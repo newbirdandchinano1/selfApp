@@ -30,3 +30,10 @@ export type CreateHealthRecordInput = {
 };
 
 export type UpdateHealthRecordInput = Partial<Pick<HealthRecordRow, 'hydration' | 'target_hydration' | 'protein' | 'target_protein' | 'sodium' | 'target_sodium' | 'record_date'>>;
+
+/** 某日所有健康记录汇总后的摄入量（同日多条时相加）。 */
+export type HealthIntakeDayTotals = {
+  hydration: number;
+  protein: number;
+  sodium: number;
+};

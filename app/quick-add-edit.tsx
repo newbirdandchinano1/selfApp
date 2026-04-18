@@ -1,29 +1,24 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import {
+  deleteCustomQuickAddItem,
+  formatQuickAddAmount,
+  getDefaultQuickAddItems,
+  isBuiltInQuickAddItem,
+  loadAllQuickAddItems,
+  loadSelectedQuickAddItems,
+  saveSelectedQuickAddKeys,
+  type QuickAddCardItem,
+} from '@/lib/quick-add-cards';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type QuickAddItem = {
-  key: string;
-  label: string;
-  amount: string;
-  icon: keyof typeof MaterialIcons.glyphMap;
-};
+type QuickAddItem = QuickAddCardItem & { icon: keyof typeof MaterialIcons.glyphMap };
 
-const homeItems: QuickAddItem[] = [
-  { key: 'water', label: '水', amount: '250ml', icon: 'water-drop' },
-  { key: 'coffee', label: '咖啡', amount: '150ml', icon: 'local-cafe' },
-  { key: 'milk', label: '牛奶', amount: '200ml', icon: 'emoji-food-beverage' },
-];
-
-const availableItems: QuickAddItem[] = [
-  { key: 'black-tea', label: '红茶', amount: '200ml', icon: 'emoji-food-beverage' },
-  { key: 'juice', label: '果汁', amount: '300ml', icon: 'local-drink' },
-  { key: 'green-tea', label: '绿茶', amount: '250ml', icon: 'spa' },
-];
+const MAX_HOME_ITEMS = 3;
 
 export default function QuickAddEditScreen() {
   const router = useRouter();
@@ -35,6 +30,130 @@ export default function QuickAddEditScreen() {
   const surfaceHigh = isDark ? 'rgba(51,65,85,0.9)' : '#e2e7ff';
   const surfaceLowest = isDark ? 'rgba(15,23,42,0.72)' : '#ffffff';
   const outline = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.35)';
+  const [homeItems, setHomeItems] = React.useState<QuickAddItem[]>(() =>
+    getDefaultQuickAddItems().map((item) => ({
+      ...item,
+      icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+    }))
+  );
+  const [allItems, setAllItems] = React.useState<QuickAddItem[]>([]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      const run = async () => {
+        try {
+          const [selected, all] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
+          if (cancelled) return;
+          setHomeItems(
+            selected.map((item) => ({
+              ...item,
+              icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+            }))
+          );
+          setAllItems(
+            all.map((item) => ({
+              ...item,
+              icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+            }))
+          );
+        } catch {
+          if (!cancelled) {
+            setHomeItems(
+              getDefaultQuickAddItems().map((item) => ({
+                ...item,
+                icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+              }))
+            );
+            setAllItems([]);
+          }
+        }
+      };
+      void run();
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
+
+  const availableItems = React.useMemo(() => {
+    const selectedKeys = new Set(homeItems.map((item) => item.key));
+    return allItems.filter((item) => !selectedKeys.has(item.key)).map((item) => ({
+      ...item,
+      icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+    }));
+  }, [allItems, homeItems]);
+
+  const onRemove = React.useCallback((key: string) => {
+    setHomeItems((prev) => prev.filter((item) => item.key !== key));
+  }, []);
+
+  const reloadItems = React.useCallback(async () => {
+    const [selected, all] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
+    setHomeItems(
+      selected.map((item) => ({
+        ...item,
+        icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+      }))
+    );
+    setAllItems(
+      all.map((item) => ({
+        ...item,
+        icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+      }))
+    );
+  }, []);
+
+  const onLongPressDelete = React.useCallback(
+    (item: QuickAddItem) => {
+      if (isBuiltInQuickAddItem(item.key)) {
+        Alert.alert('系统项目不可删除', '内置快捷项目不支持删除。');
+        return;
+      }
+      Alert.alert('删除项目', `确定删除「${item.label}」吗？`, [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              try {
+                await deleteCustomQuickAddItem(item.key);
+                await reloadItems();
+              } catch {
+                Alert.alert('删除失败', '请稍后重试。');
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [reloadItems]
+  );
+
+  const onAdd = React.useCallback((item: QuickAddItem) => {
+    setHomeItems((prev) => {
+      if (prev.some((v) => v.key === item.key)) return prev;
+      if (prev.length >= MAX_HOME_ITEMS) {
+        Alert.alert('最多3个', '首页快捷卡片最多展示 3 个，请先移除一个再添加。');
+        return prev;
+      }
+      return [...prev, item];
+    });
+  }, []);
+
+  const onSave = React.useCallback(async () => {
+    if (homeItems.length === 0) {
+      Alert.alert('请至少保留1个', '至少保留一个快捷卡片，方便快速记录。');
+      return;
+    }
+    try {
+      await saveSelectedQuickAddKeys(homeItems.map((item) => item.key));
+      router.back();
+    } catch {
+      Alert.alert('保存失败', '请稍后重试。');
+    }
+  }, [homeItems, router]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -43,7 +162,7 @@ export default function QuickAddEditScreen() {
           <MaterialIcons name="arrow-back" size={22} color={theme.text} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: theme.text }]}>编辑快捷卡片</Text>
-        <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.saveBtn, pressed && { opacity: 0.75 }]}>
+        <Pressable onPress={() => void onSave()} style={({ pressed }) => [styles.saveBtn, pressed && { opacity: 0.75 }]}>
           <Text style={[styles.saveText, { color: theme.primary }]}>保存</Text>
         </Pressable>
       </View>
@@ -53,18 +172,23 @@ export default function QuickAddEditScreen() {
           <Text style={[styles.sectionTitle, { color: theme.text }]}>首页展示 (最多3个)</Text>
           <View style={styles.cardList}>
             {homeItems.map((item) => (
-              <View key={item.key} style={[styles.cardRow, { backgroundColor: surfaceLowest, borderColor: outline }]}>
+              <Pressable
+                key={item.key}
+                onLongPress={() => onLongPressDelete(item)}
+                delayLongPress={280}
+                style={[styles.cardRow, { backgroundColor: surfaceLowest, borderColor: outline }]}
+              >
                 <View style={[styles.iconWrap, { backgroundColor: surfaceHigh }]}>
                   <MaterialIcons name={item.icon} size={28} color={theme.primary} />
                 </View>
                 <View style={styles.cardBody}>
                   <Text style={[styles.cardTitle, { color: theme.text }]}>{item.label}</Text>
-                  <Text style={[styles.cardSub, { color: theme.textSecondary }]}>{item.amount}</Text>
+                  <Text style={[styles.cardSub, { color: theme.textSecondary }]}>{formatQuickAddAmount(item)}</Text>
                 </View>
-                <Pressable style={({ pressed }) => [styles.removeBtn, pressed && { opacity: 0.8 }]}>
+                <Pressable onPress={() => onRemove(item.key)} style={({ pressed }) => [styles.removeBtn, pressed && { opacity: 0.8 }]}>
                   <MaterialIcons name="remove" size={18} color="#ba1a1a" />
                 </Pressable>
-              </View>
+              </Pressable>
             ))}
           </View>
         </View>
@@ -80,19 +204,24 @@ export default function QuickAddEditScreen() {
 
           <View style={styles.cardList}>
             {availableItems.map((item) => (
-              <View key={item.key} style={[styles.cardRow, styles.availableRow, { backgroundColor: surfaceLowest, borderColor: outline }]}>
+              <Pressable
+                key={item.key}
+                onLongPress={() => onLongPressDelete(item)}
+                delayLongPress={280}
+                style={[styles.cardRow, styles.availableRow, { backgroundColor: surfaceLowest, borderColor: outline }]}
+              >
                 <View style={[styles.availableAccent, { backgroundColor: `${theme.primary}33` }]} />
                 <View style={[styles.iconWrap, { backgroundColor: surfaceHigh }]}>
                   <MaterialIcons name={item.icon} size={28} color={theme.text} />
                 </View>
                 <View style={styles.cardBody}>
                   <Text style={[styles.cardTitle, { color: theme.text }]}>{item.label}</Text>
-                  <Text style={[styles.cardSub, { color: theme.textSecondary }]}>{item.amount}</Text>
+                  <Text style={[styles.cardSub, { color: theme.textSecondary }]}>{formatQuickAddAmount(item)}</Text>
                 </View>
-                <Pressable style={({ pressed }) => [styles.addBtn, { backgroundColor: `${theme.primary}14` }, pressed && { opacity: 0.8 }]}>
+                <Pressable onPress={() => onAdd(item)} style={({ pressed }) => [styles.addBtn, { backgroundColor: `${theme.primary}14` }, pressed && { opacity: 0.8 }]}>
                   <MaterialIcons name="add" size={22} color={theme.primary} />
                 </Pressable>
-              </View>
+              </Pressable>
             ))}
           </View>
         </View>

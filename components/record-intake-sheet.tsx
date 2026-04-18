@@ -45,7 +45,7 @@ export function RecordIntakeSheet({
 }: {
   visible: boolean;
   onClose: () => void;
-  onConfirm?: (payload: { mode: TabKey; text?: string; amount?: number; unit?: ConfirmUnit; type?: ManualType }) => void;
+  onConfirm?: (payload: { mode: TabKey; text?: string; amount?: number; unit?: ConfirmUnit; type?: ManualType }) => void | Promise<void>;
 }) {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -115,6 +115,14 @@ export function RecordIntakeSheet({
 
   React.useEffect(() => {
     if (!visible) return;
+    setText('');
+    setTab('manual');
+    setManualType('hydration');
+    setAmountText('350');
+  }, [visible]);
+
+  React.useEffect(() => {
+    if (!visible) return;
     const enabled = text.trim().length > 0;
     Animated.timing(aiMiniEnabledAnim, {
       toValue: enabled ? 1 : 0,
@@ -137,12 +145,16 @@ export function RecordIntakeSheet({
 
   const amount = Number.parseInt(amountText || '0', 10) || 0;
   const manualMeta = getManualMeta(manualType);
+  const manualConfirmDisabled = tab === 'manual' && amount <= 0;
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
+    if (tab === 'manual' && amount <= 0) return;
     if (tab === 'ai') {
-      onConfirm?.({ mode: tab, text });
+      await Promise.resolve(onConfirm?.({ mode: tab, text }));
     } else {
-      onConfirm?.({ mode: tab, amount, unit: getUnitByType(manualType), type: manualType });
+      await Promise.resolve(
+        onConfirm?.({ mode: 'manual', amount, unit: getUnitByType(manualType), type: manualType })
+      );
     }
     onClose();
   };
@@ -150,7 +162,7 @@ export function RecordIntakeSheet({
   const onPressDigit = (digit: string) => {
     setAmountText((prev) => {
       if (prev === '0') return digit;
-      if (prev.length >= 5) return prev;
+      if (prev.length >= 4) return prev;
       return `${prev}${digit}`;
     });
   };
@@ -230,7 +242,12 @@ export function RecordIntakeSheet({
                       return (
                         <Pressable
                           key={item.key}
-                          onPress={() => setManualType(item.key)}
+                          onPress={() => {
+                            setManualType(item.key);
+                            if (item.key === 'hydration') setAmountText('350');
+                            else if (item.key === 'protein') setAmountText('30');
+                            else setAmountText('500');
+                          }}
                           style={({ pressed }) => [
                             styles.typeCard,
                             selected
@@ -276,7 +293,19 @@ export function RecordIntakeSheet({
                 </View>
               )}
 
-              <Pressable onPress={handleConfirm} style={({ pressed }) => [styles.confirmBtn, { backgroundColor: theme.primary, opacity: pressed ? 0.94 : 1 }]}>
+              <Pressable
+                disabled={manualConfirmDisabled}
+                onPress={() => {
+                  void handleConfirm();
+                }}
+                style={({ pressed }) => [
+                  styles.confirmBtn,
+                  {
+                    backgroundColor: theme.primary,
+                    opacity: manualConfirmDisabled ? 0.42 : pressed ? 0.94 : 1,
+                  },
+                ]}
+              >
                 <Text style={styles.confirmText}>确认添加</Text>
                 <MaterialIcons name="check-circle" size={22} color="#fff" />
               </Pressable>

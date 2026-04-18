@@ -1,5 +1,10 @@
 import { getDatabase } from '../../database.native';
-import type { CreateHealthRecordInput, HealthRecordRow, UpdateHealthRecordInput } from './health.types';
+import type {
+  CreateHealthRecordInput,
+  HealthIntakeDayTotals,
+  HealthRecordRow,
+  UpdateHealthRecordInput,
+} from './health.types';
 
 export async function createHealthRecord(input: CreateHealthRecordInput) {
   const db = await getDatabase();
@@ -48,6 +53,58 @@ export async function getHealthRecordsLast7Days(userId: string, endDate: string 
      ORDER BY record_date ASC, updated_at ASC`,
     [userId, endDate, endDate]
   );
+}
+
+/** 指定日历日（YYYY-MM-DD）下，该用户最新一条健康记录（同日多条时取 updated_at 最新）。 */
+export async function getLatestHealthRecordForUserOnDate(userId: string, recordDateYmd: string) {
+  const db = await getDatabase();
+  return db.getFirstAsync<HealthRecordRow>(
+    `SELECT *
+     FROM health_records
+     WHERE user_id = ?
+       AND deleted_at IS NULL
+       AND record_date = ?
+     ORDER BY updated_at DESC, created_at DESC
+     LIMIT 1`,
+    [userId, recordDateYmd]
+  );
+}
+
+/** 指定日（YYYY-MM-DD）该用户所有未删除的 health_records，按创建时间升序（便于时间线展示）。 */
+export async function getHealthRecordsForUserOnDate(userId: string, recordDateYmd: string) {
+  const db = await getDatabase();
+  return db.getAllAsync<HealthRecordRow>(
+    `SELECT *
+     FROM health_records
+     WHERE user_id = ?
+       AND deleted_at IS NULL
+       AND record_date = ?
+     ORDER BY datetime(created_at) ASC, datetime(updated_at) ASC`,
+    [userId, recordDateYmd]
+  );
+}
+
+/** 指定日该用户所有未删除记录的摄入汇总；当日无记录时返回 null。 */
+export async function getHealthIntakeTotalsForUserOnDate(
+  userId: string,
+  recordDateYmd: string
+): Promise<HealthIntakeDayTotals | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ cnt: number; h: number; p: number; s: number }>(
+    `SELECT COUNT(*) as cnt,
+            COALESCE(SUM(hydration), 0) as h,
+            COALESCE(SUM(protein), 0) as p,
+            COALESCE(SUM(sodium), 0) as s
+     FROM health_records
+     WHERE user_id = ? AND deleted_at IS NULL AND record_date = ?`,
+    [userId, recordDateYmd]
+  );
+  if (!row || row.cnt === 0) return null;
+  return {
+    hydration: Number(row.h),
+    protein: Number(row.p),
+    sodium: Number(row.s),
+  };
 }
 
 export async function updateHealthRecord(id: string, input: UpdateHealthRecordInput) {

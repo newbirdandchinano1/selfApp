@@ -1,8 +1,14 @@
 import { Colors } from '@/constants/theme';
-import { resetDatabase } from '@/lib/database.native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { resetDatabase } from '@/lib/database.native';
+import {
+  getHealthIntakeTotalsForUserOnDate,
+  getHealthRecordsByUserId,
+  getLatestHealthRecordForUserOnDate,
+} from '@/lib/repositories/health/health';
+import { getDefaultUser } from '@/lib/repositories/users/user';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, FlatList, ListRenderItemInfo, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -14,10 +20,10 @@ type TimelineItem = {
   monthMark?: string;
   offsetX: number;
   size: number;
-  status: 'active' | 'done' | 'warning' | 'empty';
+  status: 'active' | 'full' | 'partial' | 'empty';
 };
 
-type DayMetric = {
+type SelectedDayMetrics = {
   hydration: number;
   hydrationTarget: number;
   protein: number;
@@ -26,36 +32,83 @@ type DayMetric = {
   sodiumTarget: number;
 };
 
-function pad2(n: number) {
-  return String(n).padStart(2, '0');
-}
-
-function dateKey(d: Date) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-
 function normalizeDate(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
+function formatLocalYmd(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatMonthLabel(d: Date) {
+  return `${d.getFullYear()}年${String(d.getMonth() + 1).padStart(2, '0')}月`;
+}
+
+function formatDateLabel(d: Date) {
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
 function calcPercent(value: number, target: number) {
+  if (!Number.isFinite(target) || target <= 0) return 0;
   return Math.min(100, Math.round((value / target) * 100));
 }
 
-function createMetricsByDate(d: Date): DayMetric {
-  const seed = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
-  const hydration = 1200 + (seed % 1400);
-  const protein = 50 + (seed % 70);
-  const sodium = 380 + (seed % 1200);
+function addDays(base: Date, delta: number) {
+  const next = new Date(base);
+  next.setDate(next.getDate() + delta);
+  return normalizeDate(next);
+}
 
-  return {
-    hydration,
-    hydrationTarget: 2500,
-    protein,
-    proteinTarget: 150,
-    sodium,
-    sodiumTarget: 2400,
-  };
+function getDayCompletionLevel(params: {
+  hydration: number;
+  hydrationTarget: number;
+  protein: number;
+  proteinTarget: number;
+  sodium: number;
+  sodiumTarget: number;
+}): 'full' | 'partial' | 'empty' {
+  const hMet = params.hydrationTarget > 0 ? params.hydration >= params.hydrationTarget : false;
+  const pMet = params.proteinTarget > 0 ? params.protein >= params.proteinTarget : false;
+  // 钠是上限指标：小于等于目标即达标，超出目标为未达标。
+  const sMet = params.sodiumTarget > 0 ? params.sodium <= params.sodiumTarget : false;
+  const metCount = [hMet, pMet, sMet].filter(Boolean).length;
+  if (metCount >= 3) return 'full';
+  if (metCount > 0 || params.hydration > 0 || params.protein > 0 || params.sodium > 0) return 'partial';
+  return 'empty';
+}
+
+function buildTimelineData(
+  today: Date,
+  startDate: Date,
+  hasRecordDateSet: Set<string>,
+  completionMap: Map<string, 'full' | 'partial'>
+): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  let cursor = new Date(today);
+  let prevMonth = -1;
+  let idx = 0;
+
+  while (cursor >= startDate) {
+    const month = cursor.getMonth();
+    const ymd = formatLocalYmd(cursor);
+    const hasRecord = hasRecordDateSet.has(ymd);
+    const completion = completionMap.get(ymd);
+    items.push({
+      key: ymd,
+      date: new Date(cursor),
+      monthMark: month !== prevMonth ? `${cursor.getFullYear()}年${month + 1}月` : undefined,
+      offsetX: [18, -20, 12, -12, 22, -18][idx % 6],
+      size: [64, 50, 44, 40, 52, 48][idx % 6],
+      status: idx === 0 ? 'active' : hasRecord ? completion ?? 'partial' : 'empty',
+    });
+    prevMonth = month;
+    idx += 1;
+    cursor = addDays(cursor, -1);
+  }
+  return items;
 }
 
 export default function HealthCalendarScreen() {
@@ -63,115 +116,146 @@ export default function HealthCalendarScreen() {
   const scheme = useColorScheme();
   const theme = Colors[scheme ?? 'light'];
   const isDark = scheme === 'dark';
-
   const today = React.useMemo(() => normalizeDate(new Date()), []);
 
-  const timelineData = React.useMemo<TimelineItem[]>(() => {
-    const start = new Date(1990, 0, 1);
-    const arr: TimelineItem[] = [];
-
-    let cursor = new Date(today);
-    let prevMonth = -1;
-    let idx = 0;
-
-    while (cursor >= start) {
-      const month = cursor.getMonth();
-      const showMonth = month !== prevMonth;
-      const phase = idx % 6;
-
-      arr.push({
-        key: dateKey(cursor),
-        date: new Date(cursor),
-        monthMark: showMonth ? `${cursor.getFullYear()}年${month + 1}月` : undefined,
-        offsetX: [18, -20, 12, -12, 22, -18][phase],
-        size: [64, 50, 44, 40, 52, 48][phase],
-        status: idx === 0 ? 'active' : phase === 2 ? 'warning' : phase === 3 ? 'empty' : 'done',
-      });
-
-      prevMonth = month;
-      cursor.setDate(cursor.getDate() - 1);
-      idx += 1;
-    }
-
-    return arr;
-  }, [today]);
-
-  const listRef = React.useRef<FlatList<TimelineItem>>(null);
+  const [timelineData, setTimelineData] = React.useState<TimelineItem[]>([]);
   const [selectedKey, setSelectedKey] = React.useState<string | null>(null);
-  const [currentMonthLabel, setCurrentMonthLabel] = React.useState(
-    `${today.getFullYear()}年${pad2(today.getMonth() + 1)}月`,
-  );
+  const [selectedMetrics, setSelectedMetrics] = React.useState<SelectedDayMetrics | null>(null);
   const [showBackToTop, setShowBackToTop] = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
+  const [isResetting, setIsResetting] = React.useState(false);
+  const listRef = React.useRef<FlatList<TimelineItem>>(null);
 
-  const onViewableItemsChanged = React.useRef(
-    ({ viewableItems }: { viewableItems: Array<{ item: TimelineItem }> }) => {
-      const first = viewableItems?.[0]?.item;
-      if (!first) return;
-      setCurrentMonthLabel(`${first.date.getFullYear()}年${pad2(first.date.getMonth() + 1)}月`);
-    },
-  ).current;
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      const load = async () => {
+        setLoading(true);
+        const user = await getDefaultUser();
+        if (!user?.id) {
+          if (!cancelled) {
+            const fallback = buildTimelineData(today, addDays(today, -29), new Set<string>(), new Map());
+            setTimelineData(fallback);
+            setSelectedKey(null);
+            setSelectedMetrics(null);
+            setLoading(false);
+          }
+          return;
+        }
 
-  const viewabilityConfig = React.useRef({
-    itemVisiblePercentThreshold: 40,
-  }).current;
+        const records = await getHealthRecordsByUserId(user.id);
+        const hasRecordDateSet = new Set(records.map((r) => r.record_date));
+        const uniqueDates = Array.from(hasRecordDateSet);
+        const completionEntries = await Promise.all(
+          uniqueDates.map(async (ymd) => {
+            const [totals, latest] = await Promise.all([
+              getHealthIntakeTotalsForUserOnDate(user.id, ymd),
+              getLatestHealthRecordForUserOnDate(user.id, ymd),
+            ]);
+            if (!totals || !latest) return [ymd, 'partial'] as const;
+            const level = getDayCompletionLevel({
+              hydration: totals.hydration,
+              hydrationTarget: latest.target_hydration,
+              protein: totals.protein,
+              proteinTarget: latest.target_protein,
+              sodium: totals.sodium,
+              sodiumTarget: latest.target_sodium,
+            });
+            return [ymd, level === 'full' ? 'full' : 'partial'] as const;
+          })
+        );
+        const completionMap = new Map<string, 'full' | 'partial'>(completionEntries);
+        const earliestDate = records.length > 0 ? normalizeDate(new Date(records[records.length - 1].record_date)) : addDays(today, -29);
+        const startDate = earliestDate > today ? today : earliestDate;
+        const nextTimeline = buildTimelineData(today, startDate, hasRecordDateSet, completionMap);
+
+        if (!cancelled) {
+          setTimelineData(nextTimeline);
+          setSelectedKey((prev) => prev ?? formatLocalYmd(today));
+          setLoading(false);
+        }
+      };
+      void load();
+      return () => {
+        cancelled = true;
+      };
+    }, [today])
+  );
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const loadSelectedMetrics = async () => {
+      if (!selectedKey) {
+        setSelectedMetrics(null);
+        return;
+      }
+      const user = await getDefaultUser();
+      if (!user?.id) {
+        if (!cancelled) setSelectedMetrics(null);
+        return;
+      }
+      const [totals, latest] = await Promise.all([
+        getHealthIntakeTotalsForUserOnDate(user.id, selectedKey),
+        getLatestHealthRecordForUserOnDate(user.id, selectedKey),
+      ]);
+      if (cancelled) return;
+      if (!totals) {
+        setSelectedMetrics(null);
+        return;
+      }
+      setSelectedMetrics({
+        hydration: totals.hydration,
+        protein: totals.protein,
+        sodium: totals.sodium,
+        hydrationTarget: Math.max(0, latest?.target_hydration ?? 0),
+        proteinTarget: Math.max(0, latest?.target_protein ?? 0),
+        sodiumTarget: Math.max(0, latest?.target_sodium ?? 0),
+      });
+    };
+    void loadSelectedMetrics();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedKey]);
 
   const selectedItem = React.useMemo(
-    () => (selectedKey ? timelineData.find((it) => it.key === selectedKey) ?? null : null),
-    [selectedKey, timelineData],
+    () => (selectedKey ? timelineData.find((item) => item.key === selectedKey) ?? null : null),
+    [selectedKey, timelineData]
   );
 
-  const [isResetting, setIsResetting] = React.useState(false);
-  const selectedMetrics = selectedItem ? createMetricsByDate(selectedItem.date) : null;
-
+  const currentMonthLabel = selectedItem ? formatMonthLabel(selectedItem.date) : formatMonthLabel(today);
   const progress = selectedMetrics
     ? Math.round(
         (calcPercent(selectedMetrics.hydration, selectedMetrics.hydrationTarget) +
           calcPercent(selectedMetrics.protein, selectedMetrics.proteinTarget) +
           calcPercent(selectedMetrics.sodium, selectedMetrics.sodiumTarget)) /
-          3,
+          3
       )
     : 0;
 
-  const handleResetDatabase = React.useCallback(() => {
-    Alert.alert('清库确认', '这会删除本地所有数据并重新建表，是否继续？', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '清库重建',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            setIsResetting(true);
-            await resetDatabase();
-            setSelectedKey(null);
-            Alert.alert('完成', '本地数据库已清空并重建。');
-          } catch {
-            Alert.alert('失败', '清库失败，请稍后重试。');
-          } finally {
-            setIsResetting(false);
-          }
-        },
-      },
-    ]);
-  }, []);
+  const onViewableItemsChanged = React.useRef(
+    ({ viewableItems }: { viewableItems: Array<{ item: TimelineItem }> }) => {
+      const topItem = viewableItems?.[0]?.item;
+      if (!topItem) return;
+    }
+  ).current;
+
+  const viewabilityConfig = React.useRef({ itemVisiblePercentThreshold: 40 }).current;
 
   const renderItem = ({ item, index }: ListRenderItemInfo<TimelineItem>) => {
     const isSelected = item.key === selectedKey;
-
     const bgColor =
-      item.status === 'active'
+      item.status === 'full'
         ? '#10b981'
-        : item.status === 'done'
-          ? '#10b981'
-          : item.status === 'warning'
-            ? '#eab308'
+        : item.status === 'partial'
+          ? '#f59e0b'
+          : item.status === 'active'
+            ? '#22c55e'
             : isDark
               ? '#334155'
               : '#e2e8f0';
-
     const curvePath =
-      index % 2 === 0
-        ? 'M 50 0 C 80 20, 20 68, 50 88'
-        : 'M 50 0 C 20 20, 80 68, 50 88';
+      index % 2 === 0 ? 'M 50 0 C 80 20, 20 68, 50 88' : 'M 50 0 C 20 20, 80 68, 50 88';
 
     return (
       <View style={styles.row}>
@@ -185,9 +269,7 @@ export default function HealthCalendarScreen() {
             />
           </Svg>
         </View>
-
         {item.monthMark ? <Text style={[styles.monthMark, { color: theme.textSecondary }]}>{item.monthMark}</Text> : null}
-
         <View style={[styles.nodeRow, { transform: [{ translateX: item.offsetX }] }]}>
           <TouchableOpacity
             activeOpacity={0.9}
@@ -208,17 +290,47 @@ export default function HealthCalendarScreen() {
             ]}
           >
             <Text style={styles.nodeDay}>{item.date.getDate()}</Text>
-            {item.status === 'active' && <MaterialIcons name="star" size={22} color="#fff" />}
-            {item.status === 'done' && (
+            {item.status === 'active' ? <MaterialIcons name="star" size={22} color="#fff" /> : null}
+            {item.status === 'full' ? (
               <View style={[styles.checkBubble, { backgroundColor: isDark ? '#1e293b' : '#fff' }]}>
                 <MaterialIcons name="check" size={11} color="#10b981" />
               </View>
-            )}
+            ) : null}
+            {item.status === 'partial' ? (
+              <View style={[styles.checkBubble, { backgroundColor: isDark ? '#1e293b' : '#fff' }]}>
+                <MaterialIcons name="remove" size={11} color="#f59e0b" />
+              </View>
+            ) : null}
           </TouchableOpacity>
         </View>
       </View>
     );
   };
+
+  const handleResetDatabase = React.useCallback(() => {
+    Alert.alert('清库确认', '这会删除本地所有数据并重新建表，是否继续？', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '清库重建',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setIsResetting(true);
+            await resetDatabase();
+            const fallback = buildTimelineData(today, addDays(today, -29), new Set<string>(), new Map());
+            setTimelineData(fallback);
+            setSelectedKey(null);
+            setSelectedMetrics(null);
+            Alert.alert('完成', '本地数据库已清空并重建。');
+          } catch {
+            Alert.alert('失败', '清库失败，请稍后重试。');
+          } finally {
+            setIsResetting(false);
+          }
+        },
+      },
+    ]);
+  }, [today]);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top', 'left', 'right']}>
@@ -252,10 +364,7 @@ export default function HealthCalendarScreen() {
             viewabilityConfig={viewabilityConfig}
             onViewableItemsChanged={onViewableItemsChanged}
             keyboardShouldPersistTaps="handled"
-            onScroll={(e) => {
-              const y = e.nativeEvent.contentOffset.y;
-              setShowBackToTop(y > 600);
-            }}
+            onScroll={(e) => setShowBackToTop(e.nativeEvent.contentOffset.y > 600)}
             scrollEventThrottle={16}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.listContent}
@@ -268,7 +377,7 @@ export default function HealthCalendarScreen() {
           style={[styles.backToTopBtn, { backgroundColor: theme.primary }]}
           onPress={() => {
             listRef.current?.scrollToOffset({ offset: 0, animated: true });
-            setSelectedKey(null);
+            setSelectedKey(formatLocalYmd(today));
           }}
           activeOpacity={0.9}
         >
@@ -278,37 +387,72 @@ export default function HealthCalendarScreen() {
       ) : null}
 
       {selectedItem && selectedMetrics ? (
-        <View style={[styles.detailCard, { backgroundColor: theme.surface, borderColor: isDark ? 'rgba(148,163,184,0.22)' : '#f1f5f9' }]}>
+        <View
+          style={[
+            styles.detailCard,
+            {
+              backgroundColor: theme.surface,
+              borderColor: isDark ? 'rgba(148,163,184,0.22)' : '#f1f5f9',
+            },
+          ]}
+        >
           <View style={styles.detailHeader}>
             <View>
-              <Text style={[styles.detailDate, { color: theme.text }]}>{selectedItem.date.getFullYear()}年{selectedItem.date.getMonth() + 1}月{selectedItem.date.getDate()}日</Text>
+              <Text style={[styles.detailDate, { color: theme.text }]}>{formatDateLabel(selectedItem.date)}</Text>
               <Text style={[styles.detailDesc, { color: theme.textSecondary }]}>你已经完成了 {progress}% 的目标</Text>
             </View>
-            <View style={styles.trendIconWrap}>
-              <MaterialIcons name="trending-up" size={20} color="#10b981" />
-            </View>
+            <TouchableOpacity
+              style={styles.trendIconWrap}
+              activeOpacity={0.8}
+              onPress={() => router.push({ pathname: '/intake-history', params: { date: selectedItem.key } })}
+            >
+              <MaterialIcons name="history" size={20} color="#10b981" />
+            </TouchableOpacity>
           </View>
-
           {[
-            { key: 'hydration', label: '水分', icon: 'water-drop' as const, color: '#3b82f6', value: selectedMetrics.hydration, target: selectedMetrics.hydrationTarget, unit: 'ML' },
-            { key: 'protein', label: '蛋白质', icon: 'restaurant' as const, color: '#f97316', value: selectedMetrics.protein, target: selectedMetrics.proteinTarget, unit: 'G' },
-            { key: 'sodium', label: '钠', icon: 'science' as const, color: '#a855f7', value: selectedMetrics.sodium, target: selectedMetrics.sodiumTarget, unit: 'MG' },
-          ].map((m) => {
-            const pct = calcPercent(m.value, m.target);
+            {
+              key: 'hydration',
+              label: '水分',
+              icon: 'water-drop' as const,
+              color: '#3b82f6',
+              value: selectedMetrics.hydration,
+              target: selectedMetrics.hydrationTarget,
+              unit: 'ML',
+            },
+            {
+              key: 'protein',
+              label: '蛋白质',
+              icon: 'restaurant' as const,
+              color: '#f97316',
+              value: selectedMetrics.protein,
+              target: selectedMetrics.proteinTarget,
+              unit: 'G',
+            },
+            {
+              key: 'sodium',
+              label: '钠',
+              icon: 'science' as const,
+              color: '#a855f7',
+              value: selectedMetrics.sodium,
+              target: selectedMetrics.sodiumTarget,
+              unit: 'MG',
+            },
+          ].map((metric) => {
+            const pct = calcPercent(metric.value, metric.target);
             return (
-              <View key={m.key} style={styles.metricRow}>
-                <View style={[styles.metricIconWrap, { backgroundColor: `${m.color}1A` }]}>
-                  <MaterialIcons name={m.icon} size={20} color={m.color} />
+              <View key={metric.key} style={styles.metricRow}>
+                <View style={[styles.metricIconWrap, { backgroundColor: `${metric.color}1A` }]}>
+                  <MaterialIcons name={metric.icon} size={20} color={metric.color} />
                 </View>
                 <View style={styles.metricMain}>
                   <View style={styles.metricTopLine}>
-                    <Text style={[styles.metricLabel, { color: theme.text }]}>{m.label}</Text>
+                    <Text style={[styles.metricLabel, { color: theme.text }]}>{metric.label}</Text>
                     <Text style={[styles.metricValue, { color: theme.textSecondary }]}>
-                      {m.value.toLocaleString()} / {m.target.toLocaleString()} {m.unit}
+                      {Math.round(metric.value).toLocaleString()} / {Math.round(metric.target).toLocaleString()} {metric.unit}
                     </Text>
                   </View>
                   <View style={[styles.progressBg, { backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : '#f1f5f9' }]}>
-                    <View style={[styles.progressFill, { width: `${pct}%`, backgroundColor: m.color }]} />
+                    <View style={[styles.progressFill, { width: `${pct}%`, backgroundColor: metric.color }]} />
                   </View>
                 </View>
                 <Text style={[styles.metricPercent, { color: theme.text }]}>{pct}%</Text>
@@ -316,7 +460,18 @@ export default function HealthCalendarScreen() {
             );
           })}
         </View>
-      ) : null}
+      ) : (
+        <View
+          style={[
+            styles.emptyTipCard,
+            { backgroundColor: theme.surface, borderColor: isDark ? 'rgba(148,163,184,0.16)' : '#e2e8f0' },
+          ]}
+        >
+          <Text style={[styles.emptyTipText, { color: theme.textSecondary }]}>
+            {loading ? '正在加载健康脉络...' : '选中一个有记录的日期查看摄入详情'}
+          </Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -445,4 +600,17 @@ const styles = StyleSheet.create({
   progressBg: { height: 8, borderRadius: 999, overflow: 'hidden' },
   progressFill: { height: '100%', borderRadius: 999 },
   metricPercent: { width: 34, textAlign: 'right', fontSize: 12, fontWeight: '800' },
+  emptyTipCard: {
+    marginHorizontal: 24,
+    marginBottom: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+  },
+  emptyTipText: {
+    textAlign: 'center',
+    fontSize: 13,
+    fontWeight: '500',
+  },
 });
