@@ -1,13 +1,17 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Dimensions, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 type TabMode = 'date' | 'time';
 type TimeRangeKey = '本周' | '下周' | '本月' | '下月' | '未来半年';
+type ReminderOption = '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+type RepeatOption = '不重复' | '每天' | '每周' | '每月' | '每年';
+type SettingPickerType = 'reminder' | 'repeat' | null;
 
 type MonthInfo = {
   year: number;
@@ -16,11 +20,36 @@ type MonthInfo = {
   firstDayOffset: number;
 };
 
+type CalendarCell = {
+  key: string;
+  day: number;
+  inCurrentMonth: boolean;
+};
+
+type DateRange = {
+  start: Date;
+  end: Date;
+};
+
 const dateQuickChips = ['今天', '今晚', '明天', '本周六', '下周一'];
 const timeQuickChips = ['本周', '下周', '本月', '下月', '未来半年'];
 const lunarLabels = ['十五', '十六', '十七', '十八', '清明', '廿十', '廿一', '廿二', '廿三', '廿四', '廿五', '廿六', '廿七', '廿八', '廿九', '三十', '三月', '初二', '初三', '初四', '初五', '谷雨', '初七', '初八', '初九', '初十', '十一', '十二', '十三', '十四'];
 
 const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
+const MONTH_PAGE_SPAN = 481;
+const MONTH_PAGE_CENTER_INDEX = Math.floor(MONTH_PAGE_SPAN / 2);
+const REMINDER_OPTIONS: ReminderOption[] = ['不提前', '提前1天', '提前2天', '提前3天', '提前7天'];
+const REPEAT_OPTIONS: RepeatOption[] = ['不重复', '每天', '每周', '每月', '每年'];
+const WEEKDAY_OPTIONS = [
+  { label: '周一', value: 1 },
+  { label: '周二', value: 2 },
+  { label: '周三', value: 3 },
+  { label: '周四', value: 4 },
+  { label: '周五', value: 5 },
+  { label: '周六', value: 6 },
+  { label: '周日', value: 7 },
+];
+const MONTH_DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => i + 1);
 
 function getMonthInfo(year: number, month: number): MonthInfo {
   const first = new Date(year, month, 1);
@@ -30,19 +59,104 @@ function getMonthInfo(year: number, month: number): MonthInfo {
   return { year, month, daysInMonth, firstDayOffset };
 }
 
-function getTimeRange(key: TimeRangeKey, monthInfo: MonthInfo) {
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(base: Date, amount: number): Date {
+  const d = new Date(base);
+  d.setDate(d.getDate() + amount);
+  return d;
+}
+
+function getMonthDiff(from: Date, to: Date): number {
+  return (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
+}
+
+function getWeekdayMonAs1(date: Date): number {
+  return ((date.getDay() + 6) % 7) + 1;
+}
+
+function getCurrentWeekStart(date: Date): Date {
+  return addDays(startOfDay(date), -(getWeekdayMonAs1(date) - 1));
+}
+
+function getUpcomingWeekday(date: Date, targetMonAs1: number): Date {
+  const current = getWeekdayMonAs1(date);
+  const delta = targetMonAs1 - current;
+  return addDays(startOfDay(date), delta);
+}
+
+function getTimeRange(key: TimeRangeKey, today: Date): DateRange {
+  const currentWeekStart = getCurrentWeekStart(today);
   switch (key) {
     case '本周':
-      return { start: 1, end: Math.min(7, monthInfo.daysInMonth) };
+      return { start: currentWeekStart, end: addDays(currentWeekStart, 6) };
     case '下周':
-      return { start: 8, end: Math.min(14, monthInfo.daysInMonth) };
+      return { start: addDays(currentWeekStart, 7), end: addDays(currentWeekStart, 13) };
     case '本月':
-      return { start: 1, end: monthInfo.daysInMonth };
+      return {
+        start: new Date(today.getFullYear(), today.getMonth(), 1),
+        end: new Date(today.getFullYear(), today.getMonth() + 1, 0),
+      };
     case '下月':
-      return { start: 1, end: monthInfo.daysInMonth };
+      return {
+        start: new Date(today.getFullYear(), today.getMonth() + 1, 1),
+        end: new Date(today.getFullYear(), today.getMonth() + 2, 0),
+      };
     case '未来半年':
-      return { start: 1, end: monthInfo.daysInMonth };
+      return { start: startOfDay(today), end: addDays(startOfDay(today), 180) };
   }
+}
+
+function formatTime(date: Date): string {
+  const h = String(date.getHours()).padStart(2, '0');
+  const m = String(date.getMinutes()).padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+function formatRepeatSummary(option: RepeatOption, weeklyDays: number[], monthlyDays: number[], yearlyDate: Date): string {
+  if (option === '每周') {
+    if (!weeklyDays.length) return '每周';
+    const labels = WEEKDAY_OPTIONS.filter((item) => weeklyDays.includes(item.value)).map((item) => item.label);
+    return `每周 ${labels.join('、')}`;
+  }
+
+  if (option === '每月') {
+    if (!monthlyDays.length) return '每月';
+    return `每月 ${monthlyDays.sort((a, b) => a - b).join('、')}日`;
+  }
+
+  if (option === '每年') {
+    return `每年 ${yearlyDate.getMonth() + 1}月${yearlyDate.getDate()}日`;
+  }
+
+  return option;
+}
+
+function buildCalendarCells(current: MonthInfo, previous: MonthInfo, next: MonthInfo): CalendarCell[] {
+  const totalCells = 42;
+  const cells: CalendarCell[] = [];
+  const prevMonthVisibleCount = current.firstDayOffset;
+
+  for (let i = 0; i < totalCells; i += 1) {
+    if (i < prevMonthVisibleCount) {
+      const day = previous.daysInMonth - prevMonthVisibleCount + i + 1;
+      cells.push({ key: `prev-${previous.year}-${previous.month}-${day}`, day, inCurrentMonth: false });
+      continue;
+    }
+
+    const currentDayIndex = i - prevMonthVisibleCount + 1;
+    if (currentDayIndex <= current.daysInMonth) {
+      cells.push({ key: `curr-${current.year}-${current.month}-${currentDayIndex}`, day: currentDayIndex, inCurrentMonth: true });
+      continue;
+    }
+
+    const day = i - (prevMonthVisibleCount + current.daysInMonth) + 1;
+    cells.push({ key: `next-${next.year}-${next.month}-${day}`, day, inCurrentMonth: false });
+  }
+
+  return cells;
 }
 
 export default function SchedulePickerScreen() {
@@ -52,20 +166,47 @@ export default function SchedulePickerScreen() {
   const isDark = scheme === 'dark';
 
   const today = React.useMemo(() => new Date(), []);
+  const todayStart = React.useMemo(() => startOfDay(today), [today]);
   const [tab, setTab] = React.useState<TabMode>('date');
-  const [selectedDay, setSelectedDay] = React.useState(today.getDate());
+  const [selectedDate, setSelectedDate] = React.useState<Date>(todayStart);
   const [selectedQuickChip, setSelectedQuickChip] = React.useState<string>('今天');
   const [timeRangeKey, setTimeRangeKey] = React.useState<TimeRangeKey | null>(null);
+  const [timeRange, setTimeRange] = React.useState<DateRange | null>(null);
+  const [timeSelectingEnd, setTimeSelectingEnd] = React.useState(false);
   const [monthOffset, setMonthOffset] = React.useState(0);
+  const [visibleMonthOffset, setVisibleMonthOffset] = React.useState(0);
   const [allDay, setAllDay] = React.useState(false);
   const [hasExactTime, setHasExactTime] = React.useState(true);
+  const [timePickerVisible, setTimePickerVisible] = React.useState(false);
+  const [settingPickerType, setSettingPickerType] = React.useState<SettingPickerType>(null);
+  const [reminderOption, setReminderOption] = React.useState<ReminderOption>('不提前');
+  const [repeatOption, setRepeatOption] = React.useState<RepeatOption>('不重复');
+  const [repeatDetailVisible, setRepeatDetailVisible] = React.useState(false);
+  const [weeklyDays, setWeeklyDays] = React.useState<number[]>([1]);
+  const [monthlyDays, setMonthlyDays] = React.useState<number[]>([1]);
+  const [yearlyDate, setYearlyDate] = React.useState<Date>(() => new Date(todayStart));
+  const [yearlyPickerVisible, setYearlyPickerVisible] = React.useState(false);
+  const [exactTime, setExactTime] = React.useState<Date>(() => {
+    const initial = new Date(todayStart);
+    initial.setHours(13, 0, 0, 0);
+    return initial;
+  });
+  const [timeDraft, setTimeDraft] = React.useState<Date>(exactTime);
 
-  const screenWidth = Dimensions.get('window').width;
-  const scrollRef = React.useRef<ScrollView>(null);
-  const visibleMonthDate = React.useMemo(() => new Date(today.getFullYear(), today.getMonth() + monthOffset, 1), [monthOffset, today]);
+  const { width: windowWidth } = useWindowDimensions();
+  const [calendarWidth, setCalendarWidth] = React.useState(() => Math.max(1, windowWidth - 32));
+  const pagerRef = React.useRef<FlatList<number>>(null);
+  const pagerCurrentIndexRef = React.useRef(MONTH_PAGE_CENTER_INDEX);
+  const pagerWidthReadyRef = React.useRef(false);
+  const pagerData = React.useMemo(
+    () => Array.from({ length: MONTH_PAGE_SPAN }, (_, i) => i - MONTH_PAGE_CENTER_INDEX),
+    []
+  );
+  const visibleMonthDate = React.useMemo(
+    () => new Date(today.getFullYear(), today.getMonth() + visibleMonthOffset, 1),
+    [today, visibleMonthOffset]
+  );
   const visibleMonthInfo = React.useMemo(() => getMonthInfo(visibleMonthDate.getFullYear(), visibleMonthDate.getMonth()), [visibleMonthDate]);
-  const prevMonthInfo = React.useMemo(() => getMonthInfo(visibleMonthDate.getFullYear(), visibleMonthDate.getMonth() - 1), [visibleMonthDate]);
-  const nextMonthInfo = React.useMemo(() => getMonthInfo(visibleMonthDate.getFullYear(), visibleMonthDate.getMonth() + 1), [visibleMonthDate]);
   const visibleMonthTitle = `${visibleMonthInfo.year}年${visibleMonthInfo.month + 1}月`;
   const isTodayVisible = monthOffset === 0;
 
@@ -73,49 +214,156 @@ export default function SchedulePickerScreen() {
   const outlineVariant = isDark ? 'rgba(148,163,184,0.25)' : 'rgba(194,198,214,0.45)';
   const surfaceLow = isDark ? 'rgba(30,41,59,0.5)' : '#f2f3ff';
 
-  const quickChipMap: Record<string, { tab: TabMode; day?: number; rangeKey?: TimeRangeKey }> = {
-    今天: { tab: 'date', day: today.getDate() },
-    今晚: { tab: 'date', day: today.getDate() },
-    明天: { tab: 'date', day: Math.min(today.getDate() + 1, visibleMonthInfo.daysInMonth) },
-    本周六: { tab: 'date', day: Math.min(today.getDate() + 2, visibleMonthInfo.daysInMonth) },
-    下周一: { tab: 'date', day: Math.min(today.getDate() + 4, visibleMonthInfo.daysInMonth) },
-    本周: { tab: 'time', rangeKey: '本周' },
-    下周: { tab: 'time', rangeKey: '下周' },
-    本月: { tab: 'time', rangeKey: '本月' },
-    下月: { tab: 'time', rangeKey: '下月' },
-    未来半年: { tab: 'time', rangeKey: '未来半年' },
-  };
-
   const handleQuickChipPress = (chip: string) => {
-    const next = quickChipMap[chip];
-    if (!next) return;
-    setTab(next.tab);
     setSelectedQuickChip(chip);
-    setMonthOffset(next.offset);
-    setTimeRangeKey(next.rangeKey ?? null);
 
-    if (next.rangeKey) {
-      const range = getTimeRange(next.rangeKey, getMonthInfo(today.getFullYear(), today.getMonth() + next.offset));
-      setSelectedDay(range.start);
-    } else if (typeof next.day === 'number') {
-      setSelectedDay(next.day);
+    if (chip === '今天' || chip === '今晚') {
+      setTab('date');
+      setTimeRangeKey(null);
+      setTimeRange(null);
+      setTimeSelectingEnd(false);
+      setSelectedDate(todayStart);
+      setMonthOffset(0);
+      return;
     }
 
-    requestAnimationFrame(() => scrollRef.current?.scrollTo({ x: screenWidth, animated: false }));
+    if (chip === '明天') {
+      const target = addDays(todayStart, 1);
+      setTab('date');
+      setTimeRangeKey(null);
+      setTimeRange(null);
+      setTimeSelectingEnd(false);
+      setSelectedDate(target);
+      setMonthOffset(getMonthDiff(todayStart, target));
+      return;
+    }
+
+    if (chip === '本周六') {
+      const target = getUpcomingWeekday(todayStart, 6);
+      setTab('date');
+      setTimeRangeKey(null);
+      setTimeRange(null);
+      setTimeSelectingEnd(false);
+      setSelectedDate(target);
+      setMonthOffset(getMonthDiff(todayStart, target));
+      return;
+    }
+
+    if (chip === '下周一') {
+      const target = addDays(getCurrentWeekStart(todayStart), 7);
+      setTab('date');
+      setTimeRangeKey(null);
+      setTimeRange(null);
+      setTimeSelectingEnd(false);
+      setSelectedDate(target);
+      setMonthOffset(getMonthDiff(todayStart, target));
+      return;
+    }
+
+    const rangeKey = chip as TimeRangeKey;
+    const nextRange = getTimeRange(rangeKey, todayStart);
+    setTab('time');
+    setSelectedQuickChip(chip);
+    setTimeRangeKey(rangeKey);
+    setTimeRange(nextRange);
+    setTimeSelectingEnd(false);
+    setSelectedDate(nextRange.start);
+    setMonthOffset(getMonthDiff(todayStart, nextRange.start));
   };
 
-  const handleDayPress = (day: number) => {
-    setSelectedDay(day);
+  const handleDayPress = (year: number, month: number, day: number) => {
+    const picked = new Date(year, month, day);
+
+    if (tab === 'time') {
+      if (picked.getTime() < todayStart.getTime()) return;
+
+      setSelectedQuickChip('');
+      setTimeRangeKey(null);
+
+      if (!timeRange || !timeSelectingEnd) {
+        setTimeRange({ start: picked, end: picked });
+        setTimeSelectingEnd(true);
+      } else {
+        const start = startOfDay(timeRange.start);
+        const end = startOfDay(picked);
+        if (end.getTime() < start.getTime()) {
+          setTimeRange({ start: end, end: start });
+        } else {
+          setTimeRange({ start, end });
+        }
+        setTimeSelectingEnd(false);
+      }
+
+      setSelectedDate(picked);
+      return;
+    }
+
+    setSelectedDate(picked);
     setTab('date');
     setTimeRangeKey(null);
-    if (day === today.getDate() && monthOffset === 0) setSelectedQuickChip('今天');
-    else if (day === today.getDate() + 1 && monthOffset === 0) setSelectedQuickChip('明天');
-    else if (day === today.getDate() + 2 && monthOffset === 0) setSelectedQuickChip('本周六');
-    else if (day === today.getDate() + 4 && monthOffset === 0) setSelectedQuickChip('下周一');
+    setTimeRange(null);
+    setTimeSelectingEnd(false);
+    if (picked.getTime() === todayStart.getTime()) setSelectedQuickChip('今天');
+    else if (picked.getTime() === addDays(todayStart, 1).getTime()) setSelectedQuickChip('明天');
+    else if (picked.getTime() === getUpcomingWeekday(todayStart, 6).getTime()) setSelectedQuickChip('本周六');
+    else if (picked.getTime() === addDays(getCurrentWeekStart(todayStart), 7).getTime()) setSelectedQuickChip('下周一');
     else setSelectedQuickChip('');
   };
 
-  const activeRange = tab === 'time' && timeRangeKey ? getTimeRange(timeRangeKey, visibleMonthInfo) : null;
+  const activeRange = tab === 'time' ? timeRange : null;
+  const exactTimeLabel = formatTime(exactTime);
+
+  const openTimePicker = () => {
+    if (!hasExactTime) return;
+    setTimeDraft(exactTime);
+    setTimePickerVisible(true);
+  };
+  const openSettingPicker = (type: Exclude<SettingPickerType, null>) => setSettingPickerType(type);
+  const settingPickerTitle = settingPickerType === 'reminder' ? '提醒设置' : '重复设置';
+  const settingPickerOptions = settingPickerType === 'reminder' ? REMINDER_OPTIONS : REPEAT_OPTIONS;
+  const settingPickerValue = settingPickerType === 'reminder' ? reminderOption : repeatOption;
+  const repeatSummary = formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate);
+
+  React.useEffect(() => {
+    const nextWidth = Math.max(1, windowWidth - 32);
+    setCalendarWidth((prev) => (Math.abs(prev - nextWidth) < 1 ? prev : nextWidth));
+  }, [windowWidth]);
+
+  const toggleWeeklyDay = (day: number) => {
+    setWeeklyDays((prev) => {
+      if (prev.includes(day)) return prev.filter((d) => d !== day);
+      return [...prev, day];
+    });
+  };
+
+  const toggleMonthlyDay = (day: number) => {
+    setMonthlyDays((prev) => {
+      if (prev.includes(day)) return prev.filter((d) => d !== day);
+      return [...prev, day];
+    });
+  };
+
+  React.useEffect(() => {
+    setVisibleMonthOffset(monthOffset);
+    if (calendarWidth <= 0) return;
+
+    const nextIndex = monthOffset + MONTH_PAGE_CENTER_INDEX;
+    // Width is measured after first paint; force-align once to avoid wrong initial offset/year.
+    if (!pagerWidthReadyRef.current) {
+      pagerWidthReadyRef.current = true;
+      pagerCurrentIndexRef.current = nextIndex;
+      requestAnimationFrame(() => {
+        pagerRef.current?.scrollToIndex({ index: nextIndex, animated: false });
+      });
+      return;
+    }
+
+    if (nextIndex === pagerCurrentIndexRef.current) return;
+    pagerCurrentIndexRef.current = nextIndex;
+    requestAnimationFrame(() => {
+      pagerRef.current?.scrollToIndex({ index: nextIndex, animated: true });
+    });
+  }, [calendarWidth, monthOffset]);
 
 
   return (
@@ -139,7 +387,7 @@ export default function SchedulePickerScreen() {
         </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} nestedScrollEnabled>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
           {(tab === 'date' ? dateQuickChips : timeQuickChips).map((chip) => {
             const isActive = selectedQuickChip === chip;
@@ -170,88 +418,168 @@ export default function SchedulePickerScreen() {
           </View>
         </View>
 
-        <ScrollView
+        <FlatList
+          ref={pagerRef}
+          data={pagerData}
           horizontal
           pagingEnabled
+          nestedScrollEnabled
+          directionalLockEnabled
+          decelerationRate="fast"
+          initialScrollIndex={MONTH_PAGE_CENTER_INDEX}
+          getItemLayout={(_, index) => ({ length: calendarWidth, offset: calendarWidth * index, index })}
           showsHorizontalScrollIndicator={false}
-          contentOffset={{ x: Dimensions.get('window').width, y: 0 }}
-          onScrollEndDrag={(e) => {
-            const width = Dimensions.get('window').width;
-            const x = e.nativeEvent.contentOffset.x;
-            if (x > width * 1.5) setMonthOffset((prev) => prev + 1);
-            else if (x < width * 0.5) setMonthOffset((prev) => prev - 1);
+          keyExtractor={(offset) => `month-${offset}`}
+          windowSize={5}
+          maxToRenderPerBatch={3}
+          updateCellsBatchingPeriod={16}
+          removeClippedSubviews
+          onLayout={(e) => {
+            const width = e.nativeEvent.layout.width;
+            setCalendarWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width));
+          }}
+          onScroll={(e) => {
+            if (calendarWidth <= 0) return;
+            const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
+            const previewOffset = Math.round(rawIndex) - MONTH_PAGE_CENTER_INDEX;
+            setVisibleMonthOffset((prev) => (prev === previewOffset ? prev : previewOffset));
+          }}
+          scrollEventThrottle={16}
+          onMomentumScrollEnd={(e) => {
+            if (calendarWidth <= 0) return;
+            const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
+            const nextIndex = Math.round(rawIndex);
+            const nextOffset = nextIndex - MONTH_PAGE_CENTER_INDEX;
+            pagerCurrentIndexRef.current = nextIndex;
+            setVisibleMonthOffset(nextOffset);
+            setMonthOffset((prev) => (prev === nextOffset ? prev : nextOffset));
+          }}
+          onScrollToIndexFailed={(info) => {
+            if (calendarWidth <= 0) return;
+            requestAnimationFrame(() => {
+              pagerRef.current?.scrollToOffset({ offset: info.index * calendarWidth, animated: false });
+            });
           }}
           contentContainerStyle={styles.calendarPager}
-        >
-          <View style={styles.calendarPage}>
-            <View style={styles.weekRow}>
-              {WEEK_LABELS.map((w) => (
-                <Text key={w} style={[styles.weekText, { color: outline }]}>
-                  {w}
-                </Text>
-              ))}
-            </View>
+          renderItem={({ item: offset }) => {
+            const monthDate = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+            const currentMonthInfo = getMonthInfo(monthDate.getFullYear(), monthDate.getMonth());
+            const prevMonthInfo = getMonthInfo(monthDate.getFullYear(), monthDate.getMonth() - 1);
+            const nextMonthInfo = getMonthInfo(monthDate.getFullYear(), monthDate.getMonth() + 1);
+            const days = buildCalendarCells(currentMonthInfo, prevMonthInfo, nextMonthInfo);
 
-            <View style={styles.grid}>
-              {days.map((cell, index) => {
-                const day = cell.day;
-                const lunar = lunarLabels[(day - 1) % lunarLabels.length] ?? '农历';
-                const isSelected = cell.inCurrentMonth && day === selectedDay && tab === 'date';
-                const isToday = isTodayVisible && cell.inCurrentMonth && day === today.getDate();
-                const inRange = !!activeRange && cell.inCurrentMonth && day >= activeRange.start && day <= activeRange.end;
-                const start = !!activeRange && cell.inCurrentMonth && day === activeRange.start;
-                const end = !!activeRange && cell.inCurrentMonth && day === activeRange.end;
-                const weekDayIndex = index % 7;
-                const isRangeStartOrEnd = start || end;
-                const showRangeLine = inRange && !isRangeStartOrEnd;
+            return (
+              <View style={[styles.calendarPage, { width: calendarWidth || '100%' }]}>
+                <View style={styles.weekRow}>
+                  {WEEK_LABELS.map((w) => (
+                    <Text key={w} style={[styles.weekText, { color: outline }]}>
+                      {w}
+                    </Text>
+                  ))}
+                </View>
 
-                return (
-                  <Pressable key={cell.key} onPress={() => cell.inCurrentMonth && handleDayPress(day)} style={styles.dayCell}>
-                    {cell.inCurrentMonth ? (
-                      <View style={styles.rangeWrap}>
-                        {inRange && weekDayIndex !== 0 ? <View style={styles.rangeLeftFill} /> : null}
-                        {inRange && weekDayIndex !== 6 ? <View style={styles.rangeRightFill} /> : null}
+                <View style={styles.grid}>
+                  {days.map((cell, index) => {
+                    const day = cell.day;
+                    const lunar = lunarLabels[(day - 1) % lunarLabels.length] ?? '农历';
+                    const cellDate = new Date(currentMonthInfo.year, currentMonthInfo.month, day);
+                    const isPastDate = cell.inCurrentMonth && cellDate.getTime() < todayStart.getTime();
+                    const isSelected =
+                      cell.inCurrentMonth &&
+                      tab === 'date' &&
+                      selectedDate.getFullYear() === cellDate.getFullYear() &&
+                      selectedDate.getMonth() === cellDate.getMonth() &&
+                      selectedDate.getDate() === cellDate.getDate();
+                    const isToday =
+                      cell.inCurrentMonth &&
+                      todayStart.getFullYear() === cellDate.getFullYear() &&
+                      todayStart.getMonth() === cellDate.getMonth() &&
+                      todayStart.getDate() === cellDate.getDate();
+                    const inRange = !!activeRange && cell.inCurrentMonth && cellDate >= activeRange.start && cellDate <= activeRange.end;
+                    const start =
+                      !!activeRange &&
+                      cell.inCurrentMonth &&
+                      cellDate.getFullYear() === activeRange.start.getFullYear() &&
+                      cellDate.getMonth() === activeRange.start.getMonth() &&
+                      cellDate.getDate() === activeRange.start.getDate();
+                    const end =
+                      !!activeRange &&
+                      cell.inCurrentMonth &&
+                      cellDate.getFullYear() === activeRange.end.getFullYear() &&
+                      cellDate.getMonth() === activeRange.end.getMonth() &&
+                      cellDate.getDate() === activeRange.end.getDate();
+                    const weekDayIndex = index % 7;
+                    const isRangeStartOrEnd = start || end;
+                    const showRangeLine = inRange && !isRangeStartOrEnd;
 
-                        {showRangeLine ? (
-                          <View style={[styles.dayCircle, styles.rangeMiddleCircle, { backgroundColor: 'rgba(0,108,73,0.14)' }]}>
-                            <Text style={[styles.dayNum, { color: '#006c49' }]}>{day}</Text>
-                            <Text style={[styles.dayLunar, { color: '#006c49' }]}>{lunar}</Text>
+                    return (
+                      <Pressable
+                        key={cell.key}
+                        onPress={() => cell.inCurrentMonth && !isPastDate && handleDayPress(currentMonthInfo.year, currentMonthInfo.month, day)}
+                        style={styles.dayCell}
+                      >
+                        {cell.inCurrentMonth ? (
+                          <View style={styles.rangeWrap}>
+                            {inRange && weekDayIndex !== 0 ? <View style={styles.rangeLeftFill} /> : null}
+                            {inRange && weekDayIndex !== 6 ? <View style={styles.rangeRightFill} /> : null}
+
+                            {showRangeLine ? (
+                              <View style={[styles.dayCircle, styles.rangeMiddleCircle, { backgroundColor: 'rgba(0,108,73,0.14)' }]}>
+                                <Text style={[styles.dayNum, { color: '#006c49' }]}>{day}</Text>
+                                <Text style={[styles.dayLunar, { color: '#006c49' }]}>{lunar}</Text>
+                              </View>
+                            ) : (
+                              <View
+                                style={[
+                                  styles.dayCircle,
+                                  isSelected && { backgroundColor: '#006c49' },
+                                  isToday && !isSelected && { backgroundColor: 'rgba(0,108,73,0.12)' },
+                                  isRangeStartOrEnd && { backgroundColor: '#006c49' },
+                                  inRange && !isRangeStartOrEnd && { backgroundColor: 'rgba(0,108,73,0.14)' },
+                                  isRangeStartOrEnd && styles.rangeEndpoint,
+                                  isToday && !isSelected && !isRangeStartOrEnd && styles.todayCircle,
+                                  isPastDate && styles.pastDayCircle,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.dayNum,
+                                    { color: isSelected || isRangeStartOrEnd ? '#fff' : isToday ? '#006c49' : theme.text },
+                                    isPastDate && styles.pastDayText,
+                                  ]}
+                                >
+                                  {day}
+                                </Text>
+                                <Text
+                                  style={[
+                                    styles.dayLunar,
+                                    { color: isSelected || isRangeStartOrEnd ? '#fff' : isToday ? '#006c49' : outline },
+                                    isPastDate && styles.pastDayText,
+                                  ]}
+                                >
+                                  {lunar}
+                                </Text>
+                              </View>
+                            )}
                           </View>
                         ) : (
-                          <View
-                            style={[
-                              styles.dayCircle,
-                              isSelected && { backgroundColor: '#006c49' },
-                              isToday && !isSelected && { backgroundColor: 'rgba(0,108,73,0.12)' },
-                              isRangeStartOrEnd && { backgroundColor: '#006c49' },
-                              inRange && !isRangeStartOrEnd && { backgroundColor: 'rgba(0,108,73,0.14)' },
-                              isRangeStartOrEnd && styles.rangeEndpoint,
-                              isToday && !isSelected && !isRangeStartOrEnd && styles.todayCircle,
-                            ]}
-                          >
-                            <Text style={[styles.dayNum, { color: isSelected || isRangeStartOrEnd ? '#fff' : isToday ? '#006c49' : theme.text }]}>{day}</Text>
-                            <Text style={[styles.dayLunar, { color: isSelected || isRangeStartOrEnd ? '#fff' : isToday ? '#006c49' : outline }]}>{lunar}</Text>
+                          <View style={[styles.dayCircle, styles.outOfMonthCircle]}>
+                            <Text style={[styles.dayNum, { color: outline, opacity: 0.4 }]}>{day}</Text>
+                            <Text style={[styles.dayLunar, { color: outline, opacity: 0.35 }]}>{lunar}</Text>
                           </View>
                         )}
-                      </View>
-                    ) : (
-                      <View style={[styles.dayCircle, styles.outOfMonthCircle]}>
-                        <Text style={[styles.dayNum, { color: outline, opacity: 0.4 }]}>{day}</Text>
-                        <Text style={[styles.dayLunar, { color: outline, opacity: 0.35 }]}>{lunar}</Text>
-                      </View>
-                    )}
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-          <View style={styles.calendarPage} />
-          <View style={styles.calendarPage} />
-        </ScrollView>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            );
+          }}
+        />
 
         {tab === 'date' ? (
           <View style={[styles.settingList, { backgroundColor: surfaceLow }]}>
-            <View style={styles.settingRow}>
+            <Pressable style={[styles.settingRow, !hasExactTime && styles.disabledRow]} onPress={openTimePicker}>
               <View style={styles.settingLeft}>
                 <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
                   <MaterialIcons name="schedule" size={20} color={theme.primary} />
@@ -259,11 +587,11 @@ export default function SchedulePickerScreen() {
                 <Text style={[styles.settingLabel, { color: theme.text }]}>具体时间</Text>
               </View>
               <View style={styles.settingRight}>
-                <Text style={[styles.settingValue, { color: theme.primary }]}>13:00</Text>
+                <Text style={[styles.settingValue, { color: hasExactTime ? theme.primary : outline }]}>{exactTimeLabel}</Text>
                 <Switch value={hasExactTime} onValueChange={setHasExactTime} />
               </View>
-            </View>
-            <View style={styles.settingRow}>
+            </Pressable>
+            <Pressable style={styles.settingRow} onPress={() => openSettingPicker('reminder')}>
               <View style={styles.settingLeft}>
                 <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
                   <MaterialIcons name="notifications" size={20} color={theme.primary} />
@@ -271,11 +599,11 @@ export default function SchedulePickerScreen() {
                 <Text style={[styles.settingLabel, { color: theme.text }]}>提醒设置</Text>
               </View>
               <View style={styles.settingRight}>
-                <Text style={[styles.settingHint, { color: outline }]}>不提醒</Text>
+                <Text style={[styles.settingHint, { color: outline }]}>{reminderOption}</Text>
                 <MaterialIcons name="chevron-right" size={20} color={outline} />
               </View>
-            </View>
-            <View style={styles.settingRow}>
+            </Pressable>
+            <Pressable style={styles.settingRow} onPress={() => openSettingPicker('repeat')}>
               <View style={styles.settingLeft}>
                 <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
                   <MaterialIcons name="repeat" size={20} color={theme.primary} />
@@ -283,10 +611,10 @@ export default function SchedulePickerScreen() {
                 <Text style={[styles.settingLabel, { color: theme.text }]}>重复设置</Text>
               </View>
               <View style={styles.settingRight}>
-                <Text style={[styles.settingHint, { color: outline }]}>不重复</Text>
+                <Text style={[styles.settingHint, { color: outline }]}>{repeatSummary}</Text>
                 <MaterialIcons name="chevron-right" size={20} color={outline} />
               </View>
-            </View>
+            </Pressable>
           </View>
         ) : (
           <>
@@ -329,7 +657,7 @@ export default function SchedulePickerScreen() {
             </View>
 
             <View style={[styles.settingList, { backgroundColor: surfaceLow }]}>
-              <View style={styles.settingRow}>
+              <Pressable style={styles.settingRow} onPress={() => openSettingPicker('reminder')}>
                 <View style={styles.settingLeft}>
                   <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
                     <MaterialIcons name="notifications" size={20} color={theme.primary} />
@@ -337,11 +665,11 @@ export default function SchedulePickerScreen() {
                   <Text style={[styles.settingLabel, { color: theme.text }]}>提醒设置</Text>
                 </View>
                 <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: outline }]}>无</Text>
+                  <Text style={[styles.settingHint, { color: outline }]}>{reminderOption}</Text>
                   <MaterialIcons name="chevron-right" size={20} color={outline} />
                 </View>
-              </View>
-              <View style={styles.settingRow}>
+              </Pressable>
+              <Pressable style={styles.settingRow} onPress={() => openSettingPicker('repeat')}>
                 <View style={styles.settingLeft}>
                   <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
                     <MaterialIcons name="repeat" size={20} color={theme.primary} />
@@ -349,10 +677,10 @@ export default function SchedulePickerScreen() {
                   <Text style={[styles.settingLabel, { color: theme.text }]}>重复设置</Text>
                 </View>
                 <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: outline }]}>不重复</Text>
+                  <Text style={[styles.settingHint, { color: outline }]}>{repeatSummary}</Text>
                   <MaterialIcons name="chevron-right" size={20} color={outline} />
                 </View>
-              </View>
+              </Pressable>
             </View>
 
             <Pressable style={[styles.clearBtn, { borderColor: 'rgba(186,26,26,0.2)', backgroundColor: theme.surface }]}>
@@ -361,6 +689,160 @@ export default function SchedulePickerScreen() {
           </>
         )}
       </ScrollView>
+
+      <Modal visible={timePickerVisible} transparent animationType="fade" onRequestClose={() => setTimePickerVisible(false)}>
+        <View style={styles.pickerBackdrop}>
+          <View style={[styles.pickerCard, { backgroundColor: theme.surface }]}>
+            <Text style={[styles.pickerTitle, { color: theme.text }]}>选择具体时间</Text>
+            <DateTimePicker
+              value={timeDraft}
+              mode="time"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              is24Hour
+              onChange={(_, date) => {
+                if (date) setTimeDraft(date);
+              }}
+            />
+            <View style={styles.pickerActions}>
+              <Pressable onPress={() => setTimePickerVisible(false)} style={[styles.pickerBtn, { backgroundColor: surfaceLow }]}>
+                <Text style={[styles.pickerBtnText, { color: outline }]}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setExactTime(timeDraft);
+                  setTimePickerVisible(false);
+                }}
+                style={[styles.pickerBtn, { backgroundColor: '#006c49' }]}
+              >
+                <Text style={[styles.pickerBtnText, { color: '#fff' }]}>确定</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={settingPickerType !== null} transparent animationType="fade" onRequestClose={() => setSettingPickerType(null)}>
+        <View style={styles.pickerBackdrop}>
+          <View style={[styles.pickerCard, { backgroundColor: theme.surface }]}>
+            <Text style={[styles.pickerTitle, { color: theme.text }]}>{settingPickerTitle}</Text>
+
+            <View style={styles.optionList}>
+              {settingPickerOptions.map((option) => {
+                const selected = option === settingPickerValue;
+                return (
+                  <Pressable
+                    key={option}
+                    style={[styles.optionRow, { borderColor: selected ? '#006c49' : outlineVariant, backgroundColor: selected ? 'rgba(0,108,73,0.1)' : 'transparent' }]}
+                    onPress={() => {
+                      if (settingPickerType === 'reminder') setReminderOption(option as ReminderOption);
+                      else {
+                        const selectedRepeat = option as RepeatOption;
+                        setRepeatOption(selectedRepeat);
+                        if (selectedRepeat === '每周' || selectedRepeat === '每月' || selectedRepeat === '每年') {
+                          setRepeatDetailVisible(true);
+                        }
+                      }
+                      setSettingPickerType(null);
+                    }}
+                  >
+                    <Text style={[styles.optionText, { color: selected ? '#006c49' : theme.text }]}>{option}</Text>
+                    {selected ? <MaterialIcons name="check" size={18} color="#006c49" /> : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={repeatDetailVisible} transparent animationType="fade" onRequestClose={() => setRepeatDetailVisible(false)}>
+        <View style={styles.pickerBackdrop}>
+          <View style={[styles.pickerCard, { backgroundColor: theme.surface }]}>
+            <Text style={[styles.pickerTitle, { color: theme.text }]}>
+              {repeatOption === '每周' ? '选择每周重复日' : repeatOption === '每月' ? '选择每月重复日期' : '选择每年重复日期'}
+            </Text>
+
+            {repeatOption === '每周' ? (
+              <View style={styles.tagWrap}>
+                {WEEKDAY_OPTIONS.map((item) => {
+                  const active = weeklyDays.includes(item.value);
+                  return (
+                    <Pressable
+                      key={item.value}
+                      style={[styles.tagItem, { borderColor: active ? '#006c49' : outlineVariant, backgroundColor: active ? 'rgba(0,108,73,0.1)' : 'transparent' }]}
+                      onPress={() => toggleWeeklyDay(item.value)}
+                    >
+                      <Text style={[styles.tagText, { color: active ? '#006c49' : theme.text }]}>{item.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
+
+            {repeatOption === '每月' ? (
+              <View style={styles.tagWrap}>
+                {MONTH_DAY_OPTIONS.map((day) => {
+                  const active = monthlyDays.includes(day);
+                  return (
+                    <Pressable
+                      key={day}
+                      style={[styles.tagItem, { borderColor: active ? '#006c49' : outlineVariant, backgroundColor: active ? 'rgba(0,108,73,0.1)' : 'transparent' }]}
+                      onPress={() => toggleMonthlyDay(day)}
+                    >
+                      <Text style={[styles.tagText, { color: active ? '#006c49' : theme.text }]}>{day}日</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
+
+            {repeatOption === '每年' ? (
+              <View style={styles.yearlyWrap}>
+                <Pressable style={[styles.yearlyDateBtn, { borderColor: outlineVariant }]} onPress={() => setYearlyPickerVisible(true)}>
+                  <Text style={[styles.settingLabel, { color: theme.text }]}>
+                    {yearlyDate.getMonth() + 1}月{yearlyDate.getDate()}日
+                  </Text>
+                  <MaterialIcons name="calendar-month" size={18} color={outline} />
+                </Pressable>
+              </View>
+            ) : null}
+
+            <View style={styles.pickerActions}>
+              <Pressable
+                onPress={() => {
+                  if (repeatOption === '每周' && weeklyDays.length === 0) setWeeklyDays([1]);
+                  if (repeatOption === '每月' && monthlyDays.length === 0) setMonthlyDays([1]);
+                  setRepeatDetailVisible(false);
+                }}
+                style={[styles.pickerBtn, { backgroundColor: '#006c49' }]}
+              >
+                <Text style={[styles.pickerBtnText, { color: '#fff' }]}>完成</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={yearlyPickerVisible} transparent animationType="fade" onRequestClose={() => setYearlyPickerVisible(false)}>
+        <View style={styles.pickerBackdrop}>
+          <View style={[styles.pickerCard, { backgroundColor: theme.surface }]}>
+            <Text style={[styles.pickerTitle, { color: theme.text }]}>选择每年日期</Text>
+            <DateTimePicker
+              value={yearlyDate}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'inline' : 'default'}
+              onChange={(_, date) => {
+                if (date) setYearlyDate(date);
+              }}
+            />
+            <View style={styles.pickerActions}>
+              <Pressable onPress={() => setYearlyPickerVisible(false)} style={[styles.pickerBtn, { backgroundColor: '#006c49' }]}>
+                <Text style={[styles.pickerBtnText, { color: '#fff' }]}>确定</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -377,9 +859,9 @@ const styles = StyleSheet.create({
   chip: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 10 },
   chipText: { fontSize: 14, fontWeight: '500' },
   calendarHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  calendarPager: { alignItems: 'stretch' },
   monthTitle: { fontSize: 28, fontWeight: '900' },
   monthActions: { flexDirection: 'row', gap: 8 },
-  calendarPager: { width: '100%' },
   calendarPage: { width: '100%' },
   weekRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 8 },
   weekText: { width: '14.28%', textAlign: 'center', fontSize: 11, fontWeight: '800' },
@@ -393,10 +875,13 @@ const styles = StyleSheet.create({
   rangeMiddleCircle: { opacity: 0.95 },
   rangeEndpoint: { zIndex: 2 },
   outOfMonthCircle: { opacity: 0.5 },
+  pastDayCircle: { opacity: 0.35 },
+  pastDayText: { textDecorationLine: 'line-through' },
   dayNum: { fontSize: 18, fontWeight: '700', lineHeight: 20 },
   dayLunar: { fontSize: 9, fontWeight: '600' },
   settingList: { borderRadius: 14, overflow: 'hidden' },
   settingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 14 },
+  disabledRow: { opacity: 0.6 },
   settingLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   settingIcon: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   settingLabel: { fontSize: 16, fontWeight: '500' },
@@ -406,4 +891,18 @@ const styles = StyleSheet.create({
   settingHint: { fontSize: 14, fontWeight: '500' },
   clearBtn: { borderWidth: 1, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   clearText: { color: '#ba1a1a', fontSize: 16, fontWeight: '600' },
+  pickerBackdrop: { flex: 1, backgroundColor: 'rgba(2,6,23,0.4)', justifyContent: 'center', paddingHorizontal: 24 },
+  pickerCard: { borderRadius: 16, padding: 16, gap: 12 },
+  pickerTitle: { fontSize: 16, fontWeight: '700', textAlign: 'center' },
+  pickerActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
+  pickerBtn: { borderRadius: 10, paddingHorizontal: 16, paddingVertical: 10, minWidth: 72, alignItems: 'center' },
+  pickerBtnText: { fontSize: 14, fontWeight: '600' },
+  optionList: { gap: 8 },
+  optionRow: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  optionText: { fontSize: 15, fontWeight: '500' },
+  tagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  tagItem: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  tagText: { fontSize: 14, fontWeight: '500' },
+  yearlyWrap: { gap: 10 },
+  yearlyDateBtn: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
 });
