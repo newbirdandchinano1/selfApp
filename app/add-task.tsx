@@ -4,15 +4,15 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -34,10 +34,8 @@ export default function AddTaskScreen() {
   const [mainTaskOpen, setMainTaskOpen] = React.useState(false);
   const [mainTaskQuery, setMainTaskQuery] = React.useState('');
   const [selectedMainTaskId, setSelectedMainTaskId] = React.useState<string | null>(null);
-  const [subtasks, setSubtasks] = React.useState<Subtask[]>([
-    { id: 's1', title: '审阅初步研究文档', done: false },
-    { id: 's2', title: '起草初始执行摘要', done: false },
-  ]);
+  const [deadlineText] = React.useState('');
+  const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
@@ -92,9 +90,7 @@ export default function AddTaskScreen() {
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: primary }]}>添加任务</Text>
-        <Pressable hitSlop={10} style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
-          <MaterialIcons name="more-vert" size={22} color={isDark ? 'rgba(148,163,184,0.9)' : 'rgba(100,116,139,0.9)'} />
-        </Pressable>
+        <View style={styles.iconBtn} />
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
@@ -141,7 +137,7 @@ export default function AddTaskScreen() {
               </View>
               <View style={styles.deadlineBody}>
                 <Text style={[styles.deadlineKicker, { color: outline }]}>截止日期</Text>
-                <Text style={[styles.deadlineValue, { color: theme.text }]}>Oct 24, 2023 — 14:00</Text>
+                <Text style={[styles.deadlineValue, { color: theme.text }]}>{deadlineText}</Text>
               </View>
               <Pressable
                 onPress={() => router.push('/schedule-picker')}

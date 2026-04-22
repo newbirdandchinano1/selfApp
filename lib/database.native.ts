@@ -1,7 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -43,10 +43,52 @@ export async function initDatabase() {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS project_categories (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS task_categories (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY NOT NULL,
+      category_id TEXT,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      note TEXT,
+      due_date TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT,
+      FOREIGN KEY (category_id) REFERENCES project_categories(id) ON DELETE SET NULL
+    );
+
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY NOT NULL,
+      project_id TEXT,
+      category_id TEXT,
+      parent_task_id TEXT,
       title TEXT NOT NULL,
       description TEXT,
+      note TEXT,
       status TEXT NOT NULL DEFAULT 'todo',
       priority INTEGER NOT NULL DEFAULT 0,
       due_date TEXT,
@@ -55,7 +97,11 @@ export async function initDatabase() {
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (category_id) REFERENCES task_categories(id) ON DELETE SET NULL,
+      FOREIGN KEY (parent_task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS task_items (
@@ -131,6 +177,15 @@ export async function initDatabase() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE INDEX IF NOT EXISTS idx_project_categories_updated_at ON project_categories(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_task_categories_updated_at ON task_categories(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_projects_category_id ON projects(category_id);
+    CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+    CREATE INDEX IF NOT EXISTS idx_projects_due_date ON projects(due_date);
+    CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_category_id ON tasks(category_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_parent_task_id ON tasks(parent_task_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
     CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
@@ -144,6 +199,14 @@ export async function initDatabase() {
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
   await ensureColumn(db, 'users', 'avatar_uri', 'TEXT');
+  await ensureColumn(db, 'projects', 'category_id', 'TEXT');
+  await ensureColumn(db, 'projects', 'note', 'TEXT');
+  await ensureColumn(db, 'projects', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'tasks', 'project_id', 'TEXT');
+  await ensureColumn(db, 'tasks', 'category_id', 'TEXT');
+  await ensureColumn(db, 'tasks', 'parent_task_id', 'TEXT');
+  await ensureColumn(db, 'tasks', 'note', 'TEXT');
+  await ensureColumn(db, 'tasks', 'extra_data', 'TEXT');
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
     ['default']
@@ -161,6 +224,9 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS accounts;
     DROP TABLE IF EXISTS task_items;
     DROP TABLE IF EXISTS tasks;
+    DROP TABLE IF EXISTS projects;
+    DROP TABLE IF EXISTS task_categories;
+    DROP TABLE IF EXISTS project_categories;
     DROP TABLE IF EXISTS users;
     DROP TABLE IF EXISTS app_meta;
   `);

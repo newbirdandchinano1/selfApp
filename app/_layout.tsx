@@ -38,25 +38,27 @@ export default function RootLayout() {
             <ActivityIndicator size="large" />
           </View>
         ) : (
-          <Stack>
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="add-frog" options={{ headerShown: false }} />
-            <Stack.Screen name="add-task" options={{ headerShown: false }} />
-            <Stack.Screen name="add-subtask" options={{ headerShown: false }} />
-            <Stack.Screen name="add-account" options={{ headerShown: false }} />
-            <Stack.Screen name="assets" options={{ headerShown: false }} />
-            <Stack.Screen name="vision-wall" options={{ headerShown: false }} />
-            <Stack.Screen name="vision-create" options={{ headerShown: false }} />
-            <Stack.Screen name="task/[id]" options={{ headerShown: false }} />
-            <Stack.Screen name="health-calendar" options={{ headerShown: false }} />
-            <Stack.Screen name="intake-history" options={{ headerShown: false }} />
-            <Stack.Screen name="finance-calendar" options={{ headerShown: false }} />
-            <Stack.Screen name="ai-finance-analysis" options={{ headerShown: false }} />
-            <Stack.Screen name="schedule-picker" options={{ headerShown: false }} />
-            <Stack.Screen name="edit-profile" options={{ headerShown: false }} />
-            <Stack.Screen name="quick-add-edit" options={{ headerShown: false }} />
-            <Stack.Screen name="add-item" options={{ headerShown: false }} />
-            <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="add-frog" />
+            <Stack.Screen name="add-task" />
+            <Stack.Screen name="add-project" />
+            <Stack.Screen name="add-subtask" />
+            <Stack.Screen name="add-account" />
+            <Stack.Screen name="assets" />
+            <Stack.Screen name="vision-wall" />
+            <Stack.Screen name="vision-create" />
+            <Stack.Screen name="task/[id]" />
+            <Stack.Screen name="health-calendar" />
+            <Stack.Screen name="intake-history" />
+            <Stack.Screen name="finance-calendar" />
+            <Stack.Screen name="ai-finance-analysis" />
+            <Stack.Screen name="schedule-picker" />
+            <Stack.Screen name="edit-profile" />
+            <Stack.Screen name="quick-add-edit" />
+            <Stack.Screen name="add-item" />
+            <Stack.Screen name="category-sort" />
+            <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
           </Stack>
         )}
         <StatusBar style="auto" />

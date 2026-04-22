@@ -1,0 +1,59 @@
+import type { SyncStatus } from '../../database.native';
+
+export type TaskStatus = 'todo' | 'doing' | 'done' | 'blocked' | 'cancelled';
+export type TaskPriority = 0 | 1 | 2 | 3 | 4;
+
+export type TaskRow = {
+  id: string;
+  project_id: string | null;
+  category_id: string | null;
+  parent_task_id: string | null;
+  title: string;
+  description: string | null;
+  note: string | null;
+  status: TaskStatus;
+  priority: TaskPriority;
+  due_date: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  sync_status: SyncStatus;
+  version: number;
+  extra_data: string | null;
+};
+
+export type CreateTaskInput = {
+  id: string;
+  title: string;
+  project_id?: string | null;
+  category_id?: string | null;
+  parent_task_id?: string | null;
+  description?: string | null;
+  note?: string | null;
+  status?: TaskStatus;
+  priority?: TaskPriority;
+  due_date?: string | null;
+  extra_data?: string | null;
+};
+
+export type UpdateTaskInput = Partial<Pick<TaskRow, 'project_id' | 'category_id' | 'parent_task_id' | 'title' | 'description' | 'note' | 'status' | 'priority' | 'due_date' | 'completed_at' | 'extra_data'>>;
+
+export type TaskCategoryRow = {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  sync_status: SyncStatus;
+  version: number;
+  extra_data: string | null;
+};
+
+export type CreateTaskCategoryInput = {
+  id: string;
+  name: string;
+  extra_data?: string | null;
+};
+
+export type UpdateTaskCategoryInput = Partial<Pick<TaskCategoryRow, 'name' | 'extra_data'>>;

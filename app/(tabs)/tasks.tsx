@@ -1,9 +1,11 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getProjects } from '@/lib/repositories/projects/project';
+import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 function PulseDot({ color }: { color: string }) {
@@ -42,19 +44,26 @@ function SegmentTabs({
   onChange,
   color,
   muted,
+  onLongPressTab,
 }: {
   tabs: Array<{ key: string; label: string }>;
   active: string;
   onChange: (key: string) => void;
   color: string;
   muted: string;
+  onLongPressTab?: (key: string, label: string) => void;
 }) {
   return (
     <View style={styles.segmentRow}>
       {tabs.map((tab) => {
         const isActive = tab.key === active;
         return (
-          <Pressable key={tab.key} onPress={() => onChange(tab.key)} style={styles.segmentBtn}>
+          <Pressable
+            key={tab.key}
+            onPress={() => onChange(tab.key)}
+            onLongPress={() => onLongPressTab?.(tab.key, tab.label)}
+            delayLongPress={260}
+            style={styles.segmentBtn}>
             <Text
               style={[
                 styles.segmentText,
@@ -81,6 +90,13 @@ export default function TasksScreen() {
 
   const [taskTab, setTaskTab] = React.useState<'all' | 'inbox'>('all');
   const [projectTab, setProjectTab] = React.useState<'all' | 'inbox'>('all');
+  const [projects, setProjects] = React.useState<ProjectRow[]>([]);
+  const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
+  const [categoryEditorVisible, setCategoryEditorVisible] = React.useState(false);
+  const [categoryEditorTitle, setCategoryEditorTitle] = React.useState('新建分类');
+  const [categoryInputValue, setCategoryInputValue] = React.useState('');
+  const [activeCategoryScope, setActiveCategoryScope] = React.useState<'task' | 'project'>('task');
+  const [activeCategoryLabel, setActiveCategoryLabel] = React.useState('全部');
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
@@ -150,8 +166,50 @@ export default function TasksScreen() {
     return () => loop.stop();
   }, [bgFloatAnim]);
 
+  React.useEffect(() => {
+    let mounted = true;
+
+    const loadProjects = async () => {
+      try {
+        const rows = await getProjects();
+        if (mounted) {
+          setProjects(rows);
+        }
+      } catch (err) {
+        console.warn('加载项目列表失败', err);
+        if (mounted) {
+          setProjects([]);
+        }
+      }
+    };
+
+    loadProjects();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const openTask = (id: string) => {
     router.push({ pathname: '/task/[id]', params: { id } });
+  };
+
+  const openCategoryMenu = (scope: 'task' | 'project', label: string) => {
+    setActiveCategoryScope(scope);
+    setActiveCategoryLabel(label);
+    setCategoryModalVisible(true);
+  };
+
+  const closeCategoryMenu = () => setCategoryModalVisible(false);
+  const openCategoryEditor = (title: string, initialValue = '') => {
+    setCategoryEditorTitle(title);
+    setCategoryInputValue(initialValue);
+    setCategoryModalVisible(false);
+    setCategoryEditorVisible(true);
+  };
+  const closeCategoryEditor = () => {
+    setCategoryEditorVisible(false);
+    setCategoryModalVisible(false);
   };
 
   const bg = isDark ? theme.background : '#faf8ff';
@@ -166,9 +224,8 @@ export default function TasksScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
         <Animated.View
-          pointerEvents="none"
           style={[
             styles.bgOrb,
             styles.bgOrbTop,
@@ -192,7 +249,6 @@ export default function TasksScreen() {
           ]}
         />
         <Animated.View
-          pointerEvents="none"
           style={[
             styles.bgOrb,
             styles.bgOrbBottom,
@@ -215,339 +271,291 @@ export default function TasksScreen() {
             },
           ]}
         />
+      </View>
 
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled">
         <Animated.View
           style={{
             opacity: pageFadeAnim,
             transform: [{ translateY: pageTranslateAnim }],
           }}
         >
-        <View style={styles.section}>
-          <View style={styles.headerRow}>
-            <View style={styles.titleRow}>
-              <Text style={[styles.sectionTitle, { color: theme.text }]}>今日青蛙</Text>
-              <MaterialIcons name="eco" size={20} color={secondary} />
-            </View>
-            <Pressable
-              onPress={() => router.push('/add-frog')}
-              style={({ pressed }) => [styles.ghostBtn, { borderColor: `${secondary}44` }, pressed && { opacity: 0.8 }]}>
-              <MaterialIcons name="add" size={14} color={secondary} />
-              <Text style={[styles.ghostBtnText, { color: secondary }]}>添加青蛙</Text>
-            </Pressable>
-          </View>
-
-          <Animated.View
-            style={{
-              opacity: frogCardAnim,
-              transform: [
-                {
-                  translateY: frogCardAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [16, 0],
-                  }),
-                },
-                {
-                  scale: frogCardAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0.97, 1],
-                  }),
-                },
-              ],
-            }}
-          >
-          <View style={[styles.frogCard, { backgroundColor: card, borderLeftColor: secondary }]}> 
-            <View style={styles.frogIconBg}>
-              <MaterialIcons name="eco" size={52} color={`${secondary}22`} />
-            </View>
-            <View style={styles.frogTopRow}>
-              <View style={[styles.badge, { backgroundColor: `${secondary}16` }]}>
-                <Text style={[styles.badgeText, { color: secondary }]}>核心挑战</Text>
-              </View>
-              <MaterialIcons name="radio-button-unchecked" size={20} color={secondary} />
-            </View>
-            <Text style={[styles.frogTitle, { color: theme.text }]}>完成季度战略分析报告</Text>
-            <Text style={[styles.frogDesc, { color: theme.textSecondary }]}>这是今天最难、最重要的任务。完成后将释放大部分心理压力。</Text>
-            <View style={styles.progressMeta}>
-              <Text style={[styles.progressLabel, { color: outline }]}>进度</Text>
-              <Text style={[styles.progressLabel, { color: outline }]}>65%</Text>
-            </View>
-            <View style={[styles.progressTrack, { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : '#e2e7ff' }]}>
-              <View style={[styles.progressFill, { backgroundColor: secondary, width: '65%' }]} />
-            </View>
-          </View>
-
-          <View style={[styles.frogDoneCard, { backgroundColor: soft, borderLeftColor: `${secondary}66` }]}>
-            <View style={styles.frogDoneRow}>
-              <Text style={[styles.frogDoneTitle, { color: theme.text }]}>核心客户年度复盘会议</Text>
-              <MaterialIcons name="check-circle" size={20} color={`${secondary}99`} />
-            </View>
-            <View style={styles.metaRow}>
-              <MaterialIcons name="schedule" size={14} color={outline} />
-              <Text style={[styles.metaText, { color: outline }]}>14:30 - 16:00</Text>
-            </View>
-          </View>
-          </Animated.View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 8 }]}>任务列表</Text>
-          <SegmentTabs
-            tabs={[{ key: 'all', label: '全部' }, { key: 'inbox', label: '收集箱' }]}
-            active={taskTab}
-            onChange={(k) => setTaskTab(k as 'all' | 'inbox')}
-            color={primary}
-            muted={outline}
-          />
-
-          <Animated.View
-            style={{
-              opacity: matrixAnim,
-              transform: [
-                {
-                  translateY: matrixAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [18, 0],
-                  }),
-                },
-              ],
-            }}
-          >
-          <View style={[styles.matrixWrap, { borderColor: outlineVariant, backgroundColor: `${outlineVariant}28` }]}>
-            <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-              <View style={styles.quadHead}>
-                <View style={styles.quadTitleRow}>
-                  <PulseDot color={error} />
-                  <Text style={[styles.quadTitle, { color: error }]}>紧急且重要 (立即执行)</Text>
+          <View style={[styles.section, styles.stackedSection]}>
+            <View style={styles.sectionCard}>
+              <View style={styles.headerRow}>
+                <View style={styles.titleRow}>
+                  <Text style={[styles.sectionTitle, { color: theme.text }]}>今日青蛙</Text>
+                  <MaterialIcons name="eco" size={20} color={secondary} />
                 </View>
+                <Pressable onPress={() => router.push('/add-frog')} style={({ pressed }) => [styles.ghostBtn, { borderColor: `${secondary}44` }, pressed && { opacity: 0.8 }]}>
+                  <MaterialIcons name="add" size={14} color={secondary} />
+                  <Text style={[styles.ghostBtnText, { color: secondary }]}>添加青蛙</Text>
+                </Pressable>
               </View>
-              <Pressable style={styles.taskRow} onPress={() => openTask('paybug')}>
-                <MaterialIcons name="radio-button-unchecked" size={20} color={error} />
-                <View style={styles.taskBody}>
-                  <Text style={[styles.taskText, { color: theme.text }]}>修复生产环境支付漏洞</Text>
-                  <View style={[styles.deadlineBadge, { backgroundColor: `${error}14` }]}>
-                    <Text style={[styles.deadlineText, { color: error }]}>12:00 截止</Text>
+
+              <Animated.View
+                style={{
+                  opacity: frogCardAnim,
+                  transform: [
+                    {
+                      translateY: frogCardAnim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }),
+                    },
+                    {
+                      scale: frogCardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }),
+                    },
+                  ],
+                }}
+              >
+                <View style={[styles.frogCard, { backgroundColor: card, borderLeftColor: secondary }]}> 
+                  <View style={styles.frogIconBg}>
+                    <MaterialIcons name="eco" size={52} color={`${secondary}22`} />
+                  </View>
+                  <View style={styles.frogTopRow}>
+                    <View style={[styles.badge, { backgroundColor: `${secondary}16` }]}>
+                      <Text style={[styles.badgeText, { color: secondary }]}>核心挑战</Text>
+                    </View>
+                    <MaterialIcons name="radio-button-unchecked" size={20} color={secondary} />
+                  </View>
+                  <Text style={[styles.frogTitle, { color: theme.text }]}>完成季度战略分析报告</Text>
+                  <Text style={[styles.frogDesc, { color: theme.textSecondary }]}>这是今天最难、最重要的任务。完成后将释放大部分心理压力。</Text>
+                  <View style={styles.progressMeta}>
+                    <Text style={[styles.progressLabel, { color: outline }]}>进度</Text>
+                    <Text style={[styles.progressLabel, { color: outline }]}>65%</Text>
+                  </View>
+                  <View style={[styles.progressTrack, { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : '#e2e7ff' }]}>
+                    <View style={[styles.progressFill, { backgroundColor: secondary, width: '65%' }]} />
                   </View>
                 </View>
-              </Pressable>
-              <Pressable style={styles.taskRow} onPress={() => openTask('investor')}>
-                <MaterialIcons name="radio-button-unchecked" size={20} color={error} />
-                <View style={styles.taskBody}>
-                  <Text style={[styles.taskText, { color: theme.text }]}>回复主要投资人邮件</Text>
+
+                <View style={[styles.frogDoneCard, { backgroundColor: soft, borderLeftColor: `${secondary}66` }]}>
+                  <View style={styles.frogDoneRow}>
+                    <Text style={[styles.frogDoneTitle, { color: theme.text }]}>核心客户年度复盘会议</Text>
+                    <MaterialIcons name="check-circle" size={20} color={`${secondary}99`} />
+                  </View>
                   <View style={styles.metaRow}>
-                    <MaterialIcons name="refresh" size={12} color={outline} />
-                    <Text style={[styles.metaHint, { color: outline }]}>每周重复</Text>
+                    <MaterialIcons name="schedule" size={14} color={outline} />
+                    <Text style={[styles.metaText, { color: outline }]}>14:30 - 16:00</Text>
                   </View>
                 </View>
-              </Pressable>
-            </View>
-
-            <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-              <View style={styles.quadHead}>
-                <View style={styles.quadTitleRow}>
-                  <View style={[styles.dot, { backgroundColor: primary }]} />
-                  <Text style={[styles.quadTitle, { color: primary }]}>不紧急但重要 (计划执行)</Text>
-                </View>
-              </View>
-              <Pressable style={styles.taskRow} onPress={() => openTask('fitness')}>
-                <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
-                <View style={styles.taskBody}>
-                  <Text style={[styles.taskText, { color: theme.text }]}>制定下半年度健身计划</Text>
-                  <View style={styles.metaRow}>
-                    <MaterialIcons name="account-tree" size={12} color={outline} />
-                    <Text style={[styles.metaHint, { color: outline }]}>4 个子任务</Text>
-                  </View>
-                </View>
-              </Pressable>
-              <Pressable style={styles.taskRow} onPress={() => openTask('rust')}>
-                <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
-                <View style={styles.taskBody}>
-                  <Text style={[styles.taskText, { color: theme.text }]}>深入学习 Rust 编程</Text>
-                  <View style={styles.metaRow}>
-                    <MaterialIcons name="refresh" size={12} color={outline} />
-                    <Text style={[styles.metaHint, { color: outline }]}>每日重复</Text>
-                  </View>
-                </View>
-              </Pressable>
-            </View>
-
-            <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-              <View style={styles.quadHead}>
-                <View style={styles.quadTitleRow}>
-                  <View style={[styles.dot, { backgroundColor: tertiary }]} />
-                  <Text style={[styles.quadTitle, { color: tertiary }]}>紧急但不重要 (委派他人)</Text>
-                </View>
-              </View>
-              <Pressable style={styles.taskRow} onPress={() => openTask('dinner')}>
-                <MaterialIcons name="radio-button-unchecked" size={20} color={tertiary} />
-                <View style={styles.taskBody}>
-                  <Text style={[styles.taskText, { color: theme.text }]}>预订团队聚餐场地</Text>
-                  <View style={[styles.deadlineBadge, { backgroundColor: `${tertiary}14` }]}>
-                    <Text style={[styles.deadlineText, { color: tertiary }]}>18:00 前确认</Text>
-                  </View>
-                </View>
-              </Pressable>
-              <View style={[styles.taskDoneRow, { opacity: 0.45 }]}>
-                <MaterialIcons name="check-circle" size={20} color={tertiary} />
-                <Text style={[styles.taskText, { color: theme.text, textDecorationLine: 'line-through' }]}>整理上周差旅票据</Text>
-              </View>
-            </View>
-
-            <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-              <View style={styles.quadHead}>
-                <View style={styles.quadTitleRow}>
-                  <View style={[styles.dot, { backgroundColor: outline }]} />
-                  <Text style={[styles.quadTitle, { color: outline }]}>不紧急不重要 (尽量消除)</Text>
-                </View>
-              </View>
-              <Pressable style={styles.taskDoneRow} onPress={() => openTask('social')}>
-                <MaterialIcons name="radio-button-unchecked" size={20} color={outline} />
-                <Text style={[styles.taskText, { color: theme.text }]}>浏览社交媒体非必要资讯</Text>
-              </Pressable>
+              </Animated.View>
             </View>
           </View>
-          </Animated.View>
-        </View>
 
-        <Animated.View
-          style={{
-            opacity: projectAnim,
-            transform: [
-              {
-                translateY: projectAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [20, 0],
-                }),
-              },
-            ],
-          }}
-        >
-        <View style={styles.section}>
-          <View style={styles.headerRow}>
-            <View style={styles.titleRow}>
-              <Text style={[styles.sectionTitle, { color: theme.text }]}>项目列表</Text>
-              <Text style={[styles.sectionMeta, { color: outline }]}>共 2 个活跃项目</Text>
-            </View>
-            <Pressable
-              onPress={() => router.push('/add-task')}
-              style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
-              <MaterialIcons name="add-circle" size={14} color={primary} />
-              <Text style={[styles.ghostBtnText, { color: primary }]}>新建项目</Text>
-            </Pressable>
-          </View>
+          <View style={[styles.section, styles.stackedSection]}>
+            <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 8 }]}>任务列表</Text>
+            <SegmentTabs
+              tabs={[{ key: 'all', label: '全部' }, { key: 'inbox', label: '收集箱' }]}
+              active={taskTab}
+              onChange={(k) => setTaskTab(k as 'all' | 'inbox')}
+              onLongPressTab={(_, label) => openCategoryMenu('task', label)}
+              color={primary}
+              muted={outline}
+            />
 
-          <SegmentTabs
-            tabs={[{ key: 'all', label: '全部' }, { key: 'inbox', label: '收集箱' }]}
-            active={projectTab}
-            onChange={(k) => setProjectTab(k as 'all' | 'inbox')}
-            color={primary}
-            muted={outline}
-          />
-
-          <View style={[styles.projectCard, { backgroundColor: card }]}> 
-            <View style={[styles.projectHead, { borderLeftColor: primary }]}> 
-              <View style={styles.projectHeadLeft}>
-                <MaterialIcons name="inventory-2" size={22} color={primary} />
-                <View>
-                  <Text style={[styles.projectTitle, { color: theme.text }]}>2024 新版 UI 设计系统</Text>
-                  <View style={styles.projectSubRow}>
-                    <Text style={[styles.projectSub, { color: outline }]}>由于 10月24日 交付</Text>
-                    <Text style={[styles.projectSub, { color: outline }]}>•</Text>
-                    <Text style={[styles.projectSubStrong, { color: primary }]}>核心项目</Text>
-                  </View>
-                </View>
-              </View>
-              <View style={styles.projectHeadRight}>
-                <View style={styles.projectCount}>
-                  <Text style={[styles.projectCountMain, { color: theme.text }]}>12 / 20</Text>
-                  <Text style={[styles.projectCountSub, { color: outline }]}>已完成子项</Text>
-                </View>
-                <MaterialIcons name="expand-more" size={22} color={outline} />
-              </View>
-            </View>
-
-            <View style={[styles.projectBody, { borderTopColor: `${outlineVariant}55` }]}>
-              <View style={styles.subtaskRow}>
-                <View style={styles.subtaskLeft}>
-                  <MaterialIcons name="check-circle" size={20} color={primary} />
-                  <Text style={[styles.subtaskText, { color: theme.textSecondary, textDecorationLine: 'line-through' }]}>定义核心调色盘</Text>
-                </View>
-                <Text style={[styles.subtaskStatus, { color: outline }]}>已完成</Text>
-              </View>
-
-              <View style={[styles.nested, { borderLeftColor: `${outlineVariant}90` }]}>
-                <View style={styles.subtaskRow}>
-                  <View style={styles.subtaskLeft}>
-                    <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
-                    <Text style={[styles.subtaskText, { color: theme.text }]}>子任务：研究竞争对手配色</Text>
-                  </View>
-                </View>
-                <View style={[styles.nested, { borderLeftColor: `${outlineVariant}90` }]}>
-                  <View style={styles.subtaskRow}>
-                    <View style={styles.subtaskLeft}>
-                      <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
-                      <Text style={[styles.subtaskText, { color: theme.text }]}>孙任务：对比 A 应用调色</Text>
+            <Animated.View style={{ opacity: matrixAnim, transform: [{ translateY: matrixAnim.interpolate({ inputRange: [0, 1], outputRange: [18, 0] }) }] }}>
+              <View style={[styles.matrixWrap, { borderColor: outlineVariant, backgroundColor: `${outlineVariant}28` }]}>
+                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}>
+                    <View style={styles.quadTitleRow}>
+                      <PulseDot color={error} />
+                      <Text style={[styles.quadTitle, { color: error }]}>紧急且重要 (立即执行)</Text>
                     </View>
                   </View>
-                  <View style={[styles.nested, { borderLeftColor: `${outlineVariant}90` }]}>
-                    <View style={styles.subtaskRow}>
-                      <View style={styles.subtaskLeft}>
-                        <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
-                        <Text style={[styles.subtaskText, { color: theme.text }]}>曾孙任务：导出 HEX 代码</Text>
+                  <Pressable style={styles.taskRow} onPress={() => openTask('paybug')}>
+                    <MaterialIcons name="radio-button-unchecked" size={20} color={error} />
+                    <View style={styles.taskBody}>
+                      <Text style={[styles.taskText, { color: theme.text }]}>修复生产环境支付漏洞</Text>
+                      <View style={[styles.deadlineBadge, { backgroundColor: `${error}14` }]}>
+                        <Text style={[styles.deadlineText, { color: error }]}>12:00 截止</Text>
+                      </View>
+                    </View>
+                  </Pressable>
+                  <Pressable style={styles.taskRow} onPress={() => openTask('investor')}>
+                    <MaterialIcons name="radio-button-unchecked" size={20} color={error} />
+                    <View style={styles.taskBody}>
+                      <Text style={[styles.taskText, { color: theme.text }]}>回复主要投资人邮件</Text>
+                      <View style={styles.metaRow}>
+                        <MaterialIcons name="refresh" size={12} color={outline} />
+                        <Text style={[styles.metaHint, { color: outline }]}>每周重复</Text>
+                      </View>
+                    </View>
+                  </Pressable>
+                </View>
+                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}><View style={styles.quadTitleRow}><View style={[styles.dot, { backgroundColor: primary }]} /><Text style={[styles.quadTitle, { color: primary }]}>不紧急但重要 (计划执行)</Text></View></View>
+                  <Pressable style={styles.taskRow} onPress={() => openTask('fitness')}>
+                    <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
+                    <View style={styles.taskBody}><Text style={[styles.taskText, { color: theme.text }]}>制定下半年度健身计划</Text><View style={styles.metaRow}><MaterialIcons name="account-tree" size={12} color={outline} /><Text style={[styles.metaHint, { color: outline }]}>4 个子任务</Text></View></View>
+                  </Pressable>
+                  <Pressable style={styles.taskRow} onPress={() => openTask('rust')}>
+                    <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
+                    <View style={styles.taskBody}><Text style={[styles.taskText, { color: theme.text }]}>深入学习 Rust 编程</Text><View style={styles.metaRow}><MaterialIcons name="refresh" size={12} color={outline} /><Text style={[styles.metaHint, { color: outline }]}>每日重复</Text></View></View>
+                  </Pressable>
+                </View>
+                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}><View style={styles.quadTitleRow}><View style={[styles.dot, { backgroundColor: tertiary }]} /><Text style={[styles.quadTitle, { color: tertiary }]}>紧急但不重要 (委派他人)</Text></View></View>
+                  <Pressable style={styles.taskRow} onPress={() => openTask('dinner')}>
+                    <MaterialIcons name="radio-button-unchecked" size={20} color={tertiary} />
+                    <View style={styles.taskBody}><Text style={[styles.taskText, { color: theme.text }]}>预订团队聚餐场地</Text><View style={[styles.deadlineBadge, { backgroundColor: `${tertiary}14` }]}><Text style={[styles.deadlineText, { color: tertiary }]}>18:00 前确认</Text></View></View>
+                  </Pressable>
+                  <View style={[styles.taskDoneRow, { opacity: 0.45 }]}><MaterialIcons name="check-circle" size={20} color={tertiary} /><Text style={[styles.taskText, { color: theme.text, textDecorationLine: 'line-through' }]}>整理上周差旅票据</Text></View>
+                </View>
+                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}><View style={styles.quadTitleRow}><View style={[styles.dot, { backgroundColor: outline }]} /><Text style={[styles.quadTitle, { color: outline }]}>不紧急不重要 (尽量消除)</Text></View></View>
+                  <Pressable style={styles.taskDoneRow} onPress={() => openTask('social')}><MaterialIcons name="radio-button-unchecked" size={20} color={outline} /><Text style={[styles.taskText, { color: theme.text }]}>浏览社交媒体非必要资讯</Text></Pressable>
+                </View>
+              </View>
+            </Animated.View>
+          </View>
+
+          <Animated.View style={{ opacity: projectAnim, transform: [{ translateY: projectAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+            <View style={[styles.section, styles.stackedSection]}>
+              <View style={styles.sectionCard}>
+                <View style={styles.headerRow}>
+                  <View style={styles.titleRow}>
+                    <Text style={[styles.sectionTitle, { color: theme.text }]}>项目列表</Text>
+                    <Text style={[styles.sectionMeta, { color: outline }]}>共 {projects.length} 个活跃项目</Text>
+                  </View>
+                  <Pressable onPress={() => router.push('/add-project')} style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
+                    <MaterialIcons name="add-circle" size={14} color={primary} />
+                    <Text style={[styles.ghostBtnText, { color: primary }]}>新建项目</Text>
+                  </Pressable>
+                </View>
+                <SegmentTabs tabs={[{ key: 'all', label: '全部' }, { key: 'inbox', label: '收集箱' }]} active={projectTab} onChange={(k) => setProjectTab(k as 'all' | 'inbox')} onLongPressTab={(_, label) => openCategoryMenu('project', label)} color={primary} muted={outline} />
+                {(projectTab === 'all' ? projects : projects.filter((project) => !project.category_id)).map((project, index) => {
+                  const isFirst = index === 0;
+                  const isCompleted = project.status === 'completed' || project.status === 'archived';
+                  return (
+                    <View
+                      key={project.id}
+                      style={[
+                        styles.projectCard,
+                        {
+                          backgroundColor: isFirst ? card : soft,
+                          opacity: isFirst ? 1 : 0.86,
+                        },
+                      ]}>
+                      <View style={[styles.projectHead, { borderLeftColor: primary }]}>
+                        <View style={styles.projectHeadLeft}>
+                          <MaterialIcons name={isFirst ? 'inventory-2' : 'data-usage'} size={22} color={primary} />
+                          <View>
+                            <Text style={[styles.projectTitle, { color: theme.text }]}>{project.name}</Text>
+                            <View style={styles.projectSubRow}>
+                              {project.due_date ? <Text style={[styles.projectSub, { color: outline }]}>截止 {project.due_date}</Text> : <Text style={[styles.projectSub, { color: outline }]}>无截止日期</Text>}
+                              <Text style={[styles.projectSub, { color: outline }]}>•</Text>
+                              <Text style={[styles.projectSubStrong, { color: primary }]}>{project.status === 'active' ? '进行中' : project.status === 'paused' ? '已暂停' : isCompleted ? '已完成' : '未知状态'}</Text>
+                            </View>
+                          </View>
+                        </View>
+                        <MaterialIcons name="expand-more" size={22} color={outline} />
+                      </View>
+                    </View>
+                  );
+                })}
+                {(projectTab === 'all' ? projects : projects.filter((project) => !project.category_id)).length === 0 && (
+                  <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
+                    <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
+                      <View style={styles.projectHeadLeft}>
+                        <MaterialIcons name="folder-open" size={22} color={outline} />
+                        <View>
+                          <Text style={[styles.projectTitle, { color: theme.textSecondary }]}>暂无项目</Text>
+                          <Text style={[styles.projectSub, { color: outline }]}>可点击右上角“新建项目”添加</Text>
+                        </View>
                       </View>
                     </View>
                   </View>
-                </View>
-              </View>
-
-              <View style={[styles.flatRow, { borderTopColor: `${outlineVariant}55`, borderTopWidth: 0 }]}>
-                <View style={styles.flatLeft}>
-                  <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
-                  <View style={{ gap: 4 }}>
-                    <Text style={[styles.taskText, { color: theme.text }]}>构建响应式导航网格</Text>
-                    <View style={styles.metaRow}>
-                      <MaterialIcons name="schedule" size={12} color={outline} />
-                      <Text style={[styles.metaHint, { color: outline }]}>今日 16:00 截止</Text>
-                    </View>
-                  </View>
-                </View>
-                <View style={[styles.priorityBadge, { backgroundColor: `${error}14` }]}>
-                  <Text style={[styles.priorityText, { color: error }]}>高优先级</Text>
-                </View>
-              </View>
-
-              <View style={styles.flatRow}>
-                <View style={styles.flatLeft}>
-                  <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
-                  <Text style={[styles.taskText, { color: theme.text }]}>导出所有 SVG 图标资源</Text>
-                </View>
+                )}
               </View>
             </View>
-          </View>
+          </Animated.View>
 
-          <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}> 
-            <View style={[styles.projectHead, { borderLeftColor: primary }]}> 
-              <View style={styles.projectHeadLeft}>
-                <MaterialIcons name="data-usage" size={22} color={primary} />
-                <View>
-                  <Text style={[styles.projectTitle, { color: theme.text }]}>市场调研问卷收集</Text>
-                  <Text style={[styles.projectSub, { color: outline }]}>进行中</Text>
+          <View style={{ height: 28 }} />
+        </Animated.View>
+      </ScrollView>
+
+      <Modal visible={categoryModalVisible} transparent animationType="fade" onRequestClose={closeCategoryMenu}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={closeCategoryMenu} />
+          <View pointerEvents="box-none" style={styles.modalCenter}>
+            <View style={[styles.modalCard, { backgroundColor: card }]}>
+              <View style={styles.modalHeader}>
+                <View style={[styles.modalTitleWrap, { backgroundColor: `${primary}12` }]}>
+                  <MaterialIcons name={activeCategoryScope === 'task' ? 'list-alt' : 'folder-open'} size={18} color={primary} />
+                  <View>
+                    <Text style={[styles.modalTitle, { color: theme.text }]}>{activeCategoryLabel}</Text>
+                    <Text style={[styles.modalSubtitle, { color: outline }]}>编辑{activeCategoryScope === 'task' ? '任务' : '项目'}分类</Text>
+                  </View>
                 </View>
+                <Pressable onPress={closeCategoryMenu} hitSlop={10}>
+                  <MaterialIcons name="close" size={22} color={outline} />
+                </Pressable>
               </View>
-              <MaterialIcons name="expand-more" size={22} color={outline} />
+
+              <View style={styles.modalActions}>
+                {[
+                  { icon: 'add', label: '新建分类', color: primary, onPress: () => openCategoryEditor('新建分类') },
+                  { icon: 'sort', label: '排序分类', color: secondary, onPress: () => {
+                    closeCategoryMenu();
+                    router.push('/category-sort');
+                  } },
+                  { icon: 'edit', label: '修改分类', color: tertiary, onPress: () => openCategoryEditor('修改分类', activeCategoryLabel) },
+                  { icon: 'account-tree', label: '子分类', color: secondary },
+                  { icon: 'delete', label: '删除分类', color: error },
+                ].map((action) => (
+                  <Pressable key={action.label} onPress={action.onPress} style={({ pressed }) => [styles.actionItem, { borderColor: `${action.color}22` }, pressed && { opacity: 0.8 }]}>
+                    <View style={[styles.actionIcon, { backgroundColor: `${action.color}14` }]}>
+                      <MaterialIcons name={action.icon as any} size={18} color={action.color} />
+                    </View>
+                    <Text style={[styles.actionText, { color: theme.text }]}>{action.label}</Text>
+                    <MaterialIcons name="chevron-right" size={20} color={outline} />
+                  </Pressable>
+                ))}
+              </View>
             </View>
           </View>
         </View>
-        </Animated.View>
+      </Modal>
 
-        <View style={{ height: 28 }} />
-        </Animated.View>
-      </ScrollView>
+      <Modal visible={categoryEditorVisible} transparent animationType="fade" onRequestClose={closeCategoryEditor}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={closeCategoryEditor} />
+          <View pointerEvents="box-none" style={styles.modalCenter}>
+            <View style={[styles.editorCard, { backgroundColor: card }]}>
+              <Text style={[styles.editorTitle, { color: theme.text }]}>{categoryEditorTitle}</Text>
+              <Text style={[styles.editorHint, { color: outline }]}>请输入分类名称后确认</Text>
+              <View style={[styles.editorInputWrap, { borderColor: outlineVariant, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8f9ff' }]}>
+                <TextInput
+                  style={[styles.editorInput, { color: theme.text }]}
+                  placeholder={activeCategoryScope === 'task' ? '例如：工作任务' : '例如：产品项目'}
+                  placeholderTextColor={outline}
+                  value={categoryInputValue}
+                  onChangeText={setCategoryInputValue}
+                />
+              </View>
+              <View style={styles.editorActions}>
+                <Pressable onPress={closeCategoryEditor} style={({ pressed }) => [styles.editorGhostBtn, pressed && { opacity: 0.8 }]}>
+                  <Text style={[styles.editorGhostText, { color: outline }]}>取消</Text>
+                </Pressable>
+                <Pressable style={({ pressed }) => [styles.editorPrimaryBtn, { backgroundColor: primary }, pressed && { opacity: 0.9 }]}>
+                  <Text style={styles.editorPrimaryText}>确认</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  scroll: { flex: 1 },
   content: { paddingHorizontal: 18, paddingTop: 14, paddingBottom: 18, gap: 18 },
   bgOrb: {
     position: 'absolute',
@@ -564,6 +572,25 @@ const styles = StyleSheet.create({
     left: -74,
   },
   section: { gap: 12 },
+  stackedSection: {
+    marginTop: 10,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(148,163,184,0.18)',
+  },
+  sectionCard: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.14)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 2,
+    gap: 12,
+  },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 },
   sectionTitle: { fontSize: 22, fontWeight: '800' },
@@ -704,4 +731,59 @@ const styles = StyleSheet.create({
   flatLeft: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, flex: 1, paddingRight: 10 },
   priorityBadge: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 },
   priorityText: { fontSize: 10, fontWeight: '900' },
+
+  modalRoot: { flex: 1 },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.38)',
+  },
+  modalCenter: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  modalCard: {
+    borderRadius: 22,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.16)',
+  },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, gap: 12 },
+  modalTitleWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: 16, flex: 1 },
+  modalTitle: { fontSize: 16, fontWeight: '800' },
+  modalSubtitle: { fontSize: 11, fontWeight: '700', marginTop: 2 },
+  modalActions: { gap: 10 },
+  actionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  actionIcon: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  actionText: { flex: 1, fontSize: 14, fontWeight: '700' },
+
+  editorCard: {
+    borderRadius: 22,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.16)',
+    gap: 12,
+  },
+  editorTitle: { fontSize: 18, fontWeight: '800' },
+  editorHint: { fontSize: 12, fontWeight: '600' },
+  editorInputWrap: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  editorInput: { fontSize: 14, fontWeight: '700' },
+  editorActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
+  editorGhostBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12 },
+  editorGhostText: { fontSize: 14, fontWeight: '700' },
+  editorPrimaryBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 },
+  editorPrimaryText: { fontSize: 14, fontWeight: '800', color: '#fff' },
 });
