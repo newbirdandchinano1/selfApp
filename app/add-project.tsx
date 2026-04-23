@@ -1,15 +1,28 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Subtask = { id: string; title: string; done: boolean };
 
+type SchedulePickerResult = {
+  mode: 'date' | 'time';
+  source: string;
+  quickChip: string;
+  allDay: boolean;
+  hasExactTime: boolean;
+  date?: string;
+  range?: { start: string; end: string };
+  startTime: string;
+  endTime: string;
+};
+
 export default function AddProjectScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ source?: string }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -17,15 +30,29 @@ export default function AddProjectScreen() {
 
   const [title, setTitle] = React.useState('');
   const [notes, setNotes] = React.useState('');
-  const [deadlineText] = React.useState('');
+  const [deadlineText, setDeadlineText] = React.useState('');
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
+  const scheduleSource = params.source ?? 'add-project';
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
   const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
   const surfaceLow = isDark ? 'rgba(30,41,59,0.35)' : 'rgba(241,243,255,0.9)';
   const surfaceLowest = theme.surface;
+
+  React.useEffect(() => {
+    const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
+    if (!picked || picked.source !== scheduleSource) return;
+
+    if (picked.mode === 'time' && picked.range) {
+      setDeadlineText(`${picked.range.start.slice(0, 10)} ~ ${picked.range.end.slice(0, 10)}`);
+    } else if (picked.date) {
+      setDeadlineText(picked.date.slice(0, 10));
+    }
+
+    globalThis.__schedulePickerResult = undefined;
+  }, [scheduleSource]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -54,7 +81,7 @@ export default function AddProjectScreen() {
                 <Text style={[styles.deadlineKicker, { color: outline }]}>截止日期</Text>
                 <Text style={[styles.deadlineValue, { color: theme.text }]}>{deadlineText}</Text>
               </View>
-              <Pressable onPress={() => router.push('/schedule-picker')} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
+              <Pressable onPress={() => router.push({ pathname: '/schedule-picker', params: { source: scheduleSource } })} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
               </Pressable>
             </View>

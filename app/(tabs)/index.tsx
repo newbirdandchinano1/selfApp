@@ -17,6 +17,7 @@ import {
   deleteHealthRecord,
 } from '@/lib/repositories/health/health';
 import type { HealthIntakeDayTotals, HealthRecordRow } from '@/lib/repositories/health/health.types';
+import { subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import {
   globalHydrationTargetMl,
   globalProteinTargetG,
@@ -473,14 +474,32 @@ export default function HealthScreen() {
 
   // 获取用户信息
   const [user, setUser] = React.useState<UserRow | null>(null);
-  React.useEffect(() => {
-    const loadUser = async () => {
-      const data = await getDefaultUser();
-      setUser(data);
-    };
-  
-    loadUser();
+  const loadUser = React.useCallback(async () => {
+    const data = await getDefaultUser();
+    setUser(data);
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      const refreshUser = async () => {
+        const data = await getDefaultUser();
+        if (!cancelled) {
+          setUser(data);
+        }
+      };
+
+      void loadUser();
+      const unsubscribe = subscribeDefaultUserUpdates(() => {
+        void refreshUser();
+      });
+
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }, [loadUser])
+  );
 
   // 本地库：当前周 7 天记录（助手建议等）+ 选中日在库中的最新一条（首页当前摄入）
   const [healthRecords, setHealthRecords] = React.useState<HealthRecordRow[]>([]);

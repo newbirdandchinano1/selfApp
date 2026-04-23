@@ -34,7 +34,7 @@ export default function AddTaskScreen() {
   const [mainTaskOpen, setMainTaskOpen] = React.useState(false);
   const [mainTaskQuery, setMainTaskQuery] = React.useState('');
   const [selectedMainTaskId, setSelectedMainTaskId] = React.useState<string | null>(null);
-  const [deadlineText] = React.useState('');
+  const [deadlineText, setDeadlineText] = React.useState('');
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
@@ -67,6 +67,19 @@ export default function AddTaskScreen() {
   const removeSubtask = (id: string) => {
     setSubtasks((prev) => prev.filter((s) => s.id !== id));
   };
+
+  React.useEffect(() => {
+    const picked = globalThis.__schedulePickerResult;
+    if (!picked || picked.source !== 'add-task') return;
+
+    if (picked.mode === 'time' && picked.range) {
+      setDeadlineText(`${picked.range.start.slice(0, 10)} ~ ${picked.range.end.slice(0, 10)}`);
+    } else if (picked.date) {
+      setDeadlineText(picked.date.slice(0, 10));
+    }
+
+    globalThis.__schedulePickerResult = undefined;
+  }, []);
 
   const createTask = () => {
     router.back();
@@ -140,7 +153,7 @@ export default function AddTaskScreen() {
                 <Text style={[styles.deadlineValue, { color: theme.text }]}>{deadlineText}</Text>
               </View>
               <Pressable
-                onPress={() => router.push('/schedule-picker')}
+                onPress={() => router.push({ pathname: '/schedule-picker', params: { source: 'add-task' } })}
                 style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
               </Pressable>

@@ -55,7 +55,7 @@ export function RecordIntakeSheet({
   const [tab, setTab] = React.useState<TabKey>('manual');
   const [text, setText] = React.useState('');
   const [manualType, setManualType] = React.useState<ManualType>('hydration');
-  const [amountText, setAmountText] = React.useState('350');
+  const [amountText, setAmountText] = React.useState('');
 
   const translateY = React.useRef(new Animated.Value(screenHeight)).current;
   const backdropOpacity = React.useRef(new Animated.Value(0)).current;
@@ -118,7 +118,7 @@ export function RecordIntakeSheet({
     setText('');
     setTab('manual');
     setManualType('hydration');
-    setAmountText('350');
+    setAmountText('');
   }, [visible]);
 
   React.useEffect(() => {
@@ -244,9 +244,7 @@ export function RecordIntakeSheet({
                           key={item.key}
                           onPress={() => {
                             setManualType(item.key);
-                            if (item.key === 'hydration') setAmountText('350');
-                            else if (item.key === 'protein') setAmountText('30');
-                            else setAmountText('500');
+                            setAmountText('');
                           }}
                           style={({ pressed }) => [
                             styles.typeCard,

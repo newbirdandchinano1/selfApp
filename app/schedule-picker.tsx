@@ -2,7 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -11,7 +11,7 @@ type TabMode = 'date' | 'time';
 type TimeRangeKey = '本周' | '下周' | '本月' | '下月' | '未来半年';
 type ReminderOption = '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
 type RepeatOption = '不重复' | '每天' | '每周' | '每月' | '每年';
-type SettingPickerType = 'reminder' | 'repeat' | null;
+type SettingPickerType = 'reminder' | 'repeat' | 'timeStart' | 'timeEnd' | null;
 
 type MonthInfo = {
   year: number;
@@ -30,6 +30,27 @@ type DateRange = {
   start: Date;
   end: Date;
 };
+
+type SchedulePickerReturnParams = {
+  source?: string;
+};
+
+type SchedulePickerResult = {
+  mode: TabMode;
+  source: string;
+  quickChip: string;
+  allDay: boolean;
+  hasExactTime: boolean;
+  date?: string;
+  range?: { start: string; end: string };
+  startTime: string;
+  endTime: string;
+};
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __schedulePickerResult: SchedulePickerResult | undefined;
+}
 
 const dateQuickChips = ['今天', '今晚', '明天', '本周六', '下周一'];
 const timeQuickChips = ['本周', '下周', '本月', '下月', '未来半年'];
@@ -124,7 +145,11 @@ function formatRepeatSummary(option: RepeatOption, weeklyDays: number[], monthly
 
   if (option === '每月') {
     if (!monthlyDays.length) return '每月';
-    return `每月 ${monthlyDays.sort((a, b) => a - b).join('、')}日`;
+    const sortedDays = [...monthlyDays].sort((a, b) => a - b);
+    if (sortedDays.length > 3) {
+      return `每月 ${sortedDays.slice(0, 3).join('、')}...`;
+    }
+    return `每月 ${sortedDays.join('、')}日`;
   }
 
   if (option === '每年') {
@@ -161,6 +186,7 @@ function buildCalendarCells(current: MonthInfo, previous: MonthInfo, next: Month
 
 export default function SchedulePickerScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<SchedulePickerReturnParams>();
   const scheme = useColorScheme();
   const theme = Colors[scheme ?? 'light'];
   const isDark = scheme === 'dark';
@@ -171,13 +197,31 @@ export default function SchedulePickerScreen() {
   const [selectedDate, setSelectedDate] = React.useState<Date>(todayStart);
   const [selectedQuickChip, setSelectedQuickChip] = React.useState<string>('今天');
   const [timeRangeKey, setTimeRangeKey] = React.useState<TimeRangeKey | null>(null);
+  React.useEffect(() => {
+    void timeRangeKey;
+  }, [timeRangeKey]);
   const [timeRange, setTimeRange] = React.useState<DateRange | null>(null);
   const [timeSelectingEnd, setTimeSelectingEnd] = React.useState(false);
   const [monthOffset, setMonthOffset] = React.useState(0);
   const [visibleMonthOffset, setVisibleMonthOffset] = React.useState(0);
   const [allDay, setAllDay] = React.useState(false);
   const [hasExactTime, setHasExactTime] = React.useState(true);
+  const [startTime, setStartTime] = React.useState<Date>(() => {
+    const initial = new Date(todayStart);
+    initial.setHours(13, 0, 0, 0);
+    return initial;
+  });
+  const [endTime, setEndTime] = React.useState<Date>(() => {
+    const initial = new Date(todayStart);
+    initial.setHours(14, 0, 0, 0);
+    return initial;
+  });
   const [timePickerVisible, setTimePickerVisible] = React.useState(false);
+  const [toastVisible, setToastVisible] = React.useState(false);
+  const [toastMessage, setToastMessage] = React.useState('');
+  const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [yearlyDatePickerVisible, setYearlyDatePickerVisible] = React.useState(false);
+  const yearlyPickerOpenTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [settingPickerType, setSettingPickerType] = React.useState<SettingPickerType>(null);
   const [reminderOption, setReminderOption] = React.useState<ReminderOption>('不提前');
   const [repeatOption, setRepeatOption] = React.useState<RepeatOption>('不重复');
@@ -185,13 +229,9 @@ export default function SchedulePickerScreen() {
   const [weeklyDays, setWeeklyDays] = React.useState<number[]>([1]);
   const [monthlyDays, setMonthlyDays] = React.useState<number[]>([1]);
   const [yearlyDate, setYearlyDate] = React.useState<Date>(() => new Date(todayStart));
-  const [yearlyPickerVisible, setYearlyPickerVisible] = React.useState(false);
-  const [exactTime, setExactTime] = React.useState<Date>(() => {
-    const initial = new Date(todayStart);
-    initial.setHours(13, 0, 0, 0);
-    return initial;
-  });
-  const [timeDraft, setTimeDraft] = React.useState<Date>(exactTime);
+  const exactTime = startTime;
+  const [timeDraft, setTimeDraft] = React.useState<Date>(startTime);
+  const [timePickerTarget, setTimePickerTarget] = React.useState<'start' | 'end'>('start');
 
   const { width: windowWidth } = useWindowDimensions();
   const [calendarWidth, setCalendarWidth] = React.useState(() => Math.max(1, windowWidth - 32));
@@ -208,7 +248,6 @@ export default function SchedulePickerScreen() {
   );
   const visibleMonthInfo = React.useMemo(() => getMonthInfo(visibleMonthDate.getFullYear(), visibleMonthDate.getMonth()), [visibleMonthDate]);
   const visibleMonthTitle = `${visibleMonthInfo.year}年${visibleMonthInfo.month + 1}月`;
-  const isTodayVisible = monthOffset === 0;
 
   const outline = isDark ? 'rgba(148,163,184,0.7)' : '#727785';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.25)' : 'rgba(194,198,214,0.45)';
@@ -313,16 +352,152 @@ export default function SchedulePickerScreen() {
   const activeRange = tab === 'time' ? timeRange : null;
   const exactTimeLabel = formatTime(exactTime);
 
-  const openTimePicker = () => {
+  const openTimePicker = (target: 'start' | 'end') => {
     if (!hasExactTime) return;
-    setTimeDraft(exactTime);
+    setTimePickerTarget(target);
+    setTimeDraft(target === 'start' ? startTime : endTime);
     setTimePickerVisible(true);
   };
+
+  const resetToDefaultState = () => {
+    setSelectedDate(todayStart);
+    setSelectedQuickChip('今天');
+    setTimeRangeKey(null);
+    setTimeRange(null);
+    setTimeSelectingEnd(false);
+    setMonthOffset(0);
+    setVisibleMonthOffset(0);
+    setAllDay(false);
+    setHasExactTime(true);
+    const defaultStart = new Date(todayStart);
+    defaultStart.setHours(13, 0, 0, 0);
+    const defaultEnd = new Date(todayStart);
+    defaultEnd.setHours(14, 0, 0, 0);
+    setStartTime(defaultStart);
+    setEndTime(defaultEnd);
+    setTimePickerVisible(false);
+    setSettingPickerType(null);
+    setReminderOption('不提前');
+    setRepeatOption('不重复');
+    setRepeatDetailVisible(false);
+    setWeeklyDays([1]);
+    setMonthlyDays([1]);
+    setYearlyDate(new Date(todayStart));
+    setYearlyDatePickerVisible(false);
+    setToastVisible(false);
+    setToastMessage('');
+    setTimeDraft(defaultStart);
+    setTimePickerTarget('start');
+  };
+
+  const showToast = React.useCallback((message: string) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToastMessage(message);
+    setToastVisible(true);
+    toastTimerRef.current = setTimeout(() => {
+      setToastVisible(false);
+      toastTimerRef.current = null;
+    }, 2500);
+  }, []);
+
+  const buildReturnPayload = React.useCallback((): SchedulePickerResult => {
+    if (tab === 'time' && timeRange) {
+      return {
+        mode: 'time',
+        source: params.source ?? '',
+        quickChip: selectedQuickChip,
+        allDay,
+        hasExactTime,
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
+        range: {
+          start: timeRange.start.toISOString(),
+          end: timeRange.end.toISOString(),
+        },
+      };
+    }
+
+    return {
+      mode: 'date',
+      source: params.source ?? '',
+      quickChip: selectedQuickChip,
+      date: selectedDate.toISOString(),
+      allDay,
+      hasExactTime,
+      startTime: startTime.toISOString(),
+      endTime: endTime.toISOString(),
+    };
+  }, [allDay, endTime, hasExactTime, params.source, selectedDate, selectedQuickChip, startTime, tab, timeRange]);
+
+  const applyTimeSelection = (target: 'start' | 'end', selected: Date) => {
+    const normalized = new Date(selected);
+    normalized.setSeconds(0, 0);
+
+    if (target === 'start') {
+      setStartTime(normalized);
+      setEndTime((prev) => {
+        const minEnd = new Date(normalized.getTime() + 60 * 1000);
+        if (prev.getTime() < minEnd.getTime()) {
+          showToast('结束时间已自动调整，且需至少晚于开始时间 1 分钟');
+          return minEnd;
+        }
+        return prev;
+      });
+      return;
+    }
+
+    const minEnd = new Date(startTime.getTime() + 60 * 1000);
+    const safeEnd = normalized.getTime() < minEnd.getTime() ? minEnd : normalized;
+    setEndTime(safeEnd);
+    if (safeEnd.getTime() !== normalized.getTime()) {
+      showToast('结束时间不能早于开始时间，且至少晚于开始时间 1 分钟');
+    }
+  };
+
+  React.useEffect(() => {
+    setEndTime((prev) => (prev.getTime() < startTime.getTime() ? new Date(startTime) : prev));
+  }, [startTime]);
   const openSettingPicker = (type: Exclude<SettingPickerType, null>) => setSettingPickerType(type);
+  const openYearlyDatePicker = React.useCallback(() => {
+    if (yearlyPickerOpenTimerRef.current) {
+      clearTimeout(yearlyPickerOpenTimerRef.current);
+      yearlyPickerOpenTimerRef.current = null;
+    }
+
+    setRepeatDetailVisible(false);
+    yearlyPickerOpenTimerRef.current = setTimeout(() => {
+      setYearlyDatePickerVisible(true);
+      yearlyPickerOpenTimerRef.current = null;
+    }, 220);
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      if (yearlyPickerOpenTimerRef.current) {
+        clearTimeout(yearlyPickerOpenTimerRef.current);
+      }
+    };
+  }, []);
   const settingPickerTitle = settingPickerType === 'reminder' ? '提醒设置' : '重复设置';
   const settingPickerOptions = settingPickerType === 'reminder' ? REMINDER_OPTIONS : REPEAT_OPTIONS;
   const settingPickerValue = settingPickerType === 'reminder' ? reminderOption : repeatOption;
+  const startTimeLabel = formatTime(startTime);
+  const endTimeLabel = formatTime(endTime);
+  const timePickerTitle = timePickerTarget === 'start' ? '选择开始时间' : '选择结束时间';
   const repeatSummary = formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate);
+  const yearlyPickerMinDate = React.useMemo(() => {
+    const base = new Date(yearlyDate);
+    base.setHours(0, 0, 0, 0);
+    return new Date(base.getFullYear() - 100, 0, 1);
+  }, [yearlyDate]);
+  const yearlyPickerMaxDate = React.useMemo(() => {
+    const base = new Date(yearlyDate);
+    base.setHours(0, 0, 0, 0);
+    return new Date(base.getFullYear() + 100, 11, 31);
+  }, [yearlyDate]);
 
   React.useEffect(() => {
     const nextWidth = Math.max(1, windowWidth - 32);
@@ -382,7 +557,12 @@ export default function SchedulePickerScreen() {
           </Pressable>
         </View>
 
-        <Pressable onPress={() => router.back()} style={styles.iconBtn}>
+        <Pressable
+          onPress={() => {
+            globalThis.__schedulePickerResult = buildReturnPayload();
+            router.back();
+          }}
+          style={styles.iconBtn}>
           <MaterialIcons name={tab === 'time' ? 'done' : 'check'} size={22} color={theme.primary} />
         </Pressable>
       </View>
@@ -579,7 +759,7 @@ export default function SchedulePickerScreen() {
 
         {tab === 'date' ? (
           <View style={[styles.settingList, { backgroundColor: surfaceLow }]}>
-            <Pressable style={[styles.settingRow, !hasExactTime && styles.disabledRow]} onPress={openTimePicker}>
+            <Pressable style={[styles.settingRow, !hasExactTime && styles.disabledRow]} onPress={() => openTimePicker('start')}>
               <View style={styles.settingLeft}>
                 <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
                   <MaterialIcons name="schedule" size={20} color={theme.primary} />
@@ -599,7 +779,9 @@ export default function SchedulePickerScreen() {
                 <Text style={[styles.settingLabel, { color: theme.text }]}>提醒设置</Text>
               </View>
               <View style={styles.settingRight}>
-                <Text style={[styles.settingHint, { color: outline }]}>{reminderOption}</Text>
+                <Text style={[styles.settingHint, { color: outline }]} numberOfLines={1} ellipsizeMode="tail">
+                  {reminderOption}
+                </Text>
                 <MaterialIcons name="chevron-right" size={20} color={outline} />
               </View>
             </Pressable>
@@ -611,7 +793,9 @@ export default function SchedulePickerScreen() {
                 <Text style={[styles.settingLabel, { color: theme.text }]}>重复设置</Text>
               </View>
               <View style={styles.settingRight}>
-                <Text style={[styles.settingHint, { color: outline }]}>{repeatSummary}</Text>
+                <Text style={[styles.settingHint, { color: outline }]} numberOfLines={1} ellipsizeMode="tail">
+                  {repeatSummary}
+                </Text>
                 <MaterialIcons name="chevron-right" size={20} color={outline} />
               </View>
             </Pressable>
@@ -630,30 +814,34 @@ export default function SchedulePickerScreen() {
                   <Switch value={allDay} onValueChange={setAllDay} />
                 </View>
               </View>
-              <View style={styles.settingRow}>
-                <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
-                    <MaterialIcons name="schedule" size={20} color={theme.primary} />
-                  </View>
-                  <Text style={[styles.settingLabel, { color: theme.text }]}>开始</Text>
-                </View>
-                <View style={styles.settingRight}>
-                  <Text style={[styles.settingValueSmall, { color: theme.primary }]}>4月1日 13:00</Text>
-                  <MaterialIcons name="chevron-right" size={20} color={outline} />
-                </View>
-              </View>
-              <View style={styles.settingRow}>
-                <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
-                    <MaterialIcons name="timer-off" size={20} color={theme.primary} />
-                  </View>
-                  <Text style={[styles.settingLabel, { color: theme.text }]}>结束</Text>
-                </View>
-                <View style={styles.settingRight}>
-                  <Text style={[styles.settingValueSmall, { color: theme.primary }]}>4月8日 14:00</Text>
-                  <MaterialIcons name="chevron-right" size={20} color={outline} />
-                </View>
-              </View>
+              {!allDay && (
+                <>
+                  <Pressable style={styles.settingRow} onPress={() => openTimePicker('start')}>
+                    <View style={styles.settingLeft}>
+                      <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
+                        <MaterialIcons name="schedule" size={20} color={theme.primary} />
+                      </View>
+                      <Text style={[styles.settingLabel, { color: theme.text }]}>开始</Text>
+                    </View>
+                    <Pressable style={styles.settingRight} onPress={() => openTimePicker('start')}>
+                      <Text style={[styles.settingValueSmall, { color: theme.primary }]}>{startTimeLabel}</Text>
+                      <MaterialIcons name="chevron-right" size={20} color={outline} />
+                    </Pressable>
+                  </Pressable>
+                  <Pressable style={styles.settingRow} onPress={() => openTimePicker('end')}>
+                    <View style={styles.settingLeft}>
+                      <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
+                        <MaterialIcons name="timer-off" size={20} color={theme.primary} />
+                      </View>
+                      <Text style={[styles.settingLabel, { color: theme.text }]}>结束</Text>
+                    </View>
+                    <Pressable style={styles.settingRight} onPress={() => openTimePicker('end')}>
+                      <Text style={[styles.settingValueSmall, { color: theme.primary }]}>{endTimeLabel}</Text>
+                      <MaterialIcons name="chevron-right" size={20} color={outline} />
+                    </Pressable>
+                  </Pressable>
+                </>
+              )}
             </View>
 
             <View style={[styles.settingList, { backgroundColor: surfaceLow }]}>
@@ -677,23 +865,26 @@ export default function SchedulePickerScreen() {
                   <Text style={[styles.settingLabel, { color: theme.text }]}>重复设置</Text>
                 </View>
                 <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: outline }]}>{repeatSummary}</Text>
+                  <Text style={[styles.settingHint, { color: outline }]} numberOfLines={1} ellipsizeMode="tail">
+                    {repeatSummary}
+                  </Text>
                   <MaterialIcons name="chevron-right" size={20} color={outline} />
                 </View>
               </Pressable>
             </View>
 
-            <Pressable style={[styles.clearBtn, { borderColor: 'rgba(186,26,26,0.2)', backgroundColor: theme.surface }]}>
+            <Pressable style={[styles.clearBtn, { borderColor: 'rgba(186,26,26,0.2)', backgroundColor: theme.surface }]} onPress={resetToDefaultState}>
               <Text style={styles.clearText}>清除</Text>
             </Pressable>
           </>
         )}
       </ScrollView>
 
+      
       <Modal visible={timePickerVisible} transparent animationType="fade" onRequestClose={() => setTimePickerVisible(false)}>
         <View style={styles.pickerBackdrop}>
           <View style={[styles.pickerCard, { backgroundColor: theme.surface }]}>
-            <Text style={[styles.pickerTitle, { color: theme.text }]}>选择具体时间</Text>
+            <Text style={[styles.pickerTitle, { color: theme.text }]}>{timePickerTitle}</Text>
             <DateTimePicker
               value={timeDraft}
               mode="time"
@@ -704,18 +895,32 @@ export default function SchedulePickerScreen() {
               }}
             />
             <View style={styles.pickerActions}>
-              <Pressable onPress={() => setTimePickerVisible(false)} style={[styles.pickerBtn, { backgroundColor: surfaceLow }]}>
+              <Pressable
+                onPress={() => {
+                  setTimePickerVisible(false);
+                }}
+                style={[styles.pickerBtn, { backgroundColor: surfaceLow }]}
+              >
                 <Text style={[styles.pickerBtnText, { color: outline }]}>取消</Text>
               </Pressable>
               <Pressable
                 onPress={() => {
-                  setExactTime(timeDraft);
+                  applyTimeSelection(timePickerTarget, timeDraft);
                   setTimePickerVisible(false);
                 }}
                 style={[styles.pickerBtn, { backgroundColor: '#006c49' }]}
               >
                 <Text style={[styles.pickerBtnText, { color: '#fff' }]}>确定</Text>
               </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={toastVisible} transparent animationType="fade" onRequestClose={() => setToastVisible(false)}>
+        <View pointerEvents="box-none" style={styles.toastOverlay}>
+          <View style={styles.toastHost}>
+            <View style={[styles.toastWrap, { backgroundColor: isDark ? 'rgba(15,23,42,0.96)' : 'rgba(17,24,39,0.96)' }]}>
+              <Text style={styles.toastText}>{toastMessage}</Text>
             </View>
           </View>
         </View>
@@ -738,9 +943,8 @@ export default function SchedulePickerScreen() {
                       else {
                         const selectedRepeat = option as RepeatOption;
                         setRepeatOption(selectedRepeat);
-                        if (selectedRepeat === '每周' || selectedRepeat === '每月' || selectedRepeat === '每年') {
-                          setRepeatDetailVisible(true);
-                        }
+                        setRepeatDetailVisible(selectedRepeat === '每周' || selectedRepeat === '每月' || selectedRepeat === '每年');
+
                       }
                       setSettingPickerType(null);
                     }}
@@ -798,7 +1002,10 @@ export default function SchedulePickerScreen() {
 
             {repeatOption === '每年' ? (
               <View style={styles.yearlyWrap}>
-                <Pressable style={[styles.yearlyDateBtn, { borderColor: outlineVariant }]} onPress={() => setYearlyPickerVisible(true)}>
+                <Pressable
+                  style={[styles.yearlyDateBtn, { borderColor: outlineVariant }]}
+                  onPress={openYearlyDatePicker}
+                >
                   <Text style={[styles.settingLabel, { color: theme.text }]}>
                     {yearlyDate.getMonth() + 1}月{yearlyDate.getDate()}日
                   </Text>
@@ -812,6 +1019,12 @@ export default function SchedulePickerScreen() {
                 onPress={() => {
                   if (repeatOption === '每周' && weeklyDays.length === 0) setWeeklyDays([1]);
                   if (repeatOption === '每月' && monthlyDays.length === 0) setMonthlyDays([1]);
+                  if (yearlyPickerOpenTimerRef.current) {
+                    clearTimeout(yearlyPickerOpenTimerRef.current);
+                    yearlyPickerOpenTimerRef.current = null;
+                  }
+                  setYearlyDatePickerVisible(false);
+                  setRepeatDetailVisible(false);
                   setRepeatDetailVisible(false);
                 }}
                 style={[styles.pickerBtn, { backgroundColor: '#006c49' }]}
@@ -823,20 +1036,37 @@ export default function SchedulePickerScreen() {
         </View>
       </Modal>
 
-      <Modal visible={yearlyPickerVisible} transparent animationType="fade" onRequestClose={() => setYearlyPickerVisible(false)}>
+      <Modal
+        visible={yearlyDatePickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (yearlyPickerOpenTimerRef.current) {
+            clearTimeout(yearlyPickerOpenTimerRef.current);
+            yearlyPickerOpenTimerRef.current = null;
+          }
+          setYearlyDatePickerVisible(false);
+        }}
+      >
         <View style={styles.pickerBackdrop}>
           <View style={[styles.pickerCard, { backgroundColor: theme.surface }]}>
             <Text style={[styles.pickerTitle, { color: theme.text }]}>选择每年日期</Text>
             <DateTimePicker
               value={yearlyDate}
               mode="date"
-              display={Platform.OS === 'ios' ? 'inline' : 'default'}
+              display={Platform.OS === 'ios' ? 'inline' : 'spinner'}
+              minimumDate={yearlyPickerMinDate}
+              maximumDate={yearlyPickerMaxDate}
               onChange={(_, date) => {
-                if (date) setYearlyDate(date);
+                if (date) {
+                  const normalized = new Date(date);
+                  normalized.setHours(0, 0, 0, 0);
+                  setYearlyDate(normalized);
+                }
               }}
             />
             <View style={styles.pickerActions}>
-              <Pressable onPress={() => setYearlyPickerVisible(false)} style={[styles.pickerBtn, { backgroundColor: '#006c49' }]}>
+              <Pressable onPress={() => setYearlyDatePickerVisible(false)} style={[styles.pickerBtn, { backgroundColor: '#006c49' }]}>
                 <Text style={[styles.pickerBtnText, { color: '#fff' }]}>确定</Text>
               </Pressable>
             </View>
@@ -885,7 +1115,7 @@ const styles = StyleSheet.create({
   settingLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   settingIcon: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   settingLabel: { fontSize: 16, fontWeight: '500' },
-  settingRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  settingRight: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1, minWidth: 0 },
   settingValue: { fontSize: 22, fontWeight: '800' },
   settingValueSmall: { fontSize: 22, fontWeight: '700' },
   settingHint: { fontSize: 14, fontWeight: '500' },
@@ -893,6 +1123,10 @@ const styles = StyleSheet.create({
   clearText: { color: '#ba1a1a', fontSize: 16, fontWeight: '600' },
   pickerBackdrop: { flex: 1, backgroundColor: 'rgba(2,6,23,0.4)', justifyContent: 'center', paddingHorizontal: 24 },
   pickerCard: { borderRadius: 16, padding: 16, gap: 12 },
+  toastOverlay: { flex: 1, justifyContent: 'flex-end', alignItems: 'center', paddingBottom: 120 },
+  toastHost: { width: '100%', alignItems: 'center' },
+  toastWrap: { borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8, maxWidth: '92%' },
+  toastText: { color: '#fff', fontSize: 13, fontWeight: '600', textAlign: 'center' },
   pickerTitle: { fontSize: 16, fontWeight: '700', textAlign: 'center' },
   pickerActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
   pickerBtn: { borderRadius: 10, paddingHorizontal: 16, paddingVertical: 10, minWidth: 72, alignItems: 'center' },
