@@ -1,15 +1,48 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type PriorityKey = 'urgent-important' | 'urgent-not-important' | 'not-urgent-important' | 'not-urgent-not-important';
+type SchedulePickerResult = {
+  mode: 'date' | 'time';
+  source: string;
+  quickChip: string;
+  allDay: boolean;
+  hasExactTime: boolean;
+  reminderOption: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
+  repeatSummary: string;
+  date?: string;
+  range?: { start: string; end: string };
+  startTime: string;
+  endTime: string;
+};
+
+function formatDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(11, 16);
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${hour}:${minute}`;
+}
 
 export default function AddSubtaskScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ source?: string }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -19,8 +52,12 @@ export default function AddSubtaskScreen() {
   const [notes, setNotes] = React.useState('');
   const [priority, setPriority] = React.useState<PriorityKey>('urgent-important');
   const [priorityOpen, setPriorityOpen] = React.useState(false);
+  const [deadlineText, setDeadlineText] = React.useState('');
+  const [reminderText, setReminderText] = React.useState('');
+  const [repeatText, setRepeatText] = React.useState('');
 
   const primary = isDark ? '#60a5fa' : '#0058be';
+  const scheduleSource = params.source ?? 'add-subtask';
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
   const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
@@ -34,6 +71,35 @@ export default function AddSubtaskScreen() {
     { key: 'not-urgent-not-important', label: '不紧急不重要', color: isDark ? '#94a3b8' : '#727785' },
   ];
   const currentPriority = priorityOptions.find((p) => p.key === priority) ?? priorityOptions[0];
+
+  const readScheduleResult = React.useCallback(() => {
+    const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
+    if (!picked || picked.source !== scheduleSource) return;
+
+    if (picked.mode === 'time' && picked.range) {
+      const rangeLabel = `${formatDate(picked.range.start)} ~ ${formatDate(picked.range.end)}`;
+      const timeLabel = picked.allDay ? '全天' : `${formatTime(picked.startTime)} - ${formatTime(picked.endTime)}`;
+      setDeadlineText(`${rangeLabel} ${timeLabel}`);
+    } else if (picked.date) {
+      const dateLabel = formatDate(picked.date);
+      const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
+      setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
+    }
+    setReminderText(picked.reminderOption === '不提前' ? '' : picked.reminderOption);
+    setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
+
+    globalThis.__schedulePickerResult = undefined;
+  }, [scheduleSource]);
+
+  React.useEffect(() => {
+    readScheduleResult();
+  }, [readScheduleResult]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      readScheduleResult();
+    }, [readScheduleResult])
+  );
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -62,31 +128,12 @@ export default function AddSubtaskScreen() {
             <TextInput
               value={title}
               onChangeText={setTitle}
-              placeholder="任务名称"
+              placeholder="任务名称（30字以内）"
               placeholderTextColor={outlineVariant}
               multiline
+              maxLength={30}
               style={[styles.titleInput, { color: theme.text }]}
             />
-          </View>
-
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>关联主任务</Text>
-            <View style={[styles.mainTaskCard, { backgroundColor: surfaceLow, borderColor: `${primary}1A` }]}>
-              <View style={styles.mainTaskLeft}>
-                <View style={[styles.mainTaskIconWrap, { backgroundColor: `${primary}1A` }]}>
-                  <MaterialIcons name="account-tree" size={20} color={primary} />
-                </View>
-                <View>
-                  <Text style={[styles.mainTaskKicker, { color: outline }]}>所属主任务</Text>
-                  <Text style={[styles.mainTaskTitle, { color: theme.text }]}>Q4 市场推广方案</Text>
-                </View>
-              </View>
-
-              <Pressable style={[styles.swapBtn, { backgroundColor: isDark ? 'rgba(148,163,184,0.14)' : '#dae2fd' }]}>
-                <MaterialIcons name="swap-horiz" size={14} color={primary} />
-                <Text style={[styles.swapText, { color: primary }]}>更换主任务</Text>
-              </Pressable>
-            </View>
           </View>
 
           <View style={styles.section}>
@@ -110,9 +157,25 @@ export default function AddSubtaskScreen() {
               </View>
               <View style={styles.deadlineBody}>
                 <Text style={[styles.deadlineKicker, { color: outline }]}>截止日期</Text>
-                <Text style={[styles.deadlineValue, { color: theme.text }]}>Oct 24, 2023 — 14:00</Text>
+                <Text style={[styles.deadlineValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
+                {!!(reminderText || repeatText) && (
+                  <View style={styles.tagRow}>
+                    {!!reminderText && (
+                      <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
+                        <MaterialIcons name="notifications-active" size={14} color={primary} />
+                        <Text style={[styles.metaTagText, { color: theme.text }]}>{reminderText}</Text>
+                      </View>
+                    )}
+                    {!!repeatText && (
+                      <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
+                        <MaterialIcons name="repeat" size={14} color={primary} />
+                        <Text style={[styles.metaTagText, { color: theme.text }]}>{repeatText}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
               </View>
-              <Pressable onPress={() => router.push('/schedule-picker')} style={styles.deadlineEdit}>
+              <Pressable onPress={() => router.push({ pathname: '/schedule-picker', params: { source: scheduleSource } })} style={styles.deadlineEdit}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
               </Pressable>
             </View>
@@ -186,13 +249,6 @@ const styles = StyleSheet.create({
   section: { gap: 10 },
   sectionLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.6, textTransform: 'uppercase', opacity: 0.75 },
   titleInput: { padding: 0, fontSize: 30, fontWeight: '900', lineHeight: 36 },
-  mainTaskCard: { borderRadius: 14, borderWidth: 1, padding: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  mainTaskLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
-  mainTaskIconWrap: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  mainTaskKicker: { fontSize: 10, fontWeight: '700', letterSpacing: 1.4, textTransform: 'uppercase' },
-  mainTaskTitle: { fontSize: 18, fontWeight: '800', marginTop: 2 },
-  swapBtn: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 4 },
-  swapText: { fontSize: 10, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },
   prioritySelect: { borderRadius: 20, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   priorityLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   priorityDot: { width: 10, height: 10, borderRadius: 5 },
@@ -202,6 +258,9 @@ const styles = StyleSheet.create({
   deadlineBody: { flex: 1, gap: 4 },
   deadlineKicker: { fontSize: 10, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase' },
   deadlineValue: { fontSize: 16, fontWeight: '800' },
+  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
+  metaTag: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  metaTagText: { fontSize: 11, fontWeight: '700' },
   deadlineEdit: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   notesWrap: { borderRadius: 16, padding: 14, minHeight: 120 },
   notesInput: { minHeight: 92, fontSize: 14, fontWeight: '500', lineHeight: 20, paddingRight: 34 },

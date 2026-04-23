@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
 export const DB_VERSION = 3;
@@ -198,6 +199,24 @@ export async function initDatabase() {
   `);
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
+  await db.runAsync(
+    `INSERT OR IGNORE INTO project_categories (
+      id, name, created_at, updated_at, deleted_at, sync_status, version, extra_data
+    ) VALUES (?, ?, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL)`,
+    [INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME]
+  );
+  await db.runAsync(
+    `UPDATE project_categories
+     SET name = ?, deleted_at = NULL, updated_at = datetime('now')
+     WHERE id = ?`,
+    [INBOX_PROJECT_CATEGORY_NAME, INBOX_PROJECT_CATEGORY_ID]
+  );
+  await db.runAsync(
+    `UPDATE projects
+     SET category_id = ?, updated_at = datetime('now')
+     WHERE deleted_at IS NULL AND category_id IS NULL`,
+    [INBOX_PROJECT_CATEGORY_ID]
+  );
   await ensureColumn(db, 'users', 'avatar_uri', 'TEXT');
   await ensureColumn(db, 'projects', 'category_id', 'TEXT');
   await ensureColumn(db, 'projects', 'note', 'TEXT');

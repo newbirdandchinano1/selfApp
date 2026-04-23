@@ -1,4 +1,5 @@
 import { getDatabase } from '../../database.native';
+import { INBOX_PROJECT_CATEGORY_ID } from './constants';
 import type {
   CreateProjectCategoryInput,
   CreateProjectInput,
@@ -72,10 +73,16 @@ export async function createProjectCategory(input: CreateProjectCategoryInput) {
 
 export async function getProjectCategories() {
   const db = await getDatabase();
-  return db.getAllAsync<ProjectCategoryRow>('SELECT * FROM project_categories WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC');
+  return db.getAllAsync<ProjectCategoryRow>(
+    `SELECT * FROM project_categories
+     WHERE deleted_at IS NULL
+     ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, updated_at DESC, created_at DESC`,
+    [INBOX_PROJECT_CATEGORY_ID]
+  );
 }
 
 export async function updateProjectCategory(id: string, input: UpdateProjectCategoryInput) {
+  if (id === INBOX_PROJECT_CATEGORY_ID) return;
   const db = await getDatabase();
   const current = await db.getFirstAsync<ProjectCategoryRow>('SELECT * FROM project_categories WHERE id = ? AND deleted_at IS NULL LIMIT 1', [id]);
   if (!current) return;
@@ -90,6 +97,7 @@ export async function updateProjectCategory(id: string, input: UpdateProjectCate
 }
 
 export async function deleteProjectCategory(id: string) {
+  if (id === INBOX_PROJECT_CATEGORY_ID) return;
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE project_categories

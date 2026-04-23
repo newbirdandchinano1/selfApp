@@ -1,12 +1,12 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
-import { createProject, getProjectCategories } from '@/lib/repositories/projects/project';
+import { deleteProject, getProjectById, getProjectCategories, updateProject } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { useFocusEffect } from '@react-navigation/native';
 import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -27,12 +27,17 @@ type SchedulePickerResult = {
   endTime: string;
 };
 
+const TITLE_MAX_LENGTH = 30;
+
 type ProjectScheduleMeta = Pick<
   SchedulePickerResult,
   'mode' | 'allDay' | 'hasExactTime' | 'reminderOption' | 'repeatOption' | 'repeatSummary' | 'date' | 'range' | 'startTime' | 'endTime'
 >;
 
-const TITLE_MAX_LENGTH = 30;
+type ProjectExtraData = {
+  schedule?: ProjectScheduleMeta | null;
+  [key: string]: unknown;
+};
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -51,37 +56,64 @@ function formatTime(value: string): string {
   return `${hour}:${minute}`;
 }
 
-function buildProjectId() {
-  return `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function extractDueDate(deadlineText: string) {
   const matched = deadlineText.match(/\d{4}-\d{2}-\d{2}/);
   return matched?.[0] ?? null;
 }
 
-export default function AddProjectScreen() {
+function parseProjectExtraData(raw: string | null): ProjectExtraData {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as ProjectExtraData;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function buildDeadlineTextFromSchedule(schedule: ProjectScheduleMeta | null) {
+  if (!schedule) return '';
+  if (schedule.mode === 'time' && schedule.range) {
+    const rangeLabel = `${formatDate(schedule.range.start)} ~ ${formatDate(schedule.range.end)}`;
+    const timeLabel = schedule.allDay ? '全天' : `${formatTime(schedule.startTime)} - ${formatTime(schedule.endTime)}`;
+    return `${rangeLabel} ${timeLabel}`;
+  }
+  if (schedule.date) {
+    const dateLabel = formatDate(schedule.date);
+    const timeLabel = schedule.allDay ? '全天' : schedule.hasExactTime ? formatTime(schedule.startTime) : '';
+    return timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel;
+  }
+  return '';
+}
+
+export default function EditProjectScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ source?: string }>();
+  const params = useLocalSearchParams<{ id?: string; source?: string }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
 
+  const projectId = typeof params.id === 'string' ? params.id : '';
   const [title, setTitle] = React.useState('');
   const [notes, setNotes] = React.useState('');
   const [deadlineText, setDeadlineText] = React.useState('');
   const [reminderText, setReminderText] = React.useState('');
   const [repeatText, setRepeatText] = React.useState('');
   const [scheduleMeta, setScheduleMeta] = React.useState<ProjectScheduleMeta | null>(null);
+  const [projectExtraData, setProjectExtraData] = React.useState<ProjectExtraData>({});
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
   const [categories, setCategories] = React.useState<ProjectCategoryRow[]>([]);
-  const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(INBOX_PROJECT_CATEGORY_ID);
+  const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
-  const [creating, setCreating] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
-  const scheduleSource = params.source ?? 'add-project';
+  const scheduleSource = params.source ?? `edit-project-${projectId || 'unknown'}`;
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
   const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
@@ -119,15 +151,43 @@ export default function AddProjectScreen() {
     globalThis.__schedulePickerResult = undefined;
   }, [scheduleSource]);
 
-  React.useEffect(() => {
-    readScheduleResult();
-  }, [readScheduleResult]);
+  const loadProject = React.useCallback(async () => {
+    if (!projectId) {
+      setLoading(false);
+      Alert.alert('参数缺失', '未找到项目 ID。');
+      router.back();
+      return;
+    }
+    setLoading(true);
+    try {
+      const project = await getProjectById(projectId);
+      if (!project) {
+        Alert.alert('项目不存在', '未找到对应项目，可能已被删除。');
+        router.back();
+        return;
+      }
+      setTitle(project.name);
+      setSelectedCategoryId(project.category_id ?? INBOX_PROJECT_CATEGORY_ID);
+      setNotes(project.note ?? '');
+      const extraData = parseProjectExtraData(project.extra_data);
+      setProjectExtraData(extraData);
+      const loadedSchedule = (extraData.schedule ?? null) as ProjectScheduleMeta | null;
+      setScheduleMeta(loadedSchedule);
+      setReminderText(loadedSchedule?.reminderOption === '不提前' ? '' : loadedSchedule?.reminderOption ?? '');
+      setRepeatText(loadedSchedule?.repeatOption === '不重复' ? '' : loadedSchedule?.repeatSummary ?? '');
+      setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
+    } catch (error) {
+      console.warn('加载项目详情失败', error);
+      Alert.alert('加载失败', '无法读取项目详情，请稍后重试。');
+      router.back();
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId, router]);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      readScheduleResult();
-    }, [readScheduleResult])
-  );
+  React.useEffect(() => {
+    loadProject();
+  }, [loadProject]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -146,39 +206,73 @@ export default function AddProjectScreen() {
     };
   }, []);
 
+  React.useEffect(() => {
+    readScheduleResult();
+  }, [readScheduleResult]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      readScheduleResult();
+    }, [readScheduleResult])
+  );
+
   const selectedCategoryName = React.useMemo(() => {
     if (!selectedCategoryId) return '';
     return categories.find((item) => item.id === selectedCategoryId)?.name ?? '';
   }, [categories, selectedCategoryId]);
 
-  const createProjectRecord = React.useCallback(async () => {
+  const saveProject = React.useCallback(async () => {
+    if (!projectId) return;
     const trimmedTitle = title.trim();
     if (!trimmedTitle) {
-      Alert.alert('无法创建项目', '请输入项目名称后再创建。');
+      Alert.alert('无法保存项目', '请输入项目名称后再保存。');
       return;
     }
-    if (creating) return;
+    if (saving) return;
 
-    setCreating(true);
+    setSaving(true);
     try {
-      await createProject({
-        id: buildProjectId(),
-        name: trimmedTitle,
+      await updateProject(projectId, {
         category_id: selectedCategoryId,
+        name: trimmedTitle,
         note: notes.trim() || null,
         due_date: extractDueDate(deadlineText),
         extra_data: JSON.stringify({
+          ...projectExtraData,
           schedule: scheduleMeta,
         }),
       });
       router.back();
     } catch (error) {
-      console.warn('创建项目失败', error);
-      Alert.alert('创建失败', '项目保存失败，请稍后重试。');
+      console.warn('更新项目失败', error);
+      Alert.alert('保存失败', '项目保存失败，请稍后重试。');
     } finally {
-      setCreating(false);
+      setSaving(false);
     }
-  }, [creating, deadlineText, notes, router, scheduleMeta, selectedCategoryId, title]);
+  }, [deadlineText, notes, projectExtraData, projectId, router, saving, scheduleMeta, selectedCategoryId, title]);
+
+  const removeProject = React.useCallback(() => {
+    if (!projectId || saving || loading) return;
+    Alert.alert('删除项目', '删除后可在同步或恢复功能前无法找回，确认删除吗？', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setSaving(true);
+            await deleteProject(projectId);
+            router.back();
+          } catch (error) {
+            console.warn('删除项目失败', error);
+            Alert.alert('删除失败', '项目删除失败，请稍后重试。');
+          } finally {
+            setSaving(false);
+          }
+        },
+      },
+    ]);
+  }, [loading, projectId, router, saving]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -186,8 +280,14 @@ export default function AddProjectScreen() {
         <Pressable onPress={() => router.back()} hitSlop={10} style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: primary }]}>添加项目</Text>
-        <View style={styles.iconBtn} />
+        <Text style={[styles.headerTitle, { color: primary }]}>{loading ? '项目详情' : '编辑项目'}</Text>
+        <Pressable
+          onPress={saveProject}
+          disabled={saving || loading}
+          hitSlop={10}
+          style={({ pressed }) => [styles.headerActionBtn, { opacity: saving || loading ? 0.55 : pressed ? 0.75 : 1 }]}>
+          <Text style={[styles.headerActionText, { color: primary }]}>{saving ? '保存中' : '保存'}</Text>
+        </Pressable>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
@@ -200,8 +300,9 @@ export default function AddProjectScreen() {
               placeholder="项目名称"
               placeholderTextColor={outlineVariant}
               multiline
+              editable={!loading}
               maxLength={TITLE_MAX_LENGTH}
-              style={[styles.titleInput, { color: theme.text }]}
+              style={[styles.titleInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
             />
             <Text style={[styles.charCounter, { color: outline }]}>
               {title.length}/{TITLE_MAX_LENGTH}
@@ -212,14 +313,14 @@ export default function AddProjectScreen() {
             <Text style={[styles.sectionLabel, { color: outline }]}>项目分类</Text>
             <Pressable
               onPress={() => setCategoryModalVisible(true)}
+              disabled={loading}
               style={({ pressed }) => [
                 styles.categorySelect,
-                { backgroundColor: surfaceLow, borderColor: outlineVariant },
-                pressed && { opacity: 0.8 },
+                { backgroundColor: surfaceLow, borderColor: outlineVariant, opacity: loading ? 0.65 : pressed ? 0.8 : 1 },
               ]}>
               <View style={styles.categoryLeft}>
                 <MaterialIcons name="folder-open" size={18} color={primary} />
-              <Text style={[styles.categoryValue, { color: theme.text }]}>{selectedCategoryName || '收集箱'}</Text>
+                <Text style={[styles.categoryValue, { color: theme.text }]}>{selectedCategoryName || '收集箱'}</Text>
               </View>
               <MaterialIcons name="expand-more" size={20} color={outline} />
             </Pressable>
@@ -251,16 +352,15 @@ export default function AddProjectScreen() {
                   </View>
                 )}
               </View>
-              <Pressable onPress={() => router.push({ pathname: '/schedule-picker', params: { source: scheduleSource } })} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
+              <Pressable onPress={() => router.push({ pathname: '/schedule-picker', params: { source: scheduleSource } })} disabled={loading} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
               </Pressable>
             </View>
           </View>
 
-          {/*
           <View style={styles.section}>
             <View style={styles.subtaskHeader}>
-              <Text style={[styles.sectionLabel, { color: outline }]}>项目拆解</Text>
+              <Text style={[styles.sectionLabel, { color: outline }]}>任务拆解</Text>
               <Pressable onPress={() => router.push('/add-task')} style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="add-circle" size={16} color={primary} />
                 <Text style={[styles.linkBtnText, { color: primary }]}>添加任务</Text>
@@ -274,14 +374,19 @@ export default function AddProjectScreen() {
                   <MaterialIcons name="close" size={18} color={outline} />
                 </View>
               ))}
+              {subtasks.length === 0 && (
+                <View style={[styles.subtaskRow, { backgroundColor: surfaceLowest, opacity: 0.8 }]}>
+                  <MaterialIcons name="playlist-add-check" size={18} color={outline} />
+                  <Text style={[styles.subtaskText, { color: outline }]}>暂无任务，点击右上角添加任务</Text>
+                </View>
+              )}
             </View>
           </View>
-          */}
 
           <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>上下文备注</Text>
             <View style={[styles.notesWrap, { backgroundColor: surfaceLow }]}>
-              <TextInput value={notes} onChangeText={setNotes} placeholder="在此记录更多背景信息..." placeholderTextColor={outline} multiline style={[styles.notesInput, { color: theme.text }]} />
+              <TextInput value={notes} onChangeText={setNotes} placeholder="在此记录更多背景信息..." placeholderTextColor={outline} multiline editable={!loading} style={[styles.notesInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]} />
               <View style={styles.notesIcon} pointerEvents="none"><MaterialIcons name="notes" size={20} color={outlineVariant} /></View>
             </View>
           </View>
@@ -290,15 +395,18 @@ export default function AddProjectScreen() {
         <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12), backgroundColor: isDark ? 'rgba(15,23,42,0.65)' : 'rgba(250,248,255,0.65)', borderTopColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)' }]}>
           <View style={styles.bottomInner}>
             <Pressable
-              onPress={createProjectRecord}
-              disabled={creating}
+              onPress={removeProject}
+              disabled={saving || loading}
               style={({ pressed }) => [
-                styles.createBtn,
-                { backgroundColor: pressed ? primaryContainer : primary, opacity: creating ? 0.7 : 1 },
+                styles.deleteBtn,
+                {
+                  backgroundColor: pressed ? '#991b1b' : '#ba1a1a',
+                  opacity: saving || loading ? 0.7 : 1,
+                },
                 pressed && { transform: [{ scale: 0.98 }] },
               ]}>
-              <MaterialIcons name="task-alt" size={22} color="#fff" />
-              <Text style={styles.createText}>{creating ? '创建中...' : '创建项目'}</Text>
+              <MaterialIcons name="delete-outline" size={22} color="#fff" />
+              <Text style={styles.createText}>删除项目</Text>
             </Pressable>
           </View>
         </View>
@@ -332,6 +440,8 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   header: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingBottom: 10, borderBottomWidth: 1 },
   iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  headerActionBtn: { minWidth: 46, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  headerActionText: { fontSize: 15, fontWeight: '800' },
   headerTitle: { fontSize: 24, fontWeight: '800', letterSpacing: -0.4 },
   content: { paddingTop: 92, paddingHorizontal: 18, gap: 22 },
   section: { gap: 10 },
@@ -363,6 +473,7 @@ const styles = StyleSheet.create({
   bottomBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1 },
   bottomInner: { maxWidth: 520, width: '100%', alignSelf: 'center' },
   createBtn: { width: '100%', paddingVertical: 16, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.14, shadowRadius: 20, elevation: 8 },
+  deleteBtn: { width: '100%', paddingVertical: 16, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.14, shadowRadius: 20, elevation: 8 },
   createText: { color: '#fff', fontSize: 18, fontWeight: '900', letterSpacing: -0.2 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.38)', justifyContent: 'center', paddingHorizontal: 18 },
   modalCard: { borderWidth: 1, borderRadius: 16, padding: 14, gap: 8 },

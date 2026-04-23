@@ -1,8 +1,10 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { getProjects } from '@/lib/repositories/projects/project';
-import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
+import { getProjectCategories, getProjects } from '@/lib/repositories/projects/project';
+import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Animated, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -82,6 +84,30 @@ function SegmentTabs({
   );
 }
 
+type ProjectScheduleMeta = {
+  mode?: 'date' | 'time';
+  reminderOption?: string;
+  repeatOption?: string;
+  range?: { start: string; end: string };
+};
+
+function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
+  if (!extraData) return null;
+  try {
+    const parsed = JSON.parse(extraData) as { schedule?: ProjectScheduleMeta };
+    return parsed?.schedule ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function getRangeEndDateLabel(project: ProjectRow, schedule: ProjectScheduleMeta | null) {
+  if (schedule?.mode === 'time' && schedule.range?.end) {
+    return schedule.range.end.slice(0, 10);
+  }
+  return project.due_date;
+}
+
 export default function TasksScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
@@ -91,6 +117,7 @@ export default function TasksScreen() {
   const [taskTab, setTaskTab] = React.useState<'all' | 'inbox'>('all');
   const [projectTab, setProjectTab] = React.useState<'all' | 'inbox'>('all');
   const [projects, setProjects] = React.useState<ProjectRow[]>([]);
+  const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
   const [categoryEditorVisible, setCategoryEditorVisible] = React.useState(false);
   const [categoryEditorTitle, setCategoryEditorTitle] = React.useState('新建分类');
@@ -104,6 +131,26 @@ export default function TasksScreen() {
   const matrixAnim = React.useRef(new Animated.Value(0)).current;
   const projectAnim = React.useRef(new Animated.Value(0)).current;
   const bgFloatAnim = React.useRef(new Animated.Value(0)).current;
+
+  const loadProjects = React.useCallback(async () => {
+    try {
+      const rows = await getProjects();
+      setProjects(rows);
+    } catch (err) {
+      console.warn('加载项目列表失败', err);
+      setProjects([]);
+    }
+  }, []);
+
+  const loadProjectCategories = React.useCallback(async () => {
+    try {
+      const rows = await getProjectCategories();
+      setProjectCategories(rows);
+    } catch (err) {
+      console.warn('加载项目分类失败', err);
+      setProjectCategories([]);
+    }
+  }, []);
 
   React.useEffect(() => {
     Animated.sequence([
@@ -167,31 +214,34 @@ export default function TasksScreen() {
   }, [bgFloatAnim]);
 
   React.useEffect(() => {
-    let mounted = true;
-
-    const loadProjects = async () => {
-      try {
-        const rows = await getProjects();
-        if (mounted) {
-          setProjects(rows);
-        }
-      } catch (err) {
-        console.warn('加载项目列表失败', err);
-        if (mounted) {
-          setProjects([]);
-        }
-      }
-    };
-
     loadProjects();
+  }, [loadProjects]);
 
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  React.useEffect(() => {
+    loadProjectCategories();
+  }, [loadProjectCategories]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      loadProjects();
+      loadProjectCategories();
+    }, [loadProjectCategories, loadProjects])
+  );
+
+  const projectCategoryMap = React.useMemo(() => {
+    const map = new Map<string, string>();
+    projectCategories.forEach((category) => {
+      map.set(category.id, category.name);
+    });
+    return map;
+  }, [projectCategories]);
 
   const openTask = (id: string) => {
     router.push({ pathname: '/task/[id]', params: { id } });
+  };
+
+  const openProject = (id: string) => {
+    router.push({ pathname: '/edit-project', params: { id } });
   };
 
   const openCategoryMenu = (scope: 'task' | 'project', label: string) => {
@@ -427,37 +477,62 @@ export default function TasksScreen() {
                   </Pressable>
                 </View>
                 <SegmentTabs tabs={[{ key: 'all', label: '全部' }, { key: 'inbox', label: '收集箱' }]} active={projectTab} onChange={(k) => setProjectTab(k as 'all' | 'inbox')} onLongPressTab={(_, label) => openCategoryMenu('project', label)} color={primary} muted={outline} />
-                {(projectTab === 'all' ? projects : projects.filter((project) => !project.category_id)).map((project, index) => {
+                {(projectTab === 'all' ? projects : projects.filter((project) => !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID)).map((project, index) => {
                   const isFirst = index === 0;
                   const isCompleted = project.status === 'completed' || project.status === 'archived';
+                  const schedule = parseProjectSchedule(project.extra_data);
+                  const dueDateLabel = getRangeEndDateLabel(project, schedule);
+                  const categoryLabel = !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? '收集箱' : projectCategoryMap.get(project.category_id) ?? '未分类';
+                  const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
+                  const hasRepeat = !!schedule?.repeatOption && schedule.repeatOption !== '不重复';
                   return (
-                    <View
+                    <Pressable
                       key={project.id}
-                      style={[
+                      onPress={() => openProject(project.id)}
+                      style={({ pressed }) => [
                         styles.projectCard,
                         {
                           backgroundColor: isFirst ? card : soft,
-                          opacity: isFirst ? 1 : 0.86,
+                          opacity: pressed ? (isFirst ? 0.88 : 0.72) : isFirst ? 1 : 0.86,
                         },
                       ]}>
-                      <View style={[styles.projectHead, { borderLeftColor: primary }]}>
+                      <View
+                      style={[
+                        styles.projectHead,
+                        { borderLeftColor: primary },
+                      ]}>
                         <View style={styles.projectHeadLeft}>
                           <MaterialIcons name={isFirst ? 'inventory-2' : 'data-usage'} size={22} color={primary} />
                           <View>
                             <Text style={[styles.projectTitle, { color: theme.text }]}>{project.name}</Text>
                             <View style={styles.projectSubRow}>
-                              {project.due_date ? <Text style={[styles.projectSub, { color: outline }]}>截止 {project.due_date}</Text> : <Text style={[styles.projectSub, { color: outline }]}>无截止日期</Text>}
+                              {dueDateLabel ? <Text style={[styles.projectSub, { color: outline }]}>截止 {dueDateLabel}</Text> : <Text style={[styles.projectSub, { color: outline }]}>无截止日期</Text>}
+                              <Text style={[styles.projectSub, { color: outline }]}>•</Text>
+                              <Text style={[styles.projectSub, { color: outline }]}>分类 {categoryLabel}</Text>
                               <Text style={[styles.projectSub, { color: outline }]}>•</Text>
                               <Text style={[styles.projectSubStrong, { color: primary }]}>{project.status === 'active' ? '进行中' : project.status === 'paused' ? '已暂停' : isCompleted ? '已完成' : '未知状态'}</Text>
+                              {(hasReminder || hasRepeat) && <Text style={[styles.projectSub, { color: outline }]}>•</Text>}
+                              {hasReminder && (
+                                <View style={styles.projectFlag}>
+                                  <MaterialIcons name="notifications-active" size={11} color={primary} />
+                                  <Text style={[styles.projectFlagText, { color: primary }]}>提醒</Text>
+                                </View>
+                              )}
+                              {hasRepeat && (
+                                <View style={styles.projectFlag}>
+                                  <MaterialIcons name="repeat" size={11} color={primary} />
+                                  <Text style={[styles.projectFlagText, { color: primary }]}>重复</Text>
+                                </View>
+                              )}
                             </View>
                           </View>
                         </View>
                         <MaterialIcons name="expand-more" size={22} color={outline} />
                       </View>
-                    </View>
+                    </Pressable>
                   );
                 })}
-                {(projectTab === 'all' ? projects : projects.filter((project) => !project.category_id)).length === 0 && (
+                {(projectTab === 'all' ? projects : projects.filter((project) => !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID)).length === 0 && (
                   <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
                     <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
                       <View style={styles.projectHeadLeft}>
@@ -716,6 +791,8 @@ const styles = StyleSheet.create({
   projectSubRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   projectSub: { fontSize: 10, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
   projectSubStrong: { fontSize: 10, fontWeight: '900', letterSpacing: 0.6 },
+  projectFlag: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  projectFlagText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
   projectCount: { alignItems: 'flex-end' },
   projectCountMain: { fontSize: 12, fontWeight: '900' },
   projectCountSub: { fontSize: 10, fontWeight: '700' },

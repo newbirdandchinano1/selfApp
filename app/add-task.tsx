@@ -1,7 +1,8 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   KeyboardAvoidingView,
@@ -19,9 +20,42 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 type Subtask = { id: string; title: string; done: boolean };
 type PriorityKey = 'urgent-important' | 'urgent-not-important' | 'not-urgent-important' | 'not-urgent-not-important';
 type MainTask = { id: string; title: string; due: string };
+type SchedulePickerResult = {
+  mode: 'date' | 'time';
+  source: string;
+  quickChip: string;
+  allDay: boolean;
+  hasExactTime: boolean;
+  reminderOption: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
+  repeatSummary: string;
+  date?: string;
+  range?: { start: string; end: string };
+  startTime: string;
+  endTime: string;
+};
+const MAX_TASK_TITLE_LENGTH = 30;
+
+function formatDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(11, 16);
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${hour}:${minute}`;
+}
 
 export default function AddTaskScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ source?: string }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -35,9 +69,12 @@ export default function AddTaskScreen() {
   const [mainTaskQuery, setMainTaskQuery] = React.useState('');
   const [selectedMainTaskId, setSelectedMainTaskId] = React.useState<string | null>(null);
   const [deadlineText, setDeadlineText] = React.useState('');
+  const [reminderText, setReminderText] = React.useState('');
+  const [repeatText, setRepeatText] = React.useState('');
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
+  const scheduleSource = params.source ?? 'add-task';
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const priorityOptions: Array<{ key: PriorityKey; label: string; color: string }> = [
     { key: 'urgent-important', label: '紧急重要', color: isDark ? '#f87171' : '#ba1a1a' },
@@ -68,18 +105,38 @@ export default function AddTaskScreen() {
     setSubtasks((prev) => prev.filter((s) => s.id !== id));
   };
 
-  React.useEffect(() => {
-    const picked = globalThis.__schedulePickerResult;
-    if (!picked || picked.source !== 'add-task') return;
+  const handleTitleChange = (text: string) => {
+    setTitle(text.slice(0, MAX_TASK_TITLE_LENGTH));
+  };
+
+  const readScheduleResult = React.useCallback(() => {
+    const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
+    if (!picked || picked.source !== scheduleSource) return;
 
     if (picked.mode === 'time' && picked.range) {
-      setDeadlineText(`${picked.range.start.slice(0, 10)} ~ ${picked.range.end.slice(0, 10)}`);
+      const rangeLabel = `${formatDate(picked.range.start)} ~ ${formatDate(picked.range.end)}`;
+      const timeLabel = picked.allDay ? '全天' : `${formatTime(picked.startTime)} - ${formatTime(picked.endTime)}`;
+      setDeadlineText(`${rangeLabel} ${timeLabel}`);
     } else if (picked.date) {
-      setDeadlineText(picked.date.slice(0, 10));
+      const dateLabel = formatDate(picked.date);
+      const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
+      setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
     }
+    setReminderText(picked.reminderOption === '不提前' ? '' : picked.reminderOption);
+    setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
 
     globalThis.__schedulePickerResult = undefined;
-  }, []);
+  }, [scheduleSource]);
+
+  React.useEffect(() => {
+    readScheduleResult();
+  }, [readScheduleResult]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      readScheduleResult();
+    }, [readScheduleResult])
+  );
 
   const createTask = () => {
     router.back();
@@ -117,12 +174,16 @@ export default function AddTaskScreen() {
             <Text style={[styles.sectionLabel, { color: outline }]}>基础信息</Text>
             <TextInput
               value={title}
-              onChangeText={setTitle}
+              onChangeText={handleTitleChange}
               placeholder="任务名称"
               placeholderTextColor={outlineVariant}
+              maxLength={MAX_TASK_TITLE_LENGTH}
               multiline
               style={[styles.titleInput, { color: theme.text }]}
             />
+            <Text style={[styles.titleCounter, { color: outline }]}>
+              {title.length}/{MAX_TASK_TITLE_LENGTH}
+            </Text>
           </View>
 
           <View style={styles.section}>
@@ -150,16 +211,33 @@ export default function AddTaskScreen() {
               </View>
               <View style={styles.deadlineBody}>
                 <Text style={[styles.deadlineKicker, { color: outline }]}>截止日期</Text>
-                <Text style={[styles.deadlineValue, { color: theme.text }]}>{deadlineText}</Text>
+                <Text style={[styles.deadlineValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
+                {!!(reminderText || repeatText) && (
+                  <View style={styles.tagRow}>
+                    {!!reminderText && (
+                      <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
+                        <MaterialIcons name="notifications-active" size={14} color={primary} />
+                        <Text style={[styles.metaTagText, { color: theme.text }]}>{reminderText}</Text>
+                      </View>
+                    )}
+                    {!!repeatText && (
+                      <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
+                        <MaterialIcons name="repeat" size={14} color={primary} />
+                        <Text style={[styles.metaTagText, { color: theme.text }]}>{repeatText}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
               </View>
               <Pressable
-                onPress={() => router.push({ pathname: '/schedule-picker', params: { source: 'add-task' } })}
+                onPress={() => router.push({ pathname: '/schedule-picker', params: { source: scheduleSource } })}
                 style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
               </Pressable>
             </View>
           </View>
 
+          {/*
           <View style={styles.section}>
             <View style={styles.subtaskHeader}>
               <Text style={[styles.sectionLabel, { color: outline }]}>任务拆解</Text>
@@ -204,6 +282,7 @@ export default function AddTaskScreen() {
               ))}
             </View>
           </View>
+          */}
 
           <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>上下文备注</Text>
@@ -412,6 +491,12 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     lineHeight: 36,
   },
+  titleCounter: {
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'right',
+    opacity: 0.8,
+  },
   prioritySelect: {
     borderRadius: 20,
     borderWidth: 1,
@@ -467,6 +552,25 @@ const styles = StyleSheet.create({
   deadlineValue: {
     fontSize: 16,
     fontWeight: '800',
+  },
+  tagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  metaTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  metaTagText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   deadlineEdit: {
     width: 36,

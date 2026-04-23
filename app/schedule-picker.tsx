@@ -41,6 +41,9 @@ type SchedulePickerResult = {
   quickChip: string;
   allDay: boolean;
   hasExactTime: boolean;
+  reminderOption: ReminderOption;
+  repeatOption: RepeatOption;
+  repeatSummary: string;
   date?: string;
   range?: { start: string; end: string };
   startTime: string;
@@ -404,6 +407,8 @@ export default function SchedulePickerScreen() {
   }, []);
 
   const buildReturnPayload = React.useCallback((): SchedulePickerResult => {
+    const currentRepeatSummary = formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate);
+
     if (tab === 'time' && timeRange) {
       return {
         mode: 'time',
@@ -411,6 +416,9 @@ export default function SchedulePickerScreen() {
         quickChip: selectedQuickChip,
         allDay,
         hasExactTime,
+        reminderOption,
+        repeatOption,
+        repeatSummary: currentRepeatSummary,
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
         range: {
@@ -427,10 +435,13 @@ export default function SchedulePickerScreen() {
       date: selectedDate.toISOString(),
       allDay,
       hasExactTime,
+      reminderOption,
+      repeatOption,
+      repeatSummary: currentRepeatSummary,
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
     };
-  }, [allDay, endTime, hasExactTime, params.source, selectedDate, selectedQuickChip, startTime, tab, timeRange]);
+  }, [allDay, endTime, hasExactTime, monthlyDays, params.source, reminderOption, repeatOption, selectedDate, selectedQuickChip, startTime, tab, timeRange, weeklyDays, yearlyDate]);
 
   const applyTimeSelection = (target: 'start' | 'end', selected: Date) => {
     const normalized = new Date(selected);
