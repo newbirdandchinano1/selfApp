@@ -8,6 +8,20 @@ import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleShee
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type PriorityKey = 'urgent-important' | 'urgent-not-important' | 'not-urgent-important' | 'not-urgent-not-important';
+type Subtask = {
+  id: string;
+  title: string;
+  done: boolean;
+  priority?: string;
+  priorityLabel?: string;
+  deadline?: string;
+  deadlineText?: string;
+  reminder?: string;
+  reminderText?: string;
+  repeat?: string;
+  repeatText?: string;
+  note?: string;
+};
 type SchedulePickerResult = {
   mode: 'date' | 'time';
   source: string;
@@ -22,6 +36,16 @@ type SchedulePickerResult = {
   startTime: string;
   endTime: string;
 };
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __addSubtaskResult:
+    | {
+        source: string;
+        task: Subtask;
+      }
+    | undefined;
+}
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -100,6 +124,29 @@ export default function AddSubtaskScreen() {
       readScheduleResult();
     }, [readScheduleResult])
   );
+
+  const createSubtask = () => {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) return;
+    globalThis.__addSubtaskResult = {
+      source: scheduleSource,
+      task: {
+        id: `task-${Date.now()}`,
+        title: trimmedTitle,
+        done: false,
+        priority: currentPriority.label,
+        priorityLabel: currentPriority.label,
+        deadline: deadlineText,
+        deadlineText,
+        reminder: reminderText,
+        reminderText,
+        repeat: repeatText,
+        repeatText,
+        note: notes.trim(),
+      },
+    };
+    router.back();
+  };
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -202,7 +249,7 @@ export default function AddSubtaskScreen() {
         <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12), backgroundColor: isDark ? 'rgba(15,23,42,0.65)' : 'rgba(250,248,255,0.65)', borderTopColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)' }]}>
           <View style={styles.bottomInner}>
             <Pressable
-              onPress={() => router.back()}
+              onPress={createSubtask}
               style={({ pressed }) => [styles.createBtn, { backgroundColor: pressed ? primaryContainer : primary }, pressed && { transform: [{ scale: 0.98 }] }]}>
               <MaterialIcons name="task-alt" size={22} color="#fff" />
               <Text style={styles.createText}>创建子任务</Text>

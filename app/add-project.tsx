@@ -1,7 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
-import { createProject, getProjectCategories } from '@/lib/repositories/projects/project';
+import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
+import { createProject, getProjectCategories, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -58,6 +58,34 @@ function buildProjectId() {
 function extractDueDate(deadlineText: string) {
   const matched = deadlineText.match(/\d{4}-\d{2}-\d{2}/);
   return matched?.[0] ?? null;
+}
+
+function ensureInboxCategory(rows: ProjectCategoryRow[]): ProjectCategoryRow[] {
+  const now = new Date().toISOString();
+  const inbox: ProjectCategoryRow = {
+    id: INBOX_PROJECT_CATEGORY_ID,
+    name: INBOX_PROJECT_CATEGORY_NAME,
+    sort_order: 0,
+    created_at: now,
+    updated_at: now,
+    deleted_at: null,
+    sync_status: 'synced',
+    version: 1,
+    extra_data: null,
+  };
+
+  const withoutInbox = rows.filter((row) => row.id !== INBOX_PROJECT_CATEGORY_ID);
+  const existing = rows.find((row) => row.id === INBOX_PROJECT_CATEGORY_ID);
+  if (!existing) return [inbox, ...withoutInbox];
+
+  return [
+    {
+      ...existing,
+      name: INBOX_PROJECT_CATEGORY_NAME,
+      deleted_at: null,
+    },
+    ...withoutInbox,
+  ];
 }
 
 export default function AddProjectScreen() {
@@ -134,10 +162,10 @@ export default function AddProjectScreen() {
     const loadCategories = async () => {
       try {
         const rows = await getProjectCategories();
-        if (mounted) setCategories(rows);
+        if (mounted) setCategories(ensureInboxCategory(rows));
       } catch (error) {
         console.warn('加载项目分类失败', error);
-        if (mounted) setCategories([]);
+        if (mounted) setCategories(ensureInboxCategory([]));
       }
     };
     loadCategories();
@@ -155,6 +183,11 @@ export default function AddProjectScreen() {
     const trimmedTitle = title.trim();
     if (!trimmedTitle) {
       Alert.alert('无法创建项目', '请输入项目名称后再创建。');
+      return;
+    }
+    const hasDuplicateName = await isProjectNameDuplicate(trimmedTitle);
+    if (hasDuplicateName) {
+      Alert.alert('无法创建项目', '项目名称不能重复，请更换后重试。');
       return;
     }
     if (creating) return;

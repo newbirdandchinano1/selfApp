@@ -2,7 +2,7 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
@@ -17,13 +17,27 @@ export const unstable_settings = {
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const [isDbReady, setIsDbReady] = useState(false);
+  const [dbError, setDbError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
-
-    Promise.all([initDatabase().catch(() => {}), loadPersistedIntakeTargets().catch(() => {})]).finally(() => {
-      if (mounted) setIsDbReady(true);
-    });
+    const run = async () => {
+      try {
+        await initDatabase();
+        await loadPersistedIntakeTargets();
+        if (mounted) {
+          setDbError(null);
+          setIsDbReady(true);
+        }
+      } catch (e) {
+        console.warn('数据库初始化失败', e);
+        if (mounted) {
+          setDbError('数据库初始化失败，请重试。');
+          setIsDbReady(false);
+        }
+      }
+    };
+    void run();
 
     return () => {
       mounted = false;
@@ -36,12 +50,41 @@ export default function RootLayout() {
         {!isDbReady ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             <ActivityIndicator size="large" />
+            {dbError ? (
+              <View style={{ marginTop: 14, alignItems: 'center', paddingHorizontal: 24 }}>
+                <Text style={{ fontSize: 14, fontWeight: '700', opacity: 0.8 }}>{dbError}</Text>
+                <Pressable
+                  onPress={async () => {
+                    setDbError(null);
+                    try {
+                      await initDatabase();
+                      await loadPersistedIntakeTargets();
+                      setIsDbReady(true);
+                    } catch (e) {
+                      console.warn('数据库初始化失败', e);
+                      setDbError('数据库初始化失败，请重试。');
+                    }
+                  }}
+                  style={({ pressed }) => ({
+                    marginTop: 12,
+                    paddingHorizontal: 14,
+                    paddingVertical: 10,
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    opacity: pressed ? 0.8 : 1,
+                  })}
+                >
+                  <Text style={{ fontSize: 14, fontWeight: '800' }}>重试</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </View>
         ) : (
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="add-frog" />
             <Stack.Screen name="add-task" />
+            <Stack.Screen name="edit-task" />
             <Stack.Screen name="add-project" />
             <Stack.Screen name="add-subtask" />
             <Stack.Screen name="add-account" />

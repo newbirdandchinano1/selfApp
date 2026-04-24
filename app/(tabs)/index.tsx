@@ -316,6 +316,79 @@ function sodiumStatusDesc(percent: number) {
   return '摄入偏高，建议减少加工食品';
 }
 
+type NutritionV2ActivityLevel = 'Sedentary' | 'Fitness' | 'High-Intensity';
+type NutritionV2Goal = 'None' | 'Fat Loss' | 'Muscle Gain';
+type NutritionV2Gender = 'Male' | 'Female';
+
+function mapLifestyleToActivityLevel(lifestyle?: string | null): NutritionV2ActivityLevel {
+  if (lifestyle === '健身') return 'Fitness';
+  if (lifestyle === '高强度锻炼') return 'High-Intensity';
+  return 'Sedentary';
+}
+
+function mapGoalToNutritionGoal(goal?: string | null): NutritionV2Goal {
+  if (goal === '减脂') return 'Fat Loss';
+  if (goal === '增肌') return 'Muscle Gain';
+  return 'None';
+}
+
+function mapGenderToNutritionGender(gender?: string | null): NutritionV2Gender {
+  return gender === '男' ? 'Male' : 'Female';
+}
+
+function calculateNutritionV2(
+  weight: number,
+  height: number,
+  age: number,
+  gender: NutritionV2Gender,
+  activityLevel: NutritionV2ActivityLevel,
+  goal: NutritionV2Goal,
+  actualSodium: number
+) {
+  void height;
+  const PROTEIN_MULTIPLIER_CAP = 1.8;
+  const PROTEIN_GRAMS_CAP = 130;
+  const WATER_ML_CAP = 4000;
+  const SODIUM_MG_CAP = 2500;
+
+  let proteinMultiplier = 1.0;
+  if (activityLevel === 'Fitness') proteinMultiplier = 1.5;
+  if (activityLevel === 'High-Intensity') proteinMultiplier = 2.0;
+
+  if (age >= 65) proteinMultiplier += 0.2;
+  if (goal === 'Fat Loss') proteinMultiplier += 0.2;
+  if (goal === 'Muscle Gain') proteinMultiplier += 0.3;
+  proteinMultiplier = Math.min(proteinMultiplier, PROTEIN_MULTIPLIER_CAP);
+
+  const totalProteinG = Math.min(weight * proteinMultiplier, PROTEIN_GRAMS_CAP);
+
+  const baseSodium = 1500;
+  let sodiumActivityBonus = activityLevel === 'Sedentary' ? 0 : activityLevel === 'Fitness' ? 500 : 1000;
+  if (activityLevel === 'High-Intensity' && gender === 'Male') {
+    sodiumActivityBonus += 200;
+  }
+  const sodiumGoalBonus = goal === 'Muscle Gain' ? 200 : 0;
+  const totalSodiumMg = Math.min(baseSodium + sodiumActivityBonus + sodiumGoalBonus, SODIUM_MG_CAP);
+
+  const waterMultiplier = age < 30 ? 35 : age <= 55 ? 30 : 25;
+  let totalWaterMl = weight * waterMultiplier;
+  if (activityLevel === 'Fitness') totalWaterMl += 300;
+  if (activityLevel === 'High-Intensity') totalWaterMl += 600;
+  if (goal === 'Fat Loss') totalWaterMl += 300;
+  if (goal === 'Muscle Gain') totalWaterMl += 200;
+  if (actualSodium > totalSodiumMg) {
+    const excessSodium = actualSodium - totalSodiumMg;
+    totalWaterMl += excessSodium * 0.282;
+  }
+  totalWaterMl = Math.min(totalWaterMl, WATER_ML_CAP);
+
+  return {
+    Water_ml: Math.round(totalWaterMl),
+    Protein_g: Math.round(totalProteinG),
+    Sodium_mg: Math.round(totalSodiumMg),
+  };
+}
+
 const CircularProgress = ({
   percentage,
   icon,
@@ -746,7 +819,7 @@ export default function HealthScreen() {
           userId: user.id,
           recordDateYmd: ymd,
           type,
-          amount: Math.round(amount),
+          amount,
           targetHydrationMl: intakeTargetsSnapshot.hydrationMl,
           targetProteinG: intakeTargetsSnapshot.proteinG,
           targetSodiumMg: intakeTargetsSnapshot.sodiumMg,
@@ -1002,17 +1075,24 @@ export default function HealthScreen() {
 
   const communityValue = React.useMemo(() => {
     if (!user) return 0;
-  
-    if (assistantTab === '水分') {
-      return user.weight * 35;
-    }
-    if (assistantTab === '蛋白质') {
-      return user.weight * 1.2;
-    }
-    if (assistantTab === '钠') {
-      return 2000;
-    }
-  }, [assistantTab, user]);
+
+    const activityLevel = mapLifestyleToActivityLevel(user.lifestyle);
+    const nutritionGoal = mapGoalToNutritionGoal(user.goal);
+    const nutritionGender = mapGenderToNutritionGender(user.gender);
+    const metrics = calculateNutritionV2(
+      user.weight ?? 0,
+      user.height ?? 0,
+      user.age ?? 0,
+      nutritionGender,
+      activityLevel,
+      nutritionGoal,
+      selectedDayIntakeTotals?.sodium ?? 0
+    );
+
+    if (assistantTab === '水分') return metrics.Water_ml;
+    if (assistantTab === '蛋白质') return metrics.Protein_g;
+    return metrics.Sodium_mg;
+  }, [assistantTab, user, selectedDayIntakeTotals?.sodium]);
 
 
   const avgValue = React.useMemo(() => {

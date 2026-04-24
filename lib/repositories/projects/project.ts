@@ -29,6 +29,31 @@ export async function getProjects() {
   return db.getAllAsync<ProjectRow>('SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC');
 }
 
+export async function isProjectNameDuplicate(name: string, excludeId?: string) {
+  const db = await getDatabase();
+  const normalizedName = name.trim();
+  if (!normalizedName) return false;
+
+  const row = excludeId
+    ? await db.getFirstAsync<{ id: string }>(
+        `SELECT id FROM projects
+         WHERE deleted_at IS NULL
+           AND LOWER(TRIM(name)) = LOWER(TRIM(?))
+           AND id != ?
+         LIMIT 1`,
+        [normalizedName, excludeId]
+      )
+    : await db.getFirstAsync<{ id: string }>(
+        `SELECT id FROM projects
+         WHERE deleted_at IS NULL
+           AND LOWER(TRIM(name)) = LOWER(TRIM(?))
+         LIMIT 1`,
+        [normalizedName]
+      );
+
+  return !!row;
+}
+
 export async function updateProject(id: string, input: UpdateProjectInput) {
   const db = await getDatabase();
   const current = await getProjectById(id);
@@ -65,8 +90,12 @@ export async function createProjectCategory(input: CreateProjectCategoryInput) {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO project_categories (
-      id, name, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+    ) VALUES (
+      ?, ?,
+      (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM project_categories WHERE deleted_at IS NULL),
+      datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?
+    )`,
     [input.id, input.name, input.extra_data ?? null]
   );
 }
@@ -76,7 +105,28 @@ export async function getProjectCategories() {
   return db.getAllAsync<ProjectCategoryRow>(
     `SELECT * FROM project_categories
      WHERE deleted_at IS NULL
-     ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, updated_at DESC, created_at DESC`,
+     ORDER BY COALESCE(sort_order, 1000000) ASC, datetime(created_at) ASC`,
+  );
+}
+
+export async function reorderProjectCategories(orderedIds: string[]) {
+  const db = await getDatabase();
+  const ids = orderedIds.filter((id) => id && id !== INBOX_PROJECT_CATEGORY_ID);
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    await db.runAsync(
+      `UPDATE project_categories
+       SET sort_order = ?, updated_at = datetime('now'),
+           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+           version = version + 1
+       WHERE id = ? AND deleted_at IS NULL`,
+      [i + 1, id]
+    );
+  }
+  await db.runAsync(
+    `UPDATE project_categories
+     SET sort_order = 0, updated_at = datetime('now')
+     WHERE id = ?`,
     [INBOX_PROJECT_CATEGORY_ID]
   );
 }

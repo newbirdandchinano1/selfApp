@@ -4,6 +4,9 @@ export type UserRow = {
   id: string;
   name: string;
   avatar_uri: string | null;
+  gender: string;
+  lifestyle: string;
+  goal: string;
   height: number;
   weight: number;
   age: number;
@@ -14,4 +17,4 @@ export type UserRow = {
   version: number;
 };
 
-export type UpdateDefaultUserInput = Pick<UserRow, 'name' | 'avatar_uri' | 'height' | 'weight' | 'age'>;
+export type UpdateDefaultUserInput = Pick<UserRow, 'name' | 'avatar_uri' | 'gender' | 'lifestyle' | 'goal' | 'height' | 'weight' | 'age'>;

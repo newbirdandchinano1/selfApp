@@ -1,13 +1,28 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
-import { getProjectCategories, getProjects } from '@/lib/repositories/projects/project';
+import {
+  createProjectCategory,
+  deleteProjectCategory,
+  getProjectCategories,
+  getProjects,
+  updateProjectCategory,
+} from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import {
+  createTaskCategory,
+  deleteTaskCategory,
+  getTaskCategories,
+  getTasksByProjectId,
+  updateTaskCategory,
+  type TaskTreeNode,
+} from '@/lib/repositories/tasks/task';
+import type { TaskCategoryRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Animated, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Animated, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 function PulseDot({ color }: { color: string }) {
@@ -56,7 +71,11 @@ function SegmentTabs({
   onLongPressTab?: (key: string, label: string) => void;
 }) {
   return (
-    <View style={styles.segmentRow}>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.segmentRow}
+      keyboardShouldPersistTaps="handled">
       {tabs.map((tab) => {
         const isActive = tab.key === active;
         return (
@@ -80,7 +99,7 @@ function SegmentTabs({
           </Pressable>
         );
       })}
-    </View>
+    </ScrollView>
   );
 }
 
@@ -91,6 +110,11 @@ type ProjectScheduleMeta = {
   range?: { start: string; end: string };
 };
 
+type TaskMetaExtra = {
+  reminder?: string;
+  repeat?: string;
+};
+
 function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
   if (!extraData) return null;
   try {
@@ -99,6 +123,65 @@ function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | n
   } catch {
     return null;
   }
+}
+
+function parseTaskMeta(extraData: string | null): TaskMetaExtra {
+  if (!extraData) return {};
+  try {
+    const parsed = JSON.parse(extraData) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as TaskMetaExtra;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function formatTaskPriority(priority: number): string {
+  if (priority >= 4) return '紧急重要';
+  if (priority === 3) return '紧急不重要';
+  if (priority === 2) return '不紧急重要';
+  if (priority === 1) return '不紧急不重要';
+  return '';
+}
+
+function getTaskPriorityColor(priority: number, isDark: boolean) {
+  if (priority >= 4) return isDark ? '#f87171' : '#ba1a1a';
+  if (priority === 3) return isDark ? '#fbbf24' : '#9a5b00';
+  if (priority === 2) return isDark ? '#60a5fa' : '#0058be';
+  if (priority === 1) return isDark ? '#94a3b8' : '#727785';
+  return isDark ? '#94a3b8' : '#727785';
+}
+
+function sortTaskTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
+  const safeTime = (value: string | null | undefined) => {
+    if (!value) return 0;
+    const ms = Date.parse(value);
+    return Number.isNaN(ms) ? 0 : ms;
+  };
+  const safeDate = (value: string | null | undefined) => {
+    if (!value) return Number.POSITIVE_INFINITY;
+    const ms = Date.parse(value);
+    return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+  };
+
+  const clone = nodes.map((n) => ({
+    ...n,
+    children: sortTaskTree(n.children ?? []),
+  }));
+
+  clone.sort((a, b) => {
+    if (a.priority !== b.priority) return b.priority - a.priority;
+    const dueA = safeDate(a.due_date);
+    const dueB = safeDate(b.due_date);
+    if (dueA !== dueB) return dueA - dueB;
+    const updA = safeTime(a.updated_at);
+    const updB = safeTime(b.updated_at);
+    return updB - updA;
+  });
+
+  return clone;
 }
 
 function getRangeEndDateLabel(project: ProjectRow, schedule: ProjectScheduleMeta | null) {
@@ -113,17 +196,23 @@ export default function TasksScreen() {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
+  const TASK_INDENT = 18;
 
   const [taskTab, setTaskTab] = React.useState<'all' | 'inbox'>('all');
-  const [projectTab, setProjectTab] = React.useState<'all' | 'inbox'>('all');
+  const [projectTab, setProjectTab] = React.useState<string>('all');
   const [projects, setProjects] = React.useState<ProjectRow[]>([]);
   const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
+  const [taskCategories, setTaskCategories] = React.useState<TaskCategoryRow[]>([]);
+  const [projectTaskTreeMap, setProjectTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
+  const [expandedProjectIds, setExpandedProjectIds] = React.useState<Record<string, boolean>>({});
+  const [collapsedTaskIds, setCollapsedTaskIds] = React.useState<Record<string, boolean>>({});
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
   const [categoryEditorVisible, setCategoryEditorVisible] = React.useState(false);
   const [categoryEditorTitle, setCategoryEditorTitle] = React.useState('新建分类');
   const [categoryInputValue, setCategoryInputValue] = React.useState('');
   const [activeCategoryScope, setActiveCategoryScope] = React.useState<'task' | 'project'>('task');
   const [activeCategoryLabel, setActiveCategoryLabel] = React.useState('全部');
+  const [activeCategoryId, setActiveCategoryId] = React.useState<string | null>(null);
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
@@ -149,6 +238,35 @@ export default function TasksScreen() {
     } catch (err) {
       console.warn('加载项目分类失败', err);
       setProjectCategories([]);
+    }
+  }, []);
+
+  const loadTaskCategories = React.useCallback(async () => {
+    try {
+      const rows = await getTaskCategories();
+      setTaskCategories(rows);
+    } catch (err) {
+      console.warn('加载任务分类失败', err);
+      setTaskCategories([]);
+    }
+  }, []);
+
+  const loadProjectTasks = React.useCallback(async (rows: ProjectRow[]) => {
+    if (rows.length === 0) {
+      setProjectTaskTreeMap({});
+      return;
+    }
+    try {
+      const entries = await Promise.all(
+        rows.map(async (project) => {
+          const tree = await getTasksByProjectId(project.id);
+          return [project.id, tree] as const;
+        })
+      );
+      setProjectTaskTreeMap(Object.fromEntries(entries));
+    } catch (err) {
+      console.warn('加载项目任务失败', err);
+      setProjectTaskTreeMap({});
     }
   }, []);
 
@@ -218,14 +336,32 @@ export default function TasksScreen() {
   }, [loadProjects]);
 
   React.useEffect(() => {
+    loadProjectTasks(projects);
+  }, [loadProjectTasks, projects]);
+
+  React.useEffect(() => {
     loadProjectCategories();
   }, [loadProjectCategories]);
+
+  React.useEffect(() => {
+    loadTaskCategories();
+  }, [loadTaskCategories]);
+
+  React.useEffect(() => {
+    if (!categoryModalVisible) return;
+    if (activeCategoryScope === 'task') {
+      loadTaskCategories();
+    } else {
+      loadProjectCategories();
+    }
+  }, [activeCategoryScope, categoryModalVisible, loadProjectCategories, loadTaskCategories]);
 
   useFocusEffect(
     React.useCallback(() => {
       loadProjects();
       loadProjectCategories();
-    }, [loadProjectCategories, loadProjects])
+      loadTaskCategories();
+    }, [loadProjectCategories, loadProjects, loadTaskCategories])
   );
 
   const projectCategoryMap = React.useMemo(() => {
@@ -236,6 +372,19 @@ export default function TasksScreen() {
     return map;
   }, [projectCategories]);
 
+  const projectTabs = React.useMemo(() => {
+    const base: Array<{ key: string; label: string }> = [
+      { key: 'all', label: '全部' },
+      { key: INBOX_PROJECT_CATEGORY_ID, label: '收集箱' },
+    ];
+
+    const extra = projectCategories
+      .filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID)
+      .map((c) => ({ key: c.id, label: c.name }));
+
+    return [...base, ...extra];
+  }, [projectCategories]);
+
   const openTask = (id: string) => {
     router.push({ pathname: '/task/[id]', params: { id } });
   };
@@ -244,16 +393,35 @@ export default function TasksScreen() {
     router.push({ pathname: '/edit-project', params: { id } });
   };
 
-  const openCategoryMenu = (scope: 'task' | 'project', label: string) => {
+  const openCategoryMenu = (scope: 'task' | 'project', label: string, categoryId: string | null = null) => {
     setActiveCategoryScope(scope);
     setActiveCategoryLabel(label);
+    setActiveCategoryId(categoryId);
+    setCategoryInputValue(label);
     setCategoryModalVisible(true);
   };
 
+  const toggleProjectExpand = React.useCallback((projectId: string) => {
+    setExpandedProjectIds((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
+  }, []);
+
+  const toggleTaskCollapse = React.useCallback((taskId: string) => {
+    setCollapsedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
+  }, []);
+
+  const hasChildrenDeeperThan = React.useCallback((nodes: TaskTreeNode[], level: number, maxLevel: number): boolean => {
+    if (nodes.length === 0) return false;
+    if (level >= maxLevel) {
+      return nodes.some((node) => node.children.length > 0);
+    }
+    return nodes.some((node) => hasChildrenDeeperThan(node.children, level + 1, maxLevel));
+  }, []);
+
   const closeCategoryMenu = () => setCategoryModalVisible(false);
-  const openCategoryEditor = (title: string, initialValue = '') => {
+  const openCategoryEditor = (title: string, initialValue = '', categoryId: string | null = null) => {
     setCategoryEditorTitle(title);
     setCategoryInputValue(initialValue);
+    setActiveCategoryId(categoryId);
     setCategoryModalVisible(false);
     setCategoryEditorVisible(true);
   };
@@ -271,6 +439,130 @@ export default function TasksScreen() {
   const secondary = isDark ? '#34d399' : '#006c49';
   const tertiary = isDark ? '#fbbf24' : '#825100';
   const error = isDark ? '#f87171' : '#ba1a1a';
+
+  const buildCategoryId = React.useCallback((scope: 'task' | 'project') => {
+    const prefix = scope === 'task' ? 'tc' : 'pc';
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  }, []);
+
+  const scopedCategories = activeCategoryScope === 'task' ? taskCategories : projectCategories;
+
+  const saveCategory = React.useCallback(async () => {
+    const name = categoryInputValue.trim();
+    if (!name) {
+      Alert.alert('无法保存分类', '请输入分类名称后再确认。');
+      return;
+    }
+
+    const normalizedName = name.toLocaleLowerCase();
+    const isDuplicateName = scopedCategories.some((category) => {
+      if (activeCategoryId && category.id === activeCategoryId) return false;
+      return category.name.trim().toLocaleLowerCase() === normalizedName;
+    });
+    if (isDuplicateName) {
+      Alert.alert('无法保存分类', '分类名称不能重复，请更换后重试。');
+      return;
+    }
+
+    try {
+      if (categoryEditorTitle.includes('新建')) {
+        if (activeCategoryScope === 'task') {
+          await createTaskCategory({ id: buildCategoryId('task'), name });
+          await loadTaskCategories();
+        } else {
+          await createProjectCategory({ id: buildCategoryId('project'), name });
+          await loadProjectCategories();
+        }
+      } else {
+        if (!activeCategoryId) {
+          Alert.alert('无法修改分类', '未找到要修改的分类。');
+          return;
+        }
+        if (activeCategoryScope === 'task') {
+          await updateTaskCategory(activeCategoryId, { name });
+          await loadTaskCategories();
+        } else {
+          await updateProjectCategory(activeCategoryId, { name });
+          await loadProjectCategories();
+        }
+      }
+      closeCategoryEditor();
+    } catch (err) {
+      console.warn('保存分类失败', err);
+      Alert.alert('保存失败', '分类保存失败，请稍后重试。');
+    }
+  }, [
+    activeCategoryId,
+    activeCategoryScope,
+    buildCategoryId,
+    categoryEditorTitle,
+    categoryInputValue,
+    closeCategoryEditor,
+    loadProjectCategories,
+    scopedCategories,
+    loadTaskCategories,
+  ]);
+
+  const removeCategory = React.useCallback(() => {
+    if (!activeCategoryId) {
+      Alert.alert('提示', '请先长按要删除的分类。');
+      return;
+    }
+    if (activeCategoryId === 'all') {
+      Alert.alert('提示', '“全部”不是可删除分类。');
+      return;
+    }
+    if (activeCategoryScope === 'project' && activeCategoryId === INBOX_PROJECT_CATEGORY_ID) {
+      Alert.alert('提示', '“收集箱”是内置分类，不能删除。');
+      return;
+    }
+    if (activeCategoryScope === 'project') {
+      const hasProjectsInCategory = projects.some(
+        (project) => (project.category_id ?? INBOX_PROJECT_CATEGORY_ID) === activeCategoryId
+      );
+      if (hasProjectsInCategory) {
+        Alert.alert('无法删除', '该分类下仍有关联项目，请先迁移或删除这些项目后再试。');
+        return;
+      }
+    }
+
+    const targetName = activeCategoryLabel || scopedCategories.find((c) => c.id === activeCategoryId)?.name || '该分类';
+    Alert.alert('删除分类', `确认删除「${targetName}」吗？`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            if (activeCategoryScope === 'task') {
+              await deleteTaskCategory(activeCategoryId);
+              await loadTaskCategories();
+              if (taskTab === activeCategoryId) setTaskTab('all');
+            } else {
+              await deleteProjectCategory(activeCategoryId);
+              await loadProjectCategories();
+              if (projectTab === activeCategoryId) setProjectTab('all');
+            }
+            closeCategoryMenu();
+          } catch (err) {
+            console.warn('删除分类失败', err);
+            Alert.alert('删除失败', '分类删除失败，请稍后重试。');
+          }
+        },
+      },
+    ]);
+  }, [
+    activeCategoryId,
+    activeCategoryLabel,
+    activeCategoryScope,
+    closeCategoryMenu,
+    loadProjectCategories,
+    loadTaskCategories,
+    projects,
+    projectTab,
+    scopedCategories,
+    taskTab,
+  ]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
@@ -402,7 +694,7 @@ export default function TasksScreen() {
               tabs={[{ key: 'all', label: '全部' }, { key: 'inbox', label: '收集箱' }]}
               active={taskTab}
               onChange={(k) => setTaskTab(k as 'all' | 'inbox')}
-              onLongPressTab={(_, label) => openCategoryMenu('task', label)}
+              onLongPressTab={(key, label) => openCategoryMenu('task', label, key)}
               color={primary}
               muted={outline}
             />
@@ -476,24 +768,165 @@ export default function TasksScreen() {
                     <Text style={[styles.ghostBtnText, { color: primary }]}>新建项目</Text>
                   </Pressable>
                 </View>
-                <SegmentTabs tabs={[{ key: 'all', label: '全部' }, { key: 'inbox', label: '收集箱' }]} active={projectTab} onChange={(k) => setProjectTab(k as 'all' | 'inbox')} onLongPressTab={(_, label) => openCategoryMenu('project', label)} color={primary} muted={outline} />
-                {(projectTab === 'all' ? projects : projects.filter((project) => !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID)).map((project, index) => {
+                <SegmentTabs
+                  tabs={projectTabs}
+                  active={projectTab}
+                  onChange={setProjectTab}
+                  onLongPressTab={(key, label) => openCategoryMenu('project', label, key)}
+                  color={primary}
+                  muted={outline}
+                />
+                {(projectTab === 'all'
+                  ? projects
+                  : projects.filter((project) => (project.category_id ?? INBOX_PROJECT_CATEGORY_ID) === projectTab)
+                ).map((project, index) => {
                   const isFirst = index === 0;
                   const isCompleted = project.status === 'completed' || project.status === 'archived';
                   const schedule = parseProjectSchedule(project.extra_data);
                   const dueDateLabel = getRangeEndDateLabel(project, schedule);
+                  const noteText = project.note?.trim();
                   const categoryLabel = !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? '收集箱' : projectCategoryMap.get(project.category_id) ?? '未分类';
                   const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
                   const hasRepeat = !!schedule?.repeatOption && schedule.repeatOption !== '不重复';
+                  const taskTree = sortTaskTree(projectTaskTreeMap[project.id] ?? []);
+                  const isExpanded = !!expandedProjectIds[project.id];
+
+                  const openEditTask = (id: string) => {
+                    router.push({ pathname: '/edit-task', params: { id } });
+                  };
+
+                  const renderTaskTree = (nodes: TaskTreeNode[], level: number): React.ReactNode => {
+                    if (nodes.length === 0 || level > 3) return null;
+                    return nodes.map((node) => {
+                      const isDone = node.status === 'done' || node.status === 'cancelled';
+                      const childrenAll = Array.isArray(node.children) ? node.children : [];
+                      const children = level < 3 ? childrenAll : [];
+                      const hasAnyChildren = childrenAll.length > 0;
+                      const hasChildrenToRender = children.length > 0;
+                      const hasDeeperLevels = level === 3 && hasAnyChildren;
+                      const canToggleCollapse = level === 1 && hasAnyChildren;
+                      const isCollapsed = canToggleCollapse ? !!collapsedTaskIds[node.id] : false;
+                      const isExpandedTask = canToggleCollapse ? !isCollapsed : true;
+                      const noteText = (node.note ?? '').trim();
+                      const hintPaddingLeft =
+                        10 +
+                        level * TASK_INDENT +
+                        (canToggleCollapse ? 22 + 8 : 0) +
+                        14 +
+                        8;
+                      return (
+                        <React.Fragment key={node.id}>
+                          <Pressable
+                            onPress={() => openEditTask(node.id)}
+                            hitSlop={8}
+                            style={({ pressed }) => [
+                              styles.projectTaskRow,
+                              {
+                                paddingLeft: 10,
+                                paddingVertical: 10,
+                                marginTop: 6,
+                                borderRadius: 10,
+                                backgroundColor: '#fff',
+                                borderBottomWidth: StyleSheet.hairlineWidth,
+                                borderBottomColor: 'rgba(203,213,225,0.9)',
+                                opacity: pressed ? 0.85 : 1,
+                              },
+                            ]}>
+                            <View style={styles.treeColumns}>
+                              {Array.from({ length: level }).map((_, idx) => (
+                                <View key={`${node.id}_col_${idx}`} style={[styles.treeColumn, { width: TASK_INDENT }]}>
+                                  <View style={styles.treeLine} />
+                                </View>
+                              ))}
+                            </View>
+                            <View style={[styles.statusCircle, { borderColor: primary, backgroundColor: isDone ? primary : 'transparent' }]}>
+                              {isDone ? <MaterialIcons name="check" size={12} color="#fff" /> : null}
+                            </View>
+                            <View style={styles.projectTaskMain}>
+                              <View style={styles.taskTitleRow}>
+                                <Text
+                                  style={[
+                                    styles.projectTaskText,
+                                    level === 1 && isDone
+                                      ? styles.taskTitleDoneMain
+                                      : styles.taskTitleNormal,
+                                  ]}
+                                  numberOfLines={1}>
+                                  {node.title}
+                                </Text>
+                                {level === 1 && isDone ? <Text style={styles.taskDoneTag}>已完成</Text> : null}
+                              </View>
+                              {(() => {
+                                const meta = parseTaskMeta(node.extra_data);
+                                const priorityLabel = formatTaskPriority(node.priority);
+                                const priorityColor = getTaskPriorityColor(node.priority, isDark);
+                                const dueDate = node.due_date?.slice(0, 10) ?? '';
+                                const reminder = (meta.reminder ?? '').trim();
+                                const repeat = (meta.repeat ?? '').trim();
+                                return (
+                                  <View style={styles.projectTaskMetaRow}>
+                                    {!!priorityLabel && (
+                                      <View style={[styles.projectTaskMetaChip, { backgroundColor: `${priorityColor}14`, borderColor: `${priorityColor}40` }]}>
+                                        <MaterialIcons name="flag" size={11} color={priorityColor} />
+                                        <Text style={[styles.projectTaskMetaText, { color: priorityColor }]}>{priorityLabel}</Text>
+                                      </View>
+                                    )}
+                                    {!!dueDate && (
+                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
+                                        <MaterialIcons name="event" size={11} color={outline} />
+                                        <Text style={[styles.projectTaskMetaText, { color: outline }]}>截止 {dueDate}</Text>
+                                      </View>
+                                    )}
+                                    {!!repeat && (
+                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
+                                        <MaterialIcons name="repeat" size={11} color={outline} />
+                                        <Text style={[styles.projectTaskMetaText, { color: outline }]}>{repeat}</Text>
+                                      </View>
+                                    )}
+                                    {!!reminder && (
+                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
+                                        <MaterialIcons name="notifications-active" size={11} color={outline} />
+                                        <Text style={[styles.projectTaskMetaText, { color: outline }]}>{reminder}</Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                );
+                              })()}
+                              {!!noteText && (
+                                <View style={[styles.projectTaskNoteWrap, { backgroundColor: `${primary}0E`, borderLeftColor: primary }]}>
+                                  <Text style={[styles.projectTaskNoteText, { color: theme.textSecondary }]} numberOfLines={2}>
+                                    {noteText}
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                          </Pressable>
+                          {hasChildrenToRender && isExpandedTask ? renderTaskTree(children, level + 1) : null}
+                          {hasDeeperLevels && isExpandedTask ? (
+                            <Text
+                              style={[
+                                styles.projectTaskEllipsisInline,
+                                {
+                                  color: '#6b7280',
+                                  paddingLeft: hintPaddingLeft,
+                                },
+                              ]}>
+                              还有更深层级任务
+                            </Text>
+                          ) : null}
+                        </React.Fragment>
+                      );
+                    });
+                  };
+
                   return (
-                    <Pressable
+                    <View
                       key={project.id}
-                      onPress={() => openProject(project.id)}
-                      style={({ pressed }) => [
+                      style={[
                         styles.projectCard,
                         {
                           backgroundColor: isFirst ? card : soft,
-                          opacity: pressed ? (isFirst ? 0.88 : 0.72) : isFirst ? 1 : 0.86,
+                          opacity: isFirst ? 1 : 0.86,
                         },
                       ]}>
                       <View
@@ -509,7 +942,15 @@ export default function TasksScreen() {
                               {dueDateLabel ? <Text style={[styles.projectSub, { color: outline }]}>截止 {dueDateLabel}</Text> : <Text style={[styles.projectSub, { color: outline }]}>无截止日期</Text>}
                               <Text style={[styles.projectSub, { color: outline }]}>•</Text>
                               <Text style={[styles.projectSub, { color: outline }]}>分类 {categoryLabel}</Text>
-                              <Text style={[styles.projectSub, { color: outline }]}>•</Text>
+                            </View>
+                            {noteText ? (
+                              <View style={[styles.projectNoteWrap, { backgroundColor: `${primary}12`, borderLeftColor: primary }]}>
+                                <Text style={[styles.projectNote, { color: theme.textSecondary }]} numberOfLines={2}>
+                                  {noteText}
+                                </Text>
+                              </View>
+                            ) : null}
+                            <View style={styles.projectMetaRow}>
                               <Text style={[styles.projectSubStrong, { color: primary }]}>{project.status === 'active' ? '进行中' : project.status === 'paused' ? '已暂停' : isCompleted ? '已完成' : '未知状态'}</Text>
                               {(hasReminder || hasRepeat) && <Text style={[styles.projectSub, { color: outline }]}>•</Text>}
                               {hasReminder && (
@@ -527,12 +968,33 @@ export default function TasksScreen() {
                             </View>
                           </View>
                         </View>
-                        <MaterialIcons name="expand-more" size={22} color={outline} />
+                        <View style={styles.projectHeadRight}>
+                          <Pressable onPress={() => openProject(project.id)} hitSlop={8} style={({ pressed }) => [styles.projectEditBtn, pressed && { opacity: 0.75 }]}>
+                            <MaterialIcons name="edit" size={16} color={outline} />
+                          </Pressable>
+                          <Pressable onPress={() => toggleProjectExpand(project.id)} hitSlop={8} style={({ pressed }) => [styles.projectExpandBtn, pressed && { opacity: 0.75 }]}>
+                            <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={20} color={outline} />
+                          </Pressable>
+                        </View>
                       </View>
-                    </Pressable>
+                      {isExpanded && (
+                        <View style={[styles.projectTaskBody, { borderTopColor: outlineVariant }]}>
+                          {taskTree.length === 0 ? (
+                            <Text style={[styles.projectTaskEmpty, { color: outline }]}>暂无任务</Text>
+                          ) : (
+                            <>
+                              {renderTaskTree(taskTree, 1)}
+                            </>
+                          )}
+                        </View>
+                      )}
+                    </View>
                   );
                 })}
-                {(projectTab === 'all' ? projects : projects.filter((project) => !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID)).length === 0 && (
+                {(projectTab === 'all'
+                  ? projects
+                  : projects.filter((project) => (project.category_id ?? INBOX_PROJECT_CATEGORY_ID) === projectTab)
+                ).length === 0 && (
                   <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
                     <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
                       <View style={styles.projectHeadLeft}>
@@ -576,11 +1038,25 @@ export default function TasksScreen() {
                   { icon: 'add', label: '新建分类', color: primary, onPress: () => openCategoryEditor('新建分类') },
                   { icon: 'sort', label: '排序分类', color: secondary, onPress: () => {
                     closeCategoryMenu();
-                    router.push('/category-sort');
+                    router.push({ pathname: '/category-sort', params: { scope: activeCategoryScope } });
                   } },
-                  { icon: 'edit', label: '修改分类', color: tertiary, onPress: () => openCategoryEditor('修改分类', activeCategoryLabel) },
-                  { icon: 'account-tree', label: '子分类', color: secondary },
-                  { icon: 'delete', label: '删除分类', color: error },
+                  { icon: 'edit', label: '修改分类', color: tertiary, onPress: () => {
+                    if (!activeCategoryId) {
+                      Alert.alert('提示', '请先长按某个分类进入。');
+                      return;
+                    }
+                    if (activeCategoryId === 'all') {
+                      Alert.alert('提示', '“全部”不是可编辑分类。');
+                      return;
+                    }
+                    if (activeCategoryScope === 'project' && activeCategoryId === INBOX_PROJECT_CATEGORY_ID) {
+                      Alert.alert('提示', '“收集箱”是内置分类，不能改名。');
+                      return;
+                    }
+                    const fallbackName = scopedCategories.find((c) => c.id === activeCategoryId)?.name ?? '';
+                    openCategoryEditor('修改分类', categoryInputValue || fallbackName, activeCategoryId);
+                  } },
+                  { icon: 'delete', label: '删除分类', color: error, onPress: removeCategory },
                 ].map((action) => (
                   <Pressable key={action.label} onPress={action.onPress} style={({ pressed }) => [styles.actionItem, { borderColor: `${action.color}22` }, pressed && { opacity: 0.8 }]}>
                     <View style={[styles.actionIcon, { backgroundColor: `${action.color}14` }]}>
@@ -591,6 +1067,7 @@ export default function TasksScreen() {
                   </Pressable>
                 ))}
               </View>
+
             </View>
           </View>
         </View>
@@ -616,7 +1093,7 @@ export default function TasksScreen() {
                 <Pressable onPress={closeCategoryEditor} style={({ pressed }) => [styles.editorGhostBtn, pressed && { opacity: 0.8 }]}>
                   <Text style={[styles.editorGhostText, { color: outline }]}>取消</Text>
                 </Pressable>
-                <Pressable style={({ pressed }) => [styles.editorPrimaryBtn, { backgroundColor: primary }, pressed && { opacity: 0.9 }]}>
+                <Pressable onPress={saveCategory} style={({ pressed }) => [styles.editorPrimaryBtn, { backgroundColor: primary }, pressed && { opacity: 0.9 }]}>
                   <Text style={styles.editorPrimaryText}>确认</Text>
                 </Pressable>
               </View>
@@ -787,8 +1264,31 @@ const styles = StyleSheet.create({
   },
   projectHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, paddingRight: 10 },
   projectHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  projectEditBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  projectExpandBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   projectTitle: { fontSize: 16, fontWeight: '800', marginBottom: 2 },
   projectSubRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  projectNoteWrap: {
+    marginTop: 6,
+    borderLeftWidth: 3,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  projectNote: { fontSize: 12, fontWeight: '500', lineHeight: 16 },
+  projectMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 },
   projectSub: { fontSize: 10, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
   projectSubStrong: { fontSize: 10, fontWeight: '900', letterSpacing: 0.6 },
   projectFlag: { flexDirection: 'row', alignItems: 'center', gap: 2 },
@@ -797,6 +1297,65 @@ const styles = StyleSheet.create({
   projectCountMain: { fontSize: 12, fontWeight: '900' },
   projectCountSub: { fontSize: 10, fontWeight: '700' },
 
+  projectTaskBody: { borderTopWidth: 1, paddingHorizontal: 10, paddingVertical: 10, gap: 6 },
+  projectTaskRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, minHeight: 24 },
+  taskExpandBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -3,
+  },
+  taskExpandBtnPlaceholder: { width: 22, height: 22, marginTop: -3 },
+  treeColumns: { flexDirection: 'row', alignSelf: 'stretch' },
+  treeColumn: { alignSelf: 'stretch', position: 'relative' },
+  treeLine: {
+    position: 'absolute',
+    left: 9,
+    top: -14,
+    bottom: -14,
+    width: 1,
+    backgroundColor: 'rgba(203,213,225,0.9)',
+  },
+  statusCircle: {
+    width: 18,
+    height: 18,
+    borderRadius: 999,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  taskTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  taskTitleNormal: { color: '#111827' },
+  taskTitleDoneMain: { color: '#6b7280', textDecorationLine: 'line-through' },
+  taskDoneTag: { color: '#6b7280', fontSize: 12, fontWeight: '700' },
+  projectTaskMain: { flex: 1, gap: 4, paddingTop: 1 },
+  projectTaskText: { flex: 1, fontSize: 13, fontWeight: '600' },
+  projectTaskTextDone: { textDecorationLine: 'line-through' },
+  projectTaskMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  projectTaskMetaChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  projectTaskMetaText: { fontSize: 10, fontWeight: '700' },
+  projectTaskNoteWrap: {
+    marginTop: 2,
+    borderLeftWidth: 3,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  projectTaskNoteText: { fontSize: 12, fontWeight: '500', lineHeight: 16 },
+  projectTaskEmpty: { fontSize: 12, fontWeight: '700' },
+  projectTaskEllipsis: { marginTop: 2, fontSize: 11, fontWeight: '700' },
+  projectTaskEllipsisInline: { marginTop: 2, fontSize: 11, fontWeight: '700' },
   projectBody: { borderTopWidth: 1, paddingHorizontal: 16, paddingVertical: 10, gap: 6 },
   subtaskRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
   subtaskLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 8 },
@@ -863,4 +1422,5 @@ const styles = StyleSheet.create({
   editorGhostText: { fontSize: 14, fontWeight: '700' },
   editorPrimaryBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 },
   editorPrimaryText: { fontSize: 14, fontWeight: '800', color: '#fff' },
+
 });

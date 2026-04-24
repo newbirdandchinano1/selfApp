@@ -55,7 +55,7 @@ export function RecordIntakeSheet({
   const [tab, setTab] = React.useState<TabKey>('manual');
   const [text, setText] = React.useState('');
   const [manualType, setManualType] = React.useState<ManualType>('hydration');
-  const [amountText, setAmountText] = React.useState('');
+  const [amountText, setAmountText] = React.useState('0');
 
   const translateY = React.useRef(new Animated.Value(screenHeight)).current;
   const backdropOpacity = React.useRef(new Animated.Value(0)).current;
@@ -118,7 +118,7 @@ export function RecordIntakeSheet({
     setText('');
     setTab('manual');
     setManualType('hydration');
-    setAmountText('');
+    setAmountText('0');
   }, [visible]);
 
   React.useEffect(() => {
@@ -143,7 +143,7 @@ export function RecordIntakeSheet({
   const aiMiniInactiveOpacity = aiMiniEnabledAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
   const aiMiniActiveOpacity = aiMiniEnabledAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 
-  const amount = Number.parseInt(amountText || '0', 10) || 0;
+  const amount = Number.isFinite(Number(amountText)) ? Number(amountText) : 0;
   const manualMeta = getManualMeta(manualType);
   const manualConfirmDisabled = tab === 'manual' && amount <= 0;
 
@@ -161,16 +161,35 @@ export function RecordIntakeSheet({
 
   const onPressDigit = (digit: string) => {
     setAmountText((prev) => {
-      if (prev === '0') return digit;
-      if (prev.length >= 4) return prev;
-      return `${prev}${digit}`;
+      const nextPrev = prev === '' ? '0' : prev;
+      if (nextPrev.includes('.')) {
+        const [, decimals = ''] = nextPrev.split('.');
+        if (decimals.length >= 2) return nextPrev;
+        if (nextPrev.length >= 7) return nextPrev;
+        return `${nextPrev}${digit}`;
+      }
+      if (nextPrev === '0') return digit;
+      if (nextPrev.length >= 5) return nextPrev;
+      return `${nextPrev}${digit}`;
+    });
+  };
+
+  const onPressDot = () => {
+    setAmountText((prev) => {
+      const nextPrev = prev === '' ? '0' : prev;
+      if (nextPrev.includes('.')) return nextPrev;
+      if (nextPrev.length >= 6) return nextPrev;
+      return `${nextPrev}.`;
     });
   };
 
   const onPressBackspace = () => {
     setAmountText((prev) => {
-      if (prev.length <= 1) return '0';
-      return prev.slice(0, -1);
+      const nextPrev = prev === '' ? '0' : prev;
+      if (nextPrev.length <= 1) return '0';
+      const next = nextPrev.slice(0, -1);
+      if (next === '' || next === '-') return '0';
+      return next;
     });
   };
 
@@ -244,7 +263,7 @@ export function RecordIntakeSheet({
                           key={item.key}
                           onPress={() => {
                             setManualType(item.key);
-                            setAmountText('');
+                            setAmountText('0');
                           }}
                           style={({ pressed }) => [
                             styles.typeCard,
@@ -279,7 +298,16 @@ export function RecordIntakeSheet({
                           <Text style={[styles.keypadBtnText, { color: theme.text }]}>{d}</Text>
                         </Pressable>
                       ))}
-                      <View style={[styles.keypadBtn, styles.keypadGhost]} />
+                      <Pressable
+                        onPress={onPressDot}
+                        style={({ pressed }) => [
+                          styles.keypadBtn,
+                          { backgroundColor: sheetBackground, borderColor: isDark ? 'rgba(148,163,184,0.18)' : '#f1f5f9' },
+                          pressed && { transform: [{ scale: 0.95 }] },
+                        ]}
+                      >
+                        <Text style={[styles.keypadBtnText, { color: theme.text }]}>.</Text>
+                      </Pressable>
                       <Pressable onPress={() => onPressDigit('0')} style={({ pressed }) => [styles.keypadBtn, { backgroundColor: sheetBackground, borderColor: isDark ? 'rgba(148,163,184,0.18)' : '#f1f5f9' }, pressed && { transform: [{ scale: 0.95 }] }]}>
                         <Text style={[styles.keypadBtnText, { color: theme.text }]}>0</Text>
                       </Pressable>

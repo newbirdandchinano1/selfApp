@@ -112,15 +112,37 @@ export async function createTaskCategory(input: CreateTaskCategoryInput) {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO task_categories (
-      id, name, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+    ) VALUES (
+      ?, ?,
+      (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM task_categories WHERE deleted_at IS NULL),
+      datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?
+    )`,
     [input.id, input.name, input.extra_data ?? null]
   );
 }
 
 export async function getTaskCategories() {
   const db = await getDatabase();
-  return db.getAllAsync<TaskCategoryRow>('SELECT * FROM task_categories WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC');
+  return db.getAllAsync<TaskCategoryRow>(
+    'SELECT * FROM task_categories WHERE deleted_at IS NULL ORDER BY COALESCE(sort_order, 1000000) ASC, datetime(created_at) ASC'
+  );
+}
+
+export async function reorderTaskCategories(orderedIds: string[]) {
+  const db = await getDatabase();
+  const ids = orderedIds.filter(Boolean);
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    await db.runAsync(
+      `UPDATE task_categories
+       SET sort_order = ?, updated_at = datetime('now'),
+           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+           version = version + 1
+       WHERE id = ? AND deleted_at IS NULL`,
+      [i + 1, id]
+    );
+  }
 }
 
 export async function updateTaskCategory(id: string, input: UpdateTaskCategoryInput) {

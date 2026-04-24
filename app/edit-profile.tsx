@@ -14,6 +14,13 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { getDefaultUser, updateDefaultUser } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 
+const GENDER_OPTIONS = ['男', '女'] as const;
+const LIFESTYLE_OPTIONS = ['长期静坐不运动', '健身', '高强度锻炼'] as const;
+const GOAL_OPTIONS = ['无', '减脂', '增肌'] as const;
+const DEFAULT_GENDER: (typeof GENDER_OPTIONS)[number] = '男';
+const DEFAULT_LIFESTYLE: (typeof LIFESTYLE_OPTIONS)[number] = '长期静坐不运动';
+const DEFAULT_GOAL: (typeof GOAL_OPTIONS)[number] = '无';
+
 
 export default function EditProfileScreen() {
   const router = useRouter();
@@ -27,9 +34,16 @@ export default function EditProfileScreen() {
 
   const [name, setName] = useState('默认用户');
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [gender, setGender] = useState<(typeof GENDER_OPTIONS)[number]>(DEFAULT_GENDER);
+  const [lifestyle, setLifestyle] = useState<(typeof LIFESTYLE_OPTIONS)[number]>(DEFAULT_LIFESTYLE);
+  const [goal, setGoal] = useState<(typeof GOAL_OPTIONS)[number]>(DEFAULT_GOAL);
   const [height, setHeight] = useState('0');
   const [weight, setWeight] = useState('0');
   const [age, setAge] = useState('0');
+
+  const handleNumericInput = (value: string, setter: (next: string) => void) => {
+    setter(value.replace(/\D+/g, ''));
+  };
 
 
   const saveProfile = async () => {
@@ -37,14 +51,18 @@ export default function EditProfileScreen() {
       await updateDefaultUser({
         name,
         avatar_uri: avatarUri,
+        gender,
+        lifestyle,
+        goal,
         height: Number(height),
         weight: Number(weight),
         age: Number(age),
       });
       Alert.alert('保存成功');
       router.dismissTo('/(tabs)/profile');
-    } catch {
-      Alert.alert('保存失败', '请稍后重试');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '请稍后重试';
+      Alert.alert('保存失败', message);
     }
   };
 
@@ -92,6 +110,21 @@ export default function EditProfileScreen() {
   
     setName(user.name ?? '默认用户');
     setAvatarUri(user.avatar_uri ?? null);
+    setGender(
+      GENDER_OPTIONS.includes(user.gender as (typeof GENDER_OPTIONS)[number])
+        ? (user.gender as (typeof GENDER_OPTIONS)[number])
+        : DEFAULT_GENDER
+    );
+    setLifestyle(
+      LIFESTYLE_OPTIONS.includes(user.lifestyle as (typeof LIFESTYLE_OPTIONS)[number])
+        ? (user.lifestyle as (typeof LIFESTYLE_OPTIONS)[number])
+        : DEFAULT_LIFESTYLE
+    );
+    setGoal(
+      GOAL_OPTIONS.includes(user.goal as (typeof GOAL_OPTIONS)[number])
+        ? (user.goal as (typeof GOAL_OPTIONS)[number])
+        : DEFAULT_GOAL
+    );
     setHeight(String(user.height ?? 0));
     setWeight(String(user.weight ?? 0));
     setAge(String(user.age ?? 0));
@@ -184,6 +217,78 @@ export default function EditProfileScreen() {
                 style={[styles.fieldInput, { color: palette.text, borderBottomColor: palette.outlineVariant }]}
               />
             </View>
+
+            <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
+              <Text style={[styles.fieldLabel, { color: palette.outline }]}>性别</Text>
+              <View style={styles.optionRow}>
+                {GENDER_OPTIONS.map(option => {
+                  const active = gender === option;
+                  return (
+                    <Pressable
+                      key={option}
+                      onPress={() => setGender(option)}
+                      style={[
+                        styles.optionChip,
+                        {
+                          borderColor: active ? palette.primary : palette.outlineVariant,
+                          backgroundColor: active ? `${palette.primary}16` : 'transparent',
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.optionText, { color: active ? palette.primary : palette.text }]}>{option}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
+            <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
+              <Text style={[styles.fieldLabel, { color: palette.outline }]}>生活习惯</Text>
+              <View style={styles.optionWrap}>
+                {LIFESTYLE_OPTIONS.map(option => {
+                  const active = lifestyle === option;
+                  return (
+                    <Pressable
+                      key={option}
+                      onPress={() => setLifestyle(option)}
+                      style={[
+                        styles.optionChip,
+                        {
+                          borderColor: active ? palette.primary : palette.outlineVariant,
+                          backgroundColor: active ? `${palette.primary}16` : 'transparent',
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.optionText, { color: active ? palette.primary : palette.text }]}>{option}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
+            <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
+              <Text style={[styles.fieldLabel, { color: palette.outline }]}>目标</Text>
+              <View style={styles.optionRow}>
+                {GOAL_OPTIONS.map(option => {
+                  const active = goal === option;
+                  return (
+                    <Pressable
+                      key={option}
+                      onPress={() => setGoal(option)}
+                      style={[
+                        styles.optionChip,
+                        {
+                          borderColor: active ? palette.primary : palette.outlineVariant,
+                          backgroundColor: active ? `${palette.primary}16` : 'transparent',
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.optionText, { color: active ? palette.primary : palette.text }]}>{option}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
           </View>
 
           <View style={styles.group}>
@@ -198,8 +303,7 @@ export default function EditProfileScreen() {
                 <View style={styles.metricRow}>
                   <TextInput
                     value={height}
-                    onChangeText={setHeight}
-                    keyboardType="number-pad"
+                    onChangeText={(value) => handleNumericInput(value, setHeight)}
                     style={[styles.metricInput, { color: palette.text, borderBottomColor: palette.outlineVariant }]}
                   />
                   <Text style={[styles.metricUnit, { color: palette.outline }]}>cm</Text>
@@ -211,8 +315,7 @@ export default function EditProfileScreen() {
                 <View style={styles.metricRow}>
                   <TextInput
                     value={weight}
-                    onChangeText={setWeight}
-                    keyboardType="number-pad"
+                    onChangeText={(value) => handleNumericInput(value, setWeight)}
                     style={[styles.metricInput, { color: palette.text, borderBottomColor: palette.outlineVariant }]}
                   />
                   <Text style={[styles.metricUnit, { color: palette.outline }]}>kg</Text>
@@ -224,8 +327,7 @@ export default function EditProfileScreen() {
                 <View style={styles.metricRow}>
                   <TextInput
                     value={age}
-                    onChangeText={setAge}
-                    keyboardType="number-pad"
+                    onChangeText={(value) => handleNumericInput(value, setAge)}
                     style={[styles.metricInput, { color: palette.text, borderBottomColor: palette.outlineVariant }]}
                   />
                   <Text style={[styles.metricUnit, { color: palette.outline }]}>岁</Text>
@@ -327,6 +429,17 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   fieldInput: { borderBottomWidth: 1, paddingBottom: 8, fontSize: 24, fontWeight: '700' },
+  optionRow: { flexDirection: 'row', gap: 10 },
+  optionWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  optionChip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    minHeight: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  optionText: { fontSize: 14, fontWeight: '700' },
   metricGrid: { gap: 12 },
   metricCard: { borderRadius: 16, padding: 18, borderWidth: 1 },
   metricRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 6 },

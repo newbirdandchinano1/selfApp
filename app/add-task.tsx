@@ -5,6 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -17,7 +18,20 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type Subtask = { id: string; title: string; done: boolean };
+type Subtask = {
+  id: string;
+  title: string;
+  done: boolean;
+  priority?: string;
+  priorityLabel?: string;
+  deadline?: string;
+  deadlineText?: string;
+  reminder?: string;
+  reminderText?: string;
+  repeat?: string;
+  repeatText?: string;
+  note?: string;
+};
 type PriorityKey = 'urgent-important' | 'urgent-not-important' | 'not-urgent-important' | 'not-urgent-not-important';
 type MainTask = { id: string; title: string; due: string };
 type SchedulePickerResult = {
@@ -34,6 +48,15 @@ type SchedulePickerResult = {
   startTime: string;
   endTime: string;
 };
+declare global {
+  // eslint-disable-next-line no-var
+  var __addTaskResult:
+    | {
+        source: string;
+        task: Subtask;
+      }
+    | undefined;
+}
 const MAX_TASK_TITLE_LENGTH = 30;
 
 function formatDate(value: string): string {
@@ -139,6 +162,28 @@ export default function AddTaskScreen() {
   );
 
   const createTask = () => {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+      Alert.alert('无法创建任务', '请输入任务名称后再创建。');
+      return;
+    }
+    globalThis.__addTaskResult = {
+      source: scheduleSource,
+      task: {
+        id: `task-${Date.now()}`,
+        title: trimmedTitle,
+        done: false,
+        priority: currentPriority.label,
+        priorityLabel: currentPriority.label,
+        deadline: deadlineText,
+        deadlineText: deadlineText,
+        reminder: reminderText,
+        reminderText: reminderText,
+        repeat: repeatText,
+        repeatText: repeatText,
+        note: notes.trim(),
+      },
+    };
     router.back();
   };
 

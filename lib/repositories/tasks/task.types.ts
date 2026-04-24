@@ -42,6 +42,7 @@ export type UpdateTaskInput = Partial<Pick<TaskRow, 'project_id' | 'category_id'
 export type TaskCategoryRow = {
   id: string;
   name: string;
+  sort_order: number;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;

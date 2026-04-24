@@ -47,6 +47,7 @@ export async function initDatabase() {
     CREATE TABLE IF NOT EXISTS project_categories (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
@@ -58,6 +59,7 @@ export async function initDatabase() {
     CREATE TABLE IF NOT EXISTS task_categories (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
@@ -150,6 +152,9 @@ export async function initDatabase() {
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL DEFAULT '默认用户',
       avatar_uri TEXT,
+      gender TEXT NOT NULL DEFAULT '男',
+      lifestyle TEXT NOT NULL DEFAULT '长期静坐不运动',
+      goal TEXT NOT NULL DEFAULT '无',
       height REAL NOT NULL DEFAULT 0,
       weight REAL NOT NULL DEFAULT 0,
       age INTEGER NOT NULL DEFAULT 0,
@@ -177,7 +182,67 @@ export async function initDatabase() {
       version INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+  `);
 
+  await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
+  await db.runAsync(
+    `INSERT OR IGNORE INTO project_categories (
+      id, name, created_at, updated_at, deleted_at, sync_status, version, extra_data
+    ) VALUES (?, ?, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL)`,
+    [INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME]
+  );
+  await db.runAsync(
+    `UPDATE project_categories
+     SET name = ?, deleted_at = NULL, updated_at = datetime('now')
+     WHERE id = ?`,
+    [INBOX_PROJECT_CATEGORY_NAME, INBOX_PROJECT_CATEGORY_ID]
+  );
+  await ensureColumn(db, 'users', 'avatar_uri', 'TEXT');
+  await ensureColumn(db, 'users', 'gender', 'TEXT');
+  await ensureColumn(db, 'users', 'lifestyle', 'TEXT');
+  await ensureColumn(db, 'users', 'goal', 'TEXT');
+  // Some SQLite builds don't allow adding a NOT NULL column via ALTER TABLE reliably.
+  // Keep it nullable on migration and treat NULL as "unsorted" in queries.
+  await ensureColumn(db, 'project_categories', 'sort_order', 'INTEGER');
+  await ensureColumn(db, 'task_categories', 'sort_order', 'INTEGER');
+  await ensureColumn(db, 'projects', 'category_id', 'TEXT');
+  await ensureColumn(db, 'projects', 'note', 'TEXT');
+  await ensureColumn(db, 'projects', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'tasks', 'project_id', 'TEXT');
+  await ensureColumn(db, 'tasks', 'category_id', 'TEXT');
+  await ensureColumn(db, 'tasks', 'parent_task_id', 'TEXT');
+  await ensureColumn(db, 'tasks', 'note', 'TEXT');
+  await ensureColumn(db, 'tasks', 'extra_data', 'TEXT');
+
+  // Ensure legacy rows have a default category_id once column exists
+  await db.runAsync(
+    `UPDATE projects
+     SET category_id = ?, updated_at = datetime('now')
+     WHERE deleted_at IS NULL AND category_id IS NULL`,
+    [INBOX_PROJECT_CATEGORY_ID]
+  );
+
+  // backfill sort_order for existing rows (portable across SQLite builds)
+  await db.execAsync(
+    `
+    UPDATE project_categories
+    SET sort_order = CASE
+      WHEN id = '${INBOX_PROJECT_CATEGORY_ID}' THEN 0
+      ELSE COALESCE(sort_order, 1000)
+    END
+    WHERE deleted_at IS NULL;
+    `
+  );
+  await db.execAsync(
+    `
+    UPDATE task_categories
+    SET sort_order = COALESCE(sort_order, 1000)
+    WHERE deleted_at IS NULL;
+    `
+  );
+
+  // Create indexes after ensureColumn migrations (old DBs might miss columns)
+  await db.execAsync(`
     CREATE INDEX IF NOT EXISTS idx_project_categories_updated_at ON project_categories(updated_at);
     CREATE INDEX IF NOT EXISTS idx_task_categories_updated_at ON task_categories(updated_at);
     CREATE INDEX IF NOT EXISTS idx_projects_category_id ON projects(category_id);
@@ -197,37 +262,16 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_health_records_user_id ON health_records(user_id);
     CREATE INDEX IF NOT EXISTS idx_health_records_record_date ON health_records(record_date);
   `);
-
-  await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
-  await db.runAsync(
-    `INSERT OR IGNORE INTO project_categories (
-      id, name, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL)`,
-    [INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME]
-  );
-  await db.runAsync(
-    `UPDATE project_categories
-     SET name = ?, deleted_at = NULL, updated_at = datetime('now')
-     WHERE id = ?`,
-    [INBOX_PROJECT_CATEGORY_NAME, INBOX_PROJECT_CATEGORY_ID]
-  );
-  await db.runAsync(
-    `UPDATE projects
-     SET category_id = ?, updated_at = datetime('now')
-     WHERE deleted_at IS NULL AND category_id IS NULL`,
-    [INBOX_PROJECT_CATEGORY_ID]
-  );
-  await ensureColumn(db, 'users', 'avatar_uri', 'TEXT');
-  await ensureColumn(db, 'projects', 'category_id', 'TEXT');
-  await ensureColumn(db, 'projects', 'note', 'TEXT');
-  await ensureColumn(db, 'projects', 'extra_data', 'TEXT');
-  await ensureColumn(db, 'tasks', 'project_id', 'TEXT');
-  await ensureColumn(db, 'tasks', 'category_id', 'TEXT');
-  await ensureColumn(db, 'tasks', 'parent_task_id', 'TEXT');
-  await ensureColumn(db, 'tasks', 'note', 'TEXT');
-  await ensureColumn(db, 'tasks', 'extra_data', 'TEXT');
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
+    ['default']
+  );
+  await db.runAsync(
+    `UPDATE users
+     SET gender = COALESCE(NULLIF(gender, ''), '男'),
+         lifestyle = COALESCE(NULLIF(lifestyle, ''), '长期静坐不运动'),
+         goal = COALESCE(NULLIF(goal, ''), '无')
+     WHERE id = ?`,
     ['default']
   );
 
