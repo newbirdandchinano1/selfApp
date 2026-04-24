@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
+import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
 import {
   createProjectCategory,
   deleteProjectCategory,
@@ -10,14 +10,11 @@ import {
 } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import {
-  createTaskCategory,
-  deleteTaskCategory,
-  getTaskCategories,
+  getTasks,
   getTasksByProjectId,
-  updateTaskCategory,
   type TaskTreeNode,
 } from '@/lib/repositories/tasks/task';
-import type { TaskCategoryRow } from '@/lib/repositories/tasks/task.types';
+import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -113,6 +110,7 @@ type ProjectScheduleMeta = {
 type TaskMetaExtra = {
   reminder?: string;
   repeat?: string;
+  frogAssignedOn?: string;
 };
 
 function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
@@ -136,6 +134,13 @@ function parseTaskMeta(extraData: string | null): TaskMetaExtra {
   } catch {
     return {};
   }
+}
+
+function formatLocalYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 function formatTaskPriority(priority: number): string {
@@ -198,11 +203,11 @@ export default function TasksScreen() {
   const isDark = colorScheme === 'dark';
   const TASK_INDENT = 18;
 
-  const [taskTab, setTaskTab] = React.useState<'all' | 'inbox'>('all');
+  const [taskTab, setTaskTab] = React.useState<string>('all');
   const [projectTab, setProjectTab] = React.useState<string>('all');
   const [projects, setProjects] = React.useState<ProjectRow[]>([]);
   const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
-  const [taskCategories, setTaskCategories] = React.useState<TaskCategoryRow[]>([]);
+  const [tasks, setTasks] = React.useState<TaskRow[]>([]);
   const [projectTaskTreeMap, setProjectTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
   const [expandedProjectIds, setExpandedProjectIds] = React.useState<Record<string, boolean>>({});
   const [collapsedTaskIds, setCollapsedTaskIds] = React.useState<Record<string, boolean>>({});
@@ -210,7 +215,6 @@ export default function TasksScreen() {
   const [categoryEditorVisible, setCategoryEditorVisible] = React.useState(false);
   const [categoryEditorTitle, setCategoryEditorTitle] = React.useState('新建分类');
   const [categoryInputValue, setCategoryInputValue] = React.useState('');
-  const [activeCategoryScope, setActiveCategoryScope] = React.useState<'task' | 'project'>('task');
   const [activeCategoryLabel, setActiveCategoryLabel] = React.useState('全部');
   const [activeCategoryId, setActiveCategoryId] = React.useState<string | null>(null);
 
@@ -241,13 +245,13 @@ export default function TasksScreen() {
     }
   }, []);
 
-  const loadTaskCategories = React.useCallback(async () => {
+  const loadTasks = React.useCallback(async () => {
     try {
-      const rows = await getTaskCategories();
-      setTaskCategories(rows);
+      const rows = await getTasks();
+      setTasks(rows);
     } catch (err) {
-      console.warn('加载任务分类失败', err);
-      setTaskCategories([]);
+      console.warn('加载任务列表失败', err);
+      setTasks([]);
     }
   }, []);
 
@@ -336,6 +340,10 @@ export default function TasksScreen() {
   }, [loadProjects]);
 
   React.useEffect(() => {
+    loadTasks();
+  }, [loadTasks]);
+
+  React.useEffect(() => {
     loadProjectTasks(projects);
   }, [loadProjectTasks, projects]);
 
@@ -344,25 +352,80 @@ export default function TasksScreen() {
   }, [loadProjectCategories]);
 
   React.useEffect(() => {
-    loadTaskCategories();
-  }, [loadTaskCategories]);
-
-  React.useEffect(() => {
     if (!categoryModalVisible) return;
-    if (activeCategoryScope === 'task') {
-      loadTaskCategories();
-    } else {
-      loadProjectCategories();
-    }
-  }, [activeCategoryScope, categoryModalVisible, loadProjectCategories, loadTaskCategories]);
+    loadProjectCategories();
+  }, [categoryModalVisible, loadProjectCategories]);
 
   useFocusEffect(
     React.useCallback(() => {
       loadProjects();
       loadProjectCategories();
-      loadTaskCategories();
-    }, [loadProjectCategories, loadProjects, loadTaskCategories])
+      loadTasks();
+    }, [loadProjectCategories, loadProjects, loadTasks])
   );
+
+  const filteredTasks = React.useMemo(() => {
+    const topLevel = tasks.filter((t) => !t.parent_task_id);
+    if (taskTab === 'all') return topLevel;
+    if (taskTab === INBOX_PROJECT_CATEGORY_ID) {
+      return topLevel.filter((t) => !t.category_id || t.category_id === INBOX_PROJECT_CATEGORY_ID);
+    }
+    return topLevel.filter((t) => t.category_id === taskTab);
+  }, [taskTab, tasks]);
+
+  const todayFrogs = React.useMemo(() => {
+    const today = formatLocalYmd(new Date());
+    return tasks
+      .filter((t) => !t.parent_task_id)
+      .filter((t) => {
+        const meta = parseTaskMeta(t.extra_data);
+        return (meta.frogAssignedOn ?? '') === today;
+      })
+      .slice()
+      .sort((a, b) => {
+        if (a.priority !== b.priority) return b.priority - a.priority;
+        const dueA = a.due_date ? Date.parse(a.due_date) : Number.POSITIVE_INFINITY;
+        const dueB = b.due_date ? Date.parse(b.due_date) : Number.POSITIVE_INFINITY;
+        if (dueA !== dueB) return dueA - dueB;
+        const updA = a.updated_at ? Date.parse(a.updated_at) : 0;
+        const updB = b.updated_at ? Date.parse(b.updated_at) : 0;
+        return updB - updA;
+      });
+  }, [tasks]);
+
+  const primaryFrog = todayFrogs[0] ?? null;
+  const extraFrogs = todayFrogs.length > 1 ? todayFrogs.slice(1, 4) : [];
+
+  const matrixGroups = React.useMemo(() => {
+    const q11: TaskRow[] = []; // 紧急且重要
+    const q10: TaskRow[] = []; // 不紧急但重要
+    const q01: TaskRow[] = []; // 紧急但不重要
+    const q00: TaskRow[] = []; // 不紧急不重要
+
+    filteredTasks.forEach((t) => {
+      if (t.priority >= 4) q11.push(t);
+      else if (t.priority === 2) q10.push(t);
+      else if (t.priority === 3) q01.push(t);
+      else q00.push(t);
+    });
+
+    const sort = (arr: TaskRow[]) =>
+      arr
+        .slice()
+        .sort((a, b) => {
+          const doneA = a.status === 'done' || a.status === 'cancelled';
+          const doneB = b.status === 'done' || b.status === 'cancelled';
+          if (doneA !== doneB) return doneA ? 1 : -1;
+          const dueA = a.due_date ? Date.parse(a.due_date) : Number.POSITIVE_INFINITY;
+          const dueB = b.due_date ? Date.parse(b.due_date) : Number.POSITIVE_INFINITY;
+          if (dueA !== dueB) return dueA - dueB;
+          const updA = a.updated_at ? Date.parse(a.updated_at) : 0;
+          const updB = b.updated_at ? Date.parse(b.updated_at) : 0;
+          return updB - updA;
+        });
+
+    return { q11: sort(q11), q10: sort(q10), q01: sort(q01), q00: sort(q00) };
+  }, [filteredTasks]);
 
   const projectCategoryMap = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -375,13 +438,24 @@ export default function TasksScreen() {
   const projectTabs = React.useMemo(() => {
     const base: Array<{ key: string; label: string }> = [
       { key: 'all', label: '全部' },
-      { key: INBOX_PROJECT_CATEGORY_ID, label: '收集箱' },
+      { key: INBOX_PROJECT_CATEGORY_ID, label: INBOX_PROJECT_CATEGORY_NAME },
     ];
 
     const extra = projectCategories
       .filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID)
       .map((c) => ({ key: c.id, label: c.name }));
 
+    return [...base, ...extra];
+  }, [projectCategories]);
+
+  const taskTabs = React.useMemo(() => {
+    const base: Array<{ key: string; label: string }> = [
+      { key: 'all', label: '全部' },
+      { key: INBOX_PROJECT_CATEGORY_ID, label: INBOX_PROJECT_CATEGORY_NAME },
+    ];
+    const extra = projectCategories
+      .filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID)
+      .map((c) => ({ key: c.id, label: c.name }));
     return [...base, ...extra];
   }, [projectCategories]);
 
@@ -393,8 +467,7 @@ export default function TasksScreen() {
     router.push({ pathname: '/edit-project', params: { id } });
   };
 
-  const openCategoryMenu = (scope: 'task' | 'project', label: string, categoryId: string | null = null) => {
-    setActiveCategoryScope(scope);
+  const openCategoryMenu = (_scope: 'task' | 'project', label: string, categoryId: string | null = null) => {
     setActiveCategoryLabel(label);
     setActiveCategoryId(categoryId);
     setCategoryInputValue(label);
@@ -432,6 +505,7 @@ export default function TasksScreen() {
 
   const bg = isDark ? theme.background : '#faf8ff';
   const card = isDark ? 'rgba(30, 41, 59, 0.45)' : '#ffffff';
+  const modalCardBg = isDark ? 'rgba(15, 23, 42, 0.94)' : card;
   const soft = isDark ? 'rgba(51,65,85,0.55)' : '#f2f3ff';
   const outline = isDark ? 'rgba(148,163,184,0.6)' : '#727785';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.20)' : 'rgba(194,198,214,0.35)';
@@ -445,7 +519,7 @@ export default function TasksScreen() {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   }, []);
 
-  const scopedCategories = activeCategoryScope === 'task' ? taskCategories : projectCategories;
+  const scopedCategories = projectCategories;
 
   const saveCategory = React.useCallback(async () => {
     const name = categoryInputValue.trim();
@@ -466,25 +540,15 @@ export default function TasksScreen() {
 
     try {
       if (categoryEditorTitle.includes('新建')) {
-        if (activeCategoryScope === 'task') {
-          await createTaskCategory({ id: buildCategoryId('task'), name });
-          await loadTaskCategories();
-        } else {
-          await createProjectCategory({ id: buildCategoryId('project'), name });
-          await loadProjectCategories();
-        }
+        await createProjectCategory({ id: buildCategoryId('project'), name });
+        await loadProjectCategories();
       } else {
         if (!activeCategoryId) {
           Alert.alert('无法修改分类', '未找到要修改的分类。');
           return;
         }
-        if (activeCategoryScope === 'task') {
-          await updateTaskCategory(activeCategoryId, { name });
-          await loadTaskCategories();
-        } else {
-          await updateProjectCategory(activeCategoryId, { name });
-          await loadProjectCategories();
-        }
+        await updateProjectCategory(activeCategoryId, { name });
+        await loadProjectCategories();
       }
       closeCategoryEditor();
     } catch (err) {
@@ -493,14 +557,12 @@ export default function TasksScreen() {
     }
   }, [
     activeCategoryId,
-    activeCategoryScope,
     buildCategoryId,
     categoryEditorTitle,
     categoryInputValue,
     closeCategoryEditor,
     loadProjectCategories,
     scopedCategories,
-    loadTaskCategories,
   ]);
 
   const removeCategory = React.useCallback(() => {
@@ -512,18 +574,16 @@ export default function TasksScreen() {
       Alert.alert('提示', '“全部”不是可删除分类。');
       return;
     }
-    if (activeCategoryScope === 'project' && activeCategoryId === INBOX_PROJECT_CATEGORY_ID) {
+    if (activeCategoryId === INBOX_PROJECT_CATEGORY_ID) {
       Alert.alert('提示', '“收集箱”是内置分类，不能删除。');
       return;
     }
-    if (activeCategoryScope === 'project') {
-      const hasProjectsInCategory = projects.some(
-        (project) => (project.category_id ?? INBOX_PROJECT_CATEGORY_ID) === activeCategoryId
-      );
-      if (hasProjectsInCategory) {
-        Alert.alert('无法删除', '该分类下仍有关联项目，请先迁移或删除这些项目后再试。');
-        return;
-      }
+    const hasProjectsInCategory = projects.some(
+      (project) => (project.category_id ?? INBOX_PROJECT_CATEGORY_ID) === activeCategoryId
+    );
+    if (hasProjectsInCategory) {
+      Alert.alert('无法删除', '该分类下仍有关联项目，请先迁移或删除这些项目后再试。');
+      return;
     }
 
     const targetName = activeCategoryLabel || scopedCategories.find((c) => c.id === activeCategoryId)?.name || '该分类';
@@ -534,15 +594,10 @@ export default function TasksScreen() {
         style: 'destructive',
         onPress: async () => {
           try {
-            if (activeCategoryScope === 'task') {
-              await deleteTaskCategory(activeCategoryId);
-              await loadTaskCategories();
-              if (taskTab === activeCategoryId) setTaskTab('all');
-            } else {
-              await deleteProjectCategory(activeCategoryId);
-              await loadProjectCategories();
-              if (projectTab === activeCategoryId) setProjectTab('all');
-            }
+            await deleteProjectCategory(activeCategoryId);
+            await loadProjectCategories();
+            if (taskTab === activeCategoryId) setTaskTab('all');
+            if (projectTab === activeCategoryId) setProjectTab('all');
             closeCategoryMenu();
           } catch (err) {
             console.warn('删除分类失败', err);
@@ -554,10 +609,8 @@ export default function TasksScreen() {
   }, [
     activeCategoryId,
     activeCategoryLabel,
-    activeCategoryScope,
     closeCategoryMenu,
     loadProjectCategories,
-    loadTaskCategories,
     projects,
     projectTab,
     scopedCategories,
@@ -653,37 +706,91 @@ export default function TasksScreen() {
                   ],
                 }}
               >
-                <View style={[styles.frogCard, { backgroundColor: card, borderLeftColor: secondary }]}> 
-                  <View style={styles.frogIconBg}>
-                    <MaterialIcons name="eco" size={52} color={`${secondary}22`} />
-                  </View>
-                  <View style={styles.frogTopRow}>
-                    <View style={[styles.badge, { backgroundColor: `${secondary}16` }]}>
-                      <Text style={[styles.badgeText, { color: secondary }]}>核心挑战</Text>
+                {primaryFrog ? (
+                  <Pressable
+                    onPress={() => openTask(primaryFrog.id)}
+                    style={({ pressed }) => [
+                      styles.frogCard,
+                      { backgroundColor: card, borderLeftColor: secondary, opacity: pressed ? 0.9 : 1 },
+                    ]}>
+                    <View style={styles.frogIconBg}>
+                      <MaterialIcons name="eco" size={52} color={`${secondary}22`} />
                     </View>
-                    <MaterialIcons name="radio-button-unchecked" size={20} color={secondary} />
+                    <View style={styles.frogTopRow}>
+                      <View style={[styles.badge, { backgroundColor: `${secondary}16` }]}>
+                        <Text style={[styles.badgeText, { color: secondary }]}>今日已指派</Text>
+                      </View>
+                      <MaterialIcons
+                        name={primaryFrog.status === 'done' || primaryFrog.status === 'cancelled' ? 'check-circle' : 'radio-button-unchecked'}
+                        size={20}
+                        color={secondary}
+                      />
+                    </View>
+                    <Text style={[styles.frogTitle, { color: theme.text }]} numberOfLines={2}>
+                      {primaryFrog.title}
+                    </Text>
+                    <Text style={[styles.frogDesc, { color: theme.textSecondary }]} numberOfLines={3}>
+                      {(primaryFrog.note ?? '').trim() || '点击查看详情或继续执行。'}
+                    </Text>
+                    <View style={styles.progressMeta}>
+                      <Text style={[styles.progressLabel, { color: outline }]}>状态</Text>
+                      <Text style={[styles.progressLabel, { color: outline }]}>
+                        {primaryFrog.status === 'done' || primaryFrog.status === 'cancelled' ? '已完成' : '进行中'}
+                      </Text>
+                    </View>
+                    <View style={[styles.progressTrack, { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : '#e2e7ff' }]}>
+                      <View
+                        style={[
+                          styles.progressFill,
+                          { backgroundColor: secondary, width: primaryFrog.status === 'done' || primaryFrog.status === 'cancelled' ? '100%' : '22%' },
+                        ]}
+                      />
+                    </View>
+                  </Pressable>
+                ) : (
+                  <View style={[styles.frogCard, { backgroundColor: card, borderLeftColor: secondary, opacity: 0.9 }]}>
+                    <View style={styles.frogIconBg}>
+                      <MaterialIcons name="eco" size={52} color={`${secondary}22`} />
+                    </View>
+                    <View style={styles.frogTopRow}>
+                      <View style={[styles.badge, { backgroundColor: `${secondary}16` }]}>
+                        <Text style={[styles.badgeText, { color: secondary }]}>今日未指派</Text>
+                      </View>
+                      <MaterialIcons name="radio-button-unchecked" size={20} color={secondary} />
+                    </View>
+                    <Text style={[styles.frogTitle, { color: theme.text }]}>还没有今日青蛙</Text>
+                    <Text style={[styles.frogDesc, { color: theme.textSecondary }]}>点击右上角“添加青蛙”，从今日可选任务中指派。</Text>
                   </View>
-                  <Text style={[styles.frogTitle, { color: theme.text }]}>完成季度战略分析报告</Text>
-                  <Text style={[styles.frogDesc, { color: theme.textSecondary }]}>这是今天最难、最重要的任务。完成后将释放大部分心理压力。</Text>
-                  <View style={styles.progressMeta}>
-                    <Text style={[styles.progressLabel, { color: outline }]}>进度</Text>
-                    <Text style={[styles.progressLabel, { color: outline }]}>65%</Text>
-                  </View>
-                  <View style={[styles.progressTrack, { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : '#e2e7ff' }]}>
-                    <View style={[styles.progressFill, { backgroundColor: secondary, width: '65%' }]} />
-                  </View>
-                </View>
+                )}
 
-                <View style={[styles.frogDoneCard, { backgroundColor: soft, borderLeftColor: `${secondary}66` }]}>
-                  <View style={styles.frogDoneRow}>
-                    <Text style={[styles.frogDoneTitle, { color: theme.text }]}>核心客户年度复盘会议</Text>
-                    <MaterialIcons name="check-circle" size={20} color={`${secondary}99`} />
-                  </View>
-                  <View style={styles.metaRow}>
-                    <MaterialIcons name="schedule" size={14} color={outline} />
-                    <Text style={[styles.metaText, { color: outline }]}>14:30 - 16:00</Text>
-                  </View>
-                </View>
+                {extraFrogs.map((t) => {
+                  const isDone = t.status === 'done' || t.status === 'cancelled';
+                  const due = t.due_date?.slice(11, 16) || t.due_date?.slice(0, 10) || '';
+                  return (
+                    <Pressable
+                      key={t.id}
+                      onPress={() => openTask(t.id)}
+                      style={({ pressed }) => [
+                        styles.frogDoneCard,
+                        { backgroundColor: soft, borderLeftColor: `${secondary}66`, opacity: pressed ? 0.9 : 1 },
+                      ]}>
+                      <View style={styles.frogDoneRow}>
+                        <Text style={[styles.frogDoneTitle, { color: theme.text }]} numberOfLines={1}>
+                          {t.title}
+                        </Text>
+                        <MaterialIcons name={isDone ? 'check-circle' : 'radio-button-unchecked'} size={20} color={`${secondary}99`} />
+                      </View>
+                      {!!due && (
+                        <View style={styles.metaRow}>
+                          <MaterialIcons name="schedule" size={14} color={outline} />
+                          <Text style={[styles.metaText, { color: outline }]} numberOfLines={1}>
+                            {due}
+                          </Text>
+                        </View>
+                      )}
+                    </Pressable>
+                  );
+                })}
               </Animated.View>
             </View>
           </View>
@@ -691,10 +798,10 @@ export default function TasksScreen() {
           <View style={[styles.section, styles.stackedSection]}>
             <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 8 }]}>任务列表</Text>
             <SegmentTabs
-              tabs={[{ key: 'all', label: '全部' }, { key: 'inbox', label: '收集箱' }]}
+              tabs={taskTabs}
               active={taskTab}
-              onChange={(k) => setTaskTab(k as 'all' | 'inbox')}
-              onLongPressTab={(key, label) => openCategoryMenu('task', label, key)}
+              onChange={setTaskTab}
+              onLongPressTab={(key, label) => openCategoryMenu('project', label, key)}
               color={primary}
               muted={outline}
             />
@@ -708,48 +815,258 @@ export default function TasksScreen() {
                       <Text style={[styles.quadTitle, { color: error }]}>紧急且重要 (立即执行)</Text>
                     </View>
                   </View>
-                  <Pressable style={styles.taskRow} onPress={() => openTask('paybug')}>
-                    <MaterialIcons name="radio-button-unchecked" size={20} color={error} />
-                    <View style={styles.taskBody}>
-                      <Text style={[styles.taskText, { color: theme.text }]}>修复生产环境支付漏洞</Text>
-                      <View style={[styles.deadlineBadge, { backgroundColor: `${error}14` }]}>
-                        <Text style={[styles.deadlineText, { color: error }]}>12:00 截止</Text>
-                      </View>
+                  {matrixGroups.q11.length === 0 ? (
+                    <Text style={[styles.quadEmpty, { color: outline }]}>暂无任务</Text>
+                  ) : (
+                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                      {matrixGroups.q11.map((t) => {
+                        const isDone = t.status === 'done' || t.status === 'cancelled';
+                        const meta = parseTaskMeta(t.extra_data);
+                        const due = t.due_date?.slice(0, 10) ?? '';
+                        const repeat = (meta.repeat ?? '').trim();
+                        const reminder = (meta.reminder ?? '').trim();
+                        return (
+                          <Pressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)}>
+                            <MaterialIcons
+                              name={isDone ? 'check-circle' : 'radio-button-unchecked'}
+                              size={20}
+                              color={error}
+                            />
+                            <View style={styles.taskBody}>
+                              <Text
+                                style={[
+                                  styles.taskText,
+                                  { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.55 : 1 },
+                                ]}
+                                numberOfLines={1}>
+                                {t.title}
+                              </Text>
+                              {!!due ? (
+                                <View style={[styles.deadlineBadge, { backgroundColor: `${error}14` }]}>
+                                  <Text style={[styles.deadlineText, { color: error }]}>截止 {due}</Text>
+                                </View>
+                              ) : null}
+                              {!!repeat || !!reminder ? (
+                                <View style={styles.metaRow}>
+                                  {!!repeat ? (
+                                    <>
+                                      <MaterialIcons name="refresh" size={12} color={outline} />
+                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                                        {repeat}
+                                      </Text>
+                                    </>
+                                  ) : null}
+                                  {!!reminder ? (
+                                    <>
+                                      <MaterialIcons name="notifications-active" size={12} color={outline} />
+                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                                        {reminder}
+                                      </Text>
+                                    </>
+                                  ) : null}
+                                </View>
+                              ) : null}
+                            </View>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  )}
+                </View>
+                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}>
+                    <View style={styles.quadTitleRow}>
+                      <View style={[styles.dot, { backgroundColor: primary }]} />
+                      <Text style={[styles.quadTitle, { color: primary }]}>不紧急但重要 (计划执行)</Text>
                     </View>
-                  </Pressable>
-                  <Pressable style={styles.taskRow} onPress={() => openTask('investor')}>
-                    <MaterialIcons name="radio-button-unchecked" size={20} color={error} />
-                    <View style={styles.taskBody}>
-                      <Text style={[styles.taskText, { color: theme.text }]}>回复主要投资人邮件</Text>
-                      <View style={styles.metaRow}>
-                        <MaterialIcons name="refresh" size={12} color={outline} />
-                        <Text style={[styles.metaHint, { color: outline }]}>每周重复</Text>
-                      </View>
+                  </View>
+                  {matrixGroups.q10.length === 0 ? (
+                    <Text style={[styles.quadEmpty, { color: outline }]}>暂无任务</Text>
+                  ) : (
+                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                      {matrixGroups.q10.map((t) => {
+                        const isDone = t.status === 'done' || t.status === 'cancelled';
+                        const meta = parseTaskMeta(t.extra_data);
+                        const due = t.due_date?.slice(0, 10) ?? '';
+                        const repeat = (meta.repeat ?? '').trim();
+                        const reminder = (meta.reminder ?? '').trim();
+                        return (
+                          <Pressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)}>
+                            <MaterialIcons
+                              name={isDone ? 'check-circle' : 'radio-button-unchecked'}
+                              size={20}
+                              color={primary}
+                            />
+                            <View style={styles.taskBody}>
+                              <Text
+                                style={[
+                                  styles.taskText,
+                                  { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.55 : 1 },
+                                ]}
+                                numberOfLines={1}>
+                                {t.title}
+                              </Text>
+                              {!!due ? (
+                                <View style={[styles.deadlineBadge, { backgroundColor: `${primary}14` }]}>
+                                  <Text style={[styles.deadlineText, { color: primary }]}>截止 {due}</Text>
+                                </View>
+                              ) : null}
+                              {!!repeat || !!reminder ? (
+                                <View style={styles.metaRow}>
+                                  {!!repeat ? (
+                                    <>
+                                      <MaterialIcons name="refresh" size={12} color={outline} />
+                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                                        {repeat}
+                                      </Text>
+                                    </>
+                                  ) : null}
+                                  {!!reminder ? (
+                                    <>
+                                      <MaterialIcons name="notifications-active" size={12} color={outline} />
+                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                                        {reminder}
+                                      </Text>
+                                    </>
+                                  ) : null}
+                                </View>
+                              ) : null}
+                            </View>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  )}
+                </View>
+                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}>
+                    <View style={styles.quadTitleRow}>
+                      <View style={[styles.dot, { backgroundColor: tertiary }]} />
+                      <Text style={[styles.quadTitle, { color: tertiary }]}>紧急但不重要 (委派他人)</Text>
                     </View>
-                  </Pressable>
+                  </View>
+                  {matrixGroups.q01.length === 0 ? (
+                    <Text style={[styles.quadEmpty, { color: outline }]}>暂无任务</Text>
+                  ) : (
+                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                      {matrixGroups.q01.map((t) => {
+                        const isDone = t.status === 'done' || t.status === 'cancelled';
+                        const meta = parseTaskMeta(t.extra_data);
+                        const due = t.due_date?.slice(0, 10) ?? '';
+                        const repeat = (meta.repeat ?? '').trim();
+                        const reminder = (meta.reminder ?? '').trim();
+                        return (
+                          <Pressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)}>
+                            <MaterialIcons
+                              name={isDone ? 'check-circle' : 'radio-button-unchecked'}
+                              size={20}
+                              color={tertiary}
+                            />
+                            <View style={styles.taskBody}>
+                              <Text
+                                style={[
+                                  styles.taskText,
+                                  { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.55 : 1 },
+                                ]}
+                                numberOfLines={1}>
+                                {t.title}
+                              </Text>
+                              {!!due ? (
+                                <View style={[styles.deadlineBadge, { backgroundColor: `${tertiary}14` }]}>
+                                  <Text style={[styles.deadlineText, { color: tertiary }]}>截止 {due}</Text>
+                                </View>
+                              ) : null}
+                              {!!repeat || !!reminder ? (
+                                <View style={styles.metaRow}>
+                                  {!!repeat ? (
+                                    <>
+                                      <MaterialIcons name="refresh" size={12} color={outline} />
+                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                                        {repeat}
+                                      </Text>
+                                    </>
+                                  ) : null}
+                                  {!!reminder ? (
+                                    <>
+                                      <MaterialIcons name="notifications-active" size={12} color={outline} />
+                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                                        {reminder}
+                                      </Text>
+                                    </>
+                                  ) : null}
+                                </View>
+                              ) : null}
+                            </View>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  )}
                 </View>
                 <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-                  <View style={styles.quadHead}><View style={styles.quadTitleRow}><View style={[styles.dot, { backgroundColor: primary }]} /><Text style={[styles.quadTitle, { color: primary }]}>不紧急但重要 (计划执行)</Text></View></View>
-                  <Pressable style={styles.taskRow} onPress={() => openTask('fitness')}>
-                    <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
-                    <View style={styles.taskBody}><Text style={[styles.taskText, { color: theme.text }]}>制定下半年度健身计划</Text><View style={styles.metaRow}><MaterialIcons name="account-tree" size={12} color={outline} /><Text style={[styles.metaHint, { color: outline }]}>4 个子任务</Text></View></View>
-                  </Pressable>
-                  <Pressable style={styles.taskRow} onPress={() => openTask('rust')}>
-                    <MaterialIcons name="radio-button-unchecked" size={20} color={primary} />
-                    <View style={styles.taskBody}><Text style={[styles.taskText, { color: theme.text }]}>深入学习 Rust 编程</Text><View style={styles.metaRow}><MaterialIcons name="refresh" size={12} color={outline} /><Text style={[styles.metaHint, { color: outline }]}>每日重复</Text></View></View>
-                  </Pressable>
-                </View>
-                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-                  <View style={styles.quadHead}><View style={styles.quadTitleRow}><View style={[styles.dot, { backgroundColor: tertiary }]} /><Text style={[styles.quadTitle, { color: tertiary }]}>紧急但不重要 (委派他人)</Text></View></View>
-                  <Pressable style={styles.taskRow} onPress={() => openTask('dinner')}>
-                    <MaterialIcons name="radio-button-unchecked" size={20} color={tertiary} />
-                    <View style={styles.taskBody}><Text style={[styles.taskText, { color: theme.text }]}>预订团队聚餐场地</Text><View style={[styles.deadlineBadge, { backgroundColor: `${tertiary}14` }]}><Text style={[styles.deadlineText, { color: tertiary }]}>18:00 前确认</Text></View></View>
-                  </Pressable>
-                  <View style={[styles.taskDoneRow, { opacity: 0.45 }]}><MaterialIcons name="check-circle" size={20} color={tertiary} /><Text style={[styles.taskText, { color: theme.text, textDecorationLine: 'line-through' }]}>整理上周差旅票据</Text></View>
-                </View>
-                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-                  <View style={styles.quadHead}><View style={styles.quadTitleRow}><View style={[styles.dot, { backgroundColor: outline }]} /><Text style={[styles.quadTitle, { color: outline }]}>不紧急不重要 (尽量消除)</Text></View></View>
-                  <Pressable style={styles.taskDoneRow} onPress={() => openTask('social')}><MaterialIcons name="radio-button-unchecked" size={20} color={outline} /><Text style={[styles.taskText, { color: theme.text }]}>浏览社交媒体非必要资讯</Text></Pressable>
+                  <View style={styles.quadHead}>
+                    <View style={styles.quadTitleRow}>
+                      <View style={[styles.dot, { backgroundColor: outline }]} />
+                      <Text style={[styles.quadTitle, { color: outline }]}>不紧急不重要 (尽量消除)</Text>
+                    </View>
+                  </View>
+                  {matrixGroups.q00.length === 0 ? (
+                    <Text style={[styles.quadEmpty, { color: outline }]}>暂无任务</Text>
+                  ) : (
+                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                      {matrixGroups.q00.map((t) => {
+                        const isDone = t.status === 'done' || t.status === 'cancelled';
+                        const meta = parseTaskMeta(t.extra_data);
+                        const due = t.due_date?.slice(0, 10) ?? '';
+                        const repeat = (meta.repeat ?? '').trim();
+                        const reminder = (meta.reminder ?? '').trim();
+                        return (
+                          <Pressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)}>
+                            <MaterialIcons
+                              name={isDone ? 'check-circle' : 'radio-button-unchecked'}
+                              size={20}
+                              color={outline}
+                            />
+                            <View style={styles.taskBody}>
+                              <Text
+                                style={[
+                                  styles.taskText,
+                                  { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.55 : 1 },
+                                ]}
+                                numberOfLines={1}>
+                                {t.title}
+                              </Text>
+                              {!!due ? (
+                                <View style={[styles.deadlineBadge, { backgroundColor: `${outline}12` }]}>
+                                  <Text style={[styles.deadlineText, { color: outline }]}>截止 {due}</Text>
+                                </View>
+                              ) : null}
+                              {!!repeat || !!reminder ? (
+                                <View style={styles.metaRow}>
+                                  {!!repeat ? (
+                                    <>
+                                      <MaterialIcons name="refresh" size={12} color={outline} />
+                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                                        {repeat}
+                                      </Text>
+                                    </>
+                                  ) : null}
+                                  {!!reminder ? (
+                                    <>
+                                      <MaterialIcons name="notifications-active" size={12} color={outline} />
+                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                                        {reminder}
+                                      </Text>
+                                    </>
+                                  ) : null}
+                                </View>
+                              ) : null}
+                            </View>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  )}
                 </View>
               </View>
             </Animated.View>
@@ -826,16 +1143,16 @@ export default function TasksScreen() {
                                 paddingVertical: 10,
                                 marginTop: 6,
                                 borderRadius: 10,
-                                backgroundColor: '#fff',
+                                backgroundColor: isDark ? 'rgba(15, 23, 42, 0.72)' : '#fff',
                                 borderBottomWidth: StyleSheet.hairlineWidth,
-                                borderBottomColor: 'rgba(203,213,225,0.9)',
+                                borderBottomColor: isDark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(203,213,225,0.9)',
                                 opacity: pressed ? 0.85 : 1,
                               },
                             ]}>
                             <View style={styles.treeColumns}>
                               {Array.from({ length: level }).map((_, idx) => (
                                 <View key={`${node.id}_col_${idx}`} style={[styles.treeColumn, { width: TASK_INDENT }]}>
-                                  <View style={styles.treeLine} />
+                                  {/* keep column width for indentation; no connector line */}
                                 </View>
                               ))}
                             </View>
@@ -849,7 +1166,7 @@ export default function TasksScreen() {
                                     styles.projectTaskText,
                                     level === 1 && isDone
                                       ? styles.taskTitleDoneMain
-                                      : styles.taskTitleNormal,
+                                      : { color: theme.text },
                                   ]}
                                   numberOfLines={1}>
                                   {node.title}
@@ -1019,13 +1336,13 @@ export default function TasksScreen() {
         <View style={styles.modalRoot}>
           <Pressable style={styles.modalBackdrop} onPress={closeCategoryMenu} />
           <View pointerEvents="box-none" style={styles.modalCenter}>
-            <View style={[styles.modalCard, { backgroundColor: card }]}>
+            <View style={[styles.modalCard, { backgroundColor: modalCardBg }]}>
               <View style={styles.modalHeader}>
                 <View style={[styles.modalTitleWrap, { backgroundColor: `${primary}12` }]}>
-                  <MaterialIcons name={activeCategoryScope === 'task' ? 'list-alt' : 'folder-open'} size={18} color={primary} />
+                  <MaterialIcons name="folder-open" size={18} color={primary} />
                   <View>
                     <Text style={[styles.modalTitle, { color: theme.text }]}>{activeCategoryLabel}</Text>
-                    <Text style={[styles.modalSubtitle, { color: outline }]}>编辑{activeCategoryScope === 'task' ? '任务' : '项目'}分类</Text>
+                    <Text style={[styles.modalSubtitle, { color: outline }]}>编辑分类</Text>
                   </View>
                 </View>
                 <Pressable onPress={closeCategoryMenu} hitSlop={10}>
@@ -1038,7 +1355,7 @@ export default function TasksScreen() {
                   { icon: 'add', label: '新建分类', color: primary, onPress: () => openCategoryEditor('新建分类') },
                   { icon: 'sort', label: '排序分类', color: secondary, onPress: () => {
                     closeCategoryMenu();
-                    router.push({ pathname: '/category-sort', params: { scope: activeCategoryScope } });
+                    router.push({ pathname: '/category-sort', params: { scope: 'project' } });
                   } },
                   { icon: 'edit', label: '修改分类', color: tertiary, onPress: () => {
                     if (!activeCategoryId) {
@@ -1049,7 +1366,7 @@ export default function TasksScreen() {
                       Alert.alert('提示', '“全部”不是可编辑分类。');
                       return;
                     }
-                    if (activeCategoryScope === 'project' && activeCategoryId === INBOX_PROJECT_CATEGORY_ID) {
+                    if (activeCategoryId === INBOX_PROJECT_CATEGORY_ID) {
                       Alert.alert('提示', '“收集箱”是内置分类，不能改名。');
                       return;
                     }
@@ -1077,13 +1394,13 @@ export default function TasksScreen() {
         <View style={styles.modalRoot}>
           <Pressable style={styles.modalBackdrop} onPress={closeCategoryEditor} />
           <View pointerEvents="box-none" style={styles.modalCenter}>
-            <View style={[styles.editorCard, { backgroundColor: card }]}>
+            <View style={[styles.editorCard, { backgroundColor: modalCardBg }]}>
               <Text style={[styles.editorTitle, { color: theme.text }]}>{categoryEditorTitle}</Text>
               <Text style={[styles.editorHint, { color: outline }]}>请输入分类名称后确认</Text>
               <View style={[styles.editorInputWrap, { borderColor: outlineVariant, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8f9ff' }]}>
                 <TextInput
                   style={[styles.editorInput, { color: theme.text }]}
-                  placeholder={activeCategoryScope === 'task' ? '例如：工作任务' : '例如：产品项目'}
+                  placeholder="例如：工作任务"
                   placeholderTextColor={outline}
                   value={categoryInputValue}
                   onChangeText={setCategoryInputValue}
@@ -1229,6 +1546,8 @@ const styles = StyleSheet.create({
   quadTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   quadTitle: { fontSize: 10, fontWeight: '900', letterSpacing: 1.2, textTransform: 'uppercase', flexShrink: 1 },
   dot: { width: 8, height: 8, borderRadius: 4 },
+  quadList: { maxHeight: 190 },
+  quadEmpty: { fontSize: 12, fontWeight: '700', opacity: 0.7 },
 
   taskRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   taskDoneRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -1328,7 +1647,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   taskTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  taskTitleNormal: { color: '#111827' },
   taskTitleDoneMain: { color: '#6b7280', textDecorationLine: 'line-through' },
   taskDoneTag: { color: '#6b7280', fontSize: 12, fontWeight: '700' },
   projectTaskMain: { flex: 1, gap: 4, paddingTop: 1 },

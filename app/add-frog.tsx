@@ -1,9 +1,12 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getTasks, updateTask } from '@/lib/repositories/tasks/task';
+import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Item = {
@@ -13,43 +16,105 @@ type Item = {
   tone: 'error' | 'primary' | 'tertiary' | 'outline';
 };
 
-const DATA: { key: string; title: string; badge: string; tone: Item['tone']; items: Item[]; dim?: boolean }[] = [
-  {
-    key: 'q1',
-    title: '紧急且重要',
-    badge: '高风险',
-    tone: 'error',
-    items: [
-      { id: 'q1-1', title: '季度财务报告提交', subtitle: '今日下午 5:00 截止', tone: 'error' },
-      { id: 'q1-2', title: '客户紧急会议 - 服务器宕机', subtitle: '高优先级处理', tone: 'error' },
-    ],
-  },
-  {
-    key: 'q2',
-    title: '重要但不紧急',
-    badge: '深度工作',
-    tone: 'primary',
-    items: [
-      { id: 'q2-1', title: '起草 2024 产品愿景', subtitle: '战略对齐工作', tone: 'primary' },
-      { id: 'q2-2', title: '设计系统审计与更新', subtitle: '可扩展性维护', tone: 'primary' },
-    ],
-  },
-  {
-    key: 'q3',
-    title: '紧急但不重要',
-    badge: '委派',
-    tone: 'tertiary',
-    items: [{ id: 'q3-1', title: '回复非紧急 Slack 消息', subtitle: '降噪优先', tone: 'tertiary' }],
-  },
-  {
-    key: 'q4',
-    title: '不紧急也不重要',
-    badge: '消除',
-    tone: 'outline',
-    dim: true,
-    items: [{ id: 'q4-1', title: '整理桌面下载文件夹', subtitle: '琐碎整理', tone: 'outline' }],
-  },
-];
+type Section = { key: string; title: string; badge: string; tone: Item['tone']; items: Item[]; dim?: boolean };
+
+type FrogTaskMeta = {
+  frogAssignedOn?: string;
+};
+
+function parseTaskExtraData(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function formatLocalYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function isValidDate(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && !Number.isNaN(Date.parse(value));
+}
+
+function isSameLocalDay(a: Date, b: Date) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function formatDueSubtitle(dueDate: string) {
+  const d = new Date(dueDate);
+  if (Number.isNaN(d.getTime())) return '时间格式异常';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `今日 ${hh}:${mm} 已过期`;
+}
+
+function groupTasksToSections(rows: TaskRow[], now: Date): Section[] {
+  const today = formatLocalYmd(now);
+  const eligible = rows
+    .filter((t) => !t.parent_task_id)
+    .filter((t) => t.status !== 'done' && t.status !== 'cancelled')
+    .filter((t) => {
+      const extra = parseTaskExtraData(t.extra_data);
+      const assignedOn = typeof extra.frogAssignedOn === 'string' ? extra.frogAssignedOn : '';
+      return assignedOn !== today;
+    })
+    .filter((t) => {
+      // 允许：没设置时间（也可作为今日青蛙候选）
+      if (!t.due_date || !String(t.due_date).trim()) return true;
+
+      // 或者：今日且已过期
+      if (!isValidDate(t.due_date)) return true;
+      const due = new Date(t.due_date);
+      if (Number.isNaN(due.getTime())) return true;
+      return isSameLocalDay(due, now) && due.getTime() < now.getTime();
+    });
+
+  const q1: Item[] = [];
+  const q2: Item[] = [];
+  const q3: Item[] = [];
+  const q4: Item[] = [];
+
+  eligible.forEach((t) => {
+    const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
+    const item: Item = {
+      id: t.id,
+      title: t.title,
+      subtitle: t.due_date && isValidDate(t.due_date) ? formatDueSubtitle(t.due_date) : '未设置时间',
+      tone,
+    };
+
+    if (t.priority >= 4) q1.push(item);
+    else if (t.priority === 2) q2.push(item);
+    else if (t.priority === 3) q3.push(item);
+    else q4.push(item);
+  });
+
+  const sortByPriorityThenDue = (a: Item, b: Item) => {
+    // keep stable-ish: due time ascending by parsing subtitle not reliable, so use id fallback
+    if (a.tone !== b.tone) return 0;
+    return a.id.localeCompare(b.id);
+  };
+
+  q1.sort(sortByPriorityThenDue);
+  q2.sort(sortByPriorityThenDue);
+  q3.sort(sortByPriorityThenDue);
+  q4.sort(sortByPriorityThenDue);
+
+  return [
+    { key: 'q1', title: '紧急且重要', badge: '高风险', tone: 'error', items: q1 },
+    { key: 'q2', title: '重要但不紧急', badge: '深度工作', tone: 'primary', items: q2 },
+    { key: 'q3', title: '紧急但不重要', badge: '委派', tone: 'tertiary', items: q3 },
+    { key: 'q4', title: '不紧急也不重要', badge: '消除', tone: 'outline', dim: true, items: q4 },
+  ];
+}
 
 export default function AddFrogScreen() {
   const router = useRouter();
@@ -58,10 +123,42 @@ export default function AddFrogScreen() {
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
 
-  const [selected, setSelected] = React.useState<Record<string, boolean>>({
-    'q1-1': true,
-    'q2-2': true,
-  });
+  const [sections, setSections] = React.useState<Section[]>(() => groupTasksToSections([], new Date()));
+  const [selected, setSelected] = React.useState<Record<string, boolean>>({});
+  const [loading, setLoading] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
+  const [taskMap, setTaskMap] = React.useState<Record<string, TaskRow>>({});
+
+  const loadEligibleTasks = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const rows = await getTasks();
+      const now = new Date();
+      setTaskMap(Object.fromEntries(rows.map((r) => [r.id, r])));
+      setSections(groupTasksToSections(rows, now));
+      setSelected((prev) => {
+        const allowed = new Set(rows.map((r) => r.id));
+        const next: Record<string, boolean> = {};
+        Object.keys(prev).forEach((k) => {
+          if (allowed.has(k) && prev[k]) next[k] = true;
+        });
+        return next;
+      });
+    } catch (e) {
+      console.warn('加载青蛙候选任务失败', e);
+      setSections(groupTasksToSections([], new Date()));
+      setSelected({});
+      setTaskMap({});
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      void loadEligibleTasks();
+    }, [loadEligibleTasks])
+  );
 
   const surface = theme.background;
   const card = theme.surface;
@@ -84,6 +181,34 @@ export default function AddFrogScreen() {
   };
 
   const selectedIds = React.useMemo(() => Object.keys(selected).filter((k) => selected[k]), [selected]);
+  const hasAnyCandidates = React.useMemo(() => sections.some((s) => s.items.length > 0), [sections]);
+
+  const assignFrogs = React.useCallback(async () => {
+    if (saving || selectedIds.length === 0) return;
+    setSaving(true);
+    try {
+      const today = formatLocalYmd(new Date());
+      const ids = selectedIds.slice();
+      await Promise.all(
+        ids.map(async (id) => {
+          const row = taskMap[id];
+          const currentExtra = parseTaskExtraData(row?.extra_data ?? null);
+          const nextExtra: FrogTaskMeta & Record<string, unknown> = {
+            ...currentExtra,
+            frogAssignedOn: today,
+          };
+          await updateTask(id, { extra_data: JSON.stringify(nextExtra) });
+        })
+      );
+      Alert.alert('已指派', `已将 ${ids.length} 个任务指派为今日青蛙。`);
+      router.back();
+    } catch (e) {
+      console.warn('指派青蛙失败', e);
+      Alert.alert('指派失败', '未能保存青蛙指派状态，请稍后重试。');
+    } finally {
+      setSaving(false);
+    }
+  }, [router, saving, selectedIds, taskMap]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: surface }]} edges={['top']}>
@@ -122,7 +247,15 @@ export default function AddFrogScreen() {
         </View>
 
         <View style={styles.sections}>
-          {DATA.map((sec) => {
+          {!hasAnyCandidates ? (
+            <View style={[styles.section, { opacity: 0.85 }]}>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>今日暂无可选青蛙</Text>
+              <Text style={[styles.itemSubtitle, { color: theme.textSecondary, marginTop: 8 }]}>
+                仅可从「今日且已过期」的任务中选择。你可以去任务详情里补充截止时间后再来。
+              </Text>
+            </View>
+          ) : null}
+          {sections.map((sec) => {
             const secColor = getTone(sec.tone);
             const badgeBg =
               sec.tone === 'error'
@@ -153,6 +286,17 @@ export default function AddFrogScreen() {
                 </View>
 
                 <View style={styles.items}>
+                  {sec.items.length === 0 ? (
+                    <View style={[styles.item, { backgroundColor: card, borderColor: outlineVariant, opacity: 0.7 }]}>
+                      <View style={styles.itemLeft}>
+                        <View style={[styles.checkbox, { backgroundColor: 'transparent', borderColor: outlineVariant }]} />
+                        <View style={styles.itemText}>
+                          <Text style={[styles.itemTitle, { color: theme.textSecondary }]}>暂无任务</Text>
+                          <Text style={[styles.itemSubtitle, { color: theme.textSecondary }]}>今日该象限下没有可选青蛙</Text>
+                        </View>
+                      </View>
+                    </View>
+                  ) : null}
                   {sec.items.map((it) => {
                     const checked = !!selected[it.id];
                     const toneColor = getTone(it.tone);
@@ -200,17 +344,17 @@ export default function AddFrogScreen() {
         ]}>
         <View style={styles.bottomBarInner}>
           <Pressable
-            onPress={() => router.back()}
-            disabled={selectedIds.length === 0}
+            onPress={assignFrogs}
+            disabled={selectedIds.length === 0 || saving || loading}
             style={({ pressed }) => [
               styles.confirmBtn,
               {
-                opacity: selectedIds.length === 0 ? 0.55 : pressed ? 0.92 : 1,
-                backgroundColor: selectedIds.length === 0 ? `${primary}80` : primary,
+                opacity: selectedIds.length === 0 || saving || loading ? 0.55 : pressed ? 0.92 : 1,
+                backgroundColor: selectedIds.length === 0 || saving || loading ? `${primary}80` : primary,
               },
-              pressed && selectedIds.length > 0 && { transform: [{ scale: 0.98 }] },
+              pressed && selectedIds.length > 0 && !saving && !loading && { transform: [{ scale: 0.98 }] },
             ]}>
-            <Text style={styles.confirmText}>确认指派</Text>
+            <Text style={styles.confirmText}>{saving ? '指派中…' : '确认指派'}</Text>
           </Pressable>
         </View>
       </View>

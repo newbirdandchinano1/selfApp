@@ -241,6 +241,38 @@ export async function initDatabase() {
     `
   );
 
+  // Unify category source of truth:
+  // App UI uses project_categories only. We keep task_categories as an internal mirror
+  // to satisfy the existing tasks(category_id) foreign key on older DBs.
+  await db.execAsync(`
+    INSERT OR REPLACE INTO task_categories (
+      id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+    )
+    SELECT
+      id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+    FROM project_categories;
+
+    CREATE TRIGGER IF NOT EXISTS trg_project_categories_ai_to_task
+    AFTER INSERT ON project_categories
+    BEGIN
+      INSERT OR REPLACE INTO task_categories (
+        id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+      ) VALUES (
+        NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.deleted_at, NEW.sync_status, NEW.version, NEW.extra_data
+      );
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_project_categories_au_to_task
+    AFTER UPDATE ON project_categories
+    BEGIN
+      INSERT OR REPLACE INTO task_categories (
+        id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+      ) VALUES (
+        NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.deleted_at, NEW.sync_status, NEW.version, NEW.extra_data
+      );
+    END;
+  `);
+
   // Create indexes after ensureColumn migrations (old DBs might miss columns)
   await db.execAsync(`
     CREATE INDEX IF NOT EXISTS idx_project_categories_updated_at ON project_categories(updated_at);

@@ -3,8 +3,6 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
 import { getProjectCategories, reorderProjectCategories } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
-import { getTaskCategories, reorderTaskCategories } from '@/lib/repositories/tasks/task';
-import type { TaskCategoryRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
@@ -19,12 +17,12 @@ export default function CategorySortScreen() {
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
 
-  const scope = params.scope === 'task' ? 'task' : 'project';
+  // task categories are unified into project categories
+  const scope = 'project';
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [projectInbox, setProjectInbox] = React.useState<ProjectCategoryRow | null>(null);
   const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
-  const [taskCategories, setTaskCategories] = React.useState<TaskCategoryRow[]>([]);
   const persistLockRef = React.useRef(false);
 
   const bg = isDark ? theme.background : '#faf8ff';
@@ -36,27 +34,22 @@ export default function CategorySortScreen() {
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      if (scope === 'task') {
-        const rows = await getTaskCategories();
-        setTaskCategories(rows);
-      } else {
-        const rows = await getProjectCategories();
-        const inbox = rows.find((r) => r.id === INBOX_PROJECT_CATEGORY_ID) ?? null;
-        setProjectInbox(
-          inbox ?? {
-            id: INBOX_PROJECT_CATEGORY_ID,
-            name: INBOX_PROJECT_CATEGORY_NAME,
-            sort_order: 0,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            deleted_at: null,
-            sync_status: 'synced',
-            version: 1,
-            extra_data: null,
-          }
-        );
-        setProjectCategories(rows.filter((r) => r.id !== INBOX_PROJECT_CATEGORY_ID));
-      }
+      const rows = await getProjectCategories();
+      const inbox = rows.find((r) => r.id === INBOX_PROJECT_CATEGORY_ID) ?? null;
+      setProjectInbox(
+        inbox ?? {
+          id: INBOX_PROJECT_CATEGORY_ID,
+          name: INBOX_PROJECT_CATEGORY_NAME,
+          sort_order: 0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          deleted_at: null,
+          sync_status: 'synced',
+          version: 1,
+          extra_data: null,
+        }
+      );
+      setProjectCategories(rows.filter((r) => r.id !== INBOX_PROJECT_CATEGORY_ID));
     } finally {
       setLoading(false);
     }
@@ -71,21 +64,17 @@ export default function CategorySortScreen() {
     persistLockRef.current = true;
     setSaving(true);
     try {
-      if (scope === 'task') {
-        await reorderTaskCategories(taskCategories.map((c) => c.id));
-      } else {
-        await reorderProjectCategories(projectCategories.map((c) => c.id));
-      }
+      await reorderProjectCategories(projectCategories.map((c) => c.id));
     } finally {
       setSaving(false);
       persistLockRef.current = false;
     }
-  }, [projectCategories, saving, scope, taskCategories]);
+  }, [projectCategories, saving]);
 
-  const data = scope === 'task' ? taskCategories : projectCategories;
+  const data = projectCategories;
 
   const renderItem = React.useCallback(
-    ({ item, drag, isActive }: RenderItemParams<ProjectCategoryRow | TaskCategoryRow>) => (
+    ({ item, drag, isActive }: RenderItemParams<ProjectCategoryRow>) => (
       <Pressable
         onLongPress={drag}
         delayLongPress={180}
@@ -110,7 +99,7 @@ export default function CategorySortScreen() {
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
 
-        <Text style={[styles.title, { color: primary }]}>{scope === 'task' ? '任务分类排序' : '项目分类排序'}</Text>
+        <Text style={[styles.title, { color: primary }]}>分类排序</Text>
 
         <Pressable
           onPress={async () => {
@@ -146,8 +135,7 @@ export default function CategorySortScreen() {
               keyExtractor={(item: any) => item.id}
               renderItem={renderItem as any}
               onDragEnd={({ data: next }) => {
-                if (scope === 'task') setTaskCategories(next as any);
-                else setProjectCategories(next as any);
+                setProjectCategories(next as any);
                 void persist();
               }}
               activationDistance={8}
