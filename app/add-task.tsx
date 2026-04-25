@@ -43,11 +43,53 @@ type SchedulePickerResult = {
   reminderOption: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
   repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary: string;
+  weeklyDays: number[];
+  monthlyDays: number[];
+  yearlyDate: string;
   date?: string;
   range?: { start: string; end: string };
   startTime: string;
   endTime: string;
 };
+
+type SchedulePickerInitPayload = {
+  mode?: 'date' | 'time';
+  quickChip?: string;
+  allDay?: boolean;
+  hasExactTime?: boolean;
+  reminderOption?: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
+  repeatSummary?: string;
+  weeklyDays?: number[];
+  monthlyDays?: number[];
+  yearlyDate?: string;
+  date?: string;
+  range?: { start: string; end: string };
+  startTime?: string;
+  endTime?: string;
+};
+
+type DateLimitYmd = {
+  start?: string;
+  end?: string;
+};
+
+type TaskScheduleMeta = Pick<
+  SchedulePickerResult,
+  | 'mode'
+  | 'allDay'
+  | 'hasExactTime'
+  | 'reminderOption'
+  | 'repeatOption'
+  | 'repeatSummary'
+  | 'weeklyDays'
+  | 'monthlyDays'
+  | 'yearlyDate'
+  | 'date'
+  | 'range'
+  | 'startTime'
+  | 'endTime'
+>;
 declare global {
   // eslint-disable-next-line no-var
   var __addTaskResult:
@@ -60,6 +102,8 @@ declare global {
 const MAX_TASK_TITLE_LENGTH = 30;
 
 function formatDate(value: string): string {
+  const v = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value.slice(0, 10);
   const year = date.getFullYear();
@@ -78,7 +122,7 @@ function formatTime(value: string): string {
 
 export default function AddTaskScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ source?: string }>();
+  const params = useLocalSearchParams<{ source?: string; dateLimit?: string }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -94,10 +138,25 @@ export default function AddTaskScreen() {
   const [deadlineText, setDeadlineText] = React.useState('');
   const [reminderText, setReminderText] = React.useState('');
   const [repeatText, setRepeatText] = React.useState('');
+  const [scheduleMeta, setScheduleMeta] = React.useState<TaskScheduleMeta | null>(null);
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const scheduleSource = params.source ?? 'add-task';
+  const dateLimit = React.useMemo<DateLimitYmd | null>(() => {
+    const raw = typeof params.dateLimit === 'string' ? params.dateLimit : '';
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as DateLimitYmd;
+      if (!parsed || typeof parsed !== 'object') return null;
+      const next: DateLimitYmd = {};
+      if (typeof parsed.start === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.start)) next.start = parsed.start;
+      if (typeof parsed.end === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.end)) next.end = parsed.end;
+      return next.start || next.end ? next : null;
+    } catch {
+      return null;
+    }
+  }, [params.dateLimit]);
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const priorityOptions: Array<{ key: PriorityKey; label: string; color: string }> = [
     { key: 'urgent-important', label: '紧急重要', color: isDark ? '#f87171' : '#ba1a1a' },
@@ -137,7 +196,9 @@ export default function AddTaskScreen() {
     if (!picked || picked.source !== scheduleSource) return;
 
     if (picked.mode === 'time' && picked.range) {
-      const rangeLabel = `${formatDate(picked.range.start)} ~ ${formatDate(picked.range.end)}`;
+      const rangeStart = formatDate(picked.range.start);
+      const rangeEnd = formatDate(picked.range.end);
+      const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
       const timeLabel = picked.allDay ? '全天' : `${formatTime(picked.startTime)} - ${formatTime(picked.endTime)}`;
       setDeadlineText(`${rangeLabel} ${timeLabel}`);
     } else if (picked.date) {
@@ -147,9 +208,53 @@ export default function AddTaskScreen() {
     }
     setReminderText(picked.reminderOption === '不提前' ? '' : picked.reminderOption);
     setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
+    setScheduleMeta({
+      mode: picked.mode,
+      allDay: picked.allDay,
+      hasExactTime: picked.hasExactTime,
+      reminderOption: picked.reminderOption,
+      repeatOption: picked.repeatOption,
+      repeatSummary: picked.repeatSummary,
+      weeklyDays: picked.weeklyDays,
+      monthlyDays: picked.monthlyDays,
+      yearlyDate: picked.yearlyDate,
+      date: picked.date,
+      range: picked.range,
+      startTime: picked.startTime,
+      endTime: picked.endTime,
+    });
 
     globalThis.__schedulePickerResult = undefined;
   }, [scheduleSource]);
+
+  const openSchedulePicker = React.useCallback(() => {
+    const scheduleInit: SchedulePickerInitPayload | undefined = scheduleMeta
+      ? {
+          mode: scheduleMeta.mode,
+          quickChip: '',
+          allDay: scheduleMeta.allDay,
+          hasExactTime: scheduleMeta.hasExactTime,
+          reminderOption: scheduleMeta.reminderOption,
+          repeatOption: scheduleMeta.repeatOption,
+          repeatSummary: scheduleMeta.repeatSummary,
+          weeklyDays: scheduleMeta.weeklyDays,
+          monthlyDays: scheduleMeta.monthlyDays,
+          yearlyDate: scheduleMeta.yearlyDate,
+          date: scheduleMeta.date,
+          range: scheduleMeta.range,
+          startTime: scheduleMeta.startTime,
+          endTime: scheduleMeta.endTime,
+        }
+      : undefined;
+    router.push({
+      pathname: '/schedule-picker',
+      params: {
+        source: scheduleSource,
+        initial: scheduleInit ? JSON.stringify(scheduleInit) : '',
+        dateLimit: dateLimit ? JSON.stringify(dateLimit) : '',
+      },
+    });
+  }, [dateLimit, router, scheduleMeta, scheduleSource]);
 
   React.useEffect(() => {
     readScheduleResult();
@@ -275,7 +380,7 @@ export default function AddTaskScreen() {
                 )}
               </View>
               <Pressable
-                onPress={() => router.push({ pathname: '/schedule-picker', params: { source: scheduleSource } })}
+                onPress={openSchedulePicker}
                 style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
               </Pressable>

@@ -10,6 +10,49 @@ import type {
 
 export type TaskTreeNode = TaskRow & { children: TaskTreeNode[] };
 
+export async function countIncompleteDescendantTasks(rootTaskId: string): Promise<number> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ cnt: number }>(
+    `WITH RECURSIVE subtree(id) AS (
+        SELECT id FROM tasks WHERE id = ? AND deleted_at IS NULL
+        UNION ALL
+        SELECT t.id
+          FROM tasks t
+          JOIN subtree s ON t.parent_task_id = s.id
+         WHERE t.deleted_at IS NULL
+     )
+     SELECT COUNT(1) AS cnt
+       FROM tasks
+      WHERE id IN (SELECT id FROM subtree WHERE id != ?)
+        AND status NOT IN ('done', 'cancelled')`,
+    [rootTaskId, rootTaskId],
+  );
+  return Number(row?.cnt ?? 0);
+}
+
+export async function countIncompleteTasksByProjectId(projectId: string): Promise<number> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ cnt: number }>(
+    `SELECT COUNT(1) AS cnt
+       FROM tasks
+      WHERE deleted_at IS NULL
+        AND project_id = ?
+        AND status NOT IN ('done', 'cancelled')`,
+    [projectId],
+  );
+  return Number(row?.cnt ?? 0);
+}
+
+export async function deleteTasksByProjectId(projectId: string) {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE tasks
+     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
+     WHERE deleted_at IS NULL AND project_id = ?`,
+    [projectId],
+  );
+}
+
 export async function createTask(input: CreateTaskInput) {
   const db = await getDatabase();
   await db.runAsync(
@@ -101,10 +144,21 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
 export async function deleteTask(id: string) {
   const db = await getDatabase();
   await db.runAsync(
-    `UPDATE tasks
-     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
-     WHERE id = ?`,
-    [id]
+    `WITH RECURSIVE subtree(id) AS (
+        SELECT id FROM tasks WHERE id = ? AND deleted_at IS NULL
+        UNION ALL
+        SELECT t.id
+          FROM tasks t
+          JOIN subtree s ON t.parent_task_id = s.id
+         WHERE t.deleted_at IS NULL
+     )
+     UPDATE tasks
+        SET deleted_at = datetime('now'),
+            updated_at = datetime('now'),
+            sync_status = 'pending_delete',
+            version = version + 1
+      WHERE id IN (SELECT id FROM subtree)`,
+    [id],
   );
 }
 

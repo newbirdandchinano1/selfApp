@@ -1,6 +1,14 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { createTask, deleteTask, getChildTasksByParentTaskId, getTaskById, updateTask } from '@/lib/repositories/tasks/task';
+import { getProjectById } from '@/lib/repositories/projects/project';
+import {
+  countIncompleteDescendantTasks,
+  createTask,
+  deleteTask,
+  getChildTasksByParentTaskId,
+  getTaskById,
+  updateTask,
+} from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -35,11 +43,48 @@ type SchedulePickerResult = {
   reminderOption: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
   repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary: string;
+  weeklyDays: number[];
+  monthlyDays: number[];
+  yearlyDate: string;
   date?: string;
   range?: { start: string; end: string };
   startTime: string;
   endTime: string;
 };
+
+type SchedulePickerInitPayload = {
+  mode?: 'date' | 'time';
+  quickChip?: string;
+  allDay?: boolean;
+  hasExactTime?: boolean;
+  reminderOption?: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
+  repeatSummary?: string;
+  weeklyDays?: number[];
+  monthlyDays?: number[];
+  yearlyDate?: string;
+  date?: string;
+  range?: { start: string; end: string };
+  startTime?: string;
+  endTime?: string;
+};
+
+type TaskScheduleMeta = Pick<
+  SchedulePickerResult,
+  | 'mode'
+  | 'allDay'
+  | 'hasExactTime'
+  | 'reminderOption'
+  | 'repeatOption'
+  | 'repeatSummary'
+  | 'weeklyDays'
+  | 'monthlyDays'
+  | 'yearlyDate'
+  | 'date'
+  | 'range'
+  | 'startTime'
+  | 'endTime'
+>;
 
 type SubtaskDraft = {
   id: string;
@@ -67,6 +112,8 @@ declare global {
 }
 
 function formatDate(value: string): string {
+  const v = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value.slice(0, 10);
   const year = date.getFullYear();
@@ -84,8 +131,9 @@ function formatTime(value: string): string {
 }
 
 function extractDueDate(deadlineText: string) {
-  const matched = deadlineText.match(/\d{4}-\d{2}-\d{2}/);
-  return matched?.[0] ?? null;
+  const all = deadlineText.match(/\d{4}-\d{2}-\d{2}/g);
+  if (!all?.length) return null;
+  return all[all.length - 1] ?? null;
 }
 
 function parseTaskExtraData(raw: string | null): Record<string, unknown> {
@@ -99,12 +147,61 @@ function parseTaskExtraData(raw: string | null): Record<string, unknown> {
   }
 }
 
+function toYmd(value: string): string | null {
+  const t = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+type DateLimitYmd = { start?: string; end?: string };
+
+function mergeDateLimit(base: DateLimitYmd, incoming: DateLimitYmd): DateLimitYmd {
+  const next: DateLimitYmd = { ...base };
+  if (incoming.start) {
+    next.start = next.start ? (incoming.start > next.start ? incoming.start : next.start) : incoming.start;
+  }
+  if (incoming.end) {
+    next.end = next.end ? (incoming.end < next.end ? incoming.end : next.end) : incoming.end;
+  }
+  if (next.start && next.end && next.start > next.end) {
+    return { start: next.start, end: next.start };
+  }
+  return next;
+}
+
+function extractScheduleLimit(extraDataRaw: string | null): DateLimitYmd {
+  const extra = parseTaskExtraData(extraDataRaw);
+  const schedule = (extra.schedule ?? null) as TaskScheduleMeta | null;
+  if (!schedule) return {};
+  if (schedule.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    const start = toYmd(schedule.range.start);
+    const end = toYmd(schedule.range.end);
+    return {
+      start: start ?? undefined,
+      end: end ?? undefined,
+    };
+  }
+  if (schedule.date) {
+    const date = toYmd(schedule.date);
+    return {
+      start: date ?? undefined,
+      end: date ?? undefined,
+    };
+  }
+  return {};
+}
+
 function toTaskPriority(value?: string): TaskPriority {
   const text = (value ?? '').toLowerCase();
-  if (text.includes('紧急重要')) return 4;
-  if (text.includes('紧急不重要')) return 3;
-  if (text.includes('不紧急重要')) return 2;
   if (text.includes('不紧急不重要')) return 1;
+  if (text.includes('不紧急重要')) return 2;
+  if (text.includes('紧急不重要')) return 3;
+  if (text.includes('紧急重要')) return 4;
   return 0;
 }
 
@@ -126,11 +223,19 @@ function getPriorityColor(priorityText: string, isDark: boolean) {
     };
   }
 
-  if (value.includes('紧急重要')) {
+  if (value.includes('不紧急不重要')) {
     return {
-      tint: isDark ? '#f87171' : '#ba1a1a',
-      bg: isDark ? 'rgba(248,113,113,0.18)' : 'rgba(186,26,26,0.1)',
-      border: isDark ? 'rgba(248,113,113,0.4)' : 'rgba(186,26,26,0.25)',
+      tint: isDark ? '#94a3b8' : '#727785',
+      bg: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(114,119,133,0.12)',
+      border: isDark ? 'rgba(148,163,184,0.34)' : 'rgba(114,119,133,0.25)',
+    };
+  }
+
+  if (value.includes('不紧急重要')) {
+    return {
+      tint: isDark ? '#60a5fa' : '#0058be',
+      bg: isDark ? 'rgba(96,165,250,0.2)' : 'rgba(0,88,190,0.1)',
+      border: isDark ? 'rgba(96,165,250,0.4)' : 'rgba(0,88,190,0.24)',
     };
   }
 
@@ -142,11 +247,11 @@ function getPriorityColor(priorityText: string, isDark: boolean) {
     };
   }
 
-  if (value.includes('不紧急重要')) {
+  if (value.includes('紧急重要')) {
     return {
-      tint: isDark ? '#60a5fa' : '#0058be',
-      bg: isDark ? 'rgba(96,165,250,0.2)' : 'rgba(0,88,190,0.1)',
-      border: isDark ? 'rgba(96,165,250,0.4)' : 'rgba(0,88,190,0.24)',
+      tint: isDark ? '#f87171' : '#ba1a1a',
+      bg: isDark ? 'rgba(248,113,113,0.18)' : 'rgba(186,26,26,0.1)',
+      border: isDark ? 'rgba(248,113,113,0.4)' : 'rgba(186,26,26,0.25)',
     };
   }
 
@@ -179,9 +284,10 @@ function mapTaskRowToSubtask(task: TaskRow): SubtaskDraft {
 }
 
 function mapPriorityTextToKey(label: string): PriorityKey {
-  if (label.includes('紧急重要')) return 'urgent-important';
-  if (label.includes('紧急不重要')) return 'urgent-not-important';
+  if (label.includes('不紧急不重要')) return 'not-urgent-not-important';
   if (label.includes('不紧急重要')) return 'not-urgent-important';
+  if (label.includes('紧急不重要')) return 'urgent-not-important';
+  if (label.includes('紧急重要')) return 'urgent-important';
   return 'not-urgent-not-important';
 }
 
@@ -193,6 +299,23 @@ function priorityKeyToLabel(key: PriorityKey): string {
 }
 
 const TITLE_MAX_LENGTH = 30;
+
+function buildDeadlineTextFromSchedule(schedule: TaskScheduleMeta | null) {
+  if (!schedule) return '';
+  if (schedule.mode === 'time' && schedule.range) {
+    const rangeStart = formatDate(schedule.range.start);
+    const rangeEnd = formatDate(schedule.range.end);
+    const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
+    const timeLabel = schedule.allDay ? '全天' : `${formatTime(schedule.startTime)} - ${formatTime(schedule.endTime)}`;
+    return `${rangeLabel} ${timeLabel}`;
+  }
+  if (schedule.date) {
+    const dateLabel = formatDate(schedule.date);
+    const timeLabel = schedule.allDay ? '全天' : schedule.hasExactTime ? formatTime(schedule.startTime) : '';
+    return timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel;
+  }
+  return '';
+}
 
 export default function EditTaskScreen() {
   const router = useRouter();
@@ -213,10 +336,13 @@ export default function EditTaskScreen() {
   const [deadlineText, setDeadlineText] = React.useState('');
   const [reminderText, setReminderText] = React.useState('');
   const [repeatText, setRepeatText] = React.useState('');
+  const [scheduleMeta, setScheduleMeta] = React.useState<TaskScheduleMeta | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [taskSnapshot, setTaskSnapshot] = React.useState<TaskRow | null>(null);
   const [subtasks, setSubtasks] = React.useState<SubtaskDraft[]>([]);
+  const [subtaskDateLimit, setSubtaskDateLimit] = React.useState<DateLimitYmd | null>(null);
+  const [taskDateLimit, setTaskDateLimit] = React.useState<DateLimitYmd | null>(null);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
@@ -253,7 +379,9 @@ export default function EditTaskScreen() {
     if (!picked || picked.source !== scheduleSource) return;
 
     if (picked.mode === 'time' && picked.range) {
-      const rangeLabel = `${formatDate(picked.range.start)} ~ ${formatDate(picked.range.end)}`;
+      const rangeStart = formatDate(picked.range.start);
+      const rangeEnd = formatDate(picked.range.end);
+      const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
       const timeLabel = picked.allDay ? '全天' : `${formatTime(picked.startTime)} - ${formatTime(picked.endTime)}`;
       setDeadlineText(`${rangeLabel} ${timeLabel}`);
     } else if (picked.date) {
@@ -263,9 +391,53 @@ export default function EditTaskScreen() {
     }
     setReminderText(picked.reminderOption === '不提前' ? '' : picked.reminderOption);
     setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
+    setScheduleMeta({
+      mode: picked.mode,
+      allDay: picked.allDay,
+      hasExactTime: picked.hasExactTime,
+      reminderOption: picked.reminderOption,
+      repeatOption: picked.repeatOption,
+      repeatSummary: picked.repeatSummary,
+      weeklyDays: picked.weeklyDays,
+      monthlyDays: picked.monthlyDays,
+      yearlyDate: picked.yearlyDate,
+      date: picked.date,
+      range: picked.range,
+      startTime: picked.startTime,
+      endTime: picked.endTime,
+    });
 
     globalThis.__schedulePickerResult = undefined;
   }, [scheduleSource]);
+
+  const openSchedulePicker = React.useCallback(() => {
+    const scheduleInit: SchedulePickerInitPayload | undefined = scheduleMeta
+      ? {
+          mode: scheduleMeta.mode,
+          quickChip: '',
+          allDay: scheduleMeta.allDay,
+          hasExactTime: scheduleMeta.hasExactTime,
+          reminderOption: scheduleMeta.reminderOption,
+          repeatOption: scheduleMeta.repeatOption,
+          repeatSummary: scheduleMeta.repeatSummary,
+          weeklyDays: scheduleMeta.weeklyDays,
+          monthlyDays: scheduleMeta.monthlyDays,
+          yearlyDate: scheduleMeta.yearlyDate,
+          date: scheduleMeta.date,
+          range: scheduleMeta.range,
+          startTime: scheduleMeta.startTime,
+          endTime: scheduleMeta.endTime,
+        }
+      : undefined;
+    router.push({
+      pathname: '/schedule-picker',
+      params: {
+        source: scheduleSource,
+        initial: scheduleInit ? JSON.stringify(scheduleInit) : '',
+        dateLimit: taskDateLimit ? JSON.stringify(taskDateLimit) : '',
+      },
+    });
+  }, [router, scheduleMeta, scheduleSource, taskDateLimit]);
 
   const readAddSubtaskResult = React.useCallback(async () => {
     const payload = globalThis.__addSubtaskResult as { source: string; task: SubtaskDraft } | undefined;
@@ -321,13 +493,52 @@ export default function EditTaskScreen() {
       setTitle(task.title ?? '');
       setNotes(task.note ?? '');
       setDeadlineText(task.due_date ? formatDate(task.due_date) : '');
+      setScheduleMeta(null);
       const priorityLabel = fromTaskPriority(task.priority);
       setPriority(mapPriorityTextToKey(priorityLabel));
       const extraData = parseTaskExtraData(task.extra_data);
       const reminder = typeof extraData.reminder === 'string' ? extraData.reminder : '';
       const repeat = typeof extraData.repeat === 'string' ? extraData.repeat : '';
-      setReminderText(reminder);
-      setRepeatText(repeat);
+      const loadedSchedule = (extraData.schedule ?? null) as TaskScheduleMeta | null;
+      if (loadedSchedule) {
+        setScheduleMeta(loadedSchedule);
+        setReminderText(loadedSchedule.reminderOption === '不提前' ? '' : loadedSchedule.reminderOption);
+        setRepeatText(loadedSchedule.repeatOption === '不重复' ? '' : loadedSchedule.repeatSummary);
+        setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (task.due_date ? formatDate(task.due_date) : ''));
+      } else {
+        setReminderText(reminder);
+        setRepeatText(repeat);
+      }
+
+      const baseLimit: DateLimitYmd = mergeDateLimit(
+        extractScheduleLimit(task.extra_data),
+        { end: task.due_date ? formatDate(task.due_date) : undefined },
+      );
+      let parentLimit: DateLimitYmd = {};
+      if (task.parent_task_id) {
+        const parentTask = await getTaskById(task.parent_task_id);
+        if (parentTask) {
+          parentLimit = mergeDateLimit(
+            extractScheduleLimit(parentTask.extra_data),
+            { end: parentTask.due_date ? formatDate(parentTask.due_date) : undefined },
+          );
+        }
+      }
+      let projectLimit: DateLimitYmd = {};
+      if (task.project_id) {
+        const project = await getProjectById(task.project_id);
+        if (project) {
+          projectLimit = mergeDateLimit(
+            extractScheduleLimit(project.extra_data),
+            { end: project.due_date ? formatDate(project.due_date) : undefined },
+          );
+        }
+      }
+      const selfLimit = mergeDateLimit(parentLimit, projectLimit);
+      setTaskDateLimit(selfLimit.start || selfLimit.end ? selfLimit : null);
+      const merged = mergeDateLimit(baseLimit, projectLimit);
+      setSubtaskDateLimit(merged.start || merged.end ? merged : null);
+
       await loadSubtasks();
     } catch (error) {
       console.warn('加载任务详情失败', error);
@@ -377,15 +588,17 @@ export default function EditTaskScreen() {
 
     setSaving(true);
     try {
+      const dueDate = scheduleMeta?.mode === 'time' && scheduleMeta.range ? scheduleMeta.range.end : extractDueDate(deadlineText);
       await updateTask(taskId, {
         title: trimmedTitle,
         note: notes.trim() || null,
         priority: toTaskPriority(priorityKeyToLabel(priority)),
-        due_date: extractDueDate(deadlineText),
+        due_date: dueDate,
         extra_data: JSON.stringify({
           ...parseTaskExtraData(taskSnapshot.extra_data),
           reminder: reminderText,
           repeat: repeatText,
+          schedule: scheduleMeta,
         }),
       });
       router.back();
@@ -395,29 +608,60 @@ export default function EditTaskScreen() {
     } finally {
       setSaving(false);
     }
-  }, [deadlineText, loading, notes, priority, reminderText, repeatText, router, saving, taskId, taskSnapshot, title]);
+  }, [deadlineText, loading, notes, priority, reminderText, repeatText, router, saving, scheduleMeta, taskId, taskSnapshot, title]);
 
   const removeTask = React.useCallback(() => {
     if (!taskId || saving || loading) return;
-    Alert.alert('删除任务', '删除后可在同步或恢复功能前无法找回，确认删除吗？', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '删除',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            setSaving(true);
-            await deleteTask(taskId);
-            router.back();
-          } catch (error) {
-            console.warn('删除任务失败', error);
-            Alert.alert('删除失败', '任务删除失败，请稍后重试。');
-          } finally {
-            setSaving(false);
-          }
-        },
-      },
-    ]);
+    (async () => {
+      try {
+        const incomplete = await countIncompleteDescendantTasks(taskId);
+        const message =
+          incomplete > 0
+            ? `该任务下有 ${incomplete} 个未完成子任务。\n\n确认删除该任务，并连同其所有子任务一起删除吗？（删除后在同步或恢复功能前无法找回）`
+            : '删除后在同步或恢复功能前无法找回，确认删除吗？';
+
+        Alert.alert('删除任务', message, [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '删除',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                setSaving(true);
+                await deleteTask(taskId);
+                router.back();
+              } catch (error) {
+                console.warn('删除任务失败', error);
+                Alert.alert('删除失败', '任务删除失败，请稍后重试。');
+              } finally {
+                setSaving(false);
+              }
+            },
+          },
+        ]);
+      } catch (error) {
+        console.warn('统计子任务失败', error);
+        Alert.alert('删除任务', '删除后在同步或恢复功能前无法找回，确认删除吗？', [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '删除',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                setSaving(true);
+                await deleteTask(taskId);
+                router.back();
+              } catch (err) {
+                console.warn('删除任务失败', err);
+                Alert.alert('删除失败', '任务删除失败，请稍后重试。');
+              } finally {
+                setSaving(false);
+              }
+            },
+          },
+        ]);
+      }
+    })();
   }, [loading, router, saving, taskId]);
 
   return (
@@ -519,7 +763,7 @@ export default function EditTaskScreen() {
                 )}
               </View>
               <Pressable
-                onPress={() => router.push({ pathname: '/schedule-picker', params: { source: scheduleSource } })}
+                onPress={openSchedulePicker}
                 disabled={loading}
                 style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
@@ -531,7 +775,15 @@ export default function EditTaskScreen() {
             <View style={styles.subtaskHeader}>
               <Text style={[styles.sectionLabel, { color: outline }]}>子任务</Text>
               <Pressable
-                onPress={() => router.push({ pathname: '/add-subtask', params: { source: addSubtaskSource } })}
+                onPress={() =>
+                  router.push({
+                    pathname: '/add-subtask',
+                    params: {
+                      source: addSubtaskSource,
+                      dateLimit: subtaskDateLimit ? JSON.stringify(subtaskDateLimit) : '',
+                    },
+                  })
+                }
                 disabled={loading}
                 style={({ pressed }) => [styles.linkBtn, (pressed || loading) && { opacity: 0.75 }]}>
                 <MaterialIcons name="add-circle" size={16} color={primary} />

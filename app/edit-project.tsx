@@ -3,7 +3,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { deleteProject, getProjectById, getProjectCategories, updateProject } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
-import { createTask, getTasksByProjectId, updateTask } from '@/lib/repositories/tasks/task';
+import { countIncompleteTasksByProjectId, createTask, getTasksByProjectId, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -35,22 +35,59 @@ type SchedulePickerResult = {
   reminderOption: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
   repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary: string;
+  weeklyDays: number[];
+  monthlyDays: number[];
+  yearlyDate: string;
   date?: string;
   range?: { start: string; end: string };
   startTime: string;
   endTime: string;
 };
 
+type SchedulePickerInitPayload = {
+  mode?: 'date' | 'time';
+  quickChip?: string;
+  allDay?: boolean;
+  hasExactTime?: boolean;
+  reminderOption?: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
+  repeatSummary?: string;
+  weeklyDays?: number[];
+  monthlyDays?: number[];
+  yearlyDate?: string;
+  date?: string;
+  range?: { start: string; end: string };
+  startTime?: string;
+  endTime?: string;
+};
+
 const TITLE_MAX_LENGTH = 30;
 
 type ProjectScheduleMeta = Pick<
   SchedulePickerResult,
-  'mode' | 'allDay' | 'hasExactTime' | 'reminderOption' | 'repeatOption' | 'repeatSummary' | 'date' | 'range' | 'startTime' | 'endTime'
+  | 'mode'
+  | 'allDay'
+  | 'hasExactTime'
+  | 'reminderOption'
+  | 'repeatOption'
+  | 'repeatSummary'
+  | 'weeklyDays'
+  | 'monthlyDays'
+  | 'yearlyDate'
+  | 'date'
+  | 'range'
+  | 'startTime'
+  | 'endTime'
 >;
 
 type ProjectExtraData = {
   schedule?: ProjectScheduleMeta | null;
   [key: string]: unknown;
+};
+
+type DateLimitYmd = {
+  start?: string;
+  end?: string;
 };
 
 declare global {
@@ -64,6 +101,8 @@ declare global {
 }
 
 function formatDate(value: string): string {
+  const v = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value.slice(0, 10);
   const year = date.getFullYear();
@@ -81,8 +120,9 @@ function formatTime(value: string): string {
 }
 
 function extractDueDate(deadlineText: string) {
-  const matched = deadlineText.match(/\d{4}-\d{2}-\d{2}/);
-  return matched?.[0] ?? null;
+  const all = deadlineText.match(/\d{4}-\d{2}-\d{2}/g);
+  if (!all?.length) return null;
+  return all[all.length - 1] ?? null;
 }
 
 function parseProjectExtraData(raw: string | null): ProjectExtraData {
@@ -193,7 +233,9 @@ function getPriorityColor(priorityText: string, isDark: boolean) {
 function buildDeadlineTextFromSchedule(schedule: ProjectScheduleMeta | null) {
   if (!schedule) return '';
   if (schedule.mode === 'time' && schedule.range) {
-    const rangeLabel = `${formatDate(schedule.range.start)} ~ ${formatDate(schedule.range.end)}`;
+    const rangeStart = formatDate(schedule.range.start);
+    const rangeEnd = formatDate(schedule.range.end);
+    const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
     const timeLabel = schedule.allDay ? '全天' : `${formatTime(schedule.startTime)} - ${formatTime(schedule.endTime)}`;
     return `${rangeLabel} ${timeLabel}`;
   }
@@ -203,6 +245,17 @@ function buildDeadlineTextFromSchedule(schedule: ProjectScheduleMeta | null) {
     return timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel;
   }
   return '';
+}
+
+function toYmd(value: string): string | null {
+  const t = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 export default function EditProjectScreen() {
@@ -246,7 +299,9 @@ export default function EditProjectScreen() {
     if (!picked || picked.source !== scheduleSource) return;
 
     if (picked.mode === 'time' && picked.range) {
-      const rangeLabel = `${formatDate(picked.range.start)} ~ ${formatDate(picked.range.end)}`;
+      const rangeStart = formatDate(picked.range.start);
+      const rangeEnd = formatDate(picked.range.end);
+      const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
       const timeLabel = picked.allDay ? '全天' : `${formatTime(picked.startTime)} - ${formatTime(picked.endTime)}`;
       setDeadlineText(`${rangeLabel} ${timeLabel}`);
     } else if (picked.date) {
@@ -263,6 +318,9 @@ export default function EditProjectScreen() {
       reminderOption: picked.reminderOption,
       repeatOption: picked.repeatOption,
       repeatSummary: picked.repeatSummary,
+      weeklyDays: picked.weeklyDays,
+      monthlyDays: picked.monthlyDays,
+      yearlyDate: picked.yearlyDate,
       date: picked.date,
       range: picked.range,
       startTime: picked.startTime,
@@ -357,6 +415,20 @@ export default function EditProjectScreen() {
     if (!selectedCategoryId) return '';
     return categories.find((item) => item.id === selectedCategoryId)?.name ?? '';
   }, [categories, selectedCategoryId]);
+  const taskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
+    if (scheduleMeta?.mode === 'time' && scheduleMeta.range?.start && scheduleMeta.range?.end) {
+      const start = toYmd(scheduleMeta.range.start);
+      const end = toYmd(scheduleMeta.range.end);
+      if (start || end) return { start: start ?? undefined, end: end ?? undefined };
+    }
+    if (scheduleMeta?.date) {
+      const date = toYmd(scheduleMeta.date);
+      if (date) return { start: date, end: date };
+    }
+    const end = extractDueDate(deadlineText);
+    if (end) return { end };
+    return null;
+  }, [deadlineText, scheduleMeta]);
 
   const openEditTask = React.useCallback(
     (taskId: string) => {
@@ -369,6 +441,34 @@ export default function EditProjectScreen() {
     },
     [persistedTaskIds, router],
   );
+
+  const openSchedulePicker = React.useCallback(() => {
+    const scheduleInit: SchedulePickerInitPayload | undefined = scheduleMeta
+      ? {
+          mode: scheduleMeta.mode,
+          quickChip: '',
+          allDay: scheduleMeta.allDay,
+          hasExactTime: scheduleMeta.hasExactTime,
+          reminderOption: scheduleMeta.reminderOption,
+          repeatOption: scheduleMeta.repeatOption,
+          repeatSummary: scheduleMeta.repeatSummary,
+          weeklyDays: scheduleMeta.weeklyDays,
+          monthlyDays: scheduleMeta.monthlyDays,
+          yearlyDate: scheduleMeta.yearlyDate,
+          date: scheduleMeta.date,
+          range: scheduleMeta.range,
+          startTime: scheduleMeta.startTime,
+          endTime: scheduleMeta.endTime,
+        }
+      : undefined;
+    router.push({
+      pathname: '/schedule-picker',
+      params: {
+        source: scheduleSource,
+        initial: scheduleInit ? JSON.stringify(scheduleInit) : '',
+      },
+    });
+  }, [router, scheduleMeta, scheduleSource]);
 
   const saveProject = React.useCallback(async () => {
     if (!projectId) return;
@@ -431,25 +531,56 @@ export default function EditProjectScreen() {
 
   const removeProject = React.useCallback(() => {
     if (!projectId || saving || loading) return;
-    Alert.alert('删除项目', '删除后可在同步或恢复功能前无法找回，确认删除吗？', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '删除',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            setSaving(true);
-            await deleteProject(projectId);
-            router.back();
-          } catch (error) {
-            console.warn('删除项目失败', error);
-            Alert.alert('删除失败', '项目删除失败，请稍后重试。');
-          } finally {
-            setSaving(false);
-          }
-        },
-      },
-    ]);
+    (async () => {
+      try {
+        const incomplete = await countIncompleteTasksByProjectId(projectId);
+        const message =
+          incomplete > 0
+            ? `该项目下有 ${incomplete} 个未完成任务/子任务。\n\n确认删除该项目，并连同其所有任务一起删除吗？（删除后在同步或恢复功能前无法找回）`
+            : '删除后在同步或恢复功能前无法找回，确认删除吗？';
+
+        Alert.alert('删除项目', message, [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '删除',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                setSaving(true);
+                await deleteProject(projectId);
+                router.back();
+              } catch (error) {
+                console.warn('删除项目失败', error);
+                Alert.alert('删除失败', '项目删除失败，请稍后重试。');
+              } finally {
+                setSaving(false);
+              }
+            },
+          },
+        ]);
+      } catch (error) {
+        console.warn('统计项目任务失败', error);
+        Alert.alert('删除项目', '删除后在同步或恢复功能前无法找回，确认删除吗？', [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '删除',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                setSaving(true);
+                await deleteProject(projectId);
+                router.back();
+              } catch (err) {
+                console.warn('删除项目失败', err);
+                Alert.alert('删除失败', '项目删除失败，请稍后重试。');
+              } finally {
+                setSaving(false);
+              }
+            },
+          },
+        ]);
+      }
+    })();
   }, [loading, projectId, router, saving]);
 
   return (
@@ -530,7 +661,7 @@ export default function EditProjectScreen() {
                   </View>
                 )}
               </View>
-              <Pressable onPress={() => router.push({ pathname: '/schedule-picker', params: { source: scheduleSource } })} disabled={loading} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
+              <Pressable onPress={openSchedulePicker} disabled={loading} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
               </Pressable>
             </View>
@@ -540,7 +671,15 @@ export default function EditProjectScreen() {
             <View style={styles.subtaskHeader}>
               <Text style={[styles.sectionLabel, { color: outline }]}>任务拆解</Text>
               <Pressable
-                onPress={() => router.push({ pathname: '/add-task', params: { source: addTaskSource } })}
+                onPress={() =>
+                  router.push({
+                    pathname: '/add-task',
+                    params: {
+                      source: addTaskSource,
+                      dateLimit: taskDateLimit ? JSON.stringify(taskDateLimit) : '',
+                    },
+                  })
+                }
                 style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="add-circle" size={16} color={primary} />
                 <Text style={[styles.linkBtnText, { color: primary }]}>添加任务</Text>

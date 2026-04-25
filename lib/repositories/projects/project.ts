@@ -79,6 +79,12 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
 export async function deleteProject(id: string) {
   const db = await getDatabase();
   await db.runAsync(
+    `UPDATE tasks
+     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
+     WHERE deleted_at IS NULL AND project_id = ?`,
+    [id]
+  );
+  await db.runAsync(
     `UPDATE projects
      SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
      WHERE id = ?`,

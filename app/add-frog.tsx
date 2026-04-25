@@ -48,19 +48,47 @@ function isSameLocalDay(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-function formatDueSubtitle(dueDate: string) {
-  const d = new Date(dueDate);
-  if (Number.isNaN(d.getTime())) return '时间格式异常';
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `今日 ${hh}:${mm} 已过期`;
+function parseDueDateAsLocalMoment(dueDate: string): { date: Date; isAllDay: boolean } | null {
+  const ymd = /^\d{4}-\d{2}-\d{2}$/;
+  if (ymd.test(dueDate)) {
+    const [yStr, mStr, dStr] = dueDate.split('-');
+    const y = Number(yStr);
+    const m = Number(mStr);
+    const d = Number(dStr);
+    if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+    const endOfDay = new Date(y, m - 1, d, 23, 59, 59, 999);
+    if (Number.isNaN(endOfDay.getTime())) return null;
+    return { date: endOfDay, isAllDay: true };
+  }
+
+  const dt = new Date(dueDate);
+  if (Number.isNaN(dt.getTime())) return null;
+  return { date: dt, isAllDay: false };
+}
+
+function formatDueSubtitle(dueDate: string, now: Date) {
+  const parsed = parseDueDateAsLocalMoment(dueDate);
+  if (!parsed) return '时间格式异常';
+  if (!isSameLocalDay(parsed.date, now)) return '时间格式异常';
+  if (parsed.isAllDay) return now.getTime() > parsed.date.getTime() ? '今日 全天 已过期' : '今日 全天';
+  const hh = String(parsed.date.getHours()).padStart(2, '0');
+  const mm = String(parsed.date.getMinutes()).padStart(2, '0');
+  return now.getTime() > parsed.date.getTime() ? `今日 ${hh}:${mm} 已过期` : `今日 ${hh}:${mm}`;
 }
 
 function groupTasksToSections(rows: TaskRow[], now: Date): Section[] {
   const today = formatLocalYmd(now);
+  const hasUnfinishedChild = new Set<string>();
+  rows.forEach((t) => {
+    if (!t.parent_task_id) return;
+    if (t.status === 'done' || t.status === 'cancelled') return;
+    hasUnfinishedChild.add(t.parent_task_id);
+  });
+
   const eligible = rows
-    .filter((t) => !t.parent_task_id)
     .filter((t) => t.status !== 'done' && t.status !== 'cancelled')
+    // 同一任务树：优先展示子任务（有未完成子任务的节点不展示）
+    .filter((t) => !hasUnfinishedChild.has(t.id))
     .filter((t) => {
       const extra = parseTaskExtraData(t.extra_data);
       const assignedOn = typeof extra.frogAssignedOn === 'string' ? extra.frogAssignedOn : '';
@@ -70,11 +98,11 @@ function groupTasksToSections(rows: TaskRow[], now: Date): Section[] {
       // 允许：没设置时间（也可作为今日青蛙候选）
       if (!t.due_date || !String(t.due_date).trim()) return true;
 
-      // 或者：今日且已过期
+      // 或者：截止在今天（全天 / 具体时间）
       if (!isValidDate(t.due_date)) return true;
-      const due = new Date(t.due_date);
-      if (Number.isNaN(due.getTime())) return true;
-      return isSameLocalDay(due, now) && due.getTime() < now.getTime();
+      const parsed = parseDueDateAsLocalMoment(t.due_date);
+      if (!parsed) return true;
+      return isSameLocalDay(parsed.date, now);
     });
 
   const q1: Item[] = [];
@@ -87,7 +115,7 @@ function groupTasksToSections(rows: TaskRow[], now: Date): Section[] {
     const item: Item = {
       id: t.id,
       title: t.title,
-      subtitle: t.due_date && isValidDate(t.due_date) ? formatDueSubtitle(t.due_date) : '未设置时间',
+      subtitle: t.due_date && isValidDate(t.due_date) ? formatDueSubtitle(t.due_date, now) : '',
       tone,
     };
 
@@ -230,9 +258,6 @@ export default function AddFrogScreen() {
           </Pressable>
           <Text style={[styles.headerTitle, { color: blue }]}>新增青蛙</Text>
         </View>
-        <Pressable hitSlop={10} style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
-          <MaterialIcons name="more-vert" size={22} color={isDark ? 'rgba(148,163,184,0.9)' : 'rgba(100,116,139,0.9)'} />
-        </Pressable>
       </View>
 
       <ScrollView
@@ -320,7 +345,9 @@ export default function AddFrogScreen() {
                           </View>
                           <View style={styles.itemText}>
                             <Text style={[styles.itemTitle, { color: checked ? hoverColor : titleColor }]}>{it.title}</Text>
-                            <Text style={[styles.itemSubtitle, { color: theme.textSecondary }]}>{it.subtitle}</Text>
+                            {it.subtitle ? (
+                              <Text style={[styles.itemSubtitle, { color: theme.textSecondary }]}>{it.subtitle}</Text>
+                            ) : null}
                           </View>
                         </View>
                       </Pressable>

@@ -21,20 +21,54 @@ type SchedulePickerResult = {
   reminderOption: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
   repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary: string;
+  weeklyDays: number[];
+  monthlyDays: number[];
+  yearlyDate: string;
   date?: string;
   range?: { start: string; end: string };
   startTime: string;
   endTime: string;
 };
 
+type SchedulePickerInitPayload = {
+  mode?: 'date' | 'time';
+  quickChip?: string;
+  allDay?: boolean;
+  hasExactTime?: boolean;
+  reminderOption?: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
+  repeatSummary?: string;
+  weeklyDays?: number[];
+  monthlyDays?: number[];
+  yearlyDate?: string;
+  date?: string;
+  range?: { start: string; end: string };
+  startTime?: string;
+  endTime?: string;
+};
+
 type ProjectScheduleMeta = Pick<
   SchedulePickerResult,
-  'mode' | 'allDay' | 'hasExactTime' | 'reminderOption' | 'repeatOption' | 'repeatSummary' | 'date' | 'range' | 'startTime' | 'endTime'
+  | 'mode'
+  | 'allDay'
+  | 'hasExactTime'
+  | 'reminderOption'
+  | 'repeatOption'
+  | 'repeatSummary'
+  | 'weeklyDays'
+  | 'monthlyDays'
+  | 'yearlyDate'
+  | 'date'
+  | 'range'
+  | 'startTime'
+  | 'endTime'
 >;
 
 const TITLE_MAX_LENGTH = 30;
 
 function formatDate(value: string): string {
+  const v = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value.slice(0, 10);
   const year = date.getFullYear();
@@ -56,8 +90,9 @@ function buildProjectId() {
 }
 
 function extractDueDate(deadlineText: string) {
-  const matched = deadlineText.match(/\d{4}-\d{2}-\d{2}/);
-  return matched?.[0] ?? null;
+  const all = deadlineText.match(/\d{4}-\d{2}-\d{2}/g);
+  if (!all?.length) return null;
+  return all[all.length - 1] ?? null;
 }
 
 function ensureInboxCategory(rows: ProjectCategoryRow[]): ProjectCategoryRow[] {
@@ -121,7 +156,9 @@ export default function AddProjectScreen() {
     if (!picked || picked.source !== scheduleSource) return;
 
     if (picked.mode === 'time' && picked.range) {
-      const rangeLabel = `${formatDate(picked.range.start)} ~ ${formatDate(picked.range.end)}`;
+      const rangeStart = formatDate(picked.range.start);
+      const rangeEnd = formatDate(picked.range.end);
+      const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
       const timeLabel = picked.allDay ? '全天' : `${formatTime(picked.startTime)} - ${formatTime(picked.endTime)}`;
       setDeadlineText(`${rangeLabel} ${timeLabel}`);
     } else if (picked.date) {
@@ -138,6 +175,9 @@ export default function AddProjectScreen() {
       reminderOption: picked.reminderOption,
       repeatOption: picked.repeatOption,
       repeatSummary: picked.repeatSummary,
+      weeklyDays: picked.weeklyDays,
+      monthlyDays: picked.monthlyDays,
+      yearlyDate: picked.yearlyDate,
       date: picked.date,
       range: picked.range,
       startTime: picked.startTime,
@@ -146,6 +186,34 @@ export default function AddProjectScreen() {
 
     globalThis.__schedulePickerResult = undefined;
   }, [scheduleSource]);
+
+  const openSchedulePicker = React.useCallback(() => {
+    const scheduleInit: SchedulePickerInitPayload | undefined = scheduleMeta
+      ? {
+          mode: scheduleMeta.mode,
+          quickChip: '',
+          allDay: scheduleMeta.allDay,
+          hasExactTime: scheduleMeta.hasExactTime,
+          reminderOption: scheduleMeta.reminderOption,
+          repeatOption: scheduleMeta.repeatOption,
+          repeatSummary: scheduleMeta.repeatSummary,
+          weeklyDays: scheduleMeta.weeklyDays,
+          monthlyDays: scheduleMeta.monthlyDays,
+          yearlyDate: scheduleMeta.yearlyDate,
+          date: scheduleMeta.date,
+          range: scheduleMeta.range,
+          startTime: scheduleMeta.startTime,
+          endTime: scheduleMeta.endTime,
+        }
+      : undefined;
+    router.push({
+      pathname: '/schedule-picker',
+      params: {
+        source: scheduleSource,
+        initial: scheduleInit ? JSON.stringify(scheduleInit) : '',
+      },
+    });
+  }, [router, scheduleMeta, scheduleSource]);
 
   React.useEffect(() => {
     readScheduleResult();
@@ -284,7 +352,7 @@ export default function AddProjectScreen() {
                   </View>
                 )}
               </View>
-              <Pressable onPress={() => router.push({ pathname: '/schedule-picker', params: { source: scheduleSource } })} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
+              <Pressable onPress={openSchedulePicker} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
               </Pressable>
             </View>
