@@ -1,6 +1,9 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getFinanceAccountsWithBalance, getFinanceTransactions } from '@/lib/repositories/finance/finance';
+import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Animated, Dimensions, Easing, Keyboard, Platform, Pressable, ScrollView, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
@@ -70,6 +73,9 @@ export default function FinanceScreen() {
   const primary = isDark ? '#60a5fa' : '#0058be';
   const secondary = isDark ? '#34d399' : '#006c49';
   const tertiary = isDark ? '#fbbf24' : '#825100';
+  const weekdayCn = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
+  const today = new Date();
+  const headerDateLabel = `${today.getMonth() + 1}月${today.getDate()}日 ${weekdayCn[today.getDay()]}`;
 
   const txns: Txn[] = [
     {
@@ -103,6 +109,32 @@ export default function FinanceScreen() {
     },
   ];
 
+  const parseAmount = React.useCallback((amount: string) => {
+    const numeric = Number(amount.replace(/[^\d.-]/g, ''));
+    return Number.isFinite(numeric) ? numeric : 0;
+  }, []);
+
+  const formatCurrencyWithDecimals = React.useCallback((value: number) => {
+    return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }, []);
+
+  const todayTxns = React.useMemo(() => txns.filter((txn) => txn.meta.includes('今天')), [txns]);
+  const todayExpenseTotal = React.useMemo(
+    () => todayTxns.reduce((sum, txn) => {
+      const amount = parseAmount(txn.amount);
+      return amount < 0 ? sum + Math.abs(amount) : sum;
+    }, 0),
+    [parseAmount, todayTxns]
+  );
+  const todayIncomeTotal = React.useMemo(
+    () => todayTxns.reduce((sum, txn) => {
+      const amount = parseAmount(txn.amount);
+      return amount > 0 ? sum + amount : sum;
+    }, 0),
+    [parseAmount, todayTxns]
+  );
+  const todayLabel = `今日 ${today.getMonth() + 1}月${today.getDate()}日 ${weekdayCn[today.getDay()]}`;
+
   const collapsedHeight = 56;
   const focusedHeight = 148;
   const collapsedBottom = 6;
@@ -112,7 +144,10 @@ export default function FinanceScreen() {
   const [inputFocused, setInputFocused] = React.useState(false);
   const [voiceMode, setVoiceMode] = React.useState(false);
   const [isRecording, setIsRecording] = React.useState(false);
+  const [financeTransactions, setFinanceTransactions] = React.useState<FinanceTransactionRow[]>([]);
+  const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [animatedNetValue, setAnimatedNetValue] = React.useState(0);
+  const [showNetAmounts, setShowNetAmounts] = React.useState(true);
 
   const focusAnim = React.useRef(new Animated.Value(0)).current;
   const voiceAnim = React.useRef(new Animated.Value(0)).current;
@@ -196,7 +231,7 @@ export default function FinanceScreen() {
   }, [revealAnim]);
 
   React.useEffect(() => {
-    const target = 842500;
+    const target = financeTransactions.reduce((sum, txn) => sum + txn.amount, 0);
     const id = netValueAnim.addListener(({ value }) => {
       setAnimatedNetValue(Math.round(value));
     });
@@ -211,7 +246,39 @@ export default function FinanceScreen() {
     return () => {
       netValueAnim.removeListener(id);
     };
-  }, [netValueAnim]);
+  }, [financeTransactions, netValueAnim]);
+
+  const loadFinanceTransactions = React.useCallback(async () => {
+    try {
+      const rows = await getFinanceTransactions();
+      setFinanceTransactions(rows);
+    } catch (error) {
+      console.warn('Failed to load finance transactions:', error);
+      setFinanceTransactions([]);
+    }
+  }, []);
+
+  const loadFinanceAccounts = React.useCallback(async () => {
+    try {
+      const rows = await getFinanceAccountsWithBalance();
+      setFinanceAccounts(rows);
+    } catch (error) {
+      console.warn('Failed to load finance accounts:', error);
+      setFinanceAccounts([]);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadFinanceTransactions();
+    void loadFinanceAccounts();
+  }, [loadFinanceAccounts, loadFinanceTransactions]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      void loadFinanceTransactions();
+      void loadFinanceAccounts();
+    }, [loadFinanceAccounts, loadFinanceTransactions])
+  );
 
   React.useEffect(() => {
     if (isRecording) {
@@ -352,6 +419,56 @@ export default function FinanceScreen() {
     return `¥${value.toLocaleString('zh-CN')}`;
   }, []);
 
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+  const monthlyTransactions = React.useMemo(() => {
+    return financeTransactions.filter((txn) => {
+      const happenedAt = new Date(txn.happened_at);
+      return happenedAt >= monthStart && happenedAt < monthEnd;
+    });
+  }, [financeTransactions, monthEnd, monthStart]);
+  const monthlyIncome = React.useMemo(
+    () =>
+      monthlyTransactions.reduce((sum, txn) => {
+        const isIncome = txn.transaction_type === 'income' || txn.amount > 0;
+        return isIncome ? sum + Math.abs(txn.amount) : sum;
+      }, 0),
+    [monthlyTransactions]
+  );
+  const monthlyExpense = React.useMemo(
+    () =>
+      monthlyTransactions.reduce((sum, txn) => {
+        const isExpense = txn.transaction_type === 'expense' || txn.amount < 0;
+        return isExpense ? sum + Math.abs(txn.amount) : sum;
+      }, 0),
+    [monthlyTransactions]
+  );
+  const monthlySurplus = monthlyIncome - monthlyExpense;
+  const savingsRate = monthlyIncome > 0 ? (monthlySurplus / monthlyIncome) * 100 : 0;
+
+  const hiddenAmountText = '****';
+  const netValueText = showNetAmounts ? formatCurrency(animatedNetValue) : hiddenAmountText;
+  const netChangeText = showNetAmounts ? `${savingsRate.toFixed(1)}%` : '--';
+  const monthlyIncomeText = showNetAmounts ? formatCurrencyWithDecimals(monthlyIncome) : hiddenAmountText;
+  const monthlyExpenseText = showNetAmounts ? formatCurrencyWithDecimals(monthlyExpense) : hiddenAmountText;
+  const monthlySurplusText = showNetAmounts ? formatCurrencyWithDecimals(monthlySurplus) : hiddenAmountText;
+  const savingRateText = showNetAmounts ? `${savingsRate.toFixed(1)}%` : '--';
+
+  const formatCurrencyBalance = React.useCallback(
+    (value: number) => {
+      if (!showNetAmounts) return hiddenAmountText;
+      return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    },
+    [showNetAmounts]
+  );
+
+  const accountIcon = React.useCallback((name: string): keyof typeof MaterialIcons.glyphMap => {
+    if (name.includes('现金')) return 'payments';
+    if (name.includes('支付宝')) return 'account-balance-wallet';
+    if (name.includes('微信')) return 'chat';
+    return 'account-balance';
+  }, []);
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
       <ScrollView
@@ -372,7 +489,7 @@ export default function FinanceScreen() {
           ]}>
           <View style={styles.headerInner}>
             <View style={styles.headerSpacer} />
-            <Text style={[styles.headerTitle, { color: text }]}>3月24日 周一</Text>
+            <Text style={[styles.headerTitle, { color: text }]}>{headerDateLabel}</Text>
             <View style={styles.headerRight}>
               <Pressable
                 onPress={() => router.push('/finance-calendar')}
@@ -391,20 +508,37 @@ export default function FinanceScreen() {
             ]}>
 
             <View style={[styles.netAccent, { backgroundColor: tertiary }]} />
-            <Text style={[styles.netKicker, { color: subtle }]}>当前净资产</Text>
+            <View style={styles.netHeaderRow}>
+              <Text style={[styles.netKicker, { color: subtle }]}>当前净资产</Text>
+              <Pressable
+                onPress={() => setShowNetAmounts((prev) => !prev)}
+                style={({ pressed }) => [styles.netVisibilityBtn, pressed && { opacity: 0.75 }]}
+                accessibilityRole="button"
+                accessibilityLabel={showNetAmounts ? '隐藏当前卡片数字' : '显示当前卡片数字'}>
+                <MaterialIcons name={showNetAmounts ? 'visibility-off' : 'visibility'} size={18} color={subtle} />
+              </Pressable>
+            </View>
             <View style={styles.netRow}>
-              <Text style={[styles.netValue, { color: text }]}>{formatCurrency(animatedNetValue)}</Text>
-              <Text style={[styles.netChange, { color: secondary }]}>+2.4%</Text>
+              <Text style={[styles.netValue, { color: text }]}>{netValueText}</Text>
+              <Text style={[styles.netChange, { color: secondary }]}>{netChangeText}</Text>
             </View>
             <View style={[styles.netDivider, { backgroundColor: outlineVariant }]} />
             <View style={styles.netStats}>
               <View style={styles.netStatCol}>
+                <Text style={[styles.netStatLabel, { color: subtle }]}>本月收入</Text>
+                <Text style={[styles.netStatValue, { color: secondary }]}>{monthlyIncomeText}</Text>
+              </View>
+              <View style={styles.netStatCol}>
                 <Text style={[styles.netStatLabel, { color: subtle }]}>本月支出</Text>
-                <Text style={[styles.netStatValue, { color: text }]}>¥12,480.00</Text>
+                <Text style={[styles.netStatValue, { color: '#dc2626' }]}>{monthlyExpenseText}</Text>
+              </View>
+              <View style={styles.netStatCol}>
+                <Text style={[styles.netStatLabel, { color: subtle }]}>本月盈余</Text>
+                <Text style={[styles.netStatValue, { color: secondary }]}>{monthlySurplusText}</Text>
               </View>
               <View style={styles.netStatCol}>
                 <Text style={[styles.netStatLabel, { color: subtle }]}>储蓄率</Text>
-                <Text style={[styles.netStatValue, { color: text }]}>32.5%</Text>
+                <Text style={[styles.netStatValue, { color: text }]}>{savingRateText}</Text>
               </View>
             </View>
             <Pressable
@@ -430,26 +564,60 @@ export default function FinanceScreen() {
           </View>
 
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.carousel}>
-            <View style={[styles.accountCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
-              <MaterialIcons name="payments" size={22} color={tertiary} />
-              <Text style={[styles.accountKicker, { color: subtle }]}>现金余额</Text>
-              <Text style={[styles.accountValue, { color: text }]}>¥4,200.00</Text>
-            </View>
+            {financeAccounts.length === 0 ? (
+              <Pressable
+                onPress={() => router.push('/add-account')}
+                style={({ pressed }) => [
+                  styles.accountCard,
+                  { backgroundColor: surface, borderColor: outlineVariant },
+                  pressed && { opacity: 0.92, transform: [{ scale: 0.99 }] },
+                ]}>
+                <MaterialIcons name="add-circle-outline" size={22} color={primary} />
+                <Text style={[styles.accountKicker, { color: subtle }]}>还没有账户</Text>
+                <Text style={[styles.accountValue, { color: text }]}>去添加</Text>
+              </Pressable>
+            ) : (
+              financeAccounts.slice(0, 8).map((acc, idx) => {
+                const isAccent = idx === 1;
+                const cardBg = isAccent ? (isDark ? 'rgba(30,41,59,0.92)' : '#283044') : surface;
+                const kickerColor = isAccent ? 'rgba(255,255,255,0.70)' : subtle;
+                const valueColor = isAccent ? '#fff' : text;
+                const iconColor = isAccent ? (isDark ? '#fbbf24' : '#ffddb8') : primary;
+                const cardStyle = isAccent ? styles.accountCardDark : styles.accountCard;
 
-            <View style={[styles.accountCardDark, { backgroundColor: isDark ? 'rgba(30,41,59,0.92)' : '#283044' }]}>
-              <MaterialIcons name="account-balance" size={22} color={isDark ? '#fbbf24' : '#ffddb8'} />
-              <Text style={[styles.accountKicker, { color: 'rgba(255,255,255,0.70)' }]}>招商银行 (8821)</Text>
-              <Text style={[styles.accountValue, { color: '#fff' }]}>¥625,300.00</Text>
-            </View>
-
-            <View style={[styles.accountCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.95)', borderColor: outlineVariant }]}>
-              <MaterialIcons name="account-balance-wallet" size={22} color={primary} />
-              <Text style={[styles.accountKicker, { color: subtle }]}>支付宝</Text>
-              <Text style={[styles.accountValue, { color: text }]}>¥213,000.00</Text>
-            </View>
+                return (
+                  <Pressable
+                    key={acc.id}
+                    onPress={() => router.push('/account-detail')}
+                    style={({ pressed }) => [
+                      cardStyle,
+                      isAccent ? { backgroundColor: cardBg } : { backgroundColor: cardBg, borderColor: outlineVariant },
+                      pressed && { opacity: 0.92, transform: [{ scale: 0.99 }] },
+                    ]}>
+                    <MaterialIcons name={accountIcon(acc.name)} size={22} color={iconColor} />
+                    <Text style={[styles.accountKicker, { color: kickerColor }]}>
+                      {acc.account_no ? `${acc.name} (${acc.account_no})` : acc.name}
+                    </Text>
+                    <Text style={[styles.accountValue, { color: valueColor }]}>{formatCurrencyBalance(acc.balance)}</Text>
+                  </Pressable>
+                );
+              })
+            )}
           </ScrollView>
 
           <Text style={[styles.sectionTitle, { color: text, marginTop: 6 }]}>收支明细</Text>
+          <View style={styles.sectionMetaRow}>
+            <Text style={[styles.sectionMetaText, { color: subtle }]}>{todayLabel}</Text>
+            <View style={styles.sectionLegendRow}>
+              <Text style={[styles.sectionLegendText, { color: '#dc2626' }]}>
+                支出 {formatCurrencyWithDecimals(todayExpenseTotal)}
+              </Text>
+              <Text style={[styles.sectionLegendDivider, { color: subtle }]}>·</Text>
+              <Text style={[styles.sectionLegendText, { color: secondary }]}>
+                收入 {formatCurrencyWithDecimals(todayIncomeTotal)}
+              </Text>
+            </View>
+          </View>
           <View style={styles.timelineWrap}>
             <View style={[styles.timelineLine, { backgroundColor: outlineVariant }]} />
             {txns.map((t, idx) => {
@@ -641,7 +809,19 @@ const styles = StyleSheet.create({
     letterSpacing: 2.2,
     textTransform: 'uppercase',
     opacity: 0.75,
+  },
+  netHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 12,
+  },
+  netVisibilityBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   netRow: {
     flexDirection: 'row',
@@ -667,11 +847,12 @@ const styles = StyleSheet.create({
   },
   netStats: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 16,
     justifyContent: 'space-between',
   },
   netStatCol: {
-    flex: 1,
+    width: '47%',
     gap: 6,
   },
   netStatLabel: {
@@ -713,6 +894,32 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '900',
     letterSpacing: -0.3,
+  },
+  sectionMetaRow: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sectionMetaText: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  sectionLegendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  sectionLegendText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+  },
+  sectionLegendDivider: {
+    fontSize: 11,
+    fontWeight: '700',
+    opacity: 0.7,
   },
   sectionLink: {
     flexDirection: 'row',

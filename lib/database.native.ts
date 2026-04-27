@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -148,6 +148,70 @@ export async function initDatabase() {
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS finance_accounts (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      account_no TEXT,
+      account_type TEXT NOT NULL DEFAULT 'asset',
+      sign_rule INTEGER NOT NULL DEFAULT 1 CHECK (sign_rule IN (-1, 1)),
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS finance_account_types (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      is_liability INTEGER NOT NULL DEFAULT 0,
+      icon_key TEXT NOT NULL DEFAULT 'savings',
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS finance_flow_categories (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      parent_id TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT,
+      FOREIGN KEY (parent_id) REFERENCES finance_flow_categories(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS finance_transactions (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      happened_at TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      ai_comment TEXT,
+      transaction_type TEXT NOT NULL DEFAULT 'expense',
+      flow_category_id TEXT,
+      amount REAL NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT,
+      FOREIGN KEY (account_id) REFERENCES finance_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (flow_category_id) REFERENCES finance_flow_categories(id) ON DELETE SET NULL
+    );
+
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL DEFAULT '默认用户',
@@ -197,6 +261,14 @@ export async function initDatabase() {
      WHERE id = ?`,
     [INBOX_PROJECT_CATEGORY_NAME, INBOX_PROJECT_CATEGORY_ID]
   );
+  await db.execAsync(`
+    INSERT OR IGNORE INTO finance_flow_categories (
+      id, name, parent_id, sort_order, is_builtin, created_at, updated_at, deleted_at, sync_status, version, extra_data
+    ) VALUES
+      ('finance-category-snack', '零食', NULL, 1, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
+      ('finance-category-drink', '饮品', NULL, 2, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
+      ('finance-category-dining', '餐饮', NULL, 3, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL);
+  `);
   await ensureColumn(db, 'users', 'avatar_uri', 'TEXT');
   await ensureColumn(db, 'users', 'gender', 'TEXT');
   await ensureColumn(db, 'users', 'lifestyle', 'TEXT');
@@ -213,6 +285,27 @@ export async function initDatabase() {
   await ensureColumn(db, 'tasks', 'parent_task_id', 'TEXT');
   await ensureColumn(db, 'tasks', 'note', 'TEXT');
   await ensureColumn(db, 'tasks', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'finance_accounts', 'account_no', 'TEXT');
+  await ensureColumn(db, 'finance_accounts', 'account_type', 'TEXT');
+  await ensureColumn(db, 'finance_accounts', 'sign_rule', 'INTEGER');
+  await ensureColumn(db, 'finance_accounts', 'note', 'TEXT');
+  await ensureColumn(db, 'finance_accounts', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'finance_account_types', 'is_liability', 'INTEGER');
+  await ensureColumn(db, 'finance_account_types', 'icon_key', 'TEXT');
+  await ensureColumn(db, 'finance_account_types', 'sort_order', 'INTEGER');
+  await ensureColumn(db, 'finance_account_types', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'finance_flow_categories', 'parent_id', 'TEXT');
+  await ensureColumn(db, 'finance_flow_categories', 'sort_order', 'INTEGER');
+  await ensureColumn(db, 'finance_flow_categories', 'is_builtin', 'INTEGER');
+  await ensureColumn(db, 'finance_flow_categories', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'finance_transactions', 'name', 'TEXT');
+  await ensureColumn(db, 'finance_transactions', 'happened_at', 'TEXT');
+  await ensureColumn(db, 'finance_transactions', 'ai_comment', 'TEXT');
+  await ensureColumn(db, 'finance_transactions', 'transaction_type', 'TEXT');
+  await ensureColumn(db, 'finance_transactions', 'flow_category_id', 'TEXT');
+  await ensureColumn(db, 'finance_transactions', 'amount', 'REAL');
+  await ensureColumn(db, 'finance_transactions', 'note', 'TEXT');
+  await ensureColumn(db, 'finance_transactions', 'extra_data', 'TEXT');
 
   // Ensure legacy rows have a default category_id once column exists
   await db.runAsync(
@@ -290,6 +383,14 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_task_items_task_id ON task_items(task_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_updated_at ON accounts(updated_at);
     CREATE INDEX IF NOT EXISTS idx_account_transactions_account_id ON account_transactions(account_id);
+    CREATE INDEX IF NOT EXISTS idx_finance_accounts_updated_at ON finance_accounts(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_finance_account_types_sort_order ON finance_account_types(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_finance_account_types_updated_at ON finance_account_types(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_finance_flow_categories_parent_id ON finance_flow_categories(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_finance_flow_categories_sort_order ON finance_flow_categories(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_finance_transactions_account_id ON finance_transactions(account_id);
+    CREATE INDEX IF NOT EXISTS idx_finance_transactions_flow_category_id ON finance_transactions(flow_category_id);
+    CREATE INDEX IF NOT EXISTS idx_finance_transactions_happened_at ON finance_transactions(happened_at);
     CREATE INDEX IF NOT EXISTS idx_users_updated_at ON users(updated_at);
     CREATE INDEX IF NOT EXISTS idx_health_records_user_id ON health_records(user_id);
     CREATE INDEX IF NOT EXISTS idx_health_records_record_date ON health_records(record_date);
@@ -315,6 +416,10 @@ export async function resetDatabase() {
 
   await db.execAsync(`
     DROP TABLE IF EXISTS health_records;
+    DROP TABLE IF EXISTS finance_transactions;
+    DROP TABLE IF EXISTS finance_flow_categories;
+    DROP TABLE IF EXISTS finance_account_types;
+    DROP TABLE IF EXISTS finance_accounts;
     DROP TABLE IF EXISTS account_transactions;
     DROP TABLE IF EXISTS accounts;
     DROP TABLE IF EXISTS task_items;

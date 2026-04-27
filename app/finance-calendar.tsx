@@ -1,18 +1,21 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getFinanceDailySummariesByDateRange, getFinanceTransactionsByYmd } from '@/lib/repositories/finance/finance';
+import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Animated, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Animated, FlatList, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type DayCell = {
   key: string;
   date: Date;
   inCurrentMonth: boolean;
-  amount?: number;
-  bars: number;
-  tone: 'empty' | 'veryLight' | 'light' | 'medium' | 'strong';
+  income: number;
+  expense: number;
+  net: number;
 };
 
 type Txn = {
@@ -22,8 +25,12 @@ type Txn = {
   amount: number;
 };
 
-const weekTitles = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const weekTitles = ['一', '二', '三', '四', '五', '六', '日'];
 const weekdayCn = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+const MONTH_PAGE_SPAN = 481;
+const MONTH_PAGE_CENTER_INDEX = Math.floor(MONTH_PAGE_SPAN / 2);
+const GRID_PADDING = 6;
+const GRID_GAP = 4;
 
 function formatYMD(date: Date) {
   const y = date.getFullYear();
@@ -44,34 +51,15 @@ function addMonths(date: Date, delta: number) {
   return new Date(date.getFullYear(), date.getMonth() + delta, 1);
 }
 
-function amountByDate(date: Date) {
-  const seed = date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
-  const hasData = seed % 4 !== 0;
-  if (!hasData) return undefined;
-
-  const sign = seed % 5 === 0 ? 1 : -1;
-  const val = ((seed % 930) + 12) * sign;
-  return Number(val.toFixed(2));
+function getMonthDiff(from: Date, to: Date) {
+  return (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
 }
 
-function toneByAmount(amount?: number): DayCell['tone'] {
-  if (amount === undefined) return 'empty';
-  const abs = Math.abs(amount);
-  if (abs > 500) return 'strong';
-  if (abs > 220) return 'medium';
-  if (abs > 90) return 'light';
-  return 'veryLight';
+function startOfDay(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-function barsByAmount(amount?: number) {
-  if (amount === undefined) return 0;
-  const abs = Math.abs(amount);
-  if (abs > 450) return 3;
-  if (abs > 150) return 2;
-  return 1;
-}
-
-function buildCalendarCells(targetMonth: Date): DayCell[] {
+function buildCalendarCells(targetMonth: Date, dailyMap: Map<string, FinanceDailySummaryRow>): DayCell[] {
   const firstDay = monthStart(targetMonth);
   const mondayStartOffset = (firstDay.getDay() + 6) % 7;
   const gridStart = new Date(firstDay);
@@ -80,31 +68,209 @@ function buildCalendarCells(targetMonth: Date): DayCell[] {
   return Array.from({ length: 42 }).map((_, idx) => {
     const d = new Date(gridStart);
     d.setDate(gridStart.getDate() + idx);
-
-    const amount = amountByDate(d);
+    const ymd = formatYMD(d);
+    const row = dailyMap.get(ymd);
     return {
-      key: formatYMD(d),
+      key: ymd,
       date: d,
       inCurrentMonth: d.getMonth() === targetMonth.getMonth(),
-      amount,
-      bars: barsByAmount(amount),
-      tone: toneByAmount(amount),
+      income: row?.income ?? 0,
+      expense: row?.expense ?? 0,
+      net: row?.net ?? 0,
     };
   });
 }
 
-function txnsByDate(date: Date): Txn[] {
-  const seed = date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
-  const expenseA = ((seed % 180) + 35).toFixed(2);
-  const expenseB = ((seed % 260) + 80).toFixed(2);
-  const expenseC = ((seed % 120) + 20).toFixed(2);
-
-  return [
-    { icon: 'restaurant', title: '晚餐', meta: '19:24 · 美食广场', amount: -Number(expenseA) },
-    { icon: 'laptop-mac', title: 'Apple Store', meta: '14:10 · 线上订阅', amount: -Number(expenseB) },
-    { icon: 'local-taxi', title: '滴滴出行', meta: '08:45 · 交通出行', amount: -Number(expenseC) },
-  ];
+function formatTimeHHmm(happenedAt: string) {
+  const t = happenedAt.slice(11, 16);
+  return /\d{2}:\d{2}/.test(t) ? t : '--:--';
 }
+
+function txnIconByType(type: string): Txn['icon'] {
+  if (type === 'income') return 'trending-up';
+  if (type === 'expense') return 'trending-down';
+  if (type === 'transfer') return 'swap-horiz';
+  return 'receipt-long';
+}
+
+function txnToUi(row: FinanceTransactionRow): Txn {
+  const ymd = row.happened_at.slice(0, 10);
+  return {
+    icon: txnIconByType(row.transaction_type),
+    title: row.name,
+    meta: `${formatTimeHHmm(row.happened_at)} · ${ymd}`,
+    amount: row.amount,
+  };
+}
+
+function clamp01(v: number) {
+  return Math.max(0, Math.min(1, v));
+}
+
+const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
+  offset: number;
+  todayMonthStart: Date;
+  calendarWidth: number;
+  dayCellSize: number;
+  isDark: boolean;
+  text: string;
+  subtle: string;
+  outline: string;
+  incomeColor: string;
+  expenseColor: string;
+  netNegativeColor: string;
+  selectedDate: Date | null;
+  setSelectedDate: (d: Date) => void;
+  setSheetSnap: (v: 'half' | 'full') => void;
+  setSheetVisible: (v: boolean) => void;
+  getCellBg: (hasData: boolean, isActive: boolean) => string;
+}) {
+  const {
+    offset,
+    todayMonthStart,
+    calendarWidth,
+    dayCellSize,
+    isDark,
+    text,
+    subtle,
+    outline,
+    incomeColor,
+    expenseColor,
+    netNegativeColor,
+    selectedDate,
+    setSelectedDate,
+    setSheetSnap,
+    setSheetVisible,
+    getCellBg,
+  } = props;
+
+  const monthDate = React.useMemo(() => addMonths(todayMonthStart, offset), [offset, todayMonthStart]);
+  const firstDay = React.useMemo(() => monthStart(monthDate), [monthDate]);
+  const gridStart = React.useMemo(() => {
+    const mondayStartOffset = (firstDay.getDay() + 6) % 7;
+    const d = new Date(firstDay);
+    d.setDate(firstDay.getDate() - mondayStartOffset);
+    return startOfDay(d);
+  }, [firstDay]);
+  const gridEnd = React.useMemo(() => {
+    const d = new Date(gridStart);
+    d.setDate(gridStart.getDate() + 41);
+    return startOfDay(d);
+  }, [gridStart]);
+
+  const [dailyMap, setDailyMap] = React.useState<Map<string, FinanceDailySummaryRow>>(() => new Map());
+  const [maxIncomeExpense, setMaxIncomeExpense] = React.useState({ maxIncome: 0, maxExpense: 0 });
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await getFinanceDailySummariesByDateRange(formatYMD(gridStart), formatYMD(gridEnd));
+        if (cancelled) return;
+
+        const map = new Map<string, FinanceDailySummaryRow>();
+        let maxIncome = 0;
+        let maxExpense = 0;
+        for (const r of rows) {
+          map.set(r.day, r);
+          if (r.income > maxIncome) maxIncome = r.income;
+          if (r.expense > maxExpense) maxExpense = r.expense;
+        }
+        setDailyMap(map);
+        setMaxIncomeExpense({ maxIncome, maxExpense });
+      } catch {
+        if (cancelled) return;
+        setDailyMap(new Map());
+        setMaxIncomeExpense({ maxIncome: 0, maxExpense: 0 });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [gridEnd, gridStart]);
+
+  const cells = React.useMemo(() => buildCalendarCells(monthDate, dailyMap), [dailyMap, monthDate]);
+
+  return (
+    <View style={[styles.calendarPage, { width: calendarWidth }]}>
+      <View style={[styles.gridWrap, { backgroundColor: isDark ? 'rgba(30,41,59,0.75)' : '#f2f3ff' }]}>
+        {Array.from({ length: 6 }).map((_, row) => (
+          <View key={`row-${offset}-${row}`} style={styles.gridRow}>
+            {cells.slice(row * 7, row * 7 + 7).map((item) => {
+              if (!item.inCurrentMonth) {
+                return <View key={item.key} style={[styles.blankCell, { width: dayCellSize, height: dayCellSize }]} />;
+              }
+
+              const isActive = selectedDate ? isSameDay(item.date, selectedDate) : false;
+              const hasData = item.income !== 0 || item.expense !== 0;
+              const incomeRatio = maxIncomeExpense.maxIncome > 0 ? clamp01(item.income / maxIncomeExpense.maxIncome) : 0;
+              const expenseRatio = maxIncomeExpense.maxExpense > 0 ? clamp01(item.expense / maxIncomeExpense.maxExpense) : 0;
+
+              return (
+                <Pressable
+                  key={item.key}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    setSelectedDate(item.date);
+                    setSheetSnap('half');
+                    setSheetVisible(true);
+                  }}
+                  style={[
+                    styles.dayCell,
+                    {
+                      width: dayCellSize,
+                      height: dayCellSize,
+                      backgroundColor: getCellBg(hasData, isActive),
+                      borderColor: isActive ? (isDark ? '#f59e0b' : '#d97706') : outline,
+                      borderWidth: 1,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.dayNum, { color: text }]}>{item.date.getDate()}</Text>
+                  <View style={styles.midArea}>
+                    <View style={styles.barsWrap}>
+                      <View
+                        style={[
+                          styles.bar,
+                          {
+                            backgroundColor: incomeColor,
+                            opacity: hasData ? 0.95 : 0.25,
+                            width: `${Math.max(8, Math.round(90 * incomeRatio))}%`,
+                          },
+                        ]}
+                      />
+                      <View
+                        style={[
+                          styles.bar,
+                          {
+                            backgroundColor: expenseColor,
+                            opacity: hasData ? 0.8 : 0.25,
+                            width: `${Math.max(8, Math.round(90 * expenseRatio))}%`,
+                          },
+                        ]}
+                      />
+                    </View>
+                  </View>
+                  <Text
+                    style={[
+                      styles.amount,
+                      {
+                        color: !hasData ? subtle : item.net >= 0 ? incomeColor : netNegativeColor,
+                        fontWeight: isActive ? '800' : '700',
+                      },
+                    ]}
+                  >
+                    {!hasData ? '--' : `${item.net >= 0 ? '+' : ''}${item.net.toFixed(2)}`}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+});
 
 export default function FinanceCalendarScreen() {
   const router = useRouter();
@@ -115,7 +281,9 @@ export default function FinanceCalendarScreen() {
   const isDark = scheme === 'dark';
 
   const today = React.useMemo(() => new Date(), []);
-  const [displayMonth, setDisplayMonth] = React.useState(monthStart(today));
+  const todayMonthStart = React.useMemo(() => monthStart(today), [today]);
+  const [monthOffset, setMonthOffset] = React.useState(0);
+  const [visibleMonthOffset, setVisibleMonthOffset] = React.useState(0);
   const [selectedDate, setSelectedDate] = React.useState<Date | null>(today);
   const [sheetVisible, setSheetVisible] = React.useState(true);
 
@@ -124,16 +292,41 @@ export default function FinanceCalendarScreen() {
   const [pickMonth, setPickMonth] = React.useState(today.getMonth() + 1);
   const [pickDay, setPickDay] = React.useState(today.getDate());
 
-  const cells = React.useMemo(() => buildCalendarCells(displayMonth), [displayMonth]);
-  const calendarHorizontalPadding = 16;
-  const gridInnerPadding = 12;
-  const gridGapTotal = 24;
-  const calendarInnerWidth = Math.max(280, windowWidth - calendarHorizontalPadding * 2 - gridInnerPadding);
-  const dayCellSize = Math.floor((calendarInnerWidth - gridGapTotal) / 7);
+  const [calendarWidth, setCalendarWidth] = React.useState(() => Math.max(1, windowWidth - 32));
+  const pagerRef = React.useRef<FlatList<number>>(null);
+  const pagerCurrentIndexRef = React.useRef(MONTH_PAGE_CENTER_INDEX);
+  const pagerWidthReadyRef = React.useRef(false);
+  const pagerData = React.useMemo(
+    () => Array.from({ length: MONTH_PAGE_SPAN }, (_, i) => i - MONTH_PAGE_CENTER_INDEX),
+    []
+  );
+  const visibleMonth = React.useMemo(() => addMonths(todayMonthStart, visibleMonthOffset), [todayMonthStart, visibleMonthOffset]);
+  const calendarInnerWidth = Math.max(280, calendarWidth);
+  const dayCellSize = (calendarInnerWidth - GRID_PADDING * 2 - GRID_GAP * 6) / 7;
 
   const activeDate = selectedDate ?? today;
-  const activeTxns = React.useMemo(() => txnsByDate(activeDate), [activeDate]);
-  const dayTotal = activeTxns.reduce((sum, t) => sum + t.amount, 0);
+  const [activeTxns, setActiveTxns] = React.useState<Txn[]>([]);
+  const [dayTotal, setDayTotal] = React.useState(0);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await getFinanceTransactionsByYmd(formatYMD(activeDate));
+        if (cancelled) return;
+        const ui = rows.map(txnToUi);
+        setActiveTxns(ui);
+        setDayTotal(ui.reduce((sum, t) => sum + t.amount, 0));
+      } catch {
+        if (cancelled) return;
+        setActiveTxns([]);
+        setDayTotal(0);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDate]);
 
   const bg = isDark ? '#0f172a' : '#faf8ff';
   const surface = isDark ? '#1e293b' : '#ffffff';
@@ -142,6 +335,7 @@ export default function FinanceCalendarScreen() {
   const outline = isDark ? 'rgba(148,163,184,0.20)' : 'rgba(194,198,214,0.45)';
   const titleColor = isDark ? '#fbbf24' : '#b45309';
   const income = isDark ? '#34d399' : '#006c49';
+  const expense = isDark ? '#cbd5e1' : '#475569';
 
   const formatTopDate = (d: Date) => `${d.getMonth() + 1}月${d.getDate()}日 ${weekdayCn[d.getDay()]}`;
 
@@ -165,7 +359,7 @@ export default function FinanceCalendarScreen() {
     const nextDate = new Date(pickYear, pickMonth - 1, clampedDay);
 
     setSelectedDate(nextDate);
-    setDisplayMonth(monthStart(nextDate));
+    setMonthOffset(getMonthDiff(todayMonthStart, monthStart(nextDate)));
     setSheetSnap('half');
     setSheetVisible(true);
     setPickerVisible(false);
@@ -177,9 +371,11 @@ export default function FinanceCalendarScreen() {
     if (type === 'd') setPickDay((v) => Math.max(1, Math.min(31, v + delta)));
   };
 
-  const halfOpenOffset = Math.min(220, Math.max(120, Math.floor(windowHeight * 0.22)));
+  const sheetMaxHeight = Math.max(340, Math.floor(windowHeight * 0.6));
+  const halfOpenOffset = Math.min(220, Math.max(110, Math.floor(windowHeight * 0.2)));
   const sheetTranslateY = React.useRef(new Animated.Value(halfOpenOffset)).current;
   const [sheetSnap, setSheetSnap] = React.useState<'half' | 'full'>('half');
+  const sheetOpenAnim = React.useRef(new Animated.Value(0)).current;
 
   const animateSheetTo = React.useCallback(
     (toValue: number) => {
@@ -194,8 +390,18 @@ export default function FinanceCalendarScreen() {
 
   React.useEffect(() => {
     if (!sheetVisible) return;
+    sheetOpenAnim.stopAnimation();
+    sheetOpenAnim.setValue(0);
+
+    // Start offscreen then spring in for a "pop up" feel.
+    sheetTranslateY.stopAnimation();
+    sheetTranslateY.setValue(sheetMaxHeight + 24);
+    requestAnimationFrame(() => {
+      animateSheetTo(sheetSnap === 'full' ? 0 : halfOpenOffset);
+    });
+    Animated.timing(sheetOpenAnim, { toValue: 1, duration: 180, useNativeDriver: true }).start();
     animateSheetTo(sheetSnap === 'full' ? 0 : halfOpenOffset);
-  }, [animateSheetTo, halfOpenOffset, sheetSnap, sheetVisible]);
+  }, [animateSheetTo, halfOpenOffset, sheetMaxHeight, sheetOpenAnim, sheetSnap, sheetTranslateY, sheetVisible]);
 
   const panResponder = React.useMemo(
     () =>
@@ -227,6 +433,46 @@ export default function FinanceCalendarScreen() {
     [animateSheetTo, halfOpenOffset, sheetSnap, sheetTranslateY],
   );
 
+  React.useEffect(() => {
+    const nextWidth = Math.max(1, windowWidth - 32);
+    setCalendarWidth((prev) => (Math.abs(prev - nextWidth) < 1 ? prev : nextWidth));
+  }, [windowWidth]);
+
+  React.useEffect(() => {
+    setVisibleMonthOffset(monthOffset);
+    if (calendarWidth <= 0) return;
+
+    const nextIndex = monthOffset + MONTH_PAGE_CENTER_INDEX;
+    if (!pagerWidthReadyRef.current) {
+      pagerWidthReadyRef.current = true;
+      pagerCurrentIndexRef.current = nextIndex;
+      requestAnimationFrame(() => {
+        pagerRef.current?.scrollToIndex({ index: nextIndex, animated: false });
+      });
+      return;
+    }
+
+    if (nextIndex === pagerCurrentIndexRef.current) return;
+    pagerCurrentIndexRef.current = nextIndex;
+    requestAnimationFrame(() => {
+      pagerRef.current?.scrollToIndex({ index: nextIndex, animated: true });
+    });
+  }, [calendarWidth, monthOffset]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const now = new Date();
+      setSelectedDate(now);
+      setMonthOffset(getMonthDiff(todayMonthStart, monthStart(now)));
+      setVisibleMonthOffset(getMonthDiff(todayMonthStart, monthStart(now)));
+      setPickYear(now.getFullYear());
+      setPickMonth(now.getMonth() + 1);
+      setPickDay(now.getDate());
+      setSheetSnap('half');
+      setSheetVisible(true);
+    }, [todayMonthStart]),
+  );
+
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: bg }]} edges={['top', 'left', 'right']}>
       <View style={[styles.topBar, { backgroundColor: isDark ? 'rgba(15,23,42,0.90)' : 'rgba(255,255,255,0.88)' }]}>
@@ -247,15 +493,15 @@ export default function FinanceCalendarScreen() {
           <View style={styles.monthHeader}>
             <View>
               <Text style={[styles.monthTag, { color: subtle }]}>
-                {displayMonth.toLocaleString('en-US', { month: 'long' }).toUpperCase()} {displayMonth.getFullYear()}
+                {visibleMonth.toLocaleString('en-US', { month: 'long' }).toUpperCase()} {visibleMonth.getFullYear()}
               </Text>
-              <Text style={[styles.monthTitle, { color: text }]}>{displayMonth.getMonth() + 1}月总览</Text>
+              <Text style={[styles.monthTitle, { color: text }]}>{visibleMonth.getMonth() + 1}月总览</Text>
             </View>
             <View style={styles.monthActions}>
               <Pressable
                 onPress={(e) => {
                   e.stopPropagation();
-                  setDisplayMonth((m) => addMonths(m, -1));
+                  setMonthOffset((prev) => prev - 1);
                 }}
                 style={({ pressed }) => [styles.monthArrowBtn, { backgroundColor: surface }, pressed && { opacity: 0.72 }]}>
                 <MaterialIcons name="chevron-left" size={22} color={subtle} />
@@ -263,7 +509,7 @@ export default function FinanceCalendarScreen() {
               <Pressable
                 onPress={(e) => {
                   e.stopPropagation();
-                  setDisplayMonth((m) => addMonths(m, 1));
+                  setMonthOffset((prev) => prev + 1);
                 }}
                 style={({ pressed }) => [styles.monthArrowBtn, { backgroundColor: surface }, pressed && { opacity: 0.72 }]}>
                 <MaterialIcons name="chevron-right" size={22} color={subtle} />
@@ -271,89 +517,96 @@ export default function FinanceCalendarScreen() {
             </View>
           </View>
 
-          <View style={styles.weekRow}>
+          <View style={[styles.weekRow, { paddingHorizontal: GRID_PADDING, gap: GRID_GAP }]}>
             {weekTitles.map((item) => (
-              <Text key={item} style={[styles.weekText, { color: subtle }]}>{item}</Text>
+              <Text key={item} style={[styles.weekText, { color: subtle, width: dayCellSize }]}>{item}</Text>
             ))}
           </View>
 
-          <View style={[styles.gridWrap, { backgroundColor: isDark ? 'rgba(30,41,59,0.75)' : '#f2f3ff' }]}>
-            {Array.from({ length: 6 }).map((_, row) => (
-              <View key={row} style={styles.gridRow}>
-                {cells.slice(row * 7, row * 7 + 7).map((item) => {
-                  if (!item.inCurrentMonth) {
-                    return <View key={item.key} style={[styles.blankCell, { width: dayCellSize, height: dayCellSize }]} />;
-                  }
-
-                  const isActive = selectedDate ? isSameDay(item.date, selectedDate) : false;
-                  return (
-                    <Pressable
-                      key={item.key}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        setSelectedDate(item.date);
-                        setSheetSnap('half');
-                        setSheetVisible(true);
-                      }}
-                      style={[
-                        styles.dayCell,
-                        {
-                          width: dayCellSize,
-                          height: dayCellSize,
-                          backgroundColor: getCellBg(item.amount !== undefined, isActive),
-                          borderColor: isActive ? (isDark ? '#f59e0b' : '#d97706') : outline,
-                          borderWidth: 1,
-                        },
-                      ]}
-                    >
-                      <Text style={[styles.dayNum, { color: text }]}>{item.date.getDate()}</Text>
-                      <View style={styles.midArea}>
-                        {item.bars > 0 ? (
-                          <View style={styles.barsWrap}>
-                            {Array.from({ length: item.bars }).map((_, i) => (
-                              <View key={i} style={[styles.bar, { backgroundColor: baseTheme.primary, opacity: 0.55 + i * 0.14 }]} />
-                            ))}
-                          </View>
-                        ) : (
-                          <View style={styles.emptyMid} />
-                        )}
-                      </View>
-                      <Text
-                        style={[
-                          styles.amount,
-                          {
-                            color:
-                              item.amount === undefined
-                                ? subtle
-                                : item.amount > 0
-                                  ? income
-                                  : isDark
-                                    ? '#cbd5e1'
-                                    : '#475569',
-                            fontWeight: isActive ? '800' : '700',
-                          },
-                        ]}
-                      >
-                        {item.amount === undefined ? '--' : `${item.amount > 0 ? '+' : ''}${item.amount.toFixed(2)}`}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            ))}
-          </View>
+          <FlatList
+            ref={pagerRef}
+            data={pagerData}
+            horizontal
+            pagingEnabled
+            directionalLockEnabled
+            decelerationRate="fast"
+            initialScrollIndex={MONTH_PAGE_CENTER_INDEX}
+            getItemLayout={(_, index) => ({ length: calendarWidth, offset: calendarWidth * index, index })}
+            showsHorizontalScrollIndicator={false}
+            keyExtractor={(offset) => `finance-month-${offset}`}
+            windowSize={5}
+            maxToRenderPerBatch={3}
+            updateCellsBatchingPeriod={16}
+            removeClippedSubviews
+            onLayout={(e) => {
+              const width = e.nativeEvent.layout.width;
+              setCalendarWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width));
+            }}
+            onScroll={(e) => {
+              if (calendarWidth <= 0) return;
+              const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
+              const previewOffset = Math.round(rawIndex) - MONTH_PAGE_CENTER_INDEX;
+              setVisibleMonthOffset((prev) => (prev === previewOffset ? prev : previewOffset));
+            }}
+            scrollEventThrottle={16}
+            onMomentumScrollEnd={(e) => {
+              if (calendarWidth <= 0) return;
+              const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
+              const nextIndex = Math.round(rawIndex);
+              const nextOffset = nextIndex - MONTH_PAGE_CENTER_INDEX;
+              pagerCurrentIndexRef.current = nextIndex;
+              setVisibleMonthOffset(nextOffset);
+              setMonthOffset((prev) => (prev === nextOffset ? prev : nextOffset));
+            }}
+            onScrollToIndexFailed={(info) => {
+              if (calendarWidth <= 0) return;
+              requestAnimationFrame(() => {
+                pagerRef.current?.scrollToOffset({ offset: info.index * calendarWidth, animated: false });
+              });
+            }}
+            renderItem={({ item: offset }) => {
+              return (
+                <FinanceMonthPage
+                  offset={offset}
+                  todayMonthStart={todayMonthStart}
+                  calendarWidth={calendarWidth}
+                  dayCellSize={dayCellSize}
+                  isDark={isDark}
+                  text={text}
+                  subtle={subtle}
+                  outline={outline}
+                  incomeColor={income}
+                  expenseColor={expense}
+                  netNegativeColor={baseTheme.primary}
+                  selectedDate={selectedDate}
+                  setSelectedDate={setSelectedDate}
+                  setSheetSnap={setSheetSnap}
+                  setSheetVisible={setSheetVisible}
+                  getCellBg={getCellBg}
+                />
+              );
+            }}
+          />
         </ScrollView>
       </Pressable>
 
       {sheetVisible && selectedDate ? (
-        <Animated.View style={[styles.sheetWrap, { transform: [{ translateY: sheetTranslateY }] }]} pointerEvents="box-none">
+        <Animated.View
+          style={[
+            styles.sheetWrap,
+            {
+              opacity: sheetOpenAnim,
+              transform: [{ translateY: sheetTranslateY }],
+            },
+          ]}
+          pointerEvents="box-none">
           <View
             style={[
               styles.sheet,
               {
                 backgroundColor: surface,
                 borderColor: outline,
-                height: Math.min(618, Math.floor(windowHeight * 0.72)),
+                height: sheetMaxHeight,
                 paddingBottom: Math.max(18, insets.bottom + 10),
               },
             ]}
@@ -374,10 +627,22 @@ export default function FinanceCalendarScreen() {
             </View>
 
             <ScrollView
-              style={styles.sheetScroll}
+              style={[styles.sheetScroll, { maxHeight: Math.max(130, sheetMaxHeight - 110) }]}
               contentContainerStyle={styles.sheetScrollContent}
               showsVerticalScrollIndicator={false}
               nestedScrollEnabled>
+              <View style={[styles.insightCard, { backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : '#fff7ed', borderColor: isDark ? 'rgba(251,191,36,0.35)' : 'rgba(251,191,36,0.28)' }]}>
+                <View style={styles.insightHeader}>
+                  <MaterialIcons name="auto-awesome" size={14} color={titleColor} />
+                  <Text style={[styles.insightTagText, { color: titleColor }]}>AI 洞察</Text>
+                </View>
+                <Text style={[styles.insightBody, { color: isDark ? '#fde68a' : '#92400e' }]}>
+                  本月餐饮支出已超出过去 3 个月平均值的 12%，建议减少外卖频次以达成存款目标。
+                </Text>
+              </View>
+
+              <View style={[styles.sheetDivider, { backgroundColor: outline }]} />
+
               {activeTxns.map((txn) => (
                 <View key={`${txn.title}-${txn.meta}`} style={styles.txnRow}>
                   <View style={[styles.txnIconWrap, { backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : '#eef2ff' }]}>
@@ -390,30 +655,6 @@ export default function FinanceCalendarScreen() {
                   <Text style={[styles.txnAmount, { color: text }]}>{txn.amount >= 0 ? '+' : ''}{txn.amount.toFixed(2)}</Text>
                 </View>
               ))}
-
-              <View style={[styles.insightCard, { backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : '#fff7ed', borderColor: isDark ? 'rgba(251,191,36,0.35)' : 'rgba(251,191,36,0.28)' }]}>
-                <View style={styles.insightHeader}>
-                  <MaterialIcons name="auto-awesome" size={14} color={titleColor} />
-                  <Text style={[styles.insightTagText, { color: titleColor }]}>AI 洞察</Text>
-                </View>
-                <Text style={[styles.insightBody, { color: isDark ? '#fde68a' : '#92400e' }]}>
-                  本月餐饮支出已超出过去 3 个月平均值的 12%，建议减少外卖频次以达成存款目标。
-                </Text>
-              </View>
-
-              <View style={[styles.prevSection, { borderTopColor: outline }]}>
-                <Text style={[styles.prevLabel, { color: subtle }]}>昨日 · {selectedDate.getMonth() + 1}月{Math.max(1, selectedDate.getDate() - 1)}日</Text>
-                <View style={styles.txnRow}>
-                  <View style={[styles.txnIconWrap, { backgroundColor: isDark ? 'rgba(52,211,153,0.25)' : '#dcfce7' }]}>
-                    <MaterialIcons name="payments" size={20} color={income} />
-                  </View>
-                  <View style={[styles.txnMain, styles.txnMainWithBorder, { borderLeftColor: income }]}>
-                    <Text style={[styles.txnTitle, { color: text }]}>工资发放</Text>
-                    <Text style={[styles.txnMeta, { color: subtle }]}>10:00 · 基础收入</Text>
-                  </View>
-                  <Text style={[styles.txnAmount, { color: income }]}>+15800.00</Text>
-                </View>
-              </View>
 
               <View style={styles.sheetBottomSpacer} />
             </ScrollView>
@@ -523,7 +764,6 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   weekText: {
-    flex: 1,
     textAlign: 'center',
     fontSize: 10,
     fontWeight: '800',
@@ -531,12 +771,15 @@ const styles = StyleSheet.create({
   },
   gridWrap: {
     borderRadius: 18,
-    padding: 6,
-    gap: 4,
+    padding: GRID_PADDING,
+    gap: GRID_GAP,
+  },
+  calendarPage: {
+    width: '100%',
   },
   gridRow: {
     flexDirection: 'row',
-    gap: 4,
+    gap: GRID_GAP,
   },
   dayCell: {
     borderRadius: 10,
@@ -587,7 +830,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   sheetScroll: {
-    flex: 1,
+    flexGrow: 0,
   },
   sheetScrollContent: {
     paddingBottom: 8,
@@ -665,6 +908,12 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 8,
   },
+  sheetDivider: {
+    height: 1,
+    marginTop: 12,
+    marginBottom: 14,
+    opacity: 0.9,
+  },
   insightHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -681,20 +930,8 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     fontWeight: '600',
   },
-  prevSection: {
-    marginTop: 12,
-    borderTopWidth: 1,
-    paddingTop: 12,
-  },
-  prevLabel: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1.4,
-    textTransform: 'uppercase',
-    marginBottom: 10,
-  },
   sheetBottomSpacer: {
-    height: 48,
+    height: 12,
   },
   modalMask: {
     flex: 1,

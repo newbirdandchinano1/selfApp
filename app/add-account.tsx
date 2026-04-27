@@ -1,48 +1,33 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
+import { deleteFinanceAccountTypeByName, getFinanceAccountTypes } from '@/lib/repositories/finance/finance';
+import { getCustomAccountTypeDraft, getCustomAccountTypeOptions, removeCustomAccountTypeOption, setCustomAccountTypeDraft } from '@/lib/state/account-type-draft';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+    Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { createFinanceAccount, createFinanceTransaction } from '@/lib/repositories/finance/finance';
 
-type AccountType = 'cash' | 'bank' | 'wallet' | 'investment' | 'credit' | 'loan';
-type ThemeColorKey = 'tertiary' | 'primary' | 'secondary' | 'error' | 'violet' | 'pink';
+type AccountType = 'cash_wallet' | 'bank' | 'investment' | 'liability' | 'custom';
 
-const TYPE_OPTIONS: { key: AccountType; label: string; icon: keyof typeof MaterialIcons.glyphMap }[] = [
-  { key: 'cash', label: '现金', icon: 'payments' },
-  { key: 'bank', label: '银行卡', icon: 'credit-card' },
-  { key: 'wallet', label: '数字钱包', icon: 'account-balance-wallet' },
-  { key: 'investment', label: '投资账户', icon: 'trending-up' },
-  { key: 'credit', label: '信用卡', icon: 'contactless' },
-  { key: 'loan', label: '个人贷款', icon: 'handshake' },
-];
-
-const COLOR_OPTIONS: { key: ThemeColorKey; value: string }[] = [
-  { key: 'tertiary', value: '#D97706' },
-  { key: 'primary', value: '#0058be' },
-  { key: 'secondary', value: '#006c49' },
-  { key: 'error', value: '#ba1a1a' },
-  { key: 'violet', value: '#7C3AED' },
-  { key: 'pink', value: '#EC4899' },
-];
-
-const ICON_OPTIONS: { key: string; icon: keyof typeof MaterialIcons.glyphMap }[] = [
-  { key: 'home', icon: 'home' },
-  { key: 'car', icon: 'directions-car' },
-  { key: 'savings', icon: 'savings' },
-  { key: 'bag', icon: 'shopping-bag' },
-  { key: 'restaurant', icon: 'restaurant' },
-  { key: 'flight', icon: 'flight' },
+const BASE_TYPE_OPTIONS: { key: Exclude<AccountType, 'custom'>; label: string; icon: keyof typeof MaterialIcons.glyphMap }[] = [
+  { key: 'cash_wallet', label: '现金与钱包', icon: 'account-balance-wallet' },
+  { key: 'bank', label: '银行账户', icon: 'account-balance' },
+  { key: 'investment', label: '投资项目', icon: 'trending-up' },
+  { key: 'liability', label: '负债', icon: 'credit-card' },
 ];
 
 export default function AddAccountScreen() {
@@ -56,14 +41,119 @@ export default function AddAccountScreen() {
   const [accountName, setAccountName] = React.useState('');
   const [balance, setBalance] = React.useState('');
   const [notes, setNotes] = React.useState('');
-  const [colorKey, setColorKey] = React.useState<ThemeColorKey>('tertiary');
-  const [iconKey, setIconKey] = React.useState<string>('savings');
+  const [iconKey, setIconKey] = React.useState<string>(() => getCustomAccountTypeDraft().iconKey || 'savings');
+  const [saving, setSaving] = React.useState(false);
+  const [customTypeName, setCustomTypeName] = React.useState(() => getCustomAccountTypeDraft().name);
+  const [customIsLiability, setCustomIsLiability] = React.useState(() => getCustomAccountTypeDraft().isLiability);
+  const [customTypeOptions, setCustomTypeOptions] = React.useState<Array<{ name: string; isLiability: boolean; iconKey: string }>>([]);
 
-  const activeColor = COLOR_OPTIONS.find((c) => c.key === colorKey)?.value ?? '#D97706';
+  // Page-level accent: brown / deep yellow
+  const accentColor = isDark ? '#D97706' : '#B45309';
 
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.35)';
   const surfaceLow = isDark ? 'rgba(30,41,59,0.35)' : 'rgba(242,243,255,0.95)';
   const surfaceLowest = theme.surface;
+
+  const canSave =
+    accountName.trim().length > 0 &&
+    (accountType !== 'custom' || customTypeName.trim().length > 0) &&
+    !saving;
+
+  const loadCustomTypeOptions = React.useCallback(async () => {
+    try {
+      const rows = await getFinanceAccountTypes();
+      setCustomTypeOptions(
+        rows.map((row) => ({
+          name: row.name,
+          isLiability: row.is_liability === 1,
+          iconKey: row.icon_key || 'savings',
+        })),
+      );
+    } catch (e) {
+      console.warn('Failed to load custom account types:', e);
+      setCustomTypeOptions(getCustomAccountTypeOptions());
+    }
+  }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const draft = getCustomAccountTypeDraft();
+      setCustomTypeName(draft.name);
+      setCustomIsLiability(draft.isLiability);
+      void loadCustomTypeOptions();
+      if (accountType === 'custom' && draft.iconKey) {
+        setIconKey(draft.iconKey);
+      }
+    }, [accountType, loadCustomTypeOptions]),
+  );
+
+  const onSave = React.useCallback(async () => {
+    const name = accountName.trim();
+    if (!name) {
+      Alert.alert('请输入账户名称', '账户名称不能为空。');
+      return;
+    }
+
+    const isLiability = accountType === 'liability' || (accountType === 'custom' && customIsLiability);
+    const signRule: -1 | 1 = isLiability ? -1 : 1;
+    const accountTypeDb = isLiability ? 'liability' : 'asset';
+
+    const customType = customTypeName.trim();
+    if (accountType === 'custom' && !customType) {
+      Alert.alert('请输入类型名称', '自定义类型名称不能为空。');
+      return;
+    }
+
+    const normalizedBalanceText = balance.trim().replace(/[^\d.-]/g, '');
+    const rawBalance = normalizedBalanceText ? Number(normalizedBalanceText) : 0;
+    const absInitial = Number.isFinite(rawBalance) ? Math.abs(rawBalance) : NaN;
+    if (!Number.isFinite(absInitial)) {
+      Alert.alert('余额无效', '请输入正确的数字金额。');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const now = Date.now();
+      const random = Math.random().toString(16).slice(2);
+      const accountId = `fa_${now}_${random}`;
+
+      await createFinanceAccount({
+        id: accountId,
+        name,
+        account_type: accountTypeDb,
+        sign_rule: signRule,
+        note: notes.trim() ? notes.trim() : null,
+        extra_data: JSON.stringify({
+          ui_account_type: accountType === 'custom' ? 'custom' : accountType,
+          ui_custom_type_name: accountType === 'custom' ? customType : null,
+          ui_is_liability: accountType === 'custom' ? customIsLiability : null,
+          ui_icon_key: iconKey,
+        }),
+      });
+
+      // Finance account balance is derived from transactions; create an initial "income" txn to set starting balance.
+      if (absInitial > 0) {
+        const txnId = `ft_init_${now}_${random}`;
+        await createFinanceTransaction({
+          id: txnId,
+          name: '初始余额',
+          happened_at: new Date().toISOString(),
+          account_id: accountId,
+          transaction_type: 'income',
+          amount: signRule * absInitial,
+          note: null,
+          extra_data: JSON.stringify({ reason: 'initial_balance' }),
+        });
+      }
+
+      router.back();
+    } catch {
+      Alert.alert('保存失败', '请稍后重试。');
+    } finally {
+      setSaving(false);
+    }
+  }, [accountName, accountType, balance, notes, iconKey, router, customIsLiability, customTypeName]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -95,17 +185,19 @@ export default function AddAccountScreen() {
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>选择账户类型</Text>
             <View style={styles.typeGrid}>
-              {TYPE_OPTIONS.map((t) => {
+              {BASE_TYPE_OPTIONS.map((t) => {
                 const active = t.key === accountType;
                 return (
                   <Pressable
                     key={t.key}
-                    onPress={() => setAccountType(t.key)}
+                    onPress={() => {
+                      setAccountType(t.key);
+                    }}
                     style={({ pressed }) => [
                       styles.typeCard,
                       {
                         backgroundColor: surfaceLowest,
-                        borderColor: active ? activeColor : outlineVariant,
+                        borderColor: active ? accentColor : outlineVariant,
                         shadowOpacity: active ? 0.08 : 0,
                       },
                       active && { shadowColor: '#000', shadowOffset: { width: 0, height: 6 }, shadowRadius: 14, elevation: 3 },
@@ -114,19 +206,98 @@ export default function AddAccountScreen() {
                     <View
                       style={[
                         styles.typeIconWrap,
-                        { backgroundColor: active ? `${activeColor}1A` : surfaceLow },
+                        { backgroundColor: active ? `${accentColor}1A` : surfaceLow },
                       ]}>
-                      <MaterialIcons name={t.icon} size={22} color={activeColor} />
+                      <MaterialIcons name={t.icon} size={22} color={accentColor} />
                     </View>
                     <Text style={[styles.typeLabel, { color: theme.text }]}>{t.label}</Text>
                   </Pressable>
                 );
               })}
+              {customTypeOptions.map((t) => {
+                const icon = FINANCE_ACCOUNT_ICON_OPTIONS.find((item) => item.key === t.iconKey)?.icon ?? 'tune';
+                const active = accountType === 'custom' && customTypeName === t.name;
+                return (
+                  <Pressable
+                    key={`custom-type-${t.name}`}
+                    onPress={() => {
+                      setAccountType('custom');
+                      setCustomTypeName(t.name);
+                      setCustomIsLiability(t.isLiability);
+                      setIconKey(t.iconKey);
+                    }}
+                    onLongPress={() => {
+                      Alert.alert(
+                        '删除自定义类型',
+                        `确认删除“${t.name}”吗？`,
+                        [
+                          { text: '取消', style: 'cancel' },
+                          {
+                            text: '删除',
+                            style: 'destructive',
+                            onPress: async () => {
+                              try {
+                                await deleteFinanceAccountTypeByName(t.name);
+                                removeCustomAccountTypeOption(t.name);
+                                await loadCustomTypeOptions();
+                                if (accountType === 'custom' && customTypeName === t.name) {
+                                  setAccountType('bank');
+                                  setCustomTypeName('');
+                                  setCustomIsLiability(false);
+                                  setIconKey('savings');
+                                }
+                              } catch (e) {
+                                console.warn('删除自定义类型失败:', e);
+                                Alert.alert('删除失败', '请稍后重试。');
+                              }
+                            },
+                          },
+                        ],
+                      );
+                    }}
+                    style={({ pressed }) => [
+                      styles.typeCard,
+                      {
+                        backgroundColor: surfaceLowest,
+                        borderColor: active ? accentColor : outlineVariant,
+                        shadowOpacity: active ? 0.08 : 0,
+                      },
+                      active && { shadowColor: '#000', shadowOffset: { width: 0, height: 6 }, shadowRadius: 14, elevation: 3 },
+                      pressed && { opacity: 0.85 },
+                    ]}>
+                    <View style={[styles.typeIconWrap, { backgroundColor: active ? `${accentColor}1A` : surfaceLow }]}>
+                      <MaterialIcons name={icon} size={22} color={accentColor} />
+                    </View>
+                    <Text numberOfLines={1} style={[styles.typeLabel, { color: theme.text }]}>{t.name}</Text>
+                  </Pressable>
+                );
+              })}
+              <Pressable
+                onPress={() => {
+                  setAccountType('custom');
+                  setCustomAccountTypeDraft({
+                    name: customTypeName,
+                    isLiability: customIsLiability,
+                    iconKey,
+                  });
+                  router.push('/add-account-type');
+                }}
+                style={({ pressed }) => [
+                  styles.typeCard,
+                  {
+                    backgroundColor: surfaceLowest,
+                    borderColor: accountType === 'custom' && !customTypeName ? accentColor : outlineVariant,
+                  },
+                  pressed && { opacity: 0.85 },
+                ]}>
+                <View style={[styles.typeIconWrap, { backgroundColor: `${accentColor}1A` }]}>
+                  <MaterialIcons name="add" size={22} color={accentColor} />
+                </View>
+                <Text style={[styles.typeLabel, { color: theme.text }]}>自定义</Text>
+              </Pressable>
             </View>
           </View>
-
           <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>账户详情</Text>
             <View style={styles.form}>
               <View style={styles.field}>
                 <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>账户名称</Text>
@@ -142,13 +313,14 @@ export default function AddAccountScreen() {
               <View style={styles.field}>
                 <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>当前余额</Text>
                 <View style={[styles.balanceRow, { borderBottomColor: outlineVariant }]}>
-                  <Text style={[styles.currency, { color: activeColor }]}>¥</Text>
+                  <Text style={[styles.currency, { color: accentColor }]}>¥</Text>
                   <TextInput
                     value={balance}
                     onChangeText={setBalance}
                     placeholder="0.00"
                     placeholderTextColor={outlineVariant}
-                    keyboardType="numeric"
+                    keyboardType="default"
+                    inputMode="decimal"
                     style={[styles.balanceInput, { color: theme.text }]}
                   />
                 </View>
@@ -172,30 +344,9 @@ export default function AddAccountScreen() {
             <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>个性化</Text>
             <View style={[styles.customCard, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
               <View style={styles.customBlock}>
-                <Text style={[styles.customLabel, { color: theme.textSecondary }]}>主题颜色</Text>
-                <View style={styles.colorRow}>
-                  {COLOR_OPTIONS.map((c) => {
-                    const active = c.key === colorKey;
-                    return (
-                      <Pressable
-                        key={c.key}
-                        onPress={() => setColorKey(c.key)}
-                        style={({ pressed }) => [
-                          styles.colorDot,
-                          { backgroundColor: c.value },
-                          active && { borderColor: c.value },
-                          pressed && { opacity: 0.8 },
-                        ]}
-                      />
-                    );
-                  })}
-                </View>
-              </View>
-
-              <View style={styles.customBlock}>
                 <Text style={[styles.customLabel, { color: theme.textSecondary }]}>账户图标</Text>
                 <View style={styles.iconGrid}>
-                  {ICON_OPTIONS.map((it) => {
+                  {FINANCE_ACCOUNT_ICON_OPTIONS.map((it) => {
                     const active = it.key === iconKey;
                     return (
                       <Pressable
@@ -203,11 +354,16 @@ export default function AddAccountScreen() {
                         onPress={() => setIconKey(it.key)}
                         style={({ pressed }) => [
                           styles.iconCell,
-                          { backgroundColor: surfaceLow },
-                          active && { backgroundColor: `${activeColor}1A` },
-                          pressed && { opacity: 0.85 },
+                          pressed && { opacity: 0.9 },
                         ]}>
-                        <MaterialIcons name={it.icon} size={18} color={active ? activeColor : theme.text} />
+                        <View
+                          style={[
+                            styles.iconCellInner,
+                            { backgroundColor: surfaceLow },
+                            active && { backgroundColor: `${accentColor}1A` },
+                          ]}>
+                          <MaterialIcons name={it.icon} size={18} color={active ? accentColor : theme.text} />
+                        </View>
                       </Pressable>
                     );
                   })}
@@ -228,13 +384,14 @@ export default function AddAccountScreen() {
           ]}>
           <View style={styles.footerInner}>
             <Pressable
-              onPress={() => router.back()}
+              onPress={() => void onSave()}
+              disabled={!canSave}
               style={({ pressed }) => [
                 styles.doneBtn,
-                { backgroundColor: activeColor, opacity: pressed ? 0.92 : 1 },
+                { backgroundColor: accentColor, opacity: !canSave ? 0.5 : pressed ? 0.92 : 1 },
                 pressed && { transform: [{ scale: 0.98 }] },
               ]}>
-              <Text style={styles.doneText}>完成</Text>
+              <Text style={styles.doneText}>{saving ? '保存中...' : '完成'}</Text>
             </Pressable>
           </View>
         </View>
@@ -265,7 +422,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'center',
   },
   headerTitle: {
@@ -274,7 +431,6 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '900',
     letterSpacing: -0.4,
-    paddingRight: 40,
   },
   headerSpacer: {
     width: 40,
@@ -377,26 +533,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  colorRow: {
-    flexDirection: 'row',
-    gap: 12,
-    flexWrap: 'wrap',
-  },
-  colorDot: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
   iconGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    marginHorizontal: -6,
   },
   iconCell: {
-    width: 44,
-    height: 44,
+    width: '20%',
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+  },
+  iconCellInner: {
+    width: '100%',
+    aspectRatio: 1,
+    minWidth: 44,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',

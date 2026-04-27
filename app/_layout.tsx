@@ -88,6 +88,8 @@ export default function RootLayout() {
             <Stack.Screen name="add-project" />
             <Stack.Screen name="add-subtask" />
             <Stack.Screen name="add-account" />
+            <Stack.Screen name="add-account-type" />
+            <Stack.Screen name="account-detail" />
             <Stack.Screen name="assets" />
             <Stack.Screen name="vision-wall" />
             <Stack.Screen name="vision-create" />

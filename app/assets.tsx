@@ -1,6 +1,9 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getFinanceAccountTypes, getFinanceAccountsWithBalance } from '@/lib/repositories/finance/finance';
+import type { FinanceAccountBalanceRow, FinanceAccountTypeRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -28,11 +31,157 @@ export default function AssetsScreen() {
   const r = (ringSize - ringStroke) / 2;
   const c = 2 * Math.PI * r;
 
-  const cashPct = 0.12;
-  const bankPct = 0.45;
-  const investPct = 0.43;
-
   const dash = (p: number) => `${c * p} ${c * (1 - p)}`;
+
+  const [accounts, setAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
+  const [accountTypes, setAccountTypes] = React.useState<FinanceAccountTypeRow[]>([]);
+
+  const loadAccounts = React.useCallback(async () => {
+    try {
+      const [rows, typeRows] = await Promise.all([getFinanceAccountsWithBalance(), getFinanceAccountTypes()]);
+      setAccounts(rows);
+      setAccountTypes(typeRows);
+    } catch (e) {
+      console.warn('Failed to load finance accounts:', e);
+      setAccounts([]);
+      setAccountTypes([]);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadAccounts();
+  }, [loadAccounts]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      void loadAccounts();
+    }, [loadAccounts]),
+  );
+
+  const formatMoney0 = React.useCallback((value: number) => {
+    const abs = Math.abs(value);
+    return `¥${abs.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
+  }, []);
+
+  const formatMoney2 = React.useCallback((value: number) => {
+    const abs = Math.abs(value);
+    return `¥${abs.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }, []);
+
+  type UiAccountType = 'cash_wallet' | 'bank' | 'investment' | 'liability' | 'custom' | 'unknown';
+
+  const parseUiMeta = React.useCallback(
+    (acc: FinanceAccountBalanceRow): { uiType: UiAccountType; uiIcon?: keyof typeof MaterialIcons.glyphMap; customTypeName?: string } => {
+    try {
+      const raw = acc.extra_data ? (JSON.parse(acc.extra_data) as unknown) : null;
+      if (raw && typeof raw === 'object') {
+        const obj = raw as Record<string, unknown>;
+        const uiType = obj.ui_account_type;
+        const iconKey = obj.ui_icon_key;
+        const customTypeName = typeof obj.ui_custom_type_name === 'string' ? obj.ui_custom_type_name.trim() : '';
+        const typeOk =
+          uiType === 'cash_wallet' || uiType === 'bank' || uiType === 'investment' || uiType === 'liability' || uiType === 'custom';
+        const iconOk = typeof iconKey === 'string' && iconKey.length > 0;
+        return {
+          uiType: typeOk ? (uiType as UiAccountType) : acc.account_type === 'liability' ? 'liability' : 'unknown',
+          uiIcon: iconOk ? (iconKey as keyof typeof MaterialIcons.glyphMap) : undefined,
+          customTypeName: customTypeName || undefined,
+        };
+      }
+    } catch {
+      // ignore JSON parse errors
+    }
+
+    return { uiType: acc.account_type === 'liability' ? 'liability' : 'unknown', uiIcon: undefined };
+  }, []);
+
+  const customTypeGroups = React.useMemo(() => {
+    const map = new Map<string, FinanceAccountBalanceRow[]>();
+    for (const a of accounts) {
+      const meta = parseUiMeta(a);
+      if (meta.uiType !== 'custom') continue;
+      const key = meta.customTypeName && meta.customTypeName.length > 0 ? meta.customTypeName : '自定义';
+      const list = map.get(key);
+      if (list) list.push(a);
+      else map.set(key, [a]);
+    }
+    const groups: Array<{ name: string; rows: FinanceAccountBalanceRow[] }> = accountTypes.map((row) => ({
+      name: row.name,
+      rows: map.get(row.name) ?? [],
+    }));
+    for (const [name, rows] of map.entries()) {
+      if (!accountTypes.some((item) => item.name === name)) {
+        groups.push({ name, rows });
+      }
+    }
+    return groups;
+  }, [accountTypes, accounts, parseUiMeta]);
+
+  const grouped = React.useMemo(() => {
+    const result: Record<UiAccountType, FinanceAccountBalanceRow[]> = {
+      cash_wallet: [],
+      bank: [],
+      investment: [],
+      liability: [],
+      custom: [],
+      unknown: [],
+    };
+    for (const a of accounts) {
+      const { uiType } = parseUiMeta(a);
+      (result[uiType] ?? result.unknown).push(a);
+    }
+    return result;
+  }, [accounts, parseUiMeta]);
+
+  const netWorth = React.useMemo(() => accounts.reduce((sum, a) => sum + (a.balance ?? 0), 0), [accounts]);
+  const totalAssets = React.useMemo(() => accounts.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [accounts]);
+  const totalLiabilitiesAbs = React.useMemo(
+    () => Math.abs(accounts.reduce((sum, a) => sum + Math.min(0, a.balance ?? 0), 0)),
+    [accounts],
+  );
+
+  const cashTotal = React.useMemo(() => grouped.cash_wallet.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [grouped.cash_wallet]);
+  const bankTotal = React.useMemo(() => grouped.bank.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [grouped.bank]);
+  const investTotal = React.useMemo(() => grouped.investment.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [grouped.investment]);
+
+  const safeAssets = totalAssets > 0 ? totalAssets : 1;
+  const cashPct = cashTotal / safeAssets;
+  const bankPct = bankTotal / safeAssets;
+  const investPct = Math.max(0, 1 - cashPct - bankPct);
+
+  const ringPct = totalAssets > 0 ? Math.round(((cashTotal + bankTotal + investTotal) / totalAssets) * 100) : 0;
+
+  const groupSumAbs = React.useCallback((rows: FinanceAccountBalanceRow[]) => {
+    return rows.reduce((sum, a) => sum + Math.abs(a.balance ?? 0), 0);
+  }, []);
+
+  const accountIcon = React.useCallback(
+    (acc: FinanceAccountBalanceRow) => {
+      const { uiIcon } = parseUiMeta(acc);
+      if (uiIcon) return uiIcon;
+      if (acc.account_type === 'liability') return 'credit-card';
+      if (acc.name.includes('现金')) return 'payments';
+      if (acc.name.includes('支付宝')) return 'account-balance-wallet';
+      if (acc.name.includes('微信')) return 'chat';
+      if (acc.name.includes('银行')) return 'account-balance';
+      return 'account-balance-wallet';
+    },
+    [parseUiMeta],
+  );
+
+  const openAccountDetail = React.useCallback(
+    (acc: FinanceAccountBalanceRow) => {
+      router.push({
+        pathname: '/account-detail',
+        params: {
+          accountId: String(acc.id),
+          accountName: acc.name,
+          accountNo: acc.account_no ?? '',
+        },
+      });
+    },
+    [router],
+  );
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: surface }]}>
@@ -41,7 +190,7 @@ export default function AssetsScreen() {
           <MaterialIcons name="arrow-back" size={22} color={isDark ? 'rgba(248,250,252,0.92)' : 'rgba(15,23,42,0.92)'} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: isDark ? 'rgba(248,250,252,0.95)' : 'rgba(15,23,42,0.95)' }]}>资产</Text>
-        <Pressable style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}>
+        <Pressable onPress={() => router.push('/finance-calendar')} style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}>
           <MaterialIcons name="calendar-today" size={22} color={isDark ? 'rgba(148,163,184,0.9)' : 'rgba(100,116,139,0.9)'} />
         </Pressable>
       </View>
@@ -51,7 +200,7 @@ export default function AssetsScreen() {
         <View style={styles.hero}>
           <Text style={[styles.kicker, { color: outline }]}>当前净资产</Text>
           <View style={styles.heroRow}>
-            <Text style={[styles.netWorth, { color: theme.text }]}>¥1,452,080</Text>
+            <Text style={[styles.netWorth, { color: theme.text }]}>{formatMoney0(netWorth)}</Text>
             <View style={[styles.pill, { backgroundColor: `${secondaryGreen}1A` }]}>
               <MaterialIcons name="trending-up" size={16} color={secondaryGreen} />
               <Text style={[styles.pillText, { color: secondaryGreen }]}>2.4%</Text>
@@ -61,12 +210,12 @@ export default function AssetsScreen() {
           <View style={styles.totalsRow}>
             <View style={styles.totalBlock}>
               <Text style={[styles.totalLabel, { color: outline }]}>总资产</Text>
-              <Text style={[styles.totalValue, { color: theme.text }]}>¥1,824,300</Text>
+              <Text style={[styles.totalValue, { color: theme.text }]}>{formatMoney0(totalAssets)}</Text>
             </View>
             <View style={[styles.vDivider, { backgroundColor: `${outlineVariant}80` }]} />
             <View style={styles.totalBlock}>
               <Text style={[styles.totalLabel, { color: outline }]}>总负债</Text>
-              <Text style={[styles.totalValue, { color: errorRed }]}>¥372,220</Text>
+              <Text style={[styles.totalValue, { color: errorRed }]}>{formatMoney0(totalLiabilitiesAbs)}</Text>
             </View>
           </View>
         </View>
@@ -82,21 +231,27 @@ export default function AssetsScreen() {
                   <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={primaryBlue} strokeWidth={ringStroke} strokeDasharray={dash(bankPct)} strokeDashoffset={c * (1 - bankPct)} fill="none" transform={`rotate(${cashPct * 360} ${ringSize / 2} ${ringSize / 2})`} />
                   <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={secondaryGreen} strokeWidth={ringStroke} strokeDasharray={dash(investPct)} strokeDashoffset={c * (1 - investPct)} fill="none" transform={`rotate(${(cashPct + bankPct) * 360} ${ringSize / 2} ${ringSize / 2})`} />
                 </Svg>
-                <Text style={[styles.ringText, { color: theme.text }]}>75%</Text>
+                <Text style={[styles.ringText, { color: theme.text }]}>{ringPct}%</Text>
               </View>
 
               <View style={styles.legend}>
                 <View style={styles.legendRow}>
                   <View style={[styles.legendDot, { backgroundColor: tertiaryAmber }]} />
-                  <Text style={[styles.legendText, { color: theme.text }]}>现金 (12%)</Text>
+                  <Text style={[styles.legendText, { color: theme.text }]}>
+                    现金 ({Math.round(cashPct * 100)}%)
+                  </Text>
                 </View>
                 <View style={styles.legendRow}>
                   <View style={[styles.legendDot, { backgroundColor: primaryBlue }]} />
-                  <Text style={[styles.legendText, { color: theme.text }]}>银行 (45%)</Text>
+                  <Text style={[styles.legendText, { color: theme.text }]}>
+                    银行 ({Math.round(bankPct * 100)}%)
+                  </Text>
                 </View>
                 <View style={styles.legendRow}>
                   <View style={[styles.legendDot, { backgroundColor: secondaryGreen }]} />
-                  <Text style={[styles.legendText, { color: theme.text }]}>投资 (43%)</Text>
+                  <Text style={[styles.legendText, { color: theme.text }]}>
+                    投资 ({Math.round(investPct * 100)}%)
+                  </Text>
                 </View>
               </View>
             </View>
@@ -133,35 +288,50 @@ export default function AssetsScreen() {
                 <MaterialIcons name="wallet" size={20} color={tertiaryAmber} />
                 <Text style={[styles.groupTitle, { color: theme.text }]}>现金与钱包</Text>
               </View>
-              <Text style={[styles.groupSum, { color: tertiaryAmber }]}>¥218,440</Text>
+              <Text style={[styles.groupSum, { color: tertiaryAmber }]}>{formatMoney0(groupSumAbs(grouped.cash_wallet))}</Text>
             </View>
 
-            <Pressable style={({ pressed }) => [styles.accountRow, { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: tertiaryAmber }, pressed && { opacity: 0.85 }]}>
-              <View style={styles.accountLeft}>
-                <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                  <MaterialIcons name="payments" size={20} color={tertiaryAmber} />
+            {grouped.cash_wallet.length === 0 ? (
+              <Pressable
+                onPress={() => router.push('/add-account')}
+                style={({ pressed }) => [
+                  styles.accountRow,
+                  { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: tertiaryAmber },
+                  pressed && { opacity: 0.85 },
+                ]}>
+                <View style={styles.accountLeft}>
+                  <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                    <MaterialIcons name="add" size={20} color={tertiaryAmber} />
+                  </View>
+                  <View>
+                    <Text style={[styles.accountName, { color: theme.text }]}>添加账户</Text>
+                    <Text style={[styles.accountMeta, { color: outline }]}>创建你的第一个账户</Text>
+                  </View>
                 </View>
-                <View>
-                  <Text style={[styles.accountName, { color: theme.text }]}>实库现金</Text>
-                  <Text style={[styles.accountMeta, { color: outline }]}>手持现金</Text>
-                </View>
-              </View>
-              <Text style={[styles.accountAmount, { color: theme.text }]}>¥12,400</Text>
-            </Pressable>
-
-            <Pressable style={({ pressed }) => [styles.accountRow, { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: tertiaryAmber }, pressed && { opacity: 0.85 }]}>
-              <View style={styles.accountLeft}>
-                <Image
-                  source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuBNP3WIUjApmbo6iDZWpuMOlVC8c9VpoSJaFIQiEwMXQSzCPo4ImTnKcjWQeASz1Xv-oXq45m_4IvZpG7CmAAjhDyS3kcRBltWAG76Dwj8E7DC7R-5Rvj6qFaX6XWGdm2hCEOFmCo2KIw0Q-f-X4yGrfFIGSualv0ei-hIlxHKgLdMP8urS7jxFEaa0rB5XKkVQ33B29pG7XTlv02QsX2rpOHqQ1JlOtVku2n3hW20uyOD4x0Dplx2-6ytBP50sGBDl1ZuYfbJW_haz' }}
-                  style={styles.accountImage}
-                />
-                <View>
-                  <Text style={[styles.accountName, { color: theme.text }]}>支付宝</Text>
-                  <Text style={[styles.accountMeta, { color: outline }]}>数字钱包</Text>
-                </View>
-              </View>
-              <Text style={[styles.accountAmount, { color: theme.text }]}>¥206,040</Text>
-            </Pressable>
+              </Pressable>
+            ) : (
+              grouped.cash_wallet.map((acc) => (
+                <Pressable
+                  key={acc.id}
+                  onPress={() => openAccountDetail(acc)}
+                  style={({ pressed }) => [
+                    styles.accountRow,
+                    { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: tertiaryAmber },
+                    pressed && { opacity: 0.85 },
+                  ]}>
+                  <View style={styles.accountLeft}>
+                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                      <MaterialIcons name={accountIcon(acc)} size={20} color={tertiaryAmber} />
+                    </View>
+                    <View>
+                      <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
+                      <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '现金/钱包'}</Text>
+                    </View>
+                  </View>
+                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatMoney2(acc.balance)}</Text>
+                </Pressable>
+              ))
+            )}
           </View>
 
           <View style={styles.group}>
@@ -170,34 +340,50 @@ export default function AssetsScreen() {
                 <MaterialIcons name="account-balance" size={20} color={primaryBlue} />
                 <Text style={[styles.groupTitle, { color: theme.text }]}>银行账户</Text>
               </View>
-              <Text style={[styles.groupSum, { color: primaryBlue }]}>¥820,500</Text>
+              <Text style={[styles.groupSum, { color: primaryBlue }]}>{formatMoney0(groupSumAbs(grouped.bank))}</Text>
             </View>
 
-            <Pressable style={({ pressed }) => [styles.accountRow, { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: primaryBlue }, pressed && { opacity: 0.85 }]}>
-              <View style={styles.accountLeft}>
-                <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                  <MaterialIcons name="domain" size={20} color={primaryBlue} />
+            {grouped.bank.length === 0 ? (
+              <Pressable
+                onPress={() => router.push('/add-account')}
+                style={({ pressed }) => [
+                  styles.accountRow,
+                  { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: primaryBlue },
+                  pressed && { opacity: 0.85 },
+                ]}>
+                <View style={styles.accountLeft}>
+                  <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                    <MaterialIcons name="add" size={20} color={primaryBlue} />
+                  </View>
+                  <View>
+                    <Text style={[styles.accountName, { color: theme.text }]}>添加账户</Text>
+                    <Text style={[styles.accountMeta, { color: outline }]}>添加银行卡/储蓄账户</Text>
+                  </View>
                 </View>
-                <View>
-                  <Text style={[styles.accountName, { color: theme.text }]}>中国工商银行</Text>
-                  <Text style={[styles.accountMeta, { color: outline }]}>工资卡 (**** 8821)</Text>
-                </View>
-              </View>
-              <Text style={[styles.accountAmount, { color: theme.text }]}>¥540,500</Text>
-            </Pressable>
-
-            <Pressable style={({ pressed }) => [styles.accountRow, { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: primaryBlue }, pressed && { opacity: 0.85 }]}>
-              <View style={styles.accountLeft}>
-                <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                  <MaterialIcons name="savings" size={20} color={primaryBlue} />
-                </View>
-                <View>
-                  <Text style={[styles.accountName, { color: theme.text }]}>招商银行</Text>
-                  <Text style={[styles.accountMeta, { color: outline }]}>储蓄账户 (**** 3302)</Text>
-                </View>
-              </View>
-              <Text style={[styles.accountAmount, { color: theme.text }]}>¥280,000</Text>
-            </Pressable>
+              </Pressable>
+            ) : (
+              grouped.bank.map((acc) => (
+                <Pressable
+                  key={acc.id}
+                  onPress={() => openAccountDetail(acc)}
+                  style={({ pressed }) => [
+                    styles.accountRow,
+                    { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: primaryBlue },
+                    pressed && { opacity: 0.85 },
+                  ]}>
+                  <View style={styles.accountLeft}>
+                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                      <MaterialIcons name={accountIcon(acc)} size={20} color={primaryBlue} />
+                    </View>
+                    <View>
+                      <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
+                      <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '银行账户'}</Text>
+                    </View>
+                  </View>
+                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatMoney2(acc.balance)}</Text>
+                </Pressable>
+              ))
+            )}
           </View>
 
           <View style={styles.group}>
@@ -206,35 +392,139 @@ export default function AssetsScreen() {
                 <MaterialIcons name="show-chart" size={20} color={secondaryGreen} />
                 <Text style={[styles.groupTitle, { color: theme.text }]}>投资项目</Text>
               </View>
-              <Text style={[styles.groupSum, { color: secondaryGreen }]}>¥785,360</Text>
+              <Text style={[styles.groupSum, { color: secondaryGreen }]}>{formatMoney0(groupSumAbs(grouped.investment))}</Text>
             </View>
 
-            <Pressable style={({ pressed }) => [styles.accountRow, { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: secondaryGreen }, pressed && { opacity: 0.85 }]}>
-              <View style={styles.accountLeft}>
-                <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                  <MaterialIcons name="bar-chart" size={20} color={secondaryGreen} />
+            {grouped.investment.length === 0 ? (
+              <Pressable
+                onPress={() => router.push('/add-account')}
+                style={({ pressed }) => [
+                  styles.accountRow,
+                  { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: secondaryGreen },
+                  pressed && { opacity: 0.85 },
+                ]}>
+                <View style={styles.accountLeft}>
+                  <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                    <MaterialIcons name="add" size={20} color={secondaryGreen} />
+                  </View>
+                  <View>
+                    <Text style={[styles.accountName, { color: theme.text }]}>添加账户</Text>
+                    <Text style={[styles.accountMeta, { color: outline }]}>添加基金/股票/理财</Text>
+                  </View>
                 </View>
-                <View>
-                  <Text style={[styles.accountName, { color: theme.text }]}>公募基金</Text>
-                  <Text style={[styles.accountMeta, { color: outline }]}>多元化投资组合</Text>
-                </View>
-              </View>
-              <Text style={[styles.accountAmount, { color: theme.text }]}>¥412,000</Text>
-            </Pressable>
-
-            <Pressable style={({ pressed }) => [styles.accountRow, { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: secondaryGreen }, pressed && { opacity: 0.85 }]}>
-              <View style={styles.accountLeft}>
-                <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                  <MaterialIcons name="show-chart" size={20} color={secondaryGreen} />
-                </View>
-                <View>
-                  <Text style={[styles.accountName, { color: theme.text }]}>股票</Text>
-                  <Text style={[styles.accountMeta, { color: outline }]}>NASDAQ & HKG</Text>
-                </View>
-              </View>
-              <Text style={[styles.accountAmount, { color: theme.text }]}>¥373,360</Text>
-            </Pressable>
+              </Pressable>
+            ) : (
+              grouped.investment.map((acc) => (
+                <Pressable
+                  key={acc.id}
+                  onPress={() => openAccountDetail(acc)}
+                  style={({ pressed }) => [
+                    styles.accountRow,
+                    { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: secondaryGreen },
+                    pressed && { opacity: 0.85 },
+                  ]}>
+                  <View style={styles.accountLeft}>
+                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                      <MaterialIcons name={accountIcon(acc)} size={20} color={secondaryGreen} />
+                    </View>
+                    <View>
+                      <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
+                      <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '投资账户'}</Text>
+                    </View>
+                  </View>
+                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatMoney2(acc.balance)}</Text>
+                </Pressable>
+              ))
+            )}
           </View>
+
+          {customTypeGroups.map((g) => (
+            <View key={`custom-group-${g.name}`} style={styles.group}>
+              <View style={styles.groupHeader}>
+                <View style={styles.groupHeaderLeft}>
+                  <MaterialIcons name="tune" size={20} color={outline} />
+                  <Text style={[styles.groupTitle, { color: theme.text }]}>{g.name}</Text>
+                </View>
+                <Text style={[styles.groupSum, { color: outline }]}>{formatMoney0(groupSumAbs(g.rows))}</Text>
+              </View>
+
+              {g.rows.length === 0 ? (
+                <Pressable
+                  onPress={() => router.push('/add-account')}
+                  style={({ pressed }) => [
+                    styles.accountRow,
+                    { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: outlineVariant },
+                    pressed && { opacity: 0.85 },
+                  ]}>
+                  <View style={styles.accountLeft}>
+                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                      <MaterialIcons name="add" size={20} color={outline} />
+                    </View>
+                    <View>
+                      <Text style={[styles.accountName, { color: theme.text }]}>添加账户</Text>
+                      <Text style={[styles.accountMeta, { color: outline }]}>类型：{g.name}</Text>
+                    </View>
+                  </View>
+                </Pressable>
+              ) : (
+                g.rows.map((acc) => (
+                  <Pressable
+                    key={acc.id}
+                    onPress={() => openAccountDetail(acc)}
+                    style={({ pressed }) => [
+                      styles.accountRow,
+                      { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: outlineVariant },
+                      pressed && { opacity: 0.85 },
+                    ]}>
+                    <View style={styles.accountLeft}>
+                      <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                        <MaterialIcons name={accountIcon(acc)} size={20} color={outline} />
+                      </View>
+                      <View>
+                        <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
+                        <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : g.name}</Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.accountAmount, { color: theme.text }]}>{formatMoney2(acc.balance)}</Text>
+                  </Pressable>
+                ))
+              )}
+            </View>
+          ))}
+
+          {grouped.unknown.length > 0 ? (
+            <View style={styles.group}>
+              <View style={styles.groupHeader}>
+                <View style={styles.groupHeaderLeft}>
+                  <MaterialIcons name="tune" size={20} color={outline} />
+                  <Text style={[styles.groupTitle, { color: theme.text }]}>其他</Text>
+                </View>
+                <Text style={[styles.groupSum, { color: outline }]}>{formatMoney0(groupSumAbs(grouped.unknown))}</Text>
+              </View>
+
+              {grouped.unknown.map((acc) => (
+                <Pressable
+                  key={acc.id}
+                  onPress={() => openAccountDetail(acc)}
+                  style={({ pressed }) => [
+                    styles.accountRow,
+                    { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: outlineVariant },
+                    pressed && { opacity: 0.85 },
+                  ]}>
+                  <View style={styles.accountLeft}>
+                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                      <MaterialIcons name={accountIcon(acc)} size={20} color={outline} />
+                    </View>
+                    <View>
+                      <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
+                      <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '其他'}</Text>
+                    </View>
+                  </View>
+                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatMoney2(acc.balance)}</Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
 
           <View style={[styles.group, { borderTopColor: `${outlineVariant}80`, borderTopWidth: 1, paddingTop: 18 }]}>
             <View style={styles.groupHeader}>
@@ -242,35 +532,51 @@ export default function AssetsScreen() {
                 <MaterialIcons name="credit-card-off" size={20} color={errorRed} />
                 <Text style={[styles.groupTitle, { color: errorRed }]}>负债</Text>
               </View>
-              <Text style={[styles.groupSum, { color: errorRed }]}>¥372,220</Text>
+              <Text style={[styles.groupSum, { color: errorRed }]}>{formatMoney0(groupSumAbs(grouped.liability))}</Text>
             </View>
 
             <View style={styles.debtList}>
-              <View style={[styles.debtRow, { backgroundColor: `${errorRed}1A`, borderLeftColor: errorRed }]}>
-                <View style={styles.accountLeft}>
-                  <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                    <MaterialIcons name="credit-card" size={20} color={errorRed} />
+              {grouped.liability.length === 0 ? (
+                <Pressable
+                  onPress={() => router.push('/add-account')}
+                  style={({ pressed }) => [
+                    styles.debtRow,
+                    { backgroundColor: `${errorRed}1A`, borderLeftColor: errorRed },
+                    pressed && { opacity: 0.9 },
+                  ]}>
+                  <View style={styles.accountLeft}>
+                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                      <MaterialIcons name="add" size={20} color={errorRed} />
+                    </View>
+                    <View>
+                      <Text style={[styles.accountName, { color: theme.text }]}>添加负债</Text>
+                      <Text style={[styles.accountMeta, { color: outline }]}>信用卡/贷款等</Text>
+                    </View>
                   </View>
-                  <View>
-                    <Text style={[styles.accountName, { color: theme.text }]}>信用卡</Text>
-                    <Text style={[styles.accountMeta, { color: outline }]}>当前账单余额</Text>
-                  </View>
-                </View>
-                <Text style={[styles.accountAmount, { color: errorRed }]}>¥42,220</Text>
-              </View>
-
-              <View style={[styles.debtRow, { backgroundColor: `${errorRed}1A`, borderLeftColor: errorRed }]}>
-                <View style={styles.accountLeft}>
-                  <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                    <MaterialIcons name="real-estate-agent" size={20} color={errorRed} />
-                  </View>
-                  <View>
-                    <Text style={[styles.accountName, { color: theme.text }]}>个人贷款</Text>
-                    <Text style={[styles.accountMeta, { color: outline }]}>待还本金</Text>
-                  </View>
-                </View>
-                <Text style={[styles.accountAmount, { color: errorRed }]}>¥330,000</Text>
-              </View>
+                </Pressable>
+              ) : (
+                grouped.liability.map((acc) => (
+                  <Pressable
+                    key={acc.id}
+                    onPress={() => openAccountDetail(acc)}
+                    style={({ pressed }) => [
+                      styles.debtRow,
+                      { backgroundColor: `${errorRed}1A`, borderLeftColor: errorRed },
+                      pressed && { opacity: 0.9 },
+                    ]}>
+                    <View style={styles.accountLeft}>
+                      <View style={[styles.accountIconBox, { backgroundColor: card }]}>
+                        <MaterialIcons name={accountIcon(acc)} size={20} color={errorRed} />
+                      </View>
+                      <View>
+                        <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
+                        <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '负债账户'}</Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.accountAmount, { color: errorRed }]}>{formatMoney2(acc.balance)}</Text>
+                  </Pressable>
+                ))
+              )}
             </View>
           </View>
         </View>
