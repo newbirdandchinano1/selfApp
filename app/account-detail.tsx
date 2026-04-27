@@ -36,12 +36,15 @@ export default function AccountDetailScreen() {
   const params = useLocalSearchParams<{ accountId?: string; accountName?: string; accountNo?: string }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
+  const themeKey = colorScheme === 'dark' ? 'dark' : 'light';
+  const theme = Colors[themeKey];
   const isDark = colorScheme === 'dark';
   const [account, setAccount] = React.useState<FinanceAccountBalanceRow | null>(null);
   const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const routeAccountId = typeof params.accountId === 'string' ? params.accountId : '';
   const routeAccountName = typeof params.accountName === 'string' ? params.accountName.trim() : '';
+  const accountSignRule = account?.sign_rule ?? 1;
+  const isLiabilityAccount = accountSignRule < 0 || account?.account_type === 'liability';
 
   const pageBg = isDark ? theme.background : '#f3f4f6';
   const surface = isDark ? '#111827' : '#ffffff';
@@ -49,9 +52,23 @@ export default function AccountDetailScreen() {
   const titleText = isDark ? '#f9fafb' : '#111827';
   const subtleText = isDark ? '#9ca3af' : '#6b7280';
   const borderColor = isDark ? 'rgba(148,163,184,0.22)' : '#f3f4f6';
-  const segmentedBg = isDark ? '#1f2937' : '#F2F2F7';
   const detailName = account?.name ?? (routeAccountName || '账户');
-  const detailDesc = account?.account_no?.trim() ? account.account_no : '账户余额';
+  const detailDesc = account?.account_no?.trim() ? account.account_no : isLiabilityAccount ? '负债明细' : '账户余额';
+
+  const getDisplayAmount = React.useCallback(
+    (tx: FinanceTransactionRow) => {
+      const absAmount = Math.abs(tx.amount);
+      if (isLiabilityAccount) {
+        if (tx.transaction_type === 'income') return -absAmount;
+        if (tx.transaction_type === 'expense') return absAmount;
+        return -tx.amount;
+      }
+      if (tx.transaction_type === 'income') return absAmount;
+      if (tx.transaction_type === 'expense') return -absAmount;
+      return tx.amount;
+    },
+    [isLiabilityAccount]
+  );
 
   const formatMoney = React.useCallback((amount: number) => {
     return `¥${Math.abs(amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -96,8 +113,14 @@ export default function AccountDetailScreen() {
 
     return Array.from(monthMap.entries()).map(([monthKey, rows], monthIndex) => {
       const [year, month] = monthKey.split('-');
-      const incomeTotal = rows.reduce((sum, tx) => sum + (tx.transaction_type === 'income' ? Math.abs(tx.amount) : 0), 0);
-      const expenseTotal = rows.reduce((sum, tx) => sum + (tx.transaction_type === 'expense' ? Math.abs(tx.amount) : 0), 0);
+      const incomeTotal = rows.reduce((sum, tx) => {
+        const displayAmount = getDisplayAmount(tx);
+        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
+      }, 0);
+      const expenseTotal = rows.reduce((sum, tx) => {
+        const displayAmount = getDisplayAmount(tx);
+        return displayAmount < 0 ? sum + Math.abs(displayAmount) : sum;
+      }, 0);
       const dayMap = new Map<string, FinanceTransactionRow[]>();
       for (const tx of rows) {
         const dayKey = tx.happened_at.slice(0, 10);
@@ -115,14 +138,15 @@ export default function AccountDetailScreen() {
           const happenedDate = new Date(tx.happened_at);
           const hour = Number.isNaN(happenedDate.getTime()) ? '00' : String(happenedDate.getHours()).padStart(2, '0');
           const minute = Number.isNaN(happenedDate.getTime()) ? '00' : String(happenedDate.getMinutes()).padStart(2, '0');
-          const isIncome = tx.transaction_type === 'income';
-          const isExpense = tx.transaction_type === 'expense';
+          const displayAmount = getDisplayAmount(tx);
+          const isIncome = displayAmount > 0;
+          const isExpense = displayAmount < 0;
           return {
             id: tx.id,
             time: `${hour}:${minute}`,
             tag: tx.name?.trim() || '交易',
             emoji: isIncome ? '📈' : isExpense ? '💸' : '💳',
-            amount: `${isIncome ? '+' : isExpense ? '-' : ''} ${formatMoney(tx.amount)}`,
+            amount: `${isIncome ? '+' : isExpense ? '-' : ''} ${formatMoney(displayAmount)}`,
             flowLabel: tx.transaction_type === 'transfer' ? '转账' : isIncome ? '收入' : '支出',
           };
         });
@@ -138,7 +162,7 @@ export default function AccountDetailScreen() {
         details,
       };
     });
-  }, [formatMoney, transactions]);
+  }, [formatMoney, getDisplayAmount, transactions]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: pageBg }]} edges={['top', 'left', 'right']}>
@@ -183,9 +207,18 @@ export default function AccountDetailScreen() {
             <View style={[styles.dashedDivider, { borderColor }]} />
 
             <View style={styles.balanceBlock}>
-              <Text style={[styles.balanceLabel, { color: subtleText }]}>余额</Text>
+              <Text style={[styles.balanceLabel, { color: subtleText }]}>{isLiabilityAccount ? '负债' : '余额'}</Text>
               <View style={styles.balanceRow}>
-                <Text style={[styles.balanceText, { color: titleText }]}>{formatMoney(account?.balance ?? 0)}</Text>
+                {(() => {
+                  const rawBalance = account?.balance ?? 0;
+                  const normalizedBalance = isLiabilityAccount ? -Math.abs(rawBalance) : rawBalance;
+                  const balancePrefix = normalizedBalance < 0 ? '-' : '';
+                  return (
+                <Text style={[styles.balanceText, { color: titleText }]}>
+                      {`${balancePrefix}${formatMoney(normalizedBalance)}`}
+                </Text>
+                  );
+                })()}
                 <Pressable style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
                   <MaterialIcons name="edit" size={16} color={subtleText} />
                 </Pressable>
@@ -218,16 +251,6 @@ export default function AccountDetailScreen() {
                 <Text style={[styles.detailsTitle, { color: titleText }]}>账户明细</Text>
                 <View style={styles.detailsUnderline} />
               </View>
-              <View style={[styles.segmentedWrap, { backgroundColor: segmentedBg }]}>
-                <Pressable style={styles.segmentItem}>
-                  <MaterialIcons name="calendar-today" size={14} color={subtleText} />
-                  <Text style={[styles.segmentText, { color: subtleText }]}>明细</Text>
-                </Pressable>
-                <Pressable style={styles.segmentItemActive}>
-                  <MaterialIcons name="receipt-long" size={14} color="#4F46E5" />
-                  <Text style={[styles.segmentTextActive, { color: '#4F46E5' }]}>账单</Text>
-                </Pressable>
-              </View>
             </View>
 
             {monthSections.map((section) => (
@@ -235,11 +258,13 @@ export default function AccountDetailScreen() {
                 <View style={styles.monthHeaderRow}>
                   <View>
                     <Text style={[styles.monthTitle, { color: titleText }]}>{section.monthLabel}</Text>
-                    <Text style={[styles.monthMeta, { color: subtleText }]}>
-                      流出 <Text style={styles.expenseText}>{section.expense}</Text>
-                      <Text style={styles.monthDivider}> | </Text>
-                      流入 <Text style={styles.incomeText}>{section.income}</Text>
-                    </Text>
+                    {!isLiabilityAccount ? (
+                      <Text style={[styles.monthMeta, { color: subtleText }]}>
+                        流出 <Text style={styles.expenseText}>{section.expense}</Text>
+                        <Text style={styles.monthDivider}> | </Text>
+                        流入 <Text style={styles.incomeText}>{section.income}</Text>
+                      </Text>
+                    ) : null}
                   </View>
                   <MaterialIcons
                     name={section.expanded ? 'keyboard-arrow-down' : 'keyboard-arrow-right'}
@@ -455,38 +480,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#FDE047',
     zIndex: 1,
     opacity: 0.85,
-  },
-  segmentedWrap: {
-    flexDirection: 'row',
-    borderRadius: 999,
-    padding: 4,
-    gap: 4,
-  },
-  segmentItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  segmentItemActive: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: '#E8E8FF',
-  },
-  segmentText: {
-    fontSize: 12,
-  },
-  segmentTextActive: {
-    fontSize: 12,
-    fontWeight: '700',
   },
   monthSection: {
     marginBottom: 6,

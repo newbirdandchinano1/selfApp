@@ -6,7 +6,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Animated, Dimensions, Easing, Keyboard, Platform, Pressable, ScrollView, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
+import { Animated, Dimensions, Easing, Modal, Pressable, ScrollView, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Txn = {
@@ -77,147 +77,33 @@ export default function FinanceScreen() {
   const today = new Date();
   const headerDateLabel = `${today.getMonth() + 1}月${today.getDate()}日 ${weekdayCn[today.getDay()]}`;
 
-  const txns: Txn[] = [
-    {
-      id: 't1',
-      icon: 'restaurant',
-      iconColor: tertiary,
-      title: '精致意式晚餐',
-      meta: '今天 19:30 · 餐饮 · 招商银行 (8821)',
-      amount: '-¥428.00',
-      amountColor: text,
-      insight: 'AI 洞察：本月餐饮超出平均 12%',
-    },
-    {
-      id: 't2',
-      icon: 'shopping-bag',
-      iconColor: subtle,
-      title: 'Apple Store 订阅',
-      meta: '昨天 08:15 · 娱乐 · 现金余额',
-      amount: '-¥98.00',
-      amountColor: text,
-    },
-    {
-      id: 't3',
-      icon: 'savings',
-      iconColor: secondary,
-      title: '月度工资发放',
-      meta: '3天前 · 收入 · 支付宝',
-      amount: '+¥45,000.00',
-      amountColor: secondary,
-      insight: 'AI 洞察：建议将 20% 转入高收益理财',
-    },
-  ];
-
-  const parseAmount = React.useCallback((amount: string) => {
-    const numeric = Number(amount.replace(/[^\d.-]/g, ''));
-    return Number.isFinite(numeric) ? numeric : 0;
-  }, []);
-
   const formatCurrencyWithDecimals = React.useCallback((value: number) => {
     return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }, []);
-
-  const todayTxns = React.useMemo(() => txns.filter((txn) => txn.meta.includes('今天')), [txns]);
-  const todayExpenseTotal = React.useMemo(
-    () => todayTxns.reduce((sum, txn) => {
-      const amount = parseAmount(txn.amount);
-      return amount < 0 ? sum + Math.abs(amount) : sum;
-    }, 0),
-    [parseAmount, todayTxns]
-  );
-  const todayIncomeTotal = React.useMemo(
-    () => todayTxns.reduce((sum, txn) => {
-      const amount = parseAmount(txn.amount);
-      return amount > 0 ? sum + amount : sum;
-    }, 0),
-    [parseAmount, todayTxns]
-  );
   const todayLabel = `今日 ${today.getMonth() + 1}月${today.getDate()}日 ${weekdayCn[today.getDay()]}`;
 
-  const collapsedHeight = 56;
-  const focusedHeight = 148;
   const collapsedBottom = 6;
-
-  const [inputText, setInputText] = React.useState('');
-  const [keyboardOffset, setKeyboardOffset] = React.useState(0);
-  const [inputFocused, setInputFocused] = React.useState(false);
-  const [voiceMode, setVoiceMode] = React.useState(false);
-  const [isRecording, setIsRecording] = React.useState(false);
+  const [isSheetVisible, setIsSheetVisible] = React.useState(false);
+  const [activeSheetTab, setActiveSheetTab] = React.useState<'expense' | 'income' | 'transfer'>('expense');
+  const [sheetAmount, setSheetAmount] = React.useState('');
+  const [sheetNote, setSheetNote] = React.useState('');
   const [financeTransactions, setFinanceTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [animatedNetValue, setAnimatedNetValue] = React.useState(0);
   const [showNetAmounts, setShowNetAmounts] = React.useState(true);
 
-  const focusAnim = React.useRef(new Animated.Value(0)).current;
-  const voiceAnim = React.useRef(new Animated.Value(0)).current;
   const baseBottomAnim = React.useRef(new Animated.Value(collapsedBottom)).current;
   const revealAnim = React.useRef(new Animated.Value(0)).current;
-  const recordingPulseAnim = React.useRef(new Animated.Value(0)).current;
   const netValueAnim = React.useRef(new Animated.Value(0)).current;
-  const recordingLoopRef = React.useRef<Animated.CompositeAnimation | null>(null);
-  const inputRef = React.useRef<TextInput>(null);
 
   React.useEffect(() => {
-    if (Platform.OS === 'ios') {
-      const onChange = Keyboard.addListener('keyboardWillChangeFrame', (e) => {
-        const screenHeight = Dimensions.get('screen').height;
-        const screenY = e.endCoordinates?.screenY ?? screenHeight;
-        setKeyboardOffset(Math.max(0, screenHeight - screenY));
-      });
-
-      return () => {
-        onChange.remove();
-      };
-    }
-
-    const onShow = Keyboard.addListener('keyboardDidShow', (e) => {
-      setKeyboardOffset(e.endCoordinates?.height ?? 0);
-    });
-
-    const onHide = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardOffset(0);
-    });
-
-    return () => {
-      onShow.remove();
-      onHide.remove();
-    };
-  }, []);
-
-  React.useEffect(() => {
-    Animated.timing(focusAnim, {
-      toValue: inputFocused ? 1 : 0,
-      duration: 220,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start();
-  }, [focusAnim, inputFocused]);
-
-  React.useEffect(() => {
-    Animated.timing(voiceAnim, {
-      toValue: voiceMode ? 1 : 0,
-      duration: 220,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start();
-  }, [voiceAnim, voiceMode]);
-
-  React.useEffect(() => {
-    const targetBottom =
-      keyboardOffset > 0
-        ? Platform.OS === 'android'
-          ? 0
-          : Math.max(0, keyboardOffset - insets.bottom)
-        : collapsedBottom;
-
     Animated.timing(baseBottomAnim, {
-      toValue: targetBottom,
+      toValue: collapsedBottom,
       duration: 180,
       easing: Easing.out(Easing.quad),
       useNativeDriver: false,
     }).start();
-  }, [baseBottomAnim, collapsedBottom, insets.bottom, keyboardOffset]);
+  }, [baseBottomAnim, collapsedBottom, insets.bottom]);
 
   React.useEffect(() => {
     Animated.stagger(70, [
@@ -280,110 +166,8 @@ export default function FinanceScreen() {
     }, [loadFinanceAccounts, loadFinanceTransactions])
   );
 
-  React.useEffect(() => {
-    if (isRecording) {
-      recordingLoopRef.current?.stop();
-      recordingPulseAnim.setValue(0);
-      const loop = Animated.loop(
-        Animated.sequence([
-          Animated.timing(recordingPulseAnim, {
-            toValue: 1,
-            duration: 700,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: false,
-          }),
-          Animated.timing(recordingPulseAnim, {
-            toValue: 0,
-            duration: 700,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: false,
-          }),
-        ]),
-      );
-      recordingLoopRef.current = loop;
-      loop.start();
-      return;
-    }
-
-    recordingLoopRef.current?.stop();
-    Animated.timing(recordingPulseAnim, {
-      toValue: 0,
-      duration: 160,
-      useNativeDriver: false,
-    }).start();
-  }, [isRecording, recordingPulseAnim]);
-
-  React.useEffect(() => {
-    return () => {
-      recordingLoopRef.current?.stop();
-    };
-  }, []);
-
-  const handleFocusInput = React.useCallback(() => {
-    setVoiceMode(false);
-    setInputFocused(true);
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-    });
-  }, []);
-
-  const handleBlurInput = React.useCallback(() => {
-    if (!inputText.trim()) {
-      setInputFocused(false);
-    }
-  }, [inputText]);
-
-  const handleSubmit = React.useCallback(() => {
-    if (!inputText.trim()) {
-      return;
-    }
-    setInputText('');
-    setInputFocused(false);
-    setVoiceMode(false);
-    Keyboard.dismiss();
-  }, [inputText]);
-
-  const handleToggleVoiceMode = React.useCallback(() => {
-    if (inputText.trim()) {
-      handleSubmit();
-      return;
-    }
-    Keyboard.dismiss();
-    setInputFocused(false);
-    setVoiceMode((v) => !v);
-    setIsRecording(false);
-  }, [handleSubmit, inputText]);
-
-  const handleVoicePressIn = React.useCallback(() => {
-    setIsRecording(true);
-  }, []);
-
-  const handleVoicePressOut = React.useCallback(() => {
-    setIsRecording(false);
-  }, []);
-
   const screenWidth = Dimensions.get('window').width;
   const expandedWidth = Math.min(420, screenWidth - 36);
-
-  const composerHeight = focusAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [collapsedHeight, focusedHeight],
-  });
-
-  const composerBorderRadius = focusAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [28, 24],
-  });
-
-  const inputAreaOpacity = voiceAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 0],
-  });
-
-  const voiceCapsuleOpacity = voiceAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 1],
-  });
 
   const heroTranslateY = revealAnim.interpolate({
     inputRange: [0, 1],
@@ -405,19 +189,101 @@ export default function FinanceScreen() {
     outputRange: [0, 1],
   });
 
-  const recordingScale = recordingPulseAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 1.03],
-  });
-
-  const recordingGlowOpacity = recordingPulseAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.2, 0.46],
-  });
-
   const formatCurrency = React.useCallback((value: number) => {
     return `¥${value.toLocaleString('zh-CN')}`;
   }, []);
+
+  const accountNameMap = React.useMemo(() => {
+    return new Map(financeAccounts.map((account) => [account.id, account.name]));
+  }, [financeAccounts]);
+  const accountSignRuleMap = React.useMemo(() => {
+    return new Map(financeAccounts.map((account) => [account.id, account.sign_rule]));
+  }, [financeAccounts]);
+
+  const getTxnDisplayAmount = React.useCallback(
+    (txn: FinanceTransactionRow) => {
+      const accountSignRule = accountSignRuleMap.get(txn.account_id);
+      const isLiabilityAccount = accountSignRule != null ? accountSignRule < 0 : txn.amount < 0;
+      const absAmount = Math.abs(txn.amount);
+      if (isLiabilityAccount) {
+        if (txn.transaction_type === 'income') return -absAmount;
+        if (txn.transaction_type === 'expense') return absAmount;
+      } else {
+        if (txn.transaction_type === 'income') return absAmount;
+        if (txn.transaction_type === 'expense') return -absAmount;
+      }
+      return txn.amount;
+    },
+    [accountSignRuleMap]
+  );
+
+  const todayTxns = React.useMemo(
+    () =>
+      financeTransactions.filter((txn) => {
+        const happenedAt = new Date(txn.happened_at);
+        return (
+          happenedAt.getFullYear() === today.getFullYear() &&
+          happenedAt.getMonth() === today.getMonth() &&
+          happenedAt.getDate() === today.getDate()
+        );
+      }),
+    [financeTransactions, today]
+  );
+
+  const todayExpenseTotal = React.useMemo(
+    () =>
+      todayTxns.reduce((sum, txn) => {
+        const displayAmount = getTxnDisplayAmount(txn);
+        return displayAmount < 0 ? sum + Math.abs(displayAmount) : sum;
+      }, 0),
+    [getTxnDisplayAmount, todayTxns]
+  );
+
+  const todayIncomeTotal = React.useMemo(
+    () =>
+      todayTxns.reduce((sum, txn) => {
+        const displayAmount = getTxnDisplayAmount(txn);
+        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
+      }, 0),
+    [getTxnDisplayAmount, todayTxns]
+  );
+
+  const displayTxns = React.useMemo<Txn[]>(() => {
+    const now = new Date();
+    const currentYmd = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayYmd = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
+
+    return financeTransactions.slice(0, 16).map((txn) => {
+      const happenedAt = new Date(txn.happened_at);
+      const hour = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getHours()).padStart(2, '0');
+      const minute = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getMinutes()).padStart(2, '0');
+      const ymd = `${happenedAt.getFullYear()}-${happenedAt.getMonth()}-${happenedAt.getDate()}`;
+      const dayLabel = ymd === currentYmd ? '今天' : ymd === yesterdayYmd ? '昨天' : `${happenedAt.getMonth() + 1}月${happenedAt.getDate()}日`;
+      const accountLabel = accountNameMap.get(txn.account_id) ?? '未知账户';
+
+      const displayAmount = getTxnDisplayAmount(txn);
+      const isIncome = displayAmount > 0;
+      const isExpense = displayAmount < 0;
+      const typeLabel = txn.transaction_type === 'transfer' ? '转账' : isIncome ? '收入' : '支出';
+      const icon: keyof typeof MaterialIcons.glyphMap = isIncome ? 'savings' : isExpense ? 'shopping-bag' : 'sync-alt';
+      const iconColor = isIncome ? secondary : isExpense ? tertiary : subtle;
+      const amountColor = isIncome ? secondary : isExpense ? '#dc2626' : text;
+      const amountPrefix = isIncome ? '+' : isExpense ? '-' : '';
+
+      return {
+        id: txn.id,
+        icon,
+        iconColor,
+        title: txn.name?.trim() || '交易',
+        meta: `${dayLabel} ${hour}:${minute} · ${typeLabel} · ${accountLabel}`,
+        amount: `${amountPrefix}${formatCurrencyWithDecimals(Math.abs(displayAmount))}`,
+        amountColor,
+        insight: txn.ai_comment?.trim() ? `AI 洞察：${txn.ai_comment.trim()}` : undefined,
+      };
+    });
+  }, [accountNameMap, financeTransactions, formatCurrencyWithDecimals, getTxnDisplayAmount, secondary, subtle, tertiary, text]);
 
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
   const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
@@ -430,18 +296,18 @@ export default function FinanceScreen() {
   const monthlyIncome = React.useMemo(
     () =>
       monthlyTransactions.reduce((sum, txn) => {
-        const isIncome = txn.transaction_type === 'income' || txn.amount > 0;
-        return isIncome ? sum + Math.abs(txn.amount) : sum;
+        const displayAmount = getTxnDisplayAmount(txn);
+        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
       }, 0),
-    [monthlyTransactions]
+    [getTxnDisplayAmount, monthlyTransactions]
   );
   const monthlyExpense = React.useMemo(
     () =>
       monthlyTransactions.reduce((sum, txn) => {
-        const isExpense = txn.transaction_type === 'expense' || txn.amount < 0;
-        return isExpense ? sum + Math.abs(txn.amount) : sum;
+        const displayAmount = getTxnDisplayAmount(txn);
+        return displayAmount < 0 ? sum + Math.abs(displayAmount) : sum;
       }, 0),
-    [monthlyTransactions]
+    [getTxnDisplayAmount, monthlyTransactions]
   );
   const monthlySurplus = monthlyIncome - monthlyExpense;
   const savingsRate = monthlyIncome > 0 ? (monthlySurplus / monthlyIncome) * 100 : 0;
@@ -467,6 +333,64 @@ export default function FinanceScreen() {
     if (name.includes('支付宝')) return 'account-balance-wallet';
     if (name.includes('微信')) return 'chat';
     return 'account-balance';
+  }, []);
+
+  const expenseCategories = React.useMemo(
+    () => [
+      { key: 'food', icon: 'restaurant', label: '餐饮', color: primary },
+      { key: 'snack', icon: 'icecream', label: '零食', color: secondary },
+      { key: 'fruit', icon: 'nutrition', label: '水果', color: tertiary },
+      { key: 'drink', icon: 'local-cafe', label: '饮品', color: primary },
+      { key: 'cook', icon: 'set-meal', label: '做饭食材', color: secondary },
+      { key: 'traffic', icon: 'directions-car', label: '交通', color: tertiary },
+      { key: 'home', icon: 'home', label: '居住', color: primary },
+      { key: 'cloth', icon: 'checkroom', label: '服饰', color: secondary },
+      { key: 'play', icon: 'sports-esports', label: '娱乐', color: tertiary },
+      { key: 'other', icon: 'more-horiz', label: '其他', color: subtle },
+    ],
+    [primary, secondary, subtle, tertiary]
+  );
+
+  const incomeCategories = React.useMemo(
+    () => [
+      { key: 'salary', icon: 'payments', label: '工资', color: secondary },
+      { key: 'bonus', icon: 'card-giftcard', label: '奖金', color: primary },
+      { key: 'refund', icon: 'receipt-long', label: '报销', color: tertiary },
+      { key: 'invest', icon: 'savings', label: '理财', color: secondary },
+      { key: 'sideline', icon: 'storefront', label: '副业', color: primary },
+      { key: 'allowance', icon: 'volunteer-activism', label: '补贴', color: tertiary },
+      { key: 'redpack', icon: 'redeem', label: '红包', color: secondary },
+      { key: 'gift', icon: 'card-membership', label: '礼金', color: primary },
+      { key: 'rent', icon: 'home-work', label: '租金', color: tertiary },
+      { key: 'other-income', icon: 'add-card', label: '其他', color: subtle },
+    ],
+    [primary, secondary, subtle, tertiary]
+  );
+
+  const keypadRows = React.useMemo(
+    () => [
+      ['1', '2', '3', 'backspace'],
+      ['4', '5', '6', '+'],
+      ['7', '8', '9', '-'],
+      ['0', '0', '.', 'done'],
+    ],
+    []
+  );
+
+  const amountDisplay = sheetAmount || '0.00';
+  const activeCategories = activeSheetTab === 'income' ? incomeCategories : expenseCategories;
+  const sheetDateLabel = `${today.getMonth() + 1}月${today.getDate()}日`;
+
+  const handleAmountKeyPress = React.useCallback((key: string) => {
+    if (key === 'backspace') {
+      setSheetAmount((prev) => prev.slice(0, -1));
+      return;
+    }
+    if (key === 'done' || key === 'check') {
+      setIsSheetVisible(false);
+      return;
+    }
+    setSheetAmount((prev) => `${prev}${key}`);
   }, []);
 
   return (
@@ -588,7 +512,16 @@ export default function FinanceScreen() {
                 return (
                   <Pressable
                     key={acc.id}
-                    onPress={() => router.push('/account-detail')}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/account-detail',
+                        params: {
+                          accountId: acc.id,
+                          accountName: acc.name,
+                          accountNo: acc.account_no ?? '',
+                        },
+                      })
+                    }
                     style={({ pressed }) => [
                       cardStyle,
                       isAccent ? { backgroundColor: cardBg } : { backgroundColor: cardBg, borderColor: outlineVariant },
@@ -620,7 +553,7 @@ export default function FinanceScreen() {
           </View>
           <View style={styles.timelineWrap}>
             <View style={[styles.timelineLine, { backgroundColor: outlineVariant }]} />
-            {txns.map((t, idx) => {
+            {displayTxns.map((t, idx) => {
               const progress = revealAnim.interpolate({
                 inputRange: [0, 0.4, 1],
                 outputRange: [0, 0, 1],
@@ -647,93 +580,208 @@ export default function FinanceScreen() {
                 />
               );
             })}
+            {displayTxns.length === 0 ? (
+              <Text style={[styles.txnMeta, { color: subtle }]}>暂无收支明细，去记一笔吧。</Text>
+            ) : null}
           </View>
           </Animated.View>
         </View>
       </ScrollView>
 
-      <Animated.View style={[styles.composerWrap, { bottom: baseBottomAnim }]}> 
-        <Animated.View
-          style={[
-            styles.composerShell,
-            {
-              width: expandedWidth,
-              height: composerHeight,
-              borderRadius: composerBorderRadius,
-            },
+      <Animated.View style={[styles.composerWrap, { bottom: baseBottomAnim }]}>
+        <Pressable
+          onPress={() => setIsSheetVisible(true)}
+          style={({ pressed }) => [
+            { width: expandedWidth },
+            pressed && { opacity: 0.92 },
           ]}>
-          <Animated.View style={[styles.composerRow, { opacity: inputAreaOpacity }]}> 
-            <Pressable style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
-              <MaterialIcons name="photo-library" size={20} color="#111827" />
-            </Pressable>
-
-            <Pressable style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
-              <MaterialIcons name="photo-camera" size={20} color="#111827" />
-            </Pressable>
-
-            <TextInput
-              ref={inputRef}
-              value={inputText}
-              onChangeText={setInputText}
-              placeholder="记录支出..."
-              placeholderTextColor="#9ca3af"
-              style={styles.composerInput}
-              returnKeyType="send"
-              onSubmitEditing={handleSubmit}
-              onFocus={handleFocusInput}
-              onBlur={handleBlurInput}
-              submitBehavior="submit"
-              multiline={inputFocused}
-              textAlignVertical={inputFocused ? 'top' : 'center'}
-            />
-
-            <Pressable
-              onPress={inputFocused || inputText.trim() ? handleSubmit : handleToggleVoiceMode}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                inputFocused || inputText.trim() ? styles.submitBtn : styles.voiceBtn,
-                pressed && { opacity: 0.88, transform: [{ scale: 0.97 }] },
-              ]}>
-              <MaterialIcons
-                name={inputFocused || inputText.trim() ? 'north-east' : 'keyboard-voice'}
-                size={18}
-                color="#fff"
-              />
-            </Pressable>
-          </Animated.View>
-
-          <Animated.View style={[styles.voiceCapsuleWrap, { opacity: voiceCapsuleOpacity }]} pointerEvents={voiceMode ? 'auto' : 'none'}>
-            <Animated.View
-              style={[
-                styles.voiceCapsule,
-                isRecording && styles.voiceCapsuleRecording,
-                {
-                  transform: [{ scale: recordingScale }],
-                  shadowOpacity: isRecording ? recordingGlowOpacity : 0,
-                },
-              ]}>
-              <Pressable
-                onPressIn={handleVoicePressIn}
-                onPressOut={handleVoicePressOut}
-                delayLongPress={180}
-                onLongPress={handleVoicePressIn}
-                style={({ pressed }) => [styles.voiceHoldArea, pressed && { opacity: 0.95 }]}>
+          <View pointerEvents="none" style={styles.composerShell}>
+            <View style={styles.composerRow}>
+              <View style={styles.iconBtn}>
+                <MaterialIcons name="photo-library" size={20} color="#111827" />
+              </View>
+              <View style={styles.iconBtn}>
+                <MaterialIcons name="photo-camera" size={20} color="#111827" />
+              </View>
+              <View style={styles.composerInput}>
+                <Text style={styles.composerPlaceholder}>记录支出...</Text>
+              </View>
+              <View style={[styles.actionBtn, styles.voiceBtn]}>
                 <MaterialIcons name="keyboard-voice" size={18} color="#fff" />
-                <Text style={styles.voiceCapsuleText}>{isRecording ? '录音中，松开发送' : '长按说话'}</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => {
-                  setVoiceMode(false);
-                  setIsRecording(false);
-                }}
-                style={({ pressed }) => [styles.voiceBackBtn, pressed && { opacity: 0.82 }]}>
-                <MaterialIcons name="keyboard-arrow-right" size={18} color="#fff" />
-              </Pressable>
-            </Animated.View>
-          </Animated.View>
-        </Animated.View>
+              </View>
+            </View>
+          </View>
+        </Pressable>
       </Animated.View>
+
+      <Modal visible={isSheetVisible} animationType="slide" transparent onRequestClose={() => setIsSheetVisible(false)}>
+        <View style={styles.sheetOverlay}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => setIsSheetVisible(false)} />
+          <View style={[styles.sheetContainer, { paddingBottom: Math.max(16, insets.bottom) }]}>
+            <View style={[styles.sheetHeader, { borderBottomColor: outlineVariant }]}>
+              <Pressable onPress={() => setIsSheetVisible(false)} style={({ pressed }) => [styles.sheetCloseBtn, pressed && { opacity: 0.75 }]}>
+                <MaterialIcons name="close" size={24} color={subtle} />
+              </Pressable>
+              <Text style={[styles.sheetTitle, { color: text }]}>{activeSheetTab === 'transfer' ? '财务转账' : '手动记账'}</Text>
+              <View style={styles.sheetCloseBtn} />
+            </View>
+
+            <View style={[styles.sheetTabs, { borderBottomColor: outlineVariant }]}>
+              <Pressable onPress={() => setActiveSheetTab('expense')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'expense' ? { color: tertiary } : { color: subtle }]}>支出</Text>
+                {activeSheetTab === 'expense' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+              <Pressable onPress={() => setActiveSheetTab('income')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'income' ? { color: tertiary } : { color: subtle }]}>收入</Text>
+                {activeSheetTab === 'income' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+              <Pressable onPress={() => setActiveSheetTab('transfer')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'transfer' ? { color: tertiary } : { color: subtle }]}>转账</Text>
+                {activeSheetTab === 'transfer' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+            </View>
+
+            {activeSheetTab === 'transfer' ? (
+              <>
+                <View style={styles.transferContent}>
+                  <View style={styles.transferAccountRow}>
+                    <Pressable style={[styles.transferAccountCard, { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant }]}>
+                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>扣款账户</Text>
+                      <View style={styles.transferAccountValueRow}>
+                        <MaterialIcons name="account-balance-wallet" size={20} color={tertiary} />
+                        <Text style={[styles.transferAccountValue, { color: text }]}>活期账户</Text>
+                      </View>
+                    </Pressable>
+                    <View style={styles.transferArrowWrap}>
+                      <MaterialIcons name="arrow-right-alt" size={28} color={subtle} />
+                    </View>
+                    <Pressable style={[styles.transferAccountCard, { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant }]}>
+                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>入账账户</Text>
+                      <View style={styles.transferAccountValueRow}>
+                        <MaterialIcons name="savings" size={20} color={primary} />
+                        <Text style={[styles.transferAccountValue, { color: text }]}>Vault</Text>
+                      </View>
+                    </Pressable>
+                  </View>
+
+                  <View style={styles.transferAmountWrap}>
+                    <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
+                    <Text style={[styles.transferAmountValue, { color: tertiary }]}>{amountDisplay}</Text>
+                  </View>
+
+                  <View style={styles.transferDateWrap}>
+                    <Pressable style={[styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                      <MaterialIcons name="calendar-today" size={14} color={subtle} />
+                      <Text style={[styles.transferDateText, { color: text }]}>{sheetDateLabel}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+
+                <View style={[styles.transferKeypadWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                  <View style={styles.transferKeypadInner}>
+                    <View style={styles.transferNumberGrid}>
+                      {['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '00'].map((key) => (
+                        <Pressable
+                          key={key}
+                          onPress={() => handleAmountKeyPress(key)}
+                          style={({ pressed }) => [
+                            styles.transferNumberBtn,
+                            { backgroundColor: surface, borderColor: outlineVariant },
+                            pressed && { opacity: 0.86 },
+                          ]}>
+                          <Text style={[styles.transferNumberText, { color: text }]}>{key}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    <View style={styles.transferActionCol}>
+                      <Pressable
+                        onPress={() => handleAmountKeyPress('backspace')}
+                        style={({ pressed }) => [
+                          styles.transferBackBtn,
+                          { backgroundColor: surface, borderColor: outlineVariant },
+                          pressed && { opacity: 0.86 },
+                        ]}>
+                        <MaterialIcons name="backspace" size={20} color={subtle} />
+                      </Pressable>
+                      <Pressable
+                        onPress={() => handleAmountKeyPress('check')}
+                        style={({ pressed }) => [styles.transferCheckBtn, { backgroundColor: tertiary }, pressed && { opacity: 0.9 }]}>
+                        <MaterialIcons name="check" size={30} color="#ffffff" />
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </>
+            ) : (
+              <>
+                <View style={styles.categoryGrid}>
+                  {activeCategories.map((item) => (
+                    <Pressable key={item.key} style={styles.categoryItem} onPress={() => {}}>
+                      <View style={[styles.categoryIconWrap, { backgroundColor: outlineVariant }]}>
+                        <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={22} color={item.color} />
+                      </View>
+                      <Text style={[styles.categoryLabel, { color: subtle }]}>{item.label}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                <View style={[styles.sheetInputWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                  <View style={styles.sheetConfigRow}>
+                    <View style={[styles.configChip, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                      <MaterialIcons name="calendar-today" size={16} color={subtle} />
+                      <Text style={[styles.configChipText, { color: text }]}>{sheetDateLabel}</Text>
+                    </View>
+                    <View style={[styles.configChip, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                      <MaterialIcons name="account-balance-wallet" size={16} color={tertiary} />
+                      <Text style={[styles.configChipText, { color: text }]}>支付账户</Text>
+                      <MaterialIcons name="expand-more" size={16} color={subtle} />
+                    </View>
+                    <TextInput
+                      value={sheetNote}
+                      onChangeText={setSheetNote}
+                      style={[styles.noteInput, { color: text }]}
+                      placeholder="添加备注..."
+                      placeholderTextColor={subtle}
+                    />
+                  </View>
+
+                  <View style={styles.amountPreview}>
+                    <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
+                    <Text style={[styles.amountValue, { color: tertiary }]}>{amountDisplay}</Text>
+                  </View>
+
+                  <View style={styles.keypad}>
+                    {keypadRows.flat().map((key, idx) => {
+                      const isDone = key === 'done';
+                      const isBackspace = key === 'backspace';
+                      const showLabel = isBackspace ? 'backspace' : isDone ? '完成' : key;
+                      return (
+                        <Pressable
+                          key={`${key}-${idx}`}
+                          onPress={() => handleAmountKeyPress(key)}
+                          style={({ pressed }) => [
+                            styles.keypadBtn,
+                            isDone
+                              ? [styles.keypadDoneBtn, { backgroundColor: tertiary }]
+                              : [styles.keypadNormalBtn, { backgroundColor: surface, borderColor: outlineVariant }],
+                            key === '0' && idx === 12 ? styles.keypadWideBtn : null,
+                            pressed && { opacity: 0.86 },
+                          ]}>
+                          {isBackspace ? (
+                            <MaterialIcons name="backspace" size={20} color={subtle} />
+                          ) : (
+                            <Text style={isDone ? styles.keypadDoneText : [styles.keypadText, { color: text }]}>{showLabel}</Text>
+                          )}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1056,6 +1104,8 @@ const styles = StyleSheet.create({
     elevation: 4,
     overflow: 'hidden',
     justifyContent: 'center',
+    minHeight: 56,
+    borderRadius: 28,
   },
   composerRow: {
     flex: 1,
@@ -1071,15 +1121,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconBtnPressed: {
-    backgroundColor: '#f3f4f6',
-  },
   composerInput: {
     flex: 1,
-    color: '#111827',
-    fontSize: 14,
     paddingVertical: 8,
     paddingHorizontal: 10,
+  },
+  composerPlaceholder: {
+    color: '#9ca3af',
+    fontSize: 14,
   },
   actionBtn: {
     width: 36,
@@ -1091,53 +1140,271 @@ const styles = StyleSheet.create({
   voiceBtn: {
     backgroundColor: '#111827',
   },
-  submitBtn: {
-    backgroundColor: '#2563eb',
+  sheetOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.25)',
   },
-  voiceCapsuleWrap: {
+  sheetBackdrop: {
     ...StyleSheet.absoluteFillObject,
+  },
+  sheetContainer: {
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    backgroundColor: '#ffffff',
+    overflow: 'hidden',
+  },
+  sheetHeader: {
+    paddingHorizontal: 18,
+    minHeight: 58,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sheetCloseBtn: {
+    width: 28,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 12,
   },
-  voiceCapsule: {
-    width: '100%',
-    borderRadius: 999,
-    backgroundColor: '#10b981',
-    minHeight: 44,
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  sheetTabs: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    paddingHorizontal: 18,
+    gap: 18,
+  },
+  sheetTabBtn: {
+    paddingTop: 12,
+    paddingBottom: 10,
+  },
+  sheetTabText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  sheetTabLine: {
+    height: 2,
+    marginTop: 8,
+    borderRadius: 1,
+  },
+  categoryGrid: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    rowGap: 16,
+  },
+  categoryItem: {
+    width: '20%',
+    alignItems: 'center',
+    gap: 6,
+  },
+  categoryIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  sheetInputWrap: {
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+  },
+  sheetConfigRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  configChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+  },
+  configChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  noteInput: {
+    flex: 1,
+    fontSize: 13,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+  },
+  amountPreview: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
+    gap: 2,
+    marginBottom: 14,
+  },
+  amountYuan: {
+    fontSize: 28,
+    fontWeight: '800',
+  },
+  amountValue: {
+    fontSize: 44,
+    fontWeight: '900',
+    letterSpacing: -0.8,
+  },
+  keypad: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingBottom: 4,
+  },
+  keypadBtn: {
+    height: 52,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '23%',
+  },
+  keypadNormalBtn: {
+    borderWidth: 1,
+  },
+  keypadWideBtn: {
+    width: '48.5%',
+  },
+  keypadDoneBtn: {
+    borderWidth: 0,
+  },
+  keypadText: {
+    fontSize: 21,
+    fontWeight: '800',
+  },
+  keypadDoneText: {
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  transferContent: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 10,
+    gap: 20,
+  },
+  transferAccountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  transferAccountCard: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 14,
     paddingHorizontal: 10,
+    alignItems: 'center',
+    gap: 6,
+  },
+  transferAccountLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+  },
+  transferAccountValueRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    shadowColor: '#10b981',
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 2,
   },
-  voiceBackBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+  transferAccountValue: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  transferArrowWrap: {
+    width: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.16)',
   },
-  voiceHoldArea: {
-    flex: 1,
-    minHeight: 36,
+  transferAmountWrap: {
+    minHeight: 112,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 2,
+  },
+  transferAmountValue: {
+    fontSize: 56,
+    fontWeight: '900',
+    letterSpacing: -1,
+  },
+  transferDateWrap: {
+    alignItems: 'center',
+    paddingBottom: 2,
+  },
+  transferDateBtn: {
     borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 6,
+  },
+  transferDateText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  transferKeypadWrap: {
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 4,
+  },
+  transferKeypadInner: {
+    flexDirection: 'row',
     gap: 8,
   },
-  voiceCapsuleRecording: {
-    backgroundColor: '#059669',
+  transferNumberGrid: {
+    flex: 3,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
   },
-  voiceCapsuleText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0.2,
+  transferNumberBtn: {
+    width: '30.6%',
+    minHeight: 52,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transferNumberText: {
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  transferActionCol: {
+    flex: 1,
+    gap: 8,
+  },
+  transferBackBtn: {
+    minHeight: 52,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transferCheckBtn: {
+    flex: 1,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
