@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { getFinanceAccountTypes, getFinanceAccountsWithBalance } from '@/lib/repositories/finance/finance';
 import type { FinanceAccountBalanceRow, FinanceAccountTypeRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -63,37 +64,70 @@ export default function AssetsScreen() {
     return `¥${abs.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
   }, []);
 
+  const formatSignedMoney0 = React.useCallback((value: number) => {
+    const abs = Math.abs(value);
+    const prefix = value < 0 ? '-¥' : '¥';
+    return `${prefix}${abs.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
+  }, []);
+
   const formatMoney2 = React.useCallback((value: number) => {
     const abs = Math.abs(value);
     return `¥${abs.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }, []);
 
+  const formatDebtMoney2 = React.useCallback((value: number) => {
+    const abs = Math.abs(value);
+    if (abs === 0) return '¥0.00';
+    return `-¥${abs.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }, []);
+
   type UiAccountType = 'cash_wallet' | 'bank' | 'investment' | 'liability' | 'custom' | 'unknown';
 
   const parseUiMeta = React.useCallback(
-    (acc: FinanceAccountBalanceRow): { uiType: UiAccountType; uiIcon?: keyof typeof MaterialIcons.glyphMap; customTypeName?: string } => {
-    try {
-      const raw = acc.extra_data ? (JSON.parse(acc.extra_data) as unknown) : null;
-      if (raw && typeof raw === 'object') {
-        const obj = raw as Record<string, unknown>;
-        const uiType = obj.ui_account_type;
-        const iconKey = obj.ui_icon_key;
-        const customTypeName = typeof obj.ui_custom_type_name === 'string' ? obj.ui_custom_type_name.trim() : '';
-        const typeOk =
-          uiType === 'cash_wallet' || uiType === 'bank' || uiType === 'investment' || uiType === 'liability' || uiType === 'custom';
-        const iconOk = typeof iconKey === 'string' && iconKey.length > 0;
-        return {
-          uiType: typeOk ? (uiType as UiAccountType) : acc.account_type === 'liability' ? 'liability' : 'unknown',
-          uiIcon: iconOk ? (iconKey as keyof typeof MaterialIcons.glyphMap) : undefined,
-          customTypeName: customTypeName || undefined,
-        };
-      }
-    } catch {
-      // ignore JSON parse errors
-    }
+    (
+      acc: FinanceAccountBalanceRow
+    ): {
+      uiType: UiAccountType;
+      uiIcon?: keyof typeof MaterialIcons.glyphMap;
+      customTypeName?: string;
+      uiIsLiability?: boolean;
+    } => {
+      try {
+        const raw = acc.extra_data ? (JSON.parse(acc.extra_data) as unknown) : null;
+        if (raw && typeof raw === 'object') {
+          const obj = raw as Record<string, unknown>;
+          const uiType = obj.ui_account_type;
+          const iconKey = obj.ui_icon_key;
+          const customTypeName = typeof obj.ui_custom_type_name === 'string' ? obj.ui_custom_type_name.trim() : '';
+          const uiIsLiability = typeof obj.ui_is_liability === 'boolean' ? obj.ui_is_liability : undefined;
+          const typeOk =
+            uiType === 'cash_wallet' || uiType === 'bank' || uiType === 'investment' || uiType === 'liability' || uiType === 'custom';
 
-    return { uiType: acc.account_type === 'liability' ? 'liability' : 'unknown', uiIcon: undefined };
-  }, []);
+          let uiIcon: keyof typeof MaterialIcons.glyphMap | undefined;
+          if (typeof iconKey === 'string' && iconKey.length > 0) {
+            const matchedIcon = FINANCE_ACCOUNT_ICON_OPTIONS.find((item) => item.key === iconKey)?.icon;
+            if (matchedIcon) {
+              uiIcon = matchedIcon;
+            } else if (iconKey in MaterialIcons.glyphMap) {
+              uiIcon = iconKey as keyof typeof MaterialIcons.glyphMap;
+            }
+          }
+
+          return {
+            uiType: typeOk ? (uiType as UiAccountType) : acc.account_type === 'liability' ? 'liability' : 'unknown',
+            uiIcon,
+            customTypeName: customTypeName || undefined,
+            uiIsLiability,
+          };
+        }
+      } catch {
+        // ignore JSON parse errors
+      }
+
+      return { uiType: acc.account_type === 'liability' ? 'liability' : 'unknown', uiIcon: undefined };
+    },
+    [],
+  );
 
   const customTypeGroups = React.useMemo(() => {
     const map = new Map<string, FinanceAccountBalanceRow[]>();
@@ -133,23 +167,47 @@ export default function AssetsScreen() {
     return result;
   }, [accounts, parseUiMeta]);
 
-  const netWorth = React.useMemo(() => accounts.reduce((sum, a) => sum + (a.balance ?? 0), 0), [accounts]);
-  const totalAssets = React.useMemo(() => accounts.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [accounts]);
-  const totalLiabilitiesAbs = React.useMemo(
-    () => Math.abs(accounts.reduce((sum, a) => sum + Math.min(0, a.balance ?? 0), 0)),
-    [accounts],
+  const isLiabilityAccount = React.useCallback(
+    (acc: FinanceAccountBalanceRow) => {
+      if (acc.sign_rule < 0 || acc.account_type === 'liability') return true;
+
+      const meta = parseUiMeta(acc);
+      if (meta.uiType === 'liability' || meta.uiIsLiability) return true;
+      if (meta.uiType !== 'custom' || !meta.customTypeName) return false;
+
+      return accountTypes.some((type) => type.name === meta.customTypeName && type.is_liability === 1);
+    },
+    [accountTypes, parseUiMeta],
   );
+
+  const totalAssets = React.useMemo(
+    () =>
+      accounts.reduce((sum, a) => {
+        if (isLiabilityAccount(a)) return sum;
+        return sum + Math.max(0, a.balance ?? 0);
+      }, 0),
+    [accounts, isLiabilityAccount],
+  );
+  const totalLiabilitiesAbs = React.useMemo(
+    () =>
+      accounts.reduce((sum, a) => {
+        if (!isLiabilityAccount(a)) return sum;
+        return sum + Math.abs(a.balance ?? 0);
+      }, 0),
+    [accounts, isLiabilityAccount],
+  );
+  const netWorth = React.useMemo(() => totalAssets - totalLiabilitiesAbs, [totalAssets, totalLiabilitiesAbs]);
 
   const cashTotal = React.useMemo(() => grouped.cash_wallet.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [grouped.cash_wallet]);
   const bankTotal = React.useMemo(() => grouped.bank.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [grouped.bank]);
   const investTotal = React.useMemo(() => grouped.investment.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [grouped.investment]);
 
-  const safeAssets = totalAssets > 0 ? totalAssets : 1;
-  const cashPct = cashTotal / safeAssets;
-  const bankPct = bankTotal / safeAssets;
-  const investPct = Math.max(0, 1 - cashPct - bankPct);
+  const hasAssets = totalAssets > 0;
+  const cashPct = hasAssets ? cashTotal / totalAssets : 0;
+  const bankPct = hasAssets ? bankTotal / totalAssets : 0;
+  const investPct = hasAssets ? investTotal / totalAssets : 0;
 
-  const ringPct = totalAssets > 0 ? Math.round(((cashTotal + bankTotal + investTotal) / totalAssets) * 100) : 0;
+  const ringPct = hasAssets ? Math.round(((cashTotal + bankTotal + investTotal) / totalAssets) * 100) : 0;
 
   const groupSumAbs = React.useCallback((rows: FinanceAccountBalanceRow[]) => {
     return rows.reduce((sum, a) => sum + Math.abs(a.balance ?? 0), 0);
@@ -200,7 +258,7 @@ export default function AssetsScreen() {
         <View style={styles.hero}>
           <Text style={[styles.kicker, { color: outline }]}>当前净资产</Text>
           <View style={styles.heroRow}>
-            <Text style={[styles.netWorth, { color: theme.text }]}>{formatMoney0(netWorth)}</Text>
+            <Text style={[styles.netWorth, { color: netWorth < 0 ? errorRed : theme.text }]}>{formatSignedMoney0(netWorth)}</Text>
             <View style={[styles.pill, { backgroundColor: `${secondaryGreen}1A` }]}>
               <MaterialIcons name="trending-up" size={16} color={secondaryGreen} />
               <Text style={[styles.pillText, { color: secondaryGreen }]}>2.4%</Text>
@@ -573,7 +631,7 @@ export default function AssetsScreen() {
                         <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '负债账户'}</Text>
                       </View>
                     </View>
-                    <Text style={[styles.accountAmount, { color: errorRed }]}>{formatMoney2(acc.balance)}</Text>
+                    <Text style={[styles.accountAmount, { color: errorRed }]}>{formatDebtMoney2(acc.balance)}</Text>
                   </Pressable>
                 ))
               )}

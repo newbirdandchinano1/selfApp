@@ -1,7 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { getFinanceDailySummariesByDateRange, getFinanceTransactionsByYmd } from '@/lib/repositories/finance/finance';
-import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import { getFinanceAccounts, getFinanceDailySummariesByDateRange, getFinanceTransactionsByYmd } from '@/lib/repositories/finance/finance';
+import type { FinanceAccountRow, FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -19,10 +19,13 @@ type DayCell = {
 };
 
 type Txn = {
+  id: string;
   icon: keyof typeof MaterialIcons.glyphMap;
   title: string;
   meta: string;
-  amount: number;
+  displayAmount: number;
+  transactionType: FinanceTransactionRow['transaction_type'];
+  isLiabilityAccount: boolean;
 };
 
 const weekTitles = ['一', '二', '三', '四', '五', '六', '日'];
@@ -93,18 +96,43 @@ function txnIconByType(type: string): Txn['icon'] {
   return 'receipt-long';
 }
 
-function txnToUi(row: FinanceTransactionRow): Txn {
+function txnToUi(row: FinanceTransactionRow, isLiabilityAccount: boolean): Txn {
   const ymd = row.happened_at.slice(0, 10);
+  const absAmount = Math.abs(row.amount);
+  const displayAmount =
+    row.transaction_type === 'income'
+      ? isLiabilityAccount ? -absAmount : absAmount
+      : row.transaction_type === 'expense'
+        ? isLiabilityAccount ? absAmount : -absAmount
+        : row.amount;
   return {
+    id: row.id,
     icon: txnIconByType(row.transaction_type),
     title: row.name,
     meta: `${formatTimeHHmm(row.happened_at)} · ${ymd}`,
-    amount: row.amount,
+    displayAmount,
+    transactionType: row.transaction_type,
+    isLiabilityAccount,
   };
+}
+
+function isLiabilityAccount(account?: FinanceAccountRow | null) {
+  if (!account) return false;
+  return account.sign_rule < 0 || account.account_type === 'liability';
 }
 
 function clamp01(v: number) {
   return Math.max(0, Math.min(1, v));
+}
+
+function formatCellNetAmount(value: number) {
+  const sign = value >= 0 ? '+' : '-';
+  const abs = Math.abs(value);
+  if (abs >= 10000) {
+    const compact = abs >= 100000 ? (abs / 10000).toFixed(0) : (abs / 10000).toFixed(1);
+    return `${sign}${compact}w`;
+  }
+  return `${sign}${abs.toFixed(2)}`;
 }
 
 const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
@@ -159,8 +187,6 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
   }, [gridStart]);
 
   const [dailyMap, setDailyMap] = React.useState<Map<string, FinanceDailySummaryRow>>(() => new Map());
-  const [maxIncomeExpense, setMaxIncomeExpense] = React.useState({ maxIncome: 0, maxExpense: 0 });
-
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -169,19 +195,13 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
         if (cancelled) return;
 
         const map = new Map<string, FinanceDailySummaryRow>();
-        let maxIncome = 0;
-        let maxExpense = 0;
         for (const r of rows) {
           map.set(r.day, r);
-          if (r.income > maxIncome) maxIncome = r.income;
-          if (r.expense > maxExpense) maxExpense = r.expense;
         }
         setDailyMap(map);
-        setMaxIncomeExpense({ maxIncome, maxExpense });
       } catch {
         if (cancelled) return;
         setDailyMap(new Map());
-        setMaxIncomeExpense({ maxIncome: 0, maxExpense: 0 });
       }
     })();
     return () => {
@@ -203,8 +223,9 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
 
               const isActive = selectedDate ? isSameDay(item.date, selectedDate) : false;
               const hasData = item.income !== 0 || item.expense !== 0;
-              const incomeRatio = maxIncomeExpense.maxIncome > 0 ? clamp01(item.income / maxIncomeExpense.maxIncome) : 0;
-              const expenseRatio = maxIncomeExpense.maxExpense > 0 ? clamp01(item.expense / maxIncomeExpense.maxExpense) : 0;
+              const totalFlow = item.income + item.expense;
+              const incomeRatio = totalFlow > 0 ? clamp01(item.income / totalFlow) : 0;
+              const expenseRatio = totalFlow > 0 ? clamp01(item.expense / totalFlow) : 0;
 
               return (
                 <Pressable
@@ -235,7 +256,7 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
                           {
                             backgroundColor: incomeColor,
                             opacity: hasData ? 0.95 : 0.25,
-                            width: `${Math.max(8, Math.round(90 * incomeRatio))}%`,
+                            width: `${Math.round(90 * incomeRatio)}%`,
                           },
                         ]}
                       />
@@ -245,13 +266,16 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
                           {
                             backgroundColor: expenseColor,
                             opacity: hasData ? 0.8 : 0.25,
-                            width: `${Math.max(8, Math.round(90 * expenseRatio))}%`,
+                            width: `${Math.round(90 * expenseRatio)}%`,
                           },
                         ]}
                       />
                     </View>
                   </View>
                   <Text
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.7}
                     style={[
                       styles.amount,
                       {
@@ -260,7 +284,7 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
                       },
                     ]}
                   >
-                    {!hasData ? '--' : `${item.net >= 0 ? '+' : ''}${item.net.toFixed(2)}`}
+                    {!hasData ? '--' : formatCellNetAmount(item.net)}
                   </Text>
                 </Pressable>
               );
@@ -312,11 +336,15 @@ export default function FinanceCalendarScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const rows = await getFinanceTransactionsByYmd(formatYMD(activeDate));
+        const [rows, accounts] = await Promise.all([getFinanceTransactionsByYmd(formatYMD(activeDate)), getFinanceAccounts()]);
         if (cancelled) return;
-        const ui = rows.map(txnToUi);
+        const accountMap = new Map(accounts.map((acc) => [acc.id, acc]));
+        const ui = rows.map((row) => {
+          const account = accountMap.get(row.account_id);
+          return txnToUi(row, isLiabilityAccount(account));
+        });
         setActiveTxns(ui);
-        setDayTotal(ui.reduce((sum, t) => sum + t.amount, 0));
+        setDayTotal(ui.reduce((sum, t) => sum + t.displayAmount, 0));
       } catch {
         if (cancelled) return;
         setActiveTxns([]);
@@ -336,6 +364,7 @@ export default function FinanceCalendarScreen() {
   const titleColor = isDark ? '#fbbf24' : '#b45309';
   const income = isDark ? '#34d399' : '#006c49';
   const expense = isDark ? '#cbd5e1' : '#475569';
+  const expenseAmountColor = isDark ? '#f87171' : '#dc2626';
 
   const formatTopDate = (d: Date) => `${d.getMonth() + 1}月${d.getDate()}日 ${weekdayCn[d.getDay()]}`;
 
@@ -643,18 +672,31 @@ export default function FinanceCalendarScreen() {
 
               <View style={[styles.sheetDivider, { backgroundColor: outline }]} />
 
-              {activeTxns.map((txn) => (
-                <View key={`${txn.title}-${txn.meta}`} style={styles.txnRow}>
-                  <View style={[styles.txnIconWrap, { backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : '#eef2ff' }]}>
-                    <MaterialIcons name={txn.icon} size={20} color={titleColor} />
-                  </View>
-                  <View style={[styles.txnMain, styles.txnMainWithBorder, { borderLeftColor: dayTotal >= 0 ? income : titleColor }]}>
-                    <Text style={[styles.txnTitle, { color: text }]}>{txn.title}</Text>
-                    <Text style={[styles.txnMeta, { color: subtle }]}>{txn.meta}</Text>
-                  </View>
-                  <Text style={[styles.txnAmount, { color: text }]}>{txn.amount >= 0 ? '+' : ''}{txn.amount.toFixed(2)}</Text>
+              {activeTxns.length === 0 ? (
+                <View style={[styles.emptyTxnWrap, { borderColor: outline }]}>
+                  <MaterialIcons name="event-note" size={18} color={subtle} />
+                  <Text style={[styles.emptyTxnText, { color: subtle }]}>今日暂无流水记录</Text>
                 </View>
-              ))}
+              ) : (
+                activeTxns.map((txn) => (
+                  <View key={txn.id} style={styles.txnRow}>
+                    <View style={[styles.txnIconWrap, { backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : '#eef2ff' }]}>
+                      <MaterialIcons name={txn.icon} size={20} color={titleColor} />
+                    </View>
+                    <View style={[styles.txnMain, styles.txnMainWithBorder, { borderLeftColor: dayTotal >= 0 ? income : titleColor }]}>
+                      <Text style={[styles.txnTitle, { color: text }]}>{txn.title}</Text>
+                      <Text style={[styles.txnMeta, { color: subtle }]}>{txn.meta}</Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.txnAmount,
+                        { color: txn.transactionType === 'income' && !txn.isLiabilityAccount ? income : expenseAmountColor },
+                      ]}>
+                      {txn.displayAmount >= 0 ? '+' : ''}{txn.displayAmount.toFixed(2)}
+                    </Text>
+                  </View>
+                ))
+              )}
 
               <View style={styles.sheetBottomSpacer} />
             </ScrollView>
@@ -932,6 +974,21 @@ const styles = StyleSheet.create({
   },
   sheetBottomSpacer: {
     height: 12,
+  },
+  emptyTxnWrap: {
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginBottom: 12,
+  },
+  emptyTxnText: {
+    fontSize: 13,
+    fontWeight: '700',
   },
   modalMask: {
     flex: 1,

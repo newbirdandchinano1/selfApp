@@ -27,6 +27,7 @@ import {
   setGlobalSodiumTargetMg,
 } from '@/lib/global-intake-targets';
 import {
+  createQuickAddItemMap,
   formatQuickAddAmount,
   getDefaultQuickAddItems,
   getQuickAddMetricType,
@@ -109,12 +110,19 @@ function formatRecordTime(createdAt: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'mg'): string {
+  const formatted = Number(value.toFixed(2)).toString();
+  return `${formatted}${unit}`;
+}
+
 type IntakeListLine = {
   key: string;
   recordId: string;
   title: string;
   timeLine: string;
   amountRight: string;
+  note: string;
+  aiComment: string;
   icon: keyof typeof MaterialIcons.glyphMap;
   iconBgLight: string;
   iconBgDark: string;
@@ -124,16 +132,7 @@ type IntakeListLine = {
 /** 将当日多条库记录展开为列表行（一行可对应水分/蛋白质/钠中一项）。 */
 function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCardItem[]): IntakeListLine[] {
   const lines: IntakeListLine[] = [];
-  const hydrationByAmount = new Map<number, QuickAddCardItem>();
-  const proteinByAmount = new Map<number, QuickAddCardItem>();
-  const sodiumByAmount = new Map<number, QuickAddCardItem>();
-  for (const item of quickAddCatalog) {
-    const rounded = Math.round(item.hydrationMl);
-    const metricType = getQuickAddMetricType(item);
-    if (metricType === 'hydration' && !hydrationByAmount.has(rounded)) hydrationByAmount.set(rounded, item);
-    if (metricType === 'protein' && !proteinByAmount.has(rounded)) proteinByAmount.set(rounded, item);
-    if (metricType === 'sodium' && !sodiumByAmount.has(rounded)) sodiumByAmount.set(rounded, item);
-  }
+  const quickAddByKey = createQuickAddItemMap(quickAddCatalog);
   const orderedRows = [...rows].sort((a, b) => {
     const ta = new Date(a.created_at).getTime();
     const tb = new Date(b.created_at).getTime();
@@ -146,40 +145,48 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
     const p = row.protein;
     const s = row.sodium;
     if (h > 0) {
-      const qa = hydrationByAmount.get(Math.round(h));
+      const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-h`,
         recordId: row.id,
         title: qa ? qa.label : '水分',
         timeLine,
-        amountRight: `${Math.round(h)}ml`,
-        icon: qa ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'water-drop',
+        amountRight: formatIntakeAmount(h, 'ml'),
+        note: '备注：暂无备注',
+        aiComment: 'AI评价：待分析',
+        icon: qa && getQuickAddMetricType(qa) === 'hydration' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'water-drop',
         iconBgLight: 'rgba(16,185,129,0.12)',
         iconBgDark: 'rgba(6,78,59,0.32)',
         iconColor: '#10b981',
       });
     }
     if (p > 0) {
+      const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-p`,
         recordId: row.id,
-        title: proteinByAmount.get(Math.round(p))?.label ?? '蛋白质',
+        title: qa && getQuickAddMetricType(qa) === 'protein' ? qa.label : '蛋白质',
         timeLine,
-        amountRight: `${Math.round(p)}g`,
-        icon: 'restaurant',
+        amountRight: formatIntakeAmount(p, 'g'),
+        note: '备注：暂无备注',
+        aiComment: 'AI评价：待分析',
+        icon: qa && getQuickAddMetricType(qa) === 'protein' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
         iconBgLight: 'rgba(245,158,11,0.14)',
         iconBgDark: 'rgba(120,53,15,0.32)',
         iconColor: '#f59e0b',
       });
     }
     if (s > 0) {
+      const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-s`,
         recordId: row.id,
-        title: sodiumByAmount.get(Math.round(s))?.label ?? '钠',
+        title: qa && getQuickAddMetricType(qa) === 'sodium' ? qa.label : '钠',
         timeLine,
-        amountRight: `${Math.round(s)}mg`,
-        icon: 'science',
+        amountRight: formatIntakeAmount(s, 'mg'),
+        note: '备注：暂无备注',
+        aiComment: 'AI评价：待分析',
+        icon: qa && getQuickAddMetricType(qa) === 'sodium' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
         iconBgLight: 'rgba(168,85,247,0.14)',
         iconBgDark: 'rgba(88,28,135,0.32)',
         iconColor: '#a855f7',
@@ -218,17 +225,19 @@ async function appendManualIntakeToDay(params: {
   recordDateYmd: string;
   type: 'hydration' | 'protein' | 'sodium';
   amount: number;
+  quickAddKey?: string;
   targetHydrationMl: number;
   targetProteinG: number;
   targetSodiumMg: number;
 }): Promise<void> {
-  const { userId, recordDateYmd, type, amount, targetHydrationMl, targetProteinG, targetSodiumMg } = params;
+  const { userId, recordDateYmd, type, amount, quickAddKey, targetHydrationMl, targetProteinG, targetSodiumMg } = params;
   if (!Number.isFinite(amount) || amount <= 0) return;
   const id = `h_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   await createHealthRecord({
     id,
     user_id: userId,
     record_date: recordDateYmd,
+    quick_add_key: quickAddKey ?? null,
     hydration: type === 'hydration' ? amount : 0,
     protein: type === 'protein' ? amount : 0,
     sodium: type === 'sodium' ? amount : 0,
@@ -811,7 +820,7 @@ export default function HealthScreen() {
   }, [metricImpactAnims, wheelImpactAnim]);
 
   const persistManualIntakeDelta = React.useCallback(
-    async (type: 'hydration' | 'protein' | 'sodium', amount: number) => {
+    async (type: 'hydration' | 'protein' | 'sodium', amount: number, quickAddKey?: string) => {
       if (!user?.id || !Number.isFinite(amount) || amount <= 0) return;
       const ymd = formatLocalYmd(selectedDate);
       try {
@@ -820,6 +829,7 @@ export default function HealthScreen() {
           recordDateYmd: ymd,
           type,
           amount,
+          quickAddKey,
           targetHydrationMl: intakeTargetsSnapshot.hydrationMl,
           targetProteinG: intakeTargetsSnapshot.proteinG,
           targetSodiumMg: intakeTargetsSnapshot.sodiumMg,
@@ -1611,7 +1621,7 @@ export default function HealthScreen() {
                     style={[styles.quickAddCard, { backgroundColor: theme.surface, width: cardWidth }]}
                     activeOpacity={0.82}
                     onPress={() => {
-                      void persistManualIntakeDelta(getQuickAddMetricType(item), item.hydrationMl);
+                      void persistManualIntakeDelta(getQuickAddMetricType(item), item.hydrationMl, item.key);
                     }}
                   >
                     <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={30} color={theme.textSecondary} style={styles.quickAddIcon} />
@@ -1704,8 +1714,16 @@ export default function HealthScreen() {
                         <MaterialIcons name={line.icon} size={22} color={line.iconColor} />
                       </View>
                       <View style={styles.intakeRowText}>
-                        <Text style={[styles.intakeRowTitle, { color: theme.text }]}>{line.title}</Text>
-                        <Text style={[styles.intakeRowTime, { color: theme.textSecondary }]}>{line.timeLine}</Text>
+                        <View style={styles.intakeRowHeader}>
+                          <Text style={[styles.intakeRowTitle, { color: theme.text }]}>{line.title}</Text>
+                          <Text style={[styles.intakeRowTime, { color: theme.textSecondary }]}>{line.timeLine}</Text>
+                        </View>
+                        <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
+                          {line.note}
+                        </Text>
+                        <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
+                          {line.aiComment}
+                        </Text>
                       </View>
                     </View>
                     <Text style={[styles.intakeRowAmount, { color: theme.text }]}>{line.amountRight}</Text>
@@ -2396,6 +2414,12 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  intakeRowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   intakeRowTitle: {
     fontSize: 14,
     fontWeight: '700',
@@ -2403,12 +2427,19 @@ const styles = StyleSheet.create({
   intakeRowTime: {
     fontSize: 11,
     fontWeight: '600',
-    marginTop: 3,
+    flexShrink: 0,
+  },
+  intakeRowMeta: {
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 4,
+    lineHeight: 16,
   },
   intakeRowAmount: {
     fontSize: 14,
     fontWeight: '700',
     marginLeft: 8,
+    alignSelf: 'flex-start',
   },
   intakeMoreHint: {
     fontSize: 12,

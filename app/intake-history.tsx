@@ -1,5 +1,11 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import {
+  createQuickAddItemMap,
+  getQuickAddMetricType,
+  loadAllQuickAddItems,
+  type QuickAddCardItem,
+} from '@/lib/quick-add-cards';
 import { getHealthRecordsForUserOnDate } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import { getDefaultUser } from '@/lib/repositories/users/user';
@@ -17,6 +23,8 @@ type IntakeHistoryLine = {
   title: string;
   amount: string;
   time: string;
+  note: string;
+  aiComment: string;
   icon: keyof typeof MaterialIcons.glyphMap;
   category: Exclude<FilterKey, 'all'>;
   iconBgLight: string;
@@ -50,6 +58,11 @@ function formatRecordTime(createdAt: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'mg'): string {
+  const formatted = Number(value.toFixed(2)).toString();
+  return `${formatted}${unit}`;
+}
+
 function formatHistoryDateLabel(d: Date): string {
   const today = normalizeDate(new Date());
   if (today.getTime() === d.getTime()) {
@@ -58,17 +71,21 @@ function formatHistoryDateLabel(d: Date): string {
   return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
-function buildHistoryLines(rows: HealthRecordRow[]): IntakeHistoryLine[] {
+function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCardItem[]): IntakeHistoryLine[] {
   const lines: IntakeHistoryLine[] = [];
+  const quickAddByKey = createQuickAddItemMap(quickAddCatalog);
   for (const row of rows) {
     const time = formatRecordTime(row.created_at);
     if (row.hydration > 0) {
+      const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-h`,
-        title: '水分',
-        amount: `${Math.round(row.hydration)}ml`,
+        title: qa && getQuickAddMetricType(qa) === 'hydration' ? qa.label : '水分',
+        amount: formatIntakeAmount(row.hydration, 'ml'),
         time,
-        icon: 'water-drop',
+        note: '备注：暂无备注',
+        aiComment: 'AI评价：待分析',
+        icon: qa && getQuickAddMetricType(qa) === 'hydration' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'water-drop',
         category: 'hydration',
         iconBgLight: 'rgba(16,185,129,0.12)',
         iconBgDark: 'rgba(6,78,59,0.32)',
@@ -76,12 +93,15 @@ function buildHistoryLines(rows: HealthRecordRow[]): IntakeHistoryLine[] {
       });
     }
     if (row.protein > 0) {
+      const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-p`,
-        title: '蛋白质',
-        amount: `${Math.round(row.protein)}g`,
+        title: qa && getQuickAddMetricType(qa) === 'protein' ? qa.label : '蛋白质',
+        amount: formatIntakeAmount(row.protein, 'g'),
         time,
-        icon: 'restaurant',
+        note: '备注：暂无备注',
+        aiComment: 'AI评价：待分析',
+        icon: qa && getQuickAddMetricType(qa) === 'protein' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
         category: 'protein',
         iconBgLight: 'rgba(245,158,11,0.14)',
         iconBgDark: 'rgba(120,53,15,0.32)',
@@ -89,12 +109,15 @@ function buildHistoryLines(rows: HealthRecordRow[]): IntakeHistoryLine[] {
       });
     }
     if (row.sodium > 0) {
+      const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-s`,
-        title: '钠',
-        amount: `${Math.round(row.sodium)}mg`,
+        title: qa && getQuickAddMetricType(qa) === 'sodium' ? qa.label : '钠',
+        amount: formatIntakeAmount(row.sodium, 'mg'),
         time,
-        icon: 'science',
+        note: '备注：暂无备注',
+        aiComment: 'AI评价：待分析',
+        icon: qa && getQuickAddMetricType(qa) === 'sodium' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
         category: 'sodium',
         iconBgLight: 'rgba(168,85,247,0.14)',
         iconBgDark: 'rgba(88,28,135,0.32)',
@@ -128,14 +151,14 @@ export default function IntakeHistoryScreen() {
     React.useCallback(() => {
       let cancelled = false;
       const load = async () => {
-        const user = await getDefaultUser();
+        const [user, catalog] = await Promise.all([getDefaultUser(), loadAllQuickAddItems()]);
         if (!user?.id) {
           if (!cancelled) setLines([]);
           return;
         }
         const records = await getHealthRecordsForUserOnDate(user.id, selectedDateYmd);
         if (!cancelled) {
-          setLines(buildHistoryLines(records));
+          setLines(buildHistoryLines(records, catalog));
         }
       };
       void load();
@@ -228,9 +251,17 @@ export default function IntakeHistoryScreen() {
                   >
                     <MaterialIcons name={line.icon} size={22} color={line.iconColor} />
                   </View>
-                  <View>
-                    <Text style={[styles.rowTitle, { color: theme.text }]}>{line.title}</Text>
-                    <Text style={[styles.rowTime, { color: theme.textSecondary }]}>{line.time}</Text>
+                  <View style={styles.rowTextWrap}>
+                    <View style={styles.rowHeader}>
+                      <Text style={[styles.rowTitle, { color: theme.text }]}>{line.title}</Text>
+                      <Text style={[styles.rowTime, { color: theme.textSecondary }]}>{line.time}</Text>
+                    </View>
+                    <Text style={[styles.rowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
+                      {line.note}
+                    </Text>
+                    <Text style={[styles.rowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
+                      {line.aiComment}
+                    </Text>
                   </View>
                 </View>
                 <Text style={[styles.rowAmount, { color: theme.text }]}>{line.amount}</Text>
@@ -316,6 +347,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    flex: 1,
+    minWidth: 0,
   },
   iconWrap: {
     width: 42,
@@ -324,17 +357,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  rowTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  rowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   rowTitle: {
     fontSize: 15,
     fontWeight: '700',
   },
   rowTime: {
-    marginTop: 2,
     fontSize: 12,
     fontWeight: '500',
+    flexShrink: 0,
+  },
+  rowMeta: {
+    marginTop: 4,
+    fontSize: 11,
+    fontWeight: '500',
+    lineHeight: 16,
   },
   rowAmount: {
     fontSize: 15,
     fontWeight: '700',
+    marginLeft: 10,
+    alignSelf: 'flex-start',
   },
 });

@@ -1,7 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
-import { deleteFinanceAccountTypeByName, getFinanceAccountTypes } from '@/lib/repositories/finance/finance';
+import { createFinanceAccount, createFinanceTransaction, deleteFinanceAccountTypeByName, getFinanceAccountTypes, getFinanceAccounts } from '@/lib/repositories/finance/finance';
 import { getCustomAccountTypeDraft, getCustomAccountTypeOptions, removeCustomAccountTypeOption, setCustomAccountTypeDraft } from '@/lib/state/account-type-draft';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -19,8 +19,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { createFinanceAccount, createFinanceTransaction } from '@/lib/repositories/finance/finance';
-
 type AccountType = 'cash_wallet' | 'bank' | 'investment' | 'liability' | 'custom';
 
 const BASE_TYPE_OPTIONS: { key: Exclude<AccountType, 'custom'>; label: string; icon: keyof typeof MaterialIcons.glyphMap }[] = [
@@ -155,6 +153,25 @@ export default function AddAccountScreen() {
     }
   }, [accountName, accountType, balance, notes, iconKey, router, customIsLiability, customTypeName]);
 
+  const hasAccountsForCustomType = React.useCallback(async (typeName: string) => {
+    const targetTypeName = typeName.trim();
+    if (!targetTypeName) return false;
+    const accounts = await getFinanceAccounts();
+    return accounts.some((acc) => {
+      if (!acc.extra_data) return false;
+      try {
+        const raw = JSON.parse(acc.extra_data) as unknown;
+        if (!raw || typeof raw !== 'object') return false;
+        const obj = raw as Record<string, unknown>;
+        const uiType = obj.ui_account_type;
+        const uiCustomTypeName = typeof obj.ui_custom_type_name === 'string' ? obj.ui_custom_type_name.trim() : '';
+        return uiType === 'custom' && uiCustomTypeName === targetTypeName;
+      } catch {
+        return false;
+      }
+    });
+  }, []);
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
       <View
@@ -227,33 +244,46 @@ export default function AddAccountScreen() {
                       setIconKey(t.iconKey);
                     }}
                     onLongPress={() => {
-                      Alert.alert(
-                        '删除自定义类型',
-                        `确认删除“${t.name}”吗？`,
-                        [
-                          { text: '取消', style: 'cancel' },
-                          {
-                            text: '删除',
-                            style: 'destructive',
-                            onPress: async () => {
-                              try {
-                                await deleteFinanceAccountTypeByName(t.name);
-                                removeCustomAccountTypeOption(t.name);
-                                await loadCustomTypeOptions();
-                                if (accountType === 'custom' && customTypeName === t.name) {
-                                  setAccountType('bank');
-                                  setCustomTypeName('');
-                                  setCustomIsLiability(false);
-                                  setIconKey('savings');
-                                }
-                              } catch (e) {
-                                console.warn('删除自定义类型失败:', e);
-                                Alert.alert('删除失败', '请稍后重试。');
-                              }
-                            },
-                          },
-                        ],
-                      );
+                      void (async () => {
+                        try {
+                          const hasRelatedAccounts = await hasAccountsForCustomType(t.name);
+                          if (hasRelatedAccounts) {
+                            Alert.alert('无法删除', `“${t.name}”下已有账户，请先删除或转移账户后再试。`);
+                            return;
+                          }
+
+                          Alert.alert(
+                            '删除自定义类型',
+                            `确认删除“${t.name}”吗？`,
+                            [
+                              { text: '取消', style: 'cancel' },
+                              {
+                                text: '删除',
+                                style: 'destructive',
+                                onPress: async () => {
+                                  try {
+                                    await deleteFinanceAccountTypeByName(t.name);
+                                    removeCustomAccountTypeOption(t.name);
+                                    await loadCustomTypeOptions();
+                                    if (accountType === 'custom' && customTypeName === t.name) {
+                                      setAccountType('bank');
+                                      setCustomTypeName('');
+                                      setCustomIsLiability(false);
+                                      setIconKey('savings');
+                                    }
+                                  } catch (e) {
+                                    console.warn('删除自定义类型失败:', e);
+                                    Alert.alert('删除失败', '请稍后重试。');
+                                  }
+                                },
+                              },
+                            ],
+                          );
+                        } catch (e) {
+                          console.warn('校验自定义类型是否可删除失败:', e);
+                          Alert.alert('操作失败', '请稍后重试。');
+                        }
+                      })();
                     }}
                     style={({ pressed }) => [
                       styles.typeCard,

@@ -1,12 +1,13 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { getFinanceAccountsWithBalance, getFinanceTransactionsByAccountId } from '@/lib/repositories/finance/finance';
+import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
+import { deleteFinanceAccount, getFinanceAccountsWithBalance, getFinanceTransactionsByAccountId } from '@/lib/repositories/finance/finance';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type DetailItem = {
@@ -41,6 +42,7 @@ export default function AccountDetailScreen() {
   const isDark = colorScheme === 'dark';
   const [account, setAccount] = React.useState<FinanceAccountBalanceRow | null>(null);
   const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
+  const [deleting, setDeleting] = React.useState(false);
   const routeAccountId = typeof params.accountId === 'string' ? params.accountId : '';
   const routeAccountName = typeof params.accountName === 'string' ? params.accountName.trim() : '';
   const accountSignRule = account?.sign_rule ?? 1;
@@ -54,6 +56,37 @@ export default function AccountDetailScreen() {
   const borderColor = isDark ? 'rgba(148,163,184,0.22)' : '#f3f4f6';
   const detailName = account?.name ?? (routeAccountName || '账户');
   const detailDesc = account?.account_no?.trim() ? account.account_no : isLiabilityAccount ? '负债明细' : '账户余额';
+
+  const accountIcon = React.useCallback(
+    (acc: FinanceAccountBalanceRow | null): keyof typeof MaterialIcons.glyphMap => {
+      if (!acc) return 'account-balance-wallet';
+      let extra: unknown = null;
+      try {
+        extra = acc.extra_data ? JSON.parse(acc.extra_data) : null;
+      } catch {
+        // ignore
+      }
+      if (extra && typeof extra === 'object') {
+        const obj = extra as Record<string, unknown>;
+        const iconKey = obj.ui_icon_key;
+        if (typeof iconKey === 'string' && iconKey.length > 0) {
+          const matchedIcon = FINANCE_ACCOUNT_ICON_OPTIONS.find((item) => item.key === iconKey)?.icon;
+          if (matchedIcon) return matchedIcon;
+          if (iconKey in MaterialIcons.glyphMap) {
+            return iconKey as keyof typeof MaterialIcons.glyphMap;
+          }
+        }
+      }
+      const name = acc.name || '';
+      if (name.includes('现金')) return 'payments';
+      if (name.includes('支付宝')) return 'account-balance-wallet';
+      if (name.includes('微信')) return 'chat';
+      if (name.includes('银行')) return 'account-balance';
+      if (acc.account_type === 'liability') return 'credit-card';
+      return 'account-balance-wallet';
+    },
+    [],
+  );
 
   const getDisplayAmount = React.useCallback(
     (tx: FinanceTransactionRow) => {
@@ -100,6 +133,35 @@ export default function AccountDetailScreen() {
       void loadAccountDetail();
     }, [loadAccountDetail]),
   );
+
+  const onDeleteAccount = React.useCallback(() => {
+    if (deleting) return;
+    const targetId = account?.id ?? routeAccountId;
+    if (!targetId) {
+      Alert.alert('无法删除', '未找到账户信息。');
+      return;
+    }
+    const targetName = (account?.name ?? routeAccountName) || '该账户';
+    Alert.alert('删除账户', `确认删除“${targetName}”吗？`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setDeleting(true);
+            await deleteFinanceAccount(targetId);
+            router.back();
+          } catch (error) {
+            console.warn('Failed to delete finance account:', error);
+            Alert.alert('删除失败', '请稍后重试。');
+          } finally {
+            setDeleting(false);
+          }
+        },
+      },
+    ]);
+  }, [account, deleting, routeAccountId, routeAccountName, router]);
 
   const monthSections = React.useMemo<MonthSection[]>(() => {
     if (transactions.length === 0) return [];
@@ -180,7 +242,12 @@ export default function AccountDetailScreen() {
             <MaterialIcons name="arrow-back" size={24} color={titleText} />
           </Pressable>
           <Text style={[styles.headerTitle, { color: titleText }]}>账户详情</Text>
-          <View style={styles.headerRightPlaceholder} />
+          <Pressable
+            onPress={onDeleteAccount}
+            disabled={deleting}
+            style={({ pressed }) => [styles.headerIconBtn, deleting && { opacity: 0.5 }, pressed && { opacity: 0.7 }]}>
+            <MaterialIcons name="delete-outline" size={22} color="#ef4444" />
+          </Pressable>
         </View>
 
         <ScrollView
@@ -191,7 +258,7 @@ export default function AccountDetailScreen() {
               <View style={styles.accountMetaRow}>
                 <View style={styles.avatarOuter}>
                   <View style={styles.avatarInner}>
-                    <Text style={styles.avatarEmoji}>💬</Text>
+                    <MaterialIcons name={accountIcon(account)} size={20} color="#111827" />
                     <View style={styles.avatarBadge}>
                       <Text style={styles.avatarBadgeDot}>.</Text>
                     </View>

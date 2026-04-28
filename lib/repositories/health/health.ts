@@ -10,9 +10,9 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO health_records (
-      id, user_id, hydration, target_hydration, protein, target_protein, sodium, target_sodium, record_date,
+      id, user_id, hydration, target_hydration, protein, target_protein, sodium, target_sodium, record_date, quick_add_key,
       created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
     [
       input.id,
       input.user_id,
@@ -23,6 +23,7 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
       input.sodium ?? 0,
       input.target_sodium ?? 0,
       input.record_date,
+      input.quick_add_key ?? null,
     ]
   );
 }
@@ -117,7 +118,7 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
 
   await db.runAsync(
     `UPDATE health_records
-     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, sodium = ?, target_sodium = ?, record_date = ?, updated_at = datetime('now'),
+     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, sodium = ?, target_sodium = ?, record_date = ?, quick_add_key = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
          version = version + 1
      WHERE id = ?`,
@@ -129,6 +130,7 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
       input.sodium ?? current.sodium,
       input.target_sodium ?? current.target_sodium,
       input.record_date ?? current.record_date,
+      input.quick_add_key ?? current.quick_add_key,
       id,
     ]
   );

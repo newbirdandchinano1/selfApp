@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 4;
+export const DB_VERSION = 5;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -239,6 +239,7 @@ export async function initDatabase() {
       sodium REAL NOT NULL DEFAULT 0,
       target_sodium REAL NOT NULL DEFAULT 0,
       record_date TEXT NOT NULL,
+      quick_add_key TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
@@ -297,6 +298,7 @@ export async function initDatabase() {
   await ensureColumn(db, 'finance_flow_categories', 'parent_id', 'TEXT');
   await ensureColumn(db, 'finance_flow_categories', 'sort_order', 'INTEGER');
   await ensureColumn(db, 'finance_flow_categories', 'is_builtin', 'INTEGER');
+  await ensureColumn(db, 'health_records', 'quick_add_key', 'TEXT');
   await ensureColumn(db, 'finance_flow_categories', 'extra_data', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'name', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'happened_at', 'TEXT');

@@ -180,6 +180,15 @@ export async function updateFinanceAccount(id: string, input: UpdateFinanceAccou
 export async function deleteFinanceAccount(id: string) {
   const db = await getDatabase();
   await db.runAsync(
+    `UPDATE finance_transactions
+     SET deleted_at = datetime('now'),
+         updated_at = datetime('now'),
+         sync_status = 'pending_delete',
+         version = version + 1
+     WHERE account_id = ? AND deleted_at IS NULL`,
+    [id]
+  );
+  await db.runAsync(
     `UPDATE finance_accounts
      SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
      WHERE id = ?`,
@@ -273,16 +282,26 @@ export async function createFinanceTransaction(input: CreateFinanceTransactionIn
 export async function getFinanceTransactions() {
   const db = await getDatabase();
   return db.getAllAsync<FinanceTransactionRow>(
-    'SELECT * FROM finance_transactions WHERE deleted_at IS NULL ORDER BY datetime(happened_at) DESC, datetime(updated_at) DESC'
+    `SELECT t.*
+     FROM finance_transactions t
+     INNER JOIN finance_accounts a
+       ON a.id = t.account_id
+      AND a.deleted_at IS NULL
+     WHERE t.deleted_at IS NULL
+     ORDER BY datetime(t.happened_at) DESC, datetime(t.updated_at) DESC`
   );
 }
 
 export async function getFinanceTransactionsByAccountId(accountId: string) {
   const db = await getDatabase();
   return db.getAllAsync<FinanceTransactionRow>(
-    `SELECT * FROM finance_transactions
-     WHERE deleted_at IS NULL AND account_id = ?
-     ORDER BY datetime(happened_at) DESC, datetime(updated_at) DESC`,
+    `SELECT t.*
+     FROM finance_transactions t
+     INNER JOIN finance_accounts a
+       ON a.id = t.account_id
+      AND a.deleted_at IS NULL
+     WHERE t.deleted_at IS NULL AND t.account_id = ?
+     ORDER BY datetime(t.happened_at) DESC, datetime(t.updated_at) DESC`,
     [accountId]
   );
 }
@@ -290,9 +309,13 @@ export async function getFinanceTransactionsByAccountId(accountId: string) {
 export async function getFinanceTransactionsByYmd(ymd: string) {
   const db = await getDatabase();
   return db.getAllAsync<FinanceTransactionRow>(
-    `SELECT * FROM finance_transactions
-     WHERE deleted_at IS NULL AND date(happened_at) = date(?)
-     ORDER BY datetime(happened_at) DESC, datetime(updated_at) DESC`,
+    `SELECT t.*
+     FROM finance_transactions t
+     INNER JOIN finance_accounts a
+       ON a.id = t.account_id
+      AND a.deleted_at IS NULL
+     WHERE t.deleted_at IS NULL AND date(t.happened_at) = date(?)
+     ORDER BY datetime(t.happened_at) DESC, datetime(t.updated_at) DESC`,
     [ymd]
   );
 }
@@ -301,18 +324,31 @@ export async function getFinanceDailySummariesByDateRange(startYmd: string, endY
   const db = await getDatabase();
   return db.getAllAsync<FinanceDailySummaryRow>(
     `
+    WITH tx_effect AS (
+      SELECT
+        date(t.happened_at) AS day,
+        CASE
+          WHEN t.transaction_type = 'income' THEN a.sign_rule * ABS(t.amount)
+          WHEN t.transaction_type = 'expense' THEN a.sign_rule * -ABS(t.amount)
+          WHEN t.transaction_type = 'transfer' THEN 0
+          ELSE a.sign_rule * -ABS(t.amount)
+        END AS effect_amount
+      FROM finance_transactions t
+      INNER JOIN finance_accounts a
+        ON a.id = t.account_id
+       AND a.deleted_at IS NULL
+      WHERE t.deleted_at IS NULL
+        AND date(t.happened_at) >= date(?)
+        AND date(t.happened_at) <= date(?)
+    )
     SELECT
-      date(happened_at) AS day,
-      COALESCE(SUM(CASE WHEN transaction_type = 'income' THEN ABS(amount) ELSE 0 END), 0) AS income,
-      COALESCE(SUM(CASE WHEN transaction_type = 'expense' THEN ABS(amount) ELSE 0 END), 0) AS expense,
-      COALESCE(SUM(CASE WHEN transaction_type = 'income' THEN ABS(amount) ELSE 0 END), 0)
-        - COALESCE(SUM(CASE WHEN transaction_type = 'expense' THEN ABS(amount) ELSE 0 END), 0) AS net
-    FROM finance_transactions
-    WHERE deleted_at IS NULL
-      AND date(happened_at) >= date(?)
-      AND date(happened_at) <= date(?)
-    GROUP BY date(happened_at)
-    ORDER BY date(happened_at) ASC
+      day,
+      COALESCE(SUM(CASE WHEN effect_amount > 0 THEN effect_amount ELSE 0 END), 0) AS income,
+      COALESCE(SUM(CASE WHEN effect_amount < 0 THEN ABS(effect_amount) ELSE 0 END), 0) AS expense,
+      COALESCE(SUM(effect_amount), 0) AS net
+    FROM tx_effect
+    GROUP BY day
+    ORDER BY day ASC
     `,
     [startYmd, endYmd]
   );

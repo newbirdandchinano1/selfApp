@@ -27,7 +27,7 @@ export const ALL_QUICK_ADD_ITEMS: QuickAddCardItem[] = [
 
 const DEFAULT_HOME_KEYS = ['water', 'coffee', 'milk'];
 
-function createItemMap(items: QuickAddCardItem[]) {
+export function createQuickAddItemMap(items: QuickAddCardItem[]) {
   return new Map(items.map((item) => [item.key, item]));
 }
 
@@ -112,19 +112,19 @@ export function formatQuickAddAmount(item: QuickAddCardItem): string {
 }
 
 export function getDefaultQuickAddItems(): QuickAddCardItem[] {
-  return keysToItems(DEFAULT_HOME_KEYS, createItemMap(ALL_QUICK_ADD_ITEMS));
+  return keysToItems(DEFAULT_HOME_KEYS, createQuickAddItemMap(ALL_QUICK_ADD_ITEMS));
 }
 
 export async function loadSelectedQuickAddItems(): Promise<QuickAddCardItem[]> {
   const allItems = await loadAllQuickAddItems();
-  const itemMap = createItemMap(allItems);
+  const itemMap = createQuickAddItemMap(allItems);
   const stored = await AsyncStorage.getItem(SELECTED_STORAGE_KEY);
   return keysToItems(parseStoredKeys(stored, itemMap), itemMap);
 }
 
 export async function saveSelectedQuickAddKeys(keys: string[]): Promise<void> {
   const allItems = await loadAllQuickAddItems();
-  const itemMap = createItemMap(allItems);
+  const itemMap = createQuickAddItemMap(allItems);
   const normalized = normalizeKeys(keys, itemMap);
   await AsyncStorage.setItem(SELECTED_STORAGE_KEY, JSON.stringify(normalized));
 }
@@ -176,7 +176,7 @@ export async function deleteCustomQuickAddItem(key: string): Promise<void> {
   await saveCustomQuickAddItems(nextCustomItems);
 
   const allItems = [...ALL_QUICK_ADD_ITEMS, ...nextCustomItems];
-  const itemMap = createItemMap(allItems);
+  const itemMap = createQuickAddItemMap(allItems);
   const stored = await AsyncStorage.getItem(SELECTED_STORAGE_KEY);
   const normalized = normalizeKeys(parseStoredKeys(stored, itemMap), itemMap);
   await AsyncStorage.setItem(SELECTED_STORAGE_KEY, JSON.stringify(normalized));

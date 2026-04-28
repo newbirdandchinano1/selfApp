@@ -1,12 +1,14 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { getFinanceAccountsWithBalance, getFinanceTransactions } from '@/lib/repositories/finance/finance';
+import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
+import { createFinanceTransaction, getFinanceAccountsWithBalance, getFinanceTransactions } from '@/lib/repositories/finance/finance';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Animated, Dimensions, Easing, Modal, Pressable, ScrollView, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
+import { Alert, Animated, Dimensions, Easing, Modal, Platform, Pressable, ScrollView, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Txn = {
@@ -18,6 +20,15 @@ type Txn = {
   amount: string;
   amountColor: string;
   insight?: string;
+};
+
+type SheetTab = 'expense' | 'income' | 'transfer';
+
+type SheetCategory = {
+  key: string;
+  icon: keyof typeof MaterialIcons.glyphMap;
+  label: string;
+  color: string;
 };
 
 function TxnItem({
@@ -61,8 +72,10 @@ export default function FinanceScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const baseTheme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const themeKey: keyof typeof Colors = colorScheme === 'dark' ? 'dark' : 'light';
+  const baseTheme = Colors[themeKey];
+
+  const isDark = themeKey === 'dark';
 
   const bg = isDark ? baseTheme.background : '#faf8ff';
   const surface = isDark ? baseTheme.surface : '#ffffff';
@@ -84,13 +97,22 @@ export default function FinanceScreen() {
 
   const collapsedBottom = 6;
   const [isSheetVisible, setIsSheetVisible] = React.useState(false);
-  const [activeSheetTab, setActiveSheetTab] = React.useState<'expense' | 'income' | 'transfer'>('expense');
+  const [activeSheetTab, setActiveSheetTab] = React.useState<SheetTab>('expense');
   const [sheetAmount, setSheetAmount] = React.useState('');
   const [sheetNote, setSheetNote] = React.useState('');
+  const [selectedCategoryKey, setSelectedCategoryKey] = React.useState('food');
+  const [selectedAccountId, setSelectedAccountId] = React.useState<string | null>(null);
+  const [selectedHappenedAt, setSelectedHappenedAt] = React.useState(() => new Date());
+  const [isDatePickerVisible, setIsDatePickerVisible] = React.useState(false);
+  const [isTimePickerVisible, setIsTimePickerVisible] = React.useState(false);
+  const [isAccountPickerVisible, setIsAccountPickerVisible] = React.useState(false);
+  const [isSavingTransaction, setIsSavingTransaction] = React.useState(false);
   const [financeTransactions, setFinanceTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [animatedNetValue, setAnimatedNetValue] = React.useState(0);
   const [showNetAmounts, setShowNetAmounts] = React.useState(true);
+  const [visibleDayCount, setVisibleDayCount] = React.useState(1);
+  const [isLoadingMoreDays, setIsLoadingMoreDays] = React.useState(false);
 
   const baseBottomAnim = React.useRef(new Animated.Value(collapsedBottom)).current;
   const revealAnim = React.useRef(new Animated.Value(0)).current;
@@ -192,9 +214,33 @@ export default function FinanceScreen() {
   const formatCurrency = React.useCallback((value: number) => {
     return `¥${value.toLocaleString('zh-CN')}`;
   }, []);
+  const getDayKey = React.useCallback((value: Date) => {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }, []);
 
   const accountNameMap = React.useMemo(() => {
     return new Map(financeAccounts.map((account) => [account.id, account.name]));
+  }, [financeAccounts]);
+  const accountExtraMap = React.useMemo(() => {
+    return new Map(
+      financeAccounts.map((account) => {
+        let extra: Record<string, unknown> | null = null;
+        if (account.extra_data) {
+          try {
+            const raw = JSON.parse(account.extra_data) as unknown;
+            if (raw && typeof raw === 'object') {
+              extra = raw as Record<string, unknown>;
+            }
+          } catch {
+            extra = null;
+          }
+        }
+        return [account.id, extra];
+      })
+    );
   }, [financeAccounts]);
   const accountSignRuleMap = React.useMemo(() => {
     return new Map(financeAccounts.map((account) => [account.id, account.sign_rule]));
@@ -248,6 +294,60 @@ export default function FinanceScreen() {
     [getTxnDisplayAmount, todayTxns]
   );
 
+  const sortedTransactions = React.useMemo(() => {
+    return [...financeTransactions].sort((a, b) => {
+      const aTime = new Date(a.happened_at).getTime();
+      const bTime = new Date(b.happened_at).getTime();
+      return bTime - aTime;
+    });
+  }, [financeTransactions]);
+  const todayDayKey = React.useMemo(() => getDayKey(today), [getDayKey, today]);
+  const sortedDayKeys = React.useMemo(() => {
+    const keys = new Set<string>();
+    sortedTransactions.forEach((txn) => {
+      const happenedAt = new Date(txn.happened_at);
+      if (!Number.isNaN(happenedAt.getTime()) && happenedAt <= today) {
+        keys.add(getDayKey(happenedAt));
+      }
+    });
+    return Array.from(keys);
+  }, [getDayKey, sortedTransactions, today]);
+  const hasMoreHistoryDays = visibleDayCount < sortedDayKeys.length;
+  const visibleDayKeySet = React.useMemo(() => {
+    if (sortedDayKeys.length === 0) {
+      return new Set<string>();
+    }
+    return new Set(sortedDayKeys.slice(0, visibleDayCount));
+  }, [sortedDayKeys, visibleDayCount]);
+
+  React.useEffect(() => {
+    setVisibleDayCount(1);
+    setIsLoadingMoreDays(false);
+  }, [todayDayKey, financeTransactions.length]);
+
+  const loadMoreHistoryDays = React.useCallback(() => {
+    if (!hasMoreHistoryDays || isLoadingMoreDays) {
+      return;
+    }
+    setIsLoadingMoreDays(true);
+    setVisibleDayCount((prev) => Math.min(prev + 1, sortedDayKeys.length));
+    setIsLoadingMoreDays(false);
+  }, [hasMoreHistoryDays, isLoadingMoreDays, sortedDayKeys.length]);
+
+  const handleMainScroll = React.useCallback(
+    (event: { nativeEvent: { contentOffset: { y: number }; layoutMeasurement: { height: number }; contentSize: { height: number } } }) => {
+      if (!hasMoreHistoryDays || isLoadingMoreDays) {
+        return;
+      }
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      const distanceToBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+      if (distanceToBottom < 80) {
+        loadMoreHistoryDays();
+      }
+    },
+    [hasMoreHistoryDays, isLoadingMoreDays, loadMoreHistoryDays]
+  );
+
   const displayTxns = React.useMemo<Txn[]>(() => {
     const now = new Date();
     const currentYmd = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
@@ -255,7 +355,13 @@ export default function FinanceScreen() {
     yesterday.setDate(yesterday.getDate() - 1);
     const yesterdayYmd = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
 
-    return financeTransactions.slice(0, 16).map((txn) => {
+    return sortedTransactions
+      .filter((txn) => {
+        const happenedAt = new Date(txn.happened_at);
+        if (Number.isNaN(happenedAt.getTime())) return false;
+        return visibleDayKeySet.has(getDayKey(happenedAt));
+      })
+      .map((txn) => {
       const happenedAt = new Date(txn.happened_at);
       const hour = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getHours()).padStart(2, '0');
       const minute = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getMinutes()).padStart(2, '0');
@@ -283,7 +389,7 @@ export default function FinanceScreen() {
         insight: txn.ai_comment?.trim() ? `AI 洞察：${txn.ai_comment.trim()}` : undefined,
       };
     });
-  }, [accountNameMap, financeTransactions, formatCurrencyWithDecimals, getTxnDisplayAmount, secondary, subtle, tertiary, text]);
+  }, [accountNameMap, formatCurrencyWithDecimals, getDayKey, getTxnDisplayAmount, secondary, sortedTransactions, subtle, tertiary, text, visibleDayKeySet]);
 
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
   const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
@@ -328,18 +434,32 @@ export default function FinanceScreen() {
     [showNetAmounts]
   );
 
-  const accountIcon = React.useCallback((name: string): keyof typeof MaterialIcons.glyphMap => {
-    if (name.includes('现金')) return 'payments';
-    if (name.includes('支付宝')) return 'account-balance-wallet';
-    if (name.includes('微信')) return 'chat';
-    return 'account-balance';
-  }, []);
+  const accountIcon = React.useCallback(
+    (account: FinanceAccountBalanceRow): keyof typeof MaterialIcons.glyphMap => {
+      const extra = accountExtraMap.get(account.id);
+      const iconKey = extra && typeof extra.ui_icon_key === 'string' ? extra.ui_icon_key : undefined;
+      if (iconKey && iconKey.length > 0) {
+        const matchedIcon = FINANCE_ACCOUNT_ICON_OPTIONS.find((item) => item.key === iconKey)?.icon;
+        if (matchedIcon) return matchedIcon;
+        if (iconKey in MaterialIcons.glyphMap) {
+          return iconKey as keyof typeof MaterialIcons.glyphMap;
+        }
+      }
+      const name = account.name;
+      if (name.includes('现金')) return 'payments';
+      if (name.includes('支付宝')) return 'account-balance-wallet';
+      if (name.includes('微信')) return 'chat';
+      if (name.includes('银行')) return 'account-balance';
+      return 'account-balance-wallet';
+    },
+    [accountExtraMap]
+  );
 
-  const expenseCategories = React.useMemo(
+  const expenseCategories = React.useMemo<SheetCategory[]>(
     () => [
       { key: 'food', icon: 'restaurant', label: '餐饮', color: primary },
       { key: 'snack', icon: 'icecream', label: '零食', color: secondary },
-      { key: 'fruit', icon: 'nutrition', label: '水果', color: tertiary },
+      { key: 'fruit', icon: 'eco', label: '水果', color: tertiary },
       { key: 'drink', icon: 'local-cafe', label: '饮品', color: primary },
       { key: 'cook', icon: 'set-meal', label: '做饭食材', color: secondary },
       { key: 'traffic', icon: 'directions-car', label: '交通', color: tertiary },
@@ -351,7 +471,7 @@ export default function FinanceScreen() {
     [primary, secondary, subtle, tertiary]
   );
 
-  const incomeCategories = React.useMemo(
+  const incomeCategories = React.useMemo<SheetCategory[]>(
     () => [
       { key: 'salary', icon: 'payments', label: '工资', color: secondary },
       { key: 'bonus', icon: 'card-giftcard', label: '奖金', color: primary },
@@ -377,9 +497,88 @@ export default function FinanceScreen() {
     []
   );
 
-  const amountDisplay = sheetAmount || '0.00';
   const activeCategories = activeSheetTab === 'income' ? incomeCategories : expenseCategories;
-  const sheetDateLabel = `${today.getMonth() + 1}月${today.getDate()}日`;
+  const selectedCategory = React.useMemo(() => {
+    return activeCategories.find((item) => item.key === selectedCategoryKey) ?? activeCategories[0];
+  }, [activeCategories, selectedCategoryKey]);
+  const selectedAccount = React.useMemo(() => {
+    return financeAccounts.find((account) => account.id === selectedAccountId) ?? financeAccounts[0] ?? null;
+  }, [financeAccounts, selectedAccountId]);
+  const sheetDateLabel = `${selectedHappenedAt.getMonth() + 1}月${selectedHappenedAt.getDate()}日`;
+  const sheetTimeLabel = `${String(selectedHappenedAt.getHours()).padStart(2, '0')}:${String(selectedHappenedAt.getMinutes()).padStart(2, '0')}`;
+  const hasAccounts = financeAccounts.length > 0;
+  const amountNumber = Number(sheetAmount);
+  const canSaveTransaction = Boolean(selectedAccount) && Number.isFinite(amountNumber) && amountNumber > 0 && !isSavingTransaction;
+  const amountDisplay = sheetAmount ? Number(sheetAmount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00';
+
+  React.useEffect(() => {
+    if (!selectedAccountId && financeAccounts[0]) {
+      setSelectedAccountId(financeAccounts[0].id);
+    }
+  }, [financeAccounts, selectedAccountId]);
+
+  React.useEffect(() => {
+    if (activeSheetTab === 'expense' && !expenseCategories.some((item) => item.key === selectedCategoryKey)) {
+      setSelectedCategoryKey(expenseCategories[0]?.key ?? 'food');
+    }
+    if (activeSheetTab === 'income' && !incomeCategories.some((item) => item.key === selectedCategoryKey)) {
+      setSelectedCategoryKey(incomeCategories[0]?.key ?? 'salary');
+    }
+  }, [activeSheetTab, expenseCategories, incomeCategories, selectedCategoryKey]);
+
+  const resetSheetForm = React.useCallback((nextTab: SheetTab = 'expense') => {
+    setActiveSheetTab(nextTab);
+    setSheetAmount('');
+    setSheetNote('');
+    setSelectedHappenedAt(new Date());
+    setIsDatePickerVisible(false);
+    setIsTimePickerVisible(false);
+    setIsAccountPickerVisible(false);
+    setSelectedCategoryKey(nextTab === 'income' ? 'salary' : 'food');
+  }, []);
+
+  const closeSheet = React.useCallback(() => {
+    if (isSavingTransaction) return;
+    setIsDatePickerVisible(false);
+    setIsTimePickerVisible(false);
+    setIsAccountPickerVisible(false);
+    setIsSheetVisible(false);
+  }, [isSavingTransaction]);
+
+  const handleSelectAccount = React.useCallback((accountId: string) => {
+    setSelectedAccountId(accountId);
+    setIsAccountPickerVisible(false);
+  }, []);
+
+  const handleDatePickerChange = React.useCallback((event: { type?: string }, date?: Date) => {
+    if (Platform.OS === 'android' && event?.type === 'dismissed') {
+      setIsDatePickerVisible(false);
+      return;
+    }
+    if (date) {
+      setSelectedHappenedAt((prev) => {
+        const next = new Date(prev);
+        next.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+        return next;
+      });
+      if (Platform.OS !== 'ios') setIsDatePickerVisible(false);
+    }
+  }, []);
+
+  const handleTimePickerChange = React.useCallback((event: { type?: string }, date?: Date) => {
+    if (Platform.OS === 'android' && event?.type === 'dismissed') {
+      setIsTimePickerVisible(false);
+      return;
+    }
+    if (date) {
+      setSelectedHappenedAt((prev) => {
+        const next = new Date(prev);
+        next.setHours(date.getHours(), date.getMinutes(), 0, 0);
+        return next;
+      });
+      if (Platform.OS !== 'ios') setIsTimePickerVisible(false);
+    }
+  }, []);
 
   const handleAmountKeyPress = React.useCallback((key: string) => {
     if (key === 'backspace') {
@@ -387,11 +586,76 @@ export default function FinanceScreen() {
       return;
     }
     if (key === 'done' || key === 'check') {
-      setIsSheetVisible(false);
       return;
     }
-    setSheetAmount((prev) => `${prev}${key}`);
+    setSheetAmount((prev) => {
+      if (key === '+' || key === '-') return prev;
+      if (key === '.') {
+        return prev.includes('.') ? prev : `${prev || '0'}.`;
+      }
+      const next = `${prev}${key}`;
+      const normalized = next.replace(/^0+(?=\d)/, '');
+      const [, decimals = ''] = normalized.split('.');
+      if (decimals.length > 2) return prev;
+      if (Number(normalized) > 99999999.99) return prev;
+      return normalized;
+    });
   }, []);
+
+  const handleSaveTransaction = React.useCallback(async () => {
+    if (!selectedAccount) {
+      Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
+      return;
+    }
+    if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+      Alert.alert('请输入金额', '记账金额需要大于 0。');
+      return;
+    }
+    if (activeSheetTab === 'transfer') {
+      Alert.alert('暂未开放', '转账功能稍后支持，请先使用支出或收入记账。');
+      return;
+    }
+
+    const transactionType = activeSheetTab;
+    const signedAmount = selectedAccount.sign_rule > 0 ? amountNumber : -amountNumber;
+    const fallbackName = transactionType === 'income' ? '收入' : '支出';
+    const title = sheetNote.trim() || selectedCategory?.label || fallbackName;
+
+    try {
+      setIsSavingTransaction(true);
+      await createFinanceTransaction({
+        id: `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        name: title,
+        happened_at: selectedHappenedAt.toISOString(),
+        account_id: selectedAccount.id,
+        transaction_type: transactionType,
+        amount: signedAmount,
+        note: sheetNote.trim() || null,
+        extra_data: JSON.stringify({
+          manual: true,
+          category_key: selectedCategory?.key ?? null,
+          category_label: selectedCategory?.label ?? null,
+        }),
+      });
+      setIsSheetVisible(false);
+      resetSheetForm(transactionType);
+      await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+    } catch (error) {
+      console.warn('Failed to create finance transaction:', error);
+      Alert.alert('保存失败', '手动记账保存失败，请稍后重试。');
+    } finally {
+      setIsSavingTransaction(false);
+    }
+  }, [activeSheetTab, amountNumber, loadFinanceAccounts, loadFinanceTransactions, resetSheetForm, selectedAccount, selectedCategory, selectedHappenedAt, sheetNote]);
+
+  const handleOpenComposer = React.useCallback(() => {
+    if (!hasAccounts) {
+      Alert.alert('请先添加账户', '当前还没有可用账户，请先前往资产页添加账户后再记账。');
+      return;
+    }
+    setSelectedAccountId((prev) => prev ?? financeAccounts[0]?.id ?? null);
+    setIsSheetVisible(true);
+  }, [financeAccounts, hasAccounts]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
@@ -401,7 +665,9 @@ export default function FinanceScreen() {
           styles.scrollContent,
           { paddingBottom: 220 + collapsedBottom },
         ]}
-        showsVerticalScrollIndicator={false}>
+        showsVerticalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onScroll={handleMainScroll}>
         <View
           style={[
             styles.header,
@@ -433,13 +699,27 @@ export default function FinanceScreen() {
 
             <View style={[styles.netAccent, { backgroundColor: tertiary }]} />
             <View style={styles.netHeaderRow}>
-              <Text style={[styles.netKicker, { color: subtle }]}>当前净资产</Text>
+              <View style={styles.netHeaderLeft}>
+                <Text style={[styles.netKicker, { color: subtle }]}>当前净资产</Text>
+                <Pressable
+                  onPress={() => setShowNetAmounts((prev) => !prev)}
+                  style={({ pressed }) => [styles.netVisibilityBtn, pressed && { opacity: 0.75 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={showNetAmounts ? '隐藏当前卡片数字' : '显示当前卡片数字'}>
+                  <MaterialIcons name={showNetAmounts ? 'visibility-off' : 'visibility'} size={18} color={subtle} />
+                </Pressable>
+              </View>
               <Pressable
-                onPress={() => setShowNetAmounts((prev) => !prev)}
-                style={({ pressed }) => [styles.netVisibilityBtn, pressed && { opacity: 0.75 }]}
+                onPress={() => router.push('/finance-stats')}
+                style={({ pressed }) => [
+                  styles.netStatsBtn,
+                  { borderColor: outlineVariant, backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(148,163,184,0.10)' },
+                  pressed && { opacity: 0.75 },
+                ]}
                 accessibilityRole="button"
-                accessibilityLabel={showNetAmounts ? '隐藏当前卡片数字' : '显示当前卡片数字'}>
-                <MaterialIcons name={showNetAmounts ? 'visibility-off' : 'visibility'} size={18} color={subtle} />
+                accessibilityLabel="查看统计">
+                <MaterialIcons name="donut-small" size={16} color={subtle} />
+                <Text style={[styles.netStatsBtnText, { color: subtle }]}>统计</Text>
               </Pressable>
             </View>
             <View style={styles.netRow}>
@@ -527,7 +807,7 @@ export default function FinanceScreen() {
                       isAccent ? { backgroundColor: cardBg } : { backgroundColor: cardBg, borderColor: outlineVariant },
                       pressed && { opacity: 0.92, transform: [{ scale: 0.99 }] },
                     ]}>
-                    <MaterialIcons name={accountIcon(acc.name)} size={22} color={iconColor} />
+                    <MaterialIcons name={accountIcon(acc)} size={22} color={iconColor} />
                     <Text style={[styles.accountKicker, { color: kickerColor }]}>
                       {acc.account_no ? `${acc.name} (${acc.account_no})` : acc.name}
                     </Text>
@@ -581,7 +861,19 @@ export default function FinanceScreen() {
               );
             })}
             {displayTxns.length === 0 ? (
-              <Text style={[styles.txnMeta, { color: subtle }]}>暂无收支明细，去记一笔吧。</Text>
+              <View style={[styles.emptyStateCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                <View style={[styles.emptyStateIconWrap, { backgroundColor: outlineVariant }]}>
+                  <MaterialIcons name="event-note" size={18} color={subtle} />
+                </View>
+                <Text style={[styles.emptyStateTitle, { color: text }]}>今天还没有收支记录</Text>
+                <Text style={[styles.emptyStateSubTitle, { color: subtle }]}>点击底部输入框，开始记第一笔</Text>
+              </View>
+            ) : null}
+            {displayTxns.length > 0 && isLoadingMoreDays ? (
+              <Text style={[styles.loadMoreText, { color: subtle }]}>加载中...</Text>
+            ) : null}
+            {displayTxns.length > 0 && !hasMoreHistoryDays ? (
+              <Text style={[styles.loadMoreText, { color: subtle }]}>没有更早记录了</Text>
             ) : null}
           </View>
           </Animated.View>
@@ -590,9 +882,10 @@ export default function FinanceScreen() {
 
       <Animated.View style={[styles.composerWrap, { bottom: baseBottomAnim }]}>
         <Pressable
-          onPress={() => setIsSheetVisible(true)}
+          onPress={handleOpenComposer}
           style={({ pressed }) => [
             { width: expandedWidth },
+            !hasAccounts && { opacity: 0.78 },
             pressed && { opacity: 0.92 },
           ]}>
           <View pointerEvents="none" style={styles.composerShell}>
@@ -614,12 +907,12 @@ export default function FinanceScreen() {
         </Pressable>
       </Animated.View>
 
-      <Modal visible={isSheetVisible} animationType="slide" transparent onRequestClose={() => setIsSheetVisible(false)}>
+      <Modal visible={isSheetVisible} animationType="slide" transparent onRequestClose={closeSheet}>
         <View style={styles.sheetOverlay}>
-          <Pressable style={styles.sheetBackdrop} onPress={() => setIsSheetVisible(false)} />
+          <Pressable style={styles.sheetBackdrop} onPress={closeSheet} />
           <View style={[styles.sheetContainer, { paddingBottom: Math.max(16, insets.bottom) }]}>
             <View style={[styles.sheetHeader, { borderBottomColor: outlineVariant }]}>
-              <Pressable onPress={() => setIsSheetVisible(false)} style={({ pressed }) => [styles.sheetCloseBtn, pressed && { opacity: 0.75 }]}>
+              <Pressable onPress={closeSheet} style={({ pressed }) => [styles.sheetCloseBtn, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="close" size={24} color={subtle} />
               </Pressable>
               <Text style={[styles.sheetTitle, { color: text }]}>{activeSheetTab === 'transfer' ? '财务转账' : '手动记账'}</Text>
@@ -627,15 +920,15 @@ export default function FinanceScreen() {
             </View>
 
             <View style={[styles.sheetTabs, { borderBottomColor: outlineVariant }]}>
-              <Pressable onPress={() => setActiveSheetTab('expense')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => resetSheetForm('expense')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'expense' ? { color: tertiary } : { color: subtle }]}>支出</Text>
                 {activeSheetTab === 'expense' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
-              <Pressable onPress={() => setActiveSheetTab('income')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => resetSheetForm('income')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'income' ? { color: tertiary } : { color: subtle }]}>收入</Text>
                 {activeSheetTab === 'income' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
-              <Pressable onPress={() => setActiveSheetTab('transfer')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => resetSheetForm('transfer')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'transfer' ? { color: tertiary } : { color: subtle }]}>转账</Text>
                 {activeSheetTab === 'transfer' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
@@ -670,11 +963,67 @@ export default function FinanceScreen() {
                   </View>
 
                   <View style={styles.transferDateWrap}>
-                    <Pressable style={[styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                    <Pressable
+                      onPress={() => {
+                        setIsTimePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsDatePickerVisible((prev) => !prev);
+                      }}
+                      style={({ pressed }) => [styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }, pressed && { opacity: 0.85 }]}>
                       <MaterialIcons name="calendar-today" size={14} color={subtle} />
                       <Text style={[styles.transferDateText, { color: text }]}>{sheetDateLabel}</Text>
                     </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsTimePickerVisible((prev) => !prev);
+                      }}
+                      style={({ pressed }) => [styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }, pressed && { opacity: 0.85 }]}>
+                      <MaterialIcons name="schedule" size={14} color={subtle} />
+                      <Text style={[styles.transferDateText, { color: text }]}>{sheetTimeLabel}</Text>
+                    </Pressable>
                   </View>
+
+                  {isDatePickerVisible ? (
+                    <View style={[styles.nativePickerCard, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff', borderColor: outlineVariant }]}>
+                      <Text style={[styles.inlinePickerTitle, { color: text }]}>选择日期</Text>
+                      <View style={styles.inlinePickerActions}>
+                        <Pressable onPress={() => handleChangeSheetDate(-1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>前一天</Text>
+                        </Pressable>
+                        <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>今天</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetDate(1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>后一天</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : null}
+
+                  {isTimePickerVisible ? (
+                    <View style={[styles.nativePickerCard, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff', borderColor: outlineVariant }]}>
+                      <Text style={[styles.inlinePickerTitle, { color: text }]}>选择时间</Text>
+                      <View style={styles.inlinePickerActions}>
+                        <Pressable onPress={() => handleChangeSheetTime(-1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>-1 小时</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetTime(0, -10)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>-10 分钟</Text>
+                        </Pressable>
+                        <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>现在</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetTime(0, 10)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>+10 分钟</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetTime(1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>+1 小时</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : null}
                 </View>
 
                 <View style={[styles.transferKeypadWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
@@ -704,8 +1053,8 @@ export default function FinanceScreen() {
                         <MaterialIcons name="backspace" size={20} color={subtle} />
                       </Pressable>
                       <Pressable
-                        onPress={() => handleAmountKeyPress('check')}
-                        style={({ pressed }) => [styles.transferCheckBtn, { backgroundColor: tertiary }, pressed && { opacity: 0.9 }]}>
+                        onPress={handleSaveTransaction}
+                        style={({ pressed }) => [styles.transferCheckBtn, { backgroundColor: canSaveTransaction ? tertiary : subtle }, pressed && { opacity: 0.9 }]}>
                         <MaterialIcons name="check" size={30} color="#ffffff" />
                       </Pressable>
                     </View>
@@ -715,27 +1064,62 @@ export default function FinanceScreen() {
             ) : (
               <>
                 <View style={styles.categoryGrid}>
-                  {activeCategories.map((item) => (
-                    <Pressable key={item.key} style={styles.categoryItem} onPress={() => {}}>
-                      <View style={[styles.categoryIconWrap, { backgroundColor: outlineVariant }]}>
+                  {activeCategories.map((item) => {
+                    const isSelected = selectedCategoryKey === item.key;
+                    return (
+                    <Pressable key={item.key} style={styles.categoryItem} onPress={() => setSelectedCategoryKey(item.key)}>
+                      <View style={[styles.categoryIconWrap, { backgroundColor: isSelected ? `${item.color}20` : outlineVariant, borderColor: isSelected ? item.color : 'transparent' }]}>
                         <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={22} color={item.color} />
                       </View>
-                      <Text style={[styles.categoryLabel, { color: subtle }]}>{item.label}</Text>
+                      <Text style={[styles.categoryLabel, { color: isSelected ? item.color : subtle }]}>{item.label}</Text>
                     </Pressable>
-                  ))}
+                    );
+                  })}
                 </View>
 
                 <View style={[styles.sheetInputWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
                   <View style={styles.sheetConfigRow}>
-                    <View style={[styles.configChip, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                    <Pressable
+                      onPress={() => {
+                        setIsTimePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsDatePickerVisible((prev) => !prev);
+                      }}
+                      style={[styles.configChip, { backgroundColor: surface, borderColor: outlineVariant }]}>
                       <MaterialIcons name="calendar-today" size={16} color={subtle} />
                       <Text style={[styles.configChipText, { color: text }]}>{sheetDateLabel}</Text>
-                    </View>
-                    <View style={[styles.configChip, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsTimePickerVisible((prev) => !prev);
+                      }}
+                      style={({ pressed }) => [
+                        styles.configChip,
+                        { backgroundColor: surface, borderColor: outlineVariant },
+                        pressed ? { opacity: 0.8 } : null,
+                      ]}>
+                      <MaterialIcons name="schedule" size={16} color={subtle} />
+                      <Text style={[styles.configChipText, { color: text }]}>{sheetTimeLabel}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsTimePickerVisible(false);
+                        setIsAccountPickerVisible((prev) => !prev);
+                      }}
+                      style={({ pressed }) => [
+                        styles.configChip,
+                        { backgroundColor: surface, borderColor: outlineVariant },
+                        pressed ? { opacity: 0.8 } : null,
+                      ]}>
                       <MaterialIcons name="account-balance-wallet" size={16} color={tertiary} />
-                      <Text style={[styles.configChipText, { color: text }]}>支付账户</Text>
+                      <Text style={[styles.configChipText, { color: text }]}>
+                        {selectedAccount?.name ?? '支付账户'}
+                      </Text>
                       <MaterialIcons name="expand-more" size={16} color={subtle} />
-                    </View>
+                    </Pressable>
                     <TextInput
                       value={sheetNote}
                       onChangeText={setSheetNote}
@@ -744,6 +1128,110 @@ export default function FinanceScreen() {
                       placeholderTextColor={subtle}
                     />
                   </View>
+
+                  <Modal visible={isDatePickerVisible} transparent animationType="fade" onRequestClose={() => setIsDatePickerVisible(false)}>
+                    <View style={styles.pickerModalOverlay}>
+                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsDatePickerVisible(false)} />
+                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
+                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择日期</Text>
+                          <Pressable onPress={() => setIsDatePickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                            <MaterialIcons name="close" size={22} color={subtle} />
+                          </Pressable>
+                        </View>
+                        <View style={styles.pickerModalBody}>
+                          <DateTimePicker
+                            value={selectedHappenedAt}
+                            mode="date"
+                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                            locale="zh-CN"
+                            themeVariant={isDark ? 'dark' : 'light'}
+                            onChange={handleDatePickerChange}
+                            style={styles.nativePicker}
+                          />
+                          <View style={styles.pickerModalFooter}>
+                            <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                              <Text style={[styles.pickerModalActionText, { color: text }]}>今天</Text>
+                            </Pressable>
+                            <Pressable onPress={() => setIsDatePickerVisible(false)} style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
+                              <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+                  </Modal>
+
+                  <Modal visible={isTimePickerVisible} transparent animationType="fade" onRequestClose={() => setIsTimePickerVisible(false)}>
+                    <View style={styles.pickerModalOverlay}>
+                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsTimePickerVisible(false)} />
+                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
+                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择时间</Text>
+                          <Pressable onPress={() => setIsTimePickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                            <MaterialIcons name="close" size={22} color={subtle} />
+                          </Pressable>
+                        </View>
+                        <View style={styles.pickerModalBody}>
+                          <DateTimePicker
+                            value={selectedHappenedAt}
+                            mode="time"
+                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                            locale="zh-CN"
+                            themeVariant={isDark ? 'dark' : 'light'}
+                            onChange={handleTimePickerChange}
+                            style={styles.nativePicker}
+                          />
+                          <View style={styles.pickerModalFooter}>
+                            <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                              <Text style={[styles.pickerModalActionText, { color: text }]}>现在</Text>
+                            </Pressable>
+                            <Pressable onPress={() => setIsTimePickerVisible(false)} style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
+                              <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+                  </Modal>
+
+                  <Modal visible={isAccountPickerVisible} transparent animationType="fade" onRequestClose={() => setIsAccountPickerVisible(false)}>
+                    <View style={styles.pickerModalOverlay}>
+                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsAccountPickerVisible(false)} />
+                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
+                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择账户</Text>
+                          <Pressable onPress={() => setIsAccountPickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                            <MaterialIcons name="close" size={22} color={subtle} />
+                          </Pressable>
+                        </View>
+                        <View style={styles.pickerModalBody}>
+                          <ScrollView style={styles.accountPickerScroll} contentContainerStyle={styles.accountPickerList} showsVerticalScrollIndicator={false}>
+                            {financeAccounts.map((account) => {
+                              const selected = account.id === selectedAccount?.id;
+                              return (
+                                <Pressable
+                                  key={account.id}
+                                  onPress={() => handleSelectAccount(account.id)}
+                                  style={({ pressed }) => [
+                                    styles.accountPickerItem,
+                                    { backgroundColor: selected ? `${tertiary}18` : isDark ? '#161d2b' : '#f2f3ff', borderColor: selected ? tertiary : outlineVariant },
+                                    pressed ? { opacity: 0.84 } : null,
+                                  ]}>
+                                  <MaterialIcons name={accountIcon(account)} size={18} color={selected ? tertiary : subtle} />
+                                  <View style={styles.accountPickerTextCol}>
+                                    <Text style={[styles.accountPickerName, { color: text }]}>{account.name}</Text>
+                                    <Text style={[styles.accountPickerBalance, { color: subtle }]}>{formatCurrencyBalance(account.balance)}</Text>
+                                  </View>
+                                  {selected ? <MaterialIcons name="check" size={18} color={tertiary} /> : null}
+                                </Pressable>
+                              );
+                            })}
+                          </ScrollView>
+                        </View>
+                      </View>
+                    </View>
+                  </Modal>
 
                   <View style={styles.amountPreview}>
                     <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
@@ -758,11 +1246,11 @@ export default function FinanceScreen() {
                       return (
                         <Pressable
                           key={`${key}-${idx}`}
-                          onPress={() => handleAmountKeyPress(key)}
+                          onPress={() => (isDone ? handleSaveTransaction() : handleAmountKeyPress(key))}
                           style={({ pressed }) => [
                             styles.keypadBtn,
                             isDone
-                              ? [styles.keypadDoneBtn, { backgroundColor: tertiary }]
+                              ? [styles.keypadDoneBtn, { backgroundColor: canSaveTransaction ? tertiary : subtle }]
                               : [styles.keypadNormalBtn, { backgroundColor: surface, borderColor: outlineVariant }],
                             key === '0' && idx === 12 ? styles.keypadWideBtn : null,
                             pressed && { opacity: 0.86 },
@@ -864,12 +1352,31 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 12,
   },
+  netHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   netVisibilityBtn: {
     width: 30,
     height: 30,
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  netStatsBtn: {
+    height: 30,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  netStatsBtnText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
   },
   netRow: {
     flexDirection: 'row',
@@ -1066,6 +1573,40 @@ const styles = StyleSheet.create({
     opacity: 0.75,
     lineHeight: 15,
   },
+  emptyStateCard: {
+    marginTop: 4,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 18,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  emptyStateIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyStateTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  emptyStateSubTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    opacity: 0.85,
+  },
+  loadMoreText: {
+    textAlign: 'center',
+    fontSize: 12,
+    fontWeight: '600',
+    opacity: 0.78,
+    paddingTop: 4,
+  },
   txnAmount: {
     fontSize: 14,
     fontWeight: '900',
@@ -1209,6 +1750,7 @@ const styles = StyleSheet.create({
     width: 46,
     height: 46,
     borderRadius: 23,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1225,6 +1767,7 @@ const styles = StyleSheet.create({
   sheetConfigRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 8,
     marginBottom: 12,
   },
@@ -1347,6 +1890,9 @@ const styles = StyleSheet.create({
   },
   transferDateWrap: {
     alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
     paddingBottom: 2,
   },
   transferDateBtn: {
@@ -1359,6 +1905,136 @@ const styles = StyleSheet.create({
   },
   transferDateText: {
     fontSize: 13,
+    fontWeight: '600',
+  },
+  nativePickerCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 10,
+    marginBottom: 12,
+    gap: 10,
+    overflow: 'hidden',
+  },
+  inlinePickerTitle: {
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+  },
+  nativePicker: {
+    width: '100%',
+    alignSelf: 'center',
+  },
+  pickerModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 18,
+  },
+  pickerModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  pickerModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 22,
+    borderWidth: 1,
+    overflow: 'hidden',
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 14,
+  },
+  pickerModalHeader: {
+    minHeight: 52,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+  },
+  pickerModalTitle: {
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: -0.2,
+  },
+  pickerModalCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerModalBody: {
+    padding: 12,
+    gap: 12,
+  },
+  pickerModalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  pickerModalAction: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerModalActionText: {
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  pickerModalPrimaryText: {
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+    color: '#ffffff',
+  },
+  inlinePickerActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  inlinePickerBtn: {
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  inlinePickerBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  accountPickerScroll: {
+    maxHeight: 320,
+  },
+  accountPickerList: {
+    gap: 8,
+    paddingBottom: 2,
+  },
+  accountPickerItem: {
+    minHeight: 50,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  accountPickerTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  accountPickerName: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  accountPickerBalance: {
+    fontSize: 11,
     fontWeight: '600',
   },
   transferKeypadWrap: {

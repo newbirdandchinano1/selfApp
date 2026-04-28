@@ -10,6 +10,7 @@ export type HealthRecordRow = {
   sodium: number;
   target_sodium: number;
   record_date: string;
+  quick_add_key: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -27,9 +28,15 @@ export type CreateHealthRecordInput = {
   sodium?: number;
   target_sodium?: number;
   record_date: string;
+  quick_add_key?: string | null;
 };
 
-export type UpdateHealthRecordInput = Partial<Pick<HealthRecordRow, 'hydration' | 'target_hydration' | 'protein' | 'target_protein' | 'sodium' | 'target_sodium' | 'record_date'>>;
+export type UpdateHealthRecordInput = Partial<
+  Pick<
+    HealthRecordRow,
+    'hydration' | 'target_hydration' | 'protein' | 'target_protein' | 'sodium' | 'target_sodium' | 'record_date' | 'quick_add_key'
+  >
+>;
 
 /** 某日所有健康记录汇总后的摄入量（同日多条时相加）。 */
 export type HealthIntakeDayTotals = {
