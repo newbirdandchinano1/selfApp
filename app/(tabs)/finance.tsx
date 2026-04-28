@@ -4,15 +4,16 @@ import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-ic
 import { createFinanceTransaction, getFinanceAccountsWithBalance, getFinanceTransactions } from '@/lib/repositories/finance/finance';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Animated, Dimensions, Easing, Modal, Platform, Pressable, ScrollView, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Txn = {
   id: string;
+  dayKey: string;
   icon: keyof typeof MaterialIcons.glyphMap;
   iconColor: string;
   title: string;
@@ -91,7 +92,8 @@ export default function FinanceScreen() {
   const headerDateLabel = `${today.getMonth() + 1}月${today.getDate()}日 ${weekdayCn[today.getDay()]}`;
 
   const formatCurrencyWithDecimals = React.useCallback((value: number) => {
-    return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const prefix = value < 0 ? '-¥' : '¥';
+    return `${prefix}${Math.abs(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }, []);
   const todayLabel = `今日 ${today.getMonth() + 1}月${today.getDate()}日 ${weekdayCn[today.getDay()]}`;
 
@@ -139,7 +141,7 @@ export default function FinanceScreen() {
   }, [revealAnim]);
 
   React.useEffect(() => {
-    const target = financeTransactions.reduce((sum, txn) => sum + txn.amount, 0);
+    const target = financeAccounts.reduce((sum, account) => sum + account.balance, 0);
     const id = netValueAnim.addListener(({ value }) => {
       setAnimatedNetValue(Math.round(value));
     });
@@ -154,7 +156,7 @@ export default function FinanceScreen() {
     return () => {
       netValueAnim.removeListener(id);
     };
-  }, [financeTransactions, netValueAnim]);
+  }, [financeAccounts, netValueAnim]);
 
   const loadFinanceTransactions = React.useCallback(async () => {
     try {
@@ -246,22 +248,12 @@ export default function FinanceScreen() {
     return new Map(financeAccounts.map((account) => [account.id, account.sign_rule]));
   }, [financeAccounts]);
 
-  const getTxnDisplayAmount = React.useCallback(
-    (txn: FinanceTransactionRow) => {
-      const accountSignRule = accountSignRuleMap.get(txn.account_id);
-      const isLiabilityAccount = accountSignRule != null ? accountSignRule < 0 : txn.amount < 0;
-      const absAmount = Math.abs(txn.amount);
-      if (isLiabilityAccount) {
-        if (txn.transaction_type === 'income') return -absAmount;
-        if (txn.transaction_type === 'expense') return absAmount;
-      } else {
-        if (txn.transaction_type === 'income') return absAmount;
-        if (txn.transaction_type === 'expense') return -absAmount;
-      }
-      return txn.amount;
-    },
-    [accountSignRuleMap]
-  );
+  const getTxnDisplayAmount = React.useCallback((txn: FinanceTransactionRow) => {
+    const absAmount = Math.abs(txn.amount);
+    if (txn.transaction_type === 'income') return absAmount;
+    if (txn.transaction_type === 'expense') return -absAmount;
+    return txn.amount;
+  }, []);
 
   const todayTxns = React.useMemo(
     () =>
@@ -380,6 +372,7 @@ export default function FinanceScreen() {
 
       return {
         id: txn.id,
+        dayKey: getDayKey(happenedAt),
         icon,
         iconColor,
         title: txn.name?.trim() || '交易',
@@ -424,12 +417,14 @@ export default function FinanceScreen() {
   const monthlyIncomeText = showNetAmounts ? formatCurrencyWithDecimals(monthlyIncome) : hiddenAmountText;
   const monthlyExpenseText = showNetAmounts ? formatCurrencyWithDecimals(monthlyExpense) : hiddenAmountText;
   const monthlySurplusText = showNetAmounts ? formatCurrencyWithDecimals(monthlySurplus) : hiddenAmountText;
+  const monthlySurplusColor = monthlySurplus > 0 ? secondary : monthlySurplus < 0 ? '#dc2626' : text;
   const savingRateText = showNetAmounts ? `${savingsRate.toFixed(1)}%` : '--';
 
   const formatCurrencyBalance = React.useCallback(
     (value: number) => {
       if (!showNetAmounts) return hiddenAmountText;
-      return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const prefix = value < 0 ? '-¥' : '¥';
+      return `${prefix}${Math.abs(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     },
     [showNetAmounts]
   );
@@ -615,6 +610,10 @@ export default function FinanceScreen() {
       Alert.alert('暂未开放', '转账功能稍后支持，请先使用支出或收入记账。');
       return;
     }
+    if (selectedAccount.sign_rule < 0 && selectedAccount.balance === 0 && activeSheetTab === 'income') {
+      Alert.alert('无法记录收入', '该债务账户当前负债为 0，只能记录支出。');
+      return;
+    }
 
     const transactionType = activeSheetTab;
     const signedAmount = selectedAccount.sign_rule > 0 ? amountNumber : -amountNumber;
@@ -738,7 +737,7 @@ export default function FinanceScreen() {
               </View>
               <View style={styles.netStatCol}>
                 <Text style={[styles.netStatLabel, { color: subtle }]}>本月盈余</Text>
-                <Text style={[styles.netStatValue, { color: secondary }]}>{monthlySurplusText}</Text>
+                <Text style={[styles.netStatValue, { color: monthlySurplusColor }]}>{monthlySurplusText}</Text>
               </View>
               <View style={styles.netStatCol}>
                 <Text style={[styles.netStatLabel, { color: subtle }]}>储蓄率</Text>
@@ -831,6 +830,7 @@ export default function FinanceScreen() {
               </Text>
             </View>
           </View>
+          <View style={[styles.sectionDivider, { backgroundColor: outlineVariant }]} />
           <View style={styles.timelineWrap}>
             <View style={[styles.timelineLine, { backgroundColor: outlineVariant }]} />
             {displayTxns.map((t, idx) => {
@@ -849,15 +849,19 @@ export default function FinanceScreen() {
                 outputRange: [16 + idx * 5, 0],
               });
 
+              const shouldShowDayDivider = idx > 0 && displayTxns[idx - 1]?.dayKey !== t.dayKey;
+
               return (
-                <TxnItem
-                  key={t.id}
-                  themeText={text}
-                  themeSubtle={subtle}
-                  outlineVariant={outlineVariant}
-                  item={t}
-                  style={{ opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] }}
-                />
+                <React.Fragment key={t.id}>
+                  {shouldShowDayDivider ? <View style={[styles.dayDivider, { backgroundColor: outlineVariant }]} /> : null}
+                  <TxnItem
+                    themeText={text}
+                    themeSubtle={subtle}
+                    outlineVariant={outlineVariant}
+                    item={t}
+                    style={{ opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] }}
+                  />
+                </React.Fragment>
               );
             })}
             {displayTxns.length === 0 ? (
@@ -1475,6 +1479,19 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     opacity: 0.7,
+  },
+  sectionDivider: {
+    height: 1,
+    marginTop: 14,
+    marginBottom: 4,
+    opacity: 0.72,
+  },
+  dayDivider: {
+    height: 1,
+    marginLeft: 52,
+    marginTop: 2,
+    marginBottom: 2,
+    opacity: 0.72,
   },
   sectionLink: {
     flexDirection: 'row',

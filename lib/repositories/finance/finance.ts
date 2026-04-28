@@ -71,10 +71,10 @@ export async function getFinanceAccountsWithBalance() {
       COALESCE(SUM(
         CASE
           WHEN t.id IS NULL THEN 0
-          WHEN t.transaction_type = 'income' THEN a.sign_rule * ABS(t.amount)
-          WHEN t.transaction_type = 'expense' THEN a.sign_rule * -ABS(t.amount)
+          WHEN t.transaction_type = 'income' THEN ABS(t.amount)
+          WHEN t.transaction_type = 'expense' THEN -ABS(t.amount)
           WHEN t.transaction_type = 'transfer' THEN 0
-          ELSE a.sign_rule * -ABS(t.amount)
+          ELSE -ABS(t.amount)
         END
       ), 0) AS balance
     FROM finance_accounts a
@@ -328,10 +328,10 @@ export async function getFinanceDailySummariesByDateRange(startYmd: string, endY
       SELECT
         date(t.happened_at) AS day,
         CASE
-          WHEN t.transaction_type = 'income' THEN a.sign_rule * ABS(t.amount)
-          WHEN t.transaction_type = 'expense' THEN a.sign_rule * -ABS(t.amount)
+          WHEN t.transaction_type = 'income' THEN ABS(t.amount)
+          WHEN t.transaction_type = 'expense' THEN -ABS(t.amount)
           WHEN t.transaction_type = 'transfer' THEN 0
-          ELSE a.sign_rule * -ABS(t.amount)
+          ELSE -ABS(t.amount)
         END AS effect_amount
       FROM finance_transactions t
       INNER JOIN finance_accounts a

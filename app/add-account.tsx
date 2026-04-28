@@ -56,6 +56,7 @@ export default function AddAccountScreen() {
     accountName.trim().length > 0 &&
     (accountType !== 'custom' || customTypeName.trim().length > 0) &&
     !saving;
+  const isSelectedLiability = accountType === 'liability' || (accountType === 'custom' && customIsLiability);
 
   const loadCustomTypeOptions = React.useCallback(async () => {
     try {
@@ -92,7 +93,7 @@ export default function AddAccountScreen() {
       return;
     }
 
-    const isLiability = accountType === 'liability' || (accountType === 'custom' && customIsLiability);
+    const isLiability = isSelectedLiability;
     const signRule: -1 | 1 = isLiability ? -1 : 1;
     const accountTypeDb = isLiability ? 'liability' : 'asset';
 
@@ -130,7 +131,8 @@ export default function AddAccountScreen() {
         }),
       });
 
-      // Finance account balance is derived from transactions; create an initial "income" txn to set starting balance.
+      // Finance account balance is derived from transactions.
+      // Asset initial balance is income-like; liability initial balance is expense-like debt.
       if (absInitial > 0) {
         const txnId = `ft_init_${now}_${random}`;
         await createFinanceTransaction({
@@ -138,7 +140,7 @@ export default function AddAccountScreen() {
           name: '初始余额',
           happened_at: new Date().toISOString(),
           account_id: accountId,
-          transaction_type: 'income',
+          transaction_type: isLiability ? 'expense' : 'income',
           amount: signRule * absInitial,
           note: null,
           extra_data: JSON.stringify({ reason: 'initial_balance' }),
@@ -151,7 +153,7 @@ export default function AddAccountScreen() {
     } finally {
       setSaving(false);
     }
-  }, [accountName, accountType, balance, notes, iconKey, router, customIsLiability, customTypeName]);
+  }, [accountName, accountType, balance, notes, iconKey, router, customIsLiability, customTypeName, isSelectedLiability]);
 
   const hasAccountsForCustomType = React.useCallback(async (typeName: string) => {
     const targetTypeName = typeName.trim();
@@ -341,8 +343,8 @@ export default function AddAccountScreen() {
               </View>
 
               <View style={styles.field}>
-                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>当前余额</Text>
-                <View style={[styles.balanceRow, { borderBottomColor: outlineVariant }]}>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>{isSelectedLiability ? '当前负债' : '当前余额'}</Text>
+                <View style={[styles.balanceRow, { borderBottomColor: outlineVariant }]}> 
                   <Text style={[styles.currency, { color: accentColor }]}>¥</Text>
                   <TextInput
                     value={balance}
