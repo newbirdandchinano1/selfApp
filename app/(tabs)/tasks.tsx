@@ -16,6 +16,7 @@ import {
   updateTask,
 } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import { getHabits } from '@/lib/repositories/habits/habit';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -211,6 +212,14 @@ type TaskMetaExtra = {
   frogAssignedOn?: string;
 };
 
+type HabitSection = {
+  id: string;
+  title: string;
+  items: Array<{ id: string; icon: string; name: string }>;
+};
+
+const HABIT_CONTEXT_ORDER = ['起床', '晨间', '中午', '午间', '晚间', '睡前', '全天'];
+
 function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
   if (!extraData) return null;
   try {
@@ -376,6 +385,10 @@ export default function TasksScreen() {
   const [categoryInputValue, setCategoryInputValue] = React.useState('');
   const [activeCategoryLabel, setActiveCategoryLabel] = React.useState('全部');
   const [activeCategoryId, setActiveCategoryId] = React.useState<string | null>(null);
+  const [habitSections, setHabitSections] = React.useState<HabitSection[]>(
+    HABIT_CONTEXT_ORDER.map((ctx) => ({ id: ctx, title: ctx, items: [] }))
+  );
+  const [expandedHabitSections, setExpandedHabitSections] = React.useState<Record<string, boolean>>({});
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
@@ -441,6 +454,37 @@ export default function TasksScreen() {
     } catch (err) {
       console.warn('加载任务列表失败', err);
       setTasks([]);
+    }
+  }, []);
+
+  const loadHabits = React.useCallback(async () => {
+    try {
+      const rows = await getHabits();
+      const itemsByContext = new Map<string, HabitSection['items']>();
+
+      for (const r of rows) {
+        const arr = itemsByContext.get(r.context) ?? [];
+        arr.push({ id: r.id, icon: r.icon, name: r.name });
+        itemsByContext.set(r.context, arr);
+      }
+
+      const nextSections: HabitSection[] = HABIT_CONTEXT_ORDER.map((ctx) => ({
+        id: ctx,
+        title: ctx,
+        items: itemsByContext.get(ctx) ?? [],
+      }));
+
+      setHabitSections(nextSections);
+      setExpandedHabitSections((prev) => {
+        const next = { ...prev };
+        for (const s of nextSections) {
+          if (typeof next[s.id] !== 'boolean') next[s.id] = true;
+        }
+        return next;
+      });
+    } catch (err) {
+      console.warn('加载习惯失败', err);
+      setHabitSections(HABIT_CONTEXT_ORDER.map((ctx) => ({ id: ctx, title: ctx, items: [] })));
     }
   }, []);
 
@@ -624,11 +668,12 @@ export default function TasksScreen() {
         await loadProjectTasks(rows);
         await loadProjectCategories();
         await loadTasks();
+        await loadHabits();
       })();
       return () => {
         cancelled = true;
       };
-    }, [loadExpandedProjectState, loadProjectCategories, loadProjects, loadProjectTasks, loadTasks, saveExpandedProjectState])
+    }, [loadExpandedProjectState, loadProjectCategories, loadProjects, loadProjectTasks, loadTasks, loadHabits, saveExpandedProjectState])
   );
 
   const taskTitleById = React.useMemo(() => {
@@ -852,6 +897,11 @@ export default function TasksScreen() {
 
   const toggleTaskCollapse = React.useCallback((taskId: string) => {
     setCollapsedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
+  }, []);
+
+  const toggleHabitSection = React.useCallback((sectionId: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpandedHabitSections((prev) => ({ ...prev, [sectionId]: !prev[sectionId] }));
   }, []);
 
   const hasChildrenDeeperThan = React.useCallback((nodes: TaskTreeNode[], level: number, maxLevel: number): boolean => {
@@ -1853,6 +1903,93 @@ export default function TasksScreen() {
             </View>
           </Animated.View>
 
+          <View style={[styles.section, styles.stackedSection]}>
+            <View style={styles.sectionCard}>
+              <View style={styles.habitHeaderRow}>
+                <Text style={[styles.sectionTitle, { color: theme.text }]}>小习惯</Text>
+                <ScalePressable
+                  onPress={() => router.push('/habit-manage')}
+                  style={({ pressed }) => [
+                    styles.ghostBtn,
+                    { borderColor: `${primary}44` },
+                    pressed && { opacity: 0.8 },
+                  ]}>
+                  <MaterialIcons name="dashboard" size={14} color={primary} />
+                  <Text style={[styles.ghostBtnText, { color: primary }]}>管理习惯</Text>
+                </ScalePressable>
+              </View>
+
+              {habitSections.map((section) => {
+                const isOpen = expandedHabitSections[section.id] ?? true;
+                return (
+                  <View key={section.id} style={styles.habitSection}>
+                    <Pressable
+                      onPress={() => toggleHabitSection(section.id)}
+                      style={({ pressed }) => [
+                        styles.habitSectionToggle,
+                        { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : 'rgba(148,163,184,0.14)' },
+                        pressed && { opacity: 0.8 },
+                      ]}>
+                      <Text style={[styles.habitSectionToggleText, { color: outline }]}>
+                        {section.title}・{section.items.length}
+                      </Text>
+                      <MaterialIcons name={isOpen ? 'expand-less' : 'expand-more'} size={16} color={outline} />
+                    </Pressable>
+
+                    {isOpen ? (
+                      <View style={styles.habitItemsRow}>
+                        {section.items.map((item) => (
+                          <Pressable
+                            key={item.id}
+                            onLongPress={() =>
+                              router.push({
+                                pathname: '/add-habit',
+                                params: {
+                                  mode: 'edit',
+                                  name: item.name,
+                                  icon: item.icon,
+                                  context: section.title,
+                                  habitId: item.id,
+                                },
+                              })
+                            }
+                            delayLongPress={260}
+                            style={({ pressed }) => [styles.habitItem, pressed && { opacity: 0.86 }]}>
+                            <View
+                              style={[
+                                styles.habitIconCircle,
+                                {
+                                  borderColor: isDark ? 'rgba(148,163,184,0.42)' : 'rgba(148,163,184,0.5)',
+                                  backgroundColor: card,
+                                },
+                              ]}>
+                              <Text style={styles.habitIconText}>{item.icon}</Text>
+                            </View>
+                            <Text style={[styles.habitItemText, { color: theme.text }]} numberOfLines={2}>
+                              {item.name}
+                            </Text>
+                          </Pressable>
+                        ))}
+                        <Pressable
+                          onPress={() => router.push('/add-habit')}
+                          style={({ pressed }) => [styles.habitItem, pressed && { opacity: 0.86 }]}>
+                          <View
+                            style={[
+                              styles.habitAddCircle,
+                              { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.12)' },
+                            ]}>
+                            <MaterialIcons name="add" size={30} color={isDark ? '#94a3b8' : '#9ca3af'} />
+                          </View>
+                          <Text style={[styles.habitAddText, { color: isDark ? '#94a3b8' : '#9ca3af' }]}>添加打卡</Text>
+                        </Pressable>
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+
           <View style={{ height: 28 }} />
         </Animated.View>
       </ScrollView>
@@ -2302,5 +2439,44 @@ const styles = StyleSheet.create({
   editorGhostText: { fontSize: 14, fontWeight: '700' },
   editorPrimaryBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 },
   editorPrimaryText: { fontSize: 14, fontWeight: '800', color: '#fff' },
+
+  habitHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  habitSection: { gap: 10 },
+  habitSectionToggle: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  habitSectionToggleText: { fontSize: 13, fontWeight: '800' },
+  habitItemsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  habitItem: {
+    width: 88,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: 8,
+  },
+  habitIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  habitIconText: { fontSize: 30 },
+  habitItemText: { fontSize: 13, fontWeight: '800', textAlign: 'center', lineHeight: 18 },
+  habitAddCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  habitAddText: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
 
 });

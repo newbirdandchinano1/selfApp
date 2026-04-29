@@ -5,7 +5,7 @@ const CUSTOM_ITEMS_STORAGE_KEY = '@quick_add_custom_items_v1';
 const MAX_HOME_ITEMS = 3;
 
 export type QuickAddVolumeUnit = 'ml' | 'g' | 'mg';
-export type QuickAddMetricType = 'hydration' | 'protein' | 'sodium';
+export type QuickAddMetricType = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
 
 export type QuickAddCardItem = {
   key: string;
@@ -13,6 +13,8 @@ export type QuickAddCardItem = {
   displayAmount: number;
   displayUnit: QuickAddVolumeUnit;
   hydrationMl: number;
+  metricType?: QuickAddMetricType;
+  metricTypes?: QuickAddMetricType[];
   icon: string;
 };
 
@@ -73,9 +75,30 @@ function sanitizeCustomItem(raw: unknown): QuickAddCardItem | null {
   const displayUnitRaw = o.displayUnit;
   const displayUnit: QuickAddVolumeUnit =
     displayUnitRaw === 'ml' || displayUnitRaw === 'g' || displayUnitRaw === 'mg' ? displayUnitRaw : 'ml';
+  const metricTypeRaw = o.metricType;
+  const metricType: QuickAddMetricType | undefined =
+    metricTypeRaw === 'hydration' || metricTypeRaw === 'protein' || metricTypeRaw === 'carbohydrate' || metricTypeRaw === 'sodium'
+      ? metricTypeRaw
+      : undefined;
+  const metricTypesRaw = o.metricTypes;
+  const metricTypes = Array.isArray(metricTypesRaw)
+    ? metricTypesRaw.filter(
+        (v): v is QuickAddMetricType =>
+          v === 'hydration' || v === 'protein' || v === 'carbohydrate' || v === 'sodium'
+      )
+    : [];
   if (!key || !label || !icon || !Number.isFinite(hydrationMl) || hydrationMl <= 0) return null;
   if (!Number.isFinite(displayAmountRaw) || displayAmountRaw <= 0) return null;
-  return { key, label, icon, hydrationMl, displayAmount: displayAmountRaw, displayUnit };
+  return {
+    key,
+    label,
+    icon,
+    hydrationMl,
+    displayAmount: displayAmountRaw,
+    displayUnit,
+    metricType,
+    metricTypes: metricTypes.length > 0 ? Array.from(new Set(metricTypes)) : undefined,
+  };
 }
 
 export async function loadCustomQuickAddItems(): Promise<QuickAddCardItem[]> {
@@ -107,6 +130,9 @@ export async function loadAllQuickAddItems(): Promise<QuickAddCardItem[]> {
 }
 
 export function formatQuickAddAmount(item: QuickAddCardItem): string {
+  if (item.metricTypes && item.metricTypes.length > 1) {
+    return `${Math.round(item.displayAmount)}`;
+  }
   const unitLabel = item.displayUnit === 'mg' ? 'MG' : item.displayUnit;
   return `${Math.round(item.displayAmount)}${unitLabel}`;
 }
@@ -134,12 +160,21 @@ export async function addCustomQuickAddItem(input: {
   displayAmount: number;
   displayUnit: QuickAddVolumeUnit;
   hydrationMl: number;
+  metricType?: QuickAddMetricType;
+  metricTypes?: QuickAddMetricType[];
   icon: string;
 }): Promise<QuickAddCardItem> {
   const label = input.label.trim();
   const displayAmount = Math.round(input.displayAmount);
   const displayUnit = input.displayUnit;
   const hydrationMl = Math.round(input.hydrationMl);
+  const metricType = input.metricType;
+  const metricTypes = Array.isArray(input.metricTypes)
+    ? Array.from(new Set(input.metricTypes)).filter(
+        (v): v is QuickAddMetricType =>
+          v === 'hydration' || v === 'protein' || v === 'carbohydrate' || v === 'sodium'
+      )
+    : [];
   const icon = input.icon;
   if (
     !label ||
@@ -148,21 +183,44 @@ export async function addCustomQuickAddItem(input: {
     (displayUnit !== 'ml' && displayUnit !== 'g' && displayUnit !== 'mg') ||
     !Number.isFinite(hydrationMl) ||
     hydrationMl <= 0 ||
-    !icon
+    (metricType !== undefined &&
+      metricType !== 'hydration' &&
+      metricType !== 'protein' &&
+      metricType !== 'carbohydrate' &&
+      metricType !== 'sodium') ||
+    !icon ||
+    metricTypes.length === 0
   ) {
     throw new Error('invalid_item');
   }
   const key = `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const item: QuickAddCardItem = { key, label, displayAmount, displayUnit, hydrationMl, icon };
+  const item: QuickAddCardItem = {
+    key,
+    label,
+    displayAmount,
+    displayUnit,
+    hydrationMl,
+    metricType: metricType ?? metricTypes[0],
+    metricTypes,
+    icon,
+  };
   const customItems = await loadCustomQuickAddItems();
   await saveCustomQuickAddItems([...customItems, item]);
   return item;
 }
 
-export function getQuickAddMetricType(item: Pick<QuickAddCardItem, 'displayUnit'>): QuickAddMetricType {
+export function getQuickAddMetricType(item: Pick<QuickAddCardItem, 'displayUnit' | 'metricType'>): QuickAddMetricType {
+  if (item.metricType) return item.metricType;
   if (item.displayUnit === 'g') return 'protein';
   if (item.displayUnit === 'mg') return 'sodium';
   return 'hydration';
+}
+
+export function getQuickAddMetricTypes(
+  item: Pick<QuickAddCardItem, 'displayUnit' | 'metricType' | 'metricTypes'>
+): QuickAddMetricType[] {
+  if (item.metricTypes && item.metricTypes.length > 0) return item.metricTypes;
+  return [getQuickAddMetricType(item)];
 }
 
 export function isBuiltInQuickAddItem(key: string): boolean {

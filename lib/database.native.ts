@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 5;
+export const DB_VERSION = 6;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -236,6 +236,8 @@ export async function initDatabase() {
       target_hydration REAL NOT NULL DEFAULT 0,
       protein REAL NOT NULL DEFAULT 0,
       target_protein REAL NOT NULL DEFAULT 0,
+      carbohydrate REAL NOT NULL DEFAULT 0,
+      target_carbohydrate REAL NOT NULL DEFAULT 0,
       sodium REAL NOT NULL DEFAULT 0,
       target_sodium REAL NOT NULL DEFAULT 0,
       record_date TEXT NOT NULL,
@@ -246,6 +248,21 @@ export async function initDatabase() {
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
       version INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS habits (
+      id TEXT PRIMARY KEY NOT NULL,
+      context TEXT NOT NULL,
+      name TEXT NOT NULL,
+      tag TEXT,
+      icon TEXT NOT NULL,
+      tone TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
     );
   `);
 
@@ -299,6 +316,8 @@ export async function initDatabase() {
   await ensureColumn(db, 'finance_flow_categories', 'sort_order', 'INTEGER');
   await ensureColumn(db, 'finance_flow_categories', 'is_builtin', 'INTEGER');
   await ensureColumn(db, 'health_records', 'quick_add_key', 'TEXT');
+  await ensureColumn(db, 'health_records', 'carbohydrate', 'REAL NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'health_records', 'target_carbohydrate', 'REAL NOT NULL DEFAULT 0');
   await ensureColumn(db, 'finance_flow_categories', 'extra_data', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'name', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'happened_at', 'TEXT');
@@ -396,6 +415,9 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_users_updated_at ON users(updated_at);
     CREATE INDEX IF NOT EXISTS idx_health_records_user_id ON health_records(user_id);
     CREATE INDEX IF NOT EXISTS idx_health_records_record_date ON health_records(record_date);
+
+    CREATE INDEX IF NOT EXISTS idx_habits_context ON habits(context);
+    CREATE INDEX IF NOT EXISTS idx_habits_updated_at ON habits(updated_at);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
@@ -429,6 +451,7 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS projects;
     DROP TABLE IF EXISTS task_categories;
     DROP TABLE IF EXISTS project_categories;
+    DROP TABLE IF EXISTS habits;
     DROP TABLE IF EXISTS users;
     DROP TABLE IF EXISTS app_meta;
   `);

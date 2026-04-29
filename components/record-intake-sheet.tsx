@@ -10,6 +10,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -19,12 +20,13 @@ import {
 const { height: screenHeight } = Dimensions.get('window');
 
 type TabKey = 'ai' | 'manual';
-type ManualType = 'hydration' | 'protein' | 'sodium';
+type ManualType = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
 type ConfirmUnit = 'ml' | 'g' | 'mg';
 
 function getUnitByType(type: ManualType): ConfirmUnit {
   if (type === 'hydration') return 'ml';
   if (type === 'protein') return 'g';
+  if (type === 'carbohydrate') return 'g';
   return 'mg';
 }
 
@@ -34,6 +36,9 @@ function getManualMeta(type: ManualType) {
   }
   if (type === 'protein') {
     return { label: '蛋白质', icon: 'fitness-center' as const, unitText: 'G', convertHint: (n: number) => `约 ${(n / 1000).toFixed(3)} 千克` };
+  }
+  if (type === 'carbohydrate') {
+    return { label: '碳水', icon: 'rice-bowl' as const, unitText: 'G', convertHint: (n: number) => `约 ${(n / 1000).toFixed(3)} 千克` };
   }
   return { label: '钠', icon: 'science' as const, unitText: 'MG', convertHint: (n: number) => `约 ${(n / 1000).toFixed(2)} 克` };
 }
@@ -144,6 +149,7 @@ export function RecordIntakeSheet({
   const aiMiniActiveOpacity = aiMiniEnabledAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 
   const amount = Number.isFinite(Number(amountText)) ? Number(amountText) : 0;
+  const amountDisplay = amountText === '' ? '0' : amountText;
   const manualMeta = getManualMeta(manualType);
   const manualConfirmDisabled = tab === 'manual' && amount <= 0;
 
@@ -216,7 +222,12 @@ export function RecordIntakeSheet({
               </Pressable>
             </View>
 
-            <View style={styles.content}>
+            <ScrollView
+              style={styles.contentScroll}
+              contentContainerStyle={styles.content}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
               <View style={[styles.tabBar, { backgroundColor: tabBg, borderColor: border }]}>
                 <Pressable onPress={() => setTab('ai')} style={[styles.tabBtn, tab === 'ai' && { backgroundColor: sheetBackground }]}>
                   <Text style={[styles.tabText, { color: tab === 'ai' ? theme.primary : mutedText }]}>AI 记录</Text>
@@ -255,6 +266,7 @@ export function RecordIntakeSheet({
                     {[
                       { key: 'hydration' as const, label: '水分', icon: 'water-drop' as const },
                       { key: 'protein' as const, label: '蛋白质', icon: 'fitness-center' as const },
+                      { key: 'carbohydrate' as const, label: '碳水', icon: 'rice-bowl' as const },
                       { key: 'sodium' as const, label: '钠', icon: 'science' as const },
                     ].map((item) => {
                       const selected = manualType === item.key;
@@ -285,7 +297,7 @@ export function RecordIntakeSheet({
                   <View style={[styles.valuePanel, { backgroundColor: isDark ? 'rgba(30,41,59,0.45)' : 'rgba(241,245,249,0.8)', borderColor: border }]}>
                     <Text style={[styles.valueLabel, { color: mutedText }]}>数值输入 ({manualMeta.unitText})</Text>
                     <View style={styles.valueMainRow}>
-                      <Text style={[styles.valueNumber, { color: theme.text }]}>{amount}</Text>
+                      <Text style={[styles.valueNumber, { color: theme.text }]}>{amountDisplay}</Text>
                       <Text style={[styles.valueUnit, { color: theme.primary }]}>{manualMeta.unitText}</Text>
                     </View>
                     <View style={[styles.valueHintPill, { backgroundColor: sheetBackground, borderColor: border }]}>
@@ -319,6 +331,8 @@ export function RecordIntakeSheet({
                 </View>
               )}
 
+            </ScrollView>
+            <View style={[styles.confirmFooter, { borderTopColor: border }]}>
               <Pressable
                 disabled={manualConfirmDisabled}
                 onPress={() => {
@@ -364,7 +378,8 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingBottom: 4 },
   iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   title: { fontSize: 20, fontWeight: '800', letterSpacing: -0.3 },
-  content: { paddingHorizontal: 18, paddingTop: 10, paddingBottom: 22, gap: 14 },
+  contentScroll: { maxHeight: screenHeight - 240, flexGrow: 0, flexShrink: 1 },
+  content: { paddingHorizontal: 18, paddingTop: 10, paddingBottom: 10, gap: 14 },
   tabBar: { flexDirection: 'row', borderRadius: 16, borderWidth: 1, padding: 4 },
   tabBtn: { flex: 1, borderRadius: 12, alignItems: 'center', justifyContent: 'center', paddingVertical: 10 },
   tabText: { fontSize: 13, fontWeight: '800' },
@@ -375,8 +390,8 @@ const styles = StyleSheet.create({
   aiMiniIconLayer: { position: 'absolute' },
   hint: { fontSize: 11, fontWeight: '500', fontStyle: 'italic', paddingHorizontal: 2 },
   manualWrap: { gap: 12 },
-  typeGrid: { flexDirection: 'row', gap: 10 },
-  typeCard: { flex: 1, borderRadius: 16, paddingVertical: 12, alignItems: 'center', justifyContent: 'center', gap: 8 },
+  typeGrid: { flexDirection: 'row', gap: 10, flexWrap: 'wrap', justifyContent: 'space-between' },
+  typeCard: { width: '48%', borderRadius: 16, paddingVertical: 12, alignItems: 'center', justifyContent: 'center', gap: 8 },
   typeIconWrap: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   typeText: { fontSize: 12, fontWeight: '800' },
   valuePanel: { borderRadius: 28, borderWidth: 1, padding: 16, alignItems: 'center' },
@@ -390,8 +405,13 @@ const styles = StyleSheet.create({
   keypadBtn: { width: '31%', aspectRatio: 1.5, borderRadius: 16, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   keypadBtnText: { fontSize: 28, fontWeight: '800' },
   keypadGhost: { opacity: 0 },
+  confirmFooter: {
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
   confirmBtn: {
-    marginTop: 2,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',

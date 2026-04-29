@@ -7,9 +7,13 @@ import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import React from 'react';
-import { Alert, Animated, Dimensions, Easing, Modal, Platform, Pressable, ScrollView, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
+import { Alert, Animated, Dimensions, Easing, Image, Modal, Platform, Pressable, ScrollView, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
+import Constants from 'expo-constants';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+type SpeechRecognitionApi = typeof import('@jamsch/expo-speech-recognition');
 
 type Txn = {
   id: string;
@@ -115,6 +119,12 @@ export default function FinanceScreen() {
   const [showNetAmounts, setShowNetAmounts] = React.useState(true);
   const [visibleDayCount, setVisibleDayCount] = React.useState(1);
   const [isLoadingMoreDays, setIsLoadingMoreDays] = React.useState(false);
+  const [sheetImageUris, setSheetImageUris] = React.useState<string[]>([]);
+  const [isPickingImage, setIsPickingImage] = React.useState(false);
+  const [isSpeechRecognizing, setIsSpeechRecognizing] = React.useState(false);
+  const [speechApi, setSpeechApi] = React.useState<SpeechRecognitionApi | null>(null);
+  const [speechApiStatus, setSpeechApiStatus] = React.useState<'loading' | 'ready' | 'unavailable'>('unavailable');
+  const [speechTriedOnce, setSpeechTriedOnce] = React.useState(false);
 
   const baseBottomAnim = React.useRef(new Animated.Value(collapsedBottom)).current;
   const revealAnim = React.useRef(new Animated.Value(0)).current;
@@ -189,6 +199,12 @@ export default function FinanceScreen() {
       void loadFinanceAccounts();
     }, [loadFinanceAccounts, loadFinanceTransactions])
   );
+
+  const speechSubsRef = React.useRef<Array<{ remove?: () => void }>>([]);
+  const clearSpeechSubs = React.useCallback(() => {
+    speechSubsRef.current.forEach((s) => s.remove?.());
+    speechSubsRef.current = [];
+  }, []);
 
   const screenWidth = Dimensions.get('window').width;
   const expandedWidth = Math.min(420, screenWidth - 36);
@@ -522,9 +538,11 @@ export default function FinanceScreen() {
   }, [activeSheetTab, expenseCategories, incomeCategories, selectedCategoryKey]);
 
   const resetSheetForm = React.useCallback((nextTab: SheetTab = 'expense') => {
+    speechApi?.ExpoSpeechRecognitionModule.stop();
     setActiveSheetTab(nextTab);
     setSheetAmount('');
     setSheetNote('');
+    setSheetImageUris([]);
     setSelectedHappenedAt(new Date());
     setIsDatePickerVisible(false);
     setIsTimePickerVisible(false);
@@ -534,11 +552,12 @@ export default function FinanceScreen() {
 
   const closeSheet = React.useCallback(() => {
     if (isSavingTransaction) return;
+    speechApi?.ExpoSpeechRecognitionModule.stop();
     setIsDatePickerVisible(false);
     setIsTimePickerVisible(false);
     setIsAccountPickerVisible(false);
     setIsSheetVisible(false);
-  }, [isSavingTransaction]);
+  }, [isSavingTransaction, speechApi]);
 
   const handleSelectAccount = React.useCallback((accountId: string) => {
     setSelectedAccountId(accountId);
@@ -575,6 +594,24 @@ export default function FinanceScreen() {
     }
   }, []);
 
+  const handleChangeSheetDate = React.useCallback((deltaDays: number) => {
+    setSelectedHappenedAt((prev) => {
+      const next = new Date(prev);
+      next.setDate(next.getDate() + deltaDays);
+      return next;
+    });
+  }, []);
+
+  const handleChangeSheetTime = React.useCallback((deltaHours: number, deltaMinutes = 0) => {
+    setSelectedHappenedAt((prev) => {
+      const next = new Date(prev);
+      next.setHours(next.getHours() + deltaHours);
+      next.setMinutes(next.getMinutes() + deltaMinutes);
+      next.setSeconds(0, 0);
+      return next;
+    });
+  }, []);
+
   const handleAmountKeyPress = React.useCallback((key: string) => {
     if (key === 'backspace') {
       setSheetAmount((prev) => prev.slice(0, -1));
@@ -598,6 +635,8 @@ export default function FinanceScreen() {
   }, []);
 
   const handleSaveTransaction = React.useCallback(async () => {
+    // 保存前停止语音，避免异步识别结果覆盖输入框
+    speechApi?.ExpoSpeechRecognitionModule.stop();
     if (!selectedAccount) {
       Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
       return;
@@ -634,6 +673,7 @@ export default function FinanceScreen() {
           manual: true,
           category_key: selectedCategory?.key ?? null,
           category_label: selectedCategory?.label ?? null,
+          attachments: sheetImageUris.length ? sheetImageUris.map((uri) => ({ type: 'image', uri })) : null,
         }),
       });
       setIsSheetVisible(false);
@@ -645,16 +685,187 @@ export default function FinanceScreen() {
     } finally {
       setIsSavingTransaction(false);
     }
-  }, [activeSheetTab, amountNumber, loadFinanceAccounts, loadFinanceTransactions, resetSheetForm, selectedAccount, selectedCategory, selectedHappenedAt, sheetNote]);
+  }, [activeSheetTab, amountNumber, loadFinanceAccounts, loadFinanceTransactions, resetSheetForm, selectedAccount, selectedCategory, selectedHappenedAt, sheetImageUris, sheetNote]);
 
-  const handleOpenComposer = React.useCallback(() => {
+  const handleOpenComposer = React.useCallback((): boolean => {
     if (!hasAccounts) {
       Alert.alert('请先添加账户', '当前还没有可用账户，请先前往资产页添加账户后再记账。');
-      return;
+      return false;
+    }
+    // 仅在弹窗未打开时重置表单；避免用户已输入金额/备注后点语音/图片又被清空
+    if (!isSheetVisible) {
+      resetSheetForm(activeSheetTab);
     }
     setSelectedAccountId((prev) => prev ?? financeAccounts[0]?.id ?? null);
     setIsSheetVisible(true);
-  }, [financeAccounts, hasAccounts]);
+    return true;
+  }, [financeAccounts, hasAccounts, resetSheetForm, activeSheetTab, isSheetVisible]);
+
+  const handlePickImage = React.useCallback(
+    async (source: 'library' | 'camera') => {
+      if (isPickingImage) return;
+
+      const opened = handleOpenComposer();
+      if (!opened) return;
+
+      setIsPickingImage(true);
+      try {
+        if (source === 'library') {
+          const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          if (!permission.granted) {
+            Alert.alert('权限不足', '需要相册权限才能选择图片。');
+            return;
+          }
+
+          const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            allowsEditing: false,
+            quality: 1,
+          });
+
+          if (result.canceled) return;
+          const uri = result.assets[0]?.uri;
+          if (uri) setSheetImageUris([uri]);
+          return;
+        }
+
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          Alert.alert('权限不足', '需要相机权限才能拍摄图片。');
+          return;
+        }
+
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          allowsEditing: false,
+          quality: 1,
+        });
+
+        if (result.canceled) return;
+        const uri = result.assets[0]?.uri;
+        if (uri) setSheetImageUris([uri]);
+      } catch (error) {
+        console.warn('Failed to pick image:', error);
+        Alert.alert('选择图片失败', '请稍后重试。');
+      } finally {
+        setIsPickingImage(false);
+      }
+    },
+    [handleOpenComposer, isPickingImage]
+  );
+
+  const handleToggleVoiceInput = React.useCallback(() => {
+    if (speechApiStatus === 'loading') {
+      Alert.alert('正在加载语音...', '稍等片刻再试。');
+      return;
+    }
+
+    // Expo Go（store client）下原生模块不可用，避免触发动态 import 报错
+    if (Constants.executionEnvironment === 'storeClient') {
+      setSpeechApiStatus('unavailable');
+      setSpeechTriedOnce(true);
+      Alert.alert('语音不可用', '当前是 Expo Go 环境，语音识别需要 Dev Build/Dev Client。');
+      return;
+    }
+
+    if (isSpeechRecognizing) {
+      speechApi?.ExpoSpeechRecognitionModule.stop();
+      clearSpeechSubs();
+      setIsSpeechRecognizing(false);
+      return;
+    }
+
+    void (async () => {
+      try {
+        const opened = handleOpenComposer();
+        if (!opened) return;
+
+        if (speechApiStatus === 'unavailable' && speechTriedOnce) {
+          Alert.alert('语音不可用', '当前是 Expo Go 环境，语音识别需要 Dev Build/Dev Client。');
+          return;
+        }
+
+        let api = speechApi;
+        if (!api) {
+          setSpeechApiStatus('loading');
+          api = (await import('@jamsch/expo-speech-recognition')) as SpeechRecognitionApi;
+          setSpeechApi(api);
+        }
+
+        const recognitionModule = api?.ExpoSpeechRecognitionModule as
+          | undefined
+          | {
+              requestPermissionsAsync?: () => Promise<{ granted: boolean }>;
+              start?: (options: any) => void;
+              stop?: () => void;
+            };
+        const emitter = api?.ExpoSpeechRecognitionModuleEmitter as
+          | undefined
+          | { addListener?: (eventName: string, listener: (...args: any[]) => void) => { remove?: () => void } };
+
+        // Expo Go 下 native module 通常不可用；此时直接兜底退出，避免 TypeError
+        if (!recognitionModule?.requestPermissionsAsync || !recognitionModule.start || !emitter?.addListener) {
+          setSpeechApi(null);
+          setSpeechApiStatus('unavailable');
+          setSpeechTriedOnce(true);
+          clearSpeechSubs();
+          Alert.alert('语音不可用', '当前环境未包含语音识别原生模块，请使用开发构建(Dev Build)或稍后重试。');
+          return;
+        }
+
+        setSpeechApiStatus('ready');
+        const permission = await recognitionModule.requestPermissionsAsync();
+        if (!permission.granted) {
+          Alert.alert('权限不足', '需要麦克风权限才能进行语音识别。');
+          return;
+        }
+
+        clearSpeechSubs();
+
+        const subs: Array<{ remove?: () => void }> = [];
+        const add = (eventName: string, listener: (...args: any[]) => void) => {
+          const sub = emitter.addListener?.(eventName, listener);
+          if (sub) subs.push(sub);
+        };
+
+        add('start', () => setIsSpeechRecognizing(true));
+        add('end', () => setIsSpeechRecognizing(false));
+        add('result', (event: any) => {
+          const transcript = event?.results?.[0]?.transcript;
+          if (typeof transcript === 'string' && transcript.trim().length > 0) {
+            setSheetNote(transcript);
+          }
+          if (event?.isFinal) {
+            recognitionModule.stop?.();
+            clearSpeechSubs();
+          }
+        });
+        add('error', (event: any) => {
+          setIsSpeechRecognizing(false);
+          const msg = event?.message || '语音识别失败';
+          Alert.alert('语音识别失败', msg);
+          clearSpeechSubs();
+        });
+        speechSubsRef.current = subs;
+
+        recognitionModule.start({
+          lang: 'zh-CN',
+          interimResults: true,
+          maxAlternatives: 1,
+          continuous: false,
+          addsPunctuation: false,
+        });
+      } catch (e) {
+        console.warn('Voice input failed:', e);
+        setSpeechApi(null);
+        setSpeechApiStatus('unavailable');
+        setSpeechTriedOnce(true);
+        clearSpeechSubs();
+        setIsSpeechRecognizing(false);
+        Alert.alert('语音不可用', '当前环境未包含语音识别原生模块，请使用开发构建(Dev Build)或稍后重试。');
+      }
+    })();
+  }, [clearSpeechSubs, handleOpenComposer, isSpeechRecognizing, speechApi, speechApiStatus, speechTriedOnce]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
@@ -885,30 +1096,47 @@ export default function FinanceScreen() {
       </ScrollView>
 
       <Animated.View style={[styles.composerWrap, { bottom: baseBottomAnim }]}>
-        <Pressable
-          onPress={handleOpenComposer}
-          style={({ pressed }) => [
-            { width: expandedWidth },
-            !hasAccounts && { opacity: 0.78 },
-            pressed && { opacity: 0.92 },
-          ]}>
-          <View pointerEvents="none" style={styles.composerShell}>
+        <View style={{ width: expandedWidth, opacity: !hasAccounts ? 0.78 : 1 }}>
+          <View style={styles.composerShell}>
             <View style={styles.composerRow}>
-              <View style={styles.iconBtn}>
+              <Pressable
+                disabled={!hasAccounts || isPickingImage}
+                onPress={() => void handlePickImage('library')}
+                style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.85 }]}>
                 <MaterialIcons name="photo-library" size={20} color="#111827" />
-              </View>
-              <View style={styles.iconBtn}>
+              </Pressable>
+
+              <Pressable
+                disabled={!hasAccounts || isPickingImage}
+                onPress={() => void handlePickImage('camera')}
+                style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.85 }]}>
                 <MaterialIcons name="photo-camera" size={20} color="#111827" />
-              </View>
-              <View style={styles.composerInput}>
+              </Pressable>
+
+              <Pressable
+                disabled={!hasAccounts}
+                onPress={() => {
+                  void handleOpenComposer();
+                }}
+                style={({ pressed }) => [styles.composerInput, pressed && { opacity: 0.92 }]} >
                 <Text style={styles.composerPlaceholder}>记录支出...</Text>
-              </View>
-              <View style={[styles.actionBtn, styles.voiceBtn]}>
+              </Pressable>
+
+              <Pressable
+                disabled={!hasAccounts}
+                onPress={handleToggleVoiceInput}
+                style={({ pressed }) => [
+                  styles.actionBtn,
+                  styles.voiceBtn,
+                  isSpeechRecognizing && { opacity: 0.72 },
+                  speechApiStatus === 'loading' && { opacity: 0.6 },
+                  pressed && { opacity: 0.92 },
+                ]}>
                 <MaterialIcons name="keyboard-voice" size={18} color="#fff" />
-              </View>
+              </Pressable>
             </View>
           </View>
-        </Pressable>
+        </View>
       </Animated.View>
 
       <Modal visible={isSheetVisible} animationType="slide" transparent onRequestClose={closeSheet}>
@@ -1124,14 +1352,40 @@ export default function FinanceScreen() {
                       </Text>
                       <MaterialIcons name="expand-more" size={16} color={subtle} />
                     </Pressable>
-                    <TextInput
-                      value={sheetNote}
-                      onChangeText={setSheetNote}
-                      style={[styles.noteInput, { color: text }]}
-                      placeholder="添加备注..."
-                      placeholderTextColor={subtle}
-                    />
                   </View>
+
+                  <View style={styles.sheetNoteRow}>
+                    <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                      <TextInput
+                        value={sheetNote}
+                        onChangeText={setSheetNote}
+                        style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent' }]}
+                        placeholder="添加备注..."
+                        placeholderTextColor={subtle}
+                      />
+                    </View>
+                  </View>
+
+                  {sheetImageUris.length ? (
+                    <View style={styles.attachmentPreview}>
+                      <Text style={[styles.attachmentPreviewText, { color: subtle }]}>已添加图片</Text>
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.attachmentThumbRow}>
+                        {sheetImageUris.map((uri, idx) => (
+                          <View key={`${uri}-${idx}`} style={styles.attachmentThumbWrap}>
+                            <Image source={{ uri }} style={styles.attachmentThumb} />
+                            <Pressable
+                              onPress={() => setSheetImageUris((prev) => prev.filter((_, i) => i !== idx))}
+                              style={({ pressed }) => [styles.attachmentRemoveBtn, pressed && { opacity: 0.85 }]}>
+                              <MaterialIcons name="close" size={14} color="#fff" />
+                            </Pressable>
+                          </View>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  ) : null}
 
                   <Modal visible={isDatePickerVisible} transparent animationType="fade" onRequestClose={() => setIsDatePickerVisible(false)}>
                     <View style={styles.pickerModalOverlay}>
@@ -2053,6 +2307,62 @@ const styles = StyleSheet.create({
   accountPickerBalance: {
     fontSize: 11,
     fontWeight: '600',
+  },
+  sheetNoteRow: {
+    marginTop: 0,
+    marginBottom: 10,
+  },
+  noteRowInput: {
+    width: '100%',
+    fontSize: 13,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+  },
+  noteRowWrap: {
+    width: '100%',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 0,
+  },
+  attachmentPreview: {
+    marginTop: 0,
+    marginBottom: 10,
+  },
+  attachmentPreviewText: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    marginBottom: 8,
+  },
+  attachmentThumbRow: {
+    gap: 10,
+    paddingRight: 6,
+  },
+  attachmentThumbWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.22)',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  attachmentThumb: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  attachmentRemoveBtn: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   transferKeypadWrap: {
     borderTopLeftRadius: 16,

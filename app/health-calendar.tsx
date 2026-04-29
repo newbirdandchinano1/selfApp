@@ -28,6 +28,8 @@ type SelectedDayMetrics = {
   hydrationTarget: number;
   protein: number;
   proteinTarget: number;
+  carbohydrate: number;
+  carbohydrateTarget: number;
   sodium: number;
   sodiumTarget: number;
 };
@@ -67,16 +69,19 @@ function getDayCompletionLevel(params: {
   hydrationTarget: number;
   protein: number;
   proteinTarget: number;
+  carbohydrate: number;
+  carbohydrateTarget: number;
   sodium: number;
   sodiumTarget: number;
 }): 'full' | 'partial' | 'empty' {
   const hMet = params.hydrationTarget > 0 ? params.hydration >= params.hydrationTarget : false;
   const pMet = params.proteinTarget > 0 ? params.protein >= params.proteinTarget : false;
+  const cMet = params.carbohydrateTarget > 0 ? params.carbohydrate >= params.carbohydrateTarget : false;
   // 钠是上限指标：小于等于目标即达标，超出目标为未达标。
   const sMet = params.sodiumTarget > 0 ? params.sodium <= params.sodiumTarget : false;
-  const metCount = [hMet, pMet, sMet].filter(Boolean).length;
-  if (metCount >= 3) return 'full';
-  if (metCount > 0 || params.hydration > 0 || params.protein > 0 || params.sodium > 0) return 'partial';
+  const metCount = [hMet, pMet, cMet, sMet].filter(Boolean).length;
+  if (metCount >= 4) return 'full';
+  if (metCount > 0 || params.hydration > 0 || params.protein > 0 || params.carbohydrate > 0 || params.sodium > 0) return 'partial';
   return 'empty';
 }
 
@@ -158,6 +163,8 @@ export default function HealthCalendarScreen() {
               hydrationTarget: latest.target_hydration,
               protein: totals.protein,
               proteinTarget: latest.target_protein,
+              carbohydrate: totals.carbohydrate,
+              carbohydrateTarget: latest.target_carbohydrate,
               sodium: totals.sodium,
               sodiumTarget: latest.target_sodium,
             });
@@ -206,9 +213,11 @@ export default function HealthCalendarScreen() {
       setSelectedMetrics({
         hydration: totals.hydration,
         protein: totals.protein,
+        carbohydrate: totals.carbohydrate,
         sodium: totals.sodium,
         hydrationTarget: Math.max(0, latest?.target_hydration ?? 0),
         proteinTarget: Math.max(0, latest?.target_protein ?? 0),
+        carbohydrateTarget: Math.max(0, latest?.target_carbohydrate ?? 0),
         sodiumTarget: Math.max(0, latest?.target_sodium ?? 0),
       });
     };
@@ -228,8 +237,9 @@ export default function HealthCalendarScreen() {
     ? Math.round(
         (calcPercent(selectedMetrics.hydration, selectedMetrics.hydrationTarget) +
           calcPercent(selectedMetrics.protein, selectedMetrics.proteinTarget) +
+          calcPercent(selectedMetrics.carbohydrate, selectedMetrics.carbohydrateTarget) +
           calcPercent(selectedMetrics.sodium, selectedMetrics.sodiumTarget)) /
-          3
+          4
       )
     : 0;
 
@@ -426,6 +436,15 @@ export default function HealthCalendarScreen() {
               color: '#f97316',
               value: selectedMetrics.protein,
               target: selectedMetrics.proteinTarget,
+              unit: 'G',
+            },
+            {
+              key: 'carbohydrate',
+              label: '碳水',
+              icon: 'rice-bowl' as const,
+              color: '#eab308',
+              value: selectedMetrics.carbohydrate,
+              target: selectedMetrics.carbohydrateTarget,
               unit: 'G',
             },
             {

@@ -10,9 +10,9 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO health_records (
-      id, user_id, hydration, target_hydration, protein, target_protein, sodium, target_sodium, record_date, quick_add_key,
+      id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, sodium, target_sodium, record_date, quick_add_key,
       created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
     [
       input.id,
       input.user_id,
@@ -20,6 +20,8 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
       input.target_hydration ?? 0,
       input.protein ?? 0,
       input.target_protein ?? 0,
+      input.carbohydrate ?? 0,
+      input.target_carbohydrate ?? 0,
       input.sodium ?? 0,
       input.target_sodium ?? 0,
       input.record_date,
@@ -91,10 +93,11 @@ export async function getHealthIntakeTotalsForUserOnDate(
   recordDateYmd: string
 ): Promise<HealthIntakeDayTotals | null> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<{ cnt: number; h: number; p: number; s: number }>(
+  const row = await db.getFirstAsync<{ cnt: number; h: number; p: number; c: number; s: number }>(
     `SELECT COUNT(*) as cnt,
             COALESCE(SUM(hydration), 0) as h,
             COALESCE(SUM(protein), 0) as p,
+            COALESCE(SUM(carbohydrate), 0) as c,
             COALESCE(SUM(sodium), 0) as s
      FROM health_records
      WHERE user_id = ? AND deleted_at IS NULL AND record_date = ?`,
@@ -104,6 +107,7 @@ export async function getHealthIntakeTotalsForUserOnDate(
   return {
     hydration: Number(row.h),
     protein: Number(row.p),
+    carbohydrate: Number(row.c),
     sodium: Number(row.s),
   };
 }
@@ -118,7 +122,7 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
 
   await db.runAsync(
     `UPDATE health_records
-     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, sodium = ?, target_sodium = ?, record_date = ?, quick_add_key = ?, updated_at = datetime('now'),
+     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, carbohydrate = ?, target_carbohydrate = ?, sodium = ?, target_sodium = ?, record_date = ?, quick_add_key = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
          version = version + 1
      WHERE id = ?`,
@@ -127,6 +131,8 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
       input.target_hydration ?? current.target_hydration,
       input.protein ?? current.protein,
       input.target_protein ?? current.target_protein,
+      input.carbohydrate ?? current.carbohydrate,
+      input.target_carbohydrate ?? current.target_carbohydrate,
       input.sodium ?? current.sodium,
       input.target_sodium ?? current.target_sodium,
       input.record_date ?? current.record_date,

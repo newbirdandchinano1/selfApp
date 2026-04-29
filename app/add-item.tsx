@@ -1,14 +1,13 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { addCustomQuickAddItem, type QuickAddVolumeUnit } from '@/lib/quick-add-cards';
+import { addCustomQuickAddItem, type QuickAddMetricType, type QuickAddVolumeUnit } from '@/lib/quick-add-cards';
 import { MaterialIcons } from '@expo/vector-icons';
-import Slider from '@react-native-community/slider';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const iconOptions: Array<{ key: string; icon: React.ComponentProps<typeof MaterialIcons>['name'] }> = [
+const iconOptions: { key: string; icon: React.ComponentProps<typeof MaterialIcons>['name'] }[] = [
   { key: 'water', icon: 'local-drink' },
   { key: 'coffee', icon: 'local-cafe' },
   { key: 'tea', icon: 'emoji-food-beverage' },
@@ -32,8 +31,7 @@ export default function AddItemScreen() {
   const [name, setName] = React.useState('');
   const [volume, setVolume] = React.useState('250');
   const [selectedIconKey, setSelectedIconKey] = React.useState(iconOptions[0].key);
-  const [unit, setUnit] = React.useState<QuickAddVolumeUnit>('ml');
-  const [coefficient, setCoefficient] = React.useState(0.8);
+  const [metricTypes, setMetricTypes] = React.useState<QuickAddMetricType[]>(['hydration']);
   const [saving, setSaving] = React.useState(false);
   const selectedIcon = React.useMemo(
     () => iconOptions.find((item) => item.key === selectedIconKey)?.icon ?? iconOptions[0].icon,
@@ -44,7 +42,7 @@ export default function AddItemScreen() {
     name.trim().length > 0 &&
     Number.isFinite(Number(volume)) &&
     Number(volume) > 0 &&
-    (unit !== 'ml' || coefficient > 0) &&
+    metricTypes.length > 0 &&
     !saving;
 
   const onSave = React.useCallback(async () => {
@@ -59,20 +57,20 @@ export default function AddItemScreen() {
       return;
     }
     let hydrationMl = amount;
-    if (unit === 'ml') hydrationMl = Math.round(amount * coefficient);
-    if (unit === 'g') hydrationMl = amount;
-    if (unit === 'mg') hydrationMl = amount;
     if (!Number.isFinite(hydrationMl) || hydrationMl <= 0) {
-      Alert.alert('参数无效', '请检查容量和单位设置。');
+      Alert.alert('参数无效', '请检查容量和指标类型设置。');
       return;
     }
+    const displayUnit: QuickAddVolumeUnit =
+      metricTypes.length > 1 ? 'g' : metricTypes[0] === 'hydration' ? 'ml' : metricTypes[0] === 'sodium' ? 'mg' : 'g';
     setSaving(true);
     try {
       await addCustomQuickAddItem({
         label: finalName,
         displayAmount: amount,
-        displayUnit: unit,
+        displayUnit,
         hydrationMl,
+        metricTypes,
         icon: selectedIcon,
       });
       router.back();
@@ -81,7 +79,7 @@ export default function AddItemScreen() {
     } finally {
       setSaving(false);
     }
-  }, [name, volume, unit, coefficient, selectedIcon, router]);
+  }, [name, volume, metricTypes, selectedIcon, router]);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['left', 'right', 'bottom']}>
@@ -133,64 +131,52 @@ export default function AddItemScreen() {
                   onPress={() => setSelectedIconKey(item.key)}
                   style={({ pressed }) => [styles.iconTile, active && styles.iconTileActive, pressed && styles.pressed]}
                 >
-                  <MaterialIcons name={item.icon} size={30} color={active ? '#006c49' : theme.textSecondary} />
+                  <View style={styles.iconGlyphWrap}>
+                    <MaterialIcons name={item.icon} size={30} color={active ? '#006c49' : theme.textSecondary} />
+                  </View>
                 </Pressable>
               );
             })}
           </View>
         </View>
 
-        <View style={styles.sectionRow}>
-          <View style={styles.halfCol}>
-            <Text style={styles.label}>默认容量</Text>
-            <TextInput
-              value={volume}
-              onChangeText={(text) => setVolume(text.replace(/[^\d]/g, '').slice(0, 4))}
-              inputMode="text"
-              style={[styles.volumeInput, { color: theme.text }]}
-            />
-            <View style={styles.smallUnderline} />
-          </View>
-          <View style={styles.halfCol}>
-            <Text style={styles.label}>单位</Text>
-            <View style={styles.unitWrap}>
-              {(['ml', 'g', 'mg'] as const).map((item) => {
-                const active = unit === item;
-                const label = item === 'mg' ? 'MG' : item;
-                return (
-                  <Pressable
-                    key={item}
-                    onPress={() => setUnit(item)}
-                    style={({ pressed }) => [styles.unitItem, active && styles.unitActive, pressed && styles.pressed]}
-                  >
-                    <Text style={active ? styles.unitTextActive : styles.unitText}>{label}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
+        <View style={styles.section}>
+          <Text style={styles.label}>指标类型</Text>
+          <View style={styles.unitWrap}>
+            {([
+              { key: 'hydration' as const, label: '水分' },
+              { key: 'protein' as const, label: '蛋白质' },
+              { key: 'carbohydrate' as const, label: '碳水' },
+              { key: 'sodium' as const, label: '钠' },
+            ] as const).map((item) => {
+              const active = metricTypes.includes(item.key);
+              return (
+                <Pressable
+                  key={item.key}
+                  onPress={() =>
+                    setMetricTypes((prev) =>
+                      prev.includes(item.key) ? prev.filter((v) => v !== item.key) : [...prev, item.key]
+                    )
+                  }
+                  style={({ pressed }) => [styles.metricTypeItem, active && styles.unitActive, pressed && styles.pressed]}
+                >
+                  <Text style={active ? styles.unitTextActive : styles.unitText}>{item.label}</Text>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
 
-        {unit === 'ml' ? (
-          <View style={styles.coefficientCard}>
-            <View style={styles.coefficientHeader}>
-              <Text style={styles.label}>含水量系数</Text>
-              <Text style={styles.coefficientValue}>{coefficient.toFixed(1)}</Text>
-            </View>
-            <Slider
-              style={styles.slider}
-              minimumValue={0}
-              maximumValue={1}
-              step={0.1}
-              value={coefficient}
-              onValueChange={(value) => setCoefficient(Math.round(value * 10) / 10)}
-              minimumTrackTintColor="#006c49"
-              maximumTrackTintColor="#e2e7ff"
-              thumbTintColor="#006c49"
-            />
-            <Text style={styles.helperText}>该系数用于计算摄入物对身体水分的贡献度。纯水为 1.0。</Text>
-          </View>
-        ) : null}
+        <View style={styles.section}>
+          <Text style={styles.label}>默认容量</Text>
+          <TextInput
+            value={volume}
+            onChangeText={(text) => setVolume(text.replace(/[^\d]/g, '').slice(0, 4))}
+            inputMode="text"
+            style={[styles.volumeInput, { color: theme.text }]}
+          />
+          <View style={styles.smallUnderline} />
+        </View>
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: 16 + Math.max(insets.bottom, 0), backgroundColor: isDark ? 'rgba(15, 23, 42, 0.8)' : 'rgba(255, 255, 255, 0.8)' }]}>
@@ -211,8 +197,8 @@ const styles = StyleSheet.create({
   backBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 18, fontWeight: '800', letterSpacing: -0.2, fontFamily: 'Manrope' },
   headerSpacer: { width: 40 },
-  content: { paddingHorizontal: 24, gap: 44 },
-  section: { gap: 16 },
+  content: { paddingHorizontal: 24, gap: 20 },
+  section: { gap: 12 },
   label: { fontSize: 11, fontWeight: '700', letterSpacing: 0.8, color: 'rgba(71, 85, 105, 0.62)', textTransform: 'uppercase' },
   nameInput: {
     padding: 0,
@@ -225,7 +211,7 @@ const styles = StyleSheet.create({
   },
   underline: { height: 2, borderRadius: 999, overflow: 'hidden', backgroundColor: '#e2e7ff' },
   underlineActive: { width: '33%', height: '100%', backgroundColor: '#10b981' },
-  iconGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 14 },
+  iconGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 10 },
   iconTile: {
     width: '22%',
     aspectRatio: 1,
@@ -235,10 +221,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#f2f3ff',
     borderWidth: 2,
     borderColor: 'transparent',
+    padding: 0,
   },
   iconTileActive: { backgroundColor: '#6cf8bb', borderColor: '#006c49', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 6, elevation: 1 },
-  sectionRow: { flexDirection: 'row', gap: 24, alignItems: 'flex-end' },
-  halfCol: { flex: 1, gap: 16 },
+  iconGlyphWrap: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   volumeInput: {
     padding: 0,
     fontSize: 40,
@@ -250,15 +241,10 @@ const styles = StyleSheet.create({
   },
   smallUnderline: { height: 1, backgroundColor: 'rgba(194, 198, 214, 0.35)' },
   unitWrap: { flexDirection: 'row', padding: 4, borderRadius: 12, gap: 4, backgroundColor: '#f2f3ff' },
-  unitItem: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
+  metricTypeItem: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center', minWidth: 0 },
   unitActive: { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 4, elevation: 1 },
   unitText: { fontSize: 14, fontWeight: '700', color: '#64748b' },
   unitTextActive: { fontSize: 14, fontWeight: '700', color: '#0058be' },
-  coefficientCard: { borderRadius: 18, padding: 24, gap: 16, backgroundColor: '#f2f3ff' },
-  coefficientHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  coefficientValue: { fontSize: 22, fontWeight: '800', fontFamily: 'Manrope', color: '#006c49' },
-  slider: { width: '100%', height: 28 },
-  helperText: { fontSize: 12, lineHeight: 18, color: '#64748b' },
   footer: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(194, 198, 214, 0.2)', paddingHorizontal: 24, paddingTop: 16 },
   saveBtn: { height: 64, borderRadius: 16, backgroundColor: '#006c49', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, shadowColor: '#006c49', shadowOpacity: 0.18, shadowRadius: 12, elevation: 3 },
   saveBtnDisabled: { opacity: 0.45 },

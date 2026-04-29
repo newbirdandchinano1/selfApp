@@ -7,6 +7,8 @@ export type HealthRecordRow = {
   target_hydration: number;
   protein: number;
   target_protein: number;
+  carbohydrate: number;
+  target_carbohydrate: number;
   sodium: number;
   target_sodium: number;
   record_date: string;
@@ -25,6 +27,8 @@ export type CreateHealthRecordInput = {
   target_hydration?: number;
   protein?: number;
   target_protein?: number;
+  carbohydrate?: number;
+  target_carbohydrate?: number;
   sodium?: number;
   target_sodium?: number;
   record_date: string;
@@ -34,7 +38,16 @@ export type CreateHealthRecordInput = {
 export type UpdateHealthRecordInput = Partial<
   Pick<
     HealthRecordRow,
-    'hydration' | 'target_hydration' | 'protein' | 'target_protein' | 'sodium' | 'target_sodium' | 'record_date' | 'quick_add_key'
+    | 'hydration'
+    | 'target_hydration'
+    | 'protein'
+    | 'target_protein'
+    | 'carbohydrate'
+    | 'target_carbohydrate'
+    | 'sodium'
+    | 'target_sodium'
+    | 'record_date'
+    | 'quick_add_key'
   >
 >;
 
@@ -42,5 +55,6 @@ export type UpdateHealthRecordInput = Partial<
 export type HealthIntakeDayTotals = {
   hydration: number;
   protein: number;
+  carbohydrate: number;
   sodium: number;
 };

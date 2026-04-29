@@ -6,7 +6,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 
 
-import { getDefaultUser } from '@/lib/repositories/users/user';
+import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 
 import {
@@ -17,11 +17,12 @@ import {
   deleteHealthRecord,
 } from '@/lib/repositories/health/health';
 import type { HealthIntakeDayTotals, HealthRecordRow } from '@/lib/repositories/health/health.types';
-import { subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import {
+  globalCarbohydrateTargetG,
   globalHydrationTargetMl,
   globalProteinTargetG,
   globalSodiumTargetMg,
+  setGlobalCarbohydrateTargetG,
   setGlobalHydrationTargetMl,
   setGlobalProteinTargetG,
   setGlobalSodiumTargetMg,
@@ -30,7 +31,7 @@ import {
   createQuickAddItemMap,
   formatQuickAddAmount,
   getDefaultQuickAddItems,
-  getQuickAddMetricType,
+  getQuickAddMetricTypes,
   loadAllQuickAddItems,
   loadSelectedQuickAddItems,
   type QuickAddCardItem,
@@ -81,6 +82,12 @@ const nutrientMetricMeta = [
     label: '钠',
     icon: 'science' as keyof typeof MaterialIcons.glyphMap,
     opacity: 0.35,
+  },
+  {
+    key: 'carbohydrate' as const,
+    label: '碳水',
+    icon: 'rice-bowl' as keyof typeof MaterialIcons.glyphMap,
+    opacity: 0.5,
   },
 ];
 
@@ -139,10 +146,14 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
     if (tb !== ta) return tb - ta;
     return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
   });
+  const includesMetric = (qa: QuickAddCardItem | undefined, metric: 'hydration' | 'protein' | 'carbohydrate' | 'sodium') =>
+    Boolean(qa && getQuickAddMetricTypes(qa).includes(metric));
+
   for (const row of orderedRows) {
     const timeLine = formatRecordTime(row.created_at);
     const h = row.hydration;
     const p = row.protein;
+    const c = row.carbohydrate;
     const s = row.sodium;
     if (h > 0) {
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
@@ -154,7 +165,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         amountRight: formatIntakeAmount(h, 'ml'),
         note: '备注：暂无备注',
         aiComment: 'AI评价：待分析',
-        icon: qa && getQuickAddMetricType(qa) === 'hydration' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'water-drop',
+        icon: includesMetric(qa, 'hydration') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'water-drop',
         iconBgLight: 'rgba(16,185,129,0.12)',
         iconBgDark: 'rgba(6,78,59,0.32)',
         iconColor: '#10b981',
@@ -165,12 +176,12 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
       lines.push({
         key: `${row.id}-p`,
         recordId: row.id,
-        title: qa && getQuickAddMetricType(qa) === 'protein' ? qa.label : '蛋白质',
+        title: includesMetric(qa, 'protein') ? qa.label : '蛋白质',
         timeLine,
         amountRight: formatIntakeAmount(p, 'g'),
         note: '备注：暂无备注',
         aiComment: 'AI评价：待分析',
-        icon: qa && getQuickAddMetricType(qa) === 'protein' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
+        icon: includesMetric(qa, 'protein') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
         iconBgLight: 'rgba(245,158,11,0.14)',
         iconBgDark: 'rgba(120,53,15,0.32)',
         iconColor: '#f59e0b',
@@ -181,15 +192,31 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
       lines.push({
         key: `${row.id}-s`,
         recordId: row.id,
-        title: qa && getQuickAddMetricType(qa) === 'sodium' ? qa.label : '钠',
+        title: includesMetric(qa, 'sodium') ? qa.label : '钠',
         timeLine,
         amountRight: formatIntakeAmount(s, 'mg'),
         note: '备注：暂无备注',
         aiComment: 'AI评价：待分析',
-        icon: qa && getQuickAddMetricType(qa) === 'sodium' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
+        icon: includesMetric(qa, 'sodium') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
         iconBgLight: 'rgba(168,85,247,0.14)',
         iconBgDark: 'rgba(88,28,135,0.32)',
         iconColor: '#a855f7',
+      });
+    }
+    if (c > 0) {
+      const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
+      lines.push({
+        key: `${row.id}-c`,
+        recordId: row.id,
+        title: includesMetric(qa, 'carbohydrate') ? qa.label : '碳水',
+        timeLine,
+        amountRight: formatIntakeAmount(c, 'g'),
+        note: '备注：暂无备注',
+        aiComment: 'AI评价：待分析',
+        icon: includesMetric(qa, 'carbohydrate') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'rice-bowl',
+        iconBgLight: 'rgba(234,179,8,0.14)',
+        iconBgDark: 'rgba(113,63,18,0.32)',
+        iconColor: '#eab308',
       });
     }
   }
@@ -223,14 +250,15 @@ async function fetchHomeHealthSlice(
 async function appendManualIntakeToDay(params: {
   userId: string;
   recordDateYmd: string;
-  type: 'hydration' | 'protein' | 'sodium';
+  type: 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
   amount: number;
   quickAddKey?: string;
   targetHydrationMl: number;
   targetProteinG: number;
+  targetCarbohydrateG: number;
   targetSodiumMg: number;
 }): Promise<void> {
-  const { userId, recordDateYmd, type, amount, quickAddKey, targetHydrationMl, targetProteinG, targetSodiumMg } = params;
+  const { userId, recordDateYmd, type, amount, quickAddKey, targetHydrationMl, targetProteinG, targetCarbohydrateG, targetSodiumMg } = params;
   if (!Number.isFinite(amount) || amount <= 0) return;
   const id = `h_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   await createHealthRecord({
@@ -240,9 +268,11 @@ async function appendManualIntakeToDay(params: {
     quick_add_key: quickAddKey ?? null,
     hydration: type === 'hydration' ? amount : 0,
     protein: type === 'protein' ? amount : 0,
+    carbohydrate: type === 'carbohydrate' ? amount : 0,
     sodium: type === 'sodium' ? amount : 0,
     target_hydration: targetHydrationMl,
     target_protein: targetProteinG,
+    target_carbohydrate: targetCarbohydrateG,
     target_sodium: targetSodiumMg,
   });
 }
@@ -292,6 +322,7 @@ type WeeklyTrendItem = {
   date: Date;
   hydration: number;
   protein: number;
+  carbohydrate: number;
   sodium: number;
   active: boolean;
 };
@@ -317,6 +348,12 @@ function proteinStatusDesc(percent: number) {
   if (percent >= 90) return '摄入充足，利于肌肉与恢复';
   if (percent >= 60) return '稍有欠缺，建议晚餐增加摄入';
   return '明显不足，请优先补充优质蛋白';
+}
+
+function carbohydrateStatusDesc(percent: number) {
+  if (percent >= 90) return '碳水补给充足，运动与专注更稳定';
+  if (percent >= 60) return '碳水略低，可补充全谷物或水果';
+  return '碳水偏低，建议及时补充主食';
 }
 
 function sodiumStatusDesc(percent: number) {
@@ -359,6 +396,7 @@ function calculateNutritionV2(
   const PROTEIN_GRAMS_CAP = 130;
   const WATER_ML_CAP = 4000;
   const SODIUM_MG_CAP = 2500;
+  const CARBOHYDRATE_G_CAP = 420;
 
   let proteinMultiplier = 1.0;
   if (activityLevel === 'Fitness') proteinMultiplier = 1.5;
@@ -370,6 +408,13 @@ function calculateNutritionV2(
   proteinMultiplier = Math.min(proteinMultiplier, PROTEIN_MULTIPLIER_CAP);
 
   const totalProteinG = Math.min(weight * proteinMultiplier, PROTEIN_GRAMS_CAP);
+  let carbohydrateMultiplier = 3.2;
+  if (activityLevel === 'Fitness') carbohydrateMultiplier = 4.0;
+  if (activityLevel === 'High-Intensity') carbohydrateMultiplier = 4.8;
+  if (goal === 'Fat Loss') carbohydrateMultiplier -= 0.35;
+  if (goal === 'Muscle Gain') carbohydrateMultiplier += 0.4;
+  carbohydrateMultiplier = Math.max(2.2, carbohydrateMultiplier);
+  const totalCarbohydrateG = Math.min(weight * carbohydrateMultiplier, CARBOHYDRATE_G_CAP);
 
   const baseSodium = 1500;
   let sodiumActivityBonus = activityLevel === 'Sedentary' ? 0 : activityLevel === 'Fitness' ? 500 : 1000;
@@ -394,6 +439,7 @@ function calculateNutritionV2(
   return {
     Water_ml: Math.round(totalWaterMl),
     Protein_g: Math.round(totalProteinG),
+    Carbohydrate_g: Math.round(totalCarbohydrateG),
     Sodium_mg: Math.round(totalSodiumMg),
   };
 }
@@ -462,13 +508,15 @@ export default function HealthScreen() {
   const isDark = colorScheme === 'dark';
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [assistantOpen, setAssistantOpen] = React.useState(false);
-  const [assistantTab, setAssistantTab] = React.useState<'水分' | '蛋白质' | '钠'>('水分');
+  const [assistantTab, setAssistantTab] = React.useState<'水分' | '蛋白质' | '碳水' | '钠'>('水分');
   const [intakeTargetTick, setIntakeTargetTick] = React.useState(0);
   const intakeTargetsSnapshot = React.useMemo(
     () => ({
       hydrationMl: globalHydrationTargetMl,
       proteinG: globalProteinTargetG,
+      carbohydrateG: globalCarbohydrateTargetG,
       sodiumMg: globalSodiumTargetMg,
+      tick: intakeTargetTick,
     }),
     [intakeTargetTick]
   );
@@ -653,26 +701,30 @@ export default function HealthScreen() {
   const dayIntakeDisplay = React.useMemo(() => {
     const hydrationCurrent = selectedDayIntakeTotals?.hydration ?? 0;
     const proteinCurrent = selectedDayIntakeTotals?.protein ?? 0;
+    const carbohydrateCurrent = selectedDayIntakeTotals?.carbohydrate ?? 0;
     const sodiumCurrent = selectedDayIntakeTotals?.sodium ?? 0;
     const tH = intakeTargetsSnapshot.hydrationMl;
     const tP = intakeTargetsSnapshot.proteinG;
+    const tC = intakeTargetsSnapshot.carbohydrateG;
     const tS = intakeTargetsSnapshot.sodiumMg;
     const pct = (current: number, target: number) =>
       target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
     return {
       hydration: { current: hydrationCurrent, target: tH, percent: pct(hydrationCurrent, tH) },
       protein: { current: proteinCurrent, target: tP, percent: pct(proteinCurrent, tP) },
+      carbohydrate: { current: carbohydrateCurrent, target: tC, percent: pct(carbohydrateCurrent, tC) },
       sodium: { current: sodiumCurrent, target: tS, percent: pct(sodiumCurrent, tS) },
     };
   }, [selectedDayIntakeTotals, intakeTargetsSnapshot]);
 
   const weeklyTrend = React.useMemo<WeeklyTrendItem[]>(() => {
-    const totalsByYmd = new Map<string, { hydration: number; protein: number; sodium: number }>();
+    const totalsByYmd = new Map<string, { hydration: number; protein: number; carbohydrate: number; sodium: number }>();
     for (const row of healthRecords) {
-      const prev = totalsByYmd.get(row.record_date) ?? { hydration: 0, protein: 0, sodium: 0 };
+      const prev = totalsByYmd.get(row.record_date) ?? { hydration: 0, protein: 0, carbohydrate: 0, sodium: 0 };
       totalsByYmd.set(row.record_date, {
         hydration: prev.hydration + row.hydration,
         protein: prev.protein + row.protein,
+        carbohydrate: prev.carbohydrate + row.carbohydrate,
         sodium: prev.sodium + row.sodium,
       });
     }
@@ -681,12 +733,13 @@ export default function HealthScreen() {
     const activeYmd = formatLocalYmd(selectedDate);
     return weekDaysCurrent.map((day) => {
       const dayYmd = formatLocalYmd(day.date);
-      const totals = totalsByYmd.get(dayYmd) ?? { hydration: 0, protein: 0, sodium: 0 };
+      const totals = totalsByYmd.get(dayYmd) ?? { hydration: 0, protein: 0, carbohydrate: 0, sodium: 0 };
       return {
         day: day.label,
         date: day.date,
         hydration: pct(totals.hydration, intakeTargetsSnapshot.hydrationMl),
         protein: pct(totals.protein, intakeTargetsSnapshot.proteinG),
+        carbohydrate: pct(totals.carbohydrate, intakeTargetsSnapshot.carbohydrateG),
         sodium: pct(totals.sodium, intakeTargetsSnapshot.sodiumMg),
         active: dayYmd === activeYmd,
       };
@@ -700,16 +753,21 @@ export default function HealthScreen() {
       if (!rows.length) return 0;
       let hydrationTotal = 0;
       let proteinTotal = 0;
+      let carbohydrateTotal = 0;
       let sodiumTotal = 0;
       for (const row of rows) {
         hydrationTotal += row.hydration;
         proteinTotal += row.protein;
+        carbohydrateTotal += row.carbohydrate;
         sodiumTotal += row.sodium;
       }
       const targetSum =
-        intakeTargetsSnapshot.hydrationMl + intakeTargetsSnapshot.proteinG + intakeTargetsSnapshot.sodiumMg;
+        intakeTargetsSnapshot.hydrationMl +
+        intakeTargetsSnapshot.proteinG +
+        intakeTargetsSnapshot.carbohydrateG +
+        intakeTargetsSnapshot.sodiumMg;
       if (targetSum <= 0) return 0;
-      const weekProgress = ((hydrationTotal + proteinTotal + sodiumTotal) / (targetSum * 7)) * 100;
+      const weekProgress = ((hydrationTotal + proteinTotal + carbohydrateTotal + sodiumTotal) / (targetSum * 7)) * 100;
       return Math.max(0, weekProgress);
     };
 
@@ -728,11 +786,13 @@ export default function HealthScreen() {
   const metricPercentAnims = React.useRef({
     hydration: new Animated.Value(0),
     protein: new Animated.Value(0),
+    carbohydrate: new Animated.Value(0),
     sodium: new Animated.Value(0),
   }).current;
   const [animatedMetricPercents, setAnimatedMetricPercents] = React.useState({
     hydration: 0,
     protein: 0,
+    carbohydrate: 0,
     sodium: 0,
   });
 
@@ -743,12 +803,16 @@ export default function HealthScreen() {
     const proteinId = metricPercentAnims.protein.addListener(({ value }) =>
       setAnimatedMetricPercents((prev) => ({ ...prev, protein: value }))
     );
+    const carbohydrateId = metricPercentAnims.carbohydrate.addListener(({ value }) =>
+      setAnimatedMetricPercents((prev) => ({ ...prev, carbohydrate: value }))
+    );
     const sodiumId = metricPercentAnims.sodium.addListener(({ value }) =>
       setAnimatedMetricPercents((prev) => ({ ...prev, sodium: value }))
     );
     return () => {
       metricPercentAnims.hydration.removeListener(hydrationId);
       metricPercentAnims.protein.removeListener(proteinId);
+      metricPercentAnims.carbohydrate.removeListener(carbohydrateId);
       metricPercentAnims.sodium.removeListener(sodiumId);
     };
   }, [metricPercentAnims]);
@@ -756,6 +820,7 @@ export default function HealthScreen() {
   React.useEffect(() => {
     const nextHydration = dayIntakeDisplay.hydration.percent;
     const nextProtein = dayIntakeDisplay.protein.percent;
+    const nextCarbohydrate = dayIntakeDisplay.carbohydrate.percent;
     const nextSodium = dayIntakeDisplay.sodium.percent;
     Animated.parallel([
       Animated.timing(metricPercentAnims.hydration, {
@@ -766,6 +831,12 @@ export default function HealthScreen() {
       }),
       Animated.timing(metricPercentAnims.protein, {
         toValue: nextProtein,
+        duration: 420,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }),
+      Animated.timing(metricPercentAnims.carbohydrate, {
+        toValue: nextCarbohydrate,
         duration: 420,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: false,
@@ -820,7 +891,7 @@ export default function HealthScreen() {
   }, [metricImpactAnims, wheelImpactAnim]);
 
   const persistManualIntakeDelta = React.useCallback(
-    async (type: 'hydration' | 'protein' | 'sodium', amount: number, quickAddKey?: string) => {
+    async (type: 'hydration' | 'protein' | 'carbohydrate' | 'sodium', amount: number, quickAddKey?: string) => {
       if (!user?.id || !Number.isFinite(amount) || amount <= 0) return;
       const ymd = formatLocalYmd(selectedDate);
       try {
@@ -832,6 +903,7 @@ export default function HealthScreen() {
           quickAddKey,
           targetHydrationMl: intakeTargetsSnapshot.hydrationMl,
           targetProteinG: intakeTargetsSnapshot.proteinG,
+          targetCarbohydrateG: intakeTargetsSnapshot.carbohydrateG,
           targetSodiumMg: intakeTargetsSnapshot.sodiumMg,
         });
         const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
@@ -847,21 +919,15 @@ export default function HealthScreen() {
     [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation]
   );
 
-  const confirmDeleteIntakeRecord = React.useCallback(
-    (recordId: string) => {
-      if (!user?.id) return;
-      Alert.alert('删除记录', '确定要删除这条摄入记录吗？删除后将无法恢复。', [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '删除',
-          style: 'destructive',
-          onPress: async () => {
-            void deleteIntakeRecordNow(recordId);
-          },
-        },
-      ]);
+  const persistQuickAddIntake = React.useCallback(
+    async (item: QuickAddCardItem) => {
+      const metrics = getQuickAddMetricTypes(item);
+      if (!metrics.length) return;
+      for (const metric of metrics) {
+        await persistManualIntakeDelta(metric, item.hydrationMl, item.key);
+      }
     },
-    [user?.id, selectedDate, weekAnchorDate]
+    [persistManualIntakeDelta]
   );
 
   const deleteIntakeRecordNow = React.useCallback(
@@ -882,6 +948,23 @@ export default function HealthScreen() {
     [user?.id, selectedDate, weekAnchorDate, playIntakeFeedbackAnimation]
   );
 
+  const confirmDeleteIntakeRecord = React.useCallback(
+    (recordId: string) => {
+      if (!user?.id) return;
+      Alert.alert('删除记录', '确定要删除这条摄入记录吗？删除后将无法恢复。', [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: async () => {
+            void deleteIntakeRecordNow(recordId);
+          },
+        },
+      ]);
+    },
+    [deleteIntakeRecordNow, user?.id]
+  );
+
   const intakeListPreview = React.useMemo(() => {
     const lines = buildIntakeListLines(selectedDayRecords, quickAddCatalog);
     const max = 8;
@@ -893,7 +976,7 @@ export default function HealthScreen() {
       weekPagerRef.current?.scrollTo({ x: weekPagerWidth, animated: false });
     }, 0);
     return () => clearTimeout(t);
-  }, [width]);
+  }, [weekPagerWidth]);
 
   React.useEffect(() => {
     metricCardAnims.forEach((anim) => anim.setValue(0));
@@ -1052,7 +1135,7 @@ export default function HealthScreen() {
   }, [statusShimmerAnim]);
 
   const weekPagerWidth = width - 48;
-  const cardWidth = (width - 48 - 16) / 3;
+  const cardWidth = (width - 48 - 24) / 4;
 
   const assistantTheme = {
     水分: {
@@ -1070,6 +1153,14 @@ export default function HealthScreen() {
       best: '75',
       avg: '68',
       community: '70',
+    },
+    碳水: {
+      accent: '#eab308',
+      unit: 'g',
+      placeholder: '260',
+      best: '280',
+      avg: '250',
+      community: '260',
     },
     钠: {
       accent: '#a855f7',
@@ -1101,6 +1192,7 @@ export default function HealthScreen() {
 
     if (assistantTab === '水分') return metrics.Water_ml;
     if (assistantTab === '蛋白质') return metrics.Protein_g;
+    if (assistantTab === '碳水') return metrics.Carbohydrate_g;
     return metrics.Sodium_mg;
   }, [assistantTab, user, selectedDayIntakeTotals?.sodium]);
 
@@ -1114,6 +1206,9 @@ export default function HealthScreen() {
     if (assistantTab === '蛋白质') {
 
       return healthRecords.reduce((acc, curr) => acc + curr.protein, 0) / healthRecords.length;
+    }
+    if (assistantTab === '碳水') {
+      return healthRecords.reduce((acc, curr) => acc + curr.carbohydrate, 0) / healthRecords.length;
     }
     if (assistantTab === '钠') {
       return healthRecords.reduce((acc, curr) => acc + curr.sodium, 0) / healthRecords.length;
@@ -1130,6 +1225,9 @@ export default function HealthScreen() {
     if (assistantTab === '蛋白质') {
       return user.weight * 1.2;
     }
+    if (assistantTab === '碳水') {
+      return user.weight * 3.5;
+    }
     if (assistantTab === '钠') {
       return 2000;
     }
@@ -1141,6 +1239,9 @@ export default function HealthScreen() {
     if (assistantTab === '蛋白质') {
 
       return ((user.weight * 1.2)+(healthRecords.reduce((acc, curr) => acc + curr.protein, 0) / healthRecords.length))/2;
+    }
+    if (assistantTab === '碳水') {
+      return ((user.weight * 3.5)+(healthRecords.reduce((acc, curr) => acc + curr.carbohydrate, 0) / healthRecords.length))/2;
     }
     if (assistantTab === '钠') {
       return (2000+(healthRecords.reduce((acc, curr) => acc + curr.sodium, 0) / healthRecords.length))/2;
@@ -1189,9 +1290,7 @@ export default function HealthScreen() {
     assistantOpen,
     assistantTab,
     manualGoal,
-    suggestNumeric.best,
-    suggestNumeric.avg,
-    suggestNumeric.community,
+    suggestNumeric,
   ]);
 
   const onWeekPagerEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -1392,6 +1491,11 @@ export default function HealthScreen() {
                 setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.sodiumMg)));
                 setAssistantOpen(true);
               }
+              if (item.key === 'carbohydrate') {
+                setAssistantTab('碳水');
+                setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.carbohydrateG)));
+                setAssistantOpen(true);
+              }
             };
 
             const cardOpacity = metricCardAnims[index].interpolate({
@@ -1540,6 +1644,37 @@ export default function HealthScreen() {
             </View>
 
             <View style={[styles.statusItem, styles.statusItemSpacing]}>
+              <View style={[styles.statusItemAccent, { backgroundColor: '#eab308' }]} />
+              <View style={styles.statusItemBody}>
+                <View style={styles.statusLineRow}>
+                  <Text style={[styles.statusItemTitle, { color: theme.text }]}>碳水摄入</Text>
+                  <Text style={[styles.statusBadge, { color: '#eab308', backgroundColor: '#eab3081A' }]}>
+                    {Math.round(animatedMetricPercents.carbohydrate)}%
+                  </Text>
+                </View>
+                <Text style={[styles.statusDesc, { color: theme.textSecondary }]}>
+                  {carbohydrateStatusDesc(dayIntakeDisplay.carbohydrate.percent)}
+                </Text>
+                <View style={styles.statusValueRow}>
+                  <Text style={[styles.statusValueMain, { color: '#eab308' }]}>
+                    {dayIntakeDisplay.carbohydrate.current.toLocaleString()}
+                  </Text>
+                  <Text style={[styles.statusValueSub, { color: theme.textSecondary }]}>
+                    G / {intakeTargetsSnapshot.carbohydrateG.toLocaleString()}
+                  </Text>
+                </View>
+                <View style={styles.statusTrack}>
+                  <View
+                    style={[
+                      styles.statusTrackFill,
+                      { width: `${Math.round(animatedMetricPercents.carbohydrate)}%`, backgroundColor: '#eab308' },
+                    ]}
+                  />
+                </View>
+              </View>
+            </View>
+
+            <View style={[styles.statusItem, styles.statusItemSpacing]}>
               <View style={[styles.statusItemAccent, { backgroundColor: '#a855f7' }]} />
               <View style={styles.statusItemBody}>
                 <View style={styles.statusLineRow}>
@@ -1621,7 +1756,7 @@ export default function HealthScreen() {
                     style={[styles.quickAddCard, { backgroundColor: theme.surface, width: cardWidth }]}
                     activeOpacity={0.82}
                     onPress={() => {
-                      void persistManualIntakeDelta(getQuickAddMetricType(item), item.hydrationMl, item.key);
+                      void persistQuickAddIntake(item);
                     }}
                   >
                     <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={30} color={theme.textSecondary} style={styles.quickAddIcon} />
@@ -1775,6 +1910,11 @@ export default function HealthScreen() {
               <Text style={[styles.legendText, { color: theme.textSecondary }]}>钠</Text>
               <Text style={[styles.legendValue, { color: theme.text }]}>{activeTrend.sodium}</Text>
             </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: '#eab308' }]} />
+              <Text style={[styles.legendText, { color: theme.textSecondary }]}>碳水</Text>
+              <Text style={[styles.legendValue, { color: theme.text }]}>{activeTrend.carbohydrate}</Text>
+            </View>
           </View>
 
           <View style={styles.chartContainer}>
@@ -1813,6 +1953,10 @@ export default function HealthScreen() {
                     const sodiumHeight = barGrowAnim.interpolate({
                       inputRange: [0, 1],
                       outputRange: [0, trendBarHeight(item.sodium)],
+                    });
+                    const carbohydrateHeight = barGrowAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, trendBarHeight(item.carbohydrate)],
                     });
                     const barOpacity = barGrowAnim.interpolate({
                       inputRange: [0, 0.2, 1],
@@ -1858,6 +2002,16 @@ export default function HealthScreen() {
                               {
                                 height: proteinHeight,
                                 backgroundColor: `rgba(245,158,11,${faded})`,
+                                opacity: barOpacity,
+                              },
+                            ]}
+                          />
+                          <Animated.View
+                            style={[
+                              styles.miniBar,
+                              {
+                                height: carbohydrateHeight,
+                                backgroundColor: `rgba(234,179,8,${faded})`,
                                 opacity: barOpacity,
                               },
                             ]}
@@ -1954,7 +2108,7 @@ export default function HealthScreen() {
             </View>
 
             <View style={[styles.assistantTabs, { backgroundColor: isDark ? 'rgba(51,65,85,0.48)' : '#f8fafc' }]}>
-              {(['水分', '蛋白质', '钠'] as const).map((tab) => {
+              {(['水分', '蛋白质', '碳水', '钠'] as const).map((tab) => {
                 const active = assistantTab === tab;
                 return (
                   <TouchableOpacity
@@ -1965,6 +2119,8 @@ export default function HealthScreen() {
                         setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.hydrationMl)));
                       if (tab === '蛋白质')
                         setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.proteinG)));
+                      if (tab === '碳水')
+                        setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.carbohydrateG)));
                       if (tab === '钠')
                         setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.sodiumMg)));
                     }}
@@ -2061,6 +2217,7 @@ export default function HealthScreen() {
                     const rounded = Math.round(n);
                     if (assistantTab === '水分') setGlobalHydrationTargetMl(rounded);
                     if (assistantTab === '蛋白质') setGlobalProteinTargetG(rounded);
+                    if (assistantTab === '碳水') setGlobalCarbohydrateTargetG(rounded);
                     if (assistantTab === '钠') setGlobalSodiumTargetMg(rounded);
                     setIntakeTargetTick((t) => t + 1);
                     setAssistantOpen(false);

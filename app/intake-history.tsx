@@ -2,7 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
   createQuickAddItemMap,
-  getQuickAddMetricType,
+  getQuickAddMetricTypes,
   loadAllQuickAddItems,
   type QuickAddCardItem,
 } from '@/lib/quick-add-cards';
@@ -16,7 +16,7 @@ import React from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-type FilterKey = 'all' | 'hydration' | 'protein' | 'sodium';
+type FilterKey = 'all' | 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
 
 type IntakeHistoryLine = {
   key: string;
@@ -74,18 +74,20 @@ function formatHistoryDateLabel(d: Date): string {
 function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCardItem[]): IntakeHistoryLine[] {
   const lines: IntakeHistoryLine[] = [];
   const quickAddByKey = createQuickAddItemMap(quickAddCatalog);
+  const includesMetric = (qa: QuickAddCardItem | undefined, metric: Exclude<FilterKey, 'all'>) =>
+    Boolean(qa && getQuickAddMetricTypes(qa).includes(metric));
   for (const row of rows) {
     const time = formatRecordTime(row.created_at);
     if (row.hydration > 0) {
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-h`,
-        title: qa && getQuickAddMetricType(qa) === 'hydration' ? qa.label : '水分',
+        title: includesMetric(qa, 'hydration') ? qa.label : '水分',
         amount: formatIntakeAmount(row.hydration, 'ml'),
         time,
         note: '备注：暂无备注',
         aiComment: 'AI评价：待分析',
-        icon: qa && getQuickAddMetricType(qa) === 'hydration' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'water-drop',
+        icon: includesMetric(qa, 'hydration') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'water-drop',
         category: 'hydration',
         iconBgLight: 'rgba(16,185,129,0.12)',
         iconBgDark: 'rgba(6,78,59,0.32)',
@@ -96,28 +98,44 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-p`,
-        title: qa && getQuickAddMetricType(qa) === 'protein' ? qa.label : '蛋白质',
+        title: includesMetric(qa, 'protein') ? qa.label : '蛋白质',
         amount: formatIntakeAmount(row.protein, 'g'),
         time,
         note: '备注：暂无备注',
         aiComment: 'AI评价：待分析',
-        icon: qa && getQuickAddMetricType(qa) === 'protein' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
+        icon: includesMetric(qa, 'protein') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
         category: 'protein',
         iconBgLight: 'rgba(245,158,11,0.14)',
         iconBgDark: 'rgba(120,53,15,0.32)',
         iconColor: '#f59e0b',
       });
     }
+    if (row.carbohydrate > 0) {
+      const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
+      lines.push({
+        key: `${row.id}-c`,
+        title: includesMetric(qa, 'carbohydrate') ? qa.label : '碳水',
+        amount: formatIntakeAmount(row.carbohydrate, 'g'),
+        time,
+        note: '备注：暂无备注',
+        aiComment: 'AI评价：待分析',
+        icon: includesMetric(qa, 'carbohydrate') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'rice-bowl',
+        category: 'carbohydrate',
+        iconBgLight: 'rgba(234,179,8,0.14)',
+        iconBgDark: 'rgba(113,63,18,0.32)',
+        iconColor: '#eab308',
+      });
+    }
     if (row.sodium > 0) {
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-s`,
-        title: qa && getQuickAddMetricType(qa) === 'sodium' ? qa.label : '钠',
+        title: includesMetric(qa, 'sodium') ? qa.label : '钠',
         amount: formatIntakeAmount(row.sodium, 'mg'),
         time,
         note: '备注：暂无备注',
         aiComment: 'AI评价：待分析',
-        icon: qa && getQuickAddMetricType(qa) === 'sodium' ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
+        icon: includesMetric(qa, 'sodium') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
         category: 'sodium',
         iconBgLight: 'rgba(168,85,247,0.14)',
         iconBgDark: 'rgba(88,28,135,0.32)',
@@ -132,6 +150,7 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'hydration', label: '水分' },
   { key: 'protein', label: '蛋白质' },
+  { key: 'carbohydrate', label: '碳水' },
   { key: 'sodium', label: '钠' },
 ];
 

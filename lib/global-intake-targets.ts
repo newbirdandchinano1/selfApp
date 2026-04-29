@@ -5,12 +5,14 @@ const STORAGE_KEY = '@global_intake_targets_v1';
 type PersistedShape = {
   hydrationMl: number;
   proteinG: number;
+  carbohydrateG: number;
   sodiumMg: number;
 };
 
 /** 无本地持久化数据时使用的默认目标（水分 ml、蛋白质 g、钠 mg）。 */
 export const DEFAULT_HYDRATION_TARGET_ML = 2500;
 export const DEFAULT_PROTEIN_TARGET_G = 80;
+export const DEFAULT_CARBOHYDRATE_TARGET_G = 260;
 export const DEFAULT_SODIUM_TARGET_MG = 2000;
 
 /**
@@ -21,12 +23,14 @@ export const DEFAULT_SODIUM_TARGET_MG = 2000;
  */
 export let globalHydrationTargetMl = DEFAULT_HYDRATION_TARGET_ML;
 export let globalProteinTargetG = DEFAULT_PROTEIN_TARGET_G;
+export let globalCarbohydrateTargetG = DEFAULT_CARBOHYDRATE_TARGET_G;
 export let globalSodiumTargetMg = DEFAULT_SODIUM_TARGET_MG;
 
 async function persistToDisk() {
   const payload: PersistedShape = {
     hydrationMl: globalHydrationTargetMl,
     proteinG: globalProteinTargetG,
+    carbohydrateG: globalCarbohydrateTargetG,
     sodiumMg: globalSodiumTargetMg,
   };
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -55,6 +59,9 @@ export async function loadPersistedIntakeTargets(): Promise<void> {
   assignIfValid(o.proteinG, (n) => {
     globalProteinTargetG = n;
   });
+  assignIfValid(o.carbohydrateG, (n) => {
+    globalCarbohydrateTargetG = n;
+  });
   assignIfValid(o.sodiumMg, (n) => {
     globalSodiumTargetMg = n;
   });
@@ -67,6 +74,11 @@ export function setGlobalHydrationTargetMl(value: number) {
 
 export function setGlobalProteinTargetG(value: number) {
   globalProteinTargetG = value;
+  void persistToDisk().catch(() => {});
+}
+
+export function setGlobalCarbohydrateTargetG(value: number) {
+  globalCarbohydrateTargetG = value;
   void persistToDisk().catch(() => {});
 }
 
