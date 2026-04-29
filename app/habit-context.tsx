@@ -1,22 +1,23 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { createHabitContext, deleteHabitContexts, getHabitContexts, updateHabitContextsSortOrder } from '@/lib/repositories/habits/habit-context';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import DraggableFlatList, { type RenderItemParams } from 'react-native-draggable-flatlist';
 
 type ContextRow = { id: string; name: string; count: number | null; isDefault?: boolean };
-
-const HABIT_CONTEXT_ORDER = ['起床', '晨间', '中午', '午间', '晚间', '睡前', '全天'];
 
 export default function HabitContextScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
+  const scheme = (colorScheme ?? 'light') as keyof typeof Colors;
+  const theme = Colors[scheme];
   const isDark = colorScheme === 'dark';
 
   const bg = isDark ? theme.background : '#ffffff';
@@ -24,21 +25,31 @@ export default function HabitContextScreen() {
   const textSub = theme.textSecondary;
   const headerBg = isDark ? 'rgba(15,23,42,0.88)' : 'rgba(255,255,255,0.92)';
 
-  const [contextData, setContextData] = React.useState<ContextRow[]>(() =>
-    HABIT_CONTEXT_ORDER.map((ctx) => ({ id: ctx, name: ctx, count: null, isDefault: ctx === '全天' }))
-  );
+  const [contextData, setContextData] = React.useState<ContextRow[]>([]);
+  const [editMode, setEditMode] = React.useState(false);
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set());
+  const [addVisible, setAddVisible] = React.useState(false);
+  const [newContextName, setNewContextName] = React.useState('');
 
   const loadContextCounts = React.useCallback(async () => {
     try {
-      const rows = await getHabits();
+      const [contexts, habits] = await Promise.all([getHabitContexts(), getHabits()]);
       const countByContext = new Map<string, number>();
-      rows.forEach((r) => {
+      habits.forEach((r) => {
         const prev = countByContext.get(r.context) ?? 0;
         countByContext.set(r.context, prev + 1);
       });
-      const next = HABIT_CONTEXT_ORDER.map((ctx) => {
-        const cnt = countByContext.get(ctx) ?? 0;
-        return { id: ctx, name: ctx, count: cnt > 0 ? cnt : null, isDefault: ctx === '全天' };
+
+      const orderedContexts = contexts.map((c) => ({ id: c.id, name: c.name }));
+      const knownNames = new Set(orderedContexts.map((c) => c.name));
+      const legacyContexts = Array.from(countByContext.keys())
+        .filter((ctx) => !knownNames.has(ctx))
+        .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+      const allContexts = [...orderedContexts, ...legacyContexts.map((name) => ({ id: name, name }))];
+
+      const next = allContexts.map((ctx) => {
+        const cnt = countByContext.get(ctx.name) ?? 0;
+        return { id: ctx.id, name: ctx.name, count: cnt > 0 ? cnt : null, isDefault: ctx.name === '全天' };
       });
       setContextData(next);
     } catch (err) {
@@ -51,6 +62,120 @@ export default function HabitContextScreen() {
     React.useCallback(() => {
       void loadContextCounts();
     }, [loadContextCounts])
+  );
+
+  const persistOrder = React.useCallback(async (rows: ContextRow[]) => {
+    try {
+      await updateHabitContextsSortOrder(rows.map((r) => r.id));
+    } catch (err) {
+      console.warn('更新情境排序失败', err);
+    }
+  }, []);
+
+  const toggleEditMode = () => {
+    setEditMode((v) => {
+      const next = !v;
+      if (!next) setSelectedIds(new Set());
+      return next;
+    });
+  };
+
+  const toggleSelected = React.useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const confirmDeleteSelected = React.useCallback(() => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+
+    Alert.alert('删除情境', `确认删除选中的 ${ids.length} 个情境吗？`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            try {
+              await deleteHabitContexts(ids);
+              setSelectedIds(new Set());
+              setEditMode(false);
+              await loadContextCounts();
+            } catch (err) {
+              console.warn('删除情境失败', err);
+            }
+          })();
+        },
+      },
+    ]);
+  }, [loadContextCounts, selectedIds]);
+
+  const openAdd = () => {
+    setNewContextName('');
+    setAddVisible(true);
+  };
+  const closeAdd = () => setAddVisible(false);
+
+  const saveNewContext = React.useCallback(() => {
+    const name = newContextName.trim();
+    if (!name) return;
+    void (async () => {
+      try {
+        await createHabitContext(name);
+        setAddVisible(false);
+        await loadContextCounts();
+      } catch (err) {
+        Alert.alert('添加失败', err instanceof Error ? err.message : '添加情境失败');
+      }
+    })();
+  }, [loadContextCounts, newContextName]);
+
+  const renderItem = React.useCallback(
+    ({ item, drag, isActive }: RenderItemParams<ContextRow>) => {
+      const isProtected = item.isDefault === true;
+      const isChecked = selectedIds.has(item.id);
+      return (
+        <Pressable
+          onPress={() => {
+            if (!editMode) return;
+            if (isProtected) return;
+            toggleSelected(item.id);
+          }}
+          onLongPress={() => {
+            if (editMode) return;
+            drag();
+          }}
+          delayLongPress={200}
+          style={({ pressed }) => [
+            styles.row,
+            { backgroundColor: card },
+            (pressed || isActive) && { opacity: 0.92 },
+          ]}>
+          <View style={styles.rowLeft}>
+            {editMode ? (
+              <MaterialIcons
+                name={isProtected ? 'lock' : isChecked ? 'check-circle' : 'radio-button-unchecked'}
+                size={20}
+                color={isProtected ? textSub : isChecked ? '#433B3E' : textSub}
+              />
+            ) : (
+              <MaterialIcons name="drag-indicator" size={20} color={textSub} />
+            )}
+            <Text style={[styles.rowText, { color: theme.text }]}>
+              {item.name}
+              {item.isDefault ? <Text style={{ color: textSub, fontWeight: '500' }}> (系统默认)</Text> : null}
+            </Text>
+          </View>
+
+          {item.count !== null ? <Text style={[styles.countText, { color: textSub }]}>{item.count}</Text> : null}
+        </Pressable>
+      );
+    },
+    [card, editMode, selectedIds, textSub, theme.text, toggleSelected]
   );
 
   return (
@@ -72,40 +197,74 @@ export default function HabitContextScreen() {
         </View>
 
         <View style={styles.headerRight}>
-          <Pressable>
-            <Text style={[styles.selectText, { color: textSub }]}>选择</Text>
+          <Pressable onPress={toggleEditMode} hitSlop={10}>
+            <Text style={[styles.selectText, { color: textSub }]}>{editMode ? '完成' : '选择'}</Text>
           </Pressable>
-          <Pressable onPress={() => {}} hitSlop={10}>
-            <MaterialIcons name="add" size={24} color={theme.text} />
-          </Pressable>
+          {editMode ? (
+            <Pressable
+              onPress={confirmDeleteSelected}
+              disabled={selectedIds.size === 0}
+              hitSlop={10}
+              style={({ pressed }) => [pressed && { opacity: 0.85 }, selectedIds.size === 0 && { opacity: 0.35 }]}>
+              <MaterialIcons name="delete" size={22} color={theme.text} />
+            </Pressable>
+          ) : (
+            <Pressable onPress={openAdd} hitSlop={10} style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
+              <MaterialIcons name="add" size={24} color={theme.text} />
+            </Pressable>
+          )}
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.list}>
-          {contextData.map((item) => (
-            <Pressable
-              key={item.id}
-              style={({ pressed }) => [
-                styles.row,
-                { backgroundColor: card },
-                pressed && { opacity: 0.92 },
-              ]}>
-              <View style={styles.rowLeft}>
-                <MaterialIcons name="drag-indicator" size={20} color={textSub} />
-                <Text style={[styles.rowText, { color: theme.text }]}>
-                  {item.name}
-                  {item.isDefault ? (
-                    <Text style={{ color: textSub, fontWeight: '500' }}> (系统默认)</Text>
-                  ) : null}
-                </Text>
-              </View>
+      <DraggableFlatList
+        data={contextData}
+        keyExtractor={(item) => item.id}
+        renderItem={renderItem}
+        contentContainerStyle={[styles.content, { paddingBottom: 18 + Math.max(insets.bottom, 8) }]}
+        showsVerticalScrollIndicator={false}
+        activationDistance={editMode ? 9999 : 0}
+        onDragEnd={({ data }) => {
+          setContextData(data);
+          void persistOrder(data);
+        }}
+      />
 
-              {item.count !== null ? <Text style={[styles.countText, { color: textSub }]}>{item.count}</Text> : null}
+      <Modal visible={addVisible} transparent animationType="fade" onRequestClose={closeAdd}>
+        <Pressable style={styles.modalBackdrop} onPress={closeAdd} />
+        <View style={[styles.modalCard, { borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(226,232,240,0.9)' }]}>
+          <Text style={[styles.modalTitle, { color: theme.text }]}>添加情境</Text>
+          <TextInput
+            value={newContextName}
+            onChangeText={setNewContextName}
+            placeholder="例如：通勤 / 运动后 / 学习"
+            placeholderTextColor={textSub}
+            autoFocus
+            style={[
+              styles.input,
+              {
+                color: theme.text,
+                borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(148,163,184,0.26)',
+                backgroundColor: isDark ? 'rgba(15,23,42,0.35)' : 'rgba(255,255,255,0.9)',
+              },
+            ]}
+          />
+          <View style={styles.modalActions}>
+            <Pressable onPress={closeAdd} style={({ pressed }) => [styles.modalBtn, pressed && { opacity: 0.85 }]}>
+              <Text style={[styles.modalBtnText, { color: textSub }]}>取消</Text>
             </Pressable>
-          ))}
+            <Pressable
+              onPress={saveNewContext}
+              disabled={!newContextName.trim()}
+              style={({ pressed }) => [
+                styles.modalBtnPrimary,
+                pressed && { opacity: 0.9 },
+                !newContextName.trim() && { opacity: 0.5 },
+              ]}>
+              <Text style={styles.modalBtnPrimaryText}>添加</Text>
+            </Pressable>
+          </View>
         </View>
-      </ScrollView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -125,8 +284,8 @@ const styles = StyleSheet.create({
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   selectText: { fontSize: 14, fontWeight: '600' },
   content: { paddingHorizontal: 18, paddingBottom: 18 },
-  list: { gap: 10 },
   row: {
+    marginBottom: 10,
     paddingHorizontal: 14,
     paddingVertical: 16,
     borderRadius: 18,
@@ -137,5 +296,41 @@ const styles = StyleSheet.create({
   rowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   rowText: { fontSize: 15, fontWeight: '800' },
   countText: { fontSize: 15, fontWeight: '700' },
+
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.35)',
+  },
+  modalCard: {
+    position: 'absolute',
+    left: 18,
+    right: 18,
+    top: '30%',
+    borderRadius: 18,
+    borderWidth: 1,
+    backgroundColor: 'rgba(255,255,255,0.98)',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+  },
+  modalTitle: { fontSize: 15, fontWeight: '800' },
+  input: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 2 },
+  modalBtn: { paddingHorizontal: 12, paddingVertical: 10 },
+  modalBtnText: { fontSize: 14, fontWeight: '700' },
+  modalBtnPrimary: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: '#433B3E',
+  },
+  modalBtnPrimaryText: { color: '#fff', fontSize: 14, fontWeight: '800' },
 });
 

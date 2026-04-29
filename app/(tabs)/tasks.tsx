@@ -17,6 +17,7 @@ import {
 } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { getHabits } from '@/lib/repositories/habits/habit';
+import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -218,8 +219,6 @@ type HabitSection = {
   items: Array<{ id: string; icon: string; name: string }>;
 };
 
-const HABIT_CONTEXT_ORDER = ['起床', '晨间', '中午', '午间', '晚间', '睡前', '全天'];
-
 function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
   if (!extraData) return null;
   try {
@@ -367,7 +366,8 @@ function getProjectScheduleLabel(project: ProjectRow, schedule: ProjectScheduleM
 export default function TasksScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
+  const scheme = (colorScheme ?? 'light') as keyof typeof Colors;
+  const theme = Colors[scheme];
   const isDark = colorScheme === 'dark';
   const TASK_INDENT = 18;
 
@@ -385,9 +385,7 @@ export default function TasksScreen() {
   const [categoryInputValue, setCategoryInputValue] = React.useState('');
   const [activeCategoryLabel, setActiveCategoryLabel] = React.useState('全部');
   const [activeCategoryId, setActiveCategoryId] = React.useState<string | null>(null);
-  const [habitSections, setHabitSections] = React.useState<HabitSection[]>(
-    HABIT_CONTEXT_ORDER.map((ctx) => ({ id: ctx, title: ctx, items: [] }))
-  );
+  const [habitSections, setHabitSections] = React.useState<HabitSection[]>([]);
   const [expandedHabitSections, setExpandedHabitSections] = React.useState<Record<string, boolean>>({});
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
@@ -459,7 +457,7 @@ export default function TasksScreen() {
 
   const loadHabits = React.useCallback(async () => {
     try {
-      const rows = await getHabits();
+      const [contexts, rows] = await Promise.all([getHabitContexts(), getHabits()]);
       const itemsByContext = new Map<string, HabitSection['items']>();
 
       for (const r of rows) {
@@ -468,7 +466,14 @@ export default function TasksScreen() {
         itemsByContext.set(r.context, arr);
       }
 
-      const nextSections: HabitSection[] = HABIT_CONTEXT_ORDER.map((ctx) => ({
+      const ordered = contexts.map((c) => c.name);
+      const known = new Set(ordered);
+      const legacy = Array.from(itemsByContext.keys())
+        .filter((ctx) => !known.has(ctx))
+        .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+      const all = [...ordered, ...legacy];
+
+      const nextSections: HabitSection[] = all.map((ctx) => ({
         id: ctx,
         title: ctx,
         items: itemsByContext.get(ctx) ?? [],
@@ -484,7 +489,7 @@ export default function TasksScreen() {
       });
     } catch (err) {
       console.warn('加载习惯失败', err);
-      setHabitSections(HABIT_CONTEXT_ORDER.map((ctx) => ({ id: ctx, title: ctx, items: [] })));
+      setHabitSections([]);
     }
   }, []);
 

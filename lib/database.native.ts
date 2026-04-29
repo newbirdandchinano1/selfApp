@@ -264,6 +264,19 @@ export async function initDatabase() {
       version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS habit_contexts (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
   `);
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
@@ -286,6 +299,19 @@ export async function initDatabase() {
       ('finance-category-snack', '零食', NULL, 1, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
       ('finance-category-drink', '饮品', NULL, 2, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
       ('finance-category-dining', '餐饮', NULL, 3, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL);
+  `);
+
+  await db.execAsync(`
+    INSERT OR IGNORE INTO habit_contexts (
+      id, name, sort_order, is_builtin, created_at, updated_at, deleted_at, sync_status, version, extra_data
+    ) VALUES
+      ('起床', '起床', 10, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
+      ('晨间', '晨间', 20, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
+      ('中午', '中午', 30, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
+      ('午间', '午间', 40, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
+      ('晚间', '晚间', 50, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
+      ('睡前', '睡前', 60, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
+      ('全天', '全天', 70, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL);
   `);
   await ensureColumn(db, 'users', 'avatar_uri', 'TEXT');
   await ensureColumn(db, 'users', 'gender', 'TEXT');

@@ -1,7 +1,9 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
+import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -9,7 +11,6 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 type CycleTab = '每周定期' | '每周N天' | '每月定期' | '每月N天';
 
-const CONTEXTS = ['起床', '晨间', '中午', '午间', '晚间', '睡前', '全天'];
 const WORK_DAYS = ['周一', '周二', '周三', '周四', '周五'];
 const WEEKEND_DAYS = ['周六', '周日'];
 const MONTH_FILTERS = ['上旬', '中旬', '下旬', '单号', '双号', '全选'];
@@ -69,8 +70,9 @@ export default function AddHabitScreen() {
   }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const themeKey = colorScheme === 'dark' ? 'dark' : 'light';
+  const theme = Colors[themeKey];
+  const isDark = themeKey === 'dark';
   const isEditMode = pickParam(params.mode) === 'edit';
   const initialName = pickParam(params.name) ?? '';
   const initialIcon = pickParam(params.icon) ?? '🥛';
@@ -80,12 +82,19 @@ export default function AddHabitScreen() {
   const [habitName, setHabitName] = React.useState(initialName);
   const [habitIcon, setHabitIcon] = React.useState(initialIcon);
   const [quantifyEnabled, setQuantifyEnabled] = React.useState(true);
-  const [contextOpen, setContextOpen] = React.useState(false);
+  const [contextOpen, setContextOpen] = React.useState(true);
   const [quantifyOpen, setQuantifyOpen] = React.useState(true);
   const [cycleOpen, setCycleOpen] = React.useState(true);
-  const [selectedContext, setSelectedContext] = React.useState(
-    initialContext && CONTEXTS.includes(initialContext) ? initialContext : '起床'
-  );
+  const [contextOptions, setContextOptions] = React.useState<string[]>([
+    '起床',
+    '晨间',
+    '中午',
+    '午间',
+    '晚间',
+    '睡前',
+    '全天',
+  ]);
+  const [selectedContext, setSelectedContext] = React.useState(initialContext ?? '起床');
   const [activeTab, setActiveTab] = React.useState<CycleTab>('每周N天');
   const [selectedDays, setSelectedDays] = React.useState<string[]>(['周一', '周二', '周三', '周四', '周五']);
   const [weeklyNDays, setWeeklyNDays] = React.useState(1);
@@ -105,6 +114,26 @@ export default function AddHabitScreen() {
   const textSub = theme.textSecondary;
   const border = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(148,163,184,0.22)';
   const yellow = '#FFD600';
+
+  const loadContexts = React.useCallback(async () => {
+    try {
+      const rows = await getHabitContexts();
+      const names = rows.map((r) => r.name);
+      const unique = Array.from(new Set(names));
+      // If current selection is a legacy context (habit row has it but table doesn't), keep it visible.
+      if (selectedContext && !unique.includes(selectedContext)) unique.push(selectedContext);
+      setContextOptions(unique.length > 0 ? unique : contextOptions);
+    } catch (err) {
+      console.warn('加载情境分类失败', err);
+      // keep fallback
+    }
+  }, [contextOptions, selectedContext]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      void loadContexts();
+    }, [loadContexts])
+  );
 
   const toggleWeekDay = React.useCallback((day: string) => {
     setSelectedDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
@@ -299,24 +328,27 @@ export default function AddHabitScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
+      <View style={[styles.headerFixed, { backgroundColor: card, borderBottomColor: border }]}>
+        <View style={styles.headerRow}>
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={12}
+            style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.8 }]}>
+            <MaterialIcons name="arrow-back" size={22} color={textSub} />
+          </Pressable>
+          <Text style={[styles.headerTitle, { color: textMain }]}>{isEditMode ? '编辑打卡' : '新建打卡'}</Text>
+          <Pressable onPress={handleSave} hitSlop={10} style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
+            <Text style={[styles.headerAction, { color: textMain, fontWeight: '700' }]}>{isEditMode ? '保存' : '创建打卡'}</Text>
+          </Pressable>
+        </View>
+      </View>
+
       <ScrollView
         contentContainerStyle={[
           styles.content,
           { paddingBottom: 120 + Math.max(insets.bottom, 12) },
         ]}
         showsVerticalScrollIndicator={false}>
-        <View style={[styles.header, { backgroundColor: card, borderColor: border }]}>
-          <Pressable onPress={() => router.back()}>
-            <Text style={[styles.headerAction, { color: textSub }]}>放弃</Text>
-          </Pressable>
-          <Text style={[styles.headerTitle, { color: textMain }]}>{isEditMode ? '编辑打卡' : '新建打卡'}</Text>
-          <Pressable onPress={handleSave}>
-            <Text style={[styles.headerAction, { color: textMain, fontWeight: '700' }]}>
-              {isEditMode ? '保存' : '创建打卡'}
-            </Text>
-          </Pressable>
-        </View>
-
         <View style={styles.main}>
           <View style={styles.nameRow}>
             <View style={[styles.emojiWrap, { backgroundColor: isDark ? 'rgba(20,184,166,0.18)' : 'rgba(20,184,166,0.12)', borderColor: border }]}>
@@ -334,16 +366,6 @@ export default function AddHabitScreen() {
             />
           </View>
 
-          <Pressable style={({ pressed }) => [styles.remindCard, { backgroundColor: softCard, borderColor: border }, pressed && { opacity: 0.85 }]}>
-            <View style={styles.remindLeft}>
-              <View style={[styles.remindPlus, { backgroundColor: yellow }]}>
-                <MaterialIcons name="add" size={14} color="#111827" />
-              </View>
-              <Text style={[styles.remindText, { color: textMain }]}>添加提醒</Text>
-            </View>
-            <MaterialIcons name="chevron-right" size={18} color={textSub} />
-          </Pressable>
-
           <View style={styles.dashedSplit}>
             <View style={[styles.dashedLine, { borderColor: border }]} />
             <Text style={[styles.splitText, { color: textSub }]}>下列为可选设置</Text>
@@ -355,7 +377,7 @@ export default function AddHabitScreen() {
             {contextOpen ? (
               <View style={[styles.sectionCard, { backgroundColor: card, borderColor: border }]}>
                 <View style={styles.contextGrid}>
-                  {CONTEXTS.map((ctx) => {
+                  {contextOptions.map((ctx) => {
                     const active = ctx === selectedContext;
                     return (
                       <Pressable
@@ -518,13 +540,9 @@ export default function AddHabitScreen() {
                               onPress={() => handleMonthlyFilter(filter)}
                               style={[
                                 styles.monthFilterBtn,
-                                active
-                                  ? filter === '全选'
-                                    ? { backgroundColor: card, borderColor: yellow, borderWidth: 1.5 }
-                                    : styles.smallCountBtnOn
-                                  : { backgroundColor: card, borderColor: border },
+                                active ? styles.smallCountBtnOn : { backgroundColor: card, borderColor: border },
                               ]}>
-                              <Text style={[styles.monthFilterText, { color: active ? (filter === '全选' ? '#b45309' : '#fff') : textSub }]}>
+                              <Text style={[styles.monthFilterText, { color: active ? '#fff' : textSub }]}>
                                 {filter}
                               </Text>
                             </Pressable>
@@ -610,15 +628,14 @@ export default function AddHabitScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { paddingHorizontal: 16, paddingTop: 12, gap: 14 },
-  header: {
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  headerFixed: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
   },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  headerIconBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   headerAction: { fontSize: 15, fontWeight: '500' },
   headerTitle: { fontSize: 17, fontWeight: '800' },
   main: { gap: 16 },
@@ -653,18 +670,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '500',
   },
-  remindCard: {
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  remindLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  remindPlus: { width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  remindText: { fontSize: 14, fontWeight: '600' },
   dashedSplit: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   dashedLine: { flex: 1, borderTopWidth: 1, borderStyle: 'dashed' },
   splitText: { fontSize: 12, fontWeight: '500' },

@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { getHabits, deleteHabit as deleteHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -22,16 +23,19 @@ type HabitGroup = {
   items: HabitItem[];
 };
 
-const HABIT_CONTEXT_ORDER = ['起床', '晨间', '中午', '午间', '晚间', '睡前', '全天'];
+type ContextTab = { id: string; name: string; count: number };
 
 export default function HabitManageScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
+  const scheme = (colorScheme ?? 'light') as keyof typeof Colors;
+  const theme = Colors[scheme];
   const isDark = colorScheme === 'dark';
 
   const [habitData, setHabitData] = React.useState<HabitGroup[]>([]);
+  const [contextTabs, setContextTabs] = React.useState<ContextTab[]>([]);
+  const [selectedContext, setSelectedContext] = React.useState<string | null>(null);
 
   const [menuVisible, setMenuVisible] = React.useState(false);
   const [menuTarget, setMenuTarget] = React.useState<{ groupCategory: string; item: HabitItem } | null>(null);
@@ -71,15 +75,33 @@ export default function HabitManageScreen() {
         byCtx.set(r.context, items);
       });
 
-      const groups: HabitGroup[] = HABIT_CONTEXT_ORDER.filter((ctx) => (byCtx.get(ctx) ?? []).length > 0).map((ctx) => ({
-        category: ctx,
-        items: byCtx.get(ctx) ?? [],
+      const contextRows = await getHabitContexts();
+      const orderedContexts = contextRows.map((r) => r.name);
+      const known = new Set(orderedContexts);
+      const legacyContexts = Array.from(byCtx.keys())
+        .filter((ctx) => !known.has(ctx))
+        .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+      const allContexts = [...orderedContexts, ...legacyContexts];
+
+      const groups: HabitGroup[] = allContexts
+        .filter((ctx) => (byCtx.get(ctx) ?? []).length > 0)
+        .map((ctx) => ({
+          category: ctx,
+          items: byCtx.get(ctx) ?? [],
+        }));
+
+      const tabs: ContextTab[] = allContexts.map((ctx) => ({
+        id: ctx,
+        name: ctx,
+        count: (byCtx.get(ctx) ?? []).length,
       }));
 
       setHabitData(groups);
+      setContextTabs(tabs);
     } catch (err) {
       console.warn('加载习惯失败', err);
       setHabitData([]);
+      setContextTabs([]);
     }
   }, [deriveToneByContext]);
 
@@ -134,6 +156,11 @@ export default function HabitManageScreen() {
     ]);
   };
 
+  const visibleGroups = React.useMemo(() => {
+    if (!selectedContext) return habitData;
+    return habitData.filter((g) => g.category === selectedContext);
+  }, [habitData, selectedContext]);
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
       <ScrollView
@@ -174,16 +201,31 @@ export default function HabitManageScreen() {
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.tabsRow}>
-              <View style={styles.activeTab}>
-                <Text style={styles.activeTabText}>全部</Text>
-              </View>
-              {habitData.map((group) => (
-                <View key={group.category} style={[styles.passiveTab, { borderColor: border }]}>
-                  <Text style={[styles.passiveTabText, { color: textSub }]}>
-                    {group.category} ({group.items.length})
-                  </Text>
-                </View>
-              ))}
+              <Pressable
+                onPress={() => setSelectedContext(null)}
+                style={({ pressed }) => [
+                  selectedContext === null ? styles.activeTab : [styles.passiveTab, { borderColor: border }],
+                  pressed && { opacity: 0.85 },
+                ]}>
+                <Text style={selectedContext === null ? styles.activeTabText : [styles.passiveTabText, { color: textSub }]}>全部</Text>
+              </Pressable>
+
+              {contextTabs.map((tab) => {
+                const isActive = selectedContext === tab.id;
+                return (
+                  <Pressable
+                    key={tab.id}
+                    onPress={() => setSelectedContext(tab.id)}
+                    style={({ pressed }) => [
+                      isActive ? styles.activeTab : [styles.passiveTab, { borderColor: border }],
+                      pressed && { opacity: 0.85 },
+                    ]}>
+                    <Text style={isActive ? styles.activeTabText : [styles.passiveTabText, { color: textSub }]}>
+                      {tab.name} ({tab.count})
+                    </Text>
+                  </Pressable>
+                );
+              })}
               <Pressable
                 onPress={() => router.push('/habit-context')}
                 style={({ pressed }) => [
@@ -199,7 +241,16 @@ export default function HabitManageScreen() {
         </View>
 
         <View style={styles.listWrap}>
-          {habitData.map((group) => (
+          {visibleGroups.length === 0 ? (
+            <View style={[styles.emptyWrap, { borderColor: border }]}>
+              <Text style={[styles.emptyTitle, { color: theme.text }]}>暂无打卡项</Text>
+              <Text style={[styles.emptySub, { color: textSub }]}>
+                {selectedContext ? `「${selectedContext}」情境下还没有打卡项` : '先去添加一个打卡项吧'}
+              </Text>
+            </View>
+          ) : null}
+
+          {visibleGroups.map((group) => (
             <View key={group.category} style={styles.groupWrap}>
               <Text style={[styles.groupTitle, { color: textSub }]}>{group.category}</Text>
               <View style={styles.groupItems}>
@@ -331,6 +382,15 @@ const styles = StyleSheet.create({
   passiveTab: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 },
   passiveTabText: { fontSize: 13, fontWeight: '600' },
   listWrap: { paddingHorizontal: 14, paddingTop: 6, gap: 16 },
+  emptyWrap: {
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: 'rgba(148,163,184,0.06)',
+  },
+  emptyTitle: { fontSize: 15, fontWeight: '800' },
+  emptySub: { marginTop: 4, fontSize: 12, fontWeight: '600' },
   groupWrap: { gap: 10 },
   groupTitle: { fontSize: 13, fontWeight: '600', paddingLeft: 4 },
   groupItems: { gap: 10 },

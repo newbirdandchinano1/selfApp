@@ -31,6 +31,7 @@ import {
   createQuickAddItemMap,
   formatQuickAddAmount,
   getDefaultQuickAddItems,
+  getQuickAddMetricAmount,
   getQuickAddMetricTypes,
   loadAllQuickAddItems,
   loadSelectedQuickAddItems,
@@ -146,8 +147,8 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
     if (tb !== ta) return tb - ta;
     return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
   });
-  const includesMetric = (qa: QuickAddCardItem | undefined, metric: 'hydration' | 'protein' | 'carbohydrate' | 'sodium') =>
-    Boolean(qa && getQuickAddMetricTypes(qa).includes(metric));
+  const getMetricQuickAdd = (qa: QuickAddCardItem | undefined, metric: 'hydration' | 'protein' | 'carbohydrate' | 'sodium') =>
+    qa && getQuickAddMetricTypes(qa).includes(metric) ? qa : undefined;
 
   for (const row of orderedRows) {
     const timeLine = formatRecordTime(row.created_at);
@@ -165,7 +166,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         amountRight: formatIntakeAmount(h, 'ml'),
         note: '备注：暂无备注',
         aiComment: 'AI评价：待分析',
-        icon: includesMetric(qa, 'hydration') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'water-drop',
+        icon: getMetricQuickAdd(qa, 'hydration')?.icon as keyof typeof MaterialIcons.glyphMap || 'water-drop',
         iconBgLight: 'rgba(16,185,129,0.12)',
         iconBgDark: 'rgba(6,78,59,0.32)',
         iconColor: '#10b981',
@@ -173,15 +174,16 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
     }
     if (p > 0) {
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
+      const metricQa = getMetricQuickAdd(qa, 'protein');
       lines.push({
         key: `${row.id}-p`,
         recordId: row.id,
-        title: includesMetric(qa, 'protein') ? qa.label : '蛋白质',
+        title: metricQa ? metricQa.label : '蛋白质',
         timeLine,
         amountRight: formatIntakeAmount(p, 'g'),
         note: '备注：暂无备注',
         aiComment: 'AI评价：待分析',
-        icon: includesMetric(qa, 'protein') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
+        icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
         iconBgLight: 'rgba(245,158,11,0.14)',
         iconBgDark: 'rgba(120,53,15,0.32)',
         iconColor: '#f59e0b',
@@ -189,15 +191,16 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
     }
     if (s > 0) {
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
+      const metricQa = getMetricQuickAdd(qa, 'sodium');
       lines.push({
         key: `${row.id}-s`,
         recordId: row.id,
-        title: includesMetric(qa, 'sodium') ? qa.label : '钠',
+        title: metricQa ? metricQa.label : '钠',
         timeLine,
         amountRight: formatIntakeAmount(s, 'mg'),
         note: '备注：暂无备注',
         aiComment: 'AI评价：待分析',
-        icon: includesMetric(qa, 'sodium') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
+        icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
         iconBgLight: 'rgba(168,85,247,0.14)',
         iconBgDark: 'rgba(88,28,135,0.32)',
         iconColor: '#a855f7',
@@ -205,15 +208,16 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
     }
     if (c > 0) {
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
+      const metricQa = getMetricQuickAdd(qa, 'carbohydrate');
       lines.push({
         key: `${row.id}-c`,
         recordId: row.id,
-        title: includesMetric(qa, 'carbohydrate') ? qa.label : '碳水',
+        title: metricQa ? metricQa.label : '碳水',
         timeLine,
         amountRight: formatIntakeAmount(c, 'g'),
         note: '备注：暂无备注',
         aiComment: 'AI评价：待分析',
-        icon: includesMetric(qa, 'carbohydrate') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'rice-bowl',
+        icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'rice-bowl',
         iconBgLight: 'rgba(234,179,8,0.14)',
         iconBgDark: 'rgba(113,63,18,0.32)',
         iconColor: '#eab308',
@@ -528,7 +532,7 @@ export default function HealthScreen() {
   const today = React.useMemo(() => normalizeDate(new Date()), []);
   const [selectedDate, setSelectedDate] = React.useState(() => normalizeDate(new Date()));
   const [weekAnchorDate, setWeekAnchorDate] = React.useState(() => normalizeDate(new Date()));
-  const [quickAddItems, setQuickAddItems] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems());
+  const [quickAddItems, setQuickAddItems] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems().slice(0, 4));
   const [quickAddCatalog, setQuickAddCatalog] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems());
 
   const weekPagerRef = React.useRef<ScrollView>(null);
@@ -545,7 +549,7 @@ export default function HealthScreen() {
   const metricCardAnims = React.useRef(nutrientMetricMeta.map(() => new Animated.Value(0))).current;
   const metricImpactAnims = React.useRef(nutrientMetricMeta.map(() => new Animated.Value(0))).current;
   const wheelImpactAnim = React.useRef(new Animated.Value(0)).current;
-  const quickAddCardAnims = React.useRef([new Animated.Value(0), new Animated.Value(0), new Animated.Value(0)]).current;
+  const quickAddCardAnims = React.useRef([new Animated.Value(0), new Animated.Value(0), new Animated.Value(0), new Animated.Value(0)]).current;
   const sectionEntranceAnims = React.useRef([
     new Animated.Value(0),
     new Animated.Value(0),
@@ -681,12 +685,12 @@ export default function HealthScreen() {
         try {
           const [selectedItems, catalog] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
           if (!cancelled) {
-            setQuickAddItems(selectedItems);
+            setQuickAddItems(selectedItems.slice(0, 4));
             setQuickAddCatalog(catalog);
           }
         } catch {
           if (!cancelled) {
-            setQuickAddItems(getDefaultQuickAddItems());
+            setQuickAddItems(getDefaultQuickAddItems().slice(0, 4));
             setQuickAddCatalog(getDefaultQuickAddItems());
           }
         }
@@ -924,7 +928,7 @@ export default function HealthScreen() {
       const metrics = getQuickAddMetricTypes(item);
       if (!metrics.length) return;
       for (const metric of metrics) {
-        await persistManualIntakeDelta(metric, item.hydrationMl, item.key);
+        await persistManualIntakeDelta(metric, getQuickAddMetricAmount(item, metric), item.key);
       }
     },
     [persistManualIntakeDelta]
@@ -1731,15 +1735,16 @@ export default function HealthScreen() {
           <View
             style={[
               styles.quickAddRow,
-              quickAddItems.length < 3 ? styles.quickAddRowCentered : null,
+              quickAddItems.length < 4 ? styles.quickAddRowCentered : null,
             ]}
           >
             {quickAddItems.map((item, index) => {
-              const itemOpacity = quickAddCardAnims[index].interpolate({
+              const cardAnim = quickAddCardAnims[index] ?? quickAddCardAnims[quickAddCardAnims.length - 1];
+              const itemOpacity = cardAnim.interpolate({
                 inputRange: [0, 1],
                 outputRange: [0, 1],
               });
-              const itemTranslateY = quickAddCardAnims[index].interpolate({
+              const itemTranslateY = cardAnim.interpolate({
                 inputRange: [0, 1],
                 outputRange: [18, 0],
               });

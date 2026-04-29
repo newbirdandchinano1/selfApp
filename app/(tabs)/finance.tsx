@@ -320,13 +320,14 @@ export default function FinanceScreen() {
     });
     return Array.from(keys);
   }, [getDayKey, sortedTransactions, today]);
-  const hasMoreHistoryDays = visibleDayCount < sortedDayKeys.length;
+  const historyDayKeys = React.useMemo(() => sortedDayKeys.filter((k) => k !== todayDayKey), [sortedDayKeys, todayDayKey]);
+  const hasMoreHistoryDays = visibleDayCount < historyDayKeys.length;
   const visibleDayKeySet = React.useMemo(() => {
-    if (sortedDayKeys.length === 0) {
+    if (historyDayKeys.length === 0) {
       return new Set<string>();
     }
-    return new Set(sortedDayKeys.slice(0, visibleDayCount));
-  }, [sortedDayKeys, visibleDayCount]);
+    return new Set(historyDayKeys.slice(0, visibleDayCount));
+  }, [historyDayKeys, visibleDayCount]);
 
   React.useEffect(() => {
     setVisibleDayCount(1);
@@ -338,9 +339,9 @@ export default function FinanceScreen() {
       return;
     }
     setIsLoadingMoreDays(true);
-    setVisibleDayCount((prev) => Math.min(prev + 1, sortedDayKeys.length));
+    setVisibleDayCount((prev) => Math.min(prev + 1, historyDayKeys.length));
     setIsLoadingMoreDays(false);
-  }, [hasMoreHistoryDays, isLoadingMoreDays, sortedDayKeys.length]);
+  }, [hasMoreHistoryDays, historyDayKeys.length, isLoadingMoreDays]);
 
   const handleMainScroll = React.useCallback(
     (event: { nativeEvent: { contentOffset: { y: number }; layoutMeasurement: { height: number }; contentSize: { height: number } } }) => {
@@ -356,6 +357,124 @@ export default function FinanceScreen() {
     [hasMoreHistoryDays, isLoadingMoreDays, loadMoreHistoryDays]
   );
 
+  const todayDisplayTxns = React.useMemo<Txn[]>(() => {
+    return todayTxns
+      .slice()
+      .sort((a, b) => new Date(b.happened_at).getTime() - new Date(a.happened_at).getTime())
+      .map((txn) => {
+        const happenedAt = new Date(txn.happened_at);
+        const hour = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getHours()).padStart(2, '0');
+        const minute = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getMinutes()).padStart(2, '0');
+        const accountLabel = accountNameMap.get(txn.account_id) ?? '未知账户';
+
+        const displayAmount = getTxnDisplayAmount(txn);
+        const isIncome = displayAmount > 0;
+        const isExpense = displayAmount < 0;
+        const typeLabel = txn.transaction_type === 'transfer' ? '转账' : isIncome ? '收入' : '支出';
+        const icon: keyof typeof MaterialIcons.glyphMap = isIncome ? 'savings' : isExpense ? 'shopping-bag' : 'sync-alt';
+        const iconColor = isIncome ? secondary : isExpense ? tertiary : subtle;
+        const amountColor = isIncome ? secondary : isExpense ? '#dc2626' : text;
+        const amountPrefix = isIncome ? '+' : isExpense ? '-' : '';
+
+        return {
+          id: txn.id,
+          dayKey: todayDayKey,
+          icon,
+          iconColor,
+          title: txn.name?.trim() || '交易',
+          meta: `今天 ${hour}:${minute} · ${typeLabel} · ${accountLabel}`,
+          amount: `${amountPrefix}${formatCurrencyWithDecimals(Math.abs(displayAmount))}`,
+          amountColor,
+          insight: txn.ai_comment?.trim() ? `AI 洞察：${txn.ai_comment.trim()}` : undefined,
+        };
+      });
+  }, [accountNameMap, formatCurrencyWithDecimals, getTxnDisplayAmount, secondary, subtle, tertiary, text, todayDayKey, todayTxns]);
+
+  const historySections = React.useMemo(() => {
+    const now = new Date();
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayDayKey = getDayKey(yesterday);
+    const weekdayCnLocal = weekdayCn;
+
+    const sectionMap = new Map<
+      string,
+      {
+        dayKey: string;
+        date: Date;
+        label: string;
+        shortLabel: string;
+        income: number;
+        expense: number;
+        items: Txn[];
+      }
+    >();
+
+    const upsert = (dayKey: string, date: Date) => {
+      const existing = sectionMap.get(dayKey);
+      if (existing) return existing;
+      const isYesterday = dayKey === yesterdayDayKey;
+      const label = isYesterday ? '昨天' : `${date.getMonth() + 1}月${date.getDate()}日 ${weekdayCnLocal[date.getDay()]}`;
+      const shortLabel = isYesterday ? '昨天' : `${date.getMonth() + 1}/${date.getDate()}`;
+      const created = { dayKey, date, label, shortLabel, income: 0, expense: 0, items: [] as Txn[] };
+      sectionMap.set(dayKey, created);
+      return created;
+    };
+
+    sortedTransactions.forEach((txn) => {
+      const happenedAt = new Date(txn.happened_at);
+      if (Number.isNaN(happenedAt.getTime())) return;
+      const dayKey = getDayKey(happenedAt);
+      if (dayKey === todayDayKey) return;
+      if (!visibleDayKeySet.has(dayKey)) return;
+
+      const section = upsert(dayKey, happenedAt);
+      const displayAmount = getTxnDisplayAmount(txn);
+      if (displayAmount > 0) section.income += Math.abs(displayAmount);
+      if (displayAmount < 0) section.expense += Math.abs(displayAmount);
+
+      const hour = String(happenedAt.getHours()).padStart(2, '0');
+      const minute = String(happenedAt.getMinutes()).padStart(2, '0');
+      const accountLabel = accountNameMap.get(txn.account_id) ?? '未知账户';
+
+      const isIncome = displayAmount > 0;
+      const isExpense = displayAmount < 0;
+      const typeLabel = txn.transaction_type === 'transfer' ? '转账' : isIncome ? '收入' : '支出';
+      const icon: keyof typeof MaterialIcons.glyphMap = isIncome ? 'savings' : isExpense ? 'shopping-bag' : 'sync-alt';
+      const iconColor = isIncome ? secondary : isExpense ? tertiary : subtle;
+      const amountColor = isIncome ? secondary : isExpense ? '#dc2626' : text;
+      const amountPrefix = isIncome ? '+' : isExpense ? '-' : '';
+
+      section.items.push({
+        id: txn.id,
+        dayKey,
+        icon,
+        iconColor,
+        title: txn.name?.trim() || '交易',
+        meta: `${section.label} ${hour}:${minute} · ${typeLabel} · ${accountLabel}`,
+        amount: `${amountPrefix}${formatCurrencyWithDecimals(Math.abs(displayAmount))}`,
+        amountColor,
+        insight: txn.ai_comment?.trim() ? `AI 洞察：${txn.ai_comment.trim()}` : undefined,
+      });
+    });
+
+    // 保持分组顺序：按日期从近到远（和 sortedTransactions 一致）
+    return Array.from(sectionMap.values()).sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [
+    accountNameMap,
+    formatCurrencyWithDecimals,
+    getDayKey,
+    getTxnDisplayAmount,
+    secondary,
+    sortedTransactions,
+    subtle,
+    tertiary,
+    text,
+    todayDayKey,
+    visibleDayKeySet,
+    weekdayCn,
+  ]);
+
   const displayTxns = React.useMemo<Txn[]>(() => {
     const now = new Date();
     const currentYmd = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
@@ -367,6 +486,7 @@ export default function FinanceScreen() {
       .filter((txn) => {
         const happenedAt = new Date(txn.happened_at);
         if (Number.isNaN(happenedAt.getTime())) return false;
+        if (getDayKey(happenedAt) === todayDayKey) return false;
         return visibleDayKeySet.has(getDayKey(happenedAt));
       })
       .map((txn) => {
@@ -398,7 +518,7 @@ export default function FinanceScreen() {
         insight: txn.ai_comment?.trim() ? `AI 洞察：${txn.ai_comment.trim()}` : undefined,
       };
     });
-  }, [accountNameMap, formatCurrencyWithDecimals, getDayKey, getTxnDisplayAmount, secondary, sortedTransactions, subtle, tertiary, text, visibleDayKeySet]);
+  }, [accountNameMap, formatCurrencyWithDecimals, getDayKey, getTxnDisplayAmount, secondary, sortedTransactions, subtle, tertiary, text, todayDayKey, visibleDayKeySet]);
 
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
   const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
@@ -1044,7 +1164,7 @@ export default function FinanceScreen() {
           <View style={[styles.sectionDivider, { backgroundColor: outlineVariant }]} />
           <View style={styles.timelineWrap}>
             <View style={[styles.timelineLine, { backgroundColor: outlineVariant }]} />
-            {displayTxns.map((t, idx) => {
+            {todayDisplayTxns.map((t, idx) => {
               const progress = revealAnim.interpolate({
                 inputRange: [0, 0.4, 1],
                 outputRange: [0, 0, 1],
@@ -1060,30 +1180,73 @@ export default function FinanceScreen() {
                 outputRange: [16 + idx * 5, 0],
               });
 
-              const shouldShowDayDivider = idx > 0 && displayTxns[idx - 1]?.dayKey !== t.dayKey;
-
               return (
-                <React.Fragment key={t.id}>
-                  {shouldShowDayDivider ? <View style={[styles.dayDivider, { backgroundColor: outlineVariant }]} /> : null}
-                  <TxnItem
-                    themeText={text}
-                    themeSubtle={subtle}
-                    outlineVariant={outlineVariant}
-                    item={t}
-                    style={{ opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] }}
-                  />
-                </React.Fragment>
+                <TxnItem
+                  key={t.id}
+                  themeText={text}
+                  themeSubtle={subtle}
+                  outlineVariant={outlineVariant}
+                  item={t}
+                  style={{ opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] }}
+                />
               );
             })}
-            {displayTxns.length === 0 ? (
+            {todayDisplayTxns.length === 0 ? (
               <View style={[styles.emptyStateCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
                 <View style={[styles.emptyStateIconWrap, { backgroundColor: outlineVariant }]}>
                   <MaterialIcons name="event-note" size={18} color={subtle} />
                 </View>
-                <Text style={[styles.emptyStateTitle, { color: text }]}>今天还没有收支记录</Text>
+                <Text style={[styles.emptyStateTitle, { color: text }]}>今天暂无记录</Text>
                 <Text style={[styles.emptyStateSubTitle, { color: subtle }]}>点击底部输入框，开始记第一笔</Text>
               </View>
             ) : null}
+            {historySections.length > 0 ? <View style={[styles.dayDivider, { backgroundColor: outlineVariant }]} /> : null}
+            {historySections.map((section) => (
+              <React.Fragment key={section.dayKey}>
+                <View style={styles.historyDayHeader}>
+                  <View style={[styles.historyDayBadgeWrap, { backgroundColor: outlineVariant }]}>
+                    <Text style={[styles.historyDayBadgeText, { color: subtle }]} numberOfLines={1}>
+                      {section.shortLabel}
+                    </Text>
+                  </View>
+                  <View style={styles.historyDayHeaderRight}>
+                    <View style={styles.historyDayLegend}>
+                      <Text style={[styles.historyDayLegendText, { color: '#dc2626' }]}>支出 {formatCurrencyWithDecimals(section.expense)}</Text>
+                      <Text style={[styles.historyDayLegendDivider, { color: subtle }]}>·</Text>
+                      <Text style={[styles.historyDayLegendText, { color: secondary }]}>收入 {formatCurrencyWithDecimals(section.income)}</Text>
+                    </View>
+                  </View>
+                </View>
+                {section.items.map((t, idx) => {
+                  const progress = revealAnim.interpolate({
+                    inputRange: [0, 0.4, 1],
+                    outputRange: [0, 0, 1],
+                  });
+
+                  const itemOpacity = progress.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0, 1],
+                  });
+
+                  const itemTranslateY = progress.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [12 + idx * 4, 0],
+                  });
+
+                  return (
+                    <TxnItem
+                      key={t.id}
+                      themeText={text}
+                      themeSubtle={subtle}
+                      outlineVariant={outlineVariant}
+                      item={t}
+                      style={{ opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] }}
+                    />
+                  );
+                })}
+                <View style={[styles.dayDivider, { backgroundColor: outlineVariant }]} />
+              </React.Fragment>
+            ))}
             {displayTxns.length > 0 && isLoadingMoreDays ? (
               <Text style={[styles.loadMoreText, { color: subtle }]}>加载中...</Text>
             ) : null}
@@ -1746,6 +1909,47 @@ const styles = StyleSheet.create({
     marginTop: 2,
     marginBottom: 2,
     opacity: 0.72,
+  },
+  historyDayHeader: {
+    marginTop: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  historyDayBadgeWrap: {
+    width: 40,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  historyDayBadgeText: {
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.2,
+  },
+  historyDayHeaderRight: {
+    flex: 1,
+    paddingTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+  },
+  historyDayLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  historyDayLegendText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
+  historyDayLegendDivider: {
+    fontSize: 11,
+    fontWeight: '700',
+    opacity: 0.7,
   },
   sectionLink: {
     flexDirection: 'row',

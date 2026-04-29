@@ -28,7 +28,8 @@ export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
+  const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
+  const theme = Colors[scheme];
   const isDark = colorScheme === 'dark';
   const [user, setUser] = useState<UserRow | null>(null);
 
@@ -40,6 +41,7 @@ export default function ProfileScreen() {
   const primary = isDark ? '#60a5fa' : '#0058be';
   const secondary = isDark ? '#34d399' : '#006c49';
   const tertiary = isDark ? '#fbbf24' : '#825100';
+  const wishAccent = isDark ? '#f472b6' : '#b42375';
 
   const avatarUrl = user?.avatar_uri ? { uri: user.avatar_uri } : require('../../assets/profile/avatar.png');
   const visionUrl = require('../../assets/profile/vision.png');
@@ -424,6 +426,26 @@ export default function ProfileScreen() {
           </View>
 
           <View style={styles.gridWrap}>
+            <Pressable
+              onPress={() => router.push('/wish-list' as any)}
+              style={[styles.wishEntryCard, { backgroundColor: surface, borderColor: `${wishAccent}24` }]}
+            >
+              <View style={[styles.wishEntryTopLine, { backgroundColor: `${wishAccent}66` }]} />
+              <View style={styles.wishEntryBody}>
+                <View style={[styles.wishEntryIcon, { backgroundColor: wishAccent }]}>
+                  <MaterialIcons name="favorite-border" size={24} color="#fff" />
+                </View>
+                <View style={styles.wishEntryTextWrap}>
+                  <Text style={[styles.wishEntryKicker, { color: wishAccent }]}>MONEY PLAN</Text>
+                  <Text style={[styles.wishEntryTitle, { color: text }]}>欲望清单</Text>
+                  <Text style={[styles.wishEntryDesc, { color: outline }]}>
+                    记录想买的东西，汇总预算与 AI 评审建议
+                  </Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={26} color={wishAccent} />
+              </View>
+            </Pressable>
+
             <View style={[styles.bigCard, { shadowColor: isDark ? '#000' : '#6c63ff' }]}>
               <Image source={progressBgUrl} style={styles.bgImage} contentFit="cover" />
               <View style={[styles.tintLayer, { backgroundColor: `${primary}66` }]} />
@@ -706,6 +728,46 @@ const styles = StyleSheet.create({
   },
   gridWrap: {
     gap: 14,
+  },
+  wishEntryCard: {
+    borderWidth: 1,
+    borderRadius: 24,
+    overflow: 'hidden',
+  },
+  wishEntryTopLine: {
+    height: 3,
+    width: '100%',
+  },
+  wishEntryBody: {
+    padding: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  wishEntryIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wishEntryTextWrap: {
+    flex: 1,
+    gap: 3,
+  },
+  wishEntryKicker: {
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 2,
+  },
+  wishEntryTitle: {
+    fontSize: 26,
+    fontWeight: '900',
+    letterSpacing: -0.5,
+  },
+  wishEntryDesc: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   bigCard: {
     borderRadius: 22,

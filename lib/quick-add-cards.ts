@@ -2,10 +2,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const SELECTED_STORAGE_KEY = '@quick_add_cards_v1';
 const CUSTOM_ITEMS_STORAGE_KEY = '@quick_add_custom_items_v1';
-const MAX_HOME_ITEMS = 3;
+const MAX_HOME_ITEMS = 4;
 
 export type QuickAddVolumeUnit = 'ml' | 'g' | 'mg';
 export type QuickAddMetricType = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
+
+export type QuickAddMetricAmounts = Partial<Record<QuickAddMetricType, number>>;
 
 export type QuickAddCardItem = {
   key: string;
@@ -15,6 +17,7 @@ export type QuickAddCardItem = {
   hydrationMl: number;
   metricType?: QuickAddMetricType;
   metricTypes?: QuickAddMetricType[];
+  metricAmounts?: QuickAddMetricAmounts;
   icon: string;
 };
 
@@ -64,6 +67,12 @@ function keysToItems(keys: string[], itemMap: Map<string, QuickAddCardItem>): Qu
     .filter((item): item is QuickAddCardItem => Boolean(item));
 }
 
+function sanitizeMetricAmount(value: unknown): number | undefined {
+  if (typeof value !== 'number') return undefined;
+  const amount = Math.round(value);
+  return Number.isFinite(amount) && amount > 0 ? amount : undefined;
+}
+
 function sanitizeCustomItem(raw: unknown): QuickAddCardItem | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
@@ -87,6 +96,17 @@ function sanitizeCustomItem(raw: unknown): QuickAddCardItem | null {
           v === 'hydration' || v === 'protein' || v === 'carbohydrate' || v === 'sodium'
       )
     : [];
+  const metricAmountsRaw = o.metricAmounts;
+  const metricAmounts: QuickAddMetricAmounts = {};
+  if (metricAmountsRaw && typeof metricAmountsRaw === 'object') {
+    const amountRecord = metricAmountsRaw as Record<string, unknown>;
+    for (const metric of ['hydration', 'protein', 'carbohydrate', 'sodium'] as const) {
+      const amount = sanitizeMetricAmount(amountRecord[metric]);
+      if (amount !== undefined) metricAmounts[metric] = amount;
+    }
+  }
+  const normalizedMetricTypes = Array.from(new Set(metricTypes));
+  const finalMetricTypes = normalizedMetricTypes.length > 0 ? normalizedMetricTypes : metricType ? [metricType] : [];
   if (!key || !label || !icon || !Number.isFinite(hydrationMl) || hydrationMl <= 0) return null;
   if (!Number.isFinite(displayAmountRaw) || displayAmountRaw <= 0) return null;
   return {
@@ -97,7 +117,8 @@ function sanitizeCustomItem(raw: unknown): QuickAddCardItem | null {
     displayAmount: displayAmountRaw,
     displayUnit,
     metricType,
-    metricTypes: metricTypes.length > 0 ? Array.from(new Set(metricTypes)) : undefined,
+    metricTypes: finalMetricTypes.length > 0 ? finalMetricTypes : undefined,
+    metricAmounts: Object.keys(metricAmounts).length > 0 ? metricAmounts : undefined,
   };
 }
 
@@ -162,6 +183,7 @@ export async function addCustomQuickAddItem(input: {
   hydrationMl: number;
   metricType?: QuickAddMetricType;
   metricTypes?: QuickAddMetricType[];
+  metricAmounts?: QuickAddMetricAmounts;
   icon: string;
 }): Promise<QuickAddCardItem> {
   const label = input.label.trim();
@@ -175,6 +197,13 @@ export async function addCustomQuickAddItem(input: {
           v === 'hydration' || v === 'protein' || v === 'carbohydrate' || v === 'sodium'
       )
     : [];
+  const metricAmounts: QuickAddMetricAmounts = {};
+  if (input.metricAmounts) {
+    for (const metric of metricTypes) {
+      const amount = sanitizeMetricAmount(input.metricAmounts[metric]);
+      if (amount !== undefined) metricAmounts[metric] = amount;
+    }
+  }
   const icon = input.icon;
   if (
     !label ||
@@ -189,7 +218,8 @@ export async function addCustomQuickAddItem(input: {
       metricType !== 'carbohydrate' &&
       metricType !== 'sodium') ||
     !icon ||
-    metricTypes.length === 0
+    metricTypes.length === 0 ||
+    metricTypes.some((metric) => metricAmounts[metric] === undefined)
   ) {
     throw new Error('invalid_item');
   }
@@ -202,6 +232,7 @@ export async function addCustomQuickAddItem(input: {
     hydrationMl,
     metricType: metricType ?? metricTypes[0],
     metricTypes,
+    metricAmounts,
     icon,
   };
   const customItems = await loadCustomQuickAddItems();
@@ -221,6 +252,11 @@ export function getQuickAddMetricTypes(
 ): QuickAddMetricType[] {
   if (item.metricTypes && item.metricTypes.length > 0) return item.metricTypes;
   return [getQuickAddMetricType(item)];
+}
+
+export function getQuickAddMetricAmount(item: QuickAddCardItem, metric: QuickAddMetricType): number {
+  const amount = item.metricAmounts?.[metric];
+  return typeof amount === 'number' && Number.isFinite(amount) && amount > 0 ? amount : item.hydrationMl;
 }
 
 export function isBuiltInQuickAddItem(key: string): boolean {

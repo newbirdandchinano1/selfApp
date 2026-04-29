@@ -2,8 +2,9 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
   deleteCustomQuickAddItem,
-  formatQuickAddAmount,
   getDefaultQuickAddItems,
+  getQuickAddMetricAmount,
+  getQuickAddMetricTypes,
   isBuiltInQuickAddItem,
   loadAllQuickAddItems,
   loadSelectedQuickAddItems,
@@ -18,14 +19,29 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 type QuickAddItem = QuickAddCardItem & { icon: keyof typeof MaterialIcons.glyphMap };
 
-const MAX_HOME_ITEMS = 3;
+const MAX_HOME_ITEMS = 4;
+
+const metricMetaMap = {
+  hydration: { label: '水分', unit: 'ml' },
+  protein: { label: '蛋白质', unit: 'g' },
+  carbohydrate: { label: '碳水', unit: 'g' },
+  sodium: { label: '钠', unit: 'mg' },
+} satisfies Record<NonNullable<QuickAddCardItem['metricTypes']>[number], { label: string; unit: string }>;
+
+function getMetricLabels(item: QuickAddCardItem): string[] {
+  return getQuickAddMetricTypes(item).map((metric) => {
+    const meta = metricMetaMap[metric];
+    return `${meta.label} ${Math.round(getQuickAddMetricAmount(item, metric))}${meta.unit}`;
+  });
+}
 
 export default function QuickAddEditScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const themeKey = colorScheme === 'dark' ? 'dark' : 'light';
+  const theme = Colors[themeKey];
+  const isDark = themeKey === 'dark';
 
   const surfaceHigh = isDark ? 'rgba(51,65,85,0.9)' : '#e2e7ff';
   const surfaceLowest = isDark ? 'rgba(15,23,42,0.72)' : '#ffffff';
@@ -135,7 +151,7 @@ export default function QuickAddEditScreen() {
     setHomeItems((prev) => {
       if (prev.some((v) => v.key === item.key)) return prev;
       if (prev.length >= MAX_HOME_ITEMS) {
-        Alert.alert('最多3个', '首页快捷卡片最多展示 3 个，请先移除一个再添加。');
+        Alert.alert('最多4个', '首页快捷卡片最多展示 4 个，请先移除一个再添加。');
         return prev;
       }
       return [...prev, item];
@@ -169,7 +185,7 @@ export default function QuickAddEditScreen() {
 
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 28 + Math.max(insets.bottom, 12) }]} showsVerticalScrollIndicator={false}>
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: theme.text }]}>首页展示 (最多3个)</Text>
+          <Text style={[styles.sectionTitle, { color: theme.text }]}>首页展示 (最多4个)</Text>
           <View style={styles.cardList}>
             {homeItems.map((item) => (
               <Pressable
@@ -183,7 +199,13 @@ export default function QuickAddEditScreen() {
                 </View>
                 <View style={styles.cardBody}>
                   <Text style={[styles.cardTitle, { color: theme.text }]}>{item.label}</Text>
-                  <Text style={[styles.cardSub, { color: theme.textSecondary }]}>{formatQuickAddAmount(item)}</Text>
+                  <View style={styles.metricTagWrap}>
+                    {getMetricLabels(item).map((label) => (
+                      <View key={label} style={[styles.metricTag, { backgroundColor: `${theme.primary}14` }]}>
+                        <Text style={[styles.metricTagText, { color: theme.primary }]}>{label}</Text>
+                      </View>
+                    ))}
+                  </View>
                 </View>
                 <Pressable onPress={() => onRemove(item.key)} style={({ pressed }) => [styles.removeBtn, pressed && { opacity: 0.8 }]}>
                   <MaterialIcons name="remove" size={18} color="#ba1a1a" />
@@ -216,7 +238,13 @@ export default function QuickAddEditScreen() {
                 </View>
                 <View style={styles.cardBody}>
                   <Text style={[styles.cardTitle, { color: theme.text }]}>{item.label}</Text>
-                  <Text style={[styles.cardSub, { color: theme.textSecondary }]}>{formatQuickAddAmount(item)}</Text>
+                  <View style={styles.metricTagWrap}>
+                    {getMetricLabels(item).map((label) => (
+                      <View key={label} style={[styles.metricTag, { backgroundColor: `${theme.primary}14` }]}>
+                        <Text style={[styles.metricTagText, { color: theme.primary }]}>{label}</Text>
+                      </View>
+                    ))}
+                  </View>
                 </View>
                 <Pressable onPress={() => onAdd(item)} style={({ pressed }) => [styles.addBtn, { backgroundColor: `${theme.primary}14` }, pressed && { opacity: 0.8 }]}>
                   <MaterialIcons name="add" size={22} color={theme.primary} />
@@ -285,8 +313,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   cardBody: { flex: 1 },
-  cardTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
-  cardSub: { fontSize: 13, fontWeight: '600' },
+  cardTitle: { fontSize: 16, fontWeight: '800' },
+  metricTagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  metricTag: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
+  metricTagText: { fontSize: 11, fontWeight: '800' },
   removeBtn: {
     width: 32,
     height: 32,

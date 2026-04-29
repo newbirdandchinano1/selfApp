@@ -22,14 +22,27 @@ const iconOptions: { key: string; icon: React.ComponentProps<typeof MaterialIcon
   { key: 'fitness', icon: 'fitness-center' },
 ];
 
+const metricOptions: { key: QuickAddMetricType; label: string; unit: QuickAddVolumeUnit; placeholder: string }[] = [
+  { key: 'hydration', label: '水分', unit: 'ml', placeholder: '250' },
+  { key: 'protein', label: '蛋白质', unit: 'g', placeholder: '20' },
+  { key: 'carbohydrate', label: '碳水', unit: 'g', placeholder: '30' },
+  { key: 'sodium', label: '钠', unit: 'mg', placeholder: '100' },
+];
+
 export default function AddItemScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const themeKey = colorScheme === 'dark' ? 'dark' : 'light';
+  const theme = Colors[themeKey];
+  const isDark = themeKey === 'dark';
   const [name, setName] = React.useState('');
-  const [volume, setVolume] = React.useState('250');
+  const [metricAmounts, setMetricAmounts] = React.useState<Record<QuickAddMetricType, string>>({
+    hydration: '250',
+    protein: '',
+    carbohydrate: '',
+    sodium: '',
+  });
   const [selectedIconKey, setSelectedIconKey] = React.useState(iconOptions[0].key);
   const [metricTypes, setMetricTypes] = React.useState<QuickAddMetricType[]>(['hydration']);
   const [saving, setSaving] = React.useState(false);
@@ -38,39 +51,49 @@ export default function AddItemScreen() {
     [selectedIconKey]
   );
 
+  const selectedMetricAmounts = React.useMemo(
+    () =>
+      metricTypes.reduce<Partial<Record<QuickAddMetricType, number>>>((acc, metric) => {
+        const amount = Number(metricAmounts[metric]);
+        if (Number.isFinite(amount) && amount > 0) acc[metric] = Math.round(amount);
+        return acc;
+      }, {}),
+    [metricAmounts, metricTypes]
+  );
+
   const canSave =
     name.trim().length > 0 &&
-    Number.isFinite(Number(volume)) &&
-    Number(volume) > 0 &&
     metricTypes.length > 0 &&
+    metricTypes.every((metric) => selectedMetricAmounts[metric] !== undefined) &&
     !saving;
 
   const onSave = React.useCallback(async () => {
     const finalName = name.trim();
-    const amount = Math.round(Number(volume));
     if (!finalName) {
       Alert.alert('请输入名称', '项目名称不能为空。');
       return;
     }
-    if (!Number.isFinite(amount) || amount <= 0) {
-      Alert.alert('容量无效', '请输入大于 0 的默认容量。');
+    if (metricTypes.length === 0) {
+      Alert.alert('请选择指标', '至少选择一个指标类型。');
       return;
     }
-    let hydrationMl = amount;
-    if (!Number.isFinite(hydrationMl) || hydrationMl <= 0) {
-      Alert.alert('参数无效', '请检查容量和指标类型设置。');
+    if (metricTypes.some((metric) => selectedMetricAmounts[metric] === undefined)) {
+      Alert.alert('数值无效', '请为每个已选指标输入大于 0 的数值。');
       return;
     }
+    const firstMetric = metricTypes[0];
+    const firstAmount = selectedMetricAmounts[firstMetric] ?? 0;
     const displayUnit: QuickAddVolumeUnit =
-      metricTypes.length > 1 ? 'g' : metricTypes[0] === 'hydration' ? 'ml' : metricTypes[0] === 'sodium' ? 'mg' : 'g';
+      metricTypes.length > 1 ? 'g' : firstMetric === 'hydration' ? 'ml' : firstMetric === 'sodium' ? 'mg' : 'g';
     setSaving(true);
     try {
       await addCustomQuickAddItem({
         label: finalName,
-        displayAmount: amount,
+        displayAmount: firstAmount,
         displayUnit,
-        hydrationMl,
+        hydrationMl: firstAmount,
         metricTypes,
+        metricAmounts: selectedMetricAmounts,
         icon: selectedIcon,
       });
       router.back();
@@ -79,7 +102,7 @@ export default function AddItemScreen() {
     } finally {
       setSaving(false);
     }
-  }, [name, volume, metricTypes, selectedIcon, router]);
+  }, [name, metricTypes, selectedMetricAmounts, selectedIcon, router]);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['left', 'right', 'bottom']}>
@@ -143,12 +166,7 @@ export default function AddItemScreen() {
         <View style={styles.section}>
           <Text style={styles.label}>指标类型</Text>
           <View style={styles.unitWrap}>
-            {([
-              { key: 'hydration' as const, label: '水分' },
-              { key: 'protein' as const, label: '蛋白质' },
-              { key: 'carbohydrate' as const, label: '碳水' },
-              { key: 'sodium' as const, label: '钠' },
-            ] as const).map((item) => {
+            {metricOptions.map((item) => {
               const active = metricTypes.includes(item.key);
               return (
                 <Pressable
@@ -168,14 +186,33 @@ export default function AddItemScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.label}>默认容量</Text>
-          <TextInput
-            value={volume}
-            onChangeText={(text) => setVolume(text.replace(/[^\d]/g, '').slice(0, 4))}
-            inputMode="text"
-            style={[styles.volumeInput, { color: theme.text }]}
-          />
-          <View style={styles.smallUnderline} />
+          <Text style={styles.label}>指标数值</Text>
+          <View style={styles.amountList}>
+            {metricOptions
+              .filter((item) => metricTypes.includes(item.key))
+              .map((item) => (
+                <View key={item.key} style={[styles.amountRow, { borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.35)' }]}>
+                  <View style={styles.amountMeta}>
+                    <Text style={[styles.amountLabel, { color: theme.text }]}>{item.label}</Text>
+                    <Text style={styles.amountUnit}>{item.unit}</Text>
+                  </View>
+                  <TextInput
+                    value={metricAmounts[item.key]}
+                    onChangeText={(text) =>
+                      setMetricAmounts((prev) => ({
+                        ...prev,
+                        [item.key]: text.replace(/[^\d]/g, '').slice(0, 5),
+                      }))
+                    }
+                    placeholder={item.placeholder}
+                    placeholderTextColor={theme.textSecondary}
+                    inputMode="numeric"
+                    keyboardType="number-pad"
+                    style={[styles.amountInput, { color: theme.text }]}
+                  />
+                </View>
+              ))}
+          </View>
         </View>
       </ScrollView>
 
@@ -191,12 +228,13 @@ export default function AddItemScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  header: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(194, 198, 214, 0.2)' },
+  header: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 },
   headerInner: { height: 64, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24 },
   headerSafeSpacer: { width: 40 },
   backBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 18, fontWeight: '800', letterSpacing: -0.2, fontFamily: 'Manrope' },
   headerSpacer: { width: 40 },
+  headerRightSpacer: { width: 40 },
   content: { paddingHorizontal: 24, gap: 20 },
   section: { gap: 12 },
   label: { fontSize: 11, fontWeight: '700', letterSpacing: 0.8, color: 'rgba(71, 85, 105, 0.62)', textTransform: 'uppercase' },
@@ -237,6 +275,31 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontFamily: 'Manrope',
     includeFontPadding: false,
+    textAlignVertical: 'center',
+  },
+  amountList: { gap: 10 },
+  amountRow: {
+    minHeight: 64,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(242,243,255,0.62)',
+  },
+  amountMeta: { gap: 3 },
+  amountLabel: { fontSize: 15, fontWeight: '800', fontFamily: 'Manrope' },
+  amountUnit: { fontSize: 12, fontWeight: '800', color: '#64748b', textTransform: 'uppercase' },
+  amountInput: {
+    minWidth: 112,
+    padding: 0,
+    fontSize: 30,
+    lineHeight: 34,
+    fontWeight: '800',
+    fontFamily: 'Manrope',
+    includeFontPadding: false,
+    textAlign: 'right',
     textAlignVertical: 'center',
   },
   smallUnderline: { height: 1, backgroundColor: 'rgba(194, 198, 214, 0.35)' },
