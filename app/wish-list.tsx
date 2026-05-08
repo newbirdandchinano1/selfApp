@@ -6,26 +6,48 @@ import React, { useMemo } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type WishItem = {
+type WishTarget = {
   id: string;
   name: string;
-  category: string;
+  subtitle: string;
   price: number;
-  priority: '高' | '中' | '低';
-  reason: string;
+  priorityText: string;
+  icon: keyof typeof MaterialIcons.glyphMap;
+  highlighted?: boolean;
 };
 
-const wishItems: WishItem[] = [
-  { id: '1', name: 'iPad Pro 11"', category: '数码', price: 6999, priority: '高', reason: '学习和做笔记' },
-  { id: '2', name: '人体工学椅', category: '家居', price: 2899, priority: '高', reason: '久坐办公保护腰背' },
-  { id: '3', name: '降噪耳机', category: '数码', price: 1999, priority: '中', reason: '提升专注效率' },
-  { id: '4', name: '周末短途旅行', category: '体验', price: 1800, priority: '低', reason: '放松和充电' },
+const wishItems: WishTarget[] = [
+  {
+    id: '1',
+    name: '索尼 WH-1000XM5',
+    subtitle: '专注深度工作',
+    price: 2499,
+    priorityText: '高优先级',
+    icon: 'headset',
+  },
+  {
+    id: '2',
+    name: '赫曼米勒 Embody',
+    subtitle: '人体工学健康',
+    price: 10500,
+    priorityText: 'AI 重点标注',
+    icon: 'chair',
+    highlighted: true,
+  },
+  {
+    id: '3',
+    name: 'Flos Bellhop 台灯',
+    subtitle: '氛围营造',
+    price: 1251,
+    priorityText: '低优先级',
+    icon: 'lightbulb-outline',
+  },
 ];
 
-const budgetCap = 15000;
+const quarterTarget = 120000;
 
 function formatCny(value: number): string {
-  return `¥${value.toLocaleString('zh-CN')}`;
+  return `¥ ${value.toLocaleString('zh-CN')}`;
 }
 
 export default function WishListScreen() {
@@ -37,262 +59,348 @@ export default function WishListScreen() {
   const isDark = colorScheme === 'dark';
 
   const bg = isDark ? theme.background : '#faf8ff';
-  const surface = isDark ? theme.surface : '#ffffff';
+  const cardBg = isDark ? '#111827' : '#ffffff';
+  const cardSoft = isDark ? '#1f2937' : '#f2f3ff';
   const text = isDark ? theme.text : '#131b2e';
-  const outline = isDark ? 'rgba(148,163,184,0.85)' : '#727785';
-  const accent = isDark ? '#f472b6' : '#b42375';
-  const accentSoft = isDark ? 'rgba(244,114,182,0.18)' : 'rgba(180,35,117,0.12)';
+  const outline = isDark ? 'rgba(148,163,184,0.9)' : '#424754';
+  const tertiary = isDark ? '#fbbf24' : '#825100';
+  const primary = isDark ? '#60a5fa' : '#0058be';
+  const borderSoft = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.25)';
 
   const summary = useMemo(() => {
     const total = wishItems.reduce((sum, item) => sum + item.price, 0);
-    const remaining = budgetCap - total;
-    const progress = Math.min(100, Math.round((total / budgetCap) * 100));
-    return { total, remaining, progress };
+    const progress = Math.round((total / quarterTarget) * 100);
+    return { total, progress };
   }, []);
 
-  const priorityColor = (priority: WishItem['priority']) => {
-    if (priority === '高') return '#ef4444';
-    if (priority === '中') return '#f59e0b';
-    return '#10b981';
-  };
-
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
+    <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right', 'top']}>
+      <View
+        style={[
+          styles.topBar,
+          {
+            paddingTop: Math.max(insets.top, 10) + 6,
+            backgroundColor: isDark ? 'rgba(17,24,39,0.8)' : 'rgba(255,255,255,0.8)',
+            borderBottomColor: borderSoft,
+          },
+        ]}>
+        <Pressable style={styles.roundIconBtn} onPress={() => router.back()}>
+          <MaterialIcons name="arrow-back-ios-new" size={20} color={primary} />
+        </Pressable>
+        <Text style={[styles.topBarTitle, { color: text }]}>量化生活清单</Text>
+        <View style={styles.topBarRightSpacer} />
+      </View>
+
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, 12) + 32 }]}
-      >
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} style={[styles.backBtn, { borderColor: `${accent}33` }]}>
-            <MaterialIcons name="arrow-back-ios-new" size={18} color={accent} />
-          </Pressable>
-          <View style={styles.headerTextWrap}>
-            <Text style={[styles.headerKicker, { color: outline }]}>MONEY INTENTION</Text>
-            <Text style={[styles.headerTitle, { color: text }]}>欲望清单</Text>
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, 12) + 100 }]}>
+        <View style={styles.hero}>
+          <Text style={[styles.heroTitle, { color: text }]}>欲望清单</Text>
+          <Text style={[styles.heroSub, { color: outline }]}>精选心头好与理性消费计划。</Text>
+        </View>
+
+        <View style={[styles.summaryCard, { backgroundColor: cardBg }]}>
+          <View style={[styles.summaryGlow, { backgroundColor: `${tertiary}14` }]} />
+          <View>
+            <Text style={[styles.summaryLabel, { color: outline }]}>总预估支出</Text>
+            <Text style={[styles.summaryTotal, { color: tertiary }]}>{formatCny(summary.total)}</Text>
+          </View>
+          <View style={[styles.progressPill, { backgroundColor: `${tertiary}1F` }]}>
+            <MaterialIcons name="trending-up" size={20} color={tertiary} />
+            <Text style={[styles.progressPillText, { color: tertiary }]}>占Q3目标的{summary.progress}%</Text>
           </View>
         </View>
 
-        <View style={[styles.summaryCard, { backgroundColor: surface, borderColor: `${accent}22` }]}>
-          <View style={[styles.summaryLine, { backgroundColor: `${accent}66` }]} />
-          <Text style={[styles.summaryLabel, { color: outline }]}>预计总支出</Text>
-          <Text style={[styles.summaryTotal, { color: text }]}>{formatCny(summary.total)}</Text>
-          <Text style={[styles.summarySub, { color: outline }]}>
-            预算上限 {formatCny(budgetCap)} · 剩余 {formatCny(summary.remaining)}
-          </Text>
-          <View style={[styles.progressTrack, { backgroundColor: accentSoft }]}>
-            <View style={[styles.progressFill, { width: `${summary.progress}%`, backgroundColor: accent }]} />
+        <View style={[styles.aiReviewCard, { backgroundColor: cardSoft }]}>
+          <View style={[styles.aiDecor, { backgroundColor: `${primary}12` }]} />
+          <View style={styles.aiHead}>
+            <View style={styles.aiKickerRow}>
+              <MaterialIcons name="auto-awesome" size={18} color={primary} />
+              <Text style={[styles.aiKicker, { color: primary }]}>AI 理性评审</Text>
+            </View>
+            <Text style={[styles.aiHeading, { color: text }]}>建议策略性延后</Text>
           </View>
-          <Text style={[styles.progressText, { color: accent }]}>{summary.progress}% 已占用预算</Text>
+          <View style={[styles.aiBody, { borderTopColor: borderSoft }]}>
+            <Text style={[styles.aiText, { color: outline }]}>
+              基于您当前的消费速度，本月购买
+              <Text style={[styles.aiTextStrong, { color: text }]}> Herman Miller Embody </Text>
+              椅子将导致您的储蓄目标达成率下降 30%。
+            </Text>
+            <Text style={[styles.aiText, { color: outline }]}>
+              <Text style={[styles.aiAdviceTag, { color: primary }]}>评审建议：</Text>
+              建议将该项支出延后至11月下旬，以匹配年度奖金发放，确保Q4流动性指标稳健。
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.sectionHead}>
-          <Text style={[styles.sectionTitle, { color: text }]}>想买的东西</Text>
-          <Text style={[styles.sectionMeta, { color: outline }]}>{wishItems.length} 项</Text>
-        </View>
-
-        <View style={styles.listWrap}>
+        <View style={styles.listSection}>
+          <Text style={[styles.listKicker, { color: outline }]}>目标好物</Text>
           {wishItems.map(item => (
-            <View key={item.id} style={[styles.itemCard, { backgroundColor: surface, borderColor: `${accent}1A` }]}>
-              <View style={styles.itemTop}>
-                <View>
-                  <Text style={[styles.itemName, { color: text }]}>{item.name}</Text>
-                  <Text style={[styles.itemCategory, { color: outline }]}>{item.category}</Text>
-                </View>
-                <Text style={[styles.itemPrice, { color: accent }]}>{formatCny(item.price)}</Text>
+            <View
+              key={item.id}
+              style={[
+                styles.itemCard,
+                {
+                  backgroundColor: cardBg,
+                  borderLeftColor: item.highlighted ? primary : 'transparent',
+                  borderLeftWidth: item.highlighted ? 4 : 0,
+                },
+              ]}>
+              <View style={[styles.itemIconWrap, { backgroundColor: cardSoft }]}>
+                <MaterialIcons name={item.icon} size={28} color={text} />
               </View>
-              <View style={styles.itemBottom}>
-                <View style={[styles.priorityPill, { backgroundColor: `${priorityColor(item.priority)}1A` }]}>
-                  <Text style={[styles.priorityText, { color: priorityColor(item.priority) }]}>
-                    {item.priority}优先级
+              <View style={styles.itemContent}>
+                <View style={styles.itemTextWrap}>
+                  <Text style={[styles.itemName, { color: text }]}>{item.name}</Text>
+                  <Text style={[styles.itemSubtitle, { color: outline }]}>{item.subtitle}</Text>
+                </View>
+                <View style={styles.itemPriceWrap}>
+                  <Text style={[styles.itemPrice, { color: tertiary }]}>{formatCny(item.price)}</Text>
+                  <Text style={[styles.itemPriority, { color: item.highlighted ? primary : outline }]}>
+                    {item.priorityText}
                   </Text>
                 </View>
-                <Text style={[styles.itemReason, { color: outline }]}>{item.reason}</Text>
               </View>
             </View>
           ))}
         </View>
-
-        <View style={styles.sectionHead}>
-          <Text style={[styles.sectionTitle, { color: text }]}>AI 评审（预留）</Text>
-        </View>
-
-        <View style={[styles.aiPlaceholder, { backgroundColor: surface, borderColor: `${accent}22` }]}>
-          <View style={[styles.aiIcon, { backgroundColor: accent }]}>
-            <MaterialIcons name="auto-awesome" size={22} color="#fff" />
-          </View>
-          <View style={styles.aiTextWrap}>
-            <Text style={[styles.aiTitle, { color: text }]}>智能消费评审位</Text>
-            <Text style={[styles.aiDesc, { color: outline }]}>
-              这里后续可以接入 AI，从必要性、性价比、预算压力三个角度给出购买建议。
-            </Text>
-          </View>
-        </View>
       </ScrollView>
+
+      <Pressable
+        onPress={() => router.push('/add-wish-item' as any)}
+        style={[
+          styles.fab,
+          {
+            bottom: Math.max(insets.bottom, 12) + 12,
+            backgroundColor: primary,
+            shadowColor: '#131b2e',
+          },
+        ]}>
+        <MaterialIcons name="add" size={20} color="#fff" />
+        <Text style={styles.fabText}>添加新项目</Text>
+      </Pressable>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  scrollContent: {
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    gap: 16,
-  },
-  header: {
+  topBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    justifyContent: 'space-between',
   },
-  backBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 999,
-    borderWidth: 1,
+  roundIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerTextWrap: {
-    flex: 1,
-  },
-  headerKicker: {
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 2,
-  },
-  headerTitle: {
-    fontSize: 30,
-    fontWeight: '900',
-    letterSpacing: -0.6,
-  },
-  summaryCard: {
-    borderRadius: 24,
-    borderWidth: 1,
-    padding: 18,
-    gap: 6,
-  },
-  summaryLine: {
-    height: 3,
-    width: '100%',
-    borderRadius: 999,
-    marginBottom: 2,
-  },
-  summaryLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  summaryTotal: {
-    fontSize: 40,
-    fontWeight: '900',
-    letterSpacing: -1,
-  },
-  summarySub: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  progressTrack: {
-    marginTop: 8,
-    height: 8,
-    borderRadius: 999,
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 999,
-  },
-  progressText: {
-    marginTop: 6,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  sectionHead: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-  },
-  sectionTitle: {
-    fontSize: 24,
+  topBarTitle: {
+    fontSize: 18,
     fontWeight: '900',
     letterSpacing: -0.4,
   },
-  sectionMeta: {
-    fontSize: 12,
-    fontWeight: '700',
+  topBarRightSpacer: {
+    width: 36,
+    height: 36,
   },
-  listWrap: {
-    gap: 10,
+  scrollContent: {
+    maxWidth: 900,
+    width: '100%',
+    alignSelf: 'center',
+    paddingHorizontal: 22,
+    paddingTop: 132,
+    gap: 18,
   },
-  itemCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    padding: 14,
-    gap: 10,
+  hero: {
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
   },
-  itemTop: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  itemName: {
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  itemCategory: {
-    marginTop: 4,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  itemPrice: {
-    fontSize: 19,
+  heroTitle: {
+    fontSize: 52,
+    lineHeight: 56,
+    letterSpacing: -1.2,
     fontWeight: '900',
   },
-  itemBottom: {
+  heroSub: {
+    fontSize: 18,
+    fontWeight: '500',
+  },
+  summaryCard: {
+    borderRadius: 20,
+    padding: 24,
+    gap: 14,
+    overflow: 'hidden',
+  },
+  summaryGlow: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: '100%',
+  },
+  summaryLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  summaryTotal: {
+    marginTop: 4,
+    fontSize: 40,
+    lineHeight: 44,
+    fontWeight: '900',
+    letterSpacing: -1,
+  },
+  progressPill: {
+    alignSelf: 'flex-start',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 6,
+  },
+  progressPillText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  aiReviewCard: {
+    borderRadius: 20,
+    padding: 22,
+    overflow: 'hidden',
+    gap: 14,
+  },
+  aiDecor: {
+    position: 'absolute',
+    width: 240,
+    height: 240,
+    borderRadius: 999,
+    right: -80,
+    top: -130,
+  },
+  aiHead: {
     gap: 8,
   },
-  priorityPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  priorityText: {
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  itemReason: {
-    fontSize: 12,
-    fontWeight: '600',
-    flex: 1,
-    textAlign: 'right',
-  },
-  aiPlaceholder: {
-    borderWidth: 1,
-    borderRadius: 24,
-    padding: 16,
+  aiKickerRow: {
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  aiKicker: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  aiHeading: {
+    fontSize: 30,
+    lineHeight: 36,
+    letterSpacing: -0.8,
+    fontWeight: '900',
+  },
+  aiBody: {
+    borderTopWidth: 1,
+    paddingTop: 12,
+    gap: 10,
+  },
+  aiText: {
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '500',
+  },
+  aiTextStrong: {
+    fontWeight: '700',
+  },
+  aiAdviceTag: {
+    fontWeight: '700',
+  },
+  listSection: {
     gap: 12,
   },
-  aiIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 14,
+  listKicker: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  itemCard: {
+    borderRadius: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  itemIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  aiTextWrap: {
+  itemContent: {
     flex: 1,
-    gap: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
   },
-  aiTitle: {
-    fontSize: 16,
-    fontWeight: '800',
+  itemTextWrap: {
+    flex: 1,
   },
-  aiDesc: {
-    fontSize: 13,
-    lineHeight: 19,
+  itemName: {
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  itemSubtitle: {
+    marginTop: 4,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  itemPriceWrap: {
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  itemPrice: {
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: -0.4,
+  },
+  itemPriority: {
+    fontSize: 12,
     fontWeight: '600',
+  },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    shadowOpacity: 0.24,
+    shadowOffset: { width: 0, height: 12 },
+    shadowRadius: 16,
+    elevation: 7,
+  },
+  fabText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0.4,
   },
 });

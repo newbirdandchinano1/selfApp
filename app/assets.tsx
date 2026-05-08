@@ -7,7 +7,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Circle } from 'react-native-svg';
 
@@ -259,10 +259,12 @@ export default function AssetsScreen() {
           <Text style={[styles.kicker, { color: outline }]}>当前净资产</Text>
           <View style={styles.heroRow}>
             <Text style={[styles.netWorth, { color: netWorth < 0 ? errorRed : theme.text }]}>{formatSignedMoney0(netWorth)}</Text>
-            <View style={[styles.pill, { backgroundColor: `${secondaryGreen}1A` }]}>
+            <Pressable
+              onPress={() => router.push('/ai-finance-analysis')}
+              style={({ pressed }) => [styles.pill, { backgroundColor: `${secondaryGreen}1A` }, pressed && { opacity: 0.8 }]}>
               <MaterialIcons name="trending-up" size={16} color={secondaryGreen} />
               <Text style={[styles.pillText, { color: secondaryGreen }]}>2.4%</Text>
-            </View>
+            </Pressable>
           </View>
 
           <View style={styles.totalsRow}>

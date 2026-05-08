@@ -84,6 +84,32 @@ export default function ProfileScreen() {
     ],
     [],
   );
+  const wishListCards = useMemo(
+    () => [
+      {
+        id: 'headphones',
+        icon: 'headset' as const,
+        iconColor: primary,
+        title: 'Noise Cancelling Headphones',
+        price: '¥ 2,499',
+      },
+      {
+        id: 'watch',
+        icon: 'watch' as const,
+        iconColor: secondary,
+        title: 'Smart Watch Series 9',
+        price: '¥ 3,199',
+      },
+      {
+        id: 'camera',
+        icon: 'photo-camera' as const,
+        iconColor: tertiary,
+        title: 'Mirrorless Camera',
+        price: '¥ 8,500',
+      },
+    ],
+    [primary, secondary, tertiary],
+  );
 
   const [activeVisionIndex, setActiveVisionIndex] = useState(0);
   const isUserInteractingVisionRef = useRef(false);
@@ -417,6 +443,42 @@ export default function ProfileScreen() {
             </View>
           </View>
 
+          <View style={styles.sectionHead}>
+            <View>
+              <Text style={[styles.kicker, { color: outline }]}>WISHLIST</Text>
+              <Text style={[styles.sectionTitle, { color: text }]}>欲望清单</Text>
+            </View>
+            <Pressable onPress={() => router.push('/wish-list' as any)}>
+              <Text style={[styles.moreText, { color: primary }]}>查看全部</Text>
+            </Pressable>
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.wishlistList}
+          >
+            {wishListCards.map(item => (
+              <View
+                key={item.id}
+                style={[
+                  styles.wishlistCard,
+                  {
+                    backgroundColor: isDark ? 'rgba(30,41,59,0.58)' : '#f2f3ff',
+                    borderColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.2)',
+                  },
+                ]}>
+                <View style={styles.wishlistIconWrap}>
+                  <MaterialIcons name={item.icon} size={24} color={item.iconColor} />
+                </View>
+                <Text style={[styles.wishlistTitle, { color: text }]} numberOfLines={2}>
+                  {item.title}
+                </Text>
+                <Text style={[styles.wishlistPrice, { color: primary }]}>{item.price}</Text>
+              </View>
+            ))}
+          </ScrollView>
+
 
           <View style={styles.sectionHead}>
             <View>
@@ -426,26 +488,6 @@ export default function ProfileScreen() {
           </View>
 
           <View style={styles.gridWrap}>
-            <Pressable
-              onPress={() => router.push('/wish-list' as any)}
-              style={[styles.wishEntryCard, { backgroundColor: surface, borderColor: `${wishAccent}24` }]}
-            >
-              <View style={[styles.wishEntryTopLine, { backgroundColor: `${wishAccent}66` }]} />
-              <View style={styles.wishEntryBody}>
-                <View style={[styles.wishEntryIcon, { backgroundColor: wishAccent }]}>
-                  <MaterialIcons name="favorite-border" size={24} color="#fff" />
-                </View>
-                <View style={styles.wishEntryTextWrap}>
-                  <Text style={[styles.wishEntryKicker, { color: wishAccent }]}>MONEY PLAN</Text>
-                  <Text style={[styles.wishEntryTitle, { color: text }]}>欲望清单</Text>
-                  <Text style={[styles.wishEntryDesc, { color: outline }]}>
-                    记录想买的东西，汇总预算与 AI 评审建议
-                  </Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={26} color={wishAccent} />
-              </View>
-            </Pressable>
-
             <View style={[styles.bigCard, { shadowColor: isDark ? '#000' : '#6c63ff' }]}>
               <Image source={progressBgUrl} style={styles.bgImage} contentFit="cover" />
               <View style={[styles.tintLayer, { backgroundColor: `${primary}66` }]} />
@@ -673,6 +715,37 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 999,
+  },
+  wishlistList: {
+    gap: 12,
+    paddingHorizontal: 4,
+    paddingBottom: 4,
+  },
+  wishlistCard: {
+    width: 160,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    gap: 8,
+  },
+  wishlistIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff',
+    marginBottom: 6,
+  },
+  wishlistTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    lineHeight: 18,
+    minHeight: 36,
+  },
+  wishlistPrice: {
+    fontSize: 12,
+    fontWeight: '900',
   },
   bgImage: {
     ...StyleSheet.absoluteFillObject,
