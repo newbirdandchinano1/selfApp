@@ -86,6 +86,49 @@ export async function getTasks() {
   return db.getAllAsync<TaskRow>('SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC');
 }
 
+/** 截止日为指定本地日（YYYY-MM-DD）的任务，含子任务，按优先级与截止时间排序。 */
+export async function getTasksDueOnDate(ymd: string) {
+  const db = await getDatabase();
+  return db.getAllAsync<TaskRow>(
+    `SELECT * FROM tasks
+     WHERE deleted_at IS NULL
+       AND due_date IS NOT NULL
+       AND trim(due_date) != ''
+       AND date(due_date) = date(?)
+     ORDER BY priority DESC, datetime(due_date) ASC, updated_at DESC`,
+    [ymd]
+  );
+}
+
+export type TaskDueDayAggregateRow = {
+  day: string;
+  total: number;
+  done: number;
+};
+
+/** 区间内每日截止任务数与已完成数（done/cancelled 视为 done），用于日历热力统计。 */
+export async function getTaskDueDayAggregatesForRange(startYmd: string, endYmd: string): Promise<TaskDueDayAggregateRow[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ day: string; total: number; done: number }>(
+    `SELECT date(due_date) AS day,
+            COUNT(*) AS total,
+            SUM(CASE WHEN status IN ('done', 'cancelled') THEN 1 ELSE 0 END) AS done
+       FROM tasks
+      WHERE deleted_at IS NULL
+        AND due_date IS NOT NULL
+        AND trim(due_date) != ''
+        AND date(due_date) >= date(?)
+        AND date(due_date) <= date(?)
+      GROUP BY date(due_date)`,
+    [startYmd, endYmd]
+  );
+  return rows.map((r) => ({
+    day: r.day,
+    total: Number(r.total),
+    done: Number(r.done),
+  }));
+}
+
 export async function getTasksByProjectId(projectId: string) {
   const db = await getDatabase();
   const rows = await db.getAllAsync<TaskRow>(

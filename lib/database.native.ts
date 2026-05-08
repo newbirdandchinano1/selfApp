@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 6;
+export const DB_VERSION = 8;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -277,6 +277,35 @@ export async function initDatabase() {
       version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS savings_plans (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      target_amount REAL NOT NULL,
+      avatar_uri TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS savings_plan_deposits (
+      id TEXT PRIMARY KEY NOT NULL,
+      savings_plan_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT,
+      FOREIGN KEY (savings_plan_id) REFERENCES savings_plans(id) ON DELETE CASCADE
+    );
   `);
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
@@ -444,6 +473,9 @@ export async function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_habits_context ON habits(context);
     CREATE INDEX IF NOT EXISTS idx_habits_updated_at ON habits(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_savings_plans_updated_at ON savings_plans(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_savings_plan_deposits_plan_id ON savings_plan_deposits(savings_plan_id);
+    CREATE INDEX IF NOT EXISTS idx_savings_plan_deposits_updated_at ON savings_plan_deposits(updated_at);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
@@ -478,6 +510,8 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS task_categories;
     DROP TABLE IF EXISTS project_categories;
     DROP TABLE IF EXISTS habits;
+    DROP TABLE IF EXISTS savings_plan_deposits;
+    DROP TABLE IF EXISTS savings_plans;
     DROP TABLE IF EXISTS users;
     DROP TABLE IF EXISTS app_meta;
   `);

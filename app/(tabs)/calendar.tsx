@@ -1,8 +1,29 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import {
+  getFinanceAccounts,
+  getFinanceDailySummariesByDateRange,
+  getFinanceFlowCategories,
+  getFinanceTransactionsByYmd,
+} from '@/lib/repositories/finance/finance';
+import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import {
+  getHealthIntakeTotalsForUserOnDate,
+  getHealthRecordsForUserOnDate,
+} from '@/lib/repositories/health/health';
+import type { HealthIntakeDayTotals, HealthRecordRow } from '@/lib/repositories/health/health.types';
+import {
+  getTaskCategories,
+  getTaskDueDayAggregatesForRange,
+  getTasksDueOnDate,
+  type TaskDueDayAggregateRow,
+} from '@/lib/repositories/tasks/task';
+import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import React, { useState } from 'react';
-import { Dimensions, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import type { DimensionValue } from 'react-native';
+import { ActivityIndicator, Dimensions, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
   FadeInDown,
@@ -17,29 +38,191 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
+const HEALTH_USER_ID = 'default';
+
+function toYmd(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatSignedYuan(net: number) {
+  const abs = Math.abs(net).toFixed(2);
+  if (net > 0.004) return `+¥${abs}`;
+  if (net < -0.004) return `-¥${abs}`;
+  return '¥0.00';
+}
+
+/** 月历格子内展示：尽量短、单行（配合 adjustsFontSizeToFit）。 */
+function formatSignedYuanCompact(net: number) {
+  const sign = net > 0 ? '+' : net < 0 ? '-' : '';
+  const abs = Math.abs(net);
+  if (abs < 0.005) return '¥0';
+  if (abs >= 10_000) {
+    const w = abs / 10_000;
+    const s = w >= 100 ? w.toFixed(0) : w >= 10 ? w.toFixed(1).replace(/\.0$/, '') : w.toFixed(2).replace(/\.?0+$/, '');
+    return `${sign}¥${s}万`;
+  }
+  if (abs >= 1000) return `${sign}¥${Math.round(abs)}`;
+  if (abs >= 100) return `${sign}¥${Math.round(abs)}`;
+  const one = abs.toFixed(1).replace(/\.0$/, '');
+  return `${sign}¥${one}`;
+}
+
+function formatTxSignedAmount(t: FinanceTransactionRow): number {
+  if (t.transaction_type === 'income') return Math.abs(Number(t.amount));
+  if (t.transaction_type === 'expense') return -Math.abs(Number(t.amount));
+  return 0;
+}
+
+function transactionIcon(t: FinanceTransactionRow): keyof typeof MaterialIcons.glyphMap {
+  if (t.transaction_type === 'income') return 'trending-up';
+  if (t.transaction_type === 'expense') return 'trending-down';
+  return 'swap-horiz';
+}
+
+function formatTaskDueMeta(due: string | null, categoryLabel: string) {
+  if (!due?.trim()) return categoryLabel;
+  const iso = due.includes('T');
+  const timePart = iso ? due.split('T')[1]?.slice(0, 5) : '';
+  if (timePart) return `${timePart} · ${categoryLabel}`;
+  return categoryLabel;
+}
+
 export default function CalendarScreen() {
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const baseTheme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
 
-  const [selectedDay, setSelectedDay] = useState<number | null>(3);
+  const [selectedDay, setSelectedDay] = useState<number | null>(() => {
+    const now = new Date();
+    return now.getDate();
+  });
   const [isSheetVisible, setIsSheetVisible] = useState(false);
   const [activeTab, setActiveTab] = useState<'tasks' | 'finance' | 'intake'>('tasks');
   const [currentMonth, setCurrentMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
+  const [monthFinanceMap, setMonthFinanceMap] = useState<Map<string, FinanceDailySummaryRow>>(() => new Map());
+  const [monthTaskMap, setMonthTaskMap] = useState<Map<string, TaskDueDayAggregateRow>>(() => new Map());
+  const [sheetTasks, setSheetTasks] = useState<TaskRow[]>([]);
+  const [sheetTransactions, setSheetTransactions] = useState<FinanceTransactionRow[]>([]);
+  const [financeAccountNames, setFinanceAccountNames] = useState<Map<string, string>>(() => new Map());
+  const [flowCategoryNames, setFlowCategoryNames] = useState<Map<string, string>>(() => new Map());
+  const [taskCategoryNames, setTaskCategoryNames] = useState<Map<string, string>>(() => new Map());
+  const [sheetHealthTotals, setSheetHealthTotals] = useState<HealthIntakeDayTotals | null>(null);
+  const [sheetHealthRecords, setSheetHealthRecords] = useState<HealthRecordRow[]>([]);
+  const [monthDataLoading, setMonthDataLoading] = useState(false);
+  const [sheetDataLoading, setSheetDataLoading] = useState(false);
   const sheetTranslateY = useSharedValue(SCREEN_HEIGHT);
   const backdropOpacity = useSharedValue(0);
 
   const monthLabel = currentMonth.toLocaleDateString('zh-CN', { month: 'long' });
-  const monthShortEn = currentMonth.toLocaleDateString('en-US', { month: 'short' }).toUpperCase();
+  const monthShortZh = `${currentMonth.getMonth() + 1}月`;
   const currentYear = currentMonth.getFullYear();
 
-  const changeMonth = (offset: number) => {
+  const changeMonth = useCallback((offset: number) => {
     setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
-  };
+  }, []);
+
+  const swipeMonthGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(!isSheetVisible)
+        .activeOffsetX([-28, 28])
+        .failOffsetY([-22, 22])
+        .onEnd((e) => {
+          'worklet';
+          const { translationX, velocityX } = e;
+          const distThreshold = 64;
+          const velThreshold = 520;
+          if (translationX <= -distThreshold || velocityX <= -velThreshold) {
+            runOnJS(changeMonth)(1);
+          } else if (translationX >= distThreshold || velocityX >= velThreshold) {
+            runOnJS(changeMonth)(-1);
+          }
+        }),
+    [isSheetVisible, changeMonth],
+  );
+
+  const loadMonthAggregates = useCallback(async () => {
+    setMonthDataLoading(true);
+    try {
+      const y = currentMonth.getFullYear();
+      const mo = currentMonth.getMonth();
+      const startYmd = toYmd(new Date(y, mo, 1));
+      const endYmd = toYmd(new Date(y, mo + 1, 0));
+      const [summaries, taskAggs, accounts, flows] = await Promise.all([
+        getFinanceDailySummariesByDateRange(startYmd, endYmd),
+        getTaskDueDayAggregatesForRange(startYmd, endYmd),
+        getFinanceAccounts(),
+        getFinanceFlowCategories(),
+      ]);
+      const fm = new Map<string, FinanceDailySummaryRow>();
+      for (const s of summaries) {
+        fm.set(s.day, s);
+      }
+      const tm = new Map<string, TaskDueDayAggregateRow>();
+      for (const t of taskAggs) {
+        tm.set(t.day, t);
+      }
+      setMonthFinanceMap(fm);
+      setMonthTaskMap(tm);
+      setFinanceAccountNames(new Map(accounts.map((a) => [a.id, a.name])));
+      setFlowCategoryNames(new Map(flows.map((f) => [f.id, f.name])));
+    } catch (e) {
+      console.warn('calendar month load', e);
+    } finally {
+      setMonthDataLoading(false);
+    }
+  }, [currentMonth]);
+
+  useEffect(() => {
+    void loadMonthAggregates();
+  }, [loadMonthAggregates]);
+
+  React.useEffect(() => {
+    void getTaskCategories().then((cats) => setTaskCategoryNames(new Map(cats.map((c) => [c.id, c.name]))));
+  }, []);
+
+  const selectedSheetYmd = useMemo(() => {
+    if (selectedDay == null) return null;
+    const y = currentMonth.getFullYear();
+    const mo = currentMonth.getMonth();
+    return `${y}-${String(mo + 1).padStart(2, '0')}-${String(selectedDay).padStart(2, '0')}`;
+  }, [selectedDay, currentMonth]);
+
+  React.useEffect(() => {
+    if (!isSheetVisible || !selectedSheetYmd) return;
+    let cancelled = false;
+    setSheetDataLoading(true);
+    (async () => {
+      try {
+        const [tasks, txs, intake, records] = await Promise.all([
+          getTasksDueOnDate(selectedSheetYmd),
+          getFinanceTransactionsByYmd(selectedSheetYmd),
+          getHealthIntakeTotalsForUserOnDate(HEALTH_USER_ID, selectedSheetYmd),
+          getHealthRecordsForUserOnDate(HEALTH_USER_ID, selectedSheetYmd),
+        ]);
+        if (!cancelled) {
+          setSheetTasks(tasks);
+          setSheetTransactions(txs);
+          setSheetHealthTotals(intake);
+          setSheetHealthRecords(records);
+        }
+      } catch (e) {
+        console.warn('calendar sheet load', e);
+      } finally {
+        if (!cancelled) setSheetDataLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSheetVisible, selectedSheetYmd]);
 
   React.useEffect(() => {
     if (selectedDay == null) return;
@@ -109,7 +292,7 @@ export default function CalendarScreen() {
   const heat70 = isDark ? 'rgba(52,211,153,0.08)' : 'rgba(0,108,73,0.06)';
   const heat40 = isDark ? 'rgba(52,211,153,0.04)' : 'rgba(0,108,73,0.02)';
 
-  const weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
   type Cell =
     | { kind: 'empty' }
@@ -132,45 +315,39 @@ export default function CalendarScreen() {
   }
 
   for (let d = 1; d <= daysInMonth; d++) {
-    if (d === 1) {
-      cells.push({
-        kind: 'day',
-        day: 1,
-        heat: '90',
-        bars: [{ color: primary, widthPct: 100 }],
-        amount: { text: '+¥1,200', color: tertiary, weight: 'bold' },
-      });
-      continue;
-    }
-    if (d === 2) {
-      cells.push({
-        kind: 'day',
-        day: 2,
-        heat: '70',
-        bars: [{ color: `${primary}55`, widthPct: 100 }],
-        amount: { text: '-¥450', color: error, weight: 'bold' },
-      });
-      continue;
-    }
-    if (d === 3) {
-      cells.push({
-        kind: 'day',
-        day: 3,
-        bars: [
-          { color: primary, widthPct: 100 },
-          { color: `${secondary}80`, widthPct: 80 },
-        ],
-        amount: { text: '+¥88', color: text, weight: 'black' },
-      });
-      continue;
-    }
+    const ymd = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const fin = monthFinanceMap.get(ymd);
+    const ta = monthTaskMap.get(ymd);
+    const net = fin?.net ?? 0;
+    const taskTotal = ta?.total ?? 0;
+    const taskDone = ta?.done ?? 0;
+    const ratio = taskTotal > 0 ? taskDone / taskTotal : 0;
 
     let heat: '90' | '70' | '40' | undefined;
-    if ([6, 9, 12, 14, 17, 20, 23, 26, 29].includes(d)) heat = '70';
-    else if ([7, 11, 15, 18, 21, 24, 27, 30].includes(d)) heat = '40';
-    else if ([10, 13, 19, 22, 25, 28, 31].includes(d)) heat = '90';
+    const bars: { color: string; widthPct: number }[] = [];
+    let amount: { text: string; color: string; weight?: 'bold' | 'black' } | undefined;
 
-    cells.push({ kind: 'day', day: d, heat });
+    if (taskTotal > 0) {
+      heat = ratio >= 0.9 ? '90' : ratio >= 0.45 ? '70' : '40';
+      bars.push({ color: primary, widthPct: Math.max(8, Math.round(ratio * 100)) });
+      if (Math.abs(net) >= 0.01) {
+        const w = Math.min(100, Math.round((Math.abs(net) / Math.max(Math.abs(net), 800)) * 100));
+        bars.push({ color: `${secondary}80`, widthPct: Math.max(12, w) });
+      }
+    } else if (Math.abs(net) >= 0.01) {
+      heat = net > 0 ? '70' : '70';
+      bars.push({ color: net > 0 ? `${tertiary}99` : `${error}99`, widthPct: 55 });
+    }
+
+    if (Math.abs(net) >= 0.01) {
+      amount = {
+        text: formatSignedYuanCompact(net),
+        color: net >= 0 ? tertiary : error,
+        weight: 'bold',
+      };
+    }
+
+    cells.push({ kind: 'day', day: d, heat, bars: bars.length ? bars : undefined, amount });
   }
 
   while (cells.length % 7 !== 0) cells.push({ kind: 'empty' });
@@ -184,6 +361,20 @@ export default function CalendarScreen() {
   const selectedWeekdayZh = selectedDate
     ? selectedDate.toLocaleDateString('zh-CN', { weekday: 'long' })
     : '';
+
+  const selectedDayFin = selectedSheetYmd ? monthFinanceMap.get(selectedSheetYmd) : undefined;
+  const sheetNet = selectedDayFin?.net ?? 0;
+  const sheetIncomeTotal =
+    selectedDayFin?.income ??
+    sheetTransactions.filter((t) => t.transaction_type === 'income').reduce((s, t) => s + Math.abs(Number(t.amount)), 0);
+  const sheetExpenseTotal =
+    selectedDayFin?.expense ??
+    sheetTransactions.filter((t) => t.transaction_type === 'expense').reduce((s, t) => s + Math.abs(Number(t.amount)), 0);
+
+  const intakeEstKcal =
+    sheetHealthTotals != null
+      ? Math.round((Number(sheetHealthTotals.protein) + Number(sheetHealthTotals.carbohydrate)) * 4)
+      : null;
 
   const cellBg = (cell: Cell) => {
     if (cell.kind === 'empty') return isDark ? 'rgba(148,163,184,0.06)' : 'rgba(242,243,255,0.65)';
@@ -204,12 +395,17 @@ export default function CalendarScreen() {
         showsVerticalScrollIndicator={false}>
         <Animated.View entering={FadeInUp.duration(420)} style={styles.header}>
           <View style={styles.headerLeft}>
-            <Animated.Text style={[styles.archiveKicker, { color: `${primary}99` }, animatedMonthLabelStyle]}>{`ARCHIVE ${currentYear}`}</Animated.Text>
+            <Animated.Text style={[styles.archiveKicker, { color: `${primary}99` }, animatedMonthLabelStyle]}>{`归档 ${currentYear}`}</Animated.Text>
             <Text style={[styles.monthTitle, { color: text }]}>
-              {monthLabel} <Text style={[styles.monthSub, { color: `${outline}99` }]}>{monthShortEn}</Text>
+              {monthLabel} <Text style={[styles.monthSub, { color: `${outline}99` }]}>{monthShortZh}</Text>
             </Text>
           </View>
-          <Animated.View entering={FadeInDown.duration(420).delay(80)} style={styles.headerBtns}>
+            <Animated.View entering={FadeInDown.duration(420).delay(80)} style={styles.headerBtns}>
+            {monthDataLoading ? (
+              <View style={{ justifyContent: 'center', paddingRight: 8 }}>
+                <ActivityIndicator size="small" color={primary} />
+              </View>
+            ) : null}
             <Pressable
               onPress={() => changeMonth(-1)}
               style={({ pressed }) => [
@@ -229,13 +425,14 @@ export default function CalendarScreen() {
           </Animated.View>
         </Animated.View>
 
-        <Animated.View
-          entering={FadeInUp.duration(480).delay(120)}
-          layout={LinearTransition.springify().damping(16)}
-          style={[
-            styles.card,
-            { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : primary },
-          ]}>
+        <GestureDetector gesture={swipeMonthGesture}>
+          <Animated.View
+            entering={FadeInUp.duration(480).delay(120)}
+            layout={LinearTransition.springify().damping(16)}
+            style={[
+              styles.card,
+              { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : primary },
+            ]}>
           <View style={[styles.weekHeader, { borderBottomColor: outlineVariant, backgroundColor: surface }]}>
             {weekDays.map((d) => (
               <View key={d} style={styles.weekHeaderCell}>
@@ -319,6 +516,10 @@ export default function CalendarScreen() {
 
                           {cell.amount ? (
                             <Text
+                              numberOfLines={1}
+                              adjustsFontSizeToFit
+                              minimumFontScale={0.55}
+                              ellipsizeMode="clip"
                               style={[
                                 styles.amountText,
                                 {
@@ -334,7 +535,7 @@ export default function CalendarScreen() {
                               {cell.amount.text}
                             </Text>
                           ) : (
-                            <View style={{ height: 14 }} />
+                            <View style={styles.amountPlaceholder} />
                           )}
                         </View>
                       </Pressable>
@@ -344,24 +545,25 @@ export default function CalendarScreen() {
               </View>
             ))}
           </View>
-        </Animated.View>
+          </Animated.View>
+        </GestureDetector>
 
         <Animated.View entering={FadeInUp.duration(520).delay(180)} style={styles.legend}>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: `${secondary}4D` }]} />
-            <Text style={[styles.legendText, { color: `${outline}B3` }]}>健康完成度 Heatmap</Text>
+            <Text style={[styles.legendText, { color: `${outline}B3` }]}>健康完成度热力图</Text>
           </View>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: primary }]} />
-            <Text style={[styles.legendText, { color: `${outline}B3` }]}>任务进度 Gantt</Text>
+            <Text style={[styles.legendText, { color: `${outline}B3` }]}>任务进度甘特图</Text>
           </View>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: tertiary }]} />
-            <Text style={[styles.legendText, { color: `${outline}B3` }]}>当日结余 Net Flow</Text>
+            <Text style={[styles.legendText, { color: `${outline}B3` }]}>当日结余净额</Text>
           </View>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: error }]} />
-            <Text style={[styles.legendText, { color: `${outline}B3` }]}>异常支出 Deficit</Text>
+            <Text style={[styles.legendText, { color: `${outline}B3` }]}>异常支出赤字</Text>
           </View>
         </Animated.View>
       </ScrollView>
@@ -390,18 +592,18 @@ export default function CalendarScreen() {
         <Animated.View entering={FadeInUp.duration(300).delay(40)} style={styles.sheetHeader}>
           <View style={styles.sheetHeaderLeft}>
             <Text style={[styles.sheetTitle, { color: text }]}>
-              {selectedDate ? `${selectedDate.getMonth() + 1}月${selectedDate.getDate()}日, ${selectedWeekdayZh}` : '请选择日期'}
+              {selectedDate ? `${selectedDate.getMonth() + 1}月${selectedDate.getDate()}日，${selectedWeekdayZh}` : '请选择日期'}
             </Text>
             {activeTab === 'finance' && (
-              <Text style={[styles.sheetSubtitle, { color: outline }]}>
-                FINANCIAL LEDGER • DAILY
-              </Text>
+              <Text style={[styles.sheetSubtitle, { color: outline }]}>财务账本 · 当日明细</Text>
             )}
           </View>
-          {activeTab === 'finance' && (
+          {activeTab === 'finance' && selectedDate && (
             <View style={styles.sheetHeaderRight}>
-              <Text style={[styles.sheetAmountLabel, { color: outline }]}>当日收支</Text>
-              <Text style={[styles.sheetAmountValue, { color: secondary }]}>+¥88.00</Text>
+              <Text style={[styles.sheetAmountLabel, { color: outline }]}>当日净额</Text>
+              <Text style={[styles.sheetAmountValue, { color: sheetNet >= 0 ? secondary : error }]}>
+                {formatSignedYuan(sheetNet)}
+              </Text>
             </View>
           )}
         </Animated.View>
@@ -447,51 +649,45 @@ export default function CalendarScreen() {
         <ScrollView style={styles.sheetContent} showsVerticalScrollIndicator={false}>
           {activeTab === 'tasks' && (
             <View style={styles.taskList}>
-              {/* Task Item 1 */}
-              <View
-                style={[
-                  styles.taskItem,
-                  { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#faf8ff', borderLeftColor: primary },
-                ]}>
-                <MaterialIcons name="check-circle" size={24} color={primary} />
-                <View style={styles.taskInfo}>
-                  <Text style={[styles.taskTitle, { color: text }]}>完成 Q2 季度报告初稿</Text>
-                  <Text style={[styles.taskMeta, { color: outline }]}>10:00 AM - 12:30 PM • 办公</Text>
-                </View>
-                <View style={[styles.taskTag, { backgroundColor: `${primary}1A` }]}>
-                  <Text style={[styles.taskTagText, { color: primary }]}>重要</Text>
-                </View>
-              </View>
-
-              {/* Task Item 2 */}
-              <View
-                style={[
-                  styles.taskItem,
-                  {
-                    backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#faf8ff',
-                    borderLeftColor: `${outlineVariant}80`,
-                    opacity: 0.6,
-                  },
-                ]}>
-                <MaterialIcons name="radio-button-unchecked" size={24} color={outline} />
-                <View style={styles.taskInfo}>
-                  <Text style={[styles.taskTitle, { color: text }]}>健身房力量训练</Text>
-                  <Text style={[styles.taskMeta, { color: outline }]}>18:00 PM - 19:30 PM • 健康</Text>
-                </View>
-              </View>
-
-              {/* Task Item 3 */}
-              <View
-                style={[
-                  styles.taskItem,
-                  { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#faf8ff', borderLeftColor: primary },
-                ]}>
-                <MaterialIcons name="check-circle" size={24} color={primary} />
-                <View style={styles.taskInfo}>
-                  <Text style={[styles.taskTitle, { color: text }]}>家庭日购物</Text>
-                  <Text style={[styles.taskMeta, { color: outline }]}>20:00 PM - 21:00 PM • 财务</Text>
-                </View>
-              </View>
+              {sheetDataLoading ? (
+                <ActivityIndicator style={{ marginTop: 24 }} color={primary} />
+              ) : sheetTasks.length === 0 ? (
+                <Text style={[styles.emptyHint, { color: outline }]}>当日暂无截止任务</Text>
+              ) : (
+                sheetTasks.map((task) => {
+                  const done = task.status === 'done' || task.status === 'cancelled';
+                  const cat = task.category_id ? (taskCategoryNames.get(task.category_id) ?? '分类') : '未分类';
+                  return (
+                    <View
+                      key={task.id}
+                      style={[
+                        styles.taskItem,
+                        {
+                          backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#faf8ff',
+                          borderLeftColor: done ? primary : `${outlineVariant}80`,
+                          opacity: done ? 1 : 0.92,
+                        },
+                      ]}>
+                      <MaterialIcons
+                        name={done ? 'check-circle' : 'radio-button-unchecked'}
+                        size={24}
+                        color={done ? primary : outline}
+                      />
+                      <View style={styles.taskInfo}>
+                        <Text style={[styles.taskTitle, { color: text }]}>{task.title}</Text>
+                        <Text style={[styles.taskMeta, { color: outline }]}>
+                          {formatTaskDueMeta(task.due_date, cat)}
+                        </Text>
+                      </View>
+                      {task.priority >= 3 && !done ? (
+                        <View style={[styles.taskTag, { backgroundColor: `${primary}1A` }]}>
+                          <Text style={[styles.taskTagText, { color: primary }]}>重要</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })
+              )}
             </View>
           )}
 
@@ -507,7 +703,9 @@ export default function CalendarScreen() {
                     },
                   ]}>
                   <Text style={[styles.financeSummaryLabel, { color: secondary }]}>总收入</Text>
-                  <Text style={[styles.financeSummaryValue, { color: secondary }]}>¥340.00</Text>
+                  <Text style={[styles.financeSummaryValue, { color: secondary }]}>
+                    ¥{sheetIncomeTotal.toFixed(2)}
+                  </Text>
                 </View>
                 <View
                   style={[
@@ -518,262 +716,327 @@ export default function CalendarScreen() {
                     },
                   ]}>
                   <Text style={[styles.financeSummaryLabel, { color: error }]}>总支出</Text>
-                  <Text style={[styles.financeSummaryValue, { color: error }]}>¥252.00</Text>
+                  <Text style={[styles.financeSummaryValue, { color: error }]}>
+                    ¥{sheetExpenseTotal.toFixed(2)}
+                  </Text>
                 </View>
               </View>
 
               <View style={styles.transactionList}>
                 <Text style={[styles.transactionHeader, { color: outline }]}>收支流水</Text>
 
-                {[
-                  {
-                    title: '闲鱼二手售出',
-                    time: '14:20',
-                    account: '支付宝入账',
-                    amount: '+¥280.00',
-                    type: '闲置回血',
-                    icon: 'trending-up',
-                    iconColor: secondary,
-                  },
-                  {
-                    title: '工作午餐',
-                    time: '12:15',
-                    account: '微信支付',
-                    amount: '-¥38.00',
-                    type: '餐饮',
-                    icon: 'lunch-dining',
-                    iconColor: error,
-                  },
-                  {
-                    title: '地铁通勤',
-                    time: '08:45',
-                    account: '交通卡',
-                    amount: '-¥6.00',
-                    type: '交通',
-                    icon: 'directions-subway',
-                    iconColor: primary,
-                  },
-                  {
-                    title: '红包收益',
-                    time: '09:30',
-                    account: '现金',
-                    amount: '+¥60.00',
-                    type: '其他',
-                    icon: 'payments',
-                    iconColor: secondary,
-                  },
-                  {
-                    title: '超市购物',
-                    time: '20:30',
-                    account: '信用卡',
-                    amount: '-¥208.00',
-                    type: '购物',
-                    icon: 'shopping-bag',
-                    iconColor: tertiary,
-                  },
-                ].map((item, idx) => (
-                  <View
-                    key={idx}
-                    style={[
-                      styles.transactionItem,
-                      {
-                        backgroundColor: surface,
-                        borderColor: outlineVariant,
-                      },
-                    ]}>
-                    <View
-                      style={[
-                        styles.transactionIcon,
-                        { backgroundColor: `${item.iconColor}1A` },
-                      ]}>
-                      <MaterialIcons name={item.icon as any} size={20} color={item.iconColor} />
-                    </View>
-                    <View style={styles.transactionInfo}>
-                      <Text style={[styles.transactionTitle, { color: text }]}>{item.title}</Text>
-                      <Text style={[styles.transactionMeta, { color: outline }]}>
-                        {item.time} • {item.account}
-                      </Text>
-                    </View>
-                    <View style={styles.transactionRight}>
-                      <Text
+                {sheetDataLoading ? (
+                  <ActivityIndicator style={{ marginTop: 16 }} color={primary} />
+                ) : sheetTransactions.length === 0 ? (
+                  <Text style={[styles.emptyHint, { color: outline }]}>当日暂无账单记录</Text>
+                ) : (
+                  sheetTransactions.map((item) => {
+                    const signed = formatTxSignedAmount(item);
+                    const iconName = transactionIcon(item);
+                    const iconColor =
+                      item.transaction_type === 'income'
+                        ? secondary
+                        : item.transaction_type === 'expense'
+                          ? error
+                          : outline;
+                    const acct = financeAccountNames.get(item.account_id) ?? '账户';
+                    const happened = item.happened_at ?? '';
+                    const timeShort = happened.includes('T') ? happened.split('T')[1]?.slice(0, 5) ?? '' : happened.slice(11, 16);
+                    const flowLabel = item.flow_category_id
+                      ? (flowCategoryNames.get(item.flow_category_id) ?? '分类')
+                      : item.transaction_type === 'transfer'
+                        ? '转账'
+                        : '未分类';
+                    const amountStr =
+                      signed >= 0 ? `+¥${Math.abs(signed).toFixed(2)}` : `-¥${Math.abs(signed).toFixed(2)}`;
+                    return (
+                      <View
+                        key={item.id}
                         style={[
-                          styles.transactionAmount,
-                          { color: item.amount.startsWith('+') ? secondary : text },
+                          styles.transactionItem,
+                          {
+                            backgroundColor: surface,
+                            borderColor: outlineVariant,
+                          },
                         ]}>
-                        {item.amount}
-                      </Text>
-                      <Text style={[styles.transactionType, { color: outline }]}>{item.type}</Text>
-                    </View>
-                  </View>
-                ))}
+                        <View
+                          style={[
+                            styles.transactionIcon,
+                            { backgroundColor: `${iconColor}1A` },
+                          ]}>
+                          <MaterialIcons name={iconName} size={20} color={iconColor} />
+                        </View>
+                        <View style={styles.transactionInfo}>
+                          <Text style={[styles.transactionTitle, { color: text }]}>{item.name || '记账'}</Text>
+                          <Text style={[styles.transactionMeta, { color: outline }]}>
+                            {timeShort || '—'} · {acct}
+                          </Text>
+                        </View>
+                        <View style={styles.transactionRight}>
+                          <Text
+                            style={[
+                              styles.transactionAmount,
+                              { color: signed >= 0 ? secondary : text },
+                            ]}>
+                            {amountStr}
+                          </Text>
+                          <Text style={[styles.transactionType, { color: outline }]}>{flowLabel}</Text>
+                        </View>
+                      </View>
+                    );
+                  })
+                )}
               </View>
-
-
             </View>
           )}
 
           {activeTab === 'intake' && (
             <View style={styles.intakeList}>
               <View style={styles.intakeSummary}>
-                <View style={[styles.intakeSummaryCard, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(242,243,255,0.5)' }]}>
-                  <Text style={[styles.intakeSummaryLabel, { color: outline }]}>能量摄入</Text>
-                  <Text style={[styles.intakeSummaryValue, { color: text }]}>
-                    1,840 <Text style={styles.intakeSummaryUnit}>kcal</Text>
-                  </Text>
-                </View>
-                <View
-                  style={[
-                    styles.intakeSummaryCard,
-                    {
-                      backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(242,243,255,0.5)',
-                      borderLeftWidth: 1,
-                      borderRightWidth: 1,
-                      borderColor: outlineVariant,
-                    },
-                  ]}>
-                  <Text style={[styles.intakeSummaryLabel, { color: outline }]}>饮水量</Text>
-                  <Text style={[styles.intakeSummaryValue, { color: secondary }]}>
-                    2,100 <Text style={styles.intakeSummaryUnit}>ml</Text>
-                  </Text>
-                </View>
-                <View style={[styles.intakeSummaryCard, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(242,243,255,0.5)' }]}>
-                  <Text style={[styles.intakeSummaryLabel, { color: outline }]}>蛋白质</Text>
-                  <Text style={[styles.intakeSummaryValue, { color: text }]}>
-                    82 <Text style={styles.intakeSummaryUnit}>g</Text>
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.mealList}>
-                {[
-                  {
-                    title: '早餐 Breakfast',
-                    time: '08:15 AM',
-                    items: '水煮蛋 & 全麦吐司',
-                    desc: '2个蛋, 1片吐司 • 320 kcal',
-                    icon: 'egg-alt',
-                    color: secondary,
-                  },
-                  {
-                    title: '午餐 Lunch',
-                    time: '12:30 PM',
-                    items: '鸡胸肉藜麦沙拉',
-                    desc: '中份, 低脂油醋汁 • 450 kcal',
-                    icon: 'lunch-dining',
-                    color: secondary,
-                  },
-                ].map((meal, idx) => (
-                  <View key={idx} style={styles.mealGroup}>
-                    <View style={styles.mealHeader}>
-                      <View style={styles.mealHeaderLeft}>
-                        <View style={[styles.mealDot, { backgroundColor: meal.color }]} />
-                        <Text style={[styles.mealTitle, { color: outline }]}>{meal.title}</Text>
-                      </View>
-                      <Text style={[styles.mealTime, { color: outlineVariant }]}>{meal.time}</Text>
-                    </View>
-                    <View style={[styles.mealItem, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                      <View style={[styles.mealIcon, { backgroundColor: `${meal.color}0D` }]}>
-                        <MaterialIcons name={meal.icon as any} size={20} color={meal.color} />
-                      </View>
-                      <View style={styles.mealInfo}>
-                        <Text style={[styles.mealItemTitle, { color: text }]}>{meal.items}</Text>
-                        <Text style={[styles.mealItemDesc, { color: outline }]}>{meal.desc}</Text>
-                      </View>
-                    </View>
+                <View style={styles.intakeSummaryRow}>
+                  <View style={[styles.intakeSummaryCard, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(242,243,255,0.5)' }]}>
+                    <Text style={[styles.intakeSummaryLabel, { color: outline }]}>估算热量</Text>
+                    <Text style={[styles.intakeSummaryValue, { color: text }]}>
+                      {intakeEstKcal != null ? (
+                        <>
+                          {new Intl.NumberFormat('zh-CN').format(intakeEstKcal)}{' '}
+                          <Text style={styles.intakeSummaryUnit}>千卡</Text>
+                        </>
+                      ) : (
+                        <Text style={[styles.intakeSummaryUnit, { color: outline }]}>—</Text>
+                      )}
+                    </Text>
                   </View>
-                ))}
-
-                <View style={styles.mealGroup}>
-                  <View style={styles.mealHeader}>
-                    <View style={styles.mealHeaderLeft}>
-                      <View style={[styles.mealDot, { backgroundColor: secondary }]} />
-                      <Text style={[styles.mealTitle, { color: outline }]}>晚餐 Dinner</Text>
-                    </View>
-                    <Text style={[styles.mealTime, { color: outlineVariant }]}>19:45 PM</Text>
-                  </View>
-                  <View style={[styles.mealItem, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                    <View style={[styles.mealIcon, { backgroundColor: `${secondary}0D` }]}>
-                      <MaterialIcons name="restaurant-menu" size={20} color={secondary} />
-                    </View>
-                    <View style={styles.mealInfo}>
-                      <Text style={[styles.mealItemTitle, { color: text }]}>清蒸鲈鱼与时蔬</Text>
-                      <Text style={[styles.mealItemDesc, { color: outline }]}>小份, 糙米饭 • 380 kcal</Text>
-                    </View>
+                  <View
+                    style={[
+                      styles.intakeSummaryCard,
+                      {
+                        backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(242,243,255,0.5)',
+                        borderLeftWidth: StyleSheet.hairlineWidth,
+                        borderColor: outlineVariant,
+                      },
+                    ]}>
+                    <Text style={[styles.intakeSummaryLabel, { color: outline }]}>饮水量</Text>
+                    <Text style={[styles.intakeSummaryValue, { color: secondary }]}>
+                      {sheetHealthTotals != null ? (
+                        <>
+                          {new Intl.NumberFormat('zh-CN').format(Math.round(sheetHealthTotals.hydration))}{' '}
+                          <Text style={styles.intakeSummaryUnit}>毫升</Text>
+                        </>
+                      ) : (
+                        <Text style={[styles.intakeSummaryUnit, { color: outline }]}>—</Text>
+                      )}
+                    </Text>
                   </View>
                 </View>
-
-                <View style={styles.mealGroup}>
-                  <View style={styles.mealHeader}>
-                    <View style={styles.mealHeaderLeft}>
-                      <View style={[styles.mealDot, { backgroundColor: primary }]} />
-                      <Text style={[styles.mealTitle, { color: outline }]}>水分 Hydration</Text>
-                    </View>
-                    <Text style={[styles.mealTime, { color: outlineVariant }]}>Whole Day</Text>
+                <View style={[styles.intakeSummaryRow, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: outlineVariant }]}>
+                  <View style={[styles.intakeSummaryCard, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(242,243,255,0.5)' }]}>
+                    <Text style={[styles.intakeSummaryLabel, { color: outline }]}>蛋白质</Text>
+                    <Text style={[styles.intakeSummaryValue, { color: text }]}>
+                      {sheetHealthTotals != null ? (
+                        <>
+                          {new Intl.NumberFormat('zh-CN').format(Math.round(sheetHealthTotals.protein * 10) / 10)}{' '}
+                          <Text style={styles.intakeSummaryUnit}>克</Text>
+                        </>
+                      ) : (
+                        <Text style={[styles.intakeSummaryUnit, { color: outline }]}>—</Text>
+                      )}
+                    </Text>
                   </View>
-                  <View style={[styles.hydrationCard, { backgroundColor: `${primary}0D`, borderColor: `${primary}1A` }]}>
-                    <View style={[styles.mealIcon, { backgroundColor: `${primary}1A` }]}>
-                      <MaterialIcons name="water-drop" size={20} color={primary} />
-                    </View>
-                    <View style={styles.hydrationInfo}>
-                      <Text style={[styles.mealItemTitle, { color: text }]}>全天累计饮水</Text>
-                      <View style={styles.hydrationProgressRow}>
-                        <View style={[styles.hydrationProgressBar, { backgroundColor: `${primary}1A` }]}>
-                          <View style={[styles.hydrationProgressFill, { backgroundColor: primary, width: '85%' }]} />
-                        </View>
-                        <Text style={[styles.hydrationText, { color: primary }]}>2.1 / 2.5 L</Text>
-                      </View>
-                    </View>
-                  </View>
-                </View>
-
-                <View style={styles.mealGroup}>
-                  <View style={styles.mealHeader}>
-                    <View style={styles.mealHeaderLeft}>
-                      <View style={[styles.mealDot, { backgroundColor: tertiary }]} />
-                      <Text style={[styles.mealTitle, { color: outline }]}>蛋白质摄入 Protein</Text>
-                    </View>
-                    <Text style={[styles.mealTime, { color: outlineVariant }]}>Whole Day</Text>
-                  </View>
-                  <View style={[styles.hydrationCard, { backgroundColor: `${tertiary}0D`, borderColor: `${tertiary}1A` }]}>
-                    <View style={[styles.mealIcon, { backgroundColor: `${tertiary}1A` }]}>
-                      <MaterialIcons name="fitness-center" size={20} color={tertiary} />
-                    </View>
-                    <View style={styles.hydrationInfo}>
-                      <Text style={[styles.mealItemTitle, { color: text }]}>今日蛋白质目标完成</Text>
-                      <View style={styles.hydrationProgressRow}>
-                        <View style={[styles.hydrationProgressBar, { backgroundColor: `${tertiary}1A` }]}>
-                          <View style={[styles.hydrationProgressFill, { backgroundColor: tertiary, width: '82%' }]} />
-                        </View>
-                        <Text style={[styles.hydrationText, { color: tertiary }]}>82 / 100 g</Text>
-                      </View>
-                    </View>
-                  </View>
-                </View>
-
-                <View style={styles.mealGroup}>
-                  <View style={styles.mealHeader}>
-                    <View style={styles.mealHeaderLeft}>
-                      <View style={[styles.mealDot, { backgroundColor: error }]} />
-                      <Text style={[styles.mealTitle, { color: outline }]}>钠摄入 Sodium</Text>
-                    </View>
-                    <Text style={[styles.mealTime, { color: outlineVariant }]}>Whole Day</Text>
-                  </View>
-                  <View style={[styles.hydrationCard, { backgroundColor: `${error}0D`, borderColor: `${error}1A` }]}>
-                    <View style={[styles.mealIcon, { backgroundColor: `${error}1A` }]}>
-                      <MaterialIcons name="warning-amber" size={20} color={error} />
-                    </View>
-                    <View style={styles.hydrationInfo}>
-                      <Text style={[styles.mealItemTitle, { color: text }]}>今日钠摄入监控</Text>
-                      <View style={styles.hydrationProgressRow}>
-                        <View style={[styles.hydrationProgressBar, { backgroundColor: `${error}1A` }]}>
-                          <View style={[styles.hydrationProgressFill, { backgroundColor: error, width: '82.5%' }]} />
-                        </View>
-                        <Text style={[styles.hydrationText, { color: error }]}>1,650 / 2,000 mg</Text>
-                      </View>
-                    </View>
+                  <View
+                    style={[
+                      styles.intakeSummaryCard,
+                      {
+                        backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(242,243,255,0.5)',
+                        borderLeftWidth: StyleSheet.hairlineWidth,
+                        borderColor: outlineVariant,
+                      },
+                    ]}>
+                    <Text style={[styles.intakeSummaryLabel, { color: outline }]}>碳水化合物</Text>
+                    <Text style={[styles.intakeSummaryValue, { color: text }]}>
+                      {sheetHealthTotals != null ? (
+                        <>
+                          {new Intl.NumberFormat('zh-CN').format(Math.round(sheetHealthTotals.carbohydrate * 10) / 10)}{' '}
+                          <Text style={styles.intakeSummaryUnit}>克</Text>
+                        </>
+                      ) : (
+                        <Text style={[styles.intakeSummaryUnit, { color: outline }]}>—</Text>
+                      )}
+                    </Text>
                   </View>
                 </View>
               </View>
+
+              {sheetDataLoading ? (
+                <ActivityIndicator style={{ marginTop: 16 }} color={primary} />
+              ) : sheetHealthRecords.length === 0 && sheetHealthTotals == null ? (
+                <Text style={[styles.emptyHint, { color: outline }]}>当日暂无健康摄入记录</Text>
+              ) : (
+                <View style={styles.mealList}>
+                  {(() => {
+                    const tgtH =
+                      sheetHealthRecords.find((r) => r.target_hydration > 0)?.target_hydration ?? 2500;
+                    const tgtP = sheetHealthRecords.find((r) => r.target_protein > 0)?.target_protein ?? 100;
+                    const tgtC =
+                      sheetHealthRecords.find((r) => r.target_carbohydrate > 0)?.target_carbohydrate ?? 250;
+                    const tgtS = sheetHealthRecords.find((r) => r.target_sodium > 0)?.target_sodium ?? 2000;
+                    const h = sheetHealthTotals?.hydration ?? 0;
+                    const p = sheetHealthTotals?.protein ?? 0;
+                    const c = sheetHealthTotals?.carbohydrate ?? 0;
+                    const s = sheetHealthTotals?.sodium ?? 0;
+                    const hPct: DimensionValue =
+                      tgtH > 0 ? `${Math.min(100, Math.round((h / tgtH) * 100))}%` : '0%';
+                    const pPct: DimensionValue =
+                      tgtP > 0 ? `${Math.min(100, Math.round((p / tgtP) * 100))}%` : '0%';
+                    const cPct: DimensionValue =
+                      tgtC > 0 ? `${Math.min(100, Math.round((c / tgtC) * 100))}%` : '0%';
+                    const sPct: DimensionValue =
+                      tgtS > 0 ? `${Math.min(100, Math.round((s / tgtS) * 100))}%` : '0%';
+                    return (
+                      <>
+                        <View style={styles.mealGroup}>
+                          <View style={styles.mealHeader}>
+                            <View style={styles.mealHeaderLeft}>
+                              <View style={[styles.mealDot, { backgroundColor: primary }]} />
+                              <Text style={[styles.mealTitle, { color: outline }]}>水分（汇总）</Text>
+                            </View>
+                            <Text style={[styles.mealTime, { color: outlineVariant }]}>全天</Text>
+                          </View>
+                          <View style={[styles.hydrationCard, { backgroundColor: `${primary}0D`, borderColor: `${primary}1A` }]}>
+                            <View style={[styles.mealIcon, { backgroundColor: `${primary}1A` }]}>
+                              <MaterialIcons name="water-drop" size={20} color={primary} />
+                            </View>
+                            <View style={styles.hydrationInfo}>
+                              <Text style={[styles.mealItemTitle, { color: text }]}>饮水与目标</Text>
+                              <View style={styles.hydrationProgressRow}>
+                                <View style={[styles.hydrationProgressBar, { backgroundColor: `${primary}1A` }]}>
+                                  <View style={[styles.hydrationProgressFill, { backgroundColor: primary, width: hPct }]} />
+                                </View>
+                                <Text style={[styles.hydrationText, { color: primary }]}>
+                                  {(h / 1000).toFixed(1)} / {(tgtH / 1000).toFixed(1)} 升
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
+                        </View>
+
+                        <View style={styles.mealGroup}>
+                          <View style={styles.mealHeader}>
+                            <View style={styles.mealHeaderLeft}>
+                              <View style={[styles.mealDot, { backgroundColor: tertiary }]} />
+                              <Text style={[styles.mealTitle, { color: outline }]}>蛋白质（汇总）</Text>
+                            </View>
+                            <Text style={[styles.mealTime, { color: outlineVariant }]}>全天</Text>
+                          </View>
+                          <View style={[styles.hydrationCard, { backgroundColor: `${tertiary}0D`, borderColor: `${tertiary}1A` }]}>
+                            <View style={[styles.mealIcon, { backgroundColor: `${tertiary}1A` }]}>
+                              <MaterialIcons name="fitness-center" size={20} color={tertiary} />
+                            </View>
+                            <View style={styles.hydrationInfo}>
+                              <Text style={[styles.mealItemTitle, { color: text }]}>摄入与目标</Text>
+                              <View style={styles.hydrationProgressRow}>
+                                <View style={[styles.hydrationProgressBar, { backgroundColor: `${tertiary}1A` }]}>
+                                  <View style={[styles.hydrationProgressFill, { backgroundColor: tertiary, width: pPct }]} />
+                                </View>
+                                <Text style={[styles.hydrationText, { color: tertiary }]}>
+                                  {new Intl.NumberFormat('zh-CN').format(Math.round(p * 10) / 10)} /{' '}
+                                  {new Intl.NumberFormat('zh-CN').format(tgtP)} 克
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
+                        </View>
+
+                        <View style={styles.mealGroup}>
+                          <View style={styles.mealHeader}>
+                            <View style={styles.mealHeaderLeft}>
+                              <View style={[styles.mealDot, { backgroundColor: secondary }]} />
+                              <Text style={[styles.mealTitle, { color: outline }]}>碳水化合物（汇总）</Text>
+                            </View>
+                            <Text style={[styles.mealTime, { color: outlineVariant }]}>全天</Text>
+                          </View>
+                          <View style={[styles.hydrationCard, { backgroundColor: `${secondary}14`, borderColor: `${secondary}33` }]}>
+                            <View style={[styles.mealIcon, { backgroundColor: `${secondary}26` }]}>
+                              <MaterialIcons name="bakery-dining" size={20} color={secondary} />
+                            </View>
+                            <View style={styles.hydrationInfo}>
+                              <Text style={[styles.mealItemTitle, { color: text }]}>摄入与目标</Text>
+                              <View style={styles.hydrationProgressRow}>
+                                <View style={[styles.hydrationProgressBar, { backgroundColor: `${secondary}26` }]}>
+                                  <View style={[styles.hydrationProgressFill, { backgroundColor: secondary, width: cPct }]} />
+                                </View>
+                                <Text style={[styles.hydrationText, { color: secondary }]}>
+                                  {new Intl.NumberFormat('zh-CN').format(Math.round(c * 10) / 10)} /{' '}
+                                  {new Intl.NumberFormat('zh-CN').format(tgtC)} 克
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
+                        </View>
+
+                        <View style={styles.mealGroup}>
+                          <View style={styles.mealHeader}>
+                            <View style={styles.mealHeaderLeft}>
+                              <View style={[styles.mealDot, { backgroundColor: error }]} />
+                              <Text style={[styles.mealTitle, { color: outline }]}>钠（汇总）</Text>
+                            </View>
+                            <Text style={[styles.mealTime, { color: outlineVariant }]}>全天</Text>
+                          </View>
+                          <View style={[styles.hydrationCard, { backgroundColor: `${error}0D`, borderColor: `${error}1A` }]}>
+                            <View style={[styles.mealIcon, { backgroundColor: `${error}1A` }]}>
+                              <MaterialIcons name="warning-amber" size={20} color={error} />
+                            </View>
+                            <View style={styles.hydrationInfo}>
+                              <Text style={[styles.mealItemTitle, { color: text }]}>摄入与目标</Text>
+                              <View style={styles.hydrationProgressRow}>
+                                <View style={[styles.hydrationProgressBar, { backgroundColor: `${error}1A` }]}>
+                                  <View style={[styles.hydrationProgressFill, { backgroundColor: error, width: sPct }]} />
+                                </View>
+                                <Text style={[styles.hydrationText, { color: error }]}>
+                                  {new Intl.NumberFormat('zh-CN').format(Math.round(s))} /{' '}
+                                  {new Intl.NumberFormat('zh-CN').format(tgtS)} 毫克
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
+                        </View>
+
+                        {sheetHealthRecords.map((rec) => {
+                          const t = rec.created_at?.includes('T')
+                            ? rec.created_at.split('T')[1]?.slice(0, 5)
+                            : '';
+                          return (
+                            <View key={rec.id} style={styles.mealGroup}>
+                              <View style={styles.mealHeader}>
+                                <View style={styles.mealHeaderLeft}>
+                                  <View style={[styles.mealDot, { backgroundColor: secondary }]} />
+                                  <Text style={[styles.mealTitle, { color: outline }]}>
+                                    {rec.quick_add_key?.trim() ? rec.quick_add_key : '健康记录'}
+                                  </Text>
+                                </View>
+                                <Text style={[styles.mealTime, { color: outlineVariant }]}>{t || '—'}</Text>
+                              </View>
+                              <View style={[styles.mealItem, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                                <View style={[styles.mealIcon, { backgroundColor: `${secondary}0D` }]}>
+                                  <MaterialIcons name="restaurant-menu" size={20} color={secondary} />
+                                </View>
+                                <View style={styles.mealInfo}>
+                                  <Text style={[styles.mealItemTitle, { color: text }]}>单次记录</Text>
+                                  <Text style={[styles.mealItemDesc, { color: outline }]}>
+                                    饮水 {new Intl.NumberFormat('zh-CN').format(rec.hydration)} ml · 蛋白质{' '}
+                                    {rec.protein} g · 碳水 {rec.carbohydrate} g · 钠{' '}
+                                    {new Intl.NumberFormat('zh-CN').format(rec.sodium)} mg
+                                  </Text>
+                                </View>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </>
+                    );
+                  })()}
+                </View>
+              )}
             </View>
           )}
         </ScrollView>
@@ -878,18 +1141,29 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   dayBottom: {
-    gap: 6,
+    gap: 4,
+    width: '100%',
+    alignSelf: 'stretch',
   },
   bars: {
     gap: 6,
+    width: '100%',
   },
   bar: {
     height: 6,
     borderRadius: 999,
   },
   amountText: {
-    fontSize: 10,
-    letterSpacing: -0.1,
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: -0.35,
+    lineHeight: 12,
+    textAlign: 'center',
+    width: '100%',
+  },
+  amountPlaceholder: {
+    height: 14,
+    width: '100%',
   },
   legend: {
     paddingHorizontal: 10,
@@ -1012,6 +1286,12 @@ const styles = StyleSheet.create({
   taskList: {
     gap: 16,
     paddingTop: 16,
+  },
+  emptyHint: {
+    textAlign: 'center',
+    marginTop: 28,
+    fontSize: 14,
+    fontWeight: '600',
   },
   taskItem: {
     flexDirection: 'row',
@@ -1138,13 +1418,16 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
   intakeSummary: {
-    flexDirection: 'row',
     borderRadius: 20,
     overflow: 'hidden',
   },
+  intakeSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
   intakeSummaryCard: {
     flex: 1,
-    padding: 16,
+    padding: 14,
     alignItems: 'center',
   },
   intakeSummaryLabel: {
