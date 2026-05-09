@@ -98,6 +98,7 @@ export default function RootLayout() {
             <Stack.Screen name="intake-history" />
             <Stack.Screen name="finance-calendar" />
             <Stack.Screen name="savings-plan" />
+            <Stack.Screen name="cash-flow" />
             <Stack.Screen name="ai-finance-analysis" />
             <Stack.Screen name="schedule-picker" />
             <Stack.Screen name="edit-profile" />

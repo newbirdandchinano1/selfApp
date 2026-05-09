@@ -1,6 +1,12 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
+import {
+  getMonthKey,
+  loadMonthBudgetSettings,
+  persistMonthBudgetSettings,
+  type MonthBudgetSetting,
+} from '@/lib/finance-monthly-budget';
 import { createFinanceTransaction, getFinanceAccountsWithBalance, getFinanceTransactions } from '@/lib/repositories/finance/finance';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -9,7 +15,25 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import React from 'react';
-import { Alert, Animated, Dimensions, Easing, Image, Modal, Platform, Pressable, ScrollView, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
+import {
+  Alert,
+  Animated,
+  Dimensions,
+  Easing,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleProp,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+  ViewStyle,
+} from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
 import Constants from 'expo-constants';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -118,6 +142,10 @@ export default function FinanceScreen() {
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [showNetAmounts, setShowNetAmounts] = React.useState(true);
   const [budgetCardNetExpanded, setBudgetCardNetExpanded] = React.useState(false);
+  const [monthBudgetSettings, setMonthBudgetSettings] = React.useState<Record<string, MonthBudgetSetting>>({});
+  const [isBudgetAdjustVisible, setIsBudgetAdjustVisible] = React.useState(false);
+  const [budgetBaseDraft, setBudgetBaseDraft] = React.useState('');
+  const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
   const [visibleDayCount, setVisibleDayCount] = React.useState(1);
   const [isLoadingMoreDays, setIsLoadingMoreDays] = React.useState(false);
   const [sheetImageUris, setSheetImageUris] = React.useState<string[]>([]);
@@ -126,6 +154,7 @@ export default function FinanceScreen() {
   const [speechApi, setSpeechApi] = React.useState<SpeechRecognitionApi | null>(null);
   const [speechApiStatus, setSpeechApiStatus] = React.useState<'loading' | 'ready' | 'unavailable'>('unavailable');
   const [speechTriedOnce, setSpeechTriedOnce] = React.useState(false);
+  const budgetBaseInputRef = React.useRef<TextInput>(null);
 
   const baseBottomAnim = React.useRef(new Animated.Value(collapsedBottom)).current;
   const revealAnim = React.useRef(new Animated.Value(0)).current;
@@ -175,10 +204,15 @@ export default function FinanceScreen() {
     void loadFinanceAccounts();
   }, [loadFinanceAccounts, loadFinanceTransactions]);
 
+  React.useEffect(() => {
+    void loadMonthBudgetSettings().then(setMonthBudgetSettings);
+  }, []);
+
   useFocusEffect(
     React.useCallback(() => {
       void loadFinanceTransactions();
       void loadFinanceAccounts();
+      void loadMonthBudgetSettings().then(setMonthBudgetSettings);
     }, [loadFinanceAccounts, loadFinanceTransactions])
   );
 
@@ -526,6 +560,35 @@ export default function FinanceScreen() {
   const monthlySurplus = monthlyIncome - monthlyExpense;
   const savingsRate = monthlyIncome > 0 ? (monthlySurplus / monthlyIncome) * 100 : 0;
 
+  const calendarAnchor = `${today.getFullYear()}-${today.getMonth()}`;
+  const prevMonthTransactions = React.useMemo(() => {
+    const y = today.getFullYear();
+    const m = today.getMonth();
+    const start = new Date(y, m - 1, 1);
+    const end = new Date(y, m, 1);
+    return financeTransactions.filter((txn) => {
+      const happenedAt = new Date(txn.happened_at);
+      return happenedAt >= start && happenedAt < end;
+    });
+  }, [financeTransactions, calendarAnchor]);
+  const prevMonthIncome = React.useMemo(
+    () =>
+      prevMonthTransactions.reduce((sum, txn) => {
+        const displayAmount = getTxnDisplayAmount(txn);
+        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
+      }, 0),
+    [getTxnDisplayAmount, prevMonthTransactions]
+  );
+  const prevMonthExpense = React.useMemo(
+    () =>
+      prevMonthTransactions.reduce((sum, txn) => {
+        const displayAmount = getTxnDisplayAmount(txn);
+        return displayAmount < 0 ? sum + Math.abs(displayAmount) : sum;
+      }, 0),
+    [getTxnDisplayAmount, prevMonthTransactions]
+  );
+  const lastMonthRemaining = Math.max(0, prevMonthIncome - prevMonthExpense);
+
   const hiddenAmountText = '****';
   const monthlyIncomeText = showNetAmounts ? formatCurrencyWithDecimals(monthlyIncome) : hiddenAmountText;
   const monthlyExpenseText = showNetAmounts ? formatCurrencyWithDecimals(monthlyExpense) : hiddenAmountText;
@@ -536,7 +599,19 @@ export default function FinanceScreen() {
   const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
   const dayOfMonth = today.getDate();
   const daysLeftIncludingToday = Math.max(1, daysInMonth - dayOfMonth + 1);
-  const budgetTotalAmount = monthlyIncome > 0 ? monthlyIncome : Math.max(monthlyExpense * 1.05, 500);
+  const currentMonthKey = getMonthKey(today);
+  const budgetSheetMonthNumber = parseInt(currentMonthKey.split('-')[1] ?? '1', 10);
+  const persistedBudgetSetting = monthBudgetSettings[currentMonthKey];
+  const effectiveBaseBudget =
+    currentMonthKey in monthBudgetSettings ? monthBudgetSettings[currentMonthKey]!.baseAmount : 0;
+  const includeLastBalanceEffective = persistedBudgetSetting?.includeLastBalance ?? false;
+  const budgetTotalAmount = includeLastBalanceEffective
+    ? effectiveBaseBudget + lastMonthRemaining
+    : effectiveBaseBudget;
+  const parsedBudgetDraft = parseFloat(budgetBaseDraft.trim().replace(/,/g, ''));
+  const baseForBudgetPreview =
+    Number.isFinite(parsedBudgetDraft) && parsedBudgetDraft >= 0 ? parsedBudgetDraft : effectiveBaseBudget;
+  const budgetPreviewTotal = modalIncludeLast ? baseForBudgetPreview + lastMonthRemaining : baseForBudgetPreview;
   const budgetSurplusAmount = budgetTotalAmount - monthlyExpense;
   const budgetUsedPercentRaw = budgetTotalAmount > 0 ? (monthlyExpense / budgetTotalAmount) * 100 : 0;
   const budgetUsedPercent = Math.min(100, Math.max(0, budgetUsedPercentRaw));
@@ -729,6 +804,48 @@ export default function FinanceScreen() {
     setIsAccountPickerVisible(false);
     setIsSheetVisible(false);
   }, [isSavingTransaction, speechApi]);
+
+  const closeBudgetAdjust = React.useCallback(() => {
+    setIsBudgetAdjustVisible(false);
+  }, []);
+
+  const openBudgetAdjust = React.useCallback(() => {
+    const row = monthBudgetSettings[currentMonthKey];
+    const base = row ? row.baseAmount : 0;
+    const inc = row?.includeLastBalance ?? false;
+    setBudgetBaseDraft(base.toFixed(2));
+    setModalIncludeLast(inc);
+    setIsBudgetAdjustVisible(true);
+  }, [monthBudgetSettings, currentMonthKey]);
+
+  const handleSaveBudgetAdjust = React.useCallback(() => {
+    const normalized = budgetBaseDraft.trim().replace(/,/g, '');
+    const n = parseFloat(normalized);
+    if (!Number.isFinite(n) || n < 0) {
+      Alert.alert('金额无效', '请输入大于等于 0 的月预算基数。');
+      return;
+    }
+    setMonthBudgetSettings((prev) => {
+      const next = {
+        ...prev,
+        [currentMonthKey]: { baseAmount: n, includeLastBalance: modalIncludeLast },
+      };
+      void persistMonthBudgetSettings(next);
+      return next;
+    });
+    setIsBudgetAdjustVisible(false);
+  }, [budgetBaseDraft, currentMonthKey, modalIncludeLast]);
+
+  const handleResetBudgetAdjust = React.useCallback(() => {
+    setMonthBudgetSettings((prev) => {
+      if (!(currentMonthKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[currentMonthKey];
+      void persistMonthBudgetSettings(next);
+      return next;
+    });
+    setIsBudgetAdjustVisible(false);
+  }, [currentMonthKey]);
 
   const handleSelectAccount = React.useCallback((accountId: string) => {
     setSelectedAccountId(accountId);
@@ -1088,9 +1205,16 @@ export default function FinanceScreen() {
                         <Text style={[styles.budgetSurplusTitle, { color: subtle }]}>本月预算结余</Text>
                       </View>
                       <View style={styles.budgetAmountRow}>
-                        <Text style={[styles.budgetSurplusValue, { color: text }]}>
-                          {showNetAmounts ? formatCurrencyWithDecimals(budgetSurplusAmount) : hiddenAmountText}
-                        </Text>
+                        <Pressable
+                          onPress={openBudgetAdjust}
+                          hitSlop={8}
+                          style={({ pressed }) => [pressed && { opacity: 0.72 }]}
+                          accessibilityRole="button"
+                          accessibilityLabel="调整本月预算">
+                          <Text style={[styles.budgetSurplusValue, { color: text }]}>
+                            {showNetAmounts ? formatCurrencyWithDecimals(budgetSurplusAmount) : hiddenAmountText}
+                          </Text>
+                        </Pressable>
                         <Pressable
                           onPress={() => setShowNetAmounts((prev) => !prev)}
                           style={({ pressed }) => [styles.netVisibilityBtn, pressed && { opacity: 0.75 }]}
@@ -1244,17 +1368,38 @@ export default function FinanceScreen() {
                     </View>
                   ) : null}
 
-                  <Pressable
-                    onPress={() => router.push('/assets')}
-                    style={({ pressed }) => [
-                      styles.assetsBtn,
-                      { backgroundColor: `${primary}14`, borderColor: `${primary}33`, marginTop: budgetCardNetExpanded ? 12 : 4 },
-                      pressed && { opacity: 0.9 },
+                  <View
+                    style={[
+                      styles.assetsBtnRow,
+                      { marginTop: budgetCardNetExpanded ? 12 : 4 },
                     ]}>
-                    <MaterialIcons name="account-balance" size={18} color={primary} />
-                    <Text style={[styles.assetsBtnText, { color: primary }]}>资产</Text>
-                    <MaterialIcons name="arrow-forward-ios" size={14} color={primary} />
-                  </Pressable>
+                    <Pressable
+                      onPress={() => router.push('/assets')}
+                      style={({ pressed }) => [
+                        styles.assetsBtn,
+                        { backgroundColor: `${primary}14`, borderColor: `${primary}33` },
+                        pressed && { opacity: 0.9 },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="资产">
+                      <MaterialIcons name="account-balance" size={18} color={primary} />
+                      <Text style={[styles.assetsBtnText, { color: primary }]}>资产</Text>
+                      <MaterialIcons name="arrow-forward-ios" size={14} color={primary} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => router.push('/cash-flow')}
+                      style={({ pressed }) => [
+                        styles.assetsBtn,
+                        { backgroundColor: `${primary}14`, borderColor: `${primary}33` },
+                        pressed && { opacity: 0.9 },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="现金流图">
+                      <MaterialIcons name="show-chart" size={18} color={primary} />
+                      <Text style={[styles.assetsBtnText, { color: primary }]}>现金流图</Text>
+                      <MaterialIcons name="arrow-forward-ios" size={14} color={primary} />
+                    </Pressable>
+                  </View>
             </View>
           </Animated.View>
 
@@ -1861,6 +2006,113 @@ export default function FinanceScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={isBudgetAdjustVisible} animationType="slide" transparent onRequestClose={closeBudgetAdjust}>
+        <KeyboardAvoidingView
+          style={styles.sheetOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <Pressable style={styles.sheetBackdrop} onPress={closeBudgetAdjust} />
+          <View style={[styles.budgetDetailsSheet, { paddingBottom: Math.max(24, insets.bottom), backgroundColor: surface }]}>
+            <View style={styles.budgetDetailsHeader}>
+              <Text style={[styles.budgetDetailsTitle, { color: text }]}>
+                {budgetSheetMonthNumber}月预算详情
+              </Text>
+              <Pressable
+                onPress={handleResetBudgetAdjust}
+                style={({ pressed }) => [styles.budgetDetailsResetBtn, pressed && { opacity: 0.85 }]}>
+                <MaterialIcons name="refresh" size={16} color="#ef4444" />
+                <Text style={styles.budgetDetailsResetText}>重置预算</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.budgetDetailsTotalWrap}>
+              <View style={[styles.budgetDetailsTotalCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb' }]}>
+                <Text style={[styles.budgetDetailsTotalLabel, { color: subtle }]}>本月预算</Text>
+                <Text style={[styles.budgetDetailsTotalValue, { color: text }]}>
+                  {formatCurrencyWithDecimals(budgetPreviewTotal)}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.budgetDetailsComposition}>
+              <View style={styles.budgetDetailsCompositionTop}>
+                <Text style={[styles.budgetDetailsCompositionTitle, { color: subtle }]}>本月预算构成</Text>
+                <View style={styles.budgetDetailsSwitchRow}>
+                  <Text style={[styles.budgetDetailsSwitchLabel, { color: subtle }]}>包含上月结余</Text>
+                  <Switch
+                    value={modalIncludeLast}
+                    onValueChange={setModalIncludeLast}
+                    trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
+                    thumbColor="#ffffff"
+                    ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.budgetDetailsBreakdownRow}>
+                <Pressable
+                  onPress={() => budgetBaseInputRef.current?.focus()}
+                  style={({ pressed }) => [
+                    styles.budgetDetailsBreakdownCard,
+                    {
+                      backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb',
+                      opacity: pressed ? 0.92 : 1,
+                    },
+                  ]}>
+                  <View style={styles.budgetDetailsBreakdownLabelRow}>
+                    <Text style={[styles.budgetDetailsBreakdownLabel, { color: subtle }]}>月预算基数</Text>
+                    <MaterialIcons name="edit" size={12} color={primary} style={{ opacity: 0.85 }} />
+                  </View>
+                  <View style={styles.budgetDetailsBaseInputWrap}>
+                    <Text style={[styles.budgetDetailsBreakdownYuan, { color: text }]}>¥</Text>
+                    <TextInput
+                      ref={budgetBaseInputRef}
+                      value={budgetBaseDraft}
+                      onChangeText={setBudgetBaseDraft}
+                      keyboardType="decimal-pad"
+                      placeholder="0.00"
+                      placeholderTextColor={subtle}
+                      style={[styles.budgetDetailsBreakdownInput, { color: text }]}
+                      selectTextOnFocus
+                    />
+                  </View>
+                </Pressable>
+
+                <Text style={[styles.budgetDetailsPlus, { color: isDark ? '#4b5563' : '#d1d5db' }]}>+</Text>
+
+                <View
+                  style={[
+                    styles.budgetDetailsBreakdownCard,
+                    {
+                      backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb',
+                      opacity: modalIncludeLast ? 1 : 0.5,
+                    },
+                  ]}>
+                  <Text style={[styles.budgetDetailsBreakdownLabel, { color: subtle }]}>上月剩余</Text>
+                  <Text
+                    style={[
+                      styles.budgetDetailsBreakdownAmount,
+                      modalIncludeLast ? { color: text } : { color: isDark ? '#4b5563' : '#d1d5db' },
+                    ]}>
+                    {modalIncludeLast ? formatCurrencyWithDecimals(lastMonthRemaining) : '--'}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <Pressable
+              onPress={handleSaveBudgetAdjust}
+              style={({ pressed }) => [
+                styles.budgetDetailsSaveBtn,
+                { backgroundColor: tertiary, opacity: pressed ? 0.92 : 1 },
+              ]}>
+              <Text style={styles.budgetDetailsSaveText}>完成</Text>
+            </Pressable>
+
+            <View style={[styles.budgetDetailsHomeIndicator, { backgroundColor: isDark ? '#9ca3af' : '#111827' }]} />
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2155,8 +2407,14 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: -0.2,
   },
+  assetsBtnRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 10,
+    alignSelf: 'flex-start',
+  },
   assetsBtn: {
-    marginTop: 16,
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 10,
@@ -2165,7 +2423,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    alignSelf: 'flex-start',
   },
   assetsBtnText: {
     fontSize: 13,
@@ -2925,5 +3182,149 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  budgetDetailsSheet: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    overflow: 'hidden',
+    maxWidth: 480,
+    alignSelf: 'center',
+    width: '100%',
+  },
+  budgetDetailsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    paddingTop: 28,
+    paddingBottom: 12,
+  },
+  budgetDetailsTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    flex: 1,
+    paddingRight: 12,
+  },
+  budgetDetailsResetBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  budgetDetailsResetText: {
+    color: '#ef4444',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  budgetDetailsTotalWrap: {
+    paddingHorizontal: 24,
+    marginBottom: 28,
+  },
+  budgetDetailsTotalCard: {
+    borderRadius: 16,
+    paddingVertical: 22,
+    paddingHorizontal: 22,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  budgetDetailsTotalLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  budgetDetailsTotalValue: {
+    fontSize: 22,
+    fontWeight: '600',
+  },
+  budgetDetailsComposition: {
+    paddingHorizontal: 24,
+    marginBottom: 20,
+    gap: 16,
+  },
+  budgetDetailsCompositionTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  budgetDetailsCompositionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  budgetDetailsSwitchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  budgetDetailsSwitchLabel: {
+    fontSize: 14,
+  },
+  budgetDetailsBreakdownRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    justifyContent: 'space-between',
+    gap: 4,
+  },
+  budgetDetailsBreakdownCard: {
+    flex: 1,
+    borderRadius: 16,
+    padding: 18,
+    minHeight: 96,
+    justifyContent: 'space-between',
+  },
+  budgetDetailsBreakdownLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 8,
+  },
+  budgetDetailsBreakdownLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  budgetDetailsBaseInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  budgetDetailsBreakdownYuan: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  budgetDetailsBreakdownInput: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '600',
+    paddingVertical: 0,
+    minWidth: 0,
+  },
+  budgetDetailsBreakdownAmount: {
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  budgetDetailsPlus: {
+    fontSize: 22,
+    fontWeight: '300',
+    alignSelf: 'center',
+    paddingHorizontal: 6,
+  },
+  budgetDetailsSaveBtn: {
+    marginHorizontal: 24,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  budgetDetailsSaveText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  budgetDetailsHomeIndicator: {
+    width: 128,
+    height: 4,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 8,
+    opacity: 0.35,
   },
 });
