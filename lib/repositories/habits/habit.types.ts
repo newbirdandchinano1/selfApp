@@ -7,6 +7,7 @@ export type HabitRow = {
   tag: string | null;
   icon: string;
   tone: string | null;
+  note: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -22,10 +23,11 @@ export type CreateHabitInput = {
   icon: string;
   tag?: string | null;
   tone?: string | null;
+  note?: string | null;
   extra_data?: string | null;
 };
 
 export type UpdateHabitInput = Partial<
-  Pick<HabitRow, 'context' | 'name' | 'tag' | 'icon' | 'tone' | 'extra_data'>
+  Pick<HabitRow, 'context' | 'name' | 'tag' | 'icon' | 'tone' | 'note' | 'extra_data'>
 >;
 

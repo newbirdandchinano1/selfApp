@@ -155,6 +155,18 @@ export default function AddAccountScreen() {
     }
   }, [accountName, accountType, balance, notes, iconKey, router, customIsLiability, customTypeName, isSelectedLiability]);
 
+  const handleBalanceChange = React.useCallback((text: string) => {
+    let s = text.replace(/[^\d.-]/g, '');
+    const negative = s.startsWith('-');
+    s = s.replace(/-/g, '');
+    const dot = s.indexOf('.');
+    if (dot !== -1) {
+      s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '');
+    }
+    if (negative) s = `-${s}`;
+    setBalance(s);
+  }, []);
+
   const hasAccountsForCustomType = React.useCallback(async (typeName: string) => {
     const targetTypeName = typeName.trim();
     if (!targetTypeName) return false;
@@ -348,11 +360,10 @@ export default function AddAccountScreen() {
                   <Text style={[styles.currency, { color: accentColor }]}>¥</Text>
                   <TextInput
                     value={balance}
-                    onChangeText={setBalance}
+                    onChangeText={handleBalanceChange}
                     placeholder="0.00"
                     placeholderTextColor={outlineVariant}
-                    keyboardType="default"
-                    inputMode="decimal"
+                    keyboardType="decimal-pad"
                     style={[styles.balanceInput, { color: theme.text }]}
                   />
                 </View>

@@ -6,7 +6,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type CycleTab = '每周定期' | '每周N天' | '每月定期' | '每月N天';
@@ -15,6 +15,53 @@ const WORK_DAYS = ['周一', '周二', '周三', '周四', '周五'];
 const WEEKEND_DAYS = ['周六', '周日'];
 const MONTH_FILTERS = ['上旬', '中旬', '下旬', '单号', '双号', '全选'];
 const PRESET_MONTHLY_N_DAYS = [5, 10, 15, 20, 25];
+const DEFAULT_QUANTIFY_UNIT = '次';
+
+/** 打卡图标备选（emoji，便于跨端一致显示） */
+const HABIT_ICON_CHOICES = [
+  '🥛',
+  '🏃',
+  '🧘',
+  '📖',
+  '✍️',
+  '💧',
+  '🍎',
+  '🥗',
+  '😴',
+  '🪥',
+  '🚶',
+  '🚴',
+  '🏋️',
+  '⏰',
+  '🎯',
+  '📝',
+  '📅',
+  '☀️',
+  '🌙',
+  '🍵',
+  '☕',
+  '🧴',
+  '💊',
+  '🎧',
+  '🌿',
+  '🧹',
+  '💪',
+  '🚿',
+  '🍽️',
+  '🦷',
+  '📵',
+  '🎵',
+  '🧠',
+  '❤️',
+  '🏊',
+  '🤸',
+  '🚭',
+  '🧊',
+  '🛏️',
+] as const;
+
+/** 数据库尚无情境时的占位列表（与 habit-context 空库行为一致） */
+const FALLBACK_CONTEXT_OPTIONS = ['起床', '晨间', '中午', '午间', '晚间', '睡前', '全天'];
 
 function pickParam(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
@@ -85,16 +132,9 @@ export default function AddHabitScreen() {
   const [contextOpen, setContextOpen] = React.useState(true);
   const [quantifyOpen, setQuantifyOpen] = React.useState(true);
   const [cycleOpen, setCycleOpen] = React.useState(true);
-  const [contextOptions, setContextOptions] = React.useState<string[]>([
-    '起床',
-    '晨间',
-    '中午',
-    '午间',
-    '晚间',
-    '睡前',
-    '全天',
-  ]);
-  const [selectedContext, setSelectedContext] = React.useState(initialContext ?? '起床');
+  const [contextOptions, setContextOptions] = React.useState<string[]>(() => [...FALLBACK_CONTEXT_OPTIONS]);
+  /** 新建时不预设「起床」，避免用户删光情境后仍被选中被注入列表 */
+  const [selectedContext, setSelectedContext] = React.useState(() => initialContext?.trim() ?? '');
   const [activeTab, setActiveTab] = React.useState<CycleTab>('每周N天');
   const [selectedDays, setSelectedDays] = React.useState<string[]>(['周一', '周二', '周三', '周四', '周五']);
   const [weeklyNDays, setWeeklyNDays] = React.useState(1);
@@ -106,6 +146,8 @@ export default function AddHabitScreen() {
   const [unitInput, setUnitInput] = React.useState('');
   const [eachPlus, setEachPlus] = React.useState(1);
   const [dailyGoal, setDailyGoal] = React.useState<number | null>(null);
+  const [habitNote, setHabitNote] = React.useState('');
+  const [iconPickerOpen, setIconPickerOpen] = React.useState(false);
 
   const bg = isDark ? theme.background : '#f8fafc';
   const card = isDark ? 'rgba(15,23,42,0.72)' : '#fff';
@@ -120,14 +162,20 @@ export default function AddHabitScreen() {
       const rows = await getHabitContexts();
       const names = rows.map((r) => r.name);
       const unique = Array.from(new Set(names));
-      // If current selection is a legacy context (habit row has it but table doesn't), keep it visible.
-      if (selectedContext && !unique.includes(selectedContext)) unique.push(selectedContext);
-      setContextOptions(unique.length > 0 ? unique : contextOptions);
+      const nextOptions = unique.length > 0 ? unique : [...FALLBACK_CONTEXT_OPTIONS];
+      setContextOptions(nextOptions);
+      // 新建打卡：选中项必须在当前可选列表中（不要用界面默认「起床」污染已删除的分类）
+      if (!isEditMode) {
+        setSelectedContext((prev) => {
+          const p = prev.trim();
+          if (p && nextOptions.includes(p)) return p;
+          return nextOptions[0] ?? '';
+        });
+      }
     } catch (err) {
       console.warn('加载情境分类失败', err);
-      // keep fallback
     }
-  }, [contextOptions, selectedContext]);
+  }, [isEditMode]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -165,7 +213,13 @@ export default function AddHabitScreen() {
         if (!row) return;
         setHabitName(row.name ?? '');
         setHabitIcon(row.icon ?? '🥛');
-        setSelectedContext(row.context ?? '起床');
+        const rawCtx = row.context?.trim() ?? '';
+        setContextOptions((opts) => {
+          if (rawCtx && !opts.includes(rawCtx)) return [...opts, rawCtx];
+          return opts;
+        });
+        setSelectedContext(rawCtx);
+        setHabitNote(row.note?.trim() ? row.note : '');
         if (row.extra_data) {
           try {
             const parsed = JSON.parse(row.extra_data) as any;
@@ -200,7 +254,11 @@ export default function AddHabitScreen() {
               if (typeof quantify.unit === 'string') setUnitInput(quantify.unit);
               if (typeof quantify.eachPlus === 'number') setEachPlus(Math.max(1, Math.min(99, Math.round(quantify.eachPlus))));
               if (quantify.dailyGoal === null) setDailyGoal(null);
-              else if (typeof quantify.dailyGoal === 'number') setDailyGoal(Math.max(0, Math.min(99, Math.round(quantify.dailyGoal))));
+              else if (typeof quantify.dailyGoal === 'number') {
+                const g = Math.round(quantify.dailyGoal);
+                if (g <= 0) setDailyGoal(null);
+                else setDailyGoal(Math.min(99, Math.max(1, g)));
+              }
             }
           } catch {
             // ignore extra_data parse errors
@@ -246,13 +304,32 @@ export default function AddHabitScreen() {
     const context = selectedContext;
     const tag = deriveTagByCycle();
     const tone = deriveToneByContext(context);
+
+    let existingExtra: Record<string, unknown> = {};
+    if (isEditMode && habitId) {
+      const prevRow = await getHabitById(habitId);
+      if (prevRow?.extra_data) {
+        try {
+          const parsed = JSON.parse(prevRow.extra_data) as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            existingExtra = parsed as Record<string, unknown>;
+          }
+        } catch {
+          /* keep empty */
+        }
+      }
+    }
+
+    const unitResolved = unitInput.trim() || DEFAULT_QUANTIFY_UNIT;
+
     const extraData = JSON.stringify({
+      ...existingExtra,
       quantifyEnabled,
       quantify: quantifyEnabled
         ? {
-            unit: unitInput,
+            unit: unitResolved,
             eachPlus,
-            dailyGoal,
+            dailyGoal: dailyGoal !== null && dailyGoal < 1 ? null : dailyGoal,
           }
         : null,
       schedule: {
@@ -265,6 +342,8 @@ export default function AddHabitScreen() {
       },
     });
 
+    const note = habitNote.trim() || null;
+
     if (isEditMode && habitId) {
       await updateHabit(habitId, {
         context,
@@ -272,6 +351,7 @@ export default function AddHabitScreen() {
         tag,
         icon: habitIcon,
         tone,
+        note,
         extra_data: extraData,
       });
     } else {
@@ -283,6 +363,7 @@ export default function AddHabitScreen() {
         icon: habitIcon,
         tag,
         tone,
+        note,
         extra_data: extraData,
       });
     }
@@ -296,6 +377,7 @@ export default function AddHabitScreen() {
     habitIcon,
     habitId,
     habitName,
+    habitNote,
     eachPlus,
     isEditMode,
     monthlyNDays,
@@ -351,18 +433,36 @@ export default function AddHabitScreen() {
         showsVerticalScrollIndicator={false}>
         <View style={styles.main}>
           <View style={styles.nameRow}>
-            <View style={[styles.emojiWrap, { backgroundColor: isDark ? 'rgba(20,184,166,0.18)' : 'rgba(20,184,166,0.12)', borderColor: border }]}>
-              <Text style={styles.emoji}>{habitIcon}</Text>
-              <View style={styles.emojiEdit}>
-                <MaterialIcons name="edit" size={10} color="#fff" />
+            <Pressable
+              onPress={() => setIconPickerOpen(true)}
+              hitSlop={8}
+              style={({ pressed }) => [pressed && { opacity: 0.88 }]}>
+              <View style={[styles.emojiWrap, { backgroundColor: isDark ? 'rgba(20,184,166,0.18)' : 'rgba(20,184,166,0.12)', borderColor: border }]}>
+                <Text style={styles.emoji}>{habitIcon}</Text>
+                <View style={styles.emojiEdit}>
+                  <MaterialIcons name="edit" size={10} color="#fff" />
+                </View>
               </View>
-            </View>
+            </Pressable>
             <TextInput
               value={habitName}
               onChangeText={setHabitName}
               placeholder="输入打卡项目名称..."
               placeholderTextColor={textSub}
               style={[styles.nameInput, { backgroundColor: softCard, color: textMain, borderColor: border }]}
+            />
+          </View>
+
+          <View style={styles.noteBlock}>
+            <Text style={[styles.noteLabel, { color: textSub }]}>备注</Text>
+            <TextInput
+              value={habitNote}
+              onChangeText={setHabitNote}
+              placeholder="补充说明、提醒事项…（可选）"
+              placeholderTextColor={textSub}
+              multiline
+              textAlignVertical="top"
+              style={[styles.noteInput, { backgroundColor: softCard, color: textMain, borderColor: border }]}
             />
           </View>
 
@@ -441,7 +541,13 @@ export default function AddHabitScreen() {
                       label="每日目标"
                       value={dailyGoal}
                       displayValue={dailyGoal === null ? '不限' : String(dailyGoal)}
-                      onMinus={() => setDailyGoal((v) => (v === null ? 0 : Math.max(0, v - 1)))}
+                      onMinus={() =>
+                        setDailyGoal((v) => {
+                          if (v === null) return null;
+                          if (v <= 1) return null;
+                          return v - 1;
+                        })
+                      }
                       onPlus={() => setDailyGoal((v) => (v === null ? 1 : Math.min(99, v + 1)))}
                       showOptional
                       textColor={textMain}
@@ -621,6 +727,53 @@ export default function AddHabitScreen() {
           <Text style={styles.createBtnText}>{isEditMode ? '保存修改' : '创建打卡'}</Text>
         </Pressable>
       </View>
+
+      <Modal visible={iconPickerOpen} transparent animationType="fade" onRequestClose={() => setIconPickerOpen(false)}>
+        <View style={styles.iconModalRoot}>
+          <Pressable style={styles.iconModalBackdrop} onPress={() => setIconPickerOpen(false)} />
+          <View style={[styles.iconModalCard, { backgroundColor: card, borderColor: border }]}>
+            <Text style={[styles.iconModalTitle, { color: textMain }]}>选择图标</Text>
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              style={styles.iconModalScroll}
+              contentContainerStyle={styles.iconModalScrollContent}>
+              <View style={styles.iconPickerGrid}>
+                {HABIT_ICON_CHOICES.map((ico) => {
+                  const selected = habitIcon === ico;
+                  return (
+                    <Pressable
+                      key={ico}
+                      onPress={() => {
+                        setHabitIcon(ico);
+                        setIconPickerOpen(false);
+                      }}
+                      style={({ pressed }) => [
+                        styles.iconPickerCell,
+                        {
+                          backgroundColor: selected
+                            ? isDark
+                              ? 'rgba(20,184,166,0.28)'
+                              : 'rgba(20,184,166,0.2)'
+                            : isDark
+                              ? 'rgba(148,163,184,0.12)'
+                              : 'rgba(148,163,184,0.1)',
+                          borderColor: selected ? '#14b8a6' : 'transparent',
+                        },
+                        pressed && { opacity: 0.85 },
+                      ]}>
+                      <Text style={styles.iconPickerEmoji}>{ico}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </ScrollView>
+            <Pressable onPress={() => setIconPickerOpen(false)} style={({ pressed }) => [styles.iconModalCloseBtn, pressed && { opacity: 0.8 }]}>
+              <Text style={[styles.iconModalCloseText, { color: textSub }]}>取消</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -661,6 +814,39 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  iconModalRoot: { flex: 1, justifyContent: 'center', paddingHorizontal: 18 },
+  iconModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.42)',
+  },
+  iconModalCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 10,
+    maxHeight: '78%',
+  },
+  iconModalTitle: { fontSize: 16, fontWeight: '800', marginBottom: 10, textAlign: 'center' },
+  iconModalScroll: { maxHeight: 360 },
+  iconModalScrollContent: { paddingBottom: 6 },
+  iconPickerGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    justifyContent: 'center',
+  },
+  iconPickerCell: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconPickerEmoji: { fontSize: 26 },
+  iconModalCloseBtn: { alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 16, marginTop: 4 },
+  iconModalCloseText: { fontSize: 14, fontWeight: '700' },
   nameInput: {
     flex: 1,
     borderRadius: 12,
@@ -669,6 +855,18 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     fontSize: 15,
     fontWeight: '500',
+  },
+  noteBlock: { gap: 6 },
+  noteLabel: { fontSize: 13, fontWeight: '700', paddingLeft: 2 },
+  noteInput: {
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    fontWeight: '500',
+    minHeight: 96,
+    lineHeight: 22,
   },
   dashedSplit: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   dashedLine: { flex: 1, borderTopWidth: 1, borderStyle: 'dashed' },

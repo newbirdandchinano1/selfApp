@@ -3,7 +3,13 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { deleteProject, getProjectById, getProjectCategories, updateProject } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
-import { countIncompleteTasksByProjectId, createTask, getTasksByProjectId, updateTask } from '@/lib/repositories/tasks/task';
+import {
+  countIncompleteTasksByProjectId,
+  createTask,
+  getTasksByProjectId,
+  updateTask,
+  type TaskTreeNode,
+} from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -26,6 +32,8 @@ type Subtask = {
   repeatText?: string;
   note?: string;
 };
+
+type SubtaskNode = Subtask & { children: SubtaskNode[] };
 type SchedulePickerResult = {
   mode: 'date' | 'time';
   source: string;
@@ -189,6 +197,44 @@ function mapTaskRowToSubtask(task: TaskRow): Subtask {
   };
 }
 
+function mapTaskTreeToSubtaskNodes(nodes: TaskTreeNode[]): SubtaskNode[] {
+  return nodes.map((n) => ({
+    ...mapTaskRowToSubtask(n),
+    children: mapTaskTreeToSubtaskNodes(n.children),
+  }));
+}
+
+function collectAllSubtaskIds(nodes: SubtaskNode[]): string[] {
+  return nodes.flatMap((n) => [n.id, ...collectAllSubtaskIds(n.children)]);
+}
+
+function collectExpandableSubtaskIds(nodes: SubtaskNode[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: SubtaskNode[]) => {
+    for (const n of list) {
+      if (n.children.length > 0) {
+        ids.push(n.id);
+        walk(n.children);
+      }
+    }
+  };
+  walk(nodes);
+  return ids;
+}
+
+function flattenSubtasksWithParents(
+  nodes: SubtaskNode[],
+  parentId: string | null,
+): Array<{ subtask: Subtask; parent_task_id: string | null }> {
+  const out: Array<{ subtask: Subtask; parent_task_id: string | null }> = [];
+  for (const n of nodes) {
+    const { children, ...rest } = n;
+    out.push({ subtask: rest, parent_task_id: parentId });
+    out.push(...flattenSubtasksWithParents(children, n.id));
+  }
+  return out;
+}
+
 function getPriorityColor(priorityText: string, isDark: boolean) {
   const value = priorityText.trim();
   if (!value) {
@@ -274,13 +320,17 @@ export default function EditProjectScreen() {
   const [repeatText, setRepeatText] = React.useState('');
   const [scheduleMeta, setScheduleMeta] = React.useState<ProjectScheduleMeta | null>(null);
   const [projectExtraData, setProjectExtraData] = React.useState<ProjectExtraData>({});
-  const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
+  const [subtasks, setSubtasks] = React.useState<SubtaskNode[]>([]);
+  const [expandedTaskIds, setExpandedTaskIds] = React.useState<Set<string>>(() => new Set());
   const [persistedTaskIds, setPersistedTaskIds] = React.useState<Set<string>>(new Set());
   const [categories, setCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
+  const [toastVisible, setToastVisible] = React.useState(false);
+  const [toastMessage, setToastMessage] = React.useState('');
+  const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const scheduleSource = params.source ?? `edit-project-${projectId || 'unknown'}`;
@@ -293,6 +343,28 @@ export default function EditProjectScreen() {
   const subtaskCardBg = isDark ? 'rgba(15,23,42,0.72)' : '#ffffff';
   const subtaskCardBorder = isDark ? 'rgba(148,163,184,0.3)' : 'rgba(194,198,214,0.55)';
   const subtaskIndicatorBg = isDark ? 'rgba(30,41,59,0.72)' : 'rgba(226,232,240,0.85)';
+
+  const showToast = React.useCallback((message: string) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToastMessage(message);
+    setToastVisible(true);
+    toastTimerRef.current = setTimeout(() => {
+      setToastVisible(false);
+      toastTimerRef.current = null;
+    }, 2200);
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const readScheduleResult = React.useCallback(() => {
     const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
@@ -330,12 +402,43 @@ export default function EditProjectScreen() {
     globalThis.__schedulePickerResult = undefined;
   }, [scheduleSource]);
 
-  const readAddTaskResult = React.useCallback(() => {
+  const readAddTaskResult = React.useCallback(async () => {
     const payload = globalThis.__addTaskResult as { source: string; task: Subtask } | undefined;
     if (!payload || payload.source !== addTaskSource) return;
-    setSubtasks((prev) => [...prev, payload.task]);
-    globalThis.__addTaskResult = undefined;
-  }, [addTaskSource]);
+    if (!projectId) {
+      globalThis.__addTaskResult = undefined;
+      return;
+    }
+
+    const task = payload.task;
+    const normalizedCategoryId = selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
+
+    try {
+      await createTask({
+        id: task.id,
+        project_id: projectId,
+        category_id: normalizedCategoryId,
+        parent_task_id: null,
+        title: task.title.trim() || '未命名任务',
+        note: task.note?.trim() || null,
+        status: (task.done ? 'done' : 'todo') as TaskRow['status'],
+        priority: toTaskPriority(task.priority || task.priorityLabel),
+        due_date: extractDueDate(task.deadline || task.deadlineText || ''),
+        extra_data: JSON.stringify({
+          reminder: task.reminder || task.reminderText || '',
+          repeat: task.repeat || task.repeatText || '',
+        }),
+      });
+      globalThis.__addTaskResult = undefined;
+      setSubtasks((prev) => [...prev, { ...task, children: [] }]);
+      setPersistedTaskIds((prev) => new Set(prev).add(task.id));
+      showToast('已加入项目');
+    } catch (error) {
+      console.warn('添加任务写入失败', error);
+      globalThis.__addTaskResult = undefined;
+      Alert.alert('任务保存失败', '任务未能写入数据库，请返回重新添加或稍后重试。');
+    }
+  }, [addTaskSource, projectId, selectedCategoryId, showToast]);
 
   const loadProject = React.useCallback(async () => {
     if (!projectId) {
@@ -363,9 +466,9 @@ export default function EditProjectScreen() {
       setRepeatText(loadedSchedule?.repeatOption === '不重复' ? '' : loadedSchedule?.repeatSummary ?? '');
       setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
       const projectTasks = await getTasksByProjectId(projectId);
-      const rootSubtasks = projectTasks.map(mapTaskRowToSubtask);
-      setSubtasks(rootSubtasks);
-      setPersistedTaskIds(new Set(projectTasks.map((t) => t.id)));
+      const tree = mapTaskTreeToSubtaskNodes(projectTasks);
+      setSubtasks(tree);
+      setPersistedTaskIds(new Set(collectAllSubtaskIds(tree)));
     } catch (error) {
       console.warn('加载项目详情失败', error);
       Alert.alert('加载失败', '无法读取项目详情，请稍后重试。');
@@ -401,13 +504,13 @@ export default function EditProjectScreen() {
   }, [readScheduleResult]);
 
   React.useEffect(() => {
-    readAddTaskResult();
+    void readAddTaskResult();
   }, [readAddTaskResult]);
 
   useFocusEffect(
     React.useCallback(() => {
       readScheduleResult();
-      readAddTaskResult();
+      void readAddTaskResult();
     }, [readAddTaskResult, readScheduleResult])
   );
 
@@ -441,6 +544,30 @@ export default function EditProjectScreen() {
     },
     [persistedTaskIds, router],
   );
+
+  const expandableSubtaskIds = React.useMemo(() => collectExpandableSubtaskIds(subtasks), [subtasks]);
+  const allSubtasksExpanded = React.useMemo(
+    () => expandableSubtaskIds.length > 0 && expandableSubtaskIds.every((id) => expandedTaskIds.has(id)),
+    [expandableSubtaskIds, expandedTaskIds],
+  );
+
+  const toggleSubtaskExpanded = React.useCallback((id: string) => {
+    setExpandedTaskIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleExpandAllSubtasks = React.useCallback(() => {
+    setExpandedTaskIds((prev) => {
+      const ids = collectExpandableSubtaskIds(subtasks);
+      const allOpen = ids.length > 0 && ids.every((id) => prev.has(id));
+      if (allOpen) return new Set();
+      return new Set(ids);
+    });
+  }, [subtasks]);
 
   const openSchedulePicker = React.useCallback(() => {
     const scheduleInit: SchedulePickerInitPayload | undefined = scheduleMeta
@@ -495,11 +622,12 @@ export default function EditProjectScreen() {
       const existingTaskIds = new Set(existingTasks.map((item) => item.id));
       const normalizedCategoryId = selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
 
-      for (const subtask of subtasks) {
+      const flatWithParents = flattenSubtasksWithParents(subtasks, null);
+      for (const { subtask, parent_task_id } of flatWithParents) {
         const payload = {
           project_id: projectId,
           category_id: normalizedCategoryId,
-          parent_task_id: null,
+          parent_task_id,
           title: subtask.title.trim() || '未命名任务',
           note: subtask.note?.trim() || null,
           status: (subtask.done ? 'done' : 'todo') as TaskRow['status'],
@@ -582,6 +710,120 @@ export default function EditProjectScreen() {
       }
     })();
   }, [loading, projectId, router, saving]);
+
+  const renderSubtaskNodes = (nodes: SubtaskNode[], depth: number): React.ReactNode =>
+    nodes.map((s) => {
+      const hasChildren = s.children.length > 0;
+      const isExpanded = expandedTaskIds.has(s.id);
+      return (
+        <React.Fragment key={s.id}>
+          <View style={styles.subtaskTreeWrap}>
+            <View
+              style={[
+                styles.subtaskRow,
+                { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder },
+              ]}>
+              {hasChildren ? (
+                <Pressable
+                  onPress={() => toggleSubtaskExpanded(s.id)}
+                  hitSlop={6}
+                  style={({ pressed }) => [styles.subtaskExpandHit, pressed && { opacity: 0.75 }]}>
+                  <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={22} color={outline} />
+                </Pressable>
+              ) : (
+                <View style={styles.subtaskExpandPlaceholder} />
+              )}
+              <View style={styles.subtaskLevelMark} accessible accessibilityLabel={depth > 0 ? `第 ${depth} 层子任务` : undefined}>
+                {depth > 0 ? (
+                  <View
+                    style={[
+                      styles.subtaskLevelBadge,
+                      {
+                        borderColor: isDark ? 'rgba(96,165,250,0.4)' : 'rgba(0,88,190,0.28)',
+                        backgroundColor: isDark ? 'rgba(96,165,250,0.12)' : 'rgba(0,88,190,0.08)',
+                      },
+                    ]}>
+                    <Text style={[styles.subtaskLevelText, { color: primary }]} numberOfLines={1}>
+                      {depth > 9 ? '9+' : String(depth)}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              <View style={[styles.subtaskIndicator, { backgroundColor: subtaskIndicatorBg }]}>
+                <View style={[styles.checkbox, { borderColor: outlineVariant, backgroundColor: s.done ? primary : 'transparent' }]}>
+                  {s.done && <MaterialIcons name="check" size={14} color="#fff" />}
+                </View>
+              </View>
+              <Pressable
+                onPress={() => openEditTask(s.id)}
+                style={({ pressed }) => [styles.subtaskRowMainPress, pressed && { opacity: 0.86 }]}>
+                <View style={styles.subtaskBody}>
+                  <Text style={[styles.subtaskText, { color: theme.text }]} numberOfLines={1}>
+                    {s.title}
+                  </Text>
+                  {!!(
+                    s.priority ||
+                    s.priorityLabel ||
+                    s.deadline ||
+                    s.deadlineText ||
+                    s.reminder ||
+                    s.reminderText ||
+                    s.repeat ||
+                    s.repeatText ||
+                    s.note
+                  ) && (
+                    <>
+                      <View style={styles.subtaskMetaRow}>
+                        {!!(s.priority || s.priorityLabel) &&
+                          (() => {
+                            const priorityText = s.priority || s.priorityLabel || '';
+                            const priorityColor = getPriorityColor(priorityText, isDark);
+                            return (
+                              <View style={[styles.metaTag, { backgroundColor: priorityColor.bg, borderColor: priorityColor.border }]}>
+                                <MaterialIcons name="flag" size={14} color={priorityColor.tint} />
+                                <Text style={[styles.metaTagText, { color: priorityColor.tint }]}>{priorityText}</Text>
+                              </View>
+                            );
+                          })()}
+                        {!!(s.deadline || s.deadlineText) && (
+                          <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
+                            <MaterialIcons name="event" size={14} color={primary} />
+                            <Text style={[styles.metaTagText, { color: theme.text }]} numberOfLines={1}>
+                              {s.deadline || s.deadlineText}
+                            </Text>
+                          </View>
+                        )}
+                        {!!(s.reminder || s.reminderText) && (
+                          <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
+                            <MaterialIcons name="notifications-active" size={14} color={primary} />
+                            <Text style={[styles.metaTagText, { color: theme.text }]}>{s.reminder || s.reminderText}</Text>
+                          </View>
+                        )}
+                        {!!(s.repeat || s.repeatText) && (
+                          <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
+                            <MaterialIcons name="repeat" size={14} color={primary} />
+                            <Text style={[styles.metaTagText, { color: theme.text }]}>{s.repeat || s.repeatText}</Text>
+                          </View>
+                        )}
+                      </View>
+                      {!!s.note && (
+                        <Text style={[styles.subtaskNote, { color: outline }]} numberOfLines={2}>
+                          {s.note}
+                        </Text>
+                      )}
+                    </>
+                  )}
+                </View>
+                <View style={[styles.subtaskAction, { backgroundColor: subtaskIndicatorBg }]}>
+                  <MaterialIcons name="chevron-right" size={18} color={outline} />
+                </View>
+              </Pressable>
+            </View>
+          </View>
+          {hasChildren && isExpanded ? renderSubtaskNodes(s.children, depth + 1) : null}
+        </React.Fragment>
+      );
+    });
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -670,80 +912,31 @@ export default function EditProjectScreen() {
           <View style={styles.section}>
             <View style={styles.subtaskHeader}>
               <Text style={[styles.sectionLabel, { color: outline }]}>任务拆解</Text>
-              <Pressable
-                onPress={() =>
-                  router.push({
-                    pathname: '/add-task',
-                    params: {
-                      source: addTaskSource,
-                      dateLimit: taskDateLimit ? JSON.stringify(taskDateLimit) : '',
-                    },
-                  })
-                }
-                style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}>
-                <MaterialIcons name="add-circle" size={16} color={primary} />
-                <Text style={[styles.linkBtnText, { color: primary }]}>添加任务</Text>
-              </Pressable>
+              <View style={styles.subtaskHeaderActions}>
+                {expandableSubtaskIds.length > 0 ? (
+                  <Pressable onPress={toggleExpandAllSubtasks} style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}>
+                    <MaterialIcons name={allSubtasksExpanded ? 'expand-less' : 'expand-more'} size={16} color={primary} />
+                    <Text style={[styles.linkBtnText, { color: primary }]}>{allSubtasksExpanded ? '全部收起' : '全部展开'}</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable
+                  onPress={() =>
+                    router.push({
+                      pathname: '/add-task',
+                      params: {
+                        source: addTaskSource,
+                        dateLimit: taskDateLimit ? JSON.stringify(taskDateLimit) : '',
+                      },
+                    })
+                  }
+                  style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}>
+                  <MaterialIcons name="add-circle" size={16} color={primary} />
+                  <Text style={[styles.linkBtnText, { color: primary }]}>添加任务</Text>
+                </Pressable>
+              </View>
             </View>
             <View style={styles.subtaskList}>
-              {subtasks.map((s) => (
-                <Pressable
-                  key={s.id}
-                  onPress={() => openEditTask(s.id)}
-                  style={({ pressed }) => [
-                    styles.subtaskRow,
-                    { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder, opacity: pressed ? 0.86 : 1 },
-                  ]}>
-                  <View style={[styles.subtaskIndicator, { backgroundColor: subtaskIndicatorBg }]}>
-                    <View style={[styles.checkbox, { borderColor: outlineVariant, backgroundColor: s.done ? primary : 'transparent' }]}>
-                      {s.done && <MaterialIcons name="check" size={14} color="#fff" />}
-                    </View>
-                  </View>
-                  <View style={styles.subtaskBody}>
-                    <Text style={[styles.subtaskText, { color: theme.text }]} numberOfLines={1}>{s.title}</Text>
-                    {!!(s.priority || s.priorityLabel || s.deadline || s.deadlineText || s.reminder || s.reminderText || s.repeat || s.repeatText || s.note) && (
-                      <>
-                        <View style={styles.subtaskMetaRow}>
-                          {!!(s.priority || s.priorityLabel) && (
-                            (() => {
-                              const priorityText = s.priority || s.priorityLabel || '';
-                              const priorityColor = getPriorityColor(priorityText, isDark);
-                              return (
-                                <View style={[styles.metaTag, { backgroundColor: priorityColor.bg, borderColor: priorityColor.border }]}>
-                                  <MaterialIcons name="flag" size={14} color={priorityColor.tint} />
-                                  <Text style={[styles.metaTagText, { color: priorityColor.tint }]}>{priorityText}</Text>
-                                </View>
-                              );
-                            })()
-                          )}
-                          {!!(s.deadline || s.deadlineText) && (
-                            <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="event" size={14} color={primary} />
-                              <Text style={[styles.metaTagText, { color: theme.text }]} numberOfLines={1}>{s.deadline || s.deadlineText}</Text>
-                            </View>
-                          )}
-                          {!!(s.reminder || s.reminderText) && (
-                            <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="notifications-active" size={14} color={primary} />
-                              <Text style={[styles.metaTagText, { color: theme.text }]}>{s.reminder || s.reminderText}</Text>
-                            </View>
-                          )}
-                          {!!(s.repeat || s.repeatText) && (
-                            <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="repeat" size={14} color={primary} />
-                              <Text style={[styles.metaTagText, { color: theme.text }]}>{s.repeat || s.repeatText}</Text>
-                            </View>
-                          )}
-                        </View>
-                        {!!s.note && <Text style={[styles.subtaskNote, { color: outline }]} numberOfLines={2}>{s.note}</Text>}
-                      </>
-                    )}
-                  </View>
-                  <View style={[styles.subtaskAction, { backgroundColor: subtaskIndicatorBg }]}>
-                    <MaterialIcons name="chevron-right" size={18} color={outline} />
-                  </View>
-                </Pressable>
-              ))}
+              {renderSubtaskNodes(subtasks, 0)}
               {subtasks.length === 0 && (
                 <View style={[styles.emptySubtaskRow, { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder }]}>
                   <View style={[styles.emptySubtaskIcon, { backgroundColor: subtaskIndicatorBg }]}>
@@ -803,6 +996,18 @@ export default function EditProjectScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <Modal visible={toastVisible} transparent animationType="fade" onRequestClose={() => setToastVisible(false)}>
+        <View
+          pointerEvents="box-none"
+          style={[styles.toastOverlay, { paddingBottom: Math.max(insets.bottom, 14) + 100 }]}>
+          <View style={styles.toastHost}>
+            <View style={[styles.toastWrap, { backgroundColor: isDark ? 'rgba(15,23,42,0.96)' : 'rgba(17,24,39,0.96)' }]}>
+              <Text style={styles.toastText}>{toastMessage}</Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -833,10 +1038,39 @@ const styles = StyleSheet.create({
   metaTagText: { fontSize: 12, fontWeight: '600' },
   deadlineEdit: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   subtaskHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  subtaskHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 1, flexWrap: 'wrap', justifyContent: 'flex-end' },
   linkBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   linkBtnText: { fontSize: 12, fontWeight: '900', letterSpacing: 1.2, textTransform: 'uppercase' },
   subtaskList: { gap: 10 },
-  subtaskRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, paddingVertical: 12, borderRadius: 16, borderWidth: 1, shadowColor: '#0f172a', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.08, shadowRadius: 10, elevation: 2 },
+  subtaskTreeWrap: { width: '100%' },
+  subtaskRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 2,
+  },
+  subtaskExpandHit: { width: 28, height: 34, alignItems: 'center', justifyContent: 'center' },
+  subtaskExpandPlaceholder: { width: 28, height: 34 },
+  subtaskLevelMark: { width: 28, alignItems: 'center', justifyContent: 'center' },
+  subtaskLevelBadge: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 5,
+    borderRadius: 11,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  subtaskLevelText: { fontSize: 11, fontWeight: '900' },
+  subtaskRowMainPress: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12, minWidth: 0 },
   subtaskIndicator: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   checkbox: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   subtaskBody: { flex: 1, gap: 8, paddingRight: 2 },
@@ -860,4 +1094,8 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
   modalItem: { borderRadius: 10, paddingHorizontal: 10, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   modalItemText: { fontSize: 14, fontWeight: '600' },
+  toastOverlay: { flex: 1, justifyContent: 'flex-end', alignItems: 'center' },
+  toastHost: { width: '100%', alignItems: 'center' },
+  toastWrap: { borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8, maxWidth: '92%' },
+  toastText: { color: '#fff', fontSize: 13, fontWeight: '600', textAlign: 'center' },
 });

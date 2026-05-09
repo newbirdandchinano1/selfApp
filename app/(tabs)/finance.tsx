@@ -1163,6 +1163,7 @@ export default function FinanceScreen() {
           styles.scrollContent,
           { paddingBottom: 220 + collapsedBottom },
         ]}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
         onScroll={handleMainScroll}>
@@ -1578,21 +1579,20 @@ export default function FinanceScreen() {
           <View style={styles.composerShell}>
             <View style={styles.composerRow}>
               <Pressable
-                disabled={!hasAccounts || isPickingImage}
+                disabled={isPickingImage}
                 onPress={() => void handlePickImage('library')}
                 style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.85 }]}>
                 <MaterialIcons name="photo-library" size={20} color="#111827" />
               </Pressable>
 
               <Pressable
-                disabled={!hasAccounts || isPickingImage}
+                disabled={isPickingImage}
                 onPress={() => void handlePickImage('camera')}
                 style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.85 }]}>
                 <MaterialIcons name="photo-camera" size={20} color="#111827" />
               </Pressable>
 
               <Pressable
-                disabled={!hasAccounts}
                 onPress={() => {
                   void handleOpenComposer();
                 }}
@@ -1601,7 +1601,6 @@ export default function FinanceScreen() {
               </Pressable>
 
               <Pressable
-                disabled={!hasAccounts}
                 onPress={handleToggleVoiceInput}
                 style={({ pressed }) => [
                   styles.actionBtn,
@@ -1837,6 +1836,9 @@ export default function FinanceScreen() {
                       <TextInput
                         value={sheetNote}
                         onChangeText={setSheetNote}
+                        multiline
+                        scrollEnabled
+                        textAlignVertical="top"
                         style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent' }]}
                         placeholder="添加备注..."
                         placeholderTextColor={subtle}
@@ -2675,7 +2677,8 @@ const styles = StyleSheet.create({
     left: 18,
     right: 18,
     alignItems: 'center',
-    zIndex: 40,
+    zIndex: 100,
+    elevation: 20,
   },
   composerShell: {
     maxWidth: 420,
@@ -2708,6 +2711,8 @@ const styles = StyleSheet.create({
   },
   composerInput: {
     flex: 1,
+    minHeight: 40,
+    justifyContent: 'center',
     paddingVertical: 8,
     paddingHorizontal: 10,
   },
@@ -2732,12 +2737,15 @@ const styles = StyleSheet.create({
   },
   sheetBackdrop: {
     ...StyleSheet.absoluteFillObject,
+    zIndex: 0,
   },
   sheetContainer: {
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
     backgroundColor: '#ffffff',
     overflow: 'hidden',
+    zIndex: 1,
+    elevation: 24,
   },
   sheetHeader: {
     paddingHorizontal: 18,
@@ -2805,8 +2813,9 @@ const styles = StyleSheet.create({
   sheetInputWrap: {
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingTop: 14,
+    paddingBottom: 4,
   },
   sheetConfigRow: {
     flexDirection: 'row',
@@ -3083,20 +3092,24 @@ const styles = StyleSheet.create({
   },
   sheetNoteRow: {
     marginTop: 0,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   noteRowInput: {
     width: '100%',
-    fontSize: 13,
-    paddingHorizontal: 4,
-    paddingVertical: 6,
+    minHeight: 104,
+    maxHeight: 168,
+    fontSize: 15,
+    lineHeight: 22,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
   noteRowWrap: {
     width: '100%',
     borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 8,
+    borderRadius: 14,
+    paddingHorizontal: 0,
     paddingVertical: 0,
+    overflow: 'hidden',
   },
   attachmentPreview: {
     marginTop: 0,

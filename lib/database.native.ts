@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 11;
+export const DB_VERSION = 13;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -257,6 +257,7 @@ export async function initDatabase() {
       tag TEXT,
       icon TEXT NOT NULL,
       tone TEXT,
+      note TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
@@ -276,6 +277,20 @@ export async function initDatabase() {
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
       version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS habit_check_ins (
+      id TEXT PRIMARY KEY NOT NULL,
+      habit_id TEXT NOT NULL,
+      record_date TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 1 CHECK (count >= 1),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE,
+      UNIQUE(habit_id, record_date)
     );
 
     CREATE TABLE IF NOT EXISTS savings_plans (
@@ -416,6 +431,7 @@ export async function initDatabase() {
   await ensureColumn(db, 'tasks', 'parent_task_id', 'TEXT');
   await ensureColumn(db, 'tasks', 'note', 'TEXT');
   await ensureColumn(db, 'tasks', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'habits', 'note', 'TEXT');
   await ensureColumn(db, 'finance_accounts', 'account_no', 'TEXT');
   await ensureColumn(db, 'finance_accounts', 'account_type', 'TEXT');
   await ensureColumn(db, 'finance_accounts', 'sign_rule', 'INTEGER');
@@ -531,6 +547,9 @@ export async function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_habits_context ON habits(context);
     CREATE INDEX IF NOT EXISTS idx_habits_updated_at ON habits(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_habit_check_ins_habit_id ON habit_check_ins(habit_id);
+    CREATE INDEX IF NOT EXISTS idx_habit_check_ins_record_date ON habit_check_ins(record_date);
+    CREATE INDEX IF NOT EXISTS idx_habit_check_ins_deleted_at ON habit_check_ins(deleted_at);
     CREATE INDEX IF NOT EXISTS idx_savings_plans_updated_at ON savings_plans(updated_at);
     CREATE INDEX IF NOT EXISTS idx_savings_plan_deposits_plan_id ON savings_plan_deposits(savings_plan_id);
     CREATE INDEX IF NOT EXISTS idx_savings_plan_deposits_updated_at ON savings_plan_deposits(updated_at);
@@ -553,6 +572,78 @@ export async function initDatabase() {
      WHERE id = ?`,
     ['default']
   );
+
+  /** 将 habits.extra_data.checkIns 迁入 habit_check_ins，并去掉 JSON 中的 checkIns（一次性） */
+  const hciBackfill = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['habit_check_ins_extra_backfill_v12']
+  );
+  if (!hciBackfill) {
+    try {
+      await db.execAsync('BEGIN IMMEDIATE');
+      const habitRows = await db.getAllAsync<{ id: string; extra_data: string | null }>(
+        'SELECT id, extra_data FROM habits WHERE deleted_at IS NULL'
+      );
+      for (const h of habitRows) {
+        if (!h.extra_data) continue;
+        let parsed: Record<string, unknown>;
+        try {
+          const raw = JSON.parse(h.extra_data) as unknown;
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+          parsed = raw as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (!('checkIns' in parsed)) continue;
+        const ci = parsed.checkIns;
+        if (ci && typeof ci === 'object' && !Array.isArray(ci)) {
+          for (const [ymd, v] of Object.entries(ci as Record<string, unknown>)) {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) continue;
+            let cnt = 0;
+            if (typeof v === 'number' && Number.isFinite(v)) cnt = Math.max(0, Math.floor(v));
+            else if (v === true) cnt = 1;
+            if (cnt < 1) continue;
+            const rid = `hci_${h.id}_${ymd.replace(/-/g, '')}`;
+            await db.runAsync(
+              `INSERT INTO habit_check_ins (
+                id, habit_id, record_date, count,
+                created_at, updated_at, deleted_at, sync_status, version
+              ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)
+              ON CONFLICT(habit_id, record_date) DO UPDATE SET
+                id = excluded.id,
+                count = excluded.count,
+                deleted_at = NULL,
+                updated_at = datetime('now'),
+                sync_status = CASE WHEN habit_check_ins.sync_status = 'synced' THEN 'pending_update' ELSE habit_check_ins.sync_status END,
+                version = habit_check_ins.version + 1`,
+              [rid, h.id, ymd, cnt]
+            );
+          }
+        }
+        delete parsed.checkIns;
+        const nextExtra = JSON.stringify(parsed);
+        await db.runAsync(
+          `UPDATE habits SET extra_data = ?, updated_at = datetime('now'),
+            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+            version = version + 1
+          WHERE id = ?`,
+          [nextExtra === '{}' ? null : nextExtra, h.id]
+        );
+      }
+      await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+        'habit_check_ins_extra_backfill_v12',
+        '1',
+      ]);
+      await db.execAsync('COMMIT');
+    } catch (e) {
+      console.warn('habit_check_ins 从 extra_data 迁移失败', e);
+      try {
+        await db.execAsync('ROLLBACK');
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 
   /** 一次性清除旧版自动写入的现金流演示数据（cf-seed-*），并复位未改动的演示型 profile */
   const cfDemoPurged = await db.getFirstAsync<{ value: string }>(
@@ -605,6 +696,7 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS projects;
     DROP TABLE IF EXISTS task_categories;
     DROP TABLE IF EXISTS project_categories;
+    DROP TABLE IF EXISTS habit_check_ins;
     DROP TABLE IF EXISTS habits;
     DROP TABLE IF EXISTS savings_plan_deposits;
     DROP TABLE IF EXISTS savings_plans;

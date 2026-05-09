@@ -103,6 +103,7 @@ export default function RootLayout() {
             <Stack.Screen name="schedule-picker" />
             <Stack.Screen name="edit-profile" />
             <Stack.Screen name="quick-add-edit" />
+            <Stack.Screen name="habit-detail" />
             <Stack.Screen name="add-item" />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />

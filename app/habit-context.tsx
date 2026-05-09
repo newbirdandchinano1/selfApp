@@ -93,6 +93,20 @@ export default function HabitContextScreen() {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
 
+    const selectedRows = contextData.filter((r) => ids.includes(r.id));
+    const hasHabits = selectedRows.filter((r) => (r.count ?? 0) > 0);
+    if (hasHabits.length > 0) {
+      const names = hasHabits.map((r) => r.name).join('、');
+      Alert.alert(
+        '无法删除',
+        hasHabits.length === 1
+          ? `「${hasHabits[0].name}」下仍有打卡项，请先在「打卡管理」中编辑或移除相关打卡后再删除该情境。`
+          : `以下情境下仍有打卡项：${names}。请先在「打卡管理」中处理后再删除。`,
+        [{ text: '知道了', style: 'default' }]
+      );
+      return;
+    }
+
     Alert.alert('删除情境', `确认删除选中的 ${ids.length} 个情境吗？`, [
       { text: '取消', style: 'cancel' },
       {
@@ -112,7 +126,7 @@ export default function HabitContextScreen() {
         },
       },
     ]);
-  }, [loadContextCounts, selectedIds]);
+  }, [contextData, loadContextCounts, selectedIds]);
 
   const openAdd = () => {
     setNewContextName('');

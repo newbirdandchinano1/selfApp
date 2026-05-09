@@ -16,6 +16,12 @@ import {
   updateTask,
 } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
+import {
+  decrementTodayHabitCheckIn,
+  getHabitCheckInListStats,
+  incrementTodayHabitCheckIn,
+} from '@/lib/repositories/habits/habit-check-in';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -34,6 +40,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  Dimensions,
   TextInput,
   UIManager,
   View,
@@ -41,6 +48,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 const PROJECT_EXPANDED_STORAGE_KEY = '@tasks_project_expanded_v1';
+
+/** Tasks「小习惯」网格：固定每行列数，单元宽度按行宽均分 */
+const HABIT_GRID_GAP = 16;
+const HABIT_GRID_COLUMNS = 4;
 
 function PulseDot({ color }: { color: string }) {
   const scale = React.useRef(new Animated.Value(1)).current;
@@ -216,8 +227,28 @@ type TaskMetaExtra = {
 type HabitSection = {
   id: string;
   title: string;
-  items: Array<{ id: string; icon: string; name: string }>;
+  items: Array<{
+    id: string;
+    icon: string;
+    name: string;
+    todayCount: number;
+    /** `extra_data.quantify.dailyGoal`，null 表示不限 */
+    dailyGoalMax: number | null;
+  }>;
 };
+
+function parseHabitDailyGoalMax(extraData: string | null): number | null {
+  if (!extraData) return null;
+  try {
+    const p = JSON.parse(extraData) as { quantify?: { dailyGoal?: number | null } };
+    const g = p?.quantify?.dailyGoal;
+    if (g === null || g === undefined) return null;
+    if (typeof g === 'number' && Number.isFinite(g) && g > 0) return Math.min(99, Math.max(1, Math.round(g)));
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
   if (!extraData) return null;
@@ -364,6 +395,23 @@ function getProjectScheduleLabel(project: ProjectRow, schedule: ProjectScheduleM
 }
 
 export default function TasksScreen() {
+  /** Measured width of the habit grid row — avoids guessing padding (tabs / safe area / web max-width). */
+  const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
+  const habitGridItemWidth = React.useMemo(() => {
+    const gap = HABIT_GRID_GAP;
+    const cols = HABIT_GRID_COLUMNS;
+    const rowWidth =
+      habitItemsRowWidth > 1
+        ? habitItemsRowWidth
+        : Math.max(120, Dimensions.get('window').width - 18 * 2 - 14 * 2);
+    return (rowWidth - gap * (cols - 1)) / cols;
+  }, [habitItemsRowWidth]);
+
+  const onHabitItemsRowLayout = React.useCallback((e: { nativeEvent: { layout: { width: number } } }) => {
+    const w = e.nativeEvent.layout.width;
+    setHabitItemsRowWidth((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
+  }, []);
+
   const router = useRouter();
   const colorScheme = useColorScheme();
   const scheme = (colorScheme ?? 'light') as keyof typeof Colors;
@@ -457,12 +505,18 @@ export default function TasksScreen() {
 
   const loadHabits = React.useCallback(async () => {
     try {
-      const [contexts, rows] = await Promise.all([getHabitContexts(), getHabits()]);
+      const [contexts, rows, checkStats] = await Promise.all([
+        getHabitContexts(),
+        getHabits(),
+        getHabitCheckInListStats(),
+      ]);
       const itemsByContext = new Map<string, HabitSection['items']>();
 
       for (const r of rows) {
         const arr = itemsByContext.get(r.context) ?? [];
-        arr.push({ id: r.id, icon: r.icon, name: r.name });
+        const todayCount = checkStats.get(r.id)?.todayCount ?? 0;
+        const dailyGoalMax = parseHabitDailyGoalMax(r.extra_data);
+        arr.push({ id: r.id, icon: r.icon, name: r.name, todayCount, dailyGoalMax });
         itemsByContext.set(r.context, arr);
       }
 
@@ -909,6 +963,74 @@ export default function TasksScreen() {
     setExpandedHabitSections((prev) => ({ ...prev, [sectionId]: !prev[sectionId] }));
   }, []);
 
+  const habitIconTapTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const habitIconTapFirstRef = React.useRef<{ habitId: string; t: number } | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (habitIconTapTimerRef.current) clearTimeout(habitIconTapTimerRef.current);
+    };
+  }, []);
+
+  const patchHabitTodayCount = React.useCallback((habitId: string, todayCount: number) => {
+    setHabitSections((prev) =>
+      prev.map((sec) => ({
+        ...sec,
+        items: sec.items.map((it) => (it.id === habitId ? { ...it, todayCount } : it)),
+      }))
+    );
+  }, []);
+
+  const handleHabitIncrement = React.useCallback(
+    async (habitId: string, dailyGoalMax: number | null) => {
+      try {
+        const { nextCount, increased } = await incrementTodayHabitCheckIn(habitId, dailyGoalMax);
+        patchHabitTodayCount(habitId, nextCount);
+        if (increased) void playHabitCheckInDing();
+      } catch (err) {
+        console.warn('习惯打卡失败', err);
+      }
+    },
+    [patchHabitTodayCount]
+  );
+
+  const handleHabitUndoOnce = React.useCallback(
+    async (habitId: string) => {
+      try {
+        const nextCount = await decrementTodayHabitCheckIn(habitId);
+        patchHabitTodayCount(habitId, nextCount);
+      } catch (err) {
+        console.warn('撤销打卡失败', err);
+      }
+    },
+    [patchHabitTodayCount]
+  );
+
+  const handleHabitIconPress = React.useCallback(
+    (item: { id: string; dailyGoalMax: number | null }) => {
+      const DOUBLE_MS = 300;
+      const now = Date.now();
+      const first = habitIconTapFirstRef.current;
+      if (first && first.habitId === item.id && now - first.t < DOUBLE_MS) {
+        habitIconTapFirstRef.current = null;
+        if (habitIconTapTimerRef.current) {
+          clearTimeout(habitIconTapTimerRef.current);
+          habitIconTapTimerRef.current = null;
+        }
+        void handleHabitUndoOnce(item.id);
+        return;
+      }
+      habitIconTapFirstRef.current = { habitId: item.id, t: now };
+      if (habitIconTapTimerRef.current) clearTimeout(habitIconTapTimerRef.current);
+      habitIconTapTimerRef.current = setTimeout(() => {
+        habitIconTapTimerRef.current = null;
+        habitIconTapFirstRef.current = null;
+        void handleHabitIncrement(item.id, item.dailyGoalMax);
+      }, DOUBLE_MS);
+    },
+    [handleHabitIncrement, handleHabitUndoOnce]
+  );
+
   const hasChildrenDeeperThan = React.useCallback((nodes: TaskTreeNode[], level: number, maxLevel: number): boolean => {
     if (nodes.length === 0) return false;
     if (level >= maxLevel) {
@@ -1149,7 +1271,7 @@ export default function TasksScreen() {
                             opacity: pressed ? 0.9 : 1,
                           },
                         ]}>
-                        <View style={styles.frogIconBg}>
+                        <View style={styles.frogIconBg} pointerEvents="none">
                           <MaterialIcons name="eco" size={52} color={`${secondary}22`} />
                         </View>
                         <View style={styles.frogTopRow}>
@@ -1546,7 +1668,15 @@ export default function TasksScreen() {
                     <Text style={[styles.sectionTitle, { color: theme.text }]}>项目列表</Text>
                     <Text style={[styles.sectionMeta, { color: outline }]}>共 {projects.length} 个活跃项目</Text>
                   </View>
-                  <ScalePressable onPress={() => router.push('/add-project')} style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
+                  <ScalePressable
+                    onPress={() =>
+                      router.push(
+                        projectTab === 'all'
+                          ? '/add-project'
+                          : { pathname: '/add-project', params: { categoryId: projectTab } },
+                      )
+                    }
+                    style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
                     <MaterialIcons name="add-circle" size={14} color={primary} />
                     <Text style={[styles.ghostBtnText, { color: primary }]}>新建项目</Text>
                   </ScalePressable>
@@ -1790,7 +1920,7 @@ export default function TasksScreen() {
                         ]}>
                         <View style={styles.projectHeadLeft}>
                           <MaterialIcons name={isFirst ? 'inventory-2' : 'data-usage'} size={22} color={primary} />
-                          <View>
+                          <View style={styles.projectHeadMainColumn}>
                             <Text style={[styles.projectTitle, { color: theme.text }]}>{project.name}</Text>
                             <View style={styles.projectSubRow}>
                               {dueDateLabel ? (
@@ -1896,7 +2026,7 @@ export default function TasksScreen() {
                     <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
                       <View style={styles.projectHeadLeft}>
                         <MaterialIcons name="folder-open" size={22} color={outline} />
-                        <View>
+                        <View style={styles.projectHeadMainColumn}>
                           <Text style={[styles.projectTitle, { color: theme.textSecondary }]}>暂无项目</Text>
                           <Text style={[styles.projectSub, { color: outline }]}>可点击右上角“新建项目”添加</Text>
                         </View>
@@ -1942,48 +2072,103 @@ export default function TasksScreen() {
                     </Pressable>
 
                     {isOpen ? (
-                      <View style={styles.habitItemsRow}>
-                        {section.items.map((item) => (
-                          <Pressable
-                            key={item.id}
-                            onLongPress={() =>
-                              router.push({
-                                pathname: '/add-habit',
-                                params: {
-                                  mode: 'edit',
-                                  name: item.name,
-                                  icon: item.icon,
-                                  context: section.title,
-                                  habitId: item.id,
-                                },
-                              })
-                            }
-                            delayLongPress={260}
-                            style={({ pressed }) => [styles.habitItem, pressed && { opacity: 0.86 }]}>
-                            <View
-                              style={[
-                                styles.habitIconCircle,
-                                {
-                                  borderColor: isDark ? 'rgba(148,163,184,0.42)' : 'rgba(148,163,184,0.5)',
-                                  backgroundColor: card,
-                                },
-                              ]}>
-                              <Text style={styles.habitIconText}>{item.icon}</Text>
+                      <View style={styles.habitItemsRow} onLayout={onHabitItemsRowLayout}>
+                        {section.items.map((item) => {
+                          const hasProgress = item.todayCount > 0;
+                          const goalMet =
+                            item.dailyGoalMax != null
+                              ? item.todayCount >= item.dailyGoalMax
+                              : item.todayCount > 0;
+
+                          const openHabitEdit = () =>
+                            router.push({
+                              pathname: '/add-habit',
+                              params: {
+                                mode: 'edit',
+                                name: item.name,
+                                icon: item.icon,
+                                context: section.title,
+                                habitId: item.id,
+                              },
+                            });
+
+                          const partialBorder = isDark ? 'rgba(52,211,153,0.5)' : 'rgba(0,108,73,0.42)';
+
+                          return (
+                            <View key={item.id} style={[styles.habitItem, { width: habitGridItemWidth }]}>
+                              <Pressable
+                                onPress={() => handleHabitIconPress(item)}
+                                onLongPress={openHabitEdit}
+                                delayLongPress={260}
+                                style={({ pressed }) => [styles.habitIconPressable, pressed && { opacity: 0.86 }]}>
+                                <View style={styles.habitIconWrap}>
+                                  <View
+                                    style={[
+                                      styles.habitIconCircle,
+                                      {
+                                        borderColor: goalMet
+                                          ? secondary
+                                          : hasProgress
+                                            ? partialBorder
+                                            : isDark
+                                              ? 'rgba(148,163,184,0.42)'
+                                              : 'rgba(148,163,184,0.5)',
+                                        borderStyle: goalMet ? 'solid' : 'dashed',
+                                        backgroundColor: card,
+                                      },
+                                    ]}>
+                                    <Text style={[styles.habitIconText, goalMet && styles.habitIconTextDone]}>
+                                      {item.icon}
+                                    </Text>
+                                    {goalMet ? (
+                                      <View style={styles.habitIconDoneOverlay} pointerEvents="none">
+                                        <MaterialIcons name="check" size={30} color={secondary} />
+                                      </View>
+                                    ) : null}
+                                  </View>
+                                  {goalMet ? (
+                                    <View style={[styles.habitTodayBadge, { borderColor: card, backgroundColor: secondary }]}>
+                                      <MaterialIcons name="check" size={11} color="#fff" />
+                                    </View>
+                                  ) : hasProgress ? (
+                                    <View
+                                      style={[
+                                        styles.habitTodayBadge,
+                                        {
+                                          borderColor: card,
+                                          backgroundColor: isDark ? 'rgba(52,211,153,0.92)' : 'rgba(0,108,73,0.88)',
+                                        },
+                                      ]}>
+                                      <Text style={styles.habitTodayBadgeCount}>{item.todayCount}</Text>
+                                    </View>
+                                  ) : null}
+                                </View>
+                              </Pressable>
+                              <Pressable
+                                onPress={() => void handleHabitIncrement(item.id, item.dailyGoalMax)}
+                                onLongPress={openHabitEdit}
+                                delayLongPress={260}
+                                style={({ pressed }) => [styles.habitNamePressable, pressed && { opacity: 0.86 }]}>
+                                <Text style={[styles.habitItemText, { color: theme.text }]} numberOfLines={2}>
+                                  {item.name}
+                                </Text>
+                              </Pressable>
                             </View>
-                            <Text style={[styles.habitItemText, { color: theme.text }]} numberOfLines={2}>
-                              {item.name}
-                            </Text>
-                          </Pressable>
-                        ))}
+                          );
+                        })}
                         <Pressable
                           onPress={() => router.push('/add-habit')}
-                          style={({ pressed }) => [styles.habitItem, pressed && { opacity: 0.86 }]}>
+                          style={({ pressed }) => [
+                            styles.habitItem,
+                            { width: habitGridItemWidth },
+                            pressed && { opacity: 0.86 },
+                          ]}>
                           <View
                             style={[
                               styles.habitAddCircle,
                               { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.12)' },
                             ]}>
-                            <MaterialIcons name="add" size={30} color={isDark ? '#94a3b8' : '#9ca3af'} />
+                            <MaterialIcons name="add" size={34} color={isDark ? '#94a3b8' : '#9ca3af'} />
                           </View>
                           <Text style={[styles.habitAddText, { color: isDark ? '#94a3b8' : '#9ca3af' }]}>添加打卡</Text>
                         </Pressable>
@@ -2071,6 +2256,10 @@ export default function TasksScreen() {
                   placeholderTextColor={outline}
                   value={categoryInputValue}
                   onChangeText={setCategoryInputValue}
+                  underlineColorAndroid="transparent"
+                  {...(Platform.OS === 'android'
+                    ? { includeFontPadding: false, textAlignVertical: 'center' as const }
+                    : {})}
                 />
               </View>
               <View style={styles.editorActions}>
@@ -2278,6 +2467,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
   },
   projectHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, paddingRight: 10 },
+  projectHeadMainColumn: { flex: 1, minWidth: 0 },
   projectHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   projectEditBtn: {
     width: 28,
@@ -2310,7 +2500,7 @@ const styles = StyleSheet.create({
   projectFlagText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
   projectProgressRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, marginBottom: 6 },
   projectProgressLabel: { fontSize: 10, fontWeight: '800' },
-  projectProgressTrack: { height: 6, borderRadius: 999, overflow: 'hidden' },
+  projectProgressTrack: { height: 6, borderRadius: 999, overflow: 'hidden', alignSelf: 'stretch' },
   projectProgressFill: { height: '100%' },
   projectCount: { alignItems: 'flex-end' },
   projectCountMain: { fontSize: 12, fontWeight: '900' },
@@ -2436,9 +2626,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 14,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: Platform.OS === 'android' ? 4 : 10,
   },
-  editorInput: { fontSize: 14, fontWeight: '700' },
+  editorInput: {
+    width: '100%',
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 22,
+    paddingVertical: Platform.OS === 'android' ? 12 : 8,
+    minHeight: 44,
+  },
   editorActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
   editorGhostBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12 },
   editorGhostText: { fontSize: 14, fontWeight: '700' },
@@ -2457,28 +2654,56 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   habitSectionToggleText: { fontSize: 13, fontWeight: '800' },
-  habitItemsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  habitItemsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: HABIT_GRID_GAP },
   habitItem: {
-    width: 88,
     alignItems: 'center',
     justifyContent: 'flex-start',
-    gap: 8,
+    gap: 10,
+  },
+  habitIconPressable: { alignItems: 'center' },
+  habitNamePressable: { alignItems: 'center', alignSelf: 'stretch', paddingHorizontal: 2 },
+  habitIconWrap: {
+    position: 'relative',
+    width: 76,
+    height: 76,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   habitIconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    position: 'relative',
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     borderWidth: 2,
     borderStyle: 'dashed',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  habitIconText: { fontSize: 30 },
-  habitItemText: { fontSize: 13, fontWeight: '800', textAlign: 'center', lineHeight: 18 },
+  habitIconText: { fontSize: 34 },
+  habitIconTextDone: { opacity: 0.35 },
+  habitIconDoneOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  habitTodayBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+  },
+  habitTodayBadgeCount: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  habitItemText: { fontSize: 13, fontWeight: '800', textAlign: 'center', lineHeight: 19 },
   habitAddCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     alignItems: 'center',
     justifyContent: 'center',
   },

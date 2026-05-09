@@ -125,7 +125,7 @@ function ensureInboxCategory(rows: ProjectCategoryRow[]): ProjectCategoryRow[] {
 
 export default function AddProjectScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ source?: string }>();
+  const params = useLocalSearchParams<{ source?: string; categoryId?: string | string[] }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -142,6 +142,15 @@ export default function AddProjectScreen() {
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(INBOX_PROJECT_CATEGORY_ID);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
+  const appliedRouteCategoryRef = React.useRef(false);
+
+  const routeCategoryId = React.useMemo(() => {
+    const raw = params.categoryId;
+    const s = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : '';
+    const t = (s ?? '').trim();
+    if (!t || t === 'all') return null;
+    return t;
+  }, [params.categoryId]);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const scheduleSource = params.source ?? 'add-project';
@@ -241,6 +250,14 @@ export default function AddProjectScreen() {
       mounted = false;
     };
   }, []);
+
+  React.useEffect(() => {
+    if (appliedRouteCategoryRef.current) return;
+    if (!routeCategoryId || categories.length === 0) return;
+    const exists = categories.some((c) => c.id === routeCategoryId);
+    if (exists) setSelectedCategoryId(routeCategoryId);
+    appliedRouteCategoryRef.current = true;
+  }, [categories, routeCategoryId]);
 
   const selectedCategoryName = React.useMemo(() => {
     if (!selectedCategoryId) return '';

@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getHabitCheckInListStats } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { getHabits, deleteHabit as deleteHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
@@ -16,6 +17,10 @@ type HabitItem = {
   tag: string | null;
   icon: string;
   tone: string | null;
+  /** habit_check_ins：有打卡记录的天数 */
+  achievedDays: number;
+  /** 今日该习惯打卡次数合计 */
+  todayCount: number;
 };
 
 type HabitGroup = {
@@ -60,17 +65,20 @@ export default function HabitManageScreen() {
 
   const loadHabits = React.useCallback(async () => {
     try {
-      const rows = await getHabits();
+      const [rows, checkStats] = await Promise.all([getHabits(), getHabitCheckInListStats()]);
       const byCtx = new Map<string, HabitItem[]>();
 
       rows.forEach((r: HabitRow) => {
         const items = byCtx.get(r.context) ?? [];
+        const st = checkStats.get(r.id);
         items.push({
           id: r.id,
           name: r.name,
           tag: r.tag ?? '每天',
           icon: r.icon,
           tone: r.tone ?? deriveToneByContext(r.context),
+          achievedDays: st?.achievedDays ?? 0,
+          todayCount: st?.todayCount ?? 0,
         });
         byCtx.set(r.context, items);
       });
@@ -256,21 +264,8 @@ export default function HabitManageScreen() {
               <View style={styles.groupItems}>
                 {group.items.map((item) => {
                   return (
-                    <Pressable
+                    <View
                       key={item.id}
-                      onLongPress={() =>
-                        router.push({
-                          pathname: '/add-habit',
-                          params: {
-                            mode: 'edit',
-                            name: item.name,
-                            icon: item.icon,
-                            context: group.category,
-                            habitId: item.id,
-                          },
-                        })
-                      }
-                      delayLongPress={260}
                       style={[
                         styles.itemCard,
                         {
@@ -278,21 +273,37 @@ export default function HabitManageScreen() {
                           borderColor: 'transparent',
                         },
                       ]}>
-                      <View style={styles.itemMain}>
-                        <Text style={styles.itemEmoji}>{item.icon}</Text>
-                        <View style={styles.itemTextWrap}>
-                          <Text style={[styles.itemTitle, { color: theme.text }]}>{item.name}</Text>
-                          <View style={styles.itemTag}>
-                            <Text style={[styles.itemTagText, { color: textSub }]}>{item.tag ?? ''}</Text>
+                      <Pressable
+                        onPress={() =>
+                          router.push({
+                            pathname: '/habit-detail',
+                            params: { habitId: item.id },
+                          })
+                        }
+                        style={({ pressed }) => [styles.itemMainPressable, pressed && { opacity: 0.92 }]}>
+                        <View style={styles.itemMain}>
+                          <Text style={styles.itemEmoji}>{item.icon}</Text>
+                          <View style={styles.itemTextWrap}>
+                            <Text style={[styles.itemTitle, { color: theme.text }]}>{item.name}</Text>
+                            <View style={styles.itemTag}>
+                              <Text style={[styles.itemTagText, { color: textSub }]}>{item.tag ?? ''}</Text>
+                            </View>
+                            {item.achievedDays > 0 || item.todayCount > 0 ? (
+                              <Text style={[styles.itemStats, { color: textSub }]}>
+                                {item.todayCount > 0 ? `今日 ${item.todayCount} 次` : null}
+                                {item.todayCount > 0 && item.achievedDays > 0 ? ' · ' : null}
+                                {item.achievedDays > 0 ? `累计 ${item.achievedDays} 天` : null}
+                              </Text>
+                            ) : null}
                           </View>
                         </View>
-                      </View>
+                      </Pressable>
                       <Pressable
                         onPress={() => openItemMenu(group.category, item)}
                         style={({ pressed }) => [styles.moreBtn, pressed && { opacity: 0.75 }]}>
                         <MaterialIcons name="more-vert" size={20} color={textSub} />
                       </Pressable>
-                    </Pressable>
+                    </View>
                   );
                 })}
               </View>
@@ -412,12 +423,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   uncheckedCircle: { width: 22, height: 22, borderRadius: 11, borderWidth: 1, backgroundColor: 'rgba(255,255,255,0.5)' },
+  itemMainPressable: { flex: 1, minWidth: 0 },
   itemMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
   itemEmoji: { fontSize: 30 },
   itemTextWrap: { gap: 4, flex: 1 },
   itemTitle: { fontSize: 16, fontWeight: '800' },
   itemTag: { alignSelf: 'flex-start', backgroundColor: 'rgba(15,23,42,0.08)', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 },
   itemTagText: { fontSize: 11, fontWeight: '600' },
+  itemStats: { fontSize: 11, fontWeight: '600', marginTop: 2 },
   moreBtn: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
 
   modalRoot: {

@@ -14,6 +14,8 @@ type Item = {
   title: string;
   subtitle: string;
   tone: 'error' | 'primary' | 'tertiary' | 'outline';
+  /** 有今日截止时间时用于排序：数值越小越紧迫；无日期时为 null，排在后面 */
+  dueSortKey: number | null;
 };
 
 type Section = { key: string; title: string; badge: string; tone: Item['tone']; items: Item[]; dim?: boolean };
@@ -112,11 +114,19 @@ function groupTasksToSections(rows: TaskRow[], now: Date): Section[] {
 
   eligible.forEach((t) => {
     const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
+    let dueSortKey: number | null = null;
+    if (t.due_date && isValidDate(t.due_date)) {
+      const parsedDue = parseDueDateAsLocalMoment(t.due_date);
+      if (parsedDue && isSameLocalDay(parsedDue.date, now)) {
+        dueSortKey = parsedDue.date.getTime();
+      }
+    }
     const item: Item = {
       id: t.id,
       title: t.title,
-      subtitle: t.due_date && isValidDate(t.due_date) ? formatDueSubtitle(t.due_date, now) : '',
+      subtitle: dueSortKey !== null && t.due_date ? formatDueSubtitle(t.due_date, now) : '',
       tone,
+      dueSortKey,
     };
 
     if (t.priority >= 4) q1.push(item);
@@ -125,16 +135,21 @@ function groupTasksToSections(rows: TaskRow[], now: Date): Section[] {
     else q4.push(item);
   });
 
-  const sortByPriorityThenDue = (a: Item, b: Item) => {
-    // keep stable-ish: due time ascending by parsing subtitle not reliable, so use id fallback
-    if (a.tone !== b.tone) return 0;
+  /** 有日期的在前；同有日期按截止时间升序（已过期/更早的时刻更靠前）；再无则按 id */
+  const sortByDueUrgencyThenId = (a: Item, b: Item) => {
+    const aDated = a.dueSortKey !== null;
+    const bDated = b.dueSortKey !== null;
+    if (aDated !== bDated) return aDated ? -1 : 1;
+    if (aDated && bDated && a.dueSortKey !== b.dueSortKey) {
+      return (a.dueSortKey as number) - (b.dueSortKey as number);
+    }
     return a.id.localeCompare(b.id);
   };
 
-  q1.sort(sortByPriorityThenDue);
-  q2.sort(sortByPriorityThenDue);
-  q3.sort(sortByPriorityThenDue);
-  q4.sort(sortByPriorityThenDue);
+  q1.sort(sortByDueUrgencyThenId);
+  q2.sort(sortByDueUrgencyThenId);
+  q3.sort(sortByDueUrgencyThenId);
+  q4.sort(sortByDueUrgencyThenId);
 
   return [
     { key: 'q1', title: '紧急且重要', badge: '高风险', tone: 'error', items: q1 },
@@ -331,26 +346,28 @@ export default function AddFrogScreen() {
                     const hoverColor = checked ? toneColor : titleColor;
 
                     return (
-                      <Pressable
+                      <View
                         key={it.id}
-                        onPress={() => toggle(it.id)}
-                        style={({ pressed }) => [
-                          styles.item,
-                          { backgroundColor: card, borderColor: pressed ? `${toneColor}33` : 'transparent' },
-                          pressed && { transform: [{ scale: 0.995 }] },
-                        ]}>
+                        style={[styles.item, { backgroundColor: card, borderColor: outlineVariant }]}>
                         <View style={styles.itemLeft}>
-                          <View style={[styles.checkbox, { backgroundColor: boxBg, borderColor: boxBorder }]}>
-                            {checked ? <MaterialIcons name="check" size={16} color="#fff" /> : null}
-                          </View>
-                          <View style={styles.itemText}>
+                          <Pressable
+                            onPress={() => toggle(it.id)}
+                            hitSlop={8}
+                            style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
+                            <View style={[styles.checkbox, { backgroundColor: boxBg, borderColor: boxBorder }]}>
+                              {checked ? <MaterialIcons name="check" size={16} color="#fff" /> : null}
+                            </View>
+                          </Pressable>
+                          <Pressable
+                            style={({ pressed }) => [styles.itemText, pressed && { opacity: 0.82 }]}
+                            onPress={() => router.push({ pathname: '/task/[id]', params: { id: it.id } })}>
                             <Text style={[styles.itemTitle, { color: checked ? hoverColor : titleColor }]}>{it.title}</Text>
                             {it.subtitle ? (
                               <Text style={[styles.itemSubtitle, { color: theme.textSecondary }]}>{it.subtitle}</Text>
                             ) : null}
-                          </View>
+                          </Pressable>
                         </View>
-                      </Pressable>
+                      </View>
                     );
                   })}
                 </View>

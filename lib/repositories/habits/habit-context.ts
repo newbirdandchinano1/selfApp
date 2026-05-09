@@ -60,10 +60,32 @@ export async function createHabitContext(name: string) {
   );
 }
 
+/** 删除情境后，仍引用该名称的习惯归入此前情境（与内置默认一致，避免界面「删了又出现」） */
+const HABIT_CONTEXT_FALLBACK_NAME = '全天';
+
 export async function deleteHabitContexts(ids: string[]) {
   if (ids.length === 0) return;
   const db = await getDatabase();
   const placeholders = ids.map(() => '?').join(', ');
+
+  const resolved = await db.getAllAsync<{ name: string }>(
+    `SELECT name FROM habit_contexts WHERE deleted_at IS NULL AND id IN (${placeholders})`,
+    ids
+  );
+  const names = Array.from(new Set(resolved.map((r) => r.name).filter((n): n is string => Boolean(n?.trim()))));
+  if (names.length > 0) {
+    const inPh = names.map(() => '?').join(', ');
+    await db.runAsync(
+      `UPDATE habits
+       SET context = ?,
+           updated_at = datetime('now'),
+           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+           version = version + 1
+       WHERE deleted_at IS NULL AND context IN (${inPh})`,
+      [HABIT_CONTEXT_FALLBACK_NAME, ...names]
+    );
+  }
+
   await db.runAsync(
     `UPDATE habit_contexts
      SET deleted_at = datetime('now'),
