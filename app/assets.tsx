@@ -348,7 +348,7 @@ export default function AssetsScreen() {
                 <MaterialIcons name="wallet" size={20} color={tertiaryAmber} />
                 <Text style={[styles.groupTitle, { color: theme.text }]}>现金与钱包</Text>
               </View>
-              <Text style={[styles.groupSum, { color: tertiaryAmber }]}>{formatMoney0(groupSumAbs(grouped.cash_wallet))}</Text>
+              <Text style={[styles.groupSum, { color: tertiaryAmber }]}>{formatMoney2(groupSumAbs(grouped.cash_wallet))}</Text>
             </View>
 
             {grouped.cash_wallet.length === 0 ? (
@@ -400,7 +400,7 @@ export default function AssetsScreen() {
                 <MaterialIcons name="account-balance" size={20} color={primaryBlue} />
                 <Text style={[styles.groupTitle, { color: theme.text }]}>银行账户</Text>
               </View>
-              <Text style={[styles.groupSum, { color: primaryBlue }]}>{formatMoney0(groupSumAbs(grouped.bank))}</Text>
+              <Text style={[styles.groupSum, { color: primaryBlue }]}>{formatMoney2(groupSumAbs(grouped.bank))}</Text>
             </View>
 
             {grouped.bank.length === 0 ? (
@@ -452,7 +452,7 @@ export default function AssetsScreen() {
                 <MaterialIcons name="show-chart" size={20} color={secondaryGreen} />
                 <Text style={[styles.groupTitle, { color: theme.text }]}>投资项目</Text>
               </View>
-              <Text style={[styles.groupSum, { color: secondaryGreen }]}>{formatMoney0(groupSumAbs(grouped.investment))}</Text>
+              <Text style={[styles.groupSum, { color: secondaryGreen }]}>{formatMoney2(groupSumAbs(grouped.investment))}</Text>
             </View>
 
             {grouped.investment.length === 0 ? (
@@ -592,7 +592,7 @@ export default function AssetsScreen() {
                 <MaterialIcons name="credit-card-off" size={20} color={errorRed} />
                 <Text style={[styles.groupTitle, { color: errorRed }]}>负债</Text>
               </View>
-              <Text style={[styles.groupSum, { color: errorRed }]}>{formatMoney0(groupSumAbs(grouped.liability))}</Text>
+              <Text style={[styles.groupSum, { color: errorRed }]}>{formatDebtMoney2(groupSumAbs(grouped.liability))}</Text>
             </View>
 
             <View style={styles.debtList}>
