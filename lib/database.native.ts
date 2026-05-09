@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 8;
+export const DB_VERSION = 11;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -306,6 +306,64 @@ export async function initDatabase() {
       extra_data TEXT,
       FOREIGN KEY (savings_plan_id) REFERENCES savings_plans(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS cash_flow_profile (
+      id TEXT PRIMARY KEY NOT NULL,
+      necessary_expenses REAL NOT NULL DEFAULT 0,
+      unnecessary_expenses REAL NOT NULL DEFAULT 0,
+      target_passive_income REAL NOT NULL DEFAULT 0,
+      target_months INTEGER NOT NULL DEFAULT 12,
+      seed_version INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS cash_flow_incomes (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      quadrant TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS cash_flow_holdings (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      principal REAL NOT NULL DEFAULT 0,
+      inflow REAL NOT NULL DEFAULT 0,
+      outflow REAL NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS cash_flow_expense_lines (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      bucket TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
   `);
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
@@ -476,6 +534,12 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_savings_plans_updated_at ON savings_plans(updated_at);
     CREATE INDEX IF NOT EXISTS idx_savings_plan_deposits_plan_id ON savings_plan_deposits(savings_plan_id);
     CREATE INDEX IF NOT EXISTS idx_savings_plan_deposits_updated_at ON savings_plan_deposits(updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_cash_flow_profile_updated_at ON cash_flow_profile(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_cash_flow_incomes_sort_order ON cash_flow_incomes(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_cash_flow_incomes_updated_at ON cash_flow_incomes(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_cash_flow_holdings_sort_order ON cash_flow_holdings(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_cash_flow_holdings_updated_at ON cash_flow_holdings(updated_at);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
@@ -489,6 +553,38 @@ export async function initDatabase() {
      WHERE id = ?`,
     ['default']
   );
+
+  /** 一次性清除旧版自动写入的现金流演示数据（cf-seed-*），并复位未改动的演示型 profile */
+  const cfDemoPurged = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['cash_flow_legacy_demo_purged_v10']
+  );
+  if (!cfDemoPurged) {
+    try {
+      await db.execAsync(`
+        DELETE FROM cash_flow_incomes WHERE id LIKE 'cf-seed-%';
+        DELETE FROM cash_flow_holdings WHERE id LIKE 'cf-seed-%';
+      `);
+      await db.runAsync(
+        `UPDATE cash_flow_profile
+         SET necessary_expenses = 0, unnecessary_expenses = 0, target_passive_income = 0,
+             updated_at = datetime('now'),
+             sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+             version = version + 1
+         WHERE id = 'default'
+           AND necessary_expenses = 4000
+           AND unnecessary_expenses = 1500
+           AND target_passive_income = 20000
+           AND target_months = 60`
+      );
+      await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+        'cash_flow_legacy_demo_purged_v10',
+        '1',
+      ]);
+    } catch {
+      /* 旧库可能尚无 cash_flow 表；忽略 */
+    }
+  }
 
   return db;
 }
@@ -512,6 +608,10 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS habits;
     DROP TABLE IF EXISTS savings_plan_deposits;
     DROP TABLE IF EXISTS savings_plans;
+    DROP TABLE IF EXISTS cash_flow_expense_lines;
+    DROP TABLE IF EXISTS cash_flow_incomes;
+    DROP TABLE IF EXISTS cash_flow_holdings;
+    DROP TABLE IF EXISTS cash_flow_profile;
     DROP TABLE IF EXISTS users;
     DROP TABLE IF EXISTS app_meta;
   `);

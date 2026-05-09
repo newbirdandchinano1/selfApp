@@ -277,20 +277,21 @@ export default function CalendarScreen() {
     opacity: 0.86 + backdropOpacity.value * 0.14,
   }));
 
-  const bg = isDark ? baseTheme.background : '#faf8ff';
-  const surface = isDark ? baseTheme.surface : '#ffffff';
-  const text = isDark ? baseTheme.text : '#131b2e';
-  const outline = isDark ? 'rgba(148,163,184,0.75)' : '#727785';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.18)' : 'rgba(194,198,214,0.26)';
+  const bg = baseTheme.background;
+  const surface = baseTheme.surface;
+  const text = baseTheme.text;
+  const textMuted = baseTheme.textSecondary;
+  const outline = isDark ? 'rgba(148,163,184,0.82)' : baseTheme.textSecondary;
+  const outlineVariant = isDark ? 'rgba(148,163,184,0.14)' : 'rgba(148,163,184,0.22)';
 
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const secondary = isDark ? '#34d399' : '#006c49';
-  const tertiary = isDark ? '#fbbf24' : '#825100';
-  const error = isDark ? '#f87171' : '#ba1a1a';
+  const primary = baseTheme.primary;
+  const secondary = isDark ? '#34d399' : '#059669';
+  const tertiary = isDark ? '#fbbf24' : '#d97706';
+  const error = isDark ? '#f87171' : '#dc2626';
 
-  const heat90 = isDark ? 'rgba(52,211,153,0.14)' : 'rgba(0,108,73,0.12)';
-  const heat70 = isDark ? 'rgba(52,211,153,0.08)' : 'rgba(0,108,73,0.06)';
-  const heat40 = isDark ? 'rgba(52,211,153,0.04)' : 'rgba(0,108,73,0.02)';
+  const heat90 = isDark ? 'rgba(16,185,129,0.18)' : 'rgba(16,185,129,0.11)';
+  const heat70 = isDark ? 'rgba(16,185,129,0.10)' : 'rgba(16,185,129,0.07)';
+  const heat40 = isDark ? 'rgba(16,185,129,0.05)' : 'rgba(16,185,129,0.04)';
 
   const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
@@ -377,7 +378,7 @@ export default function CalendarScreen() {
       : null;
 
   const cellBg = (cell: Cell) => {
-    if (cell.kind === 'empty') return isDark ? 'rgba(148,163,184,0.06)' : 'rgba(242,243,255,0.65)';
+    if (cell.kind === 'empty') return isDark ? 'rgba(148,163,184,0.06)' : 'rgba(241,245,249,0.92)';
     if (cell.kind === 'day' && cell.day === selectedDay) return surface;
     if (cell.kind === 'day' && cell.heat === '90') return heat90;
     if (cell.kind === 'day' && cell.heat === '70') return heat70;
@@ -395,9 +396,17 @@ export default function CalendarScreen() {
         showsVerticalScrollIndicator={false}>
         <Animated.View entering={FadeInUp.duration(420)} style={styles.header}>
           <View style={styles.headerLeft}>
-            <Animated.Text style={[styles.archiveKicker, { color: `${primary}99` }, animatedMonthLabelStyle]}>{`归档 ${currentYear}`}</Animated.Text>
+            <Animated.View
+              style={[
+                styles.yearChip,
+                { backgroundColor: isDark ? 'rgba(16,185,129,0.14)' : 'rgba(16,185,129,0.10)' },
+                animatedMonthLabelStyle,
+              ]}>
+              <Text style={[styles.yearChipText, { color: primary }]}>{currentYear}</Text>
+            </Animated.View>
             <Text style={[styles.monthTitle, { color: text }]}>
-              {monthLabel} <Text style={[styles.monthSub, { color: `${outline}99` }]}>{monthShortZh}</Text>
+              {monthLabel}
+              <Text style={[styles.monthSub, { color: textMuted }]}> · {monthShortZh}</Text>
             </Text>
           </View>
             <Animated.View entering={FadeInDown.duration(420).delay(80)} style={styles.headerBtns}>
@@ -431,30 +440,33 @@ export default function CalendarScreen() {
             layout={LinearTransition.springify().damping(16)}
             style={[
               styles.card,
-              { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : primary },
+              {
+                backgroundColor: surface,
+                borderColor: outlineVariant,
+                shadowColor: isDark ? '#020617' : '#0f172a',
+              },
             ]}>
-          <View style={[styles.weekHeader, { borderBottomColor: outlineVariant, backgroundColor: surface }]}>
+          <View
+            style={[
+              styles.weekHeader,
+              {
+                borderBottomColor: outlineVariant,
+                backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(248,250,252,0.96)',
+              },
+            ]}>
             {weekDays.map((d) => (
               <View key={d} style={styles.weekHeaderCell}>
-                <Text style={[styles.weekHeaderText, { color: outline }]}>{d}</Text>
+                <Text style={[styles.weekHeaderText, { color: textMuted }]}>{d}</Text>
               </View>
             ))}
           </View>
 
-          <View>
+          <View style={styles.calendarGrid}>
             {weeks.map((row, rowIndex) => (
-              <View key={rowIndex} style={styles.weekRow}>
+              <View key={rowIndex} style={[styles.weekRow, rowIndex === weeks.length - 1 && styles.weekRowLast]}>
                 {row.map((cell, colIndex) => {
-                  const isLastCol = colIndex === 6;
-                  const isLastRow = rowIndex === weeks.length - 1;
                   const bgColor = cellBg(cell);
                   const isSelected = cell.kind === 'day' && cell.day === selectedDay;
-
-                  const borders = {
-                    borderRightWidth: isLastCol ? 0 : StyleSheet.hairlineWidth,
-                    borderBottomWidth: isLastRow ? 0 : StyleSheet.hairlineWidth,
-                    borderColor: isDark ? 'rgba(148,163,184,0.20)' : 'rgba(194,198,214,0.18)',
-                  } as const;
 
                   const cellAnimDelay = 30 + rowIndex * 55 + colIndex * 18;
 
@@ -464,21 +476,21 @@ export default function CalendarScreen() {
                         key={colIndex}
                         entering={FadeInDown.duration(320).delay(cellAnimDelay)}
                         layout={LinearTransition.springify().damping(18)}
-                        style={[styles.dayCellWrapper, borders]}>
-                        <View style={[styles.dayCell, { backgroundColor: bgColor }]} />
+                        style={styles.dayCellWrapper}>
+                        <View style={[styles.dayCell, styles.dayCellInner, { backgroundColor: bgColor }]} />
                       </Animated.View>
                     );
                   }
 
-                  const dayColor = isSelected ? primary : `${text}66`;
-                  const dayOpacity = isSelected ? 1 : 0.9;
+                  const dayColor = isSelected ? primary : text;
+                  const dayOpacity = isSelected ? 1 : 0.72;
 
                   return (
                     <Animated.View
                       key={colIndex}
                       entering={FadeInDown.duration(360).delay(cellAnimDelay)}
                       layout={LinearTransition.springify().damping(18)}
-                      style={[styles.dayCellWrapper, borders]}>
+                      style={styles.dayCellWrapper}>
                       <Pressable
                         onPress={() => {
                           setSelectedDay(cell.day);
@@ -486,11 +498,17 @@ export default function CalendarScreen() {
                         }}
                         style={({ pressed }) => [
                           styles.dayCell,
+                          styles.dayCellInner,
                           {
                             transform: [{ scale: pressed ? 0.97 : 1 }],
-                            backgroundColor: pressed ? (isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)') : bgColor,
-                            borderWidth: isSelected ? 2 : 0,
-                            borderColor: isSelected ? `${primary}33` : 'transparent',
+                            backgroundColor: pressed ? (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.04)') : bgColor,
+                            borderWidth: isSelected ? 2 : StyleSheet.hairlineWidth,
+                            borderColor: isSelected ? `${primary}55` : (isDark ? 'rgba(148,163,184,0.12)' : 'rgba(226,232,240,0.95)'),
+                            shadowColor: isSelected ? primary : 'transparent',
+                            shadowOffset: { width: 0, height: 4 },
+                            shadowOpacity: isSelected ? (isDark ? 0.35 : 0.18) : 0,
+                            shadowRadius: isSelected ? 10 : 0,
+                            elevation: isSelected ? 3 : 0,
                           },
                         ]}>
                         <Text style={[styles.dayNumber, { color: dayColor, opacity: dayOpacity }]}>
@@ -548,23 +566,30 @@ export default function CalendarScreen() {
           </Animated.View>
         </GestureDetector>
 
-        <Animated.View entering={FadeInUp.duration(520).delay(180)} style={styles.legend}>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: `${secondary}4D` }]} />
-            <Text style={[styles.legendText, { color: `${outline}B3` }]}>健康完成度热力图</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: primary }]} />
-            <Text style={[styles.legendText, { color: `${outline}B3` }]}>任务进度甘特图</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: tertiary }]} />
-            <Text style={[styles.legendText, { color: `${outline}B3` }]}>当日结余净额</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: error }]} />
-            <Text style={[styles.legendText, { color: `${outline}B3` }]}>异常支出赤字</Text>
-          </View>
+        <Animated.View
+          entering={FadeInUp.duration(520).delay(180)}
+          style={[styles.legendCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.legendScroll}>
+            <View style={[styles.legendChip, { borderColor: outlineVariant }]}>
+              <View style={[styles.legendDot, { backgroundColor: `${secondary}99` }]} />
+              <Text style={[styles.legendText, { color: textMuted }]}>完成度热力</Text>
+            </View>
+            <View style={[styles.legendChip, { borderColor: outlineVariant }]}>
+              <View style={[styles.legendDot, { backgroundColor: primary }]} />
+              <Text style={[styles.legendText, { color: textMuted }]}>任务进度</Text>
+            </View>
+            <View style={[styles.legendChip, { borderColor: outlineVariant }]}>
+              <View style={[styles.legendDot, { backgroundColor: tertiary }]} />
+              <Text style={[styles.legendText, { color: textMuted }]}>当日结余</Text>
+            </View>
+            <View style={[styles.legendChip, { borderColor: outlineVariant }]}>
+              <View style={[styles.legendDot, { backgroundColor: error }]} />
+              <Text style={[styles.legendText, { color: textMuted }]}>支出赤字</Text>
+            </View>
+          </ScrollView>
         </Animated.View>
       </ScrollView>
 
@@ -609,40 +634,82 @@ export default function CalendarScreen() {
         </Animated.View>
 
         {/* Tabs */}
-        <View style={[styles.sheetTabs, { borderBottomColor: outlineVariant }]}>
-          <Pressable
-            onPress={() => setActiveTab('tasks')}
-            style={[styles.sheetTab, activeTab === 'tasks' && styles.sheetTabActive]}>
-            <Text
-              style={[
-                styles.sheetTabText,
-                { color: activeTab === 'tasks' ? primary : outline },
+        <View style={styles.sheetTabsOuter}>
+          <View
+            style={[
+              styles.sheetTabsTrack,
+              {
+                backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.05)',
+                borderColor: outlineVariant,
+              },
+            ]}>
+            <Pressable
+              onPress={() => setActiveTab('tasks')}
+              style={({ pressed }) => [
+                styles.sheetTabPill,
+                activeTab === 'tasks' && [
+                  styles.sheetTabPillActive,
+                  {
+                    backgroundColor: surface,
+                    borderColor: `${primary}40`,
+                    shadowColor: isDark ? '#000' : primary,
+                    opacity: pressed ? 0.92 : 1,
+                  },
+                ],
               ]}>
-              任务列表
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setActiveTab('finance')}
-            style={[styles.sheetTab, activeTab === 'finance' && styles.sheetTabActive]}>
-            <Text
-              style={[
-                styles.sheetTabText,
-                { color: activeTab === 'finance' ? primary : outline },
+              <Text
+                style={[
+                  styles.sheetTabText,
+                  { color: activeTab === 'tasks' ? text : textMuted, fontWeight: activeTab === 'tasks' ? '800' : '600' },
+                ]}>
+                任务列表
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setActiveTab('finance')}
+              style={({ pressed }) => [
+                styles.sheetTabPill,
+                activeTab === 'finance' && [
+                  styles.sheetTabPillActive,
+                  {
+                    backgroundColor: surface,
+                    borderColor: `${primary}40`,
+                    shadowColor: isDark ? '#000' : primary,
+                    opacity: pressed ? 0.92 : 1,
+                  },
+                ],
               ]}>
-              账单明细
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setActiveTab('intake')}
-            style={[styles.sheetTab, activeTab === 'intake' && styles.sheetTabActive]}>
-            <Text
-              style={[
-                styles.sheetTabText,
-                { color: activeTab === 'intake' ? primary : outline },
+              <Text
+                style={[
+                  styles.sheetTabText,
+                  { color: activeTab === 'finance' ? text : textMuted, fontWeight: activeTab === 'finance' ? '800' : '600' },
+                ]}>
+                账单明细
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setActiveTab('intake')}
+              style={({ pressed }) => [
+                styles.sheetTabPill,
+                activeTab === 'intake' && [
+                  styles.sheetTabPillActive,
+                  {
+                    backgroundColor: surface,
+                    borderColor: `${primary}40`,
+                    shadowColor: isDark ? '#000' : primary,
+                    opacity: pressed ? 0.92 : 1,
+                  },
+                ],
               ]}>
-              摄入日志
-            </Text>
-          </Pressable>
+              <Text
+                style={[
+                  styles.sheetTabText,
+                  { color: activeTab === 'intake' ? text : textMuted, fontWeight: activeTab === 'intake' ? '800' : '600' },
+                ]}>
+                摄入日志
+              </Text>
+            </Pressable>
+          </View>
         </View>
 
         {/* Tab Content */}
@@ -663,7 +730,7 @@ export default function CalendarScreen() {
                       style={[
                         styles.taskItem,
                         {
-                          backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#faf8ff',
+                          backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(248,250,252,0.96)',
                           borderLeftColor: done ? primary : `${outlineVariant}80`,
                           opacity: done ? 1 : 0.92,
                         },
@@ -1061,84 +1128,103 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   headerLeft: {
-    gap: 6,
+    gap: 10,
     flex: 1,
     paddingRight: 12,
   },
-  archiveKicker: {
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 2.6,
+  yearChip: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  yearChipText: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.8,
   },
   monthTitle: {
-    fontSize: 36,
-    fontWeight: '900',
-    letterSpacing: -0.8,
-    lineHeight: 42,
+    fontSize: 30,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+    lineHeight: 36,
   },
   monthSub: {
-    fontWeight: '300',
+    fontWeight: '500',
+    fontSize: 17,
   },
   headerBtns: {
     flexDirection: 'row',
     gap: 10,
   },
   circleBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    elevation: 2,
   },
   card: {
-    borderRadius: 22,
+    borderRadius: 26,
     overflow: 'hidden',
-    borderWidth: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.1,
-    shadowRadius: 24,
-    elevation: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.07,
+    shadowRadius: 28,
+    elevation: 5,
   },
   weekHeader: {
     flexDirection: 'row',
-    borderBottomWidth: 1,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   weekHeaderCell: {
     flex: 1,
-    height: 44,
+    height: 42,
     alignItems: 'center',
     justifyContent: 'center',
   },
   weekHeaderText: {
-    fontSize: 9,
-    fontWeight: '900',
-    letterSpacing: 2,
-    textTransform: 'uppercase',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  calendarGrid: {
+    paddingTop: 8,
+    paddingBottom: 10,
   },
   weekRow: {
     flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+    marginBottom: 6,
+  },
+  weekRowLast: {
+    marginBottom: 0,
   },
   dayCellWrapper: {
     flex: 1,
-    height: 115,
+    minWidth: 0,
+    height: 112,
   },
   dayCell: {
     flex: 1,
     height: '100%',
-    padding: 10,
     justifyContent: 'space-between',
-    borderRadius: 8,
+  },
+  dayCellInner: {
+    padding: 9,
+    borderRadius: 14,
   },
   dayNumber: {
-    fontSize: 12,
-    fontWeight: '900',
+    fontSize: 13,
+    fontWeight: '800',
   },
   dayBottom: {
     gap: 4,
@@ -1150,7 +1236,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   bar: {
-    height: 6,
+    height: 5,
     borderRadius: 999,
   },
   amountText: {
@@ -1165,31 +1251,41 @@ const styles = StyleSheet.create({
     height: 14,
     width: '100%',
   },
-  legend: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    columnGap: 16,
-    rowGap: 10,
-    borderRadius: 14,
+  legendCard: {
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.04,
+    shadowRadius: 14,
+    elevation: 2,
   },
-  legendItem: {
-    width: '48%',
+  legendScroll: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    paddingHorizontal: 12,
+  },
+  legendChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   legendDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 3,
+    width: 8,
+    height: 8,
+    borderRadius: 999,
   },
   legendText: {
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -1202,24 +1298,24 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 600,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderTopWidth: 1,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderTopWidth: StyleSheet.hairlineWidth,
     zIndex: 50,
-    shadowColor: '#131b2e',
-    shadowOffset: { width: 0, height: -24 },
-    shadowOpacity: 0.12,
-    shadowRadius: 48,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: -18 },
+    shadowOpacity: 0.14,
+    shadowRadius: 40,
     elevation: 24,
   },
   sheetHandle: {
     alignItems: 'center',
-    paddingVertical: 16,
+    paddingVertical: 12,
   },
   sheetHandleLine: {
-    width: 56,
-    height: 6,
-    borderRadius: 3,
+    width: 40,
+    height: 5,
+    borderRadius: 999,
   },
   sheetHeader: {
     paddingHorizontal: 32,
@@ -1256,28 +1352,35 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '800',
   },
-  sheetTabs: {
+  sheetTabsOuter: {
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+  },
+  sheetTabsTrack: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    gap: 8,
-    marginBottom: 8,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 4,
+    gap: 4,
   },
-  sheetTab: {
+  sheetTabPill: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 11,
     alignItems: 'center',
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
+    justifyContent: 'center',
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
   },
-  sheetTabActive: {
-    borderBottomColor: '#0058be',
+  sheetTabPillActive: {
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 3,
   },
   sheetTabText: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
+    fontSize: 12,
+    letterSpacing: 0.15,
   },
   sheetContent: {
     flex: 1,

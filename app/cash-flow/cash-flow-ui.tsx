@@ -2,8 +2,26 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { CASH_FLOW_EMPTY_STATE } from '@/lib/repositories/cash-flow/cash-flow.defaults';
 import {
+  loadCashFlowState,
+  newCashFlowHoldingId,
+  newCashFlowIncomeId,
+  newExpenseFlowLineId,
+  persistCashFlowState,
+} from '@/lib/repositories/cash-flow/cash-flow';
+import type {
+  CashFlowExpenseBucket,
+  CashFlowState,
+  Holding,
+  IncomeItem,
+  Quadrant,
+} from '@/lib/repositories/cash-flow/cash-flow.types';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Swipeable } from 'react-native-gesture-handler';
+import {
+  ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,8 +31,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type Quadrant = 'E' | 'S' | 'B' | 'I';
-type ExpenseFlowType = 'necessary' | 'unnecessary' | 'asset' | 'liability';
+type ExpenseFlowType = CashFlowExpenseBucket;
 type ActiveTab =
   | 'dashboard'
   | 'entry'
@@ -25,17 +42,6 @@ type ActiveTab =
   | 'detail_asset'
   | 'detail_liability'
   | 'detail_expense';
-
-type IncomeItem = { id: number; name: string; amount: number; quadrant: Quadrant };
-type Holding = { id: number; name: string; principal: number; inflow: number; outflow: number };
-
-type CashFlowState = {
-  necessaryExpenses: number;
-  unnecessaryExpenses: number;
-  incomes: IncomeItem[];
-  holdings: Holding[];
-  goals: { targetPassiveIncome: number; targetMonths: number };
-};
 
 type CategorizedHolding = Holding & { netCashflow: number; isAsset: boolean };
 
@@ -53,23 +59,6 @@ type Metrics = {
   categorizedHoldings: CategorizedHolding[];
   totalAssetsValue: number;
   totalLiabilitiesValue: number;
-};
-
-const INITIAL_STATE: CashFlowState = {
-  necessaryExpenses: 4000,
-  unnecessaryExpenses: 1500,
-  incomes: [
-    { id: 1, name: '主业薪资', amount: 12000, quadrant: 'E' },
-    { id: 2, name: '副业接单', amount: 3000, quadrant: 'S' },
-    { id: 3, name: '指数基金分红', amount: 800, quadrant: 'I' },
-  ],
-  holdings: [
-    { id: 1, name: '自住房屋按揭', principal: 1_000_000, inflow: 0, outflow: 4500 },
-    { id: 2, name: '出租公寓', principal: 500_000, inflow: 3500, outflow: 1500 },
-    { id: 3, name: '车贷', principal: 150_000, inflow: 0, outflow: 2500 },
-    { id: 4, name: '高息分红股', principal: 100_000, inflow: 800, outflow: 0 },
-  ],
-  goals: { targetPassiveIncome: 20000, targetMonths: 60 },
 };
 
 function calculateMetrics(state: CashFlowState): Metrics {
@@ -140,30 +129,117 @@ const VIEW_TITLES: Record<Exclude<ActiveTab, 'dashboard'>, string> = {
   detail_expense: '流出明细',
 };
 
+/** URL 段（嵌套路由）；物理返回 = pop 子屏，不再靠 JS 拦返回键 */
+export const CASH_FLOW_SECTION_SLUGS: Record<Exclude<ActiveTab, 'dashboard'>, string> = {
+  entry: 'entry',
+  ledger: 'ledger',
+  simulator: 'simulator',
+  detail_active: 'detail-active',
+  detail_passive: 'detail-passive',
+  detail_asset: 'detail-asset',
+  detail_liability: 'detail-liability',
+  detail_expense: 'detail-expense',
+};
+
+export function parseCashFlowSectionSlug(slug: string | undefined): Exclude<ActiveTab, 'dashboard'> | null {
+  if (!slug || typeof slug !== 'string') return null;
+  const pairs = Object.entries(CASH_FLOW_SECTION_SLUGS) as [Exclude<ActiveTab, 'dashboard'>, string][];
+  const hit = pairs.find(([, s]) => s === slug);
+  return hit ? hit[0] : null;
+}
+
+/** 点击首页「财务形态」标签时弹出说明（与 calculateMetrics 判定口径一致） */
+function showCashFlowPatternHelp(pattern: string) {
+  const guide: Record<string, { title: string; body: string }> = {
+    '财务自由 🎉': {
+      title: '财务自由',
+      body:
+        '被动收入（含 B/I 收入与资产净流入）已达到或超过「必要支出」。在本应用中，表示仅靠这类现金流即可覆盖你的月度刚需底线。\n\n实际生活中仍需预留应急金，并考虑通胀与大额支出。',
+    },
+    '老鼠赛跑 🐀': {
+      title: '老鼠赛跑',
+      body:
+        '负债带来的月度净流出大于资产带来的净流入，同时你还在依赖主动收入（E/S）。典型情况是工资多用于还贷与生活开支，资产「往口袋里塞钱」的速度赶不上负债「往外掏钱」，容易陷入忙碌却难攒钱的循环。\n\n可关注：降低高消耗负债、增加净流入资产或被动收入。',
+    },
+    '快车道起步 🚀': {
+      title: '快车道起步',
+      body:
+        '资产负债台账里至少有一项资产在本月带来正向净现金流（流入大于流出）。说明已有资产在为你「工作」，是脱离纯靠时间换钱的重要一步。\n\n可继续优化资产结构与回报率，拉高被动收入占比。',
+    },
+    穷人模式: {
+      title: '穷人模式',
+      body:
+        '当前数据不满足上述三种形态的判定：尚未达到财务自由；或不满足「负债消耗 > 资产回流且仍有主动收入」的老鼠赛跑条件；或暂无资产净流入。\n\n常见于积累期：可先理清收支、建立安全垫，再逐步提高资产性收入。',
+    },
+  };
+  const hit = guide[pattern];
+  if (hit) {
+    Alert.alert(hit.title, hit.body);
+  } else {
+    Alert.alert('财务形态', '暂无该标签的说明，请以首页指标为准。');
+  }
+}
+
 function formatMoney(value: number) {
   return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 }
 
 type ToastState = { message: string; type: 'success' | 'warning' } | null;
 
-export default function CashFlowScreen() {
-  const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
-  const theme = Colors[isDark ? 'dark' : 'light'];
+type CashFlowContextValue = {
+  state: CashFlowState;
+  setState: React.Dispatch<React.SetStateAction<CashFlowState>>;
+  hydrated: boolean;
+  metrics: Metrics;
+  showToast: (message: string, type?: 'success' | 'warning') => void;
+  toast: ToastState;
+};
 
-  const bg = isDark ? theme.background : '#f8fafc';
-  const surface = isDark ? theme.surface : '#ffffff';
-  const text = isDark ? theme.text : '#0f172a';
-  const subtle = isDark ? theme.textSecondary : '#64748b';
-  const border = isDark ? 'rgba(148,163,184,0.2)' : '#e2e8f0';
+const CashFlowContext = React.createContext<CashFlowContextValue | null>(null);
 
-  const [state, setState] = useState<CashFlowState>(INITIAL_STATE);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+function useCashFlowContext() {
+  const v = React.useContext(CashFlowContext);
+  if (!v) throw new Error('CashFlowProvider missing');
+  return v;
+}
+
+export function CashFlowProvider({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<CashFlowState>(CASH_FLOW_EMPTY_STATE);
+  const [hydrated, setHydrated] = useState(false);
+  const skipNextPersist = useRef(true);
   const [toast, setToast] = useState<ToastState>(null);
 
   const metrics = useMemo(() => calculateMetrics(state), [state]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const loaded = await loadCashFlowState();
+        if (!cancelled) setState(loaded);
+      } catch (e) {
+        console.error(e);
+        if (!cancelled) setState(CASH_FLOW_EMPTY_STATE);
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (skipNextPersist.current) {
+      skipNextPersist.current = false;
+      return;
+    }
+    const t = setTimeout(() => {
+      persistCashFlowState(state).catch((err) => console.error(err));
+    }, 450);
+    return () => clearTimeout(t);
+  }, [state, hydrated]);
 
   const showToast = useCallback((message: string, type: 'success' | 'warning' = 'success') => {
     setToast({ message, type });
@@ -175,17 +251,49 @@ export default function CashFlowScreen() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  const value = useMemo<CashFlowContextValue>(
+    () => ({ state, setState, hydrated, metrics, showToast, toast }),
+    [state, hydrated, metrics, showToast, toast]
+  );
+
+  return <CashFlowContext.Provider value={value}>{children}</CashFlowContext.Provider>;
+}
+
+export function CashFlowShell({ route }: { route: ActiveTab }) {
+  const router = useRouter();
+  const { state, setState, hydrated, metrics, showToast, toast } = useCashFlowContext();
+  const insets = useSafeAreaInsets();
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+  const theme = Colors[isDark ? 'dark' : 'light'];
+
+  const bg = isDark ? theme.background : '#f8fafc';
+  const surface = isDark ? theme.surface : '#ffffff';
+  const text = isDark ? theme.text : '#0f172a';
+  const subtle = isDark ? theme.textSecondary : '#64748b';
+  const border = isDark ? 'rgba(148,163,184,0.2)' : '#e2e8f0';
+
   const headerTitle =
-    activeTab === 'dashboard'
+    route === 'dashboard'
       ? 'CASHFLOW引擎'
-      : VIEW_TITLES[activeTab as Exclude<ActiveTab, 'dashboard'>];
+      : VIEW_TITLES[route as Exclude<ActiveTab, 'dashboard'>];
+
+  const navigateToSection = useCallback(
+    (tab: Exclude<ActiveTab, 'dashboard'>) => {
+      router.push({
+        pathname: '/cash-flow/[section]',
+        params: { section: CASH_FLOW_SECTION_SLUGS[tab] },
+      });
+    },
+    [router]
+  );
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right']}>
       <View style={[styles.header, { borderBottomColor: border, backgroundColor: isDark ? 'rgba(15,23,42,0.92)' : 'rgba(255,255,255,0.95)', paddingTop: insets.top }]}>
-        {activeTab !== 'dashboard' ? (
+        {route !== 'dashboard' ? (
           <Pressable
-            onPress={() => setActiveTab('dashboard')}
+            onPress={() => router.back()}
             style={({ pressed }) => [styles.headerBack, pressed && { opacity: 0.75 }]}>
             <MaterialIcons name="chevron-left" size={28} color={subtle} />
             <Text style={[styles.headerBackTitle, { color: text }]}>{headerTitle}</Text>
@@ -226,16 +334,22 @@ export default function CashFlowScreen() {
         </View>
       ) : null}
 
+      {!hydrated ? (
+        <View style={[styles.cashFlowLoading, { paddingBottom: 28 + insets.bottom }]}>
+          <ActivityIndicator size="large" color={subtle} />
+          <Text style={[styles.cashFlowLoadingText, { color: subtle }]}>正在读取现金流数据…</Text>
+        </View>
+      ) : (
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: 28 + insets.bottom }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}>
-        {activeTab === 'dashboard' ? (
+        {route === 'dashboard' ? (
           <MobileDashboard
             state={state}
             metrics={metrics}
-            onNavigate={setActiveTab}
+            onNavigate={navigateToSection}
             surface={surface}
             text={text}
             subtle={subtle}
@@ -243,7 +357,7 @@ export default function CashFlowScreen() {
             isDark={isDark}
           />
         ) : null}
-        {activeTab === 'entry' ? (
+        {route === 'entry' ? (
           <MobileEntry
             setState={setState}
             showToast={showToast}
@@ -254,10 +368,17 @@ export default function CashFlowScreen() {
             isDark={isDark}
           />
         ) : null}
-        {activeTab === 'ledger' ? (
-          <MobileLedger metrics={metrics} surface={surface} text={text} subtle={subtle} border={border} />
+        {route === 'ledger' ? (
+          <MobileLedger
+            metrics={metrics}
+            surface={surface}
+            text={text}
+            subtle={subtle}
+            border={border}
+            onOpenAssets={() => router.push('/assets')}
+          />
         ) : null}
-        {activeTab === 'simulator' ? (
+        {route === 'simulator' ? (
           <MobileSimulator
             state={state}
             currentMetrics={metrics}
@@ -268,9 +389,9 @@ export default function CashFlowScreen() {
             isDark={isDark}
           />
         ) : null}
-        {activeTab.startsWith('detail_') ? (
+        {route.startsWith('detail_') ? (
           <FlowDetail
-            detailType={activeTab}
+            detailType={route}
             state={state}
             metrics={metrics}
             surface={surface}
@@ -278,9 +399,12 @@ export default function CashFlowScreen() {
             subtle={subtle}
             border={border}
             isDark={isDark}
+            setState={setState}
+            showToast={showToast}
           />
         ) : null}
       </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
@@ -297,7 +421,7 @@ function MobileDashboard({
 }: {
   state: CashFlowState;
   metrics: Metrics;
-  onNavigate: (tab: ActiveTab) => void;
+  onNavigate: (tab: Exclude<ActiveTab, 'dashboard'>) => void;
   surface: string;
   text: string;
   subtle: string;
@@ -319,9 +443,22 @@ function MobileDashboard({
               <Text style={[styles.heroPctUnit, { color: subtle }]}>%</Text>
             </Text>
           </View>
-          <View style={[styles.patternPill, { backgroundColor: isDark ? 'rgba(148,163,184,0.15)' : '#f1f5f9', borderColor: border }]}>
-            <Text style={[styles.patternPillText, { color: text }]}>{metrics.pattern}</Text>
-          </View>
+          <Pressable
+            onPress={() => showCashFlowPatternHelp(metrics.pattern)}
+            accessibilityRole="button"
+            accessibilityLabel={`财务形态：${metrics.pattern}，点击查看说明`}
+            style={({ pressed }) => [
+              styles.patternPill,
+              {
+                backgroundColor: isDark ? 'rgba(148,163,184,0.15)' : '#f1f5f9',
+                borderColor: border,
+                opacity: pressed ? 0.88 : 1,
+              },
+            ]}>
+            <Text style={[styles.patternPillText, { color: text }]} numberOfLines={2}>
+              {metrics.pattern}
+            </Text>
+          </Pressable>
         </View>
         <View style={[styles.progressTrack, { backgroundColor: isDark ? 'rgba(148,163,184,0.2)' : '#e2e8f0' }]}>
           <View style={[styles.progressFill, { width: `${fp}%` }]} />
@@ -511,6 +648,28 @@ function MobileDashboard({
             留存的现金将被通胀侵蚀，除非买入资产
           </Text>
         </Pressable>
+        <View style={styles.arrowCenter}>
+          <MaterialIcons name="expand-more" size={26} color="#cbd5e1" />
+        </View>
+        <View
+          style={[
+            styles.fcfBlock,
+            {
+              backgroundColor: isDark ? 'rgba(99,102,241,0.12)' : '#eef2ff',
+              borderColor: isDark ? 'rgba(99,102,241,0.35)' : '#c7d2fe',
+            },
+          ]}>
+          <Text style={styles.fcfK}>自由现金流</Text>
+          <Text
+            style={[
+              styles.fcfV,
+              { color: metrics.freeCashFlow >= 0 ? '#059669' : '#f43f5e' },
+            ]}>
+            {metrics.freeCashFlow >= 0 ? '+' : ''}
+            {formatMoney(metrics.freeCashFlow)}
+          </Text>
+          <Text style={[styles.fcfHint, { color: subtle }]}>总收入 − 总流出（生活+还款）</Text>
+        </View>
       </View>
     </View>
   );
@@ -523,12 +682,23 @@ type DetailTab =
   | 'detail_liability'
   | 'detail_expense';
 
+type DetailDeleteAction =
+  | { type: 'income'; id: string }
+  | { type: 'holding'; id: string }
+  | { type: 'expense_line'; id: string }
+  | { type: 'clear_necessary' }
+  | { type: 'clear_unnecessary' };
+
 type DetailListItem = {
   name: string;
   amount: string;
   tag: string;
   sub?: string;
   colorOverride?: 'rose';
+  /** 左滑删除对应数据源 */
+  deleteAction?: DetailDeleteAction;
+  /** 汇总项不可单独删除时点按进入对应明细页 */
+  navigateToSection?: Exclude<ActiveTab, 'dashboard'>;
 };
 
 type DetailColorKey = 'blue' | 'emerald' | 'rose' | 'amber';
@@ -553,6 +723,7 @@ function buildDetailConfig(detailType: DetailTab, state: CashFlowState, metrics:
         name: i.name,
         amount: formatMoney(i.amount),
         tag: `象限 ${i.quadrant}`,
+        deleteAction: { type: 'income' as const, id: i.id },
       }));
   } else if (detailType === 'detail_passive') {
     color = 'emerald';
@@ -566,6 +737,7 @@ function buildDetailConfig(detailType: DetailTab, state: CashFlowState, metrics:
         name: i.name,
         amount: formatMoney(i.amount),
         tag: `象限 ${i.quadrant}`,
+        deleteAction: { type: 'income' as const, id: i.id },
       }));
     const assetFlows = metrics.categorizedHoldings
       .filter((h) => h.isAsset)
@@ -573,6 +745,7 @@ function buildDetailConfig(detailType: DetailTab, state: CashFlowState, metrics:
         name: h.name,
         amount: `+${formatMoney(h.netCashflow)}`,
         tag: '资产净流入',
+        deleteAction: { type: 'holding' as const, id: h.id },
       }));
     items = [...pureBI, ...assetFlows];
   } else if (detailType === 'detail_asset') {
@@ -588,6 +761,7 @@ function buildDetailConfig(detailType: DetailTab, state: CashFlowState, metrics:
         amount: `+${formatMoney(h.netCashflow)}`,
         tag: '净现金流',
         sub: `本金: ${formatMoney(h.principal)}`,
+        deleteAction: { type: 'holding' as const, id: h.id },
       }));
   } else if (detailType === 'detail_liability') {
     color = 'rose';
@@ -597,31 +771,134 @@ function buildDetailConfig(detailType: DetailTab, state: CashFlowState, metrics:
     quote = '“中产阶级买入他们以为是资产的负债。任何从你口袋里掏钱的东西，都是负债。”';
     items = metrics.categorizedHoldings
       .filter((h) => !h.isAsset)
-      .map((h) => ({
-        name: h.name,
-        amount: `-${formatMoney(Math.abs(h.netCashflow))}`,
-        tag: '月度消耗',
-        sub: `余额: ${formatMoney(h.principal)}`,
-      }));
+      .map((h) => {
+        const rm = h.extra?.repayMonths;
+        return {
+          name: h.name,
+          amount: `-${formatMoney(Math.abs(h.netCashflow))}`,
+          tag: '月度消耗',
+          sub:
+            rm != null
+              ? `余额约: ${formatMoney(h.principal)} · 剩余 ${rm} 个月`
+              : `余额: ${formatMoney(h.principal)}`,
+          deleteAction: { type: 'holding' as const, id: h.id },
+        };
+      });
   } else if (detailType === 'detail_expense') {
     color = 'amber';
     title = '总流出';
     icon = 'payments';
     totalDisplay = formatMoney(metrics.totalExpenses);
     quote = '“减少不必要的开支，降低你的财务底线，你就能更快达到财务自由。”';
-    items = [
-      { name: '必要生活支出', amount: formatMoney(state.necessaryExpenses), tag: '生存底线' },
-      { name: '非必要消费', amount: formatMoney(state.unnecessaryExpenses), tag: '拿铁因子' },
-      {
-        name: '负债还款消耗',
-        amount: formatMoney(metrics.liabilityOutflow),
-        tag: '现金流黑洞',
-        colorOverride: 'rose',
-      },
-    ];
+    const necLines = state.expenseLines
+      .filter((l) => l.bucket === 'necessary')
+      .map((l) => ({
+        name: l.name,
+        amount: formatMoney(l.amount),
+        tag: '必要支出',
+        deleteAction: { type: 'expense_line' as const, id: l.id },
+      }));
+    const unnLines = state.expenseLines
+      .filter((l) => l.bucket === 'unnecessary')
+      .map((l) => ({
+        name: l.name,
+        amount: formatMoney(l.amount),
+        tag: '非必要消费',
+        deleteAction: { type: 'expense_line' as const, id: l.id },
+      }));
+    const liabLines = metrics.categorizedHoldings
+      .filter((h) => !h.isAsset)
+      .map((h) => {
+        const rm = h.extra?.repayMonths;
+        return {
+          name: h.name,
+          amount: formatMoney(h.outflow),
+          tag: '负债月供',
+          sub:
+            rm != null
+              ? `余额约: ${formatMoney(h.principal)} · 剩余 ${rm} 个月`
+              : `余额: ${formatMoney(h.principal)}`,
+          colorOverride: 'rose' as const,
+          deleteAction: { type: 'holding' as const, id: h.id },
+        };
+      });
+    items = [...necLines, ...unnLines, ...liabLines];
+    if (items.length === 0) {
+      items = [
+        {
+          name: '暂无流出记录',
+          amount: '—',
+          tag: '提示',
+          sub: '在「记一笔 → 录入去向」中添加必要/非必要/负债等',
+        },
+      ];
+    }
   }
 
   return { color, title, icon, totalDisplay, quote, items };
+}
+
+function applyDetailItemDelete(
+  action: DetailDeleteAction,
+  setState: React.Dispatch<React.SetStateAction<CashFlowState>>,
+  showToast: (m: string, t?: 'success' | 'warning') => void
+) {
+  switch (action.type) {
+    case 'income':
+      setState((prev) => ({ ...prev, incomes: prev.incomes.filter((i) => i.id !== action.id) }));
+      showToast('已删除该收入明细');
+      return;
+    case 'holding':
+      setState((prev) => ({ ...prev, holdings: prev.holdings.filter((h) => h.id !== action.id) }));
+      showToast('已删除该项资产负债明细');
+      return;
+    case 'expense_line':
+      setState((prev) => {
+        const line = prev.expenseLines.find((l) => l.id === action.id);
+        if (!line) return prev;
+        const expenseLines = prev.expenseLines.filter((l) => l.id !== action.id);
+        if (line.bucket === 'necessary') {
+          return {
+            ...prev,
+            expenseLines,
+            necessaryExpenses: Math.max(0, prev.necessaryExpenses - line.amount),
+          };
+        }
+        return {
+          ...prev,
+          expenseLines,
+          unnecessaryExpenses: Math.max(0, prev.unnecessaryExpenses - line.amount),
+        };
+      });
+      showToast('已删除该笔流出记录');
+      return;
+    case 'clear_necessary':
+      setState((prev) => ({
+        ...prev,
+        necessaryExpenses: 0,
+        expenseLines: prev.expenseLines.filter((l) => l.bucket !== 'necessary'),
+      }));
+      showToast('已清空必要支出流水');
+      return;
+    case 'clear_unnecessary':
+      setState((prev) => ({
+        ...prev,
+        unnecessaryExpenses: 0,
+        expenseLines: prev.expenseLines.filter((l) => l.bucket !== 'unnecessary'),
+      }));
+      showToast('已清空非必要消费流水');
+      return;
+  }
+}
+
+function detailRowKey(item: DetailListItem, idx: number): string {
+  if (item.navigateToSection) return `nav-${item.navigateToSection}`;
+  const a = item.deleteAction;
+  if (!a) return `${item.name}-${idx}`;
+  if (a.type === 'income') return `income-${a.id}`;
+  if (a.type === 'holding') return `holding-${a.id}`;
+  if (a.type === 'expense_line') return `exp-${a.id}`;
+  return `${a.type}-${idx}`;
 }
 
 const DETAIL_PALETTE: Record<
@@ -663,6 +940,8 @@ function FlowDetail({
   subtle,
   border,
   isDark,
+  setState,
+  showToast,
 }: {
   detailType: ActiveTab;
   state: CashFlowState;
@@ -672,7 +951,10 @@ function FlowDetail({
   subtle: string;
   border: string;
   isDark: boolean;
+  setState: React.Dispatch<React.SetStateAction<CashFlowState>>;
+  showToast: (m: string, t?: 'success' | 'warning') => void;
 }) {
+  const router = useRouter();
   const tab = detailType as DetailTab;
   const config = useMemo(() => buildDetailConfig(tab, state, metrics), [tab, state, metrics]);
   const palette = DETAIL_PALETTE[config.color];
@@ -703,28 +985,68 @@ function FlowDetail({
           <Text style={[styles.detailEmptyText, { color: subtle }]}>暂无数据</Text>
         </View>
       ) : (
-        config.items.map((item, idx) => (
-          <View
-            key={`${item.name}-${idx}`}
-            style={[styles.detailRow, { backgroundColor: surface, borderColor: border }]}>
-            <View style={{ flex: 1, paddingRight: 10 }}>
-              <Text style={[styles.detailRowName, { color: text }]}>{item.name}</Text>
-              {item.sub ? <Text style={[styles.detailRowSub, { color: subtle }]}>{item.sub}</Text> : null}
-            </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text
-                style={[
-                  styles.detailRowAmount,
-                  { color: item.colorOverride === 'rose' ? '#f43f5e' : text },
-                ]}>
-                {item.amount}
-              </Text>
-              <View style={[styles.detailTag, { backgroundColor: palette.light }]}>
-                <Text style={[styles.detailTagText, { color: palette.accent }]}>{item.tag}</Text>
+        config.items.map((item, idx) => {
+          const row = (
+            <View style={[styles.detailRow, { backgroundColor: surface, borderColor: border }]}>
+              <View style={{ flex: 1, paddingRight: 10 }}>
+                <Text style={[styles.detailRowName, { color: text }]}>{item.name}</Text>
+                {item.sub ? <Text style={[styles.detailRowSub, { color: subtle }]}>{item.sub}</Text> : null}
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text
+                  style={[
+                    styles.detailRowAmount,
+                    { color: item.colorOverride === 'rose' ? '#f43f5e' : text },
+                  ]}>
+                  {item.amount}
+                </Text>
+                <View style={[styles.detailTag, { backgroundColor: palette.light }]}>
+                  <Text style={[styles.detailTagText, { color: palette.accent }]}>{item.tag}</Text>
+                </View>
               </View>
             </View>
-          </View>
-        ))
+          );
+
+          const nav = item.navigateToSection;
+          const rowWrapped =
+            nav != null ? (
+              <Pressable
+                onPress={() =>
+                  router.push({
+                    pathname: '/cash-flow/[section]',
+                    params: { section: CASH_FLOW_SECTION_SLUGS[nav] },
+                  })
+                }
+                style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
+                {row}
+              </Pressable>
+            ) : (
+              row
+            );
+
+          const da = item.deleteAction;
+          if (!da) {
+            return (
+              <View key={detailRowKey(item, idx)}>{rowWrapped}</View>
+            );
+          }
+          return (
+            <Swipeable
+              key={detailRowKey(item, idx)}
+              overshootRight={false}
+              rightThreshold={44}
+              renderRightActions={() => (
+                <Pressable
+                  onPress={() => applyDetailItemDelete(da, setState, showToast)}
+                  style={styles.detailSwipeDeleteAction}>
+                  <MaterialIcons name="delete" size={22} color="#fff" />
+                  <Text style={styles.detailSwipeDeleteText}>删除</Text>
+                </Pressable>
+              )}>
+              {rowWrapped}
+            </Swipeable>
+          );
+        })
       )}
 
       <View style={[styles.detailInsight, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f1f5f9', borderColor: border }]}>
@@ -759,36 +1081,115 @@ function MobileEntry({
   const [name, setName] = useState('');
   const [quadrant, setQuadrant] = useState<Quadrant>('E');
   const [expenseType, setExpenseType] = useState<ExpenseFlowType>('necessary');
+  const [submitting, setSubmitting] = useState(false);
+  /** 资产投入：月均回报 */
+  const [assetReturnAmount, setAssetReturnAmount] = useState('');
+  /** 负债偿还：剩余还款月份（整数） */
+  const [liabilityRepayMonths, setLiabilityRepayMonths] = useState('');
 
-  const submit = () => {
+  const submit = async () => {
     const n = parseFloat(amount.replace(/,/g, ''));
     if (!amount.trim() || !Number.isFinite(n)) {
       showToast('请输入有效金额', 'warning');
       return;
     }
-    if (entryType === 'income') {
-      const newIncome: IncomeItem = {
-        id: Date.now(),
-        name: name.trim() || '新增收入',
-        amount: n,
-        quadrant,
-      };
-      setState((prev) => ({ ...prev, incomes: [...prev.incomes, newIncome] }));
-      showToast('收入记录成功！请优先支付自己，买入资产！', 'warning');
-    } else {
-      if (expenseType === 'necessary') {
-        setState((prev) => ({ ...prev, necessaryExpenses: prev.necessaryExpenses + n }));
-      } else if (expenseType === 'unnecessary') {
-        setState((prev) => ({ ...prev, unnecessaryExpenses: prev.unnecessaryExpenses + n }));
-      } else if (expenseType === 'asset') {
-        showToast('太棒了！请前往[台账]模块详细登记资产。', 'success');
-      } else {
-        showToast('记录成功。减少负债也能增加现金流。', 'success');
+    if (entryType === 'expense' && expenseType === 'asset') {
+      const ret = parseFloat(assetReturnAmount.replace(/,/g, ''));
+      if (!assetReturnAmount.trim() || !Number.isFinite(ret) || ret < 0) {
+        showToast('请输入回报金额（可为 0）', 'warning');
+        return;
       }
-      if (expenseType !== 'asset') showToast('支出已记录。', 'success');
     }
-    setAmount('');
-    setName('');
+    if (entryType === 'expense' && expenseType === 'liability') {
+      const monthsRaw = liabilityRepayMonths.trim();
+      const months = parseInt(monthsRaw, 10);
+      if (!monthsRaw || !Number.isFinite(months) || months < 1) {
+        showToast('请输入剩余还款月份（正整数）', 'warning');
+        return;
+      }
+    }
+    if (submitting) return;
+    setSubmitting(true);
+    const title = name.trim();
+    try {
+      if (entryType === 'income') {
+        const newIncome: IncomeItem = {
+          id: newCashFlowIncomeId(),
+          name: title || '新增收入',
+          amount: n,
+          quadrant,
+        };
+        setState((prev) => ({ ...prev, incomes: [...prev.incomes, newIncome] }));
+        showToast('收入记录成功！请优先支付自己，买入资产！', 'warning');
+      } else {
+        if (expenseType === 'necessary') {
+          const lid = newExpenseFlowLineId();
+          setState((prev) => ({
+            ...prev,
+            necessaryExpenses: prev.necessaryExpenses + n,
+            expenseLines: [
+              ...prev.expenseLines,
+              { id: lid, name: title || '必要支出', amount: n, bucket: 'necessary' as const },
+            ],
+          }));
+          showToast('支出已记录。', 'success');
+        } else if (expenseType === 'unnecessary') {
+          const lid = newExpenseFlowLineId();
+          setState((prev) => ({
+            ...prev,
+            unnecessaryExpenses: prev.unnecessaryExpenses + n,
+            expenseLines: [
+              ...prev.expenseLines,
+              { id: lid, name: title || '非必要消费', amount: n, bucket: 'unnecessary' as const },
+            ],
+          }));
+          showToast('支出已记录。', 'success');
+        } else if (expenseType === 'asset') {
+          const ret = parseFloat(assetReturnAmount.replace(/,/g, ''));
+          const id = newCashFlowHoldingId();
+          setState((prev) => ({
+            ...prev,
+            holdings: [
+              ...prev.holdings,
+              {
+                id,
+                name: title || '资产投入',
+                principal: n,
+                inflow: ret,
+                outflow: 0,
+              },
+            ],
+          }));
+          showToast('已记入资产负债台账（资产），首页与明细将同步更新。', 'success');
+        } else {
+          const months = parseInt(liabilityRepayMonths.trim(), 10);
+          const id = newCashFlowHoldingId();
+          /** 月供 n，剩余 months；本金按「月供×剩余月份」估算为余额参考 */
+          const principalApprox = n * months;
+          setState((prev) => ({
+            ...prev,
+            holdings: [
+              ...prev.holdings,
+              {
+                id,
+                name: title || '负债偿还',
+                principal: principalApprox,
+                inflow: 0,
+                outflow: n,
+                extra: { repayMonths: months },
+              },
+            ],
+          }));
+          showToast('已记入资产负债台账（负债），首页与明细将同步更新。', 'success');
+        }
+      }
+    } finally {
+      setSubmitting(false);
+      setAmount('');
+      setName('');
+      setAssetReturnAmount('');
+      setLiabilityRepayMonths('');
+    }
   };
 
   const quadOptions: { id: Quadrant; label: string; desc: string }[] = [
@@ -804,6 +1205,13 @@ function MobileEntry({
     { id: 'necessary', icon: '🏠', label: '必要支出', desc: '生存底线刚需开支' },
     { id: 'unnecessary', icon: '🛍️', label: '非必要消费', desc: '拿铁因子/冲动消费' },
   ];
+
+  const primaryAmountLabel =
+    entryType === 'expense' && expenseType === 'asset'
+      ? '投入金额 (¥)'
+      : entryType === 'expense' && expenseType === 'liability'
+        ? '每期还款金额 (¥)'
+        : '金额 (¥)';
 
   return (
     <View style={styles.section}>
@@ -827,19 +1235,52 @@ function MobileEntry({
       </View>
 
       <View style={[styles.card, { backgroundColor: surface, borderColor: border, marginTop: 12 }]}>
-        <Text style={[styles.inputLabel, { color: subtle }]}>金额 (¥)</Text>
+        <Text style={[styles.inputLabel, { color: subtle }]}>{primaryAmountLabel}</Text>
         <TextInput
           value={amount}
           onChangeText={setAmount}
-          keyboardType="decimal-pad"
+          keyboardType="default"
+          showSoftInputOnFocus
           placeholder="0"
           placeholderTextColor="#cbd5e1"
           style={[styles.inputAmount, { color: text, borderColor: border, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8fafc' }]}
         />
+        {entryType === 'expense' && expenseType === 'asset' ? (
+          <>
+            <Text style={[styles.inputLabel, { color: subtle, marginTop: 14 }]}>回报金额 (¥)</Text>
+            <Text style={[styles.inputHint, { color: subtle }]}>月均现金流回报（若无填 0）</Text>
+            <TextInput
+              value={assetReturnAmount}
+              onChangeText={setAssetReturnAmount}
+              keyboardType="default"
+              showSoftInputOnFocus
+              placeholder="0"
+              placeholderTextColor="#cbd5e1"
+              style={[styles.inputAmount, { color: text, borderColor: border, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8fafc' }]}
+            />
+          </>
+        ) : null}
+        {entryType === 'expense' && expenseType === 'liability' ? (
+          <>
+            <Text style={[styles.inputLabel, { color: subtle, marginTop: 14 }]}>剩余还款月份</Text>
+            <Text style={[styles.inputHint, { color: subtle }]}>预计还需多少个月还清（正整数）</Text>
+            <TextInput
+              value={liabilityRepayMonths}
+              onChangeText={setLiabilityRepayMonths}
+              keyboardType="default"
+              showSoftInputOnFocus
+              placeholder="如：24"
+              placeholderTextColor="#cbd5e1"
+              style={[styles.inputName, { color: text, borderColor: border, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8fafc' }]}
+            />
+          </>
+        ) : null}
         <Text style={[styles.inputLabel, { color: subtle, marginTop: 14 }]}>简短描述</Text>
         <TextInput
           value={name}
           onChangeText={setName}
+          keyboardType="default"
+          showSoftInputOnFocus
           placeholder={entryType === 'income' ? '如：私活收入' : '如：打车费'}
           placeholderTextColor="#cbd5e1"
           style={[styles.inputName, { color: text, borderColor: border, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8fafc' }]}
@@ -902,12 +1343,16 @@ function MobileEntry({
       </View>
 
       <Pressable
-        onPress={submit}
+        onPress={() => void submit()}
+        disabled={submitting}
         style={({ pressed }) => [
           styles.submitBtn,
-          { backgroundColor: entryType === 'income' ? '#2563eb' : '#f59e0b', opacity: pressed ? 0.9 : 1 },
+          {
+            backgroundColor: entryType === 'income' ? '#2563eb' : '#f59e0b',
+            opacity: submitting ? 0.55 : pressed ? 0.9 : 1,
+          },
         ]}>
-        <Text style={styles.submitBtnText}>确认记录</Text>
+        <Text style={styles.submitBtnText}>{submitting ? '保存中…' : '确认记录'}</Text>
       </Pressable>
     </View>
   );
@@ -919,12 +1364,14 @@ function MobileLedger({
   text,
   subtle,
   border,
+  onOpenAssets,
 }: {
   metrics: Metrics;
   surface: string;
   text: string;
   subtle: string;
   border: string;
+  onOpenAssets: () => void;
 }) {
   const [view, setView] = useState<'assets' | 'liabilities'>('assets');
   const assets = metrics.categorizedHoldings.filter((h) => h.isAsset);
@@ -1001,6 +1448,12 @@ function MobileLedger({
               <Text style={[styles.ledgerMuted, { color: subtle }]}>月均还款/消耗</Text>
               <Text style={styles.ledgerNeg}>-¥{l.outflow}</Text>
             </View>
+            {l.extra?.repayMonths != null ? (
+              <View style={styles.ledgerRow}>
+                <Text style={[styles.ledgerMuted, { color: subtle }]}>剩余还款月份</Text>
+                <Text style={[styles.ledgerVal, { color: text }]}>{l.extra.repayMonths} 个月</Text>
+              </View>
+            ) : null}
             <View style={[styles.ledgerFoot, { borderTopColor: border, backgroundColor: 'rgba(244,63,94,0.08)' }]}>
               <Text style={[styles.ledgerFootLabel, { color: subtle }]}>现金流流失</Text>
               <Text style={styles.ledgerNegBig}>-¥{Math.abs(l.netCashflow)}</Text>
@@ -1008,6 +1461,18 @@ function MobileLedger({
           </View>
         ))
       )}
+
+      <View style={styles.ledgerAssetsLinkWrap}>
+        <Pressable
+          onPress={onOpenAssets}
+          style={({ pressed }) => [
+            styles.ledgerLinkBtn,
+            { borderColor: border, backgroundColor: surface, opacity: pressed ? 0.85 : 1 },
+          ]}>
+          <MaterialIcons name="account-balance" size={18} color="#059669" />
+          <Text style={[styles.ledgerLinkBtnText, { color: '#059669' }]}>资产账户（详细登记）</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -1040,7 +1505,7 @@ function MobileSimulator({
     const outf = parseFloat(simOutflow) || 0;
     return {
       ...state,
-      holdings: [...state.holdings, { id: 999, name: simName || '模拟项', principal, inflow: inf, outflow: outf }],
+      holdings: [...state.holdings, { id: 'cf-sim-temp', name: simName || '模拟项', principal, inflow: inf, outflow: outf }],
     };
   }, [state, simName, simPrincipal, simInflow, simOutflow]);
 
@@ -1061,13 +1526,16 @@ function MobileSimulator({
         <TextInput
           value={simName}
           onChangeText={setSimName}
+          keyboardType="default"
+          showSoftInputOnFocus
           style={[styles.simInput, { color: text, borderColor: border, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8fafc' }]}
         />
         <Text style={[styles.simLabel, { color: subtle }]}>总价/贷款金额</Text>
         <TextInput
           value={simPrincipal}
           onChangeText={setSimPrincipal}
-          keyboardType="decimal-pad"
+          keyboardType="default"
+          showSoftInputOnFocus
           style={[styles.simInput, { color: text, borderColor: border, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8fafc' }]}
         />
         <View style={styles.simRow2}>
@@ -1076,7 +1544,8 @@ function MobileSimulator({
             <TextInput
               value={simInflow}
               onChangeText={setSimInflow}
-              keyboardType="decimal-pad"
+              keyboardType="default"
+              showSoftInputOnFocus
               style={[styles.simInput, { color: '#059669', borderColor: border, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8fafc' }]}
             />
           </View>
@@ -1085,7 +1554,8 @@ function MobileSimulator({
             <TextInput
               value={simOutflow}
               onChangeText={setSimOutflow}
-              keyboardType="decimal-pad"
+              keyboardType="default"
+              showSoftInputOnFocus
               style={[styles.simInput, { color: '#f43f5e', borderColor: border, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8fafc' }]}
             />
           </View>
@@ -1134,6 +1604,8 @@ function MobileSimulator({
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  cashFlowLoading: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, gap: 12 },
+  cashFlowLoadingText: { fontSize: 14, textAlign: 'center' },
   header: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 16,
@@ -1307,10 +1779,15 @@ const styles = StyleSheet.create({
   expenseK: { fontSize: 11, color: '#d97706', fontWeight: '800', marginBottom: 6 },
   expenseV: { fontSize: 22, fontWeight: '900' },
   expenseHint: { fontSize: 10, marginTop: 8, textAlign: 'center' },
+  fcfBlock: { padding: 16, borderRadius: 16, borderWidth: 1, alignItems: 'center', width: '100%' },
+  fcfK: { fontSize: 11, color: '#4f46e5', fontWeight: '800', marginBottom: 6 },
+  fcfV: { fontSize: 22, fontWeight: '900' },
+  fcfHint: { fontSize: 10, marginTop: 8, textAlign: 'center' },
   segment: { flexDirection: 'row', borderRadius: 14, padding: 4, marginBottom: 4 },
   segmentBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   segmentText: { fontSize: 14, fontWeight: '800' },
   inputLabel: { fontSize: 12, fontWeight: '700', marginBottom: 8 },
+  inputHint: { fontSize: 11, marginBottom: 8, marginTop: -4 },
   inputAmount: {
     borderWidth: 1,
     borderRadius: 16,
@@ -1404,6 +1881,18 @@ const styles = StyleSheet.create({
   ledgerFootLabel: { fontSize: 12, fontWeight: '700' },
   ledgerFootPos: { fontSize: 18, fontWeight: '900', color: '#059669' },
   ledgerNegBig: { fontSize: 18, fontWeight: '900', color: '#f43f5e' },
+  ledgerAssetsLinkWrap: { marginTop: 20, alignSelf: 'stretch' },
+  ledgerLinkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignSelf: 'stretch',
+  },
+  ledgerLinkBtnText: { fontSize: 13, fontWeight: '800' },
   simTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   simTitle: { fontSize: 14, fontWeight: '800' },
   simLabel: { fontSize: 11, fontWeight: '700', marginBottom: 6, marginTop: 8 },
@@ -1471,6 +1960,15 @@ const styles = StyleSheet.create({
   detailRowName: { fontSize: 14, fontWeight: '800', marginBottom: 2 },
   detailRowSub: { fontSize: 11 },
   detailRowAmount: { fontSize: 17, fontWeight: '900' },
+  detailSwipeDeleteAction: {
+    backgroundColor: '#ef4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 88,
+    borderRadius: 16,
+    marginBottom: 10,
+  },
+  detailSwipeDeleteText: { color: '#fff', fontSize: 12, fontWeight: '800', marginTop: 4 },
   detailTag: {
     alignSelf: 'flex-end',
     paddingHorizontal: 8,
