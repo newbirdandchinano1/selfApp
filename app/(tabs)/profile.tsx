@@ -1,5 +1,10 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
+import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
+import type { WeeklyReviewJournalRow } from '@/lib/repositories/insights/weekly-review-journal.types';
+import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
+import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { listVisions } from '@/lib/repositories/visions/vision';
 import { visionRowToProfileCarouselItem } from '@/lib/repositories/visions/vision-present';
 import { getDefaultUser } from '@/lib/repositories/users/user';
@@ -9,7 +14,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import {
   Animated,
   Dimensions,
@@ -26,6 +31,43 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const VISION_CARD_WIDTH = SCREEN_WIDTH - 36;
+
+const WISH_PROFILE_PREVIEW_MAX = 12;
+
+function formatWishCny(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return '¥ 0';
+  return `¥ ${Math.round(value).toLocaleString('zh-CN')}`;
+}
+
+function formatWeekRangeLabel(): string {
+  const { start, end } = getCurrentWeekRange();
+  return `${start.getMonth() + 1}月${start.getDate()}日 – ${end.getMonth() + 1}月${end.getDate()}日`;
+}
+
+function weeklyJournalStatusText(row: WeeklyReviewJournalRow | null): string {
+  if (!row) return '尚未记录本周复盘';
+  const anyText = [
+    row.section_summary,
+    row.section_plans,
+    row.section_reflect,
+    row.section_learnings,
+    row.section_next_week,
+  ].some(s => (s ?? '').trim().length > 0);
+  if ((row.ai_coaching ?? '').trim()) return '已生成 AI 建议，可随时回去修改';
+  if (anyText) return '草稿已保存，可继续填写并生成建议';
+  return '点开写下你的本周故事';
+}
+
+function wishListIconForRow(row: WishItemRow): ComponentProps<typeof MaterialIcons>['name'] {
+  const id = row.category_id ?? '';
+  const lab = (row.category_label ?? '').toLowerCase();
+  if (id.includes('数码') || lab.includes('数码')) return 'devices';
+  if (id.includes('家居') || lab.includes('家居')) return 'chair';
+  if (id.includes('健康') || lab.includes('健康')) return 'favorite';
+  if (id.includes('学习') || lab.includes('学习')) return 'menu-book';
+  if (id.includes('体验') || lab.includes('体验')) return 'flight';
+  return 'card-giftcard';
+}
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -71,32 +113,36 @@ export default function ProfileScreen() {
       setVisionCards([]);
     }
   }, []);
-  const wishListCards = useMemo(
-    () => [
-      {
-        id: 'headphones',
-        icon: 'headset' as const,
-        iconColor: primary,
-        title: 'Noise Cancelling Headphones',
-        price: '¥ 2,499',
-      },
-      {
-        id: 'watch',
-        icon: 'watch' as const,
-        iconColor: secondary,
-        title: 'Smart Watch Series 9',
-        price: '¥ 3,199',
-      },
-      {
-        id: 'camera',
-        icon: 'photo-camera' as const,
-        iconColor: tertiary,
-        title: 'Mirrorless Camera',
-        price: '¥ 8,500',
-      },
-    ],
-    [primary, secondary, tertiary],
-  );
+
+  const [wishPreviewRows, setWishPreviewRows] = useState<WishItemRow[]>([]);
+
+  const [weeklyJournal, setWeeklyJournal] = useState<WeeklyReviewJournalRow | null | undefined>(undefined);
+  const [weeklyJournalLoading, setWeeklyJournalLoading] = useState(true);
+
+  const loadWeeklyJournal = useCallback(async () => {
+    setWeeklyJournalLoading(true);
+    try {
+      const ymd = getCurrentWeekRange().startYmd;
+      const row = await getWeeklyReviewJournalByWeek(ymd);
+      setWeeklyJournal(row ?? null);
+    } catch {
+      setWeeklyJournal(null);
+    } finally {
+      setWeeklyJournalLoading(false);
+    }
+  }, []);
+
+  const loadProfileWishItems = useCallback(async () => {
+    try {
+      const rows = await listWishItems();
+      const sorted = [...rows].sort(
+        (a, b) => b.desire_level - a.desire_level || b.price - a.price || b.updated_at.localeCompare(a.updated_at),
+      );
+      setWishPreviewRows(sorted.slice(0, WISH_PROFILE_PREVIEW_MAX));
+    } catch {
+      setWishPreviewRows([]);
+    }
+  }, []);
 
   const [activeVisionIndex, setActiveVisionIndex] = useState(0);
   const isUserInteractingVisionRef = useRef(false);
@@ -169,7 +215,9 @@ export default function ProfileScreen() {
     useCallback(() => {
       loadUser();
       void loadProfileVisions();
-    }, [loadUser, loadProfileVisions]),
+      void loadProfileWishItems();
+      void loadWeeklyJournal();
+    }, [loadUser, loadProfileVisions, loadProfileWishItems, loadWeeklyJournal]),
   );
 
   const healthBgUrl = require('../../assets/profile/health.png');
@@ -485,32 +533,118 @@ export default function ProfileScreen() {
             </Pressable>
           </View>
 
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.wishlistList}
-          >
-            {wishListCards.map(item => (
-              <View
-                key={item.id}
-                style={[
-                  styles.wishlistCard,
-                  {
-                    backgroundColor: isDark ? 'rgba(30,41,59,0.58)' : '#f2f3ff',
-                    borderColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.2)',
-                  },
-                ]}>
-                <View style={styles.wishlistIconWrap}>
-                  <MaterialIcons name={item.icon} size={24} color={item.iconColor} />
-                </View>
-                <Text style={[styles.wishlistTitle, { color: text }]} numberOfLines={2}>
-                  {item.title}
-                </Text>
-                <Text style={[styles.wishlistPrice, { color: primary }]}>{item.price}</Text>
-              </View>
-            ))}
-          </ScrollView>
+          {wishPreviewRows.length === 0 ? (
+            <View
+              style={{
+                marginHorizontal: 4,
+                paddingVertical: 28,
+                paddingHorizontal: 20,
+                borderRadius: 22,
+                borderWidth: 1,
+                borderColor: outlineVariant,
+                backgroundColor: isDark ? 'rgba(30,41,59,0.45)' : 'rgba(255,255,255,0.92)',
+                alignItems: 'center',
+              }}
+            >
+              <Text style={{ color: outline, fontSize: 15, fontWeight: '600', textAlign: 'center', lineHeight: 22 }}>
+                暂无心愿条目，可在欲望清单中添加。
+              </Text>
+              <Pressable
+                onPress={() => router.push('/add-wish-item')}
+                style={({ pressed }) => [{ marginTop: 14, opacity: pressed ? 0.85 : 1 }]}
+              >
+                <Text style={{ color: primary, fontSize: 15, fontWeight: '800' }}>添加好物</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.wishlistList}
+            >
+              {wishPreviewRows.map((row, idx) => {
+                const accentColors = [primary, secondary, tertiary, wishAccent];
+                const iconColor = accentColors[idx % accentColors.length]!;
+                const iconName = wishListIconForRow(row);
+                return (
+                  <Pressable
+                    key={row.id}
+                    onPress={() => router.push('/wish-list')}
+                    style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}
+                  >
+                    <View
+                      style={[
+                        styles.wishlistCard,
+                        {
+                          backgroundColor: isDark ? 'rgba(30,41,59,0.58)' : '#f2f3ff',
+                          borderColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.2)',
+                        },
+                      ]}
+                    >
+                      <View style={[styles.wishlistIconWrap, { overflow: 'hidden' }]}>
+                        {row.reference_image_uri ? (
+                          <Image
+                            source={{ uri: row.reference_image_uri }}
+                            style={{ width: 48, height: 48 }}
+                            contentFit="cover"
+                            transition={150}
+                          />
+                        ) : (
+                          <MaterialIcons name={iconName} size={24} color={iconColor} />
+                        )}
+                      </View>
+                      <Text style={[styles.wishlistTitle, { color: text }]} numberOfLines={2}>
+                        {row.name}
+                      </Text>
+                      <Text style={[styles.wishlistPrice, { color: primary }]}>{formatWishCny(row.price)}</Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          )}
 
+          <View style={styles.sectionHead}>
+            <View>
+              <Text style={[styles.kicker, { color: outline }]}>WEEKLY REVIEW</Text>
+              <Text style={[styles.sectionTitle, { color: text }]}>每周复盘</Text>
+            </View>
+            <Pressable onPress={() => router.push('/weekly-review')} hitSlop={8}>
+              <Text style={[styles.moreText, { color: primary }]}>去填写</Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            onPress={() => router.push('/weekly-review')}
+            style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+            <View
+              style={[
+                styles.weeklyEntryCard,
+                {
+                  backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#ffffff',
+                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)',
+                },
+              ]}>
+              <View style={[styles.weeklyEntryAccent, { backgroundColor: primary }]} />
+              <View style={styles.weeklyEntryBody}>
+                <MaterialIcons name="edit-note" size={28} color={primary} />
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={[styles.weeklyEntryRange, { color: outline }]}>{formatWeekRangeLabel()}</Text>
+                  {weeklyJournalLoading ? (
+                    <Text style={[styles.weeklyEntryMeta, { color: outline }]}>加载中…</Text>
+                  ) : (
+                    <Text style={[styles.weeklyEntryMeta, { color: text }]}>
+                      {weeklyJournalStatusText(weeklyJournal ?? null)}
+                    </Text>
+                  )}
+                  <Text style={[styles.weeklyEntryHint, { color: outline }]}>
+                    按五大板块书写复盘，自评执行分后可生成 AI 建议，并记录是否调整任务、存钱与时间分配。
+                  </Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={26} color={outline} />
+              </View>
+            </View>
+          </Pressable>
 
           <View style={styles.sectionHead}>
             <View>
@@ -520,71 +654,100 @@ export default function ProfileScreen() {
           </View>
 
           <View style={styles.gridWrap}>
-            <View style={[styles.bigCard, { shadowColor: isDark ? '#000' : '#6c63ff' }]}>
-              <Image source={progressBgUrl} style={styles.bgImage} contentFit="cover" />
-              <View style={[styles.tintLayer, { backgroundColor: `${primary}66` }]} />
-              <View style={styles.bigCardTop}>
-                <Text style={styles.cardKicker}>计划完成情况</Text>
-                <Text style={styles.percentText}>85%</Text>
+            <Pressable
+              onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'plan-completion' } })}
+              style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
+            >
+              <View style={[styles.bigCard, { shadowColor: isDark ? '#000' : '#6c63ff' }]}>
+                <Image source={progressBgUrl} style={styles.bgImage} contentFit="cover" />
+                <View style={[styles.tintLayer, { backgroundColor: `${primary}66` }]} />
+                <View style={styles.bigCardTop}>
+                  <Text style={styles.cardKicker}>计划完成情况</Text>
+                  <Text style={styles.percentText}>85%</Text>
+                </View>
+                <View style={styles.bigCardBottom}>
+                  <Text style={styles.whiteHint}>本周目标达成率 · 卓越</Text>
+                  <MaterialIcons name="trending-up" size={30} color="rgba(255,255,255,0.9)" />
+                </View>
               </View>
-              <View style={styles.bigCardBottom}>
-                <Text style={styles.whiteHint}>本周目标达成率 · 卓越</Text>
-                <MaterialIcons name="trending-up" size={30} color="rgba(255,255,255,0.9)" />
-              </View>
-            </View>
+            </Pressable>
 
             <View style={styles.twoColRow}>
-              <View style={styles.smallCard}>
-                <Image source={healthBgUrl} style={styles.bgImage} contentFit="cover" />
-                <View style={[styles.tintLayer, { backgroundColor: `${secondary}66` }]} />
-                <View>
-                  <Text style={styles.cardKicker}>体脂率</Text>
-                  <Text style={styles.smallValue}>18%</Text>
-                </View>
-                <View style={styles.tagPill}>
-                  <Text style={styles.tagPillText}>健康态</Text>
-                </View>
-              </View>
-
-              <View style={styles.smallCard}>
-                <Image source={waterBgUrl} style={styles.bgImage} contentFit="cover" />
-                <View style={[styles.tintLayer, { backgroundColor: `${primary}55` }]} />
-                <View>
-                  <Text style={styles.cardKicker}>饮水均值</Text>
-                  <Text style={styles.smallValue}>1.8L</Text>
-                </View>
-                <Text style={styles.smallHint}>每日焕活能量</Text>
-              </View>
-            </View>
-
-            <View style={styles.savingCard}>
-              <Image source={savingsBgUrl} style={styles.bgImage} contentFit="cover" />
-              <View style={[styles.tintLayer, { backgroundColor: `${tertiary}66` }]} />
-              <View style={styles.savingLeft}>
-                <Text style={styles.cardKicker}>储蓄状态</Text>
-                <Text style={styles.savingTitle}>资产稳步增长</Text>
-                <Text style={styles.savingSub}>目标进度: 30,000 CNY</Text>
-              </View>
-              <View style={styles.glassIcon}>
-                <MaterialIcons name="account-balance" size={30} color="rgba(255,221,184,0.95)" />
-              </View>
-            </View>
-
-            <View style={[styles.aiCard, { backgroundColor: surface, borderColor: `${primary}1A` }]}>
-              <View style={[styles.aiTopLine, { backgroundColor: `${primary}66` }]} />
-              <View style={styles.aiBody}>
-                <View style={[styles.aiIcon, { backgroundColor: primary }]}> 
-                  <MaterialIcons name="auto-awesome" size={24} color="#fff" />
-                </View>
-                <View style={styles.aiTextWrap}>
-                  <View style={styles.aiTitleRow}>
-                    <Text style={[styles.aiTitleKicker, { color: primary }]}>AI 智能人格洞察</Text>
-                    <View style={[styles.aiDivider, { backgroundColor: `${primary}1A` }]} />
+              <Pressable
+                onPress={() =>
+                  router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'body-composition' } })
+                }
+                style={({ pressed }) => [{ flex: 1, opacity: pressed ? 0.92 : 1 }]}
+              >
+                <View style={styles.smallCard}>
+                  <Image source={healthBgUrl} style={styles.bgImage} contentFit="cover" />
+                  <View style={[styles.tintLayer, { backgroundColor: `${secondary}66` }]} />
+                  <View>
+                    <Text style={styles.cardKicker}>体脂率</Text>
+                    <Text style={styles.smallValue}>18%</Text>
                   </View>
-                  <Text style={[styles.aiQuote, { color: text }]}>“你这周的饮水量提升了 15%，非常棒。考虑增加 10g 蛋白质摄入以支持健身训练。在执行储蓄计划方面你做得也很出色，请继续保持你的节奏！”</Text>
+                  <View style={styles.tagPill}>
+                    <Text style={styles.tagPillText}>健康态</Text>
+                  </View>
+                </View>
+              </Pressable>
+
+              <Pressable
+                onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'hydration' } })}
+                style={({ pressed }) => [{ flex: 1, opacity: pressed ? 0.92 : 1 }]}
+              >
+                <View style={styles.smallCard}>
+                  <Image source={waterBgUrl} style={styles.bgImage} contentFit="cover" />
+                  <View style={[styles.tintLayer, { backgroundColor: `${primary}55` }]} />
+                  <View>
+                    <Text style={styles.cardKicker}>饮水均值</Text>
+                    <Text style={styles.smallValue}>1.8L</Text>
+                  </View>
+                  <Text style={styles.smallHint}>每日焕活能量</Text>
+                </View>
+              </Pressable>
+            </View>
+
+            <Pressable
+              onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'savings' } })}
+              style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
+            >
+              <View style={styles.savingCard}>
+                <Image source={savingsBgUrl} style={styles.bgImage} contentFit="cover" />
+                <View style={[styles.tintLayer, { backgroundColor: `${tertiary}66` }]} />
+                <View style={styles.savingLeft}>
+                  <Text style={styles.cardKicker}>储蓄状态</Text>
+                  <Text style={styles.savingTitle}>资产稳步增长</Text>
+                  <Text style={styles.savingSub}>目标进度: 30,000 CNY</Text>
+                </View>
+                <View style={styles.glassIcon}>
+                  <MaterialIcons name="account-balance" size={30} color="rgba(255,221,184,0.95)" />
                 </View>
               </View>
-            </View>
+            </Pressable>
+
+            <Pressable
+              onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'ai-insight' } })}
+              style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
+            >
+              <View style={[styles.aiCard, { backgroundColor: surface, borderColor: `${primary}1A` }]}>
+                <View style={[styles.aiTopLine, { backgroundColor: `${primary}66` }]} />
+                <View style={styles.aiBody}>
+                  <View style={[styles.aiIcon, { backgroundColor: primary }]}>
+                    <MaterialIcons name="auto-awesome" size={24} color="#fff" />
+                  </View>
+                  <View style={styles.aiTextWrap}>
+                    <View style={styles.aiTitleRow}>
+                      <Text style={[styles.aiTitleKicker, { color: primary }]}>AI 智能人格洞察</Text>
+                      <View style={[styles.aiDivider, { backgroundColor: `${primary}1A` }]} />
+                    </View>
+                    <Text style={[styles.aiQuote, { color: text }]}>
+                      “你这周的饮水量提升了 15%，非常棒。考虑增加 10g 蛋白质摄入以支持健身训练。在执行储蓄计划方面你做得也很出色，请继续保持你的节奏！”
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </Pressable>
           </View>
         </Animated.View>
       </ScrollView>
@@ -1022,5 +1185,43 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontStyle: 'italic',
     opacity: 0.92,
+  },
+  weeklyEntryCard: {
+    marginHorizontal: 4,
+    borderRadius: 22,
+    borderWidth: 1,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  weeklyEntryAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+  },
+  weeklyEntryBody: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingVertical: 18,
+    paddingHorizontal: 18,
+    paddingLeft: 20,
+  },
+  weeklyEntryRange: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+  },
+  weeklyEntryMeta: {
+    fontSize: 16,
+    fontWeight: '800',
+    lineHeight: 22,
+  },
+  weeklyEntryHint: {
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 19,
   },
 });

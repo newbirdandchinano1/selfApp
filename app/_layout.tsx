@@ -84,6 +84,7 @@ export default function RootLayout() {
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="add-frog" />
             <Stack.Screen name="add-task" />
+            <Stack.Screen name="add-standalone-todo" />
             <Stack.Screen name="edit-task" />
             <Stack.Screen name="add-project" />
             <Stack.Screen name="add-subtask" />
@@ -98,6 +99,7 @@ export default function RootLayout() {
             <Stack.Screen name="health-calendar" />
             <Stack.Screen name="intake-history" />
             <Stack.Screen name="finance-calendar" />
+            <Stack.Screen name="edit-finance-transaction/[id]" />
             <Stack.Screen name="savings-plan" />
             <Stack.Screen name="cash-flow" />
             <Stack.Screen name="ai-finance-analysis" />
@@ -108,6 +110,9 @@ export default function RootLayout() {
             <Stack.Screen name="add-item" />
             <Stack.Screen name="wish-list" />
             <Stack.Screen name="add-wish-item" />
+            <Stack.Screen name="edit-wish-item/[id]" />
+            <Stack.Screen name="persona-detail/[slug]" />
+            <Stack.Screen name="weekly-review" />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
           </Stack>

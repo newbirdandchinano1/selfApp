@@ -1,12 +1,13 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
+import { deleteWishItem, listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const quarterTarget = 120_000;
@@ -82,6 +83,29 @@ export default function WishListScreen() {
     const sorted = [...items].sort((a, b) => b.desire_level - a.desire_level || b.price - a.price);
     return sorted[0]?.name ?? null;
   }, [items]);
+
+  const requestDeleteWish = useCallback(
+    (row: WishItemRow) => {
+      Alert.alert('删除心愿', `确定删除「${row.name}」？此操作不可恢复。`, [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              try {
+                await deleteWishItem(row.id);
+                setItems(prev => prev.filter(i => i.id !== row.id));
+              } catch {
+                Alert.alert('删除失败', '请稍后重试');
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [],
+  );
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right', 'top']}>
@@ -176,7 +200,10 @@ export default function WishListScreen() {
         </View>
 
         <View style={styles.listSection}>
-          <Text style={[styles.listKicker, { color: outline }]}>目标好物</Text>
+          <View style={styles.listKickerRow}>
+            <Text style={[styles.listKicker, { color: outline }]}>目标好物</Text>
+            <Text style={[styles.listSwipeHint, { color: outline }]}>左滑删除</Text>
+          </View>
           {!initialLoading && items.length === 0 ? (
             <View style={[styles.emptyCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
               <MaterialIcons name="redeem" size={40} color={outline} />
@@ -188,38 +215,61 @@ export default function WishListScreen() {
             const highlighted = row.desire_level >= 4;
             const thumb = row.reference_image_uri;
             return (
-              <View
+              <Swipeable
                 key={row.id}
-                style={[
-                  styles.itemCard,
-                  {
-                    backgroundColor: cardBg,
-                    borderLeftColor: highlighted ? primary : 'transparent',
-                    borderLeftWidth: highlighted ? 4 : 0,
-                  },
-                ]}>
-                <View style={[styles.itemIconWrap, { backgroundColor: cardSoft }]}>
-                  {thumb ? (
-                    <Image source={{ uri: thumb }} style={styles.itemThumb} contentFit="cover" transition={150} />
-                  ) : (
-                    <MaterialIcons name="card-giftcard" size={28} color={text} />
-                  )}
-                </View>
-                <View style={styles.itemContent}>
-                  <View style={styles.itemTextWrap}>
-                    <Text style={[styles.itemName, { color: text }]}>{row.name}</Text>
-                    <Text style={[styles.itemSubtitle, { color: outline }]} numberOfLines={2}>
-                      {subtitleForRow(row)}
-                    </Text>
+                overshootRight={false}
+                rightThreshold={48}
+                renderRightActions={() => (
+                  <Pressable
+                    onPress={() => requestDeleteWish(row)}
+                    style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`删除 ${row.name}`}
+                  >
+                    <MaterialIcons name="delete-outline" size={24} color="#fff" />
+                    <Text style={styles.swipeDeleteText}>删除</Text>
+                  </Pressable>
+                )}
+              >
+                <Pressable
+                  onPress={() => router.push({ pathname: '/edit-wish-item/[id]', params: { id: row.id } })}
+                  style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
+                >
+                  <View
+                    style={[
+                      styles.itemCard,
+                      {
+                        backgroundColor: cardBg,
+                        borderLeftColor: highlighted ? primary : 'transparent',
+                        borderLeftWidth: highlighted ? 4 : 0,
+                      },
+                    ]}>
+                    <View style={[styles.itemIconWrap, { backgroundColor: cardSoft }]}>
+                      {thumb ? (
+                        <Image source={{ uri: thumb }} style={styles.itemThumb} contentFit="cover" transition={150} />
+                      ) : (
+                        <MaterialIcons name="card-giftcard" size={28} color={text} />
+                      )}
+                    </View>
+                    <View style={styles.itemContent}>
+                      <View style={styles.itemTextWrap}>
+                        <Text style={[styles.itemName, { color: text }]}>{row.name}</Text>
+                        <Text style={[styles.itemSubtitle, { color: outline }]} numberOfLines={2}>
+                          {subtitleForRow(row)}
+                        </Text>
+                      </View>
+                      <View style={styles.itemPriceWrap}>
+                        <Text style={[styles.itemPrice, { color: tertiary }]}>{formatCny(row.price)}</Text>
+                        <Text
+                          style={[styles.itemPriority, { color: highlighted ? primary : outline }]}
+                          numberOfLines={1}>
+                          {desireLevelLabel(row.desire_level)}
+                        </Text>
+                      </View>
+                    </View>
                   </View>
-                  <View style={styles.itemPriceWrap}>
-                    <Text style={[styles.itemPrice, { color: tertiary }]}>{formatCny(row.price)}</Text>
-                    <Text style={[styles.itemPriority, { color: highlighted ? primary : outline }]} numberOfLines={1}>
-                      {desireLevelLabel(row.desire_level)}
-                    </Text>
-                  </View>
-                </View>
-              </View>
+                </Pressable>
+              </Swipeable>
             );
           })}
         </View>
@@ -406,12 +456,37 @@ const styles = StyleSheet.create({
   listSection: {
     gap: 12,
   },
+  listKickerRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
   listKicker: {
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1,
     textTransform: 'uppercase',
-    marginBottom: 2,
+  },
+  listSwipeHint: {
+    fontSize: 11,
+    fontWeight: '600',
+    opacity: 0.85,
+  },
+  swipeDeleteAction: {
+    width: 88,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#dc2626',
+    borderRadius: 20,
+    marginLeft: 10,
+    marginVertical: 2,
+    gap: 4,
+  },
+  swipeDeleteText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
   },
   emptyCard: {
     borderRadius: 20,

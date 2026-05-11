@@ -10,6 +10,8 @@ import {
 } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import {
+  createTask,
+  deleteTask,
   getTasks,
   getTasksByProjectId,
   type TaskTreeNode,
@@ -46,12 +48,16 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Swipeable } from 'react-native-gesture-handler';
 
 const PROJECT_EXPANDED_STORAGE_KEY = '@tasks_project_expanded_v1';
 
 /** Tasks「小习惯」网格：固定每行列数，单元宽度按行宽均分 */
 const HABIT_GRID_GAP = 16;
 const HABIT_GRID_COLUMNS = 4;
+
+/** 无项目待办标题长度上限（与 add-task 页面一致，避免列表与详情不一致） */
+const STANDALONE_TODO_TITLE_MAX = 30;
 
 function PulseDot({ color }: { color: string }) {
   const scale = React.useRef(new Animated.Value(1)).current;
@@ -385,6 +391,23 @@ function formatTaskDueText(dueYmd: string): string {
   return `截止：${dueYmd}`;
 }
 
+/** 待办勾选图标颜色：与任务优先级象限语义一致 */
+function getTaskPriorityCheckColor(priority: number, isDark: boolean) {
+  if (priority >= 4) return isDark ? '#f87171' : '#ba1a1a';
+  if (priority === 3) return isDark ? '#fbbf24' : '#825100';
+  if (priority === 2) return isDark ? '#60a5fa' : '#0058be';
+  return isDark ? '#94a3b8' : '#727785';
+}
+
+/** 未完成且截止日期（本地日）早于今天。 */
+function isTaskDueOverdue(dueYmd: string, isDone: boolean): boolean {
+  if (isDone || !dueYmd.trim()) return false;
+  const due = ymdToLocalDate(dueYmd);
+  const today = ymdToLocalDate(formatLocalYmd(new Date()));
+  if (!due || !today) return false;
+  return due.getTime() < today.getTime();
+}
+
 function getProjectScheduleLabel(project: ProjectRow, schedule: ProjectScheduleMeta | null) {
   if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
     const start = formatScheduleDateToYMD(schedule.range.start);
@@ -435,6 +458,9 @@ export default function TasksScreen() {
   const [activeCategoryId, setActiveCategoryId] = React.useState<string | null>(null);
   const [habitSections, setHabitSections] = React.useState<HabitSection[]>([]);
   const [expandedHabitSections, setExpandedHabitSections] = React.useState<Record<string, boolean>>({});
+  /** 底部「无项目待办」快捷输入框内容 */
+  const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
+  const [quickTodoSaving, setQuickTodoSaving] = React.useState(false);
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
@@ -749,6 +775,31 @@ export default function TasksScreen() {
     return tasks.filter((t) => t.category_id === taskTab);
   }, [taskTab, tasks]);
 
+  /**
+   * 架构意图：「待办」区块只展示未挂 `project_id` 的顶层任务，与项目树数据源解耦；
+   * 适合杂项/灵感，避免与项目内子任务重复展示（子任务带 parent_task_id）。
+   */
+  const standaloneTodos = React.useMemo(() => {
+    const list = tasks.filter((t) => !t.project_id && !t.parent_task_id);
+    const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
+    return list.slice().sort((a, b) => {
+      const da = isDoneRow(a);
+      const db = isDoneRow(b);
+      if (da !== db) return da ? 1 : -1;
+      const dueA = a.due_date ? Date.parse(a.due_date) : Number.POSITIVE_INFINITY;
+      const dueB = b.due_date ? Date.parse(b.due_date) : Number.POSITIVE_INFINITY;
+      if (dueA !== dueB) return dueA - dueB;
+      const updA = a.updated_at ? Date.parse(a.updated_at) : 0;
+      const updB = b.updated_at ? Date.parse(b.updated_at) : 0;
+      return updB - updA;
+    });
+  }, [tasks]);
+
+  const standaloneTodoOpenCount = React.useMemo(
+    () => standaloneTodos.filter((t) => t.status !== 'done' && t.status !== 'cancelled').length,
+    [standaloneTodos]
+  );
+
   const todayFrogs = React.useMemo(() => {
     const today = formatLocalYmd(new Date());
     return tasks
@@ -768,7 +819,10 @@ export default function TasksScreen() {
       });
   }, [tasks]);
 
-  const todayFrogCards = React.useMemo(() => todayFrogs.slice(0, 4), [todayFrogs]);
+  const frogCarouselCardWidth = React.useMemo(
+    () => Math.min(196, Math.max(152, Dimensions.get('window').width * 0.46)),
+    []
+  );
 
   const matrixGroups = React.useMemo(() => {
     const q11: TaskRow[] = []; // 紧急且重要
@@ -776,7 +830,10 @@ export default function TasksScreen() {
     const q01: TaskRow[] = []; // 紧急但不重要
     const q00: TaskRow[] = []; // 不紧急不重要
 
-    filteredTasks.forEach((t) => {
+    // 无项目顶层待办只在底部「待办」区块展示，避免与四象限重复
+    const forMatrix = filteredTasks.filter((t) => t.project_id || t.parent_task_id);
+
+    forMatrix.forEach((t) => {
       if (t.priority >= 4) q11.push(t);
       else if (t.priority === 2) q10.push(t);
       else if (t.priority === 3) q01.push(t);
@@ -839,6 +896,17 @@ export default function TasksScreen() {
 
   const openProject = (id: string) => {
     router.push({ pathname: '/edit-project', params: { id } });
+  };
+
+  const openQuickAddTaskForProject = (project: ProjectRow) => {
+    router.push({
+      pathname: '/add-task',
+      params: {
+        source: `tasks-quick-add-${project.id}`,
+        projectId: project.id,
+        categoryId: project.category_id ?? INBOX_PROJECT_CATEGORY_ID,
+      },
+    });
   };
 
   const updateTaskInProjectTree = React.useCallback(
@@ -935,6 +1003,70 @@ export default function TasksScreen() {
     },
     [loadProjectTasks, loadTasks, projects, tasks, updateTaskInProjectTree]
   );
+
+  /** 从任务 Tab 底部快捷创建「无项目」待办，写入 tasks 表，与四象限列表共用 `tasks` 状态 */
+  const submitQuickStandaloneTodo = React.useCallback(async () => {
+    const title = quickTodoDraft.trim();
+    if (!title) {
+      Alert.alert('提示', '请先输入待办内容。');
+      return;
+    }
+    if (quickTodoSaving) return;
+    setQuickTodoSaving(true);
+    try {
+      const id = `tsk_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      await createTask({
+        id,
+        project_id: null,
+        category_id: null,
+        parent_task_id: null,
+        title,
+        note: null,
+        status: 'todo',
+        priority: 0,
+        due_date: null,
+        extra_data: null,
+      });
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setQuickTodoDraft('');
+      await loadTasks();
+    } catch (err) {
+      console.warn('创建无项目待办失败', err);
+      Alert.alert('保存失败', '待办未能写入，请稍后重试。');
+    } finally {
+      setQuickTodoSaving(false);
+    }
+  }, [loadTasks, quickTodoDraft, quickTodoSaving]);
+
+  /** 左滑删除：软删除整棵子树，并刷新列表（与 DB deleteTask 行为一致） */
+  const confirmDeleteStandaloneTodo = React.useCallback(
+    (taskId: string, titleLabel: string) => {
+      Alert.alert('删除待办', `确定删除「${titleLabel}」吗？（若有子任务会一并删除）`, [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+              await deleteTask(taskId);
+              await loadTasks();
+              await loadProjectTasks(projects);
+            } catch (err) {
+              console.warn('删除待办失败', err);
+              Alert.alert('删除失败', '请稍后重试。');
+              await loadTasks();
+            }
+          },
+        },
+      ]);
+    },
+    [loadProjectTasks, loadTasks, projects]
+  );
+
+  const openStandaloneTaskComposer = React.useCallback(() => {
+    router.push('/add-standalone-todo');
+  }, [router]);
 
   const openCategoryMenu = (_scope: 'task' | 'project', label: string, categoryId: string | null = null) => {
     setActiveCategoryLabel(label);
@@ -1255,92 +1387,104 @@ export default function TasksScreen() {
                   ],
                 }}
               >
-                {todayFrogCards.length > 0 ? (
-                  todayFrogCards.map((frog) => {
-                    const isDone = frog.status === 'done' || frog.status === 'cancelled';
-                    return (
-                      <ScalePressable
-                        key={frog.id}
-                        onPress={() => openTask(frog.id)}
-                        scaleTo={0.985}
-                        style={({ pressed }) => [
-                          styles.frogCard,
-                          {
-                            backgroundColor: isDone ? (isDark ? 'rgba(51, 65, 85, 0.6)' : '#eef1f6') : card,
-                            borderLeftColor: secondary,
-                            opacity: pressed ? 0.9 : 1,
-                          },
-                        ]}>
-                        <View style={styles.frogIconBg} pointerEvents="none">
-                          <MaterialIcons name="eco" size={52} color={`${secondary}22`} />
-                        </View>
-                        <View style={styles.frogTopRow}>
-                          <View style={[styles.badge, { backgroundColor: `${secondary}16` }]}>
-                            <Text style={[styles.badgeText, { color: secondary }]}>今日已指派</Text>
+                {todayFrogs.length > 0 ? (
+                  <ScrollView
+                    horizontal
+                    nestedScrollEnabled
+                    directionalLockEnabled
+                    showsHorizontalScrollIndicator={false}
+                    style={styles.frogCarousel}
+                    contentContainerStyle={styles.frogCarouselContent}>
+                    {todayFrogs.map((frog) => {
+                      const isDone = frog.status === 'done' || frog.status === 'cancelled';
+                      return (
+                        <ScalePressable
+                          key={frog.id}
+                          onPress={() => openTask(frog.id)}
+                          scaleTo={0.985}
+                          style={({ pressed }) => [
+                            styles.frogCard,
+                            styles.frogCardSlide,
+                            { width: frogCarouselCardWidth },
+                            {
+                              backgroundColor: isDone ? (isDark ? 'rgba(51, 65, 85, 0.6)' : '#eef1f6') : card,
+                              borderLeftColor: secondary,
+                              opacity: pressed ? 0.9 : 1,
+                            },
+                          ]}>
+                          <View style={styles.frogIconBgCompact} pointerEvents="none">
+                            <MaterialIcons name="eco" size={34} color={`${secondary}22`} />
                           </View>
-                          <Pressable
-                            onPress={(e) => {
-                              e.stopPropagation?.();
-                              playFrogDoneBounce(frog.id);
-                              void toggleTaskDone(frog.id);
-                            }}
-                            hitSlop={10}
-                            style={({ pressed }) => [styles.inlineDoneBtn, pressed && { opacity: 0.75 }]}>
-                            <Animated.View style={{ transform: [{ scale: getFrogDoneBounce(frog.id) }] }}>
-                              <MaterialIcons
-                                name={isDone ? 'check-circle' : 'radio-button-unchecked'}
-                                size={20}
-                                color={secondary}
-                              />
-                            </Animated.View>
-                          </Pressable>
-                        </View>
-                        {frog.parent_task_id ? (
+                          <View style={styles.frogTopRowCompact}>
+                            <View style={[styles.badge, styles.badgeCompact, { backgroundColor: `${secondary}16` }]}>
+                              <Text style={[styles.badgeText, styles.badgeTextCompact, { color: secondary }]}>今日已指派</Text>
+                            </View>
+                            <Pressable
+                              onPress={(e) => {
+                                e.stopPropagation?.();
+                                playFrogDoneBounce(frog.id);
+                                void toggleTaskDone(frog.id);
+                              }}
+                              hitSlop={10}
+                              style={({ pressed }) => [styles.inlineDoneBtn, pressed && { opacity: 0.75 }]}>
+                              <Animated.View style={{ transform: [{ scale: getFrogDoneBounce(frog.id) }] }}>
+                                <MaterialIcons
+                                  name={isDone ? 'check-circle' : 'radio-button-unchecked'}
+                                  size={18}
+                                  color={secondary}
+                                />
+                              </Animated.View>
+                            </Pressable>
+                          </View>
+                          {frog.parent_task_id ? (
+                            <Text
+                              style={[
+                                styles.taskParentHint,
+                                { color: outline, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.65 : 1 },
+                              ]}
+                              numberOfLines={1}>
+                              上级任务：{taskTitleById.get(frog.parent_task_id) ?? '（未找到）'}
+                            </Text>
+                          ) : null}
                           <Text
                             style={[
-                              styles.taskParentHint,
-                              { color: outline, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.65 : 1 },
+                              styles.frogTitleCompact,
+                              { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.55 : 1 },
                             ]}
-                            numberOfLines={1}>
-                            上级任务：{taskTitleById.get(frog.parent_task_id) ?? '（未找到）'}
+                            numberOfLines={2}>
+                            {frog.title}
                           </Text>
-                        ) : null}
-                        <Text
-                          style={[
-                            styles.frogTitle,
-                            { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.55 : 1 },
-                          ]}
-                          numberOfLines={2}>
-                          {frog.title}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.frogDesc,
-                            { color: theme.textSecondary, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.58 : 1 },
-                          ]}
-                          numberOfLines={3}>
-                          {(frog.note ?? '').trim() || '点击查看详情或继续执行。'}
-                        </Text>
-                        <View style={styles.progressMeta}>
-                          <Text style={[styles.progressLabel, { color: outline }]}>状态</Text>
-                          <Text style={[styles.progressLabel, { color: outline }]}>{isDone ? '已完成' : '进行中'}</Text>
-                        </View>
-                      </ScalePressable>
-                    );
-                  })
+                          <Text
+                            style={[
+                              styles.frogDescCompact,
+                              { color: theme.textSecondary, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.58 : 1 },
+                            ]}
+                            numberOfLines={2}>
+                            {(frog.note ?? '').trim() || '点击查看详情或继续执行。'}
+                          </Text>
+                          <View style={styles.progressMetaCompact}>
+                            <Text style={[styles.progressLabel, { color: outline }]}>状态</Text>
+                            <Text style={[styles.progressLabel, { color: outline }]}>{isDone ? '已完成' : '进行中'}</Text>
+                          </View>
+                        </ScalePressable>
+                      );
+                    })}
+                  </ScrollView>
                 ) : (
-                  <View style={[styles.frogCard, { backgroundColor: card, borderLeftColor: secondary, opacity: 0.9 }]}>
-                    <View style={styles.frogIconBg}>
-                      <MaterialIcons name="eco" size={52} color={`${secondary}22`} />
+                  <View style={[styles.frogCard, styles.frogCardEmpty, { backgroundColor: card, borderLeftColor: secondary, opacity: 0.9 }]}>
+                    <View style={styles.frogIconBgCompact}>
+                      <MaterialIcons name="eco" size={34} color={`${secondary}22`} />
                     </View>
-                    <View style={styles.frogTopRow}>
-                      <View style={[styles.badge, { backgroundColor: `${secondary}16` }]}>
-                        <Text style={[styles.badgeText, { color: secondary }]}>今日未指派</Text>
+                    <View style={styles.frogTopRowCompact}>
+                      <View style={[styles.badge, styles.badgeCompact, { backgroundColor: `${secondary}16` }]}>
+                        <Text style={[styles.badgeText, styles.badgeTextCompact, { color: secondary }]}>今日未指派</Text>
                       </View>
-                      <MaterialIcons name="radio-button-unchecked" size={20} color={secondary} />
+                      <MaterialIcons name="radio-button-unchecked" size={18} color={secondary} />
                     </View>
-                    <Text style={[styles.frogTitle, { color: theme.text }]}>还没有今日青蛙</Text>
-                    <Text style={[styles.frogDesc, { color: theme.textSecondary }]}>点击右上角“添加青蛙”，从今日可选任务中指派。</Text>
+                    <Text style={[styles.frogTitleCompact, { color: theme.text }]}>还没有今日青蛙</Text>
+                    <Text style={[styles.frogDescCompact, { color: theme.textSecondary }]}>
+                      点击右上角“添加青蛙”，从今日可选任务中指派。
+                    </Text>
                   </View>
                 )}
               </Animated.View>
@@ -1385,6 +1529,7 @@ export default function TasksScreen() {
                         const repeat = (meta.repeat ?? '').trim();
                         const reminder = (meta.reminder ?? '').trim();
                         const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
+                        const overdue = isTaskDueOverdue(due, isDone);
                         return (
                           <ScalePressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)} scaleTo={0.985}>
                             <MaterialIcons name={isDone ? 'check-circle' : 'radio-button-unchecked'} size={20} color={error} />
@@ -1403,8 +1548,20 @@ export default function TasksScreen() {
                                 {t.title}
                               </Text>
                               {!!due ? (
-                                <View style={[styles.deadlineBadge, { backgroundColor: `${error}14` }]}>
-                                  <Text style={[styles.deadlineText, { color: error }]}>{formatTaskDueText(due)}</Text>
+                                <View style={styles.deadlineRow}>
+                                  <View
+                                    style={[
+                                      styles.deadlineBadge,
+                                      { backgroundColor: overdue ? `${error}22` : `${error}14` },
+                                    ]}>
+                                    <Text style={[styles.deadlineText, { color: error }]}>{formatTaskDueText(due)}</Text>
+                                  </View>
+                                  {overdue ? (
+                                    <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
+                                      <MaterialIcons name="report-problem" size={12} color={error} />
+                                      <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
+                                    </View>
+                                  ) : null}
                                 </View>
                               ) : null}
                               {!!repeat || !!reminder ? (
@@ -1459,6 +1616,7 @@ export default function TasksScreen() {
                         const repeat = (meta.repeat ?? '').trim();
                         const reminder = (meta.reminder ?? '').trim();
                         const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
+                        const overdue = isTaskDueOverdue(due, isDone);
                         return (
                           <ScalePressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)} scaleTo={0.985}>
                             <MaterialIcons name={isDone ? 'check-circle' : 'radio-button-unchecked'} size={20} color={primary} />
@@ -1477,8 +1635,20 @@ export default function TasksScreen() {
                                 {t.title}
                               </Text>
                               {!!due ? (
-                                <View style={[styles.deadlineBadge, { backgroundColor: `${primary}14` }]}>
-                                  <Text style={[styles.deadlineText, { color: primary }]}>{formatTaskDueText(due)}</Text>
+                                <View style={styles.deadlineRow}>
+                                  <View
+                                    style={[
+                                      styles.deadlineBadge,
+                                      { backgroundColor: overdue ? `${error}22` : `${primary}14` },
+                                    ]}>
+                                    <Text style={[styles.deadlineText, { color: overdue ? error : primary }]}>{formatTaskDueText(due)}</Text>
+                                  </View>
+                                  {overdue ? (
+                                    <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
+                                      <MaterialIcons name="report-problem" size={12} color={error} />
+                                      <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
+                                    </View>
+                                  ) : null}
                                 </View>
                               ) : null}
                               {!!repeat || !!reminder ? (
@@ -1533,6 +1703,7 @@ export default function TasksScreen() {
                         const repeat = (meta.repeat ?? '').trim();
                         const reminder = (meta.reminder ?? '').trim();
                         const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
+                        const overdue = isTaskDueOverdue(due, isDone);
                         return (
                           <ScalePressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)} scaleTo={0.985}>
                             <MaterialIcons name={isDone ? 'check-circle' : 'radio-button-unchecked'} size={20} color={tertiary} />
@@ -1551,8 +1722,20 @@ export default function TasksScreen() {
                                 {t.title}
                               </Text>
                               {!!due ? (
-                                <View style={[styles.deadlineBadge, { backgroundColor: `${tertiary}14` }]}>
-                                  <Text style={[styles.deadlineText, { color: tertiary }]}>{formatTaskDueText(due)}</Text>
+                                <View style={styles.deadlineRow}>
+                                  <View
+                                    style={[
+                                      styles.deadlineBadge,
+                                      { backgroundColor: overdue ? `${error}22` : `${tertiary}14` },
+                                    ]}>
+                                    <Text style={[styles.deadlineText, { color: overdue ? error : tertiary }]}>{formatTaskDueText(due)}</Text>
+                                  </View>
+                                  {overdue ? (
+                                    <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
+                                      <MaterialIcons name="report-problem" size={12} color={error} />
+                                      <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
+                                    </View>
+                                  ) : null}
                                 </View>
                               ) : null}
                               {!!repeat || !!reminder ? (
@@ -1607,6 +1790,7 @@ export default function TasksScreen() {
                         const repeat = (meta.repeat ?? '').trim();
                         const reminder = (meta.reminder ?? '').trim();
                         const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
+                        const overdue = isTaskDueOverdue(due, isDone);
                         return (
                           <ScalePressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)} scaleTo={0.985}>
                             <MaterialIcons name={isDone ? 'check-circle' : 'radio-button-unchecked'} size={20} color={outline} />
@@ -1625,8 +1809,20 @@ export default function TasksScreen() {
                                 {t.title}
                               </Text>
                               {!!due ? (
-                                <View style={[styles.deadlineBadge, { backgroundColor: `${outline}12` }]}>
-                                  <Text style={[styles.deadlineText, { color: outline }]}>{formatTaskDueText(due)}</Text>
+                                <View style={styles.deadlineRow}>
+                                  <View
+                                    style={[
+                                      styles.deadlineBadge,
+                                      { backgroundColor: overdue ? `${error}22` : `${outline}12` },
+                                    ]}>
+                                    <Text style={[styles.deadlineText, { color: overdue ? error : outline }]}>{formatTaskDueText(due)}</Text>
+                                  </View>
+                                  {overdue ? (
+                                    <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
+                                      <MaterialIcons name="report-problem" size={12} color={error} />
+                                      <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
+                                    </View>
+                                  ) : null}
                                 </View>
                               ) : null}
                               {!!repeat || !!reminder ? (
@@ -1810,6 +2006,7 @@ export default function TasksScreen() {
                                 const dueDate = node.due_date?.slice(0, 10) ?? '';
                                 const reminder = (meta.reminder ?? '').trim();
                                 const repeat = (meta.repeat ?? '').trim();
+                                const dueOverdue = isTaskDueOverdue(dueDate, isDone);
                                 return (
                                   <View style={styles.projectTaskMetaRow}>
                                     {!!priorityLabel && (
@@ -1819,11 +2016,22 @@ export default function TasksScreen() {
                                       </View>
                                     )}
                                     {!!dueDate && (
-                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
-                                        <MaterialIcons name="event" size={11} color={outline} />
-                                        <Text style={[styles.projectTaskMetaText, { color: outline }]}>{formatTaskDueText(dueDate)}</Text>
+                                      <View
+                                        style={[
+                                          styles.projectTaskMetaChip,
+                                          { borderColor: outlineVariant },
+                                          dueOverdue && { backgroundColor: `${error}14`, borderColor: `${error}44` },
+                                        ]}>
+                                        <MaterialIcons name="event" size={11} color={dueOverdue ? error : outline} />
+                                        <Text style={[styles.projectTaskMetaText, { color: dueOverdue ? error : outline }]}>{formatTaskDueText(dueDate)}</Text>
                                       </View>
                                     )}
+                                    {dueOverdue ? (
+                                      <View style={[styles.projectTaskMetaChip, { backgroundColor: `${error}18`, borderColor: `${error}55` }]}>
+                                        <MaterialIcons name="report-problem" size={11} color={error} />
+                                        <Text style={[styles.projectTaskMetaText, { color: error }]}>已过期</Text>
+                                      </View>
+                                    ) : null}
                                     {!!repeat && (
                                       <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
                                         <MaterialIcons name="repeat" size={11} color={outline} />
@@ -1991,6 +2199,17 @@ export default function TasksScreen() {
                           </View>
                         </View>
                         <View style={styles.projectHeadRight}>
+                          <Pressable
+                            onPress={(e) => {
+                              e.stopPropagation();
+                              openQuickAddTaskForProject(project);
+                            }}
+                            hitSlop={8}
+                            accessibilityRole="button"
+                            accessibilityLabel={`为「${project.name}」快捷添加任务`}
+                            style={({ pressed }) => [styles.projectQuickAddBtn, pressed && { opacity: 0.75 }]}>
+                            <MaterialIcons name="add-task" size={20} color={primary} />
+                          </Pressable>
                           {hasAnyTasks ? (
                             <Pressable
                               onPress={(e) => {
@@ -2180,6 +2399,200 @@ export default function TasksScreen() {
             </View>
           </View>
 
+          <View style={[styles.section, styles.stackedSection]}>
+            <View style={styles.sectionCard}>
+              <View style={styles.habitHeaderRow}>
+                <View style={{ flex: 1, gap: 4 }}>
+                  <Text style={[styles.sectionTitle, { color: theme.text, fontSize: 18 }]}>待办</Text>
+                  <Text style={[styles.standaloneTodoSubtitle, { color: outline }]}>
+                    暂不挂项目 · 进行中 {standaloneTodoOpenCount} 条
+                  </Text>
+                </View>
+                <ScalePressable
+                  onPress={openStandaloneTaskComposer}
+                  style={({ pressed }) => [
+                    styles.ghostBtn,
+                    { borderColor: `${tertiary}44` },
+                    pressed && { opacity: 0.8 },
+                  ]}>
+                  <MaterialIcons name="playlist-add" size={14} color={tertiary} />
+                  <Text style={[styles.ghostBtnText, { color: tertiary }]}>详细新建</Text>
+                </ScalePressable>
+              </View>
+
+              {/* 快捷输入：胶囊容器 + 左侧图标区 + 圆形发送，与上方「详细新建」表单区分 */}
+              <View
+                style={[
+                  styles.quickTodoShell,
+                  {
+                    backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : '#ffffff',
+                    borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(203,213,225,0.85)',
+                    shadowColor: '#000',
+                  },
+                ]}>
+                <View style={[styles.quickTodoIconBadge, { backgroundColor: isDark ? `${secondary}22` : `${secondary}14` }]}>
+                  <MaterialIcons name="bolt" size={18} color={secondary} />
+                </View>
+                <TextInput
+                  value={quickTodoDraft}
+                  onChangeText={(t) => setQuickTodoDraft(t.slice(0, STANDALONE_TODO_TITLE_MAX))}
+                  placeholder="快速记一条…"
+                  placeholderTextColor={outline}
+                  returnKeyType="done"
+                  blurOnSubmit={false}
+                  multiline={false}
+                  {...(Platform.OS === 'android'
+                    ? ({ textAlignVertical: 'center', includeFontPadding: false } as const)
+                    : {})}
+                  onSubmitEditing={() => void submitQuickStandaloneTodo()}
+                  style={[styles.quickTodoInput, { color: theme.text }]}
+                />
+                <Pressable
+                  onPress={() => void submitQuickStandaloneTodo()}
+                  disabled={quickTodoSaving}
+                  accessibilityRole="button"
+                  accessibilityLabel="添加待办"
+                  style={({ pressed }) => [
+                    styles.quickTodoSendBtn,
+                    {
+                      backgroundColor: secondary,
+                      opacity: quickTodoSaving ? 0.5 : pressed ? 0.88 : 1,
+                    },
+                  ]}>
+                  {quickTodoSaving ? (
+                    <Text style={styles.quickTodoSendBtnDots}>…</Text>
+                  ) : (
+                    <MaterialIcons name="arrow-upward" size={22} color="#fff" />
+                  )}
+                </Pressable>
+              </View>
+              <Text style={[styles.quickTodoHint, { color: outline }]}>回车或点右侧按钮即可保存 · 最多 {STANDALONE_TODO_TITLE_MAX} 字</Text>
+
+              {standaloneTodos.length === 0 ? (
+                <EmptyPlaceholder
+                  icon="task-alt"
+                  title="还没有待办"
+                  subtitle="杂事、灵感先记在这里，需要时再关联到项目。"
+                  color={primary}
+                  muted={outline}
+                  cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
+                />
+              ) : (
+                <ScrollView
+                  style={styles.standaloneTodoList}
+                  contentContainerStyle={styles.standaloneTodoListContent}
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator={false}>
+                  {standaloneTodos.map((t) => {
+                    const isDone = t.status === 'done' || t.status === 'cancelled';
+                    const meta = parseTaskMeta(t.extra_data);
+                    const due = t.due_date?.slice(0, 10) ?? '';
+                    const repeat = (meta.repeat ?? '').trim();
+                    const reminder = (meta.reminder ?? '').trim();
+                    const overdue = isTaskDueOverdue(due, isDone);
+                    const checkColor = getTaskPriorityCheckColor(t.priority, isDark);
+                    return (
+                      <View key={t.id} style={styles.standaloneTodoSwipeWrap}>
+                        <Swipeable
+                          overshootRight={false}
+                          friction={2}
+                          renderRightActions={() => (
+                            <View style={styles.standaloneSwipeActions}>
+                              <Pressable
+                                onPress={() => confirmDeleteStandaloneTodo(t.id, t.title)}
+                                style={({ pressed }) => [styles.standaloneSwipeDelete, { opacity: pressed ? 0.9 : 1 }]}
+                                accessibilityRole="button"
+                                accessibilityLabel={`删除 ${t.title}`}>
+                                <MaterialIcons name="delete-outline" size={22} color="#fff" />
+                                <Text style={styles.standaloneSwipeDeleteText} numberOfLines={1}>
+                                  删除
+                                </Text>
+                              </Pressable>
+                            </View>
+                          )}>
+                          <View
+                            style={[
+                              styles.standaloneTodoCard,
+                              {
+                                backgroundColor: card,
+                                borderColor: outlineVariant,
+                                shadowColor: '#000',
+                              },
+                            ]}>
+                          <Pressable
+                            hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                            onPress={() => void toggleTaskDone(t.id)}
+                            accessibilityRole="button"
+                            accessibilityLabel={isDone ? '标记为未完成' : '标记为已完成'}>
+                            <MaterialIcons
+                              name={isDone ? 'check-circle' : 'radio-button-unchecked'}
+                              size={22}
+                              color={checkColor}
+                            />
+                          </Pressable>
+                          <Pressable style={styles.taskBody} onPress={() => openTask(t.id)}>
+                            <Text
+                              style={[
+                                styles.taskText,
+                                {
+                                  color: theme.text,
+                                  textDecorationLine: isDone ? 'line-through' : 'none',
+                                  opacity: isDone ? 0.45 : 1,
+                                },
+                              ]}
+                              numberOfLines={2}>
+                              {t.title}
+                            </Text>
+                            {!!due ? (
+                              <View style={styles.deadlineRow}>
+                                <View
+                                  style={[
+                                    styles.deadlineBadge,
+                                    { backgroundColor: overdue ? `${error}22` : `${primary}14` },
+                                  ]}>
+                                  <Text style={[styles.deadlineText, { color: overdue ? error : primary }]}>
+                                    {formatTaskDueText(due)}
+                                  </Text>
+                                </View>
+                                {overdue ? (
+                                  <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
+                                    <MaterialIcons name="report-problem" size={12} color={error} />
+                                    <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
+                                  </View>
+                                ) : null}
+                              </View>
+                            ) : null}
+                            {!!repeat || !!reminder ? (
+                              <View style={styles.metaRow}>
+                                {!!repeat ? (
+                                  <>
+                                    <MaterialIcons name="refresh" size={12} color={outline} />
+                                    <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                                      {repeat}
+                                    </Text>
+                                  </>
+                                ) : null}
+                                {!!reminder ? (
+                                  <>
+                                    <MaterialIcons name="notifications-active" size={12} color={outline} />
+                                    <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                                      {reminder}
+                                    </Text>
+                                  </>
+                                ) : null}
+                              </View>
+                            ) : null}
+                          </Pressable>
+                          </View>
+                        </Swipeable>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              )}
+            </View>
+          </View>
+
           <View style={{ height: 28 }} />
         </Animated.View>
       </ScrollView>
@@ -2331,27 +2744,50 @@ const styles = StyleSheet.create({
   },
   ghostBtnText: { fontSize: 12, fontWeight: '800' },
 
+  frogCarousel: {
+    flexGrow: 0,
+    marginHorizontal: -2,
+  },
+  frogCarouselContent: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    paddingRight: 4,
+  },
   frogCard: {
-    borderRadius: 18,
+    borderRadius: 14,
     borderLeftWidth: 4,
-    padding: 16,
+    padding: 12,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(148,163,184,0.14)',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.07,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  frogCardSlide: {
+    flexShrink: 0,
+    marginRight: 10,
+  },
+  frogCardEmpty: {
+    alignSelf: 'stretch',
   },
   frogIconBg: { position: 'absolute', right: 8, top: 8 },
+  frogIconBgCompact: { position: 'absolute', right: 6, top: 6 },
   frogTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  frogTopRowCompact: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
   inlineDoneBtn: { borderRadius: 10 },
   badge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
+  badgeCompact: { paddingHorizontal: 8, paddingVertical: 3 },
   badgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 1.1, textTransform: 'uppercase' },
+  badgeTextCompact: { fontSize: 9, letterSpacing: 0.7 },
   frogTitle: { fontSize: 20, fontWeight: '800', marginBottom: 6, paddingRight: 40 },
+  frogTitleCompact: { fontSize: 15, fontWeight: '800', marginBottom: 4, paddingRight: 36, lineHeight: 20 },
   frogDesc: { fontSize: 13, lineHeight: 19, marginBottom: 14 },
+  frogDescCompact: { fontSize: 12, lineHeight: 16, marginBottom: 8 },
   progressMeta: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  progressMetaCompact: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2, marginTop: 2 },
   progressLabel: { fontSize: 10, fontWeight: '800' },
   progressTrack: { height: 6, borderRadius: 999, overflow: 'hidden' },
   progressFill: { height: '100%' },
@@ -2438,8 +2874,25 @@ const styles = StyleSheet.create({
   taskBody: { flex: 1, gap: 4 },
   taskParentHint: { fontSize: 10, fontWeight: '700', opacity: 0.7, letterSpacing: 0.2 },
   taskText: { fontSize: 13, fontWeight: '600', lineHeight: 18 },
+  deadlineRow: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+  },
   deadlineBadge: { alignSelf: 'flex-start', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   deadlineText: { fontSize: 10, fontWeight: '800' },
+  overduePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    alignSelf: 'flex-start',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  overduePillText: { fontSize: 10, fontWeight: '800' },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   metaText: { fontSize: 12, fontWeight: '700' },
   metaHint: { fontSize: 10, fontWeight: '800' },
@@ -2477,6 +2930,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   projectExpandBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  projectQuickAddBtn: {
     width: 28,
     height: 28,
     borderRadius: 8,
@@ -2708,5 +3168,98 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   habitAddText: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
+
+  standaloneTodoSubtitle: { fontSize: 12, fontWeight: '600' },
+  quickTodoShell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingLeft: 4,
+    paddingRight: 4,
+    paddingVertical: 3,
+    minHeight: 40,
+    maxHeight: 40,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  quickTodoIconBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickTodoInput: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    paddingVertical: 0,
+    paddingHorizontal: 6,
+    margin: 0,
+    height: 40,
+    lineHeight: Platform.OS === 'ios' ? 20 : undefined,
+  },
+  quickTodoSendBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickTodoSendBtnDots: { color: '#fff', fontSize: 16, fontWeight: '900' },
+  quickTodoHint: { fontSize: 11, fontWeight: '600', marginTop: 6, marginLeft: 8 },
+  standaloneTodoList: { maxHeight: 280 },
+  standaloneTodoListContent: { paddingTop: 2, paddingBottom: 6, gap: 0 },
+  /** 外边距放在 Swipeable 外，保证侧滑层高度与卡片本体一致 */
+  standaloneTodoSwipeWrap: { marginBottom: 10 },
+  /** 待办卡片：圆角 + 描边，与四象限内扁平列表区分 */
+  standaloneTodoCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    overflow: 'hidden',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.07,
+    shadowRadius: 10,
+    elevation: 2,
+  },
+  /**
+   * 与卡片等高；负 margin 让删除条向左压住卡片右缘，避免中间露一条缝。
+   */
+  standaloneSwipeActions: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginLeft: -10,
+  },
+  /**
+   * 删除条与卡片同高；横向「图标 + 删除」；
+   * 左侧略叠在卡片下（配合 actions 的 marginLeft），右侧圆角与卡片一致。
+   */
+  standaloneSwipeDelete: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'stretch',
+    minWidth: 118,
+    paddingHorizontal: 18,
+    backgroundColor: '#dc2626',
+    borderTopRightRadius: 16,
+    borderBottomRightRadius: 16,
+    gap: 8,
+  },
+  standaloneSwipeDeleteText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
+    flexShrink: 0,
+  },
 
 });

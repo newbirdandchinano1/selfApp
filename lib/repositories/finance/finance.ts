@@ -279,6 +279,14 @@ export async function createFinanceTransaction(input: CreateFinanceTransactionIn
   );
 }
 
+export async function getFinanceTransactionById(id: string) {
+  const db = await getDatabase();
+  return db.getFirstAsync<FinanceTransactionRow>(
+    'SELECT * FROM finance_transactions WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+    [id]
+  );
+}
+
 export async function getFinanceTransactions() {
   const db = await getDatabase();
   return db.getAllAsync<FinanceTransactionRow>(

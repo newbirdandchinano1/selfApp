@@ -1,7 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { getFinanceAccounts, getFinanceDailySummariesByDateRange, getFinanceTransactionsByYmd } from '@/lib/repositories/finance/finance';
-import type { FinanceAccountRow, FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import { getFinanceDailySummariesByDateRange, getFinanceTransactionsByYmd } from '@/lib/repositories/finance/finance';
+import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -25,7 +25,6 @@ type Txn = {
   meta: string;
   displayAmount: number;
   transactionType: FinanceTransactionRow['transaction_type'];
-  isLiabilityAccount: boolean;
 };
 
 const weekTitles = ['一', '二', '三', '四', '五', '六', '日'];
@@ -96,29 +95,24 @@ function txnIconByType(type: string): Txn['icon'] {
   return 'receipt-long';
 }
 
-function txnToUi(row: FinanceTransactionRow, isLiabilityAccount: boolean): Txn {
-  const ymd = row.happened_at.slice(0, 10);
+/** 与财务首页 `getTxnDisplayAmount` 一致：按收支类型与金额绝对值展示，负债账户的负金额已体现在 `amount` 符号中。 */
+function getTxnDisplayAmount(row: FinanceTransactionRow): number {
   const absAmount = Math.abs(row.amount);
-  const displayAmount =
-    row.transaction_type === 'income'
-      ? isLiabilityAccount ? -absAmount : absAmount
-      : row.transaction_type === 'expense'
-        ? isLiabilityAccount ? absAmount : -absAmount
-        : row.amount;
+  if (row.transaction_type === 'income') return absAmount;
+  if (row.transaction_type === 'expense') return -absAmount;
+  return row.amount;
+}
+
+function txnToUi(row: FinanceTransactionRow): Txn {
+  const ymd = row.happened_at.slice(0, 10);
   return {
     id: row.id,
     icon: txnIconByType(row.transaction_type),
     title: row.name,
     meta: `${formatTimeHHmm(row.happened_at)} · ${ymd}`,
-    displayAmount,
+    displayAmount: getTxnDisplayAmount(row),
     transactionType: row.transaction_type,
-    isLiabilityAccount,
   };
-}
-
-function isLiabilityAccount(account?: FinanceAccountRow | null) {
-  if (!account) return false;
-  return account.sign_rule < 0 || account.account_type === 'liability';
 }
 
 function clamp01(v: number) {
@@ -336,13 +330,9 @@ export default function FinanceCalendarScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const [rows, accounts] = await Promise.all([getFinanceTransactionsByYmd(formatYMD(activeDate)), getFinanceAccounts()]);
+        const rows = await getFinanceTransactionsByYmd(formatYMD(activeDate));
         if (cancelled) return;
-        const accountMap = new Map(accounts.map((acc) => [acc.id, acc]));
-        const ui = rows.map((row) => {
-          const account = accountMap.get(row.account_id);
-          return txnToUi(row, isLiabilityAccount(account));
-        });
+        const ui = rows.map((row) => txnToUi(row));
         setActiveTxns(ui);
         setDayTotal(ui.reduce((sum, t) => sum + t.displayAmount, 0));
       } catch {
@@ -690,7 +680,14 @@ export default function FinanceCalendarScreen() {
                     <Text
                       style={[
                         styles.txnAmount,
-                        { color: txn.transactionType === 'income' && !txn.isLiabilityAccount ? income : expenseAmountColor },
+                        {
+                          color:
+                            txn.transactionType === 'income'
+                              ? income
+                              : txn.transactionType === 'expense'
+                                ? expenseAmountColor
+                                : subtle,
+                        },
                       ]}>
                       {txn.displayAmount >= 0 ? '+' : ''}{txn.displayAmount.toFixed(2)}
                     </Text>

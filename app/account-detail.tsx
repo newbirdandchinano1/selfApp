@@ -1,13 +1,17 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
-import { deleteFinanceAccount, getFinanceAccountsWithBalance, getFinanceTransactionsByAccountId } from '@/lib/repositories/finance/finance';
+import { deleteFinanceAccount, getFinanceAccountsWithBalance, getFinanceTransactionsByAccountId, updateFinanceAccount } from '@/lib/repositories/finance/finance';
+import {
+  isFinanceAccountExcludedFromAggregates,
+  mergeFinanceAccountExcludeFromTotalAssets,
+} from '@/lib/repositories/finance/finance-account-extra';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type DetailItem = {
@@ -43,6 +47,8 @@ export default function AccountDetailScreen() {
   const [account, setAccount] = React.useState<FinanceAccountBalanceRow | null>(null);
   const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const [deleting, setDeleting] = React.useState(false);
+  /** 切换「不计入总资产」写入中的防抖态，避免连点 */
+  const [savingExcludeFromTotal, setSavingExcludeFromTotal] = React.useState(false);
   const routeAccountId = typeof params.accountId === 'string' ? params.accountId : '';
   const routeAccountName = typeof params.accountName === 'string' ? params.accountName.trim() : '';
   const accountSignRule = account?.sign_rule ?? 1;
@@ -132,6 +138,30 @@ export default function AccountDetailScreen() {
     React.useCallback(() => {
       void loadAccountDetail();
     }, [loadAccountDetail]),
+  );
+
+  const excludeFromTotalAssets = React.useMemo(
+    () => isFinanceAccountExcludedFromAggregates(account?.extra_data ?? null),
+    [account?.extra_data],
+  );
+
+  const onToggleExcludeFromTotalAssets = React.useCallback(
+    async (nextExcluded: boolean) => {
+      const targetId = account?.id ?? routeAccountId;
+      if (!targetId || savingExcludeFromTotal) return;
+      try {
+        setSavingExcludeFromTotal(true);
+        const merged = mergeFinanceAccountExcludeFromTotalAssets(account?.extra_data ?? null, nextExcluded);
+        await updateFinanceAccount(targetId, { extra_data: merged });
+        await loadAccountDetail();
+      } catch (error) {
+        console.warn('Failed to update exclude_from_total_assets:', error);
+        Alert.alert('保存失败', '请稍后重试。');
+      } finally {
+        setSavingExcludeFromTotal(false);
+      }
+    },
+    [account?.extra_data, account?.id, loadAccountDetail, routeAccountId, savingExcludeFromTotal],
   );
 
   const onDeleteAccount = React.useCallback(() => {
@@ -291,6 +321,29 @@ export default function AccountDetailScreen() {
                 </Pressable>
               </View>
             </View>
+
+            {/* 资产：不计入「总资产」汇总；负债：不计入「总负债」汇总；首页净资产均与资产页一致 */}
+            {account ? (
+              <View style={[styles.optionRow, { borderTopColor: borderColor }]}>
+                <View style={styles.optionTextCol}>
+                  <Text style={[styles.optionTitle, { color: titleText }]}>
+                    {isLiabilityAccount ? '不计入总负债' : '不计入总资产'}
+                  </Text>
+                  <Text style={[styles.optionHint, { color: subtleText }]}>
+                    {isLiabilityAccount
+                      ? '开启后，该负债不参与首页净资产与资产页「总负债」汇总'
+                      : '开启后，该账户不参与首页净资产与资产页「总资产」汇总'}
+                  </Text>
+                </View>
+                <Switch
+                  value={excludeFromTotalAssets}
+                  disabled={savingExcludeFromTotal}
+                  onValueChange={(v) => void onToggleExcludeFromTotalAssets(v)}
+                  trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#86efac' }}
+                  thumbColor={excludeFromTotalAssets ? '#16a34a' : isDark ? '#9ca3af' : '#f4f4f5'}
+                />
+              </View>
+            ) : null}
 
             <View style={styles.actionRow}>
               <Pressable
@@ -487,6 +540,29 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderStyle: 'dashed',
     marginVertical: 16,
+  },
+  optionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingTop: 14,
+    marginTop: 4,
+    marginBottom: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  optionTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  optionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  optionHint: {
+    fontSize: 12,
+    marginTop: 4,
+    lineHeight: 17,
   },
   balanceBlock: {
     marginBottom: 16,

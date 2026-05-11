@@ -476,7 +476,10 @@ export default function TaskDetailScreen() {
       <View pointerEvents="box-none" style={styles.bottomBar}>
         <View style={[styles.bottomFade, { backgroundColor: isDark ? 'rgba(15,23,42,0.92)' : 'rgba(250,248,255,0.95)' }]} />
         <Pressable
-          onPress={() => id && router.push({ pathname: '/edit-task', params: { id } })}
+          onPress={() =>
+            id &&
+            router.push({ pathname: '/edit-task', params: { id, from: 'task-detail' } })
+          }
           style={({ pressed }) => [
             styles.editBtn,
             { backgroundColor: primary, shadowColor: primary },

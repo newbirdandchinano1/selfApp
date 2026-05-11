@@ -1,5 +1,8 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
+import { createTask } from '@/lib/repositories/tasks/task';
+import type { TaskPriority } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -120,9 +123,30 @@ function formatTime(value: string): string {
   return `${hour}:${minute}`;
 }
 
+function firstRouteParam(value: string | string[] | undefined): string {
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value) && typeof value[0] === 'string') return value[0].trim();
+  return '';
+}
+
+function extractDueDateFromDeadlineText(deadlineText: string) {
+  const all = deadlineText.match(/\d{4}-\d{2}-\d{2}/g);
+  if (!all?.length) return null;
+  return all[all.length - 1] ?? null;
+}
+
+function labelToTaskPriority(value?: string): TaskPriority {
+  const text = (value ?? '').toLowerCase();
+  if (text.includes('紧急重要')) return 4;
+  if (text.includes('紧急不重要')) return 3;
+  if (text.includes('不紧急重要')) return 2;
+  if (text.includes('不紧急不重要')) return 1;
+  return 0;
+}
+
 export default function AddTaskScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ source?: string; dateLimit?: string }>();
+  const params = useLocalSearchParams<{ source?: string; dateLimit?: string; projectId?: string; categoryId?: string }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -140,8 +164,13 @@ export default function AddTaskScreen() {
   const [repeatText, setRepeatText] = React.useState('');
   const [scheduleMeta, setScheduleMeta] = React.useState<TaskScheduleMeta | null>(null);
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
+  const quickProjectId = firstRouteParam(params.projectId);
+  const quickCategoryRaw = firstRouteParam(params.categoryId);
+  const quickTaskCategoryId =
+    !quickCategoryRaw || quickCategoryRaw === INBOX_PROJECT_CATEGORY_ID ? null : quickCategoryRaw;
   const scheduleSource = params.source ?? 'add-task';
   const dateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const raw = typeof params.dateLimit === 'string' ? params.dateLimit : '';
@@ -266,10 +295,38 @@ export default function AddTaskScreen() {
     }, [readScheduleResult])
   );
 
-  const createTask = () => {
+  const handleCreateTask = async () => {
     const trimmedTitle = title.trim();
     if (!trimmedTitle) {
       Alert.alert('无法创建任务', '请输入任务名称后再创建。');
+      return;
+    }
+    if (quickProjectId) {
+      try {
+        setIsSubmitting(true);
+        const id = `tsk_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        await createTask({
+          id,
+          project_id: quickProjectId,
+          category_id: quickTaskCategoryId,
+          parent_task_id: null,
+          title: trimmedTitle,
+          note: notes.trim() || null,
+          status: 'todo',
+          priority: labelToTaskPriority(currentPriority.label),
+          due_date: extractDueDateFromDeadlineText(deadlineText) ?? null,
+          extra_data: JSON.stringify({
+            reminder: reminderText || '',
+            repeat: repeatText || '',
+          }),
+        });
+        router.back();
+      } catch (error) {
+        console.warn('创建任务失败', error);
+        Alert.alert('保存失败', '任务未能写入，请稍后重试。');
+      } finally {
+        setIsSubmitting(false);
+      }
       return;
     }
     globalThis.__addTaskResult = {
@@ -463,14 +520,15 @@ export default function AddTaskScreen() {
           ]}>
           <View style={styles.bottomInner}>
             <Pressable
-              onPress={createTask}
+              onPress={() => void handleCreateTask()}
+              disabled={isSubmitting}
               style={({ pressed }) => [
                 styles.createBtn,
-                { backgroundColor: pressed ? primaryContainer : primary },
+                { backgroundColor: pressed ? primaryContainer : primary, opacity: isSubmitting ? 0.72 : 1 },
                 pressed && { transform: [{ scale: 0.98 }] },
               ]}>
               <MaterialIcons name="task-alt" size={22} color="#fff" />
-              <Text style={styles.createText}>创建任务</Text>
+              <Text style={styles.createText}>{isSubmitting ? '保存中…' : '创建任务'}</Text>
             </Pressable>
           </View>
         </View>

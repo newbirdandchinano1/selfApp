@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 15;
+export const DB_VERSION = 16;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -413,6 +413,27 @@ export async function initDatabase() {
       version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS weekly_review_journal (
+      id TEXT PRIMARY KEY NOT NULL,
+      week_start_ymd TEXT NOT NULL UNIQUE,
+      section_summary TEXT,
+      section_plans TEXT,
+      section_reflect TEXT,
+      section_learnings TEXT,
+      section_next_week TEXT,
+      execution_score INTEGER NOT NULL DEFAULT 0 CHECK (execution_score >= 0 AND execution_score <= 5),
+      ai_coaching TEXT,
+      adjust_tasks INTEGER NOT NULL DEFAULT 0,
+      adjust_savings INTEGER NOT NULL DEFAULT 0,
+      adjust_plans INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
   `);
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
@@ -600,6 +621,9 @@ export async function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_wish_items_updated_at ON wish_items(updated_at);
     CREATE INDEX IF NOT EXISTS idx_wish_items_category_id ON wish_items(category_id);
+
+    CREATE INDEX IF NOT EXISTS idx_weekly_review_journal_week ON weekly_review_journal(week_start_ymd);
+    CREATE INDEX IF NOT EXISTS idx_weekly_review_journal_updated ON weekly_review_journal(updated_at);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',

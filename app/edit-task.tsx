@@ -319,13 +319,16 @@ function buildDeadlineTextFromSchedule(schedule: TaskScheduleMeta | null) {
 
 export default function EditTaskScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ id?: string; source?: string }>();
+  const params = useLocalSearchParams<{ id?: string; source?: string; from?: string | string[] }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
 
   const taskId = typeof params.id === 'string' ? params.id : '';
+  /** 从任务详情进入编辑时，删除后需跳过已无效的详情页，直接回到任务 Tab */
+  const openedFromTaskDetail =
+    params.from === 'task-detail' || (Array.isArray(params.from) && params.from[0] === 'task-detail');
   const scheduleSource = params.source ?? `edit-task-${taskId || 'unknown'}`;
   const addSubtaskSource = `${scheduleSource}-add-subtask`;
 
@@ -610,6 +613,15 @@ export default function EditTaskScreen() {
     }
   }, [deadlineText, loading, notes, priority, reminderText, repeatText, router, saving, scheduleMeta, taskId, taskSnapshot, title]);
 
+  /** 删除成功后：从详情→编辑来的栈上有已删除的详情页，需 dismiss 到任务 Tab */
+  const navigateAfterDeleteTask = React.useCallback(() => {
+    if (openedFromTaskDetail) {
+      router.dismissTo('/(tabs)/tasks');
+    } else {
+      router.back();
+    }
+  }, [openedFromTaskDetail, router]);
+
   const removeTask = React.useCallback(() => {
     if (!taskId || saving || loading) return;
     (async () => {
@@ -629,7 +641,7 @@ export default function EditTaskScreen() {
               try {
                 setSaving(true);
                 await deleteTask(taskId);
-                router.back();
+                navigateAfterDeleteTask();
               } catch (error) {
                 console.warn('删除任务失败', error);
                 Alert.alert('删除失败', '任务删除失败，请稍后重试。');
@@ -650,7 +662,7 @@ export default function EditTaskScreen() {
               try {
                 setSaving(true);
                 await deleteTask(taskId);
-                router.back();
+                navigateAfterDeleteTask();
               } catch (err) {
                 console.warn('删除任务失败', err);
                 Alert.alert('删除失败', '任务删除失败，请稍后重试。');
@@ -662,7 +674,7 @@ export default function EditTaskScreen() {
         ]);
       }
     })();
-  }, [loading, router, saving, taskId]);
+  }, [loading, navigateAfterDeleteTask, saving, taskId]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>

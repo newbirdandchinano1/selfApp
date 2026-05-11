@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { getFinanceAccountTypes, getFinanceAccountsWithBalance } from '@/lib/repositories/finance/finance';
+import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import type { FinanceAccountBalanceRow, FinanceAccountTypeRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -184,6 +185,7 @@ export default function AssetsScreen() {
     () =>
       accounts.reduce((sum, a) => {
         if (isLiabilityAccount(a)) return sum;
+        if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
         return sum + Math.max(0, a.balance ?? 0);
       }, 0),
     [accounts, isLiabilityAccount],
@@ -192,15 +194,23 @@ export default function AssetsScreen() {
     () =>
       accounts.reduce((sum, a) => {
         if (!isLiabilityAccount(a)) return sum;
+        if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
         return sum + Math.abs(a.balance ?? 0);
       }, 0),
     [accounts, isLiabilityAccount],
   );
   const netWorth = React.useMemo(() => totalAssets - totalLiabilitiesAbs, [totalAssets, totalLiabilitiesAbs]);
 
-  const cashTotal = React.useMemo(() => grouped.cash_wallet.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [grouped.cash_wallet]);
-  const bankTotal = React.useMemo(() => grouped.bank.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [grouped.bank]);
-  const investTotal = React.useMemo(() => grouped.investment.reduce((sum, a) => sum + Math.max(0, a.balance ?? 0), 0), [grouped.investment]);
+  const sumAssetBalanceForDisplay = React.useCallback((rows: FinanceAccountBalanceRow[]) => {
+    return rows.reduce((sum, a) => {
+      if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
+      return sum + Math.max(0, a.balance ?? 0);
+    }, 0);
+  }, []);
+
+  const cashTotal = React.useMemo(() => sumAssetBalanceForDisplay(grouped.cash_wallet), [grouped.cash_wallet, sumAssetBalanceForDisplay]);
+  const bankTotal = React.useMemo(() => sumAssetBalanceForDisplay(grouped.bank), [grouped.bank, sumAssetBalanceForDisplay]);
+  const investTotal = React.useMemo(() => sumAssetBalanceForDisplay(grouped.investment), [grouped.investment, sumAssetBalanceForDisplay]);
 
   const hasAssets = totalAssets > 0;
   const cashPct = hasAssets ? cashTotal / totalAssets : 0;
@@ -209,8 +219,12 @@ export default function AssetsScreen() {
 
   const ringPct = hasAssets ? Math.round(((cashTotal + bankTotal + investTotal) / totalAssets) * 100) : 0;
 
+  /** 分组标题上的合计：与页头总资产/总负债一致，跳过「不计入」标记的账户 */
   const groupSumAbs = React.useCallback((rows: FinanceAccountBalanceRow[]) => {
-    return rows.reduce((sum, a) => sum + Math.abs(a.balance ?? 0), 0);
+    return rows.reduce((sum, a) => {
+      if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
+      return sum + Math.abs(a.balance ?? 0);
+    }, 0);
   }, []);
 
   const accountIcon = React.useCallback(

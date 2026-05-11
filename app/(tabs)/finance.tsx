@@ -7,7 +7,14 @@ import {
   persistMonthBudgetSettings,
   type MonthBudgetSetting,
 } from '@/lib/finance-monthly-budget';
-import { createFinanceTransaction, getFinanceAccountsWithBalance, getFinanceTransactions } from '@/lib/repositories/finance/finance';
+import {
+  createFinanceTransaction,
+  deleteFinanceTransaction,
+  getFinanceAccountsWithBalance,
+  getFinanceTransactions,
+} from '@/lib/repositories/finance/finance';
+import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
+import { isFinanceTransactionExcludedFromBudget } from '@/lib/repositories/finance/finance-transaction-extra';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -37,6 +44,7 @@ import {
 import Svg, { Circle, Path } from 'react-native-svg';
 import Constants from 'expo-constants';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Swipeable } from 'react-native-gesture-handler';
 
 type SpeechRecognitionApi = typeof import('@jamsch/expo-speech-recognition');
 
@@ -54,6 +62,23 @@ type Txn = {
 
 type SheetTab = 'expense' | 'income' | 'transfer';
 
+/** 与 `getFinanceAccountsWithBalance` 中按账户汇总 balance 的规则一致：收入 +、支出 -、转账 0。 */
+function getTxnNetWorthTotalDelta(txn: FinanceTransactionRow): number {
+  if (txn.transaction_type === 'income') return Math.abs(txn.amount);
+  if (txn.transaction_type === 'expense') return -Math.abs(txn.amount);
+  return 0;
+}
+
+function parseFinanceDayKey(dayKey: string): { y: number; m: number; d: number } | null {
+  const m = dayKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return null;
+  return { y, m: mo, d };
+}
+
 type SheetCategory = {
   key: string;
   icon: keyof typeof MaterialIcons.glyphMap;
@@ -67,14 +92,16 @@ function TxnItem({
   outlineVariant,
   item,
   style,
+  onPress,
 }: {
   themeText: string;
   themeSubtle: string;
   outlineVariant: string;
   item: Txn;
   style?: StyleProp<ViewStyle>;
+  onPress?: () => void;
 }) {
-  return (
+  const inner = (
     <Animated.View style={[styles.txnItem, style]}>
       <View style={[styles.txnIconWrap, { backgroundColor: outlineVariant }]}>
         <MaterialIcons name={item.icon} size={18} color={item.iconColor} />
@@ -96,6 +123,16 @@ function TxnItem({
       </View>
     </Animated.View>
   );
+
+  if (onPress) {
+    return (
+      <Pressable onPress={onPress} style={({ pressed }) => [pressed && { opacity: 0.88 }]}>
+        {inner}
+      </Pressable>
+    );
+  }
+
+  return inner;
 }
 
 export default function FinanceScreen() {
@@ -149,6 +186,8 @@ export default function FinanceScreen() {
   const [visibleDayCount, setVisibleDayCount] = React.useState(1);
   const [isLoadingMoreDays, setIsLoadingMoreDays] = React.useState(false);
   const [sheetImageUris, setSheetImageUris] = React.useState<string[]>([]);
+  /** 支出是否计入本月预算（收入页不展示该项，保存时也不会写入排除标记） */
+  const [sheetIncludeInBudget, setSheetIncludeInBudget] = React.useState(true);
   const [isPickingImage, setIsPickingImage] = React.useState(false);
   const [isSpeechRecognizing, setIsSpeechRecognizing] = React.useState(false);
   const [speechApi, setSpeechApi] = React.useState<SpeechRecognitionApi | null>(null);
@@ -199,6 +238,29 @@ export default function FinanceScreen() {
     }
   }, []);
 
+  const handleDeleteFinanceTxn = React.useCallback(
+    (txnId: string, displayTitle: string) => {
+      const label = displayTitle.trim() || '该笔记录';
+      Alert.alert('删除记录', `确定删除「${label}」吗？`, [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteFinanceTransaction(txnId);
+              await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+            } catch (error) {
+              console.warn('Failed to delete finance transaction:', error);
+              Alert.alert('删除失败', '请稍后重试。');
+            }
+          },
+        },
+      ]);
+    },
+    [loadFinanceAccounts, loadFinanceTransactions],
+  );
+
   React.useEffect(() => {
     void loadFinanceTransactions();
     void loadFinanceAccounts();
@@ -224,6 +286,15 @@ export default function FinanceScreen() {
 
   const screenWidth = Dimensions.get('window').width;
   const expandedWidth = Math.min(420, screenWidth - 36);
+
+  /** 手动记账弹窗：不超过安全区顶部以下，避免顶栏关闭按钮被挡 */
+  const manualSheetMaxHeight = React.useMemo(() => Dimensions.get('window').height - insets.top - 10, [insets.top]);
+  /** 顶栏 + Tab 区域估算高度，余量给下方可滚动内容 */
+  const MANUAL_SHEET_CHROME_HEIGHT = 124;
+  const manualSheetBodyMaxHeight = React.useMemo(
+    () => Math.max(200, manualSheetMaxHeight - MANUAL_SHEET_CHROME_HEIGHT),
+    [manualSheetMaxHeight]
+  );
 
   const heroTranslateY = revealAnim.interpolate({
     inputRange: [0, 1],
@@ -302,6 +373,17 @@ export default function FinanceScreen() {
       todayTxns.reduce((sum, txn) => {
         const displayAmount = getTxnDisplayAmount(txn);
         return displayAmount < 0 ? sum + Math.abs(displayAmount) : sum;
+      }, 0),
+    [getTxnDisplayAmount, todayTxns]
+  );
+
+  const todayBudgetExpenseTotal = React.useMemo(
+    () =>
+      todayTxns.reduce((sum, txn) => {
+        const displayAmount = getTxnDisplayAmount(txn);
+        if (displayAmount >= 0) return sum;
+        if (isFinanceTransactionExcludedFromBudget(txn.extra_data)) return sum;
+        return sum + Math.abs(displayAmount);
       }, 0),
     [getTxnDisplayAmount, todayTxns]
   );
@@ -557,6 +639,17 @@ export default function FinanceScreen() {
       }, 0),
     [getTxnDisplayAmount, monthlyTransactions]
   );
+
+  const monthlyBudgetExpense = React.useMemo(
+    () =>
+      monthlyTransactions.reduce((sum, txn) => {
+        const displayAmount = getTxnDisplayAmount(txn);
+        if (displayAmount >= 0) return sum;
+        if (isFinanceTransactionExcludedFromBudget(txn.extra_data)) return sum;
+        return sum + Math.abs(displayAmount);
+      }, 0),
+    [getTxnDisplayAmount, monthlyTransactions]
+  );
   const monthlySurplus = monthlyIncome - monthlyExpense;
   const savingsRate = monthlyIncome > 0 ? (monthlySurplus / monthlyIncome) * 100 : 0;
 
@@ -612,8 +705,8 @@ export default function FinanceScreen() {
   const baseForBudgetPreview =
     Number.isFinite(parsedBudgetDraft) && parsedBudgetDraft >= 0 ? parsedBudgetDraft : effectiveBaseBudget;
   const budgetPreviewTotal = modalIncludeLast ? baseForBudgetPreview + lastMonthRemaining : baseForBudgetPreview;
-  const budgetSurplusAmount = budgetTotalAmount - monthlyExpense;
-  const budgetUsedPercentRaw = budgetTotalAmount > 0 ? (monthlyExpense / budgetTotalAmount) * 100 : 0;
+  const budgetSurplusAmount = budgetTotalAmount - monthlyBudgetExpense;
+  const budgetUsedPercentRaw = budgetTotalAmount > 0 ? (monthlyBudgetExpense / budgetTotalAmount) * 100 : 0;
   const budgetUsedPercent = Math.min(100, Math.max(0, budgetUsedPercentRaw));
   const dailyBudgetAmount =
     monthlyIncome > 0
@@ -621,45 +714,70 @@ export default function FinanceScreen() {
       : budgetSurplusAmount > 0
         ? budgetSurplusAmount / daysLeftIncludingToday
         : budgetTotalAmount / daysLeftIncludingToday;
-  const todayAvailableAmount = Math.max(0, dailyBudgetAmount - todayExpenseTotal);
-  const todayBudgetUsagePct = dailyBudgetAmount > 0 ? Math.min(1, todayExpenseTotal / dailyBudgetAmount) : 0;
+  const todayAvailableAmount = Math.max(0, dailyBudgetAmount - todayBudgetExpenseTotal);
+  const todayBudgetUsagePct = dailyBudgetAmount > 0 ? Math.min(1, todayBudgetExpenseTotal / dailyBudgetAmount) : 0;
 
+  /** 净资产汇总：排除标记为「不计入总资产/总负债」的账户，与资产页 hero、账户详情开关一致 */
   const netTotalForTrend = React.useMemo(
-    () => financeAccounts.reduce((sum, account) => sum + account.balance, 0),
-    [financeAccounts]
+    () =>
+      financeAccounts.reduce((sum, account) => {
+        if (isFinanceAccountExcludedFromAggregates(account.extra_data)) return sum;
+        return sum + account.balance;
+      }, 0),
+    [financeAccounts],
   );
+  const netWorthTrendDayKey = getDayKey(today);
   const netTrendSeries = React.useMemo(() => {
-    const end = Math.max(0, netTotalForTrend);
-    const n = 30;
-    const out: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const p = i / (n - 1);
-      let bump = 0;
-      if (p < 0.2) bump = 0.004;
-      else if (p < 0.42) bump = 0.028 * ((p - 0.2) / 0.22);
-      else if (p < 0.58) bump = 0.028 - 0.014 * ((p - 0.42) / 0.16);
-      else bump = 0.014 - 0.02 * ((p - 0.58) / 0.42);
-      const v = end * (0.972 + bump + Math.sin(p * Math.PI * 2.3) * 0.006);
-      out.push(i === n - 1 ? end : Math.max(0, v));
+    const DAYS = 30;
+    const parsed = parseFinanceDayKey(netWorthTrendDayKey);
+    if (!parsed) {
+      return Array.from({ length: DAYS }, () => netTotalForTrend);
     }
-    out[n - 1] = end;
-    return out;
-  }, [netTotalForTrend]);
+    const { y: y0, m: m0, d: d0 } = parsed;
 
+    const txns = financeTransactions
+      .map((t) => {
+        const ms = new Date(t.happened_at).getTime();
+        return { ms, d: getTxnNetWorthTotalDelta(t) };
+      })
+      .filter((x) => Number.isFinite(x.ms));
+
+    txns.sort((a, b) => b.ms - a.ms);
+
+    const raw: number[] = [];
+    let ti = 0;
+    let suffix = 0;
+
+    for (let offset = 0; offset < DAYS; offset++) {
+      const d = new Date(y0, m0, d0 - offset);
+      const nextDayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 0, 0).getTime();
+
+      while (ti < txns.length && txns[ti].ms >= nextDayStart) {
+        suffix += txns[ti].d;
+        ti++;
+      }
+      raw.push(netTotalForTrend - suffix);
+    }
+
+    return raw.reverse();
+  }, [financeTransactions, netTotalForTrend, netWorthTrendDayKey]);
+
+  /** 与 Svg viewBox 一致；inset 需 ≥ 终点圆点半径 + 描边，避免裁切/溢出卡片。 */
   const trendChartPathD = React.useMemo(() => {
     const w = 272;
     const h = 44;
-    const padX = 2;
-    const padY = 4;
+    const inset = 10;
     const vals = netTrendSeries;
     if (vals.length < 2) return '';
     const min = Math.min(...vals);
     const max = Math.max(...vals);
     const span = max - min || 1;
+    const innerW = w - inset * 2;
+    const innerH = h - inset * 2;
     return vals
       .map((v, i) => {
-        const x = padX + (i / (vals.length - 1)) * (w - padX * 2);
-        const y = padY + (1 - (v - min) / span) * (h - padY * 2);
+        const x = inset + (i / (vals.length - 1)) * innerW;
+        const y = inset + (1 - (v - min) / span) * innerH;
         return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
       })
       .join(' ');
@@ -668,17 +786,18 @@ export default function FinanceScreen() {
   const trendChartLastPoint = React.useMemo(() => {
     const w = 272;
     const h = 44;
-    const padX = 2;
-    const padY = 4;
+    const inset = 10;
     const vals = netTrendSeries;
     if (vals.length < 2) return { x: w / 2, y: h / 2 };
     const min = Math.min(...vals);
     const max = Math.max(...vals);
     const span = max - min || 1;
+    const innerW = w - inset * 2;
+    const innerH = h - inset * 2;
     const v = vals[vals.length - 1];
     const i = vals.length - 1;
-    const x = padX + (i / (vals.length - 1)) * (w - padX * 2);
-    const y = padY + (1 - (v - min) / span) * (h - padY * 2);
+    const x = inset + (i / (vals.length - 1)) * innerW;
+    const y = inset + (1 - (v - min) / span) * innerH;
     return { x, y };
   }, [netTrendSeries]);
 
@@ -789,6 +908,7 @@ export default function FinanceScreen() {
     setSheetAmount('');
     setSheetNote('');
     setSheetImageUris([]);
+    setSheetIncludeInBudget(true);
     setSelectedHappenedAt(new Date());
     setIsDatePickerVisible(false);
     setIsTimePickerVisible(false);
@@ -962,6 +1082,7 @@ export default function FinanceScreen() {
           category_key: selectedCategory?.key ?? null,
           category_label: selectedCategory?.label ?? null,
           attachments: sheetImageUris.length ? sheetImageUris.map((uri) => ({ type: 'image', uri })) : null,
+          ...(transactionType === 'expense' && !sheetIncludeInBudget ? { exclude_from_budget: true } : {}),
         }),
       });
       setIsSheetVisible(false);
@@ -973,7 +1094,19 @@ export default function FinanceScreen() {
     } finally {
       setIsSavingTransaction(false);
     }
-  }, [activeSheetTab, amountNumber, loadFinanceAccounts, loadFinanceTransactions, resetSheetForm, selectedAccount, selectedCategory, selectedHappenedAt, sheetImageUris, sheetNote]);
+  }, [
+    activeSheetTab,
+    amountNumber,
+    loadFinanceAccounts,
+    loadFinanceTransactions,
+    resetSheetForm,
+    selectedAccount,
+    selectedCategory,
+    selectedHappenedAt,
+    sheetImageUris,
+    sheetIncludeInBudget,
+    sheetNote,
+  ]);
 
   const handleOpenComposer = React.useCallback((): boolean => {
     if (!hasAccounts) {
@@ -1233,7 +1366,7 @@ export default function FinanceScreen() {
                       <View style={styles.budgetProgressBlock}>
                         <View style={styles.budgetProgressLabels}>
                           <Text style={[styles.budgetProgressEnd, { color: subtle }]}>
-                            已用 {showNetAmounts ? formatCurrencyWithDecimals(monthlyExpense) : hiddenAmountText}
+                            已用 {showNetAmounts ? formatCurrencyWithDecimals(monthlyBudgetExpense) : hiddenAmountText}
                           </Text>
                           <Text style={[styles.budgetProgressEnd, { color: subtle }]}>
                             {showNetAmounts ? formatCurrencyWithDecimals(budgetTotalAmount) : hiddenAmountText}
@@ -1325,7 +1458,7 @@ export default function FinanceScreen() {
                   </Text>
 
                   <View style={styles.trendChartWrap}>
-                    <Svg width="100%" height={52} viewBox="0 0 272 44" preserveAspectRatio="none">
+                    <Svg width="100%" height={44} viewBox="0 0 272 44" preserveAspectRatio="meet">
                       {trendChartPathD.length > 4 ? (
                         <Path
                           d={trendChartPathD}
@@ -1464,7 +1597,10 @@ export default function FinanceScreen() {
             )}
           </ScrollView>
 
-          <Text style={[styles.sectionTitle, { color: text, marginTop: 6 }]}>收支明细</Text>
+          <View style={[styles.sectionHeaderRow, { marginTop: 6 }]}>
+            <Text style={[styles.sectionTitle, { color: text }]}>收支明细</Text>
+            <Text style={[styles.txnSwipeHint, { color: subtle }]}>左滑删除</Text>
+          </View>
           <View style={styles.sectionMetaRow}>
             <Text style={[styles.sectionMetaText, { color: subtle }]}>{todayLabel}</Text>
             <View style={styles.sectionLegendRow}>
@@ -1497,14 +1633,38 @@ export default function FinanceScreen() {
               });
 
               return (
-                <TxnItem
+                <Swipeable
                   key={t.id}
-                  themeText={text}
-                  themeSubtle={subtle}
-                  outlineVariant={outlineVariant}
-                  item={t}
-                  style={{ opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] }}
-                />
+                  friction={2}
+                  overshootRight={false}
+                  rightThreshold={40}
+                  renderRightActions={() => (
+                    <View style={[styles.swipeDeleteTrack, { backgroundColor: bg }]}>
+                      <Pressable
+                        onPress={() => handleDeleteFinanceTxn(t.id, t.title)}
+                        style={({ pressed }) => [styles.swipeDeletePill, pressed && { opacity: 0.88 }]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`删除 ${t.title}`}>
+                        <MaterialIcons name="delete-outline" size={20} color="#fff" />
+                        <Text style={styles.swipeDeleteText}>删除</Text>
+                      </Pressable>
+                    </View>
+                  )}>
+                  <Animated.View
+                    style={[
+                      styles.txnSwipeForeground,
+                      { backgroundColor: surface, borderColor: outlineVariant },
+                      { opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] },
+                    ]}>
+                    <TxnItem
+                      themeText={text}
+                      themeSubtle={subtle}
+                      outlineVariant={outlineVariant}
+                      item={t}
+                      onPress={() => router.push(`/edit-finance-transaction/${t.id}`)}
+                    />
+                  </Animated.View>
+                </Swipeable>
               );
             })}
             {todayDisplayTxns.length === 0 ? (
@@ -1550,14 +1710,38 @@ export default function FinanceScreen() {
                   });
 
                   return (
-                    <TxnItem
+                    <Swipeable
                       key={t.id}
-                      themeText={text}
-                      themeSubtle={subtle}
-                      outlineVariant={outlineVariant}
-                      item={t}
-                      style={{ opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] }}
-                    />
+                      friction={2}
+                      overshootRight={false}
+                      rightThreshold={40}
+                      renderRightActions={() => (
+                        <View style={[styles.swipeDeleteTrack, { backgroundColor: bg }]}>
+                          <Pressable
+                            onPress={() => handleDeleteFinanceTxn(t.id, t.title)}
+                            style={({ pressed }) => [styles.swipeDeletePill, pressed && { opacity: 0.88 }]}
+                            accessibilityRole="button"
+                            accessibilityLabel={`删除 ${t.title}`}>
+                            <MaterialIcons name="delete-outline" size={20} color="#fff" />
+                            <Text style={styles.swipeDeleteText}>删除</Text>
+                          </Pressable>
+                        </View>
+                      )}>
+                      <Animated.View
+                        style={[
+                          styles.txnSwipeForeground,
+                          { backgroundColor: surface, borderColor: outlineVariant },
+                          { opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] },
+                        ]}>
+                        <TxnItem
+                          themeText={text}
+                          themeSubtle={subtle}
+                          outlineVariant={outlineVariant}
+                          item={t}
+                          onPress={() => router.push(`/edit-finance-transaction/${t.id}`)}
+                        />
+                      </Animated.View>
+                    </Swipeable>
                   );
                 })}
                 <View style={[styles.dayDivider, { backgroundColor: outlineVariant }]} />
@@ -1619,7 +1803,15 @@ export default function FinanceScreen() {
       <Modal visible={isSheetVisible} animationType="slide" transparent onRequestClose={closeSheet}>
         <View style={styles.sheetOverlay}>
           <Pressable style={styles.sheetBackdrop} onPress={closeSheet} />
-          <View style={[styles.sheetContainer, { paddingBottom: Math.max(16, insets.bottom) }]}>
+          <View
+            style={[
+              styles.sheetContainer,
+              {
+                paddingBottom: Math.max(16, insets.bottom),
+                maxHeight: manualSheetMaxHeight,
+                backgroundColor: surface,
+              },
+            ]}>
             <View style={[styles.sheetHeader, { borderBottomColor: outlineVariant }]}>
               <Pressable onPress={closeSheet} style={({ pressed }) => [styles.sheetCloseBtn, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="close" size={24} color={subtle} />
@@ -1643,6 +1835,13 @@ export default function FinanceScreen() {
               </Pressable>
             </View>
 
+            <ScrollView
+              style={[styles.sheetBodyScroll, { maxHeight: manualSheetBodyMaxHeight }]}
+              contentContainerStyle={styles.sheetBodyScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+              nestedScrollEnabled
+              bounces>
             {activeSheetTab === 'transfer' ? (
               <>
                 <View style={styles.transferContent}>
@@ -1831,6 +2030,49 @@ export default function FinanceScreen() {
                     </Pressable>
                   </View>
 
+                  {activeSheetTab === 'expense' ? (
+                    <View
+                      style={[
+                        styles.sheetBudgetCard,
+                        { backgroundColor: surface, borderColor: outlineVariant },
+                      ]}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="计入本月预算"
+                        accessibilityState={{ checked: sheetIncludeInBudget }}
+                        onPress={() => setSheetIncludeInBudget((v) => !v)}
+                        style={({ pressed }) => [
+                          styles.sheetBudgetMainHit,
+                          pressed ? { opacity: 0.82 } : null,
+                        ]}>
+                        <View
+                          style={[
+                            styles.sheetBudgetIconWrap,
+                            {
+                              backgroundColor: isDark ? 'rgba(251, 191, 36, 0.14)' : 'rgba(130, 81, 0, 0.09)',
+                            },
+                          ]}>
+                          <MaterialIcons name="pie-chart" size={22} color={tertiary} />
+                        </View>
+                        <View style={styles.sheetBudgetTextCol}>
+                          <Text style={[styles.sheetBudgetTitle, { color: text }]}>计入本月预算</Text>
+                          <Text style={[styles.sheetBudgetSubtitle, { color: subtle }]} numberOfLines={2}>
+                            {sheetIncludeInBudget
+                              ? '占用本月预算与「今日可用」计算'
+                              : '仍记为支出，不参与预算与今日可用'}
+                          </Text>
+                        </View>
+                      </Pressable>
+                      <Switch
+                        value={sheetIncludeInBudget}
+                        onValueChange={setSheetIncludeInBudget}
+                        trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
+                        thumbColor="#ffffff"
+                        ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
+                      />
+                    </View>
+                  ) : null}
+
                   <View style={styles.sheetNoteRow}>
                     <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
                       <TextInput
@@ -2005,6 +2247,7 @@ export default function FinanceScreen() {
                 </View>
               </>
             )}
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -2318,6 +2561,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
     height: 52,
     width: '100%',
+    justifyContent: 'center',
   },
   netAccent: {
     position: 'absolute',
@@ -2441,6 +2685,41 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '900',
     letterSpacing: -0.3,
+  },
+  txnSwipeHint: {
+    fontSize: 11,
+    fontWeight: '600',
+    opacity: 0.85,
+  },
+  txnSwipeForeground: {
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 8,
+    paddingRight: 10,
+    overflow: 'hidden',
+  },
+  swipeDeleteTrack: {
+    width: 100,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingLeft: 14,
+    paddingRight: 4,
+  },
+  swipeDeletePill: {
+    minWidth: 68,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: 'rgba(220, 38, 38, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 2,
+  },
+  swipeDeleteText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '800',
   },
   sectionMetaRow: {
     marginTop: 6,
@@ -2746,6 +3025,13 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     zIndex: 1,
     elevation: 24,
+    flexDirection: 'column',
+  },
+  sheetBodyScroll: {
+    flexGrow: 0,
+  },
+  sheetBodyScrollContent: {
+    paddingBottom: 6,
   },
   sheetHeader: {
     paddingHorizontal: 18,
@@ -2823,6 +3109,47 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
     marginBottom: 12,
+  },
+  sheetBudgetCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingLeft: 12,
+    paddingRight: 10,
+    paddingVertical: 11,
+    marginBottom: 12,
+    gap: 4,
+  },
+  sheetBudgetMainHit: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 44,
+  },
+  sheetBudgetIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetBudgetTextCol: {
+    flex: 1,
+    marginLeft: 12,
+    paddingRight: 6,
+  },
+  sheetBudgetTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  sheetBudgetSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 3,
+    lineHeight: 16,
+    opacity: 0.92,
   },
   configChip: {
     flexDirection: 'row',
