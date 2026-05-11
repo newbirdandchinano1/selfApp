@@ -93,6 +93,7 @@ export default function RootLayout() {
             <Stack.Screen name="assets" />
             <Stack.Screen name="vision-wall" />
             <Stack.Screen name="vision-create" />
+            <Stack.Screen name="vision-detail/[id]" />
             <Stack.Screen name="task/[id]" />
             <Stack.Screen name="health-calendar" />
             <Stack.Screen name="intake-history" />
@@ -105,6 +106,8 @@ export default function RootLayout() {
             <Stack.Screen name="quick-add-edit" />
             <Stack.Screen name="habit-detail" />
             <Stack.Screen name="add-item" />
+            <Stack.Screen name="wish-list" />
+            <Stack.Screen name="add-wish-item" />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
           </Stack>

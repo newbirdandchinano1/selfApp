@@ -1,12 +1,39 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { createWishItem } from '@/lib/repositories/wish-list/wish-list';
+import {
+  createCustomCategoryId,
+  DEFAULT_WISH_CATEGORIES,
+  findDuplicateCategoryName,
+  isBuiltinWishCategoryId,
+  loadCustomWishCategories,
+  loadDefaultNameOverrides,
+  loadDefaultPriorityOverrides,
+  mergeWishCategories,
+  saveCustomWishCategories,
+  saveDefaultNameOverrides,
+  saveDefaultPriorityOverrides,
+  type WishCategoryDef,
+} from '@/lib/wish-categories';
 import { MaterialIcons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-
-const categoryOptions = ['数码', '家居', '健康', '学习', '体验', '其他'];
 
 export default function AddWishItemScreen() {
   const router = useRouter();
@@ -18,9 +45,22 @@ export default function AddWishItemScreen() {
 
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
-  const [category, setCategory] = useState('');
+  const [customCategories, setCustomCategories] = useState<WishCategoryDef[]>([]);
+  const [defaultPriorityOverrides, setDefaultPriorityOverrides] = useState<Record<string, number>>({});
+  const [defaultNameOverrides, setDefaultNameOverrides] = useState<Record<string, string>>({});
+  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
+  const [selectedCategoryId, setSelectedCategoryId] = useState('');
+  const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
+  const [categoryModalVisible, setCategoryModalVisible] = useState(false);
+  const [categoryModalMode, setCategoryModalMode] = useState<'create' | 'edit'>('create');
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategoryPriority, setNewCategoryPriority] = useState('50');
+  const [categorySaveError, setCategorySaveError] = useState<string | null>(null);
   const [desireLevel, setDesireLevel] = useState(3);
   const [reason, setReason] = useState('');
+  const [referenceImageUri, setReferenceImageUri] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const bg = isDark ? theme.background : '#faf8ff';
   const text = isDark ? theme.text : '#131b2e';
@@ -30,7 +70,244 @@ export default function AddWishItemScreen() {
   const surface = isDark ? '#111827' : '#ffffff';
   const surfaceLow = isDark ? '#1f2937' : '#f2f3ff';
 
-  const canSave = useMemo(() => name.trim().length > 0 && price.trim().length > 0, [name, price]);
+  const categoryOptions = useMemo(
+    () => mergeWishCategories(customCategories, defaultPriorityOverrides, defaultNameOverrides),
+    [customCategories, defaultPriorityOverrides, defaultNameOverrides],
+  );
+
+  const selectedCategoryLabel = useMemo(() => {
+    const hit = categoryOptions.find(c => c.id === selectedCategoryId);
+    return hit?.name ?? '';
+  }, [categoryOptions, selectedCategoryId]);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const [list, priorityOv, nameOv] = await Promise.all([
+          loadCustomWishCategories(),
+          loadDefaultPriorityOverrides(),
+          loadDefaultNameOverrides(),
+        ]);
+        if (alive) {
+          setCustomCategories(list);
+          setDefaultPriorityOverrides(priorityOv);
+          setDefaultNameOverrides(nameOv);
+        }
+      } finally {
+        if (alive) {
+          setCategoriesLoaded(true);
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const closeCategoryModal = useCallback(() => {
+    setCategoryModalVisible(false);
+    setCategoryModalMode('create');
+    setEditingCategoryId(null);
+    setCategorySaveError(null);
+  }, []);
+
+  const openAddCategoryModal = useCallback(() => {
+    setCategorySaveError(null);
+    setCategoryModalMode('create');
+    setEditingCategoryId(null);
+    setNewCategoryName('');
+    setNewCategoryPriority('50');
+    setCategoryModalVisible(true);
+  }, []);
+
+  const openEditCategoryModal = useCallback((item: WishCategoryDef) => {
+    setCategorySaveError(null);
+    setCategoryModalMode('edit');
+    setEditingCategoryId(item.id);
+    setNewCategoryName(item.name);
+    setNewCategoryPriority(String(item.priority));
+    setCategoryModalVisible(true);
+  }, []);
+
+  const commitCategoryModal = useCallback(async () => {
+    const pr = Number.parseInt(newCategoryPriority.replace(/\D/g, ''), 10);
+    const priority = Number.isFinite(pr) ? Math.min(9999, Math.max(0, pr)) : 50;
+
+    if (categoryModalMode === 'create') {
+      const trimmed = newCategoryName.trim();
+      const dupMsg = findDuplicateCategoryName(
+        trimmed,
+        mergeWishCategories(customCategories, defaultPriorityOverrides, defaultNameOverrides),
+      );
+      if (dupMsg) {
+        setCategorySaveError(dupMsg);
+        return;
+      }
+      const nextCat: WishCategoryDef = {
+        id: createCustomCategoryId(),
+        name: trimmed,
+        priority,
+      };
+      const next = [...customCategories, nextCat];
+      try {
+        await saveCustomWishCategories(next);
+        setCustomCategories(next);
+        setSelectedCategoryId(nextCat.id);
+        setCategoryMenuOpen(false);
+        closeCategoryModal();
+      } catch {
+        setCategorySaveError('保存失败，请稍后重试');
+      }
+      return;
+    }
+
+    if (!editingCategoryId) {
+      setCategorySaveError('无法保存');
+      return;
+    }
+
+    if (isBuiltinWishCategoryId(editingCategoryId)) {
+      const trimmed = newCategoryName.trim();
+      const dupMsg = findDuplicateCategoryName(
+        trimmed,
+        mergeWishCategories(customCategories, defaultPriorityOverrides, defaultNameOverrides),
+        editingCategoryId,
+      );
+      if (dupMsg) {
+        setCategorySaveError(dupMsg);
+        return;
+      }
+      const base = DEFAULT_WISH_CATEGORIES.find(d => d.id === editingCategoryId);
+      if (!base) {
+        setCategorySaveError('无法保存');
+        return;
+      }
+      const nextNames = { ...defaultNameOverrides };
+      if (trimmed === base.name) {
+        delete nextNames[editingCategoryId];
+      } else {
+        nextNames[editingCategoryId] = trimmed;
+      }
+      const nextPriorities = { ...defaultPriorityOverrides };
+      if (priority === base.priority) {
+        delete nextPriorities[editingCategoryId];
+      } else {
+        nextPriorities[editingCategoryId] = priority;
+      }
+      try {
+        await Promise.all([
+          saveDefaultNameOverrides(nextNames),
+          saveDefaultPriorityOverrides(nextPriorities),
+        ]);
+        setDefaultNameOverrides(nextNames);
+        setDefaultPriorityOverrides(nextPriorities);
+        setCategoryMenuOpen(false);
+        closeCategoryModal();
+      } catch {
+        setCategorySaveError('保存失败，请稍后重试');
+      }
+      return;
+    }
+
+    const trimmed = newCategoryName.trim();
+    const dupMsg = findDuplicateCategoryName(
+      trimmed,
+      mergeWishCategories(customCategories, defaultPriorityOverrides, defaultNameOverrides),
+      editingCategoryId,
+    );
+    if (dupMsg) {
+      setCategorySaveError(dupMsg);
+      return;
+    }
+    const next = customCategories.map(c =>
+      c.id === editingCategoryId ? { ...c, name: trimmed, priority } : c,
+    );
+    try {
+      await saveCustomWishCategories(next);
+      setCustomCategories(next);
+      setCategoryMenuOpen(false);
+      closeCategoryModal();
+    } catch {
+      setCategorySaveError('保存失败，请稍后重试');
+    }
+  }, [
+    categoryModalMode,
+    closeCategoryModal,
+    customCategories,
+    defaultPriorityOverrides,
+    defaultNameOverrides,
+    editingCategoryId,
+    newCategoryName,
+    newCategoryPriority,
+  ]);
+
+  const editingIsBuiltin =
+    categoryModalMode === 'edit' && editingCategoryId
+      ? isBuiltinWishCategoryId(editingCategoryId)
+      : false;
+
+  const pickReferenceImage = useCallback(async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('权限不足', '需要相册权限才能选择参考图');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.88,
+    });
+    if (!result.canceled && result.assets[0]?.uri) {
+      setReferenceImageUri(result.assets[0].uri);
+    }
+  }, []);
+
+  const handleSaveWish = useCallback(async () => {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      Alert.alert('提示', '请输入好物名称');
+      return;
+    }
+    const p = price.trim();
+    if (!p) {
+      Alert.alert('提示', '请输入预估价格');
+      return;
+    }
+    const priceNum = Number.parseFloat(p);
+    if (!Number.isFinite(priceNum) || priceNum < 0) {
+      Alert.alert('提示', '请输入有效的预估价格');
+      return;
+    }
+    setSaving(true);
+    try {
+      await createWishItem({
+        name: trimmedName,
+        price: priceNum,
+        category_id: selectedCategoryId || null,
+        category_label: selectedCategoryLabel || null,
+        desire_level: desireLevel,
+        reason: reason.trim() || null,
+        reference_image_uri: referenceImageUri,
+      });
+      router.back();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '请稍后重试';
+      Alert.alert('保存失败', msg);
+    } finally {
+      setSaving(false);
+    }
+  }, [
+    name,
+    price,
+    selectedCategoryId,
+    selectedCategoryLabel,
+    desireLevel,
+    reason,
+    referenceImageUri,
+    router,
+  ]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right', 'top']}>
@@ -47,14 +324,22 @@ export default function AddWishItemScreen() {
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: primary }]}>添加新好物</Text>
-        <Pressable style={styles.headerSaveBtn} onPress={() => router.back()}>
-          <Text style={[styles.headerSaveText, { color: primary }]}>保存</Text>
+        <Pressable
+          style={styles.headerSaveBtn}
+          disabled={saving}
+          onPress={() => void handleSaveWish()}>
+          {saving ? (
+            <ActivityIndicator size="small" color={primary} />
+          ) : (
+            <Text style={[styles.headerSaveText, { color: primary }]}>保存</Text>
+          )}
         </Pressable>
       </View>
 
       <ScrollView
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 12) + 120 }]}>
+        contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 12) + 28 }]}>
         <View style={styles.section}>
           <View style={[styles.underlineWrap, { borderBottomColor: outlineVariant }]}>
             <TextInput
@@ -82,7 +367,8 @@ export default function AddWishItemScreen() {
                   onChangeText={v => setPrice(v.replace(/[^\d.]/g, ''))}
                   placeholder="0.00"
                   placeholderTextColor={outline}
-                  keyboardType="decimal-pad"
+                  keyboardType="default"
+                  autoCorrect={false}
                   style={[styles.priceInput, { color: text }]}
                 />
               </View>
@@ -90,31 +376,76 @@ export default function AddWishItemScreen() {
 
             <View style={styles.field}>
               <Text style={[styles.fieldLabel, { color: outline }]}>所属类别</Text>
-              <View style={[styles.underlineWrap, { borderBottomColor: outlineVariant }]}>
-                <Text style={[styles.categoryValue, { color: category ? text : outline }]}>
-                  {category || '选择类别...'}
+              <Text style={[styles.categorySortHint, { color: outline }]}>
+                列表按优先级从高到低排序；长按标签可编辑。
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: categoryMenuOpen }}
+                onPress={() => setCategoryMenuOpen(o => !o)}
+                style={({ pressed }) => [
+                  styles.underlineWrap,
+                  styles.categoryTrigger,
+                  {
+                    borderBottomColor: outlineVariant,
+                    opacity: pressed ? 0.85 : 1,
+                  },
+                ]}>
+                <Text style={[styles.categoryValue, { color: selectedCategoryLabel ? text : outline }]}>
+                  {selectedCategoryLabel || '选择类别...'}
                 </Text>
-                <MaterialIcons name="arrow-drop-down" size={24} color={outline} />
-              </View>
-              <View style={styles.categoryWrap}>
-                {categoryOptions.map(item => {
-                  const active = item === category;
-                  return (
-                    <Pressable
-                      key={item}
-                      onPress={() => setCategory(item)}
-                      style={[
-                        styles.categoryPill,
-                        {
-                          backgroundColor: active ? `${primary}1A` : surface,
-                          borderColor: active ? `${primary}44` : outlineVariant,
-                        },
-                      ]}>
-                      <Text style={[styles.categoryPillText, { color: active ? primary : outline }]}>{item}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
+                <MaterialIcons
+                  name={categoryMenuOpen ? 'arrow-drop-up' : 'arrow-drop-down'}
+                  size={24}
+                  color={outline}
+                />
+              </Pressable>
+              {categoryMenuOpen ? (
+                <View collapsable={false}>
+                  <View style={styles.categoryWrap}>
+                    {(categoriesLoaded
+                      ? categoryOptions
+                      : mergeWishCategories([], {}, {})
+                    ).map(item => {
+                      const active = item.id === selectedCategoryId;
+                      return (
+                        <Pressable
+                          key={item.id}
+                          accessibilityHint="长按可编辑类别"
+                          delayLongPress={420}
+                          onPress={() => {
+                            setSelectedCategoryId(item.id);
+                            setCategoryMenuOpen(false);
+                          }}
+                          onLongPress={() => openEditCategoryModal(item)}
+                          style={[
+                            styles.categoryPill,
+                            {
+                              backgroundColor: active ? `${primary}1A` : surface,
+                              borderColor: active ? `${primary}44` : outlineVariant,
+                            },
+                          ]}>
+                          <Text style={[styles.categoryPillText, { color: active ? primary : outline }]}>
+                            {item.name}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <Pressable
+                    onPress={openAddCategoryModal}
+                    style={({ pressed }) => [
+                      styles.addCategoryBtn,
+                      {
+                        borderColor: outlineVariant,
+                        backgroundColor: pressed ? `${primary}0D` : 'transparent',
+                      },
+                    ]}>
+                    <MaterialIcons name="add-circle-outline" size={20} color={primary} />
+                    <Text style={[styles.addCategoryBtnText, { color: primary }]}>添加自定义类别</Text>
+                  </Pressable>
+                </View>
+              ) : null}
             </View>
           </View>
         </View>
@@ -160,29 +491,124 @@ export default function AddWishItemScreen() {
           />
         </View>
 
-        <Pressable style={[styles.uploadCard, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-          <View style={[styles.uploadIconWrap, { backgroundColor: isDark ? '#374151' : '#eaedff' }]}>
-            <MaterialIcons name="add-photo-alternate" size={22} color={outline} />
-          </View>
-          <Text style={[styles.uploadText, { color: outline }]}>上传参考图</Text>
-        </Pressable>
+        <View style={styles.uploadSection}>
+          <Text style={[styles.fieldLabel, { color: outline }]}>参考图</Text>
+          {referenceImageUri ? (
+            <View
+              style={[
+                styles.uploadCardFilled,
+                { backgroundColor: surface, borderColor: outlineVariant },
+              ]}>
+              <Pressable
+                accessibilityRole="imagebutton"
+                accessibilityLabel="点击更换参考图"
+                onPress={pickReferenceImage}
+                style={styles.uploadPreviewPress}>
+                <Image
+                  source={{ uri: referenceImageUri }}
+                  style={styles.uploadPreviewImage}
+                  contentFit="cover"
+                  transition={200}
+                />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="移除参考图"
+                onPress={() => setReferenceImageUri(null)}
+                style={[styles.uploadRemoveBtn, { backgroundColor: 'rgba(15,23,42,0.55)' }]}>
+                <MaterialIcons name="close" size={20} color="#fff" />
+              </Pressable>
+              <Text style={[styles.uploadReplaceHint, { color: outline }]}>点击图像可更换</Text>
+            </View>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="上传参考图"
+              onPress={pickReferenceImage}
+              style={[
+                styles.uploadCard,
+                { backgroundColor: surfaceLow, borderColor: outlineVariant },
+              ]}>
+              <View style={[styles.uploadIconWrap, { backgroundColor: isDark ? '#374151' : '#eaedff' }]}>
+                <MaterialIcons name="add-photo-alternate" size={22} color={outline} />
+              </View>
+              <Text style={[styles.uploadText, { color: outline }]}>上传参考图</Text>
+              <Text style={[styles.uploadSub, { color: outline }]}>支持相册，建议比例 4:3</Text>
+            </Pressable>
+          )}
+        </View>
       </ScrollView>
 
-      <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
-        <Pressable
-          onPress={() => router.back()}
-          disabled={!canSave}
-          style={[
-            styles.bottomBtn,
-            {
-              backgroundColor: primary,
-              opacity: canSave ? 1 : 0.45,
-            },
-          ]}>
-          <MaterialIcons name="save" size={18} color="#fff" />
-          <Text style={styles.bottomBtnText}>存入清单</Text>
-        </Pressable>
-      </View>
+      <Modal
+        visible={categoryModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeCategoryModal}>
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            accessibilityRole="button"
+            style={StyleSheet.absoluteFillObject}
+            onPress={closeCategoryModal}
+          />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.modalKb}
+            pointerEvents="box-none">
+            <View style={[styles.modalCard, { backgroundColor: surface }]}>
+              <Text style={[styles.modalTitle, { color: text }]}>
+                {categoryModalMode === 'create'
+                  ? '自定义类别'
+                  : editingIsBuiltin
+                    ? '编辑内置类别'
+                    : '编辑类别'}
+              </Text>
+              <Text style={[styles.modalHint, { color: outline }]}>
+                可修改名称与优先级；数值越大在列表中越靠前。
+              </Text>
+              <Text style={[styles.modalFieldLabel, { color: outline }]}>类别名称</Text>
+              <TextInput
+                value={newCategoryName}
+                onChangeText={t => {
+                  setNewCategoryName(t);
+                  setCategorySaveError(null);
+                }}
+                placeholder="例如：摄影器材"
+                placeholderTextColor={outline}
+                style={[styles.modalInput, { color: text, borderColor: outlineVariant }]}
+              />
+              <Text style={[styles.modalFieldLabel, { color: outline }]}>优先级（0–9999）</Text>
+              <TextInput
+                value={newCategoryPriority}
+                onChangeText={v => {
+                  setNewCategoryPriority(v.replace(/\D/g, '').slice(0, 4));
+                  setCategorySaveError(null);
+                }}
+                placeholder="50"
+                placeholderTextColor={outline}
+                keyboardType="number-pad"
+                style={[styles.modalInput, { color: text, borderColor: outlineVariant }]}
+              />
+              {categorySaveError ? (
+                <Text style={styles.modalError}>{categorySaveError}</Text>
+              ) : null}
+              <View style={styles.modalActions}>
+                <Pressable
+                  onPress={closeCategoryModal}
+                  style={[styles.modalSecondaryBtn, { borderColor: outlineVariant }]}>
+                  <Text style={[styles.modalSecondaryText, { color: outline }]}>取消</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void commitCategoryModal()}
+                  style={[styles.modalPrimaryBtn, { backgroundColor: primary }]}>
+                  <Text style={styles.modalPrimaryText}>
+                    {categoryModalMode === 'create' ? '保存' : '保存修改'}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -279,6 +705,13 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.8,
   },
+  categorySortHint: {
+    fontSize: 11,
+    fontWeight: '500',
+    lineHeight: 15,
+    marginTop: -2,
+    marginBottom: 2,
+  },
   currency: {
     fontSize: 20,
     fontWeight: '700',
@@ -294,6 +727,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '500',
   },
+  categoryTrigger: {
+    minHeight: 44,
+    justifyContent: 'center',
+  },
   categoryWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -308,6 +745,94 @@ const styles = StyleSheet.create({
   categoryPillText: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  addCategoryBtn: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  addCategoryBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+  },
+  modalKb: {
+    width: '100%',
+    maxWidth: 400,
+    alignSelf: 'center',
+  },
+  modalCard: {
+    borderRadius: 16,
+    padding: 20,
+    gap: 10,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  modalHint: {
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 4,
+  },
+  modalFieldLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    marginTop: 4,
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  modalError: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#dc2626',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  modalSecondaryBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  modalSecondaryText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  modalPrimaryBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  modalPrimaryText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '800',
   },
   starRow: {
     flexDirection: 'row',
@@ -342,6 +867,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+  uploadSection: {
+    gap: 8,
+  },
   uploadCard: {
     minHeight: 180,
     borderRadius: 16,
@@ -349,7 +877,45 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
+    gap: 8,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+  },
+  uploadSub: {
+    fontSize: 12,
+    fontWeight: '500',
+    opacity: 0.85,
+  },
+  uploadCardFilled: {
+    borderRadius: 16,
+    borderWidth: 1,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  uploadPreviewPress: {
+    width: '100%',
+  },
+  uploadPreviewImage: {
+    width: '100%',
+    height: 200,
+    backgroundColor: 'rgba(148,163,184,0.12)',
+  },
+  uploadRemoveBtn: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  uploadReplaceHint: {
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
   },
   uploadIconWrap: {
     width: 46,
@@ -361,28 +927,5 @@ const styles = StyleSheet.create({
   uploadText: {
     fontSize: 15,
     fontWeight: '700',
-  },
-  bottomBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    backgroundColor: 'rgba(250,248,255,0.96)',
-  },
-  bottomBtn: {
-    height: 54,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 8,
-  },
-  bottomBtnText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '800',
-    letterSpacing: 0.2,
   },
 });

@@ -1,53 +1,35 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
+import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React, { useMemo } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type WishTarget = {
-  id: string;
-  name: string;
-  subtitle: string;
-  price: number;
-  priorityText: string;
-  icon: keyof typeof MaterialIcons.glyphMap;
-  highlighted?: boolean;
-};
-
-const wishItems: WishTarget[] = [
-  {
-    id: '1',
-    name: '索尼 WH-1000XM5',
-    subtitle: '专注深度工作',
-    price: 2499,
-    priorityText: '高优先级',
-    icon: 'headset',
-  },
-  {
-    id: '2',
-    name: '赫曼米勒 Embody',
-    subtitle: '人体工学健康',
-    price: 10500,
-    priorityText: 'AI 重点标注',
-    icon: 'chair',
-    highlighted: true,
-  },
-  {
-    id: '3',
-    name: 'Flos Bellhop 台灯',
-    subtitle: '氛围营造',
-    price: 1251,
-    priorityText: '低优先级',
-    icon: 'lightbulb-outline',
-  },
-];
-
-const quarterTarget = 120000;
+const quarterTarget = 120_000;
 
 function formatCny(value: number): string {
   return `¥ ${value.toLocaleString('zh-CN')}`;
+}
+
+function desireLevelLabel(level: number): string {
+  if (level >= 5) return '欲望等级 5 · 心之所向';
+  if (level >= 4) return '欲望等级 4';
+  if (level >= 3) return '欲望等级 3';
+  if (level >= 2) return '欲望等级 2';
+  return '欲望等级 1 · 理智购买';
+}
+
+function subtitleForRow(row: WishItemRow): string {
+  if (row.category_label?.trim()) return row.category_label.trim();
+  if (row.reason?.trim()) {
+    const one = row.reason.trim().split(/\n/)[0];
+    return one.length > 36 ? `${one.slice(0, 36)}…` : one;
+  }
+  return '未填写类别与理由';
 }
 
 export default function WishListScreen() {
@@ -57,6 +39,29 @@ export default function WishListScreen() {
   const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
   const theme = Colors[scheme];
   const isDark = colorScheme === 'dark';
+
+  const [items, setItems] = useState<WishItemRow[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const rows = await listWishItems();
+      setItems(rows);
+    } catch {
+      setLoadError('加载失败，请点击重试');
+      setItems([]);
+    } finally {
+      setInitialLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      void reload();
+    }, [reload])
+  );
 
   const bg = isDark ? theme.background : '#faf8ff';
   const cardBg = isDark ? '#111827' : '#ffffff';
@@ -68,10 +73,15 @@ export default function WishListScreen() {
   const borderSoft = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.25)';
 
   const summary = useMemo(() => {
-    const total = wishItems.reduce((sum, item) => sum + item.price, 0);
-    const progress = Math.round((total / quarterTarget) * 100);
+    const total = items.reduce((sum, row) => sum + (Number.isFinite(row.price) ? row.price : 0), 0);
+    const progress = quarterTarget > 0 ? Math.min(999, Math.round((total / quarterTarget) * 100)) : 0;
     return { total, progress };
-  }, []);
+  }, [items]);
+
+  const topDesireName = useMemo(() => {
+    const sorted = [...items].sort((a, b) => b.desire_level - a.desire_level || b.price - a.price);
+    return sorted[0]?.name ?? null;
+  }, [items]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right', 'top']}>
@@ -99,6 +109,19 @@ export default function WishListScreen() {
           <Text style={[styles.heroSub, { color: outline }]}>精选心头好与理性消费计划。</Text>
         </View>
 
+        {initialLoading ? (
+          <View style={styles.loadingWrap}>
+            <ActivityIndicator size="large" color={primary} />
+          </View>
+        ) : null}
+
+        {loadError ? (
+          <Pressable onPress={() => void reload()} style={[styles.errorBanner, { borderColor: borderSoft }]}>
+            <Text style={[styles.errorText, { color: text }]}>{loadError}</Text>
+            <Text style={[styles.errorRetry, { color: primary }]}>点击重试</Text>
+          </Pressable>
+        ) : null}
+
         <View style={[styles.summaryCard, { backgroundColor: cardBg }]}>
           <View style={[styles.summaryGlow, { backgroundColor: `${tertiary}14` }]} />
           <View>
@@ -118,56 +141,92 @@ export default function WishListScreen() {
               <MaterialIcons name="auto-awesome" size={18} color={primary} />
               <Text style={[styles.aiKicker, { color: primary }]}>AI 理性评审</Text>
             </View>
-            <Text style={[styles.aiHeading, { color: text }]}>建议策略性延后</Text>
+            <Text style={[styles.aiHeading, { color: text }]}>
+              {items.length === 0 ? '从添加第一条开始' : topDesireName ? '关注高欲望单品' : '建议策略性延后'}
+            </Text>
           </View>
           <View style={[styles.aiBody, { borderTopColor: borderSoft }]}>
-            <Text style={[styles.aiText, { color: outline }]}>
-              基于您当前的消费速度，本月购买
-              <Text style={[styles.aiTextStrong, { color: text }]}> Herman Miller Embody </Text>
-              椅子将导致您的储蓄目标达成率下降 30%。
-            </Text>
-            <Text style={[styles.aiText, { color: outline }]}>
-              <Text style={[styles.aiAdviceTag, { color: primary }]}>评审建议：</Text>
-              建议将该项支出延后至11月下旬，以匹配年度奖金发放，确保Q4流动性指标稳健。
-            </Text>
+            {items.length === 0 ? (
+              <Text style={[styles.aiText, { color: outline }]}>
+                清单为空时暂无消费压力分析。点击右下角添加好物，数据将来自本地数据库。
+              </Text>
+            ) : (
+              <>
+                <Text style={[styles.aiText, { color: outline }]}>
+                  当前共
+                  <Text style={[styles.aiTextStrong, { color: text }]}> {items.length} </Text>
+                  条心愿，总预估
+                  <Text style={[styles.aiTextStrong, { color: text }]}> {formatCny(summary.total)} </Text>
+                  。
+                  {topDesireName ? (
+                    <>
+                      {' '}
+                      其中<Text style={[styles.aiTextStrong, { color: text }]}> {topDesireName} </Text>
+                      欲望等级较高，可优先评估必要性再下单。
+                    </>
+                  ) : null}
+                </Text>
+                <Text style={[styles.aiText, { color: outline }]}>
+                  <Text style={[styles.aiAdviceTag, { color: primary }]}>提示：</Text>
+                  以上为占位说明；完整 AI 评审可后续接入模型与现金流数据。
+                </Text>
+              </>
+            )}
           </View>
         </View>
 
         <View style={styles.listSection}>
           <Text style={[styles.listKicker, { color: outline }]}>目标好物</Text>
-          {wishItems.map(item => (
-            <View
-              key={item.id}
-              style={[
-                styles.itemCard,
-                {
-                  backgroundColor: cardBg,
-                  borderLeftColor: item.highlighted ? primary : 'transparent',
-                  borderLeftWidth: item.highlighted ? 4 : 0,
-                },
-              ]}>
-              <View style={[styles.itemIconWrap, { backgroundColor: cardSoft }]}>
-                <MaterialIcons name={item.icon} size={28} color={text} />
-              </View>
-              <View style={styles.itemContent}>
-                <View style={styles.itemTextWrap}>
-                  <Text style={[styles.itemName, { color: text }]}>{item.name}</Text>
-                  <Text style={[styles.itemSubtitle, { color: outline }]}>{item.subtitle}</Text>
-                </View>
-                <View style={styles.itemPriceWrap}>
-                  <Text style={[styles.itemPrice, { color: tertiary }]}>{formatCny(item.price)}</Text>
-                  <Text style={[styles.itemPriority, { color: item.highlighted ? primary : outline }]}>
-                    {item.priorityText}
-                  </Text>
-                </View>
-              </View>
+          {!initialLoading && items.length === 0 ? (
+            <View style={[styles.emptyCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
+              <MaterialIcons name="redeem" size={40} color={outline} />
+              <Text style={[styles.emptyTitle, { color: text }]}>还没有心愿条目</Text>
+              <Text style={[styles.emptySub, { color: outline }]}>保存的条目会显示在这里</Text>
             </View>
-          ))}
+          ) : null}
+          {items.map(row => {
+            const highlighted = row.desire_level >= 4;
+            const thumb = row.reference_image_uri;
+            return (
+              <View
+                key={row.id}
+                style={[
+                  styles.itemCard,
+                  {
+                    backgroundColor: cardBg,
+                    borderLeftColor: highlighted ? primary : 'transparent',
+                    borderLeftWidth: highlighted ? 4 : 0,
+                  },
+                ]}>
+                <View style={[styles.itemIconWrap, { backgroundColor: cardSoft }]}>
+                  {thumb ? (
+                    <Image source={{ uri: thumb }} style={styles.itemThumb} contentFit="cover" transition={150} />
+                  ) : (
+                    <MaterialIcons name="card-giftcard" size={28} color={text} />
+                  )}
+                </View>
+                <View style={styles.itemContent}>
+                  <View style={styles.itemTextWrap}>
+                    <Text style={[styles.itemName, { color: text }]}>{row.name}</Text>
+                    <Text style={[styles.itemSubtitle, { color: outline }]} numberOfLines={2}>
+                      {subtitleForRow(row)}
+                    </Text>
+                  </View>
+                  <View style={styles.itemPriceWrap}>
+                    <Text style={[styles.itemPrice, { color: tertiary }]}>{formatCny(row.price)}</Text>
+                    <Text style={[styles.itemPriority, { color: highlighted ? primary : outline }]} numberOfLines={1}>
+                      {desireLevelLabel(row.desire_level)}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })}
         </View>
       </ScrollView>
 
       <Pressable
-        onPress={() => router.push('/add-wish-item' as any)}
+        onPress={() => router.push('/add-wish-item')}
         style={[
           styles.fab,
           {
@@ -221,6 +280,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 22,
     paddingTop: 132,
     gap: 18,
+  },
+  loadingWrap: {
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  errorBanner: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 14,
+    gap: 6,
+  },
+  errorText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  errorRetry: {
+    fontSize: 13,
+    fontWeight: '800',
   },
   hero: {
     alignItems: 'center',
@@ -336,6 +413,23 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginBottom: 2,
   },
+  emptyCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingVertical: 28,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    gap: 8,
+  },
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  emptySub: {
+    fontSize: 14,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
   itemCard: {
     borderRadius: 20,
     paddingVertical: 14,
@@ -350,6 +444,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  itemThumb: {
+    width: 56,
+    height: 56,
   },
   itemContent: {
     flex: 1,
@@ -373,6 +472,7 @@ const styles = StyleSheet.create({
   itemPriceWrap: {
     alignItems: 'flex-end',
     gap: 4,
+    maxWidth: '46%',
   },
   itemPrice: {
     fontSize: 22,
@@ -380,8 +480,9 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
   },
   itemPriority: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
+    textAlign: 'right',
   },
   fab: {
     position: 'absolute',

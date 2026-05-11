@@ -1,11 +1,22 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  Alert,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 
@@ -21,6 +32,23 @@ const DEFAULT_GENDER: (typeof GENDER_OPTIONS)[number] = '男';
 const DEFAULT_LIFESTYLE: (typeof LIFESTYLE_OPTIONS)[number] = '长期静坐不运动';
 const DEFAULT_GOAL: (typeof GOAL_OPTIONS)[number] = '无';
 
+function parseIsoDateLocal(iso: string): Date {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, (m ?? 1) - 1, d ?? 1);
+}
+
+function toIsoDate(d: Date): string {
+  const y = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${month}-${day}`;
+}
+
+function formatChineseBirthday(iso: string | null): string {
+  if (!iso) return '点击添加生日';
+  const d = parseIsoDateLocal(iso);
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+}
 
 export default function EditProfileScreen() {
   const router = useRouter();
@@ -39,7 +67,9 @@ export default function EditProfileScreen() {
   const [goal, setGoal] = useState<(typeof GOAL_OPTIONS)[number]>(DEFAULT_GOAL);
   const [height, setHeight] = useState('0');
   const [weight, setWeight] = useState('0');
-  const [age, setAge] = useState('0');
+  const [birthdayIso, setBirthdayIso] = useState<string | null>(null);
+  const [showBirthdayPicker, setShowBirthdayPicker] = useState(false);
+  const [birthdayDraft, setBirthdayDraft] = useState(() => new Date(1990, 0, 1));
 
   const handleNumericInput = (value: string, setter: (next: string) => void) => {
     setter(value.replace(/\D+/g, ''));
@@ -54,9 +84,9 @@ export default function EditProfileScreen() {
         gender,
         lifestyle,
         goal,
+        birthday: birthdayIso,
         height: Number(height),
         weight: Number(weight),
-        age: Number(age),
       });
       Alert.alert('保存成功');
       router.dismissTo('/(tabs)/profile');
@@ -127,9 +157,23 @@ export default function EditProfileScreen() {
     );
     setHeight(String(user.height ?? 0));
     setWeight(String(user.weight ?? 0));
-    setAge(String(user.age ?? 0));
+    setBirthdayIso(user.birthday ?? null);
   }, [user]);
 
+  const birthdayMaxDate = useMemo(() => new Date(), []);
+  const birthdayMinDate = useMemo(() => new Date(1900, 0, 1), []);
+
+  const openBirthdayPicker = () => {
+    setBirthdayDraft(birthdayIso ? parseIsoDateLocal(birthdayIso) : new Date(1990, 0, 1));
+    setShowBirthdayPicker(true);
+  };
+
+  const dismissBirthdayPicker = () => setShowBirthdayPicker(false);
+
+  const confirmBirthday = () => {
+    setBirthdayIso(toIsoDate(birthdayDraft));
+    setShowBirthdayPicker(false);
+  };
 
   const palette = useMemo(
     () => ({
@@ -216,6 +260,21 @@ export default function EditProfileScreen() {
                 placeholderTextColor={isDark ? 'rgba(148,163,184,0.6)' : 'rgba(114,119,133,0.5)'}
                 style={[styles.fieldInput, { color: palette.text, borderBottomColor: palette.outlineVariant }]}
               />
+            </View>
+
+            <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
+              <Text style={[styles.fieldLabel, { color: palette.outline }]}>生日</Text>
+              <Pressable onPress={openBirthdayPicker} style={styles.birthdayRow}>
+                <Text
+                  style={[
+                    styles.birthdayValue,
+                    { color: birthdayIso ? palette.text : (isDark ? 'rgba(148,163,184,0.6)' : 'rgba(114,119,133,0.55)') },
+                  ]}
+                >
+                  {formatChineseBirthday(birthdayIso)}
+                </Text>
+                <MaterialIcons name="calendar-today" size={22} color={palette.outline} />
+              </Pressable>
             </View>
 
             <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
@@ -321,18 +380,6 @@ export default function EditProfileScreen() {
                   <Text style={[styles.metricUnit, { color: palette.outline }]}>kg</Text>
                 </View>
               </View>
-
-              <View style={[styles.metricCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
-                <Text style={[styles.fieldLabel, { color: palette.outline }]}>年龄</Text>
-                <View style={styles.metricRow}>
-                  <TextInput
-                    value={age}
-                    onChangeText={(value) => handleNumericInput(value, setAge)}
-                    style={[styles.metricInput, { color: palette.text, borderBottomColor: palette.outlineVariant }]}
-                  />
-                  <Text style={[styles.metricUnit, { color: palette.outline }]}>岁</Text>
-                </View>
-              </View>
             </View>
           </View>
 
@@ -356,6 +403,54 @@ export default function EditProfileScreen() {
           </Pressable>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={showBirthdayPicker}
+        transparent
+        animationType="fade"
+        onRequestClose={dismissBirthdayPicker}
+      >
+        <View style={styles.birthdayModalRoot}>
+          <Pressable style={styles.birthdayModalBackdrop} onPress={dismissBirthdayPicker} />
+          <View
+            style={[
+              styles.birthdayModalCard,
+              {
+                backgroundColor: palette.surface,
+                borderColor: palette.outlineVariant,
+              },
+            ]}
+          >
+            <Text style={[styles.birthdayModalTitle, { color: palette.text }]}>选择生日</Text>
+            <DateTimePicker
+              value={birthdayDraft}
+              mode="date"
+              display="spinner"
+              themeVariant={isDark ? 'dark' : 'light'}
+              locale={Platform.OS === 'ios' ? 'zh_CN' : undefined}
+              maximumDate={birthdayMaxDate}
+              minimumDate={birthdayMinDate}
+              onChange={(_, date) => {
+                if (date) setBirthdayDraft(date);
+              }}
+            />
+            <View style={styles.birthdayModalActions}>
+              <Pressable
+                onPress={dismissBirthdayPicker}
+                style={[styles.birthdayModalBtnGhost, { borderColor: palette.outlineVariant }]}
+              >
+                <Text style={[styles.birthdayModalBtnGhostText, { color: palette.outline }]}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmBirthday}
+                style={[styles.birthdayModalBtnPrimary, { backgroundColor: palette.primary }]}
+              >
+                <Text style={styles.birthdayModalBtnPrimaryText}>确定</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -429,6 +524,60 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   fieldInput: { borderBottomWidth: 1, paddingBottom: 8, fontSize: 24, fontWeight: '700' },
+  birthdayRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  birthdayValue: { flex: 1, fontSize: 24, fontWeight: '700' },
+  birthdayModalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 28,
+  },
+  birthdayModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  birthdayModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 20,
+    paddingTop: 20,
+    paddingHorizontal: 12,
+    paddingBottom: 16,
+    borderWidth: 1,
+  },
+  birthdayModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  birthdayModalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 4,
+  },
+  birthdayModalBtnGhost: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  birthdayModalBtnGhostText: { fontSize: 15, fontWeight: '800' },
+  birthdayModalBtnPrimary: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  birthdayModalBtnPrimaryText: { color: '#fff', fontSize: 15, fontWeight: '800' },
   optionRow: { flexDirection: 'row', gap: 10 },
   optionWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   optionChip: {

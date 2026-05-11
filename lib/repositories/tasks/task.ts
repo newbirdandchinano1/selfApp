@@ -43,6 +43,38 @@ export async function countIncompleteTasksByProjectId(projectId: string): Promis
   return Number(row?.cnt ?? 0);
 }
 
+/** 统计项目下任务完成度（不含已取消）；用于愿景「目标」关联项目进度 */
+export async function getTaskCompletionStatsByProjectId(
+  projectId: string
+): Promise<{ total: number; completed: number }> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ total: number | null; completed: number | null }>(
+    `SELECT
+       COALESCE(SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END), 0) AS total,
+       COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) AS completed
+       FROM tasks
+      WHERE deleted_at IS NULL AND project_id = ?`,
+    [projectId],
+  );
+  return {
+    total: Number(row?.total ?? 0),
+    completed: Number(row?.completed ?? 0),
+  };
+}
+
+/** 多个项目任务完成度汇总（愿景「目标」多项目关联） */
+export async function getTaskCompletionStatsByProjectIds(
+  projectIds: string[]
+): Promise<{ total: number; completed: number }> {
+  const unique = [...new Set(projectIds.map(id => id.trim()).filter(Boolean))];
+  if (unique.length === 0) return { total: 0, completed: 0 };
+  const stats = await Promise.all(unique.map(id => getTaskCompletionStatsByProjectId(id)));
+  return stats.reduce(
+    (acc, s) => ({ total: acc.total + s.total, completed: acc.completed + s.completed }),
+    { total: 0, completed: 0 },
+  );
+}
+
 export async function deleteTasksByProjectId(projectId: string) {
   const db = await getDatabase();
   await db.runAsync(

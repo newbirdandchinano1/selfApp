@@ -1,46 +1,47 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import {
+  deleteVision,
+  getVisionRowById,
+  listVisions,
+  parseVisionExtra,
+  serializeVisionExtra,
+  updateVision,
+} from '@/lib/repositories/visions/vision';
+import { visionRowToWallCard } from '@/lib/repositories/visions/vision-present';
+import type { VisionWallCardModel } from '@/lib/visions-registry';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-type VisionCardModel =
-  | {
-      kind: 'progress';
-      title: string;
-      leftText: string;
-      percentText: string;
-      percent: number; // 0..1
-      imageSource: number;
-    }
-  | {
-      kind: 'count';
-      title: string;
-      leftKicker: string;
-      leftValue: string;
-      rightKicker: string;
-      rightValue: string;
-      imageSource: number;
-    }
-  | {
-      kind: 'target';
-      title: string;
-      percentText: string;
-      percent: number; // 0..1
-      imageSource: number;
-    }
-  | {
-      kind: 'countdown';
-      title: string;
-      dateText: string;
-      remainText: string;
-      imageSource: number;
-    };
+type WallEntry = { id: string; card: VisionWallCardModel };
 
-const VisionCard = ({ card }: { card: VisionCardModel }) => {
+function formatStoredAmount(n: number): string {
+  if (!Number.isFinite(n)) return '0';
+  if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+  return String(Number(n.toFixed(6)));
+}
+
+const VisionCard = ({
+  card,
+  visionId,
+  onOpenDetail,
+  onAdjustAmount,
+}: {
+  card: VisionWallCardModel;
+  visionId: string;
+  onOpenDetail: () => void;
+  onAdjustAmount: (visionId: string, deltaSign: -1 | 1, step: number) => void;
+}) => {
+  const showProgressAdjust = card.kind === 'progress' && card.wallAdjust;
+  const showCountAdjust = card.kind === 'count' && card.wallAdjust;
+  const showTargetAdjust = card.kind === 'target' && card.wallAdjust && !card.taskProgressOnly;
+
   return (
     <View style={styles.card}>
       <Image source={card.imageSource} style={styles.cardBgImg} contentFit="cover" transition={120} />
@@ -48,77 +49,139 @@ const VisionCard = ({ card }: { card: VisionCardModel }) => {
       {/* 用半透明遮罩模拟 HTML 里的渐变背景（避免再引入 LinearGradient 依赖） */}
       <View style={styles.cardOverlay} />
 
-      <View style={styles.cardContent}>
-        {card.kind === 'progress' && (
-          <>
-            <Text style={styles.cardTitle}>{card.title}</Text>
-            <View style={{ gap: 8 }}>
-              <View style={styles.cardRowBetween}>
-                <Text style={styles.cardMeta}>{card.leftText}</Text>
-                <Text style={styles.cardPercentText}>{card.percentText}</Text>
+      <View style={styles.cardContent} pointerEvents="box-none">
+        <Pressable onPress={onOpenDetail} style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+          {card.kind === 'progress' && (
+            <>
+              <Text style={styles.cardTitle}>{card.title}</Text>
+              <View style={styles.countRow}>
+                <View style={{ gap: 4 }}>
+                  <Text style={styles.countKicker}>{card.leftKicker}</Text>
+                  <Text style={styles.countValue}>{card.leftValue}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                  <Text style={styles.countKicker}>{card.rightKicker}</Text>
+                  <Text style={styles.countValue}>{card.rightValue}</Text>
+                </View>
               </View>
-              <View style={styles.progressTrack}>
-                <View
-                  style={[
-                    styles.progressFill,
-                    { width: `${Math.round(card.percent * 100)}%` },
-                  ]}
-                />
-              </View>
-            </View>
-          </>
-        )}
+            </>
+          )}
 
-        {card.kind === 'count' && (
-          <>
-            <Text style={styles.cardTitle}>{card.title}</Text>
-            <View style={styles.countRow}>
-              <View style={{ gap: 4 }}>
-                <Text style={styles.countKicker}>{card.leftKicker}</Text>
-                <Text style={styles.countValue}>{card.leftValue}</Text>
+          {card.kind === 'count' && (
+            <>
+              <Text style={styles.cardTitle}>{card.title}</Text>
+              <View style={styles.countRow}>
+                <View style={{ gap: 4 }}>
+                  <Text style={styles.countKicker}>{card.leftKicker}</Text>
+                  <Text style={styles.countValue}>{card.leftValue}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                  <Text style={styles.countKicker}>{card.rightKicker}</Text>
+                  <Text style={styles.countValue}>{card.rightValue}</Text>
+                </View>
               </View>
-              <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                <Text style={styles.countKicker}>{card.rightKicker}</Text>
-                <Text style={styles.countValue}>{card.rightValue}</Text>
-              </View>
-            </View>
-          </>
-        )}
+            </>
+          )}
 
-        {card.kind === 'target' && (
-          <>
-            <Text style={styles.cardTitle}>{card.title}</Text>
-            <View style={{ gap: 10 }}>
-              <View style={{ alignItems: 'flex-end' }}>
-                <Text style={styles.cardPercentText}>{card.percentText}</Text>
+          {card.kind === 'target' && (
+            <>
+              <Text style={styles.cardTitle}>{card.title}</Text>
+              <View style={{ gap: 10 }}>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={styles.cardPercentText}>{card.percentText}</Text>
+                </View>
+                <View style={styles.progressTrack}>
+                  <View
+                    style={[
+                      styles.progressFill,
+                      { width: `${Math.round(card.percent * 100)}%` },
+                    ]}
+                  />
+                </View>
               </View>
-              <View style={styles.progressTrack}>
-                <View
-                  style={[
-                    styles.progressFill,
-                    { width: `${Math.round(card.percent * 100)}%` },
-                  ]}
-                />
-              </View>
-            </View>
-          </>
-        )}
+            </>
+          )}
 
-        {card.kind === 'countdown' && (
-          <>
-            <Text style={styles.cardTitle}>{card.title}</Text>
-            <View style={styles.countRow}>
-              <View style={{ gap: 4 }}>
-                <Text style={styles.countKicker}>截止日期</Text>
-                <Text style={styles.countValue}>{card.dateText}</Text>
+          {card.kind === 'countdown' && (
+            <>
+              <Text style={styles.cardTitle}>{card.title}</Text>
+              <View style={styles.countRow}>
+                <View style={{ gap: 4 }}>
+                  <Text style={styles.countKicker}>
+                    {card.countdownKind === 'countup' ? '记录日期' : '截止日期'}
+                  </Text>
+                  <Text style={styles.countValue}>{card.dateText}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                  {card.countdownKind === 'countup' ? null : (
+                    <Text style={styles.countKicker}>剩余时间</Text>
+                  )}
+                  <Text style={styles.remainValue}>{card.remainText}</Text>
+                </View>
               </View>
-              <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                <Text style={styles.countKicker}>剩余时间</Text>
-                <Text style={styles.remainValue}>{card.remainText}</Text>
-              </View>
-            </View>
-          </>
-        )}
+            </>
+          )}
+        </Pressable>
+
+        {showProgressAdjust && card.wallAdjust ? (
+          <View style={styles.adjustRow}>
+            <Pressable
+              onPress={() => onAdjustAmount(visionId, -1, card.wallAdjust!.step)}
+              style={({ pressed }) => [styles.adjustBtn, pressed && { opacity: 0.85 }]}
+              accessibilityLabel="减少进度量"
+            >
+              <MaterialIcons name="remove" size={22} color="#fff" />
+            </Pressable>
+            <Text style={styles.adjustHint}>步长 {card.wallAdjust.step}</Text>
+            <Pressable
+              onPress={() => onAdjustAmount(visionId, 1, card.wallAdjust!.step)}
+              style={({ pressed }) => [styles.adjustBtn, styles.adjustBtnPrimary, pressed && { opacity: 0.9 }]}
+              accessibilityLabel="增加进度量"
+            >
+              <MaterialIcons name="add" size={22} color="#fff" />
+            </Pressable>
+          </View>
+        ) : null}
+
+        {showCountAdjust && card.wallAdjust ? (
+          <View style={styles.adjustRow}>
+            <Pressable
+              onPress={() => onAdjustAmount(visionId, -1, card.wallAdjust!.step)}
+              style={({ pressed }) => [styles.adjustBtn, pressed && { opacity: 0.85 }]}
+              accessibilityLabel="减少累计"
+            >
+              <MaterialIcons name="remove" size={22} color="#fff" />
+            </Pressable>
+            <Text style={styles.adjustHint}>每次 {card.wallAdjust.step}</Text>
+            <Pressable
+              onPress={() => onAdjustAmount(visionId, 1, card.wallAdjust!.step)}
+              style={({ pressed }) => [styles.adjustBtn, styles.adjustBtnPrimary, pressed && { opacity: 0.9 }]}
+              accessibilityLabel="增加累计"
+            >
+              <MaterialIcons name="add" size={22} color="#fff" />
+            </Pressable>
+          </View>
+        ) : null}
+
+        {showTargetAdjust && card.wallAdjust ? (
+          <View style={styles.adjustRow}>
+            <Pressable
+              onPress={() => onAdjustAmount(visionId, -1, card.wallAdjust!.step)}
+              style={({ pressed }) => [styles.adjustBtn, pressed && { opacity: 0.85 }]}
+              accessibilityLabel="减少当前量"
+            >
+              <MaterialIcons name="remove" size={22} color="#fff" />
+            </Pressable>
+            <Text style={styles.adjustHint}>步长 {card.wallAdjust.step}</Text>
+            <Pressable
+              onPress={() => onAdjustAmount(visionId, 1, card.wallAdjust!.step)}
+              style={({ pressed }) => [styles.adjustBtn, styles.adjustBtnPrimary, pressed && { opacity: 0.9 }]}
+              accessibilityLabel="增加当前量"
+            >
+              <MaterialIcons name="add" size={22} color="#fff" />
+            </Pressable>
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -127,60 +190,104 @@ const VisionCard = ({ card }: { card: VisionCardModel }) => {
 export default function VisionWallScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
+  const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
+  const theme = Colors[scheme];
   const isDark = colorScheme === 'dark';
 
-  const cards: VisionCardModel[] = [
-    {
-      kind: 'progress',
-      title: '西藏骑行之旅',
-      leftText: '650 km / 1000 km',
-      percentText: '65%',
-      percent: 0.65,
-      imageSource: require('../assets/vision-wall/card1.png'),
+  const [wallEntries, setWallEntries] = useState<WallEntry[]>([]);
+
+  const loadWallEntries = useCallback(async () => {
+    try {
+      const rows = await listVisions();
+      const dbEntries: WallEntry[] = await Promise.all(
+        rows.map(async r => ({
+          id: r.id,
+          card: await visionRowToWallCard(r),
+        })),
+      );
+      setWallEntries(dbEntries);
+    } catch {
+      setWallEntries([]);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadWallEntries();
+    }, [loadWallEntries]),
+  );
+
+  const onAdjustVisionAmount = useCallback(
+    async (visionId: string, deltaSign: -1 | 1, step: number) => {
+      const safeStep = Number.isFinite(step) && step > 0 ? step : 1;
+      try {
+        const row = await getVisionRowById(visionId);
+        if (!row) return;
+        const extra = parseVisionExtra(row.extra_data) ?? {};
+        const cur = Number(extra.currentAmount ?? 0);
+        const next = Math.max(0, cur + deltaSign * safeStep);
+        extra.currentAmount = formatStoredAmount(next);
+        await updateVision(visionId, { extra_data: serializeVisionExtra(extra) });
+        await loadWallEntries();
+      } catch {
+        Alert.alert('更新失败', '无法保存累计值，请重试。');
+      }
     },
-    {
-      kind: 'count',
-      title: '完成 50 本书的阅读',
-      leftKicker: '本周进度',
-      leftValue: '本周: 2 次',
-      rightKicker: '当前总量',
-      rightValue: '已读 12 / 50',
-      imageSource: require('../assets/vision-wall/card2.png'),
-    },
-    {
-      kind: 'target',
-      title: '储蓄目标',
-      percentText: '60%',
-      percent: 0.6,
-      imageSource: require('../assets/vision-wall/card3.png'),
-    },
-    {
-      kind: 'countdown',
-      title: '学会一门新语言',
-      dateText: '2024-12-31',
-      remainText: '还有 45 天',
-      imageSource: require('../assets/vision-wall/card4.png'),
-    },
-  ];
+    [loadWallEntries],
+  );
+
+  const requestDeleteVision = useCallback((entry: WallEntry) => {
+    Alert.alert('删除愿景', '确定删除这条愿景吗？删除后将从愿景墙与我的页移除；在同步或恢复功能前可能无法找回。', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            try {
+              await deleteVision(entry.id);
+              setWallEntries(prev => prev.filter(e => e.id !== entry.id));
+            } catch {
+              Alert.alert('删除失败', '无法删除本地数据，请稍后重试。');
+            }
+          })();
+        },
+      },
+    ]);
+  }, []);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? 'rgba(15,23,42,0.95)' : theme.background }]}>
       <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.85)' }]}>
-        <Pressable
-          onPress={() => router.back()}
-          style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}
-        >
-          <MaterialIcons
-            name="arrow-back"
-            size={22}
-            color={isDark ? 'rgba(248,250,252,0.92)' : 'rgba(15,23,42,0.92)'}
-          />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: isDark ? 'rgba(248,250,252,0.95)' : 'rgba(15,23,42,0.95)' }]}>
-          愿景墙
-        </Text>
-        <View style={{ width: 36 }} />
+        <View style={styles.headerLeading}>
+          <Pressable
+            onPress={() => router.back()}
+            style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}
+          >
+            <MaterialIcons
+              name="arrow-back"
+              size={22}
+              color={isDark ? 'rgba(248,250,252,0.92)' : 'rgba(15,23,42,0.92)'}
+            />
+          </Pressable>
+        </View>
+        <View style={styles.headerCenter}>
+          <Text
+            style={[styles.headerTitle, { color: isDark ? 'rgba(248,250,252,0.95)' : 'rgba(15,23,42,0.95)' }]}
+            numberOfLines={1}
+          >
+            愿景墙
+          </Text>
+        </View>
+        <View style={styles.headerTrailing}>
+          <Pressable
+            onPress={() => router.push('/vision-create')}
+            style={({ pressed }) => [styles.headerCreateBtn, pressed && { opacity: 0.88 }]}
+          >
+            <MaterialIcons name="add" size={17} color="#fff" />
+            <Text style={styles.headerCreateBtnText}>创建愿景</Text>
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
@@ -195,29 +302,54 @@ export default function VisionWallScreen() {
         </View>
 
         <View style={{ gap: 16 }}>
-          {cards.map((card, idx) => (
-            <VisionCard key={idx} card={card} />
-          ))}
+          {wallEntries.length === 0 ? (
+            <View style={{ paddingVertical: 36, paddingHorizontal: 12, alignItems: 'center' }}>
+              <Text
+                style={{
+                  fontSize: 15,
+                  fontWeight: '600',
+                  color: isDark ? 'rgba(148,163,184,0.9)' : 'rgba(114,119,133,0.9)',
+                  textAlign: 'center',
+                  lineHeight: 22,
+                }}
+              >
+                暂无愿景，点击右上角「创建愿景」添加第一条。
+              </Text>
+            </View>
+          ) : (
+            wallEntries.map(entry => (
+              <Swipeable
+                key={entry.id}
+                overshootRight={false}
+                rightThreshold={48}
+                renderRightActions={() => (
+                  <Pressable
+                    onPress={() => requestDeleteVision(entry)}
+                    style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`删除愿景 ${entry.card.title}`}
+                  >
+                    <MaterialIcons name="delete-outline" size={24} color="#fff" />
+                    <Text style={styles.swipeDeleteText}>删除</Text>
+                  </Pressable>
+                )}
+              >
+                <VisionCard
+                  card={entry.card}
+                  visionId={entry.id}
+                  onOpenDetail={() =>
+                    router.push({ pathname: '/vision-detail/[id]', params: { id: entry.id } })
+                  }
+                  onAdjustAmount={onAdjustVisionAmount}
+                />
+              </Swipeable>
+            ))
+          )}
         </View>
 
-        <View style={{ height: 24 }} />
-
-        <View style={{ paddingHorizontal: 6 }}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.createBtn,
-              pressed && { transform: [{ scale: 0.98 }], opacity: 0.95 },
-            ]}
-            onPress={() => router.push('/vision-create')}
-          >
-            <MaterialIcons name="add" size={18} color="#fff" />
-            <Text style={styles.createBtnText}>创建新的愿景</Text>
-          </Pressable>
-
-          <Text style={[styles.footerText, { color: isDark ? 'rgba(226,232,240,0.45)' : 'rgba(114,119,133,0.45)' }]}>
-            The Quantified Life • © 2024
-          </Text>
-        </View>
+        <Text style={[styles.footerText, { color: isDark ? 'rgba(226,232,240,0.45)' : 'rgba(114,119,133,0.45)' }]}>
+          The Quantified Life • © 2024
+        </Text>
       </ScrollView>
     </SafeAreaView>
   );
@@ -229,12 +361,27 @@ const styles = StyleSheet.create({
   },
   header: {
     height: 56,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(148,163,184,0.15)',
+  },
+  headerLeading: {
+    width: 44,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  headerCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  headerTrailing: {
+    minWidth: 44,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
   },
   headerIconBtn: {
     width: 36,
@@ -247,6 +394,26 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     letterSpacing: -0.3,
+  },
+  headerCreateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 14,
+    backgroundColor: '#0058be',
+    shadowColor: '#0058be',
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  headerCreateBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: -0.2,
   },
 
   content: {
@@ -304,6 +471,33 @@ const styles = StyleSheet.create({
     right: 18,
     bottom: 18,
     gap: 10,
+  },
+  adjustRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    marginTop: 8,
+  },
+  adjustBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
+  },
+  adjustBtnPrimary: {
+    backgroundColor: '#0058be',
+    borderColor: 'rgba(255,255,255,0.25)',
+  },
+  adjustHint: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
   },
   cardTitle: {
     color: '#fff',
@@ -363,33 +557,29 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
   },
 
-  createBtn: {
-    marginTop: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 10,
-    backgroundColor: '#0058be',
-    borderRadius: 18,
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-    shadowColor: '#0058be',
-    shadowOpacity: 0.15,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 12 },
-  },
-  createBtnText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '900',
-  },
   footerText: {
-    marginTop: 12,
+    marginTop: 22,
     textAlign: 'center',
     fontSize: 12,
     fontWeight: '700',
     opacity: 0.95,
     letterSpacing: 0.4,
+  },
+
+  swipeDeleteAction: {
+    width: 88,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#dc2626',
+    borderRadius: 20,
+    marginLeft: 10,
+    marginVertical: 2,
+    gap: 4,
+  },
+  swipeDeleteText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
   },
 });
 

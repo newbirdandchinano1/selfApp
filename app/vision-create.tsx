@@ -1,11 +1,21 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getProjects } from '@/lib/repositories/projects/project';
+import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import { createVision } from '@/lib/repositories/visions/vision';
+import type { VisionExtraPayload, VisionLinkedProjectRef } from '@/lib/repositories/visions/vision.types';
+import { visionTrackKindFromCreateTab } from '@/lib/repositories/visions/vision.types';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
 import { Image } from 'expo-image';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -14,7 +24,49 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+function startOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function addLocalDays(base: Date, delta: number): Date {
+  return new Date(base.getFullYear(), base.getMonth(), base.getDate() + delta);
+}
+
+function formatYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseYmd(s: string): Date | null {
+  const t = s.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return null;
+  const [y, m, d] = t.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return Number.isNaN(dt.getTime()) ? null : startOfLocalDay(dt);
+}
+
+/** 倒数日：仅今天之后；正数日：仅今天之前 */
+function clampEndDateToKind(iso: string, kind: 'countdown' | 'countup'): string {
+  const today = startOfLocalDay(new Date());
+  const parsed = parseYmd(iso);
+  if (kind === 'countdown') {
+    const min = addLocalDays(today, 1);
+    if (!parsed || parsed <= today) return formatYmd(min);
+    return formatYmd(parsed);
+  }
+  const max = addLocalDays(today, -1);
+  if (!parsed || parsed >= today) return formatYmd(max);
+  return formatYmd(parsed);
+}
+
+function defaultEndDateForKind(kind: 'countdown' | 'countup'): string {
+  const today = startOfLocalDay(new Date());
+  return kind === 'countdown' ? formatYmd(addLocalDays(today, 1)) : formatYmd(addLocalDays(today, -1));
+}
 
 type BackgroundOption =
   | {
@@ -27,14 +79,18 @@ type BackgroundOption =
 
 export default function VisionCreateScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
+  const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
+  const theme = Colors[scheme];
   const isDark = colorScheme === 'dark';
   const visionPrimary = '#0058be';
 
   const [visionName, setVisionName] = useState('');
   const [details, setDetails] = useState('');
   const [selectedBgIdx, setSelectedBgIdx] = useState(0);
+  /** 自定义封面相册 URI（与「自定义」槽位 `bgOptions.length - 1` 配套写入 extra.customBgUri） */
+  const [customCoverUri, setCustomCoverUri] = useState<string | null>(null);
 
   // 追踪方式：进度 / 计数 / 倒数日 / 目标
   const [trackType, setTrackType] = useState<0 | 1 | 2 | 3>(0);
@@ -46,14 +102,76 @@ export default function VisionCreateScreen() {
   const [unit, setUnit] = useState('');
 
   // 计数配置
-  const [countFrequency, setCountFrequency] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [countStep, setCountStep] = useState('1');
   const [countUnit, setCountUnit] = useState('次');
 
   // 倒数日配置
   const [countdownKind, setCountdownKind] = useState<'countdown' | 'countup'>('countdown');
-  const [endDate, setEndDate] = useState('2025-12-31');
+  const [endDate, setEndDate] = useState(() => defaultEndDateForKind('countdown'));
   const [dateFormat, setDateFormat] = useState<'ymd' | 'year' | 'month' | 'week' | 'day'>('ymd');
+  const [endDatePickerVisible, setEndDatePickerVisible] = useState(false);
+  const [endDateDraft, setEndDateDraft] = useState(() => parseYmd(defaultEndDateForKind('countdown'))!);
+
+  const endPickerMinDate = useMemo(() => {
+    const today = startOfLocalDay(new Date());
+    if (countdownKind === 'countdown') return addLocalDays(today, 1);
+    const past = new Date();
+    past.setFullYear(past.getFullYear() - 120);
+    return startOfLocalDay(past);
+  }, [countdownKind]);
+
+  const endPickerMaxDate = useMemo(() => {
+    const today = startOfLocalDay(new Date());
+    if (countdownKind === 'countup') return addLocalDays(today, -1);
+    const fut = new Date();
+    fut.setFullYear(fut.getFullYear() + 50);
+    return startOfLocalDay(fut);
+  }, [countdownKind]);
+
+  /** 「目标」追踪：可选，可多选；为空表示暂不关联项目 */
+  const [linkedProjects, setLinkedProjects] = useState<VisionLinkedProjectRef[]>([]);
+  const [projectPickerVisible, setProjectPickerVisible] = useState(false);
+  const [projectRows, setProjectRows] = useState<ProjectRow[]>([]);
+  const [projectListLoading, setProjectListLoading] = useState(false);
+
+  const openEndDatePicker = useCallback(() => {
+    const today = startOfLocalDay(new Date());
+    const parsed = parseYmd(endDate);
+    if (countdownKind === 'countdown') {
+      const min = addLocalDays(today, 1);
+      setEndDateDraft(parsed && parsed > today ? parsed : min);
+    } else {
+      const max = addLocalDays(today, -1);
+      setEndDateDraft(parsed && parsed < today ? parsed : max);
+    }
+    setEndDatePickerVisible(true);
+  }, [countdownKind, endDate]);
+
+  const confirmEndDatePicker = useCallback(() => {
+    setEndDate(clampEndDateToKind(formatYmd(endDateDraft), countdownKind));
+    setEndDatePickerVisible(false);
+  }, [countdownKind, endDateDraft]);
+
+  const openProjectPicker = useCallback(() => {
+    setProjectPickerVisible(true);
+    setProjectListLoading(true);
+    void (async () => {
+      try {
+        const rows = await getProjects();
+        setProjectRows(rows);
+      } catch {
+        setProjectRows([]);
+        Alert.alert('提示', '无法加载项目列表，请稍后重试。');
+      } finally {
+        setProjectListLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (trackType !== 2) return;
+    setEndDate(prev => clampEndDateToKind(prev, countdownKind));
+  }, [trackType, countdownKind]);
 
   const bgOptions: BackgroundOption[] = useMemo(
     () => [
@@ -78,11 +196,86 @@ export default function VisionCreateScreen() {
     []
   );
 
-  const onSave = () => {
-    // 这里先保留占位：后续你接接口/存储时再实现。
-    // eslint-disable-next-line no-console
-    console.log('save vision', { visionName, details, selectedBgIdx, trackType, direction, goalTotal, step, unit });
-    router.back();
+  const customBgSlotIndex = bgOptions.length - 1;
+
+  const openCustomCoverPicker = useCallback(async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('需要相册权限', '请在系统设置中允许访问相册，以便选择自定义封面。');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [3, 4],
+        quality: 0.85,
+      });
+      if (result.canceled) return;
+      const uri = result.assets[0]?.uri;
+      if (!uri) return;
+      setCustomCoverUri(uri);
+      setSelectedBgIdx(customBgSlotIndex);
+    } catch (e) {
+      console.warn('openCustomCoverPicker', e);
+      Alert.alert('选择失败', '无法打开相册，请稍后重试。');
+    }
+  }, [customBgSlotIndex]);
+
+  const onSave = async () => {
+    const title = visionName.trim();
+    if (!title) {
+      Alert.alert('提示', '请填写愿景名称');
+      return;
+    }
+
+    const id = `vn_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+    const track_kind = visionTrackKindFromCreateTab(trackType);
+    const directionForDb = trackType === 0 || trackType === 3 ? direction : null;
+
+    const extra: VisionExtraPayload = {
+      goalTotal,
+      step,
+      unit,
+      countFrequency: 'daily',
+      countStep,
+      countUnit,
+      countdownKind,
+      endDate,
+      dateFormat,
+      ...(trackType === 0 || trackType === 1 || trackType === 3 ? { currentAmount: '0' } : {}),
+    };
+    if (trackType === 3 && linkedProjects.length > 0) {
+      extra.linkedProjects = linkedProjects.map(p => ({
+        id: p.id.trim(),
+        name: p.name.trim(),
+      }));
+    }
+
+    if (selectedBgIdx === customBgSlotIndex) {
+      const u = customCoverUri?.trim();
+      if (!u) {
+        Alert.alert('提示', '请选择自定义封面图片');
+        return;
+      }
+      extra.customBgUri = u;
+    }
+
+    try {
+      await createVision({
+        id,
+        title,
+        description: details.trim() || null,
+        track_kind,
+        direction: directionForDb,
+        bg_option_idx: selectedBgIdx,
+        extra,
+      });
+      router.back();
+    } catch (e) {
+      console.warn('createVision failed', e);
+      Alert.alert('保存失败', '无法写入本地数据库，请稍后重试。');
+    }
   };
 
   const placeholderColor = isDark ? 'rgba(148,163,184,0.55)' : 'rgba(114,119,133,0.55)';
@@ -90,28 +283,30 @@ export default function VisionCreateScreen() {
   const outline = 'rgba(114,119,133,0.95)';
 
   return (
+    <>
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.85)' }]}>
-        <View style={styles.headerLeft}>
+        <View style={styles.headerLeading}>
           <Pressable
             onPress={() => router.back()}
             style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}
           >
             <MaterialIcons name="close" size={20} color={isDark ? 'rgba(248,250,252,0.92)' : 'rgba(15,23,42,0.92)'} />
           </Pressable>
-          <Text style={[styles.headerTitle, { color: textColor }]}>创建愿景</Text>
         </View>
-
-        <Pressable
-          onPress={onSave}
-          style={({ pressed }) => [
-            styles.saveBtn,
-            pressed && { opacity: 0.85 },
-            { backgroundColor: isDark ? 'rgba(30,41,59,0.2)' : 'rgba(234,237,255,0.6)' },
-          ]}
-        >
-          <Text style={[styles.saveBtnText, { color: isDark ? '#60a5fa' : '#1d4ed8' }]}>保存</Text>
-        </Pressable>
+        <View style={styles.headerCenter}>
+          <Text style={[styles.headerTitle, { color: textColor }]} numberOfLines={1}>
+            新建愿景
+          </Text>
+        </View>
+        <View style={styles.headerTrailing}>
+          <Pressable
+            onPress={onSave}
+            style={({ pressed }) => [styles.headerCreateBtn, pressed && { opacity: 0.88 }]}
+          >
+            <Text style={styles.headerCreateBtnText}>创建愿景</Text>
+          </Pressable>
+        </View>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
@@ -158,14 +353,32 @@ export default function VisionCreateScreen() {
                 const isSelected = idx === selectedBgIdx;
 
                 if (opt.kind === 'custom') {
+                  const hasCustom = !!customCoverUri?.trim();
                   return (
                     <Pressable
                       key={idx}
-                      onPress={() => setSelectedBgIdx(idx)}
-                      style={({ pressed }) => [styles.customBg, isSelected && styles.customBgSelected, pressed && { opacity: 0.9 }]}
+                      onPress={openCustomCoverPicker}
+                      style={({ pressed }) => [
+                        hasCustom ? styles.bgCard : styles.customBg,
+                        isSelected && (hasCustom ? { borderColor: theme.primary, borderWidth: 2 } : styles.customBgSelected),
+                        pressed && { opacity: 0.9 },
+                      ]}
                     >
-                      <MaterialIcons name="add_a_photo" size={22} color={outline} />
-                      <Text style={[styles.customBgText, { color: outline }]}>自定义</Text>
+                      {hasCustom ? (
+                        <>
+                          <Image source={{ uri: customCoverUri! }} style={styles.bgImg} contentFit="cover" transition={120} />
+                          {isSelected && (
+                            <View style={styles.bgSelectedOverlay}>
+                              <MaterialIcons name="check-circle" size={20} color={theme.primary} />
+                            </View>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <MaterialIcons name="add-a-photo" size={22} color={outline} />
+                          <Text style={[styles.customBgText, { color: outline }]}>自定义</Text>
+                        </>
+                      )}
                     </Pressable>
                   );
                 }
@@ -183,7 +396,7 @@ export default function VisionCreateScreen() {
                     <Image source={opt.source} style={styles.bgImg} contentFit="cover" transition={120} />
                     {isSelected && (
                       <View style={styles.bgSelectedOverlay}>
-                        <MaterialIcons name="check_circle" size={20} color={theme.primary} />
+                        <MaterialIcons name="check-circle" size={20} color={theme.primary} />
                       </View>
                     )}
                   </Pressable>
@@ -214,67 +427,6 @@ export default function VisionCreateScreen() {
                 },
               ]}
             >
-              <View style={styles.sectionHeader}>
-                <View style={{ gap: 6 }}>
-                  <Text style={[styles.panelTitle, { color: textColor }]}>频率</Text>
-                  <Text style={[styles.panelSub, { color: outline }]}>设定更新周期</Text>
-                </View>
-
-                <View style={styles.directionTabs}>
-                  <Pressable
-                    onPress={() => setCountFrequency('daily')}
-                    style={({ pressed }) => [
-                      styles.directionBtn,
-                      countFrequency === 'daily' && { backgroundColor: visionPrimary },
-                      pressed && { opacity: 0.9 },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.directionBtnText,
-                        countFrequency === 'daily' ? { color: '#fff' } : { color: outline },
-                      ]}
-                    >
-                      每日
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => setCountFrequency('weekly')}
-                    style={({ pressed }) => [
-                      styles.directionBtn,
-                      countFrequency === 'weekly' && { backgroundColor: visionPrimary },
-                      pressed && { opacity: 0.9 },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.directionBtnText,
-                        countFrequency === 'weekly' ? { color: '#fff' } : { color: outline },
-                      ]}
-                    >
-                      每周
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => setCountFrequency('monthly')}
-                    style={({ pressed }) => [
-                      styles.directionBtn,
-                      countFrequency === 'monthly' && { backgroundColor: visionPrimary },
-                      pressed && { opacity: 0.9 },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.directionBtnText,
-                        countFrequency === 'monthly' ? { color: '#fff' } : { color: outline },
-                      ]}
-                    >
-                      每月
-                    </Text>
-                  </Pressable>
-                </View>
-              </View>
-
               <View style={{ gap: 14 }}>
                 <Text style={[styles.panelTitle, { color: textColor }]}>计数设置</Text>
                 <View style={styles.grid2}>
@@ -358,13 +510,24 @@ export default function VisionCreateScreen() {
 
               <View style={{ marginTop: 18, gap: 8 }}>
                 <Text style={[styles.label, { color: outline }]}>结束日期</Text>
-                <TextInput
-                  value={endDate}
-                  onChangeText={setEndDate}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor={placeholderColor}
-                  style={[styles.grid2Input, { color: textColor }]}
-                />
+                <Pressable
+                  onPress={openEndDatePicker}
+                  style={({ pressed }) => [
+                    styles.endDateField,
+                    {
+                      backgroundColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(234,237,255,0.9)',
+                      borderColor: 'rgba(194,198,214,0.45)',
+                      opacity: pressed ? 0.88 : 1,
+                    },
+                  ]}
+                >
+                  <MaterialIcons name="event" size={22} color={visionPrimary} />
+                  <Text style={[styles.endDateFieldText, { color: textColor }]}>{endDate}</Text>
+                  <MaterialIcons name="expand-more" size={22} color={outline} />
+                </Pressable>
+                <Text style={[styles.endDateHint, { color: outline }]}>
+                  {countdownKind === 'countdown' ? '倒数日须选择今天之后的日期。' : '正数日须选择今天之前的日期。'}
+                </Text>
               </View>
 
               <View style={{ marginTop: 18, gap: 10 }}>
@@ -424,12 +587,15 @@ export default function VisionCreateScreen() {
               >
                 <View style={{ gap: 4 }}>
                   <Text style={[styles.panelTitle, { color: textColor }]}>目标设置</Text>
-                  <Text style={[styles.panelSub, { color: outline }]}>通过关联任务来追踪愿景达成</Text>
+                  <Text style={[styles.panelSub, { color: outline }]}>
+                    可不关联；关联后按所选项目（可多选）的任务完成情况汇总进度
+                  </Text>
                 </View>
                 <MaterialIcons name="track-changes" size={18} color={visionPrimary} />
               </View>
 
               <Pressable
+                onPress={openProjectPicker}
                 style={({ pressed }) => [
                   {
                     width: '100%',
@@ -457,32 +623,74 @@ export default function VisionCreateScreen() {
                     <MaterialIcons name="add-link" size={18} color={visionPrimary} />
                   </View>
                   <View style={{ gap: 2 }}>
-                    <Text style={{ color: textColor, fontSize: 14, fontWeight: '700' }}>关联当前任务</Text>
-                    <Text style={{ color: outline, fontSize: 12, fontWeight: '600' }}>从现有任务库中选择</Text>
+                    <Text style={{ color: textColor, fontSize: 14, fontWeight: '700' }}>添加关联项目</Text>
+                    <Text style={{ color: outline, fontSize: 12, fontWeight: '600' }}>可多次打开，添加多个项目</Text>
                   </View>
                 </View>
                 <MaterialIcons name="chevron-right" size={20} color={outline} />
               </Pressable>
 
               <View style={{ gap: 10 }}>
-                <Text style={[styles.label, { color: outline }]}>已关联任务</Text>
+                <Text style={[styles.label, { color: outline }]}>已关联项目</Text>
                 <View
                   style={{
                     borderWidth: 2,
                     borderStyle: 'dashed',
                     borderColor: 'rgba(194,198,214,0.45)',
                     borderRadius: 12,
-                    paddingVertical: 26,
+                    paddingVertical: linkedProjects.length > 0 ? 12 : 26,
                     paddingHorizontal: 14,
-                    alignItems: 'center',
+                    alignItems: 'stretch',
                     justifyContent: 'center',
-                    gap: 6,
+                    gap: 10,
                   }}
                 >
-                  <MaterialIcons name="task-alt" size={28} color={'rgba(114,119,133,0.35)'} />
-                  <Text style={{ color: 'rgba(114,119,133,0.55)', fontSize: 13, fontStyle: 'italic' }}>
-                    尚未选择任务，点击上方按钮开始
-                  </Text>
+                  {linkedProjects.length > 0 ? (
+                    <>
+                      <Text style={{ color: outline, fontSize: 11, fontWeight: '600', marginBottom: 2 }}>
+                        各项目任务合并统计：已完成 / 全部非取消任务
+                      </Text>
+                      {linkedProjects.map(p => (
+                        <View
+                          key={p.id}
+                          style={{ width: '100%', flexDirection: 'row', alignItems: 'center', gap: 12 }}
+                        >
+                          <View
+                            style={{
+                              width: 40,
+                              height: 40,
+                              borderRadius: 20,
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              backgroundColor: 'rgba(0,88,190,0.1)',
+                            }}
+                          >
+                            <MaterialIcons name="folder-special" size={22} color={visionPrimary} />
+                          </View>
+                          <View style={{ flex: 1, gap: 2 }}>
+                            <Text style={{ color: textColor, fontSize: 15, fontWeight: '800' }} numberOfLines={2}>
+                              {p.name}
+                            </Text>
+                          </View>
+                          <Pressable
+                            onPress={() => setLinkedProjects(prev => prev.filter(x => x.id !== p.id))}
+                            hitSlop={8}
+                            style={({ pressed }) => [{ padding: 6, opacity: pressed ? 0.65 : 1 }]}
+                            accessibilityLabel={`移除关联 ${p.name}`}
+                          >
+                            <MaterialIcons name="close" size={22} color={outline} />
+                          </Pressable>
+                        </View>
+                      ))}
+                    </>
+                  ) : (
+                    <>
+                      <MaterialIcons name="folder-off" size={28} color={'rgba(114,119,133,0.35)'} style={{ alignSelf: 'center' }} />
+                      <Text style={{ color: 'rgba(114,119,133,0.55)', fontSize: 13, fontStyle: 'italic', textAlign: 'center' }}>
+                        暂不关联项目也可以保存；需要时点击「添加关联项目」
+                      </Text>
+                    </>
+                  )}
                 </View>
               </View>
             </View>
@@ -581,27 +789,122 @@ export default function VisionCreateScreen() {
             </View>
           )}
 
-          {/* 页面底部还有按钮，但按钮不再绝对定位，因此这里不需要额外占位高度 */}
         </ScrollView>
       </KeyboardAvoidingView>
+    </SafeAreaView>
 
-      {/* Footer Button */}
-      <View style={[styles.footer, { backgroundColor: isDark ? 'rgba(15,23,42,0.8)' : 'rgba(255,255,255,0.85)' }]}>
-        <Pressable
-          onPress={() => {
-            // 这里先直接复用“保存”占位逻辑
-            onSave();
-          }}
-          style={({ pressed }) => [
-            styles.primaryFooterBtn,
-            pressed && { opacity: 0.9, transform: [{ scale: 0.99 }] },
+    <Modal
+      visible={projectPickerVisible}
+      animationType="slide"
+      transparent
+      onRequestClose={() => setProjectPickerVisible(false)}
+    >
+      <View style={styles.projectModalRoot}>
+        <Pressable style={styles.projectModalBackdrop} onPress={() => setProjectPickerVisible(false)} />
+        <View style={[styles.projectModalSheet, { backgroundColor: theme.background }]}>
+          <View style={styles.projectModalHeader}>
+            <Text style={[styles.projectModalTitle, { color: textColor }]}>添加关联项目</Text>
+            <Pressable onPress={() => setProjectPickerVisible(false)} hitSlop={12} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
+              <MaterialIcons name="close" size={22} color={outline} />
+            </Pressable>
+          </View>
+          {projectListLoading ? (
+            <View style={styles.projectModalLoading}>
+              <ActivityIndicator size="large" color={visionPrimary} />
+            </View>
+          ) : projectRows.length === 0 ? (
+            <Text style={[styles.projectModalEmpty, { color: outline }]}>暂无项目，请先在任务中创建项目后再关联。</Text>
+          ) : (
+            <ScrollView keyboardShouldPersistTaps="handled" style={styles.projectModalList} showsVerticalScrollIndicator={false}>
+              {projectRows.map(p => (
+                <Pressable
+                  key={p.id}
+                  onPress={() => {
+                    if (linkedProjects.some(x => x.id === p.id)) {
+                      Alert.alert('提示', '该项目已在关联列表中');
+                      return;
+                    }
+                    setLinkedProjects(prev => [...prev, { id: p.id, name: p.name }]);
+                  }}
+                  style={({ pressed }) => [
+                    styles.projectModalRow,
+                    {
+                      borderBottomColor: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(194,198,214,0.35)',
+                      opacity: pressed ? 0.88 : 1,
+                    },
+                  ]}
+                >
+                  <MaterialIcons name="folder" size={22} color={visionPrimary} />
+                  <Text style={[styles.projectModalRowTitle, { color: textColor }]} numberOfLines={2}>
+                    {p.name}
+                  </Text>
+                  {linkedProjects.some(x => x.id === p.id) ? (
+                    <MaterialIcons name="check-circle" size={22} color={visionPrimary} />
+                  ) : (
+                    <MaterialIcons name="add-circle-outline" size={22} color={outline} />
+                  )}
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+      </View>
+    </Modal>
+
+    <Modal
+      visible={endDatePickerVisible}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setEndDatePickerVisible(false)}
+    >
+      <View style={styles.dateModalRoot}>
+        <Pressable style={styles.dateModalBackdrop} onPress={() => setEndDatePickerVisible(false)} />
+        <View
+          style={[
+            styles.dateModalCard,
+            {
+              backgroundColor: theme.background,
+              borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.5)',
+              marginBottom: Math.max(insets.bottom, 16) + 8,
+            },
           ]}
         >
-          <Text style={styles.primaryFooterText}>开启愿景</Text>
-          <MaterialIcons name="rocket_launch" size={18} color="#fff" />
-        </Pressable>
+          <Text style={[styles.dateModalTitle, { color: textColor }]}>
+            {countdownKind === 'countdown' ? '选择结束日期（倒数日）' : '选择结束日期（正数日）'}
+          </Text>
+          <DateTimePicker
+            value={endDateDraft}
+            mode="date"
+            display="spinner"
+            themeVariant={isDark ? 'dark' : 'light'}
+            locale={Platform.OS === 'ios' ? 'zh_CN' : undefined}
+            minimumDate={endPickerMinDate}
+            maximumDate={endPickerMaxDate}
+            onChange={(_, date) => {
+              if (date) setEndDateDraft(startOfLocalDay(date));
+            }}
+          />
+          <View style={styles.dateModalActions}>
+            <Pressable
+              onPress={() => setEndDatePickerVisible(false)}
+              style={[
+                styles.dateModalBtnGhost,
+                { borderColor: isDark ? 'rgba(148,163,184,0.3)' : 'rgba(194,198,214,0.65)' },
+              ]}
+            >
+              <Text style={[styles.dateModalBtnGhostText, { color: outline }]}>取消</Text>
+            </Pressable>
+            <Pressable
+              onPress={confirmEndDatePicker}
+              style={[styles.dateModalBtnPrimary, { backgroundColor: visionPrimary }]}
+            >
+              <Text style={styles.dateModalBtnPrimaryText}>确定</Text>
+            </Pressable>
+          </View>
+        </View>
       </View>
-    </SafeAreaView>
+    </Modal>
+    </>
   );
 }
 
@@ -651,18 +954,28 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
-    paddingHorizontal: 16,
-    height: 60,
+    paddingHorizontal: 12,
+    height: 56,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(148,163,184,0.18)',
   },
-  headerLeft: {
-    flexDirection: 'row',
+  headerLeading: {
+    width: 44,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  headerCenter: {
+    flex: 1,
     alignItems: 'center',
-    gap: 10,
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  headerTrailing: {
+    minWidth: 96,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
   },
   headerIconBtn: {
     width: 36,
@@ -673,17 +986,25 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(248,250,252,0.18)',
   },
   headerTitle: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '800',
     letterSpacing: -0.3,
   },
-  saveBtn: {
+  headerCreateBtn: {
     paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 12,
+    paddingVertical: 9,
+    borderRadius: 14,
+    backgroundColor: '#0058be',
+    shadowColor: '#0058be',
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
   },
-  saveBtnText: {
-    fontWeight: '700',
+  headerCreateBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '900',
+    letterSpacing: -0.2,
   },
 
   scrollContent: {
@@ -859,27 +1180,138 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(234,237,255,0.9)',
   },
 
-  primaryFooterBtn: {
-    width: '100%',
-    backgroundColor: '#0058be',
-    borderRadius: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+  projectModalRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  projectModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  projectModalSheet: {
+    maxHeight: '78%',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 8,
+  },
+  projectModalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(148,163,184,0.22)',
+  },
+  projectModalTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  projectModalLoading: {
+    paddingVertical: 40,
+    alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
   },
-  primaryFooterText: {
-    color: '#fff',
+  projectModalEmpty: {
+    paddingHorizontal: 22,
+    paddingVertical: 28,
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '600',
+    lineHeight: 21,
+  },
+  projectModalList: {
+    flexGrow: 0,
+  },
+  projectModalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  projectModalRowTitle: {
+    flex: 1,
     fontSize: 16,
-    fontWeight: '900',
+    fontWeight: '700',
   },
-  footer: {
-    // 不使用 absolute，确保 iOS 下滚动区域是自适应的（不会凭空多出大块空白）
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 18,
+
+  endDateField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  endDateFieldText: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  endDateHint: {
+    fontSize: 11,
+    fontWeight: '600',
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  dateModalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  dateModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  dateModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 20,
+    paddingTop: 18,
+    paddingHorizontal: 12,
+    paddingBottom: 14,
+    borderWidth: 1,
+  },
+  dateModalTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginBottom: 6,
+    letterSpacing: -0.2,
+  },
+  dateModalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  dateModalBtnGhost: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dateModalBtnGhostText: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  dateModalBtnPrimary: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dateModalBtnPrimaryText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
   },
 });
 

@@ -1,6 +1,9 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { listVisions } from '@/lib/repositories/visions/vision';
+import { visionRowToProfileCarouselItem } from '@/lib/repositories/visions/vision-present';
 import { getDefaultUser } from '@/lib/repositories/users/user';
+import type { ProfileVisionCarouselItem } from '@/lib/visions-registry';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -55,35 +58,19 @@ export default function ProfileScreen() {
       ? (user.weight / ((user.height / 100) * (user.height / 100))).toFixed(1)
       : '0.0';
 
-  const visionCards = useMemo(
-    () => [
-      {
-        id: 'book',
-        kicker: '年度目标',
-        title: '完成 50 本书的阅读',
-        progressText: '已读 12 / 50 (24%)',
-        progress: 24,
-        year: '2024',
-      },
-      {
-        id: 'run',
-        kicker: '健康挑战',
-        title: '累计跑步 600 公里',
-        progressText: '已跑 198 / 600 (33%)',
-        progress: 33,
-        year: '2024',
-      },
-      {
-        id: 'travel',
-        kicker: '人生体验',
-        title: '打卡 12 座城市',
-        progressText: '已完成 4 / 12 (34%)',
-        progress: 34,
-        year: '2024',
-      },
-    ],
-    [],
-  );
+  const [visionCards, setVisionCards] = useState<ProfileVisionCarouselItem[]>([]);
+  const visionCardsRef = useRef(visionCards);
+  visionCardsRef.current = visionCards;
+
+  const loadProfileVisions = useCallback(async () => {
+    try {
+      const rows = await listVisions();
+      const fromDb = await Promise.all(rows.map(r => visionRowToProfileCarouselItem(r)));
+      setVisionCards(fromDb);
+    } catch {
+      setVisionCards([]);
+    }
+  }, []);
   const wishListCards = useMemo(
     () => [
       {
@@ -113,7 +100,7 @@ export default function ProfileScreen() {
 
   const [activeVisionIndex, setActiveVisionIndex] = useState(0);
   const isUserInteractingVisionRef = useRef(false);
-  const visionListRef = useRef<FlatList<(typeof visionCards)[number]>>(null);
+  const visionListRef = useRef<FlatList<ProfileVisionCarouselItem>>(null);
   const visionScrollX = useRef(new Animated.Value(0)).current;
   const autoPlayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -137,7 +124,9 @@ export default function ProfileScreen() {
     clearAutoPlay();
     autoPlayTimerRef.current = setInterval(() => {
       setActiveVisionIndex(prev => {
-        const next = (prev + 1) % visionCards.length;
+        const len = visionCardsRef.current.length;
+        if (len === 0) return prev;
+        const next = (prev + 1) % len;
         visionListRef.current?.scrollToOffset({
           offset: next * VISION_CARD_WIDTH,
           animated: true,
@@ -148,12 +137,20 @@ export default function ProfileScreen() {
   };
 
   useEffect(() => {
+    if (visionCards.length === 0) return;
+    setActiveVisionIndex(i => Math.min(i, Math.max(0, visionCards.length - 1)));
+  }, [visionCards.length]);
+
+  useEffect(() => {
+    clearAutoPlay();
+    if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+    if (visionCards.length === 0) return;
     startAutoPlay();
     return () => {
       clearAutoPlay();
       if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
     };
-  }, []);
+  }, [visionCards]);
 
   const loadUser = useCallback(async () => {
     try {
@@ -171,7 +168,8 @@ export default function ProfileScreen() {
   useFocusEffect(
     useCallback(() => {
       loadUser();
-    }, [loadUser]),
+      void loadProfileVisions();
+    }, [loadUser, loadProfileVisions]),
   );
 
   const healthBgUrl = require('../../assets/profile/health.png');
@@ -334,113 +332,147 @@ export default function ProfileScreen() {
               />
             ))}
 
-            <Animated.FlatList
-              ref={visionListRef}
-              horizontal
-              pagingEnabled
-              data={visionCards}
-              keyExtractor={item => item.id}
-              showsHorizontalScrollIndicator={false}
-              decelerationRate="fast"
-              bounces={false}
-              onScrollBeginDrag={() => {
-                isUserInteractingVisionRef.current = true;
-                clearAutoPlay();
-              }}
-              onScrollEndDrag={scheduleAutoPlayResume}
-              onMomentumScrollEnd={(e: NativeSyntheticEvent<NativeScrollEvent>) => {
-                const index = Math.round(e.nativeEvent.contentOffset.x / VISION_CARD_WIDTH);
-                setActiveVisionIndex(Math.max(0, Math.min(index, visionCards.length - 1)));
-                scheduleAutoPlayResume();
-              }}
-              onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: visionScrollX } } }], {
-                useNativeDriver: true,
-              })}
-              scrollEventThrottle={16}
-              renderItem={({ item, index }) => {
-                const inputRange = [
-                  (index - 1) * VISION_CARD_WIDTH,
-                  index * VISION_CARD_WIDTH,
-                  (index + 1) * VISION_CARD_WIDTH,
-                ];
+            {visionCards.length === 0 ? (
+              <View
+                style={{
+                  width: VISION_CARD_WIDTH,
+                  minHeight: 300,
+                  alignSelf: 'center',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  paddingHorizontal: 20,
+                  borderRadius: 22,
+                  borderWidth: 1,
+                  borderColor: outlineVariant,
+                  backgroundColor: isDark ? 'rgba(30,41,59,0.45)' : 'rgba(255,255,255,0.92)',
+                }}
+              >
+                <Text style={{ color: outline, fontSize: 15, fontWeight: '600', textAlign: 'center', lineHeight: 22 }}>
+                  暂无愿景，可在愿景墙或此处创建第一条。
+                </Text>
+                <Pressable
+                  onPress={() => router.push('/vision-create')}
+                  style={({ pressed }) => [{ marginTop: 16, opacity: pressed ? 0.85 : 1 }]}
+                >
+                  <Text style={{ color: primary, fontSize: 15, fontWeight: '800' }}>创建愿景</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <>
+                <Animated.FlatList
+                  ref={visionListRef}
+                  horizontal
+                  pagingEnabled
+                  data={visionCards}
+                  keyExtractor={item => item.id}
+                  showsHorizontalScrollIndicator={false}
+                  decelerationRate="fast"
+                  bounces={false}
+                  onScrollBeginDrag={() => {
+                    isUserInteractingVisionRef.current = true;
+                    clearAutoPlay();
+                  }}
+                  onScrollEndDrag={scheduleAutoPlayResume}
+                  onMomentumScrollEnd={(e: NativeSyntheticEvent<NativeScrollEvent>) => {
+                    const index = Math.round(e.nativeEvent.contentOffset.x / VISION_CARD_WIDTH);
+                    setActiveVisionIndex(Math.max(0, Math.min(index, visionCards.length - 1)));
+                    scheduleAutoPlayResume();
+                  }}
+                  onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: visionScrollX } } }], {
+                    useNativeDriver: true,
+                  })}
+                  scrollEventThrottle={16}
+                  renderItem={({ item, index }) => {
+                    const inputRange = [
+                      (index - 1) * VISION_CARD_WIDTH,
+                      index * VISION_CARD_WIDTH,
+                      (index + 1) * VISION_CARD_WIDTH,
+                    ];
 
-                const scale = visionScrollX.interpolate({
-                  inputRange,
-                  outputRange: [0.9, 1, 0.9],
-                  extrapolate: 'clamp',
-                });
-                const translateY = visionScrollX.interpolate({
-                  inputRange,
-                  outputRange: [20, 0, 20],
-                  extrapolate: 'clamp',
-                });
-                const rotate = visionScrollX.interpolate({
-                  inputRange,
-                  outputRange: ['5deg', '0deg', '-5deg'],
-                  extrapolate: 'clamp',
-                });
-                const opacity = visionScrollX.interpolate({
-                  inputRange,
-                  outputRange: [0.72, 1, 0.72],
-                  extrapolate: 'clamp',
-                });
+                    const scale = visionScrollX.interpolate({
+                      inputRange,
+                      outputRange: [0.9, 1, 0.9],
+                      extrapolate: 'clamp',
+                    });
+                    const translateY = visionScrollX.interpolate({
+                      inputRange,
+                      outputRange: [20, 0, 20],
+                      extrapolate: 'clamp',
+                    });
+                    const rotate = visionScrollX.interpolate({
+                      inputRange,
+                      outputRange: ['5deg', '0deg', '-5deg'],
+                      extrapolate: 'clamp',
+                    });
+                    const opacity = visionScrollX.interpolate({
+                      inputRange,
+                      outputRange: [0.72, 1, 0.72],
+                      extrapolate: 'clamp',
+                    });
 
-                return (
-                  <Animated.View
-                    style={[
-                      styles.visionCard,
-                      {
-                        backgroundColor: surface,
-                        opacity,
-                        transform: [{ perspective: 1000 }, { translateY }, { rotateZ: rotate }, { scale }],
-                      },
-                    ]}
-                  >
-                    <Image source={visionUrl} style={styles.bgImage} contentFit="cover" />
-                    <View style={styles.visionOverlay} />
-                    <View style={styles.visionContent}>
-                      <Text style={styles.cardKicker}>{item.kicker}</Text>
-                      <Text style={styles.visionTitle}>{item.title}</Text>
-                      <View style={styles.progressTrack}>
-                        <View
+                    return (
+                      <Pressable
+                        style={{ width: VISION_CARD_WIDTH }}
+                        onPress={() => router.push({ pathname: '/vision-detail/[id]', params: { id: item.id } })}
+                      >
+                        <Animated.View
                           style={[
-                            styles.progressFill,
+                            styles.visionCard,
                             {
-                              backgroundColor: 'rgba(173,198,255,0.95)',
-                              width: `${item.progress}%` as `${number}%`,
+                              backgroundColor: surface,
+                              opacity,
+                              transform: [{ perspective: 1000 }, { translateY }, { rotateZ: rotate }, { scale }],
                             },
                           ]}
-                        />
-                      </View>
-                      <View style={styles.progressMetaRow}>
-                        <Text style={styles.progressMeta}>{item.progressText}</Text>
-                        <Text style={styles.progressYear}>{item.year}</Text>
-                      </View>
-                    </View>
-                  </Animated.View>
-                );
-              }}
-            />
-
-            <View style={styles.visionDots}>
-              {visionCards.map((card, idx) => (
-                <View
-                  key={card.id}
-                  style={[
-                    styles.visionDot,
-                    {
-                      width: idx === activeVisionIndex ? 18 : 8,
-                      backgroundColor:
-                        idx === activeVisionIndex
-                          ? primary
-                          : isDark
-                            ? 'rgba(148,163,184,0.35)'
-                            : 'rgba(114,119,133,0.25)',
-                    },
-                  ]}
+                        >
+                          <Image source={visionUrl} style={styles.bgImage} contentFit="cover" />
+                          <View style={styles.visionOverlay} />
+                          <View style={styles.visionContent}>
+                            <Text style={styles.cardKicker}>{item.kicker}</Text>
+                            <Text style={styles.visionTitle}>{item.title}</Text>
+                            <View style={styles.progressTrack}>
+                              <View
+                                style={[
+                                  styles.progressFill,
+                                  {
+                                    backgroundColor: 'rgba(173,198,255,0.95)',
+                                    width: `${item.progress}%` as `${number}%`,
+                                  },
+                                ]}
+                              />
+                            </View>
+                            <View style={styles.progressMetaRow}>
+                              <Text style={styles.progressMeta}>{item.progressText}</Text>
+                              <Text style={styles.progressYear}>{item.year}</Text>
+                            </View>
+                          </View>
+                        </Animated.View>
+                      </Pressable>
+                    );
+                  }}
                 />
-              ))}
-            </View>
+
+                <View style={styles.visionDots}>
+                  {visionCards.map((card, idx) => (
+                    <View
+                      key={card.id}
+                      style={[
+                        styles.visionDot,
+                        {
+                          width: idx === activeVisionIndex ? 18 : 8,
+                          backgroundColor:
+                            idx === activeVisionIndex
+                              ? primary
+                              : isDark
+                                ? 'rgba(148,163,184,0.35)'
+                                : 'rgba(114,119,133,0.25)',
+                        },
+                      ]}
+                    />
+                  ))}
+                </View>
+              </>
+            )}
           </View>
 
           <View style={styles.sectionHead}>
@@ -448,7 +480,7 @@ export default function ProfileScreen() {
               <Text style={[styles.kicker, { color: outline }]}>WISHLIST</Text>
               <Text style={[styles.sectionTitle, { color: text }]}>欲望清单</Text>
             </View>
-            <Pressable onPress={() => router.push('/wish-list' as any)}>
+            <Pressable onPress={() => router.push('/wish-list')}>
               <Text style={[styles.moreText, { color: primary }]}>查看全部</Text>
             </Pressable>
           </View>

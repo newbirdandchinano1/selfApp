@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 13;
+export const DB_VERSION = 15;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -219,6 +219,7 @@ export async function initDatabase() {
       gender TEXT NOT NULL DEFAULT '男',
       lifestyle TEXT NOT NULL DEFAULT '长期静坐不运动',
       goal TEXT NOT NULL DEFAULT '无',
+      birthday TEXT,
       height REAL NOT NULL DEFAULT 0,
       weight REAL NOT NULL DEFAULT 0,
       age INTEGER NOT NULL DEFAULT 0,
@@ -379,6 +380,39 @@ export async function initDatabase() {
       version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS visions (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      track_kind TEXT NOT NULL,
+      direction TEXT,
+      bg_option_idx INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS wish_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      price REAL NOT NULL,
+      category_id TEXT,
+      category_label TEXT,
+      desire_level INTEGER NOT NULL DEFAULT 3 CHECK (desire_level >= 1 AND desire_level <= 5),
+      reason TEXT,
+      reference_image_uri TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
   `);
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
@@ -419,6 +453,7 @@ export async function initDatabase() {
   await ensureColumn(db, 'users', 'gender', 'TEXT');
   await ensureColumn(db, 'users', 'lifestyle', 'TEXT');
   await ensureColumn(db, 'users', 'goal', 'TEXT');
+  await ensureColumn(db, 'users', 'birthday', 'TEXT');
   // Some SQLite builds don't allow adding a NOT NULL column via ALTER TABLE reliably.
   // Keep it nullable on migration and treat NULL as "unsorted" in queries.
   await ensureColumn(db, 'project_categories', 'sort_order', 'INTEGER');
@@ -559,6 +594,12 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_cash_flow_incomes_updated_at ON cash_flow_incomes(updated_at);
     CREATE INDEX IF NOT EXISTS idx_cash_flow_holdings_sort_order ON cash_flow_holdings(sort_order);
     CREATE INDEX IF NOT EXISTS idx_cash_flow_holdings_updated_at ON cash_flow_holdings(updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_visions_updated_at ON visions(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_visions_sort_order ON visions(sort_order);
+
+    CREATE INDEX IF NOT EXISTS idx_wish_items_updated_at ON wish_items(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wish_items_category_id ON wish_items(category_id);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
@@ -704,6 +745,8 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS cash_flow_incomes;
     DROP TABLE IF EXISTS cash_flow_holdings;
     DROP TABLE IF EXISTS cash_flow_profile;
+    DROP TABLE IF EXISTS wish_items;
+    DROP TABLE IF EXISTS visions;
     DROP TABLE IF EXISTS users;
     DROP TABLE IF EXISTS app_meta;
   `);
