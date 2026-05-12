@@ -26,6 +26,7 @@ import {
 } from '@/lib/repositories/habits/habit-check-in';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
+import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -240,6 +241,8 @@ type HabitSection = {
     todayCount: number;
     /** `extra_data.quantify.dailyGoal`，null 表示不限 */
     dailyGoalMax: number | null;
+    /** `extra_data.habitKind`：养成 / 戒除 */
+    kind: HabitKind;
   }>;
 };
 
@@ -355,6 +358,267 @@ function ymdToLocalDate(ymd: string): Date | null {
   const day = Number(m[3]);
   if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
   return new Date(year, month - 1, day);
+}
+
+function startOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function addLocalDays(d: Date, n: number): Date {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+/** 含 `d` 的周的周一（本地 0:00） */
+function mondayOfWeekContaining(d: Date): Date {
+  const sod = startOfLocalDay(d);
+  const dow = sod.getDay();
+  const deltaMon = dow === 0 ? -6 : 1 - dow;
+  return addLocalDays(sod, deltaMon);
+}
+
+/** 青蛙完成热力图：列=周（周一至周日自上而下），颜色与完成数挂钩 */
+const FROG_HEATMAP_WEEKS = 15;
+const FROG_HEAT_CELL = 22;
+const FROG_HEAT_GAP = 8;
+const FROG_HEAT_MONTH_ROW_H = 24;
+const FROG_HEAT_LEVEL_COLORS_LIGHT = ['#EAEBEE', '#C1DFCC', '#87C3A0', '#4EA871', '#329258'] as const;
+const FROG_HEAT_LEVEL_COLORS_DARK = [
+  'rgba(51,65,85,0.78)',
+  'rgba(193,223,204,0.32)',
+  'rgba(135,195,160,0.5)',
+  'rgba(78,168,113,0.68)',
+  'rgba(50,146,88,0.85)',
+] as const;
+
+type FrogHeatCell = { level: number | null; ymd: string | null };
+
+function FrogCompletedHeatmap({
+  tasks,
+  textMain,
+  textMuted,
+  accentColor,
+  innerCardBg,
+  innerBorderColor,
+  isDark,
+}: {
+  tasks: TaskRow[];
+  textMain: string;
+  textMuted: string;
+  accentColor: string;
+  innerCardBg: string;
+  innerBorderColor: string;
+  isDark: boolean;
+}) {
+  const router = useRouter();
+  const scrollRef = React.useRef<ScrollView>(null);
+  const colors = isDark ? FROG_HEAT_LEVEL_COLORS_DARK : FROG_HEAT_LEVEL_COLORS_LIGHT;
+  const [selectedYmd, setSelectedYmd] = React.useState<string | null>(null);
+
+  const frogDoneTasksByYmd = React.useMemo(() => {
+    const map = new Map<string, TaskRow[]>();
+    for (const t of tasks) {
+      if (t.status !== 'done' && t.status !== 'cancelled') continue;
+      const assigned = (parseTaskMeta(t.extra_data).frogAssignedOn ?? '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(assigned)) continue;
+      const arr = map.get(assigned) ?? [];
+      arr.push(t);
+      map.set(assigned, arr);
+    }
+    return map;
+  }, [tasks]);
+
+  const { weekColumns, monthTickColIndexes } = React.useMemo(() => {
+    const today = startOfLocalDay(new Date());
+    const thisMonday = mondayOfWeekContaining(today);
+    const gridStartMonday = addLocalDays(thisMonday, -(FROG_HEATMAP_WEEKS - 1) * 7);
+
+    type Col = { cells: FrogHeatCell[]; monday: Date };
+    const weekColumns: Col[] = [];
+    const monthTickColIndexes: number[] = [];
+
+    for (let c = 0; c < FROG_HEATMAP_WEEKS; c++) {
+      const monday = addLocalDays(gridStartMonday, c * 7);
+      const cells: FrogHeatCell[] = [];
+      for (let r = 0; r < 7; r++) {
+        const day = addLocalDays(monday, r);
+        if (day.getTime() > today.getTime()) {
+          cells.push({ level: null, ymd: null });
+        } else {
+          const ymd = formatLocalYmd(day);
+          const n = frogDoneTasksByYmd.get(ymd)?.length ?? 0;
+          cells.push({ level: Math.min(4, n), ymd });
+        }
+      }
+      weekColumns.push({ cells, monday });
+    }
+
+    let prevKey = '';
+    for (let c = 0; c < weekColumns.length; c++) {
+      const m = weekColumns[c].monday;
+      const key = `${m.getFullYear()}-${m.getMonth()}`;
+      if (key !== prevKey) {
+        monthTickColIndexes.push(c);
+        prevKey = key;
+      }
+    }
+
+    return { weekColumns, monthTickColIndexes };
+  }, [frogDoneTasksByYmd]);
+
+  const selectedFrogs = selectedYmd ? frogDoneTasksByYmd.get(selectedYmd) ?? [] : [];
+
+  const onHeatCellPress = React.useCallback((cell: FrogHeatCell) => {
+    if (!cell.ymd) return;
+    setSelectedYmd((prev) => (prev === cell.ymd ? null : cell.ymd));
+  }, []);
+
+  const colStride = FROG_HEAT_CELL + FROG_HEAT_GAP;
+
+  React.useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      scrollRef.current?.scrollToEnd({ animated: false });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [weekColumns]);
+
+  const weekdayLeftLabels = ['一', '二', '三', '四', '五', '六', '日'];
+
+  return (
+    <View style={styles.frogHeatmapOuter}>
+      <View style={styles.frogHeatmapHeading}>
+        <Text style={[styles.frogHeatmapTitle, { color: textMain }]}>已完成青蛙</Text>
+        <View style={styles.frogHeatmapLegend}>
+          <Text style={[styles.frogHeatmapLegendText, { color: textMuted }]}>少</Text>
+          <View style={styles.frogHeatmapLegendSwatches}>
+            {colors.map((bg, i) => (
+              <View key={i} style={[styles.frogHeatmapLegendCell, { backgroundColor: bg }]} />
+            ))}
+          </View>
+          <Text style={[styles.frogHeatmapLegendText, { color: textMuted }]}>多</Text>
+        </View>
+      </View>
+
+      <View
+        style={[
+          styles.frogHeatmapCard,
+          { backgroundColor: innerCardBg, borderColor: innerBorderColor },
+        ]}>
+        <View style={styles.frogHeatmapBodyRow}>
+          <View style={styles.frogHeatmapYAxis}>
+            <View style={{ height: FROG_HEAT_MONTH_ROW_H }} />
+            {weekdayLeftLabels.map((lb) => (
+              <View key={lb} style={[styles.frogHeatmapYCell, { height: FROG_HEAT_CELL + FROG_HEAT_GAP }]}>
+                <Text style={[styles.frogHeatmapYLabel, { color: textMuted }]}>{lb}</Text>
+              </View>
+            ))}
+          </View>
+
+          <ScrollView
+            ref={scrollRef}
+            horizontal
+            nestedScrollEnabled
+            showsHorizontalScrollIndicator={false}
+            style={{ flex: 1 }}
+            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}>
+            <View>
+              <View style={[styles.frogHeatmapMonthRow, { height: FROG_HEAT_MONTH_ROW_H }]}>
+                {weekColumns.map((col, c) => {
+                  const show = monthTickColIndexes.includes(c);
+                  const m = col.monday.getMonth() + 1;
+                  return (
+                    <View key={`m-${c}`} style={{ width: colStride, alignItems: 'center' }}>
+                      {show ? (
+                        <Text style={[styles.frogHeatmapMonthText, { color: textMuted }]}>{m}月</Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </View>
+
+              <View style={[styles.frogHeatmapGridRow, { gap: FROG_HEAT_GAP }]}>
+                {weekColumns.map((col, c) => (
+                  <View key={`w-${c}`} style={{ gap: FROG_HEAT_GAP }}>
+                    {col.cells.map((cell, r) => {
+                      const isFuture = cell.level === null || !cell.ymd;
+                      const selected = !isFuture && cell.ymd === selectedYmd;
+                      return (
+                        <Pressable
+                          key={`c-${c}-r-${r}`}
+                          disabled={isFuture}
+                          onPress={() => onHeatCellPress(cell)}
+                          hitSlop={isFuture ? 0 : 4}
+                          style={({ pressed }) => [
+                            styles.frogHeatmapCellHit,
+                            !isFuture && pressed && { opacity: 0.82 },
+                          ]}>
+                          <View
+                            style={[
+                              styles.frogHeatmapDataCell,
+                              {
+                                width: FROG_HEAT_CELL,
+                                height: FROG_HEAT_CELL,
+                                backgroundColor: isFuture ? 'transparent' : colors[cell.level!],
+                                borderWidth: selected ? 2 : 0,
+                                borderColor: selected ? accentColor : 'transparent',
+                              },
+                            ]}
+                          />
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ))}
+              </View>
+            </View>
+          </ScrollView>
+        </View>
+
+        {selectedYmd ? (
+          <View
+            style={[
+              styles.frogHeatmapDetail,
+              { borderTopColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(148,163,184,0.28)' },
+            ]}>
+            <View style={styles.frogHeatmapDetailHead}>
+              <Text style={[styles.frogHeatmapDetailDate, { color: textMain }]} numberOfLines={1}>
+                {formatYmdCN(selectedYmd)}
+              </Text>
+              <Text style={[styles.frogHeatmapDetailFrogCount, { color: textMain }]}>
+                青蛙✖{selectedFrogs.length}
+              </Text>
+            </View>
+            {selectedFrogs.length === 0 ? (
+              <Text style={[styles.frogHeatmapDetailEmpty, { color: textMuted }]}>该日暂无已完成记录</Text>
+            ) : (
+              <View style={styles.frogHeatmapDetailList}>
+                {selectedFrogs.map((t, idx) => (
+                  <Pressable
+                    key={t.id}
+                    onPress={() => router.push({ pathname: '/task/[id]', params: { id: t.id } })}
+                    style={({ pressed }) => [
+                      styles.frogHeatmapDetailRow,
+                      {
+                        borderBottomColor: isDark ? 'rgba(148,163,184,0.14)' : 'rgba(148,163,184,0.2)',
+                        opacity: pressed ? 0.85 : 1,
+                      },
+                      idx === selectedFrogs.length - 1 && { borderBottomWidth: 0 },
+                    ]}>
+                    <MaterialIcons name="eco" size={16} color={accentColor} style={{ marginTop: 1 }} />
+                    <Text style={[styles.frogHeatmapDetailTitle, { color: textMain }]} numberOfLines={2}>
+                      {t.title}
+                    </Text>
+                    <MaterialIcons name="chevron-right" size={18} color={textMuted} />
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </View>
+        ) : null}
+      </View>
+    </View>
+  );
 }
 
 function formatYmdCN(ymd: string): string {
@@ -542,7 +806,8 @@ export default function TasksScreen() {
         const arr = itemsByContext.get(r.context) ?? [];
         const todayCount = checkStats.get(r.id)?.todayCount ?? 0;
         const dailyGoalMax = parseHabitDailyGoalMax(r.extra_data);
-        arr.push({ id: r.id, icon: r.icon, name: r.name, todayCount, dailyGoalMax });
+        const kind = parseHabitKind(r.extra_data);
+        arr.push({ id: r.id, icon: r.icon, name: r.name, todayCount, dailyGoalMax, kind });
         itemsByContext.set(r.context, arr);
       }
 
@@ -1488,6 +1753,16 @@ export default function TasksScreen() {
                   </View>
                 )}
               </Animated.View>
+
+              <FrogCompletedHeatmap
+                tasks={tasks}
+                textMain={theme.text}
+                textMuted={outline}
+                accentColor={secondary}
+                innerCardBg={isDark ? 'rgba(15,23,42,0.55)' : '#ffffff'}
+                innerBorderColor={isDark ? 'rgba(148,163,184,0.18)' : 'rgba(203,213,225,0.65)'}
+                isDark={isDark}
+              />
             </View>
           </View>
 
@@ -2298,6 +2573,7 @@ export default function TasksScreen() {
                             item.dailyGoalMax != null
                               ? item.todayCount >= item.dailyGoalMax
                               : item.todayCount > 0;
+                          const isBreak = item.kind === 'break';
 
                           const openHabitEdit = () =>
                             router.push({
@@ -2311,7 +2587,16 @@ export default function TasksScreen() {
                               },
                             });
 
-                          const partialBorder = isDark ? 'rgba(52,211,153,0.5)' : 'rgba(0,108,73,0.42)';
+                          const partialBorderBuild = isDark ? 'rgba(52,211,153,0.5)' : 'rgba(0,108,73,0.42)';
+                          const partialBorderBreak = isDark ? 'rgba(251,191,36,0.62)' : 'rgba(180,83,9,0.48)';
+                          const partialBorder = isBreak ? partialBorderBreak : partialBorderBuild;
+                          const progressBadgeBg = isBreak
+                            ? isDark
+                              ? 'rgba(234,88,12,0.92)'
+                              : 'rgba(194,65,12,0.9)'
+                            : isDark
+                              ? 'rgba(52,211,153,0.92)'
+                              : 'rgba(0,108,73,0.88)';
 
                           return (
                             <View key={item.id} style={[styles.habitItem, { width: habitGridItemWidth }]}>
@@ -2321,6 +2606,11 @@ export default function TasksScreen() {
                                 delayLongPress={260}
                                 style={({ pressed }) => [styles.habitIconPressable, pressed && { opacity: 0.86 }]}>
                                 <View style={styles.habitIconWrap}>
+                                  {isBreak ? (
+                                    <View style={[styles.habitKindBadge, { borderColor: card }]}>
+                                      <Text style={styles.habitKindBadgeText}>戒</Text>
+                                    </View>
+                                  ) : null}
                                   <View
                                     style={[
                                       styles.habitIconCircle,
@@ -2355,7 +2645,7 @@ export default function TasksScreen() {
                                         styles.habitTodayBadge,
                                         {
                                           borderColor: card,
-                                          backgroundColor: isDark ? 'rgba(52,211,153,0.92)' : 'rgba(0,108,73,0.88)',
+                                          backgroundColor: progressBadgeBg,
                                         },
                                       ]}>
                                       <Text style={styles.habitTodayBadgeCount}>{item.todayCount}</Text>
@@ -2744,6 +3034,64 @@ const styles = StyleSheet.create({
   },
   ghostBtnText: { fontSize: 12, fontWeight: '800' },
 
+  frogHeatmapOuter: { marginTop: 2, gap: 10 },
+  frogHeatmapHeading: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+    gap: 10,
+  },
+  frogHeatmapTitle: { fontSize: 17, fontWeight: '800', letterSpacing: 0.3 },
+  frogHeatmapLegend: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  frogHeatmapLegendText: { fontSize: 12, fontWeight: '600' },
+  frogHeatmapLegendSwatches: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  frogHeatmapLegendCell: { width: 14, height: 14, borderRadius: 4 },
+  frogHeatmapCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 1,
+  },
+  frogHeatmapBodyRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  frogHeatmapYAxis: { width: 22, marginRight: 4 },
+  frogHeatmapYCell: { justifyContent: 'center', alignItems: 'flex-end', paddingRight: 2 },
+  frogHeatmapYLabel: { fontSize: 11, fontWeight: '700' },
+  frogHeatmapMonthRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 2 },
+  frogHeatmapMonthText: { fontSize: 11, fontWeight: '700' },
+  frogHeatmapGridRow: { flexDirection: 'row' },
+  frogHeatmapCellHit: { alignItems: 'center', justifyContent: 'center' },
+  frogHeatmapDataCell: { borderRadius: 6 },
+  frogHeatmapDetail: {
+    marginTop: 4,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+  },
+  frogHeatmapDetailHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  frogHeatmapDetailDate: { fontSize: 16, fontWeight: '800', flex: 1, minWidth: 0, marginRight: 4 },
+  frogHeatmapDetailFrogCount: { fontSize: 15, fontWeight: '800', flexShrink: 0 },
+  frogHeatmapDetailEmpty: { fontSize: 13, fontWeight: '600', paddingVertical: 4 },
+  frogHeatmapDetailList: { marginTop: 2 },
+  frogHeatmapDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  frogHeatmapDetailTitle: { flex: 1, fontSize: 14, fontWeight: '700', lineHeight: 20 },
+
   frogCarousel: {
     flexGrow: 0,
     marginHorizontal: -2,
@@ -3129,6 +3477,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  habitKindBadge: {
+    position: 'absolute',
+    left: -2,
+    top: -2,
+    zIndex: 3,
+    minWidth: 20,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#ea580c',
+    borderWidth: 2,
+  },
+  habitKindBadgeText: { color: '#fff', fontSize: 10, fontWeight: '900' },
   habitIconCircle: {
     position: 'relative',
     width: 76,

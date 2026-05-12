@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
+import { type HabitKind, parseHabitKind } from '@/lib/repositories/habits/habit-kind';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -147,6 +148,7 @@ export default function AddHabitScreen() {
   const [eachPlus, setEachPlus] = React.useState(1);
   const [dailyGoal, setDailyGoal] = React.useState<number | null>(null);
   const [habitNote, setHabitNote] = React.useState('');
+  const [habitKind, setHabitKind] = React.useState<HabitKind>('build');
   const [iconPickerOpen, setIconPickerOpen] = React.useState(false);
 
   const bg = isDark ? theme.background : '#f8fafc';
@@ -220,6 +222,7 @@ export default function AddHabitScreen() {
         });
         setSelectedContext(rawCtx);
         setHabitNote(row.note?.trim() ? row.note : '');
+        setHabitKind(parseHabitKind(row.extra_data));
         if (row.extra_data) {
           try {
             const parsed = JSON.parse(row.extra_data) as any;
@@ -324,6 +327,7 @@ export default function AddHabitScreen() {
 
     const extraData = JSON.stringify({
       ...existingExtra,
+      habitKind,
       quantifyEnabled,
       quantify: quantifyEnabled
         ? {
@@ -376,6 +380,7 @@ export default function AddHabitScreen() {
     deriveToneByContext,
     habitIcon,
     habitId,
+    habitKind,
     habitName,
     habitNote,
     eachPlus,
@@ -464,6 +469,42 @@ export default function AddHabitScreen() {
               textAlignVertical="top"
               style={[styles.noteInput, { backgroundColor: softCard, color: textMain, borderColor: border }]}
             />
+          </View>
+
+          <View style={styles.kindBlock}>
+            <Text style={[styles.kindBlockLabel, { color: textSub }]}>打卡类型</Text>
+            <View style={styles.kindRow}>
+              <Pressable
+                onPress={() => setHabitKind('build')}
+                style={({ pressed }) => [
+                  styles.kindCard,
+                  {
+                    backgroundColor: habitKind === 'build' ? (isDark ? 'rgba(20,184,166,0.22)' : 'rgba(20,184,166,0.12)') : softCard,
+                    borderColor: habitKind === 'build' ? '#14b8a6' : border,
+                    borderWidth: habitKind === 'build' ? 2 : 1,
+                  },
+                  pressed && { opacity: 0.88 },
+                ]}>
+                <Text style={styles.kindCardEmoji}>✨</Text>
+                <Text style={[styles.kindCardTitle, { color: textMain }]}>养成习惯</Text>
+                <Text style={[styles.kindCardSub, { color: textSub }]}>主动完成一件事</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setHabitKind('break')}
+                style={({ pressed }) => [
+                  styles.kindCard,
+                  {
+                    backgroundColor: habitKind === 'break' ? (isDark ? 'rgba(251,146,60,0.2)' : 'rgba(251,146,60,0.12)') : softCard,
+                    borderColor: habitKind === 'break' ? '#ea580c' : border,
+                    borderWidth: habitKind === 'break' ? 2 : 1,
+                  },
+                  pressed && { opacity: 0.88 },
+                ]}>
+                <Text style={styles.kindCardEmoji}>🛡️</Text>
+                <Text style={[styles.kindCardTitle, { color: textMain }]}>戒坏习惯</Text>
+                <Text style={[styles.kindCardSub, { color: textSub }]}>坚持不去做某事</Text>
+              </Pressable>
+            </View>
           </View>
 
           <View style={styles.dashedSplit}>
@@ -868,6 +909,20 @@ const styles = StyleSheet.create({
     minHeight: 96,
     lineHeight: 22,
   },
+  kindBlock: { gap: 8 },
+  kindBlockLabel: { fontSize: 13, fontWeight: '700', paddingLeft: 2 },
+  kindRow: { flexDirection: 'row', gap: 10 },
+  kindCard: {
+    flex: 1,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    gap: 4,
+  },
+  kindCardEmoji: { fontSize: 22 },
+  kindCardTitle: { fontSize: 14, fontWeight: '800' },
+  kindCardSub: { fontSize: 11, fontWeight: '600', textAlign: 'center', lineHeight: 15 },
   dashedSplit: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   dashedLine: { flex: 1, borderTopWidth: 1, borderStyle: 'dashed' },
   splitText: { fontSize: 12, fontWeight: '500' },
