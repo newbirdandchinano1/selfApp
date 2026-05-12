@@ -11,11 +11,14 @@ import {
   createFinanceTransaction,
   deleteFinanceTransaction,
   getFinanceAccountsWithBalance,
+  getFinanceFlowCategories,
   getFinanceTransactions,
 } from '@/lib/repositories/finance/finance';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import { isFinanceTransactionExcludedFromBudget } from '@/lib/repositories/finance/finance-transaction-extra';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
+import { getZhipuApiKey, parseFinanceOneLinerFromText } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
@@ -23,6 +26,7 @@ import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import React from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   Dimensions,
@@ -57,10 +61,23 @@ type Txn = {
   meta: string;
   amount: string;
   amountColor: string;
-  insight?: string;
+  insight: string;
+  insightIsAiBody: boolean;
 };
 
-type SheetTab = 'expense' | 'income' | 'transfer';
+type SheetTab = 'sentence' | 'expense' | 'income' | 'transfer';
+
+function buildTxnAiInsightLine(
+  txn: FinanceTransactionRow,
+  opts: { zhipuReady: boolean; generatingId: string | null; skippedIds: Set<string> },
+): { text: string; isAiBody: boolean } {
+  const trimmed = txn.ai_comment?.trim();
+  if (trimmed) return { text: `AI 评价：${trimmed}`, isAiBody: true };
+  if (opts.skippedIds.has(txn.id)) return { text: 'AI 评价：生成失败，离开再进入本页或重新加载列表后可重试', isAiBody: false };
+  if (txn.id === opts.generatingId) return { text: 'AI 评价：正在生成…', isAiBody: false };
+  if (!opts.zhipuReady) return { text: 'AI 评价：未配置智谱密钥，无法自动生成（EXPO_PUBLIC_ZHIPU_API_KEY）', isAiBody: false };
+  return { text: 'AI 评价：排队生成中…', isAiBody: false };
+}
 
 /** 与 `getFinanceAccountsWithBalance` 中按账户汇总 balance 的规则一致：收入 +、支出 -、转账 0。 */
 function getTxnNetWorthTotalDelta(txn: FinanceTransactionRow): number {
@@ -85,6 +102,75 @@ type SheetCategory = {
   label: string;
   color: string;
 };
+
+type ParsedOneLiner = {
+  transaction_type: 'expense' | 'income';
+  amount: number;
+  name: string;
+  category_label?: string | null;
+};
+
+type SentenceResolveResult =
+  | { ok: true; parsed: ParsedOneLiner; source: 'ai' | 'local' }
+  | { ok: false; error: string };
+
+type SentenceLedgerPreviewState =
+  | null
+  | {
+      kind: 'ok';
+      source: 'ai' | 'local';
+      transaction_type: 'expense' | 'income';
+      amount: number;
+      name: string;
+      categoryLabel: string;
+    }
+  | { kind: 'error'; message: string };
+
+/** 无智谱密钥时的极简规则解析（需含阿拉伯数字金额）。 */
+function parseFinanceSentenceLocal(raw: string): ({ ok: true } & ParsedOneLiner) | { ok: false } {
+  const s = raw.trim().replace(/\s+/g, ' ');
+  if (!s) return { ok: false };
+  const incomeHints = /(?:^|[\s,，])(收入|到账|进账|工资|奖金|补贴|退款|回款|(?:收到)?转账)/;
+  const transaction_type: 'income' | 'expense' = incomeHints.test(s) ? 'income' : 'expense';
+  const numRe = /(\d+(?:\.\d+)?)\s*(?:元|块|￥|¥)?/;
+  const m = s.match(numRe);
+  if (!m) return { ok: false };
+  const amount = Number(m[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return { ok: false };
+  const capped = Math.min(amount, 99999999.99);
+  let name = s
+    .replace(m[0], ' ')
+    .replace(/[,，。、;；]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  name = name
+    .replace(/^(支出|花了|消费|买了|买|付|支付)/, '')
+    .replace(/^(收入|到账|进账|收到)/, '')
+    .trim();
+  if (!name) name = transaction_type === 'income' ? '收入' : '支出';
+  if (name.length > 80) name = `${name.slice(0, 77)}…`;
+  return { ok: true, transaction_type, amount: capped, name, category_label: null };
+}
+
+function pickSheetCategoryForParsed(
+  transactionType: 'expense' | 'income',
+  categoryLabelHint: string | null | undefined,
+  expenseCats: SheetCategory[],
+  incomeCats: SheetCategory[],
+): SheetCategory {
+  const pool = transactionType === 'income' ? incomeCats : expenseCats;
+  if (!pool.length) {
+    return { key: 'other', icon: 'label', label: '其他', color: '#94a3b8' };
+  }
+  const h = categoryLabelHint?.trim();
+  if (h) {
+    const exact = pool.find((c) => c.label === h);
+    if (exact) return exact;
+    const fuzzy = pool.find((c) => h.includes(c.label) || c.label.includes(h));
+    if (fuzzy) return fuzzy;
+  }
+  return pool[0];
+}
 
 function TxnItem({
   themeText,
@@ -114,12 +200,10 @@ function TxnItem({
           </View>
           <Text style={[styles.txnAmount, { color: item.amountColor }]}>{item.amount}</Text>
         </View>
-        {item.insight ? (
-          <View style={[styles.insightTag, { backgroundColor: outlineVariant }]}>
-            <MaterialIcons name="auto-awesome" size={14} color={item.iconColor} />
-            <Text style={[styles.insightText, { color: item.iconColor }]}>{item.insight}</Text>
-          </View>
-        ) : null}
+        <View style={[styles.insightTag, { backgroundColor: outlineVariant }]}>
+          <MaterialIcons name="auto-awesome" size={14} color={item.insightIsAiBody ? item.iconColor : themeSubtle} />
+          <Text style={[styles.insightText, { color: item.insightIsAiBody ? item.iconColor : themeSubtle }]}>{item.insight}</Text>
+        </View>
       </View>
     </Animated.View>
   );
@@ -165,8 +249,10 @@ export default function FinanceScreen() {
 
   const collapsedBottom = 6;
   const [isSheetVisible, setIsSheetVisible] = React.useState(false);
-  const [activeSheetTab, setActiveSheetTab] = React.useState<SheetTab>('expense');
+  const [activeSheetTab, setActiveSheetTab] = React.useState<SheetTab>('sentence');
   const [sheetAmount, setSheetAmount] = React.useState('');
+  const [sheetSentence, setSheetSentence] = React.useState('');
+  const [isParsingSentence, setIsParsingSentence] = React.useState(false);
   const [sheetNote, setSheetNote] = React.useState('');
   const [selectedCategoryKey, setSelectedCategoryKey] = React.useState('food');
   const [selectedAccountId, setSelectedAccountId] = React.useState<string | null>(null);
@@ -177,8 +263,26 @@ export default function FinanceScreen() {
   const [isSavingTransaction, setIsSavingTransaction] = React.useState(false);
   const [financeTransactions, setFinanceTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
-  const [showNetAmounts, setShowNetAmounts] = React.useState(true);
+  const [generatingTxnAiId, setGeneratingTxnAiId] = React.useState<string | null>(null);
+  const [txnAiFailEpoch, setTxnAiFailEpoch] = React.useState(0);
+  const financeTransactionsRef = React.useRef<FinanceTransactionRow[]>([]);
+  const flowCategoryNamesRef = React.useRef<Record<string, string>>({});
+  const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
+  const txnAiBackfillRunning = React.useRef(false);
+  const txnAiSkippedIdsRef = React.useRef<Set<string>>(new Set());
+  const runTxnAiBackfillRef = React.useRef<() => Promise<void>>(async () => undefined);
+
+  React.useLayoutEffect(() => {
+    financeTransactionsRef.current = financeTransactions;
+  }, [financeTransactions]);
+
+  const activeSheetTabRef = React.useRef<SheetTab>('sentence');
+  React.useLayoutEffect(() => {
+    activeSheetTabRef.current = activeSheetTab;
+  }, [activeSheetTab]);
   const [budgetCardNetExpanded, setBudgetCardNetExpanded] = React.useState(false);
+  /** 预算卡与月度汇总是否显示真实金额（false 时显示 ****） */
+  const [showNetAmounts, setShowNetAmounts] = React.useState(true);
   const [monthBudgetSettings, setMonthBudgetSettings] = React.useState<Record<string, MonthBudgetSetting>>({});
   const [isBudgetAdjustVisible, setIsBudgetAdjustVisible] = React.useState(false);
   const [budgetBaseDraft, setBudgetBaseDraft] = React.useState('');
@@ -193,6 +297,8 @@ export default function FinanceScreen() {
   const [speechApi, setSpeechApi] = React.useState<SpeechRecognitionApi | null>(null);
   const [speechApiStatus, setSpeechApiStatus] = React.useState<'loading' | 'ready' | 'unavailable'>('unavailable');
   const [speechTriedOnce, setSpeechTriedOnce] = React.useState(false);
+  const [sentenceLedgerPreview, setSentenceLedgerPreview] = React.useState<SentenceLedgerPreviewState>(null);
+  const [isSentencePreviewBusy, setIsSentencePreviewBusy] = React.useState(false);
   const budgetBaseInputRef = React.useRef<TextInput>(null);
 
   const baseBottomAnim = React.useRef(new Animated.Value(collapsedBottom)).current;
@@ -220,10 +326,19 @@ export default function FinanceScreen() {
 
   const loadFinanceTransactions = React.useCallback(async () => {
     try {
-      const rows = await getFinanceTransactions();
+      const [rows, categories] = await Promise.all([getFinanceTransactions(), getFinanceFlowCategories()]);
+      txnAiSkippedIdsRef.current.clear();
+      flowCategoryNamesRef.current = Object.fromEntries(categories.map((c) => [c.id, c.name]));
+      financeTransactionsRef.current = rows;
       setFinanceTransactions(rows);
+      setTxnAiFailEpoch((e) => e + 1);
+      queueMicrotask(() => {
+        void runTxnAiBackfillRef.current();
+      });
     } catch (error) {
       console.warn('Failed to load finance transactions:', error);
+      flowCategoryNamesRef.current = {};
+      financeTransactionsRef.current = [];
       setFinanceTransactions([]);
     }
   }, []);
@@ -355,6 +470,55 @@ export default function FinanceScreen() {
     return txn.amount;
   }, []);
 
+  const runTxnAiBackfill = React.useCallback(async () => {
+    const key = getZhipuApiKey().trim();
+    if (!key || txnAiBackfillRunning.current) return;
+    txnAiBackfillRunning.current = true;
+    try {
+      const cats = flowCategoryNamesRef.current;
+      while (true) {
+        const accMap = new Map(financeAccountsRef.current.map((a) => [a.id, a.name]));
+        const snapshot = financeTransactionsRef.current;
+        const txn = snapshot.find((r) => !r.ai_comment?.trim() && !txnAiSkippedIdsRef.current.has(r.id));
+        if (!txn) break;
+
+        const accountLabel = accMap.get(txn.account_id) ?? '未知账户';
+        const categoryLabel = txn.flow_category_id ? cats[txn.flow_category_id] ?? '未分类' : '未分类';
+
+        setGeneratingTxnAiId(txn.id);
+        try {
+          const result = await tryPersistFinanceTxnAiComment(txn.id, {
+            name: txn.name,
+            happened_at: txn.happened_at,
+            transaction_type: txn.transaction_type,
+            amount: txn.amount,
+            note: txn.note,
+            accountLabel,
+            categoryLabel,
+          });
+          if (result.ok) {
+            setFinanceTransactions((prev) => {
+              const next = prev.map((t) => (t.id === txn.id ? { ...t, ai_comment: result.comment } : t));
+              financeTransactionsRef.current = next;
+              return next;
+            });
+          } else {
+            txnAiSkippedIdsRef.current.add(txn.id);
+            setTxnAiFailEpoch((e) => e + 1);
+          }
+        } finally {
+          setGeneratingTxnAiId(null);
+        }
+      }
+    } finally {
+      txnAiBackfillRunning.current = false;
+    }
+  }, []);
+
+  React.useLayoutEffect(() => {
+    runTxnAiBackfillRef.current = runTxnAiBackfill;
+  }, [runTxnAiBackfill]);
+
   const todayTxns = React.useMemo(
     () =>
       financeTransactions.filter((txn) => {
@@ -452,6 +616,55 @@ export default function FinanceScreen() {
     [hasMoreHistoryDays, isLoadingMoreDays, loadMoreHistoryDays]
   );
 
+  const zhipuTxnReady = Boolean(getZhipuApiKey().trim());
+
+  /** 智谱 glm-4-flash 优先，失败则本地规则（与 `parseFinanceOneLinerFromText` / 调试页同源密钥）。 */
+  const resolveFinanceSentenceLine = React.useCallback(async (line: string): Promise<SentenceResolveResult> => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return { ok: false, error: '请输入用一句话描述这笔账。' };
+    }
+    const key = getZhipuApiKey().trim();
+    if (key) {
+      const r = await parseFinanceOneLinerFromText({
+        apiKey: key,
+        text: trimmed,
+        maxAttempts: 6,
+        retryDelayMs: 800,
+      });
+      if (r.ok) {
+        return {
+          ok: true,
+          source: 'ai',
+          parsed: {
+            transaction_type: r.transaction_type,
+            amount: r.amount,
+            name: r.name,
+            category_label: r.category_label,
+          },
+        };
+      }
+      const loc = parseFinanceSentenceLocal(trimmed);
+      if (loc.ok) {
+        return { ok: true, parsed: loc, source: 'local' };
+      }
+      return {
+        ok: false,
+        error: `智谱解析未成功（${r.error}）。本地规则也无法识别，请写清数字金额后再试。`,
+      };
+    }
+    const loc = parseFinanceSentenceLocal(trimmed);
+    if (loc.ok) return { ok: true, parsed: loc, source: 'local' };
+    return {
+      ok: false,
+      error: '请写明金额（需含阿拉伯数字），或配置 EXPO_PUBLIC_ZHIPU_API_KEY 以使用智谱 AI 理解口语。',
+    };
+  }, []);
+
+  React.useEffect(() => {
+    setSentenceLedgerPreview(null);
+  }, [sheetSentence]);
+
   const todayDisplayTxns = React.useMemo<Txn[]>(() => {
     return todayTxns
       .slice()
@@ -471,6 +684,12 @@ export default function FinanceScreen() {
         const amountColor = isIncome ? secondary : isExpense ? '#dc2626' : text;
         const amountPrefix = isIncome ? '+' : isExpense ? '-' : '';
 
+        const aiLine = buildTxnAiInsightLine(txn, {
+          zhipuReady: zhipuTxnReady,
+          generatingId: generatingTxnAiId,
+          skippedIds: txnAiSkippedIdsRef.current,
+        });
+
         return {
           id: txn.id,
           dayKey: todayDayKey,
@@ -480,10 +699,24 @@ export default function FinanceScreen() {
           meta: `今天 ${hour}:${minute} · ${typeLabel} · ${accountLabel}`,
           amount: `${amountPrefix}${formatCurrencyWithDecimals(Math.abs(displayAmount))}`,
           amountColor,
-          insight: txn.ai_comment?.trim() ? `AI 洞察：${txn.ai_comment.trim()}` : undefined,
+          insight: aiLine.text,
+          insightIsAiBody: aiLine.isAiBody,
         };
       });
-  }, [accountNameMap, formatCurrencyWithDecimals, getTxnDisplayAmount, secondary, subtle, tertiary, text, todayDayKey, todayTxns]);
+  }, [
+    accountNameMap,
+    formatCurrencyWithDecimals,
+    generatingTxnAiId,
+    getTxnDisplayAmount,
+    secondary,
+    subtle,
+    tertiary,
+    text,
+    todayDayKey,
+    todayTxns,
+    txnAiFailEpoch,
+    zhipuTxnReady,
+  ]);
 
   const historySections = React.useMemo(() => {
     const now = new Date();
@@ -540,6 +773,12 @@ export default function FinanceScreen() {
       const amountColor = isIncome ? secondary : isExpense ? '#dc2626' : text;
       const amountPrefix = isIncome ? '+' : isExpense ? '-' : '';
 
+      const aiLine = buildTxnAiInsightLine(txn, {
+        zhipuReady: zhipuTxnReady,
+        generatingId: generatingTxnAiId,
+        skippedIds: txnAiSkippedIdsRef.current,
+      });
+
       section.items.push({
         id: txn.id,
         dayKey,
@@ -549,7 +788,8 @@ export default function FinanceScreen() {
         meta: `${section.label} ${hour}:${minute} · ${typeLabel} · ${accountLabel}`,
         amount: `${amountPrefix}${formatCurrencyWithDecimals(Math.abs(displayAmount))}`,
         amountColor,
-        insight: txn.ai_comment?.trim() ? `AI 洞察：${txn.ai_comment.trim()}` : undefined,
+        insight: aiLine.text,
+        insightIsAiBody: aiLine.isAiBody,
       });
     });
 
@@ -558,6 +798,7 @@ export default function FinanceScreen() {
   }, [
     accountNameMap,
     formatCurrencyWithDecimals,
+    generatingTxnAiId,
     getDayKey,
     getTxnDisplayAmount,
     secondary,
@@ -568,6 +809,8 @@ export default function FinanceScreen() {
     todayDayKey,
     visibleDayKeySet,
     weekdayCn,
+    zhipuTxnReady,
+    txnAiFailEpoch,
   ]);
 
   const displayTxns = React.useMemo<Txn[]>(() => {
@@ -601,6 +844,12 @@ export default function FinanceScreen() {
       const amountColor = isIncome ? secondary : isExpense ? '#dc2626' : text;
       const amountPrefix = isIncome ? '+' : isExpense ? '-' : '';
 
+      const aiLine = buildTxnAiInsightLine(txn, {
+        zhipuReady: zhipuTxnReady,
+        generatingId: generatingTxnAiId,
+        skippedIds: txnAiSkippedIdsRef.current,
+      });
+
       return {
         id: txn.id,
         dayKey: getDayKey(happenedAt),
@@ -610,10 +859,11 @@ export default function FinanceScreen() {
         meta: `${dayLabel} ${hour}:${minute} · ${typeLabel} · ${accountLabel}`,
         amount: `${amountPrefix}${formatCurrencyWithDecimals(Math.abs(displayAmount))}`,
         amountColor,
-        insight: txn.ai_comment?.trim() ? `AI 洞察：${txn.ai_comment.trim()}` : undefined,
+        insight: aiLine.text,
+        insightIsAiBody: aiLine.isAiBody,
       };
     });
-  }, [accountNameMap, formatCurrencyWithDecimals, getDayKey, getTxnDisplayAmount, secondary, sortedTransactions, subtle, tertiary, text, todayDayKey, visibleDayKeySet]);
+  }, [accountNameMap, formatCurrencyWithDecimals, generatingTxnAiId, getDayKey, getTxnDisplayAmount, secondary, sortedTransactions, subtle, tertiary, text, todayDayKey, visibleDayKeySet, zhipuTxnReady, txnAiFailEpoch]);
 
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
   const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
@@ -873,7 +1123,8 @@ export default function FinanceScreen() {
     []
   );
 
-  const activeCategories = activeSheetTab === 'income' ? incomeCategories : expenseCategories;
+  const activeCategories =
+    activeSheetTab === 'income' ? incomeCategories : activeSheetTab === 'expense' ? expenseCategories : expenseCategories;
   const selectedCategory = React.useMemo(() => {
     return activeCategories.find((item) => item.key === selectedCategoryKey) ?? activeCategories[0];
   }, [activeCategories, selectedCategoryKey]);
@@ -885,6 +1136,12 @@ export default function FinanceScreen() {
   const hasAccounts = financeAccounts.length > 0;
   const amountNumber = Number(sheetAmount);
   const canSaveTransaction = Boolean(selectedAccount) && Number.isFinite(amountNumber) && amountNumber > 0 && !isSavingTransaction;
+  const canSaveSentence =
+    Boolean(selectedAccount) &&
+    sheetSentence.trim().length > 0 &&
+    !isSavingTransaction &&
+    !isParsingSentence &&
+    !isSentencePreviewBusy;
   const amountDisplay = sheetAmount ? Number(sheetAmount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00';
 
   React.useEffect(() => {
@@ -894,6 +1151,7 @@ export default function FinanceScreen() {
   }, [financeAccounts, selectedAccountId]);
 
   React.useEffect(() => {
+    if (activeSheetTab === 'sentence') return;
     if (activeSheetTab === 'expense' && !expenseCategories.some((item) => item.key === selectedCategoryKey)) {
       setSelectedCategoryKey(expenseCategories[0]?.key ?? 'food');
     }
@@ -902,10 +1160,11 @@ export default function FinanceScreen() {
     }
   }, [activeSheetTab, expenseCategories, incomeCategories, selectedCategoryKey]);
 
-  const resetSheetForm = React.useCallback((nextTab: SheetTab = 'expense') => {
+  const resetSheetForm = React.useCallback((nextTab: SheetTab = 'sentence') => {
     speechApi?.ExpoSpeechRecognitionModule.stop();
     setActiveSheetTab(nextTab);
     setSheetAmount('');
+    setSheetSentence('');
     setSheetNote('');
     setSheetImageUris([]);
     setSheetIncludeInBudget(true);
@@ -914,16 +1173,18 @@ export default function FinanceScreen() {
     setIsTimePickerVisible(false);
     setIsAccountPickerVisible(false);
     setSelectedCategoryKey(nextTab === 'income' ? 'salary' : 'food');
+    setSentenceLedgerPreview(null);
+    setIsSentencePreviewBusy(false);
   }, []);
 
   const closeSheet = React.useCallback(() => {
-    if (isSavingTransaction) return;
+    if (isSavingTransaction || isParsingSentence || isSentencePreviewBusy) return;
     speechApi?.ExpoSpeechRecognitionModule.stop();
     setIsDatePickerVisible(false);
     setIsTimePickerVisible(false);
     setIsAccountPickerVisible(false);
     setIsSheetVisible(false);
-  }, [isSavingTransaction, speechApi]);
+  }, [isParsingSentence, isSavingTransaction, isSentencePreviewBusy, speechApi]);
 
   const closeBudgetAdjust = React.useCallback(() => {
     setIsBudgetAdjustVisible(false);
@@ -1042,19 +1303,126 @@ export default function FinanceScreen() {
     });
   }, []);
 
+  const handleSentenceLedgerPreview = React.useCallback(async () => {
+    if (!selectedAccount) {
+      Alert.alert('请选择账户', '需要选择一个可用账户后再做识别预览。');
+      return;
+    }
+    const line = sheetSentence.trim();
+    if (!line) {
+      Alert.alert('请输入内容', '用一句话描述这笔账。');
+      return;
+    }
+    setIsSentencePreviewBusy(true);
+    setSentenceLedgerPreview(null);
+    try {
+      const resolved = await resolveFinanceSentenceLine(line);
+      if (!resolved.ok) {
+        setSentenceLedgerPreview({ kind: 'error', message: resolved.error });
+        return;
+      }
+      const cat = pickSheetCategoryForParsed(
+        resolved.parsed.transaction_type,
+        resolved.parsed.category_label,
+        expenseCategories,
+        incomeCategories,
+      );
+      setSentenceLedgerPreview({
+        kind: 'ok',
+        source: resolved.source,
+        transaction_type: resolved.parsed.transaction_type,
+        amount: resolved.parsed.amount,
+        name: resolved.parsed.name,
+        categoryLabel: cat.label,
+      });
+    } finally {
+      setIsSentencePreviewBusy(false);
+    }
+  }, [selectedAccount, sheetSentence, resolveFinanceSentenceLine, expenseCategories, incomeCategories]);
+
   const handleSaveTransaction = React.useCallback(async () => {
-    // 保存前停止语音，避免异步识别结果覆盖输入框
     speechApi?.ExpoSpeechRecognitionModule.stop();
     if (!selectedAccount) {
       Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
       return;
     }
-    if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-      Alert.alert('请输入金额', '记账金额需要大于 0。');
-      return;
-    }
     if (activeSheetTab === 'transfer') {
       Alert.alert('暂未开放', '转账功能稍后支持，请先使用支出或收入记账。');
+      return;
+    }
+
+    if (activeSheetTab === 'sentence') {
+      const line = sheetSentence.trim();
+      if (!line) {
+        Alert.alert('请输入内容', '用一句话描述这笔账，需包含金额。');
+        return;
+      }
+      setIsParsingSentence(true);
+      try {
+        const resolved = await resolveFinanceSentenceLine(line);
+        if (!resolved.ok) {
+          Alert.alert('无法识别', resolved.error);
+          return;
+        }
+        const parsed = resolved.parsed;
+
+        if (selectedAccount.sign_rule < 0 && selectedAccount.balance === 0 && parsed.transaction_type === 'income') {
+          Alert.alert('无法记录收入', '该债务账户当前负债为 0，只能记录支出。');
+          return;
+        }
+
+        const cat = pickSheetCategoryForParsed(parsed.transaction_type, parsed.category_label, expenseCategories, incomeCategories);
+        const transactionType = parsed.transaction_type;
+        const amountAbs = parsed.amount;
+        const signedAmount = selectedAccount.sign_rule > 0 ? amountAbs : -amountAbs;
+
+        try {
+          setIsSavingTransaction(true);
+          const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+          await createFinanceTransaction({
+            id: txnId,
+            name: parsed.name,
+            happened_at: selectedHappenedAt.toISOString(),
+            account_id: selectedAccount.id,
+            transaction_type: transactionType,
+            amount: signedAmount,
+            note: line,
+            extra_data: JSON.stringify({
+              manual: true,
+              sentence: true,
+              parse_source: resolved.source,
+              category_key: cat.key,
+              category_label: cat.label,
+              attachments: null,
+              ...(transactionType === 'expense' && !sheetIncludeInBudget ? { exclude_from_budget: true } : {}),
+            }),
+          });
+          await tryPersistFinanceTxnAiComment(txnId, {
+            name: parsed.name,
+            happened_at: selectedHappenedAt.toISOString(),
+            transaction_type: transactionType,
+            amount: signedAmount,
+            note: line,
+            accountLabel: selectedAccount.name,
+            categoryLabel: cat.label,
+          });
+          setIsSheetVisible(false);
+          resetSheetForm('sentence');
+          await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+        } catch (error) {
+          console.warn('Failed to create finance transaction:', error);
+          Alert.alert('保存失败', '手动记账保存失败，请稍后重试。');
+        } finally {
+          setIsSavingTransaction(false);
+        }
+      } finally {
+        setIsParsingSentence(false);
+      }
+      return;
+    }
+
+    if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+      Alert.alert('请输入金额', '记账金额需要大于 0。');
       return;
     }
     if (selectedAccount.sign_rule < 0 && selectedAccount.balance === 0 && activeSheetTab === 'income') {
@@ -1069,8 +1437,9 @@ export default function FinanceScreen() {
 
     try {
       setIsSavingTransaction(true);
+      const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       await createFinanceTransaction({
-        id: `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        id: txnId,
         name: title,
         happened_at: selectedHappenedAt.toISOString(),
         account_id: selectedAccount.id,
@@ -1085,8 +1454,17 @@ export default function FinanceScreen() {
           ...(transactionType === 'expense' && !sheetIncludeInBudget ? { exclude_from_budget: true } : {}),
         }),
       });
+      await tryPersistFinanceTxnAiComment(txnId, {
+        name: title,
+        happened_at: selectedHappenedAt.toISOString(),
+        transaction_type: transactionType,
+        amount: signedAmount,
+        note: sheetNote.trim() || null,
+        accountLabel: selectedAccount.name,
+        categoryLabel: selectedCategory?.label ?? '未分类',
+      });
       setIsSheetVisible(false);
-      resetSheetForm(transactionType);
+      resetSheetForm('sentence');
       await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
     } catch (error) {
       console.warn('Failed to create finance transaction:', error);
@@ -1097,15 +1475,20 @@ export default function FinanceScreen() {
   }, [
     activeSheetTab,
     amountNumber,
+    expenseCategories,
+    incomeCategories,
     loadFinanceAccounts,
     loadFinanceTransactions,
     resetSheetForm,
+    resolveFinanceSentenceLine,
     selectedAccount,
     selectedCategory,
     selectedHappenedAt,
     sheetImageUris,
     sheetIncludeInBudget,
     sheetNote,
+    sheetSentence,
+    speechApi,
   ]);
 
   const handleOpenComposer = React.useCallback((): boolean => {
@@ -1115,12 +1498,12 @@ export default function FinanceScreen() {
     }
     // 仅在弹窗未打开时重置表单；避免用户已输入金额/备注后点语音/图片又被清空
     if (!isSheetVisible) {
-      resetSheetForm(activeSheetTab);
+      resetSheetForm('sentence');
     }
     setSelectedAccountId((prev) => prev ?? financeAccounts[0]?.id ?? null);
     setIsSheetVisible(true);
     return true;
-  }, [financeAccounts, hasAccounts, resetSheetForm, activeSheetTab, isSheetVisible]);
+  }, [financeAccounts, hasAccounts, resetSheetForm, isSheetVisible]);
 
   const handlePickImage = React.useCallback(
     async (source: 'library' | 'camera') => {
@@ -1254,7 +1637,8 @@ export default function FinanceScreen() {
         add('result', (event: any) => {
           const transcript = event?.results?.[0]?.transcript;
           if (typeof transcript === 'string' && transcript.trim().length > 0) {
-            setSheetNote(transcript);
+            if (activeSheetTabRef.current === 'sentence') setSheetSentence(transcript);
+            else setSheetNote(transcript);
           }
           if (event?.isFinal) {
             recognitionModule.stop?.();
@@ -1816,11 +2200,17 @@ export default function FinanceScreen() {
               <Pressable onPress={closeSheet} style={({ pressed }) => [styles.sheetCloseBtn, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="close" size={24} color={subtle} />
               </Pressable>
-              <Text style={[styles.sheetTitle, { color: text }]}>{activeSheetTab === 'transfer' ? '财务转账' : '手动记账'}</Text>
+              <Text style={[styles.sheetTitle, { color: text }]}>
+                {activeSheetTab === 'transfer' ? '财务转账' : activeSheetTab === 'sentence' ? '一句话记账' : '手动记账'}
+              </Text>
               <View style={styles.sheetCloseBtn} />
             </View>
 
             <View style={[styles.sheetTabs, { borderBottomColor: outlineVariant }]}>
+              <Pressable onPress={() => resetSheetForm('sentence')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'sentence' ? { color: tertiary } : { color: subtle }]}>一句话</Text>
+                {activeSheetTab === 'sentence' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
               <Pressable onPress={() => resetSheetForm('expense')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'expense' ? { color: tertiary } : { color: subtle }]}>支出</Text>
                 {activeSheetTab === 'expense' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
@@ -1971,6 +2361,7 @@ export default function FinanceScreen() {
               </>
             ) : (
               <>
+                {activeSheetTab !== 'sentence' ? (
                 <View style={styles.categoryGrid}>
                   {activeCategories.map((item) => {
                     const isSelected = selectedCategoryKey === item.key;
@@ -1984,6 +2375,33 @@ export default function FinanceScreen() {
                     );
                   })}
                 </View>
+                ) : (
+                  <View style={styles.sentenceHintBox}>
+                    <Text style={[styles.sentenceHintText, { color: subtle }]}>
+                      写清事由与金额。例如：午饭 28、打车 15.5 元、工资到账 8000
+                    </Text>
+                    <View style={styles.sentenceAiMetaRow}>
+                      <MaterialIcons name="auto-awesome" size={16} color={zhipuTxnReady ? secondary : subtle} />
+                      <Text
+                        style={[
+                          styles.sentenceAiMetaText,
+                          { color: zhipuTxnReady ? secondary : subtle },
+                        ]}
+                        numberOfLines={2}>
+                        {zhipuTxnReady
+                          ? '已配置智谱密钥：一句话将优先由 AI（glm-4-flash）解析，失败时回退本地规则。'
+                          : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => router.push('/zhipu-api-test')}
+                      style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
+                      <Text style={[styles.sentenceZhipuDevLink, { color: tertiary }]}>
+                        智谱 API 调试页（验证密钥与请求）
+                      </Text>
+                    </Pressable>
+                  </View>
+                )}
 
                 <View style={[styles.sheetInputWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
                   <View style={styles.sheetConfigRow}>
@@ -2030,7 +2448,7 @@ export default function FinanceScreen() {
                     </Pressable>
                   </View>
 
-                  {activeSheetTab === 'expense' ? (
+                  {activeSheetTab === 'expense' || activeSheetTab === 'sentence' ? (
                     <View
                       style={[
                         styles.sheetBudgetCard,
@@ -2073,6 +2491,109 @@ export default function FinanceScreen() {
                     </View>
                   ) : null}
 
+                  {activeSheetTab === 'sentence' ? (
+                    <View style={styles.sheetSentenceBlock}>
+                      <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant, minHeight: 100 }]}>
+                        <TextInput
+                          value={sheetSentence}
+                          onChangeText={setSheetSentence}
+                          multiline
+                          scrollEnabled
+                          textAlignVertical="top"
+                          style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent', minHeight: 96 }]}
+                          placeholder="例如：咖啡 18、地铁 6、工资 12000"
+                          placeholderTextColor={subtle}
+                        />
+                      </View>
+                      {sentenceLedgerPreview?.kind === 'ok' ? (
+                        <View
+                          style={[
+                            styles.sentencePreviewCard,
+                            { backgroundColor: surface, borderColor: outlineVariant },
+                          ]}>
+                          <View
+                            style={[
+                              styles.sentencePreviewBadge,
+                              {
+                                backgroundColor:
+                                  sentenceLedgerPreview.source === 'ai'
+                                    ? isDark
+                                      ? 'rgba(52,211,153,0.18)'
+                                      : 'rgba(0,108,73,0.12)'
+                                    : isDark
+                                      ? 'rgba(148,163,184,0.2)'
+                                      : 'rgba(66,71,84,0.1)',
+                              },
+                            ]}>
+                            <Text
+                              style={[
+                                styles.sentencePreviewBadgeText,
+                                {
+                                  color: sentenceLedgerPreview.source === 'ai' ? secondary : subtle,
+                                },
+                              ]}>
+                              {sentenceLedgerPreview.source === 'ai' ? '智谱 AI 识别' : '本地规则'}
+                            </Text>
+                          </View>
+                          <Text style={[styles.sentencePreviewLine, { color: text }]}>
+                            {sentenceLedgerPreview.transaction_type === 'income' ? '收入' : '支出'} ·{' '}
+                            {formatCurrencyWithDecimals(sentenceLedgerPreview.amount)} · {sentenceLedgerPreview.name}
+                          </Text>
+                          <Text style={[styles.sentencePreviewLine, { color: subtle, fontWeight: '600' }]}>
+                            分类：{sentenceLedgerPreview.categoryLabel}
+                          </Text>
+                        </View>
+                      ) : sentenceLedgerPreview?.kind === 'error' ? (
+                        <View
+                          style={[
+                            styles.sentencePreviewCard,
+                            {
+                              backgroundColor: isDark ? 'rgba(220,38,38,0.12)' : 'rgba(254,226,226,0.9)',
+                              borderColor: isDark ? 'rgba(248,113,113,0.35)' : 'rgba(252,165,165,0.8)',
+                            },
+                          ]}>
+                          <Text style={[styles.sentencePreviewErr, { color: isDark ? '#fecaca' : '#991b1b' }]}>
+                            {sentenceLedgerPreview.message}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <View style={styles.sentenceActionsRow}>
+                        <Pressable
+                          onPress={() => void handleSentenceLedgerPreview()}
+                          disabled={!canSaveSentence}
+                          style={({ pressed }) => [
+                            styles.sheetSentencePreviewBtn,
+                            {
+                              borderColor: outlineVariant,
+                              backgroundColor: isDark ? '#161d2b' : '#f2f3ff',
+                              opacity: !canSaveSentence ? 0.55 : pressed ? 0.88 : 1,
+                            },
+                          ]}>
+                          {isSentencePreviewBusy ? (
+                            <ActivityIndicator color={tertiary} />
+                          ) : (
+                            <Text style={[styles.sheetSentencePreviewBtnText, { color: tertiary }]}>AI 识别预览</Text>
+                          )}
+                        </Pressable>
+                        <Pressable
+                          onPress={() => void handleSaveTransaction()}
+                          disabled={!canSaveSentence}
+                          style={({ pressed }) => [
+                            styles.sheetSentenceSubmit,
+                            styles.sheetSentenceSubmitFlex,
+                            { backgroundColor: canSaveSentence ? tertiary : subtle },
+                            pressed && canSaveSentence && { opacity: 0.9 },
+                          ]}>
+                          {isParsingSentence ? (
+                            <ActivityIndicator color="#fff" />
+                          ) : (
+                            <Text style={styles.sheetSentenceSubmitText}>记账</Text>
+                          )}
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : (
+                    <>
                   <View style={styles.sheetNoteRow}>
                     <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
                       <TextInput
@@ -2108,6 +2629,8 @@ export default function FinanceScreen() {
                       </ScrollView>
                     </View>
                   ) : null}
+                    </>
+                  )}
 
                   <Modal visible={isDatePickerVisible} transparent animationType="fade" onRequestClose={() => setIsDatePickerVisible(false)}>
                     <View style={styles.pickerModalOverlay}>
@@ -2213,6 +2736,8 @@ export default function FinanceScreen() {
                     </View>
                   </Modal>
 
+                  {activeSheetTab !== 'sentence' ? (
+                    <>
                   <View style={styles.amountPreview}>
                     <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
                     <Text style={[styles.amountValue, { color: tertiary }]}>{amountDisplay}</Text>
@@ -2244,6 +2769,8 @@ export default function FinanceScreen() {
                       );
                     })}
                   </View>
+                    </>
+                  ) : null}
                 </View>
               </>
             )}
@@ -3055,21 +3582,112 @@ const styles = StyleSheet.create({
   sheetTabs: {
     flexDirection: 'row',
     borderBottomWidth: 1,
-    paddingHorizontal: 18,
-    gap: 18,
+    paddingHorizontal: 6,
+    gap: 2,
   },
   sheetTabBtn: {
+    flex: 1,
+    minWidth: 0,
     paddingTop: 12,
     paddingBottom: 10,
+    alignItems: 'center',
   },
   sheetTabText: {
-    fontSize: 15,
+    fontSize: 12,
     fontWeight: '600',
   },
   sheetTabLine: {
     height: 2,
     marginTop: 8,
     borderRadius: 1,
+    alignSelf: 'stretch',
+  },
+  sentenceHintBox: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+  },
+  sentenceHintText: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '500',
+  },
+  sheetSentenceBlock: {
+    gap: 12,
+    paddingBottom: 8,
+  },
+  sentenceAiMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: 10,
+  },
+  sentenceAiMetaText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
+  },
+  sentenceZhipuDevLink: {
+    marginTop: 8,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  sentencePreviewCard: {
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 6,
+  },
+  sentencePreviewBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  sentencePreviewBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  sentencePreviewLine: {
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  sentencePreviewErr: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
+  },
+  sentenceActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  sheetSentencePreviewBtn: {
+    flex: 1,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  sheetSentencePreviewBtnText: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  sheetSentenceSubmit: {
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetSentenceSubmitFlex: {
+    flex: 1,
+  },
+  sheetSentenceSubmitText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '800',
   },
   categoryGrid: {
     paddingHorizontal: 16,

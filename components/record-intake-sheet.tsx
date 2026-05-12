@@ -1,7 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
-  analyzeFoodNutritionFromImage,
   getZhipuApiKey,
   parseFoodIntakeFromText,
   type FoodTextIntakeJson,
@@ -33,30 +32,21 @@ type ManualType = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
 type ConfirmUnit = 'ml' | 'g' | 'mg';
 
 export type RecordIntakeConfirmPayload =
-  | {
-      mode: 'ai';
-      text: string;
-      hydrationMl: number;
-      protein: number;
-      carbohydrate: number;
-      sodium: number;
-      foodSummary?: string;
-    }
+  /** 确认后由首页在后台请求智谱解析并落库 */
+  | { mode: 'ai'; text: string }
   | { mode: 'manual'; amount: number; unit: ConfirmUnit; type: ManualType }
-  | { mode: 'photo'; protein: number; carbohydrate: number; sodium: number; sourceImageUri?: string | null };
+  | {
+      mode: 'photo';
+      imageBase64: string;
+      imageMimeType: string;
+      sourceImageUri: string | null;
+    };
 
 function getUnitByType(type: ManualType): ConfirmUnit {
   if (type === 'hydration') return 'ml';
   if (type === 'protein') return 'g';
   if (type === 'carbohydrate') return 'g';
   return 'mg';
-}
-
-function nonFoodHint(code: number): string {
-  if (code === 1) return '图中明显不是食物，无法记录营养摄入';
-  if (code === 2) return '无法识别或不清晰，请换一张更聚焦的食物照片';
-  if (code === 3) return '画面过于混杂，请单独拍摄一餐或一种食物';
-  return '无法按食物估算';
 }
 
 function getManualMeta(type: ManualType) {
@@ -91,14 +81,8 @@ export function RecordIntakeSheet({
   const [manualType, setManualType] = React.useState<ManualType>('hydration');
   const [amountText, setAmountText] = React.useState('0');
   const [photoUri, setPhotoUri] = React.useState<string | null>(null);
-  const [photoAnalyzing, setPhotoAnalyzing] = React.useState(false);
-  const [photoNutrition, setPhotoNutrition] = React.useState<{
-    is_food: 0 | 1;
-    non_food_code: number;
-    protein_g: number;
-    carbohydrate_g: number;
-    sodium_mg: number;
-  } | null>(null);
+  const [photoBase64, setPhotoBase64] = React.useState<string | null>(null);
+  const [photoMime, setPhotoMime] = React.useState('image/jpeg');
   const [photoError, setPhotoError] = React.useState<string | null>(null);
   const [aiBusy, setAiBusy] = React.useState(false);
   const [aiError, setAiError] = React.useState<string | null>(null);
@@ -167,8 +151,8 @@ export function RecordIntakeSheet({
     setManualType('hydration');
     setAmountText('0');
     setPhotoUri(null);
-    setPhotoAnalyzing(false);
-    setPhotoNutrition(null);
+    setPhotoBase64(null);
+    setPhotoMime('image/jpeg');
     setPhotoError(null);
     setAiBusy(false);
     setAiError(null);
@@ -215,25 +199,6 @@ export function RecordIntakeSheet({
     }
   }, [text]);
 
-  const analyzePickedImage = React.useCallback(async (imageBase64: string, mime: string) => {
-    setPhotoAnalyzing(true);
-    setPhotoError(null);
-    setPhotoNutrition(null);
-    try {
-      const r = await analyzeFoodNutritionFromImage({
-        apiKey: getZhipuApiKey(),
-        imageBase64,
-        imageMimeType: mime,
-      });
-      setPhotoNutrition(r.data);
-      if (!r.ok) setPhotoError(r.error);
-    } catch (e) {
-      setPhotoError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPhotoAnalyzing(false);
-    }
-  }, []);
-
   const pickFromLibrary = React.useCallback(async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
@@ -251,14 +216,16 @@ export function RecordIntakeSheet({
     const b64 = asset.base64;
     if (!b64) {
       setPhotoUri(asset.uri);
-      setPhotoNutrition(null);
+      setPhotoBase64(null);
       setPhotoError('无法读取图片数据，请重试或压缩后重选');
       return;
     }
     const mime = asset.mimeType?.trim() || 'image/jpeg';
     setPhotoUri(asset.uri);
-    await analyzePickedImage(b64, mime);
-  }, [analyzePickedImage]);
+    setPhotoBase64(b64);
+    setPhotoMime(mime);
+    setPhotoError(null);
+  }, []);
 
   const takePhoto = React.useCallback(async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
@@ -276,14 +243,16 @@ export function RecordIntakeSheet({
     const b64 = asset.base64;
     if (!b64) {
       setPhotoUri(asset.uri);
-      setPhotoNutrition(null);
+      setPhotoBase64(null);
       setPhotoError('无法读取图片数据，请重试');
       return;
     }
     const mime = asset.mimeType?.trim() || 'image/jpeg';
     setPhotoUri(asset.uri);
-    await analyzePickedImage(b64, mime);
-  }, [analyzePickedImage]);
+    setPhotoBase64(b64);
+    setPhotoMime(mime);
+    setPhotoError(null);
+  }, []);
 
   if (!shouldRender) return null;
 
@@ -299,17 +268,8 @@ export function RecordIntakeSheet({
   const amount = Number.isFinite(Number(amountText)) ? Number(amountText) : 0;
   const amountDisplay = amountText === '' ? '0' : amountText;
   const manualMeta = getManualMeta(manualType);
-  const photoNutritionSum =
-    photoNutrition != null
-      ? photoNutrition.protein_g + photoNutrition.carbohydrate_g + photoNutrition.sodium_mg
-      : 0;
-  const photoConfirmDisabled =
-    tab === 'photo' &&
-    (photoAnalyzing ||
-      !photoNutrition ||
-      photoNutrition.is_food !== 1 ||
-      photoNutritionSum <= 0);
-  const aiConfirmDisabled = tab === 'ai' && (!text.trim() || aiBusy);
+  const photoConfirmDisabled = tab === 'photo' && !photoBase64;
+  const aiConfirmDisabled = tab === 'ai' && !text.trim();
   const confirmDisabled = (tab === 'manual' && amount <= 0) || photoConfirmDisabled || aiConfirmDisabled;
 
   const handleConfirm = async () => {
@@ -317,61 +277,24 @@ export function RecordIntakeSheet({
     if (tab === 'photo' && photoConfirmDisabled) return;
     if (tab === 'ai') {
       const t = text.trim();
-      if (!t || aiBusy) return;
-      let data: FoodTextIntakeJson;
-      if (aiResolved?.text === t) {
-        data = aiResolved.data;
-      } else {
-        setAiBusy(true);
-        setAiError(null);
-        try {
-          const r = await parseFoodIntakeFromText({ apiKey: getZhipuApiKey(), text: t });
-          if (!r.ok) {
-            setAiError(r.error);
-            return;
-          }
-          data = r.data;
-          setAiResolved({ text: t, data });
-        } catch (e) {
-          setAiError(e instanceof Error ? e.message : String(e));
-          return;
-        } finally {
-          setAiBusy(false);
-        }
-      }
-      const sum = data.hydration_ml + data.protein_g + data.carbohydrate_g + data.sodium_mg;
-      if (!Number.isFinite(sum) || sum <= 0) {
-        setAiError('未能估算出有效摄入量，请写得更具体一些（如「一碗牛肉面、一杯牛奶」）');
-        return;
-      }
+      if (!t) return;
+      await Promise.resolve(onConfirm?.({ mode: 'ai', text: t }));
+      onClose();
+      return;
+    }
+    if (tab === 'photo' && photoBase64) {
       await Promise.resolve(
         onConfirm?.({
-          mode: 'ai',
-          text: t,
-          hydrationMl: data.hydration_ml,
-          protein: data.protein_g,
-          carbohydrate: data.carbohydrate_g,
-          sodium: data.sodium_mg,
-          foodSummary: data.food_summary || undefined,
+          mode: 'photo',
+          imageBase64: photoBase64,
+          imageMimeType: photoMime,
+          sourceImageUri: photoUri,
         })
       );
       onClose();
       return;
-    } else if (tab === 'photo' && photoNutrition && photoNutrition.is_food === 1) {
-      await Promise.resolve(
-        onConfirm?.({
-          mode: 'photo',
-          protein: photoNutrition.protein_g,
-          carbohydrate: photoNutrition.carbohydrate_g,
-          sodium: photoNutrition.sodium_mg,
-          sourceImageUri: photoUri,
-        })
-      );
-    } else {
-      await Promise.resolve(
-        onConfirm?.({ mode: 'manual', amount, unit: getUnitByType(manualType), type: manualType })
-      );
     }
+    await Promise.resolve(onConfirm?.({ mode: 'manual', amount, unit: getUnitByType(manualType), type: manualType }));
     onClose();
   };
 
@@ -501,13 +424,18 @@ export function RecordIntakeSheet({
                         </Text>
                       ) : null}
                       <Text style={[styles.photoResultLine, { color: theme.textSecondary }]}>
-                        水分 {aiResolved.data.hydration_ml} ml · 蛋白质 {aiResolved.data.protein_g} g · 碳水 {aiResolved.data.carbohydrate_g} g · 钠{' '}
-                        {aiResolved.data.sodium_mg} mg
+                        水分 {aiResolved.data.hydration_ml} ml（正餐不显性计水；汤/粥/饮料/水果可计入）· 蛋白质 {aiResolved.data.protein_g} g · 碳水{' '}
+                        {aiResolved.data.carbohydrate_g} g · 钠 {aiResolved.data.sodium_mg} mg
                       </Text>
+                      {aiResolved.data.ai_evaluation?.trim() ? (
+                        <Text style={[styles.photoResultLine, { color: theme.text, marginTop: 6 }]} numberOfLines={6}>
+                          AI 评价：{aiResolved.data.ai_evaluation.trim()}
+                        </Text>
+                      ) : null}
                     </View>
                   ) : null}
                   <Text style={[styles.hint, { color: mutedText }]}>
-                    智谱 glm-4.7-flash 解析描述；可点右下角魔法棒预解析，或直接点确认添加（将自动请求一次）。
+                    可点右下角魔法棒仅作预览；点「确认添加」后将在后台解析并自动写入摄入记录（无需在此等待）。
                   </Text>
                 </View>
               ) : tab === 'photo' ? (
@@ -515,13 +443,12 @@ export function RecordIntakeSheet({
                   <View style={styles.photoActionRow}>
                     <Pressable
                       onPress={() => void pickFromLibrary()}
-                      disabled={photoAnalyzing}
                       style={({ pressed }) => [
                         styles.photoActionBtn,
                         {
                           backgroundColor: isDark ? 'rgba(51,65,85,0.75)' : '#f1f5f9',
                           borderColor: border,
-                          opacity: photoAnalyzing ? 0.55 : pressed ? 0.92 : 1,
+                          opacity: pressed ? 0.92 : 1,
                         },
                       ]}
                     >
@@ -530,13 +457,12 @@ export function RecordIntakeSheet({
                     </Pressable>
                     <Pressable
                       onPress={() => void takePhoto()}
-                      disabled={photoAnalyzing}
                       style={({ pressed }) => [
                         styles.photoActionBtn,
                         {
                           backgroundColor: isDark ? 'rgba(51,65,85,0.75)' : '#f1f5f9',
                           borderColor: border,
-                          opacity: photoAnalyzing ? 0.55 : pressed ? 0.92 : 1,
+                          opacity: pressed ? 0.92 : 1,
                         },
                       ]}
                     >
@@ -554,47 +480,14 @@ export function RecordIntakeSheet({
                         <Text style={[styles.photoPreviewHint, { color: mutedText }]}>请选择或拍摄食物照片</Text>
                       </View>
                     )}
-                    {photoAnalyzing ? (
-                      <View style={styles.photoAnalyzingOverlay}>
-                        <ActivityIndicator size="large" color={theme.primary} />
-                        <Text style={[styles.photoAnalyzingText, { color: theme.text }]}>AI 识别中…</Text>
-                      </View>
-                    ) : null}
                   </View>
 
                   {photoError ? (
                     <Text style={[styles.photoErrorText, { color: '#ef4444' }]}>{photoError}</Text>
                   ) : null}
 
-                  {photoNutrition && !photoAnalyzing ? (
-                    <View style={[styles.photoResultCard, { backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#f8fafc', borderColor: border }]}>
-                      {photoNutrition.is_food === 1 ? (
-                        <>
-                          <View style={styles.photoResultRow}>
-                            <MaterialIcons name="check-circle" size={18} color="#10b981" />
-                            <Text style={[styles.photoResultTitle, { color: theme.text }]}>已识别为食物</Text>
-                          </View>
-                          <Text style={[styles.photoResultLine, { color: theme.textSecondary }]}>
-                            蛋白质 {photoNutrition.protein_g} g · 碳水 {photoNutrition.carbohydrate_g} g · 钠 {photoNutrition.sodium_mg} mg
-                          </Text>
-                          {photoNutritionSum <= 0 ? (
-                            <Text style={[styles.photoResultLine, { color: '#f59e0b' }]}>估算均为 0，请换更清晰的食物照片</Text>
-                          ) : null}
-                        </>
-                      ) : (
-                        <>
-                          <View style={styles.photoResultRow}>
-                            <MaterialIcons name="info-outline" size={18} color="#f59e0b" />
-                            <Text style={[styles.photoResultTitle, { color: theme.text }]}>未按食物记录</Text>
-                          </View>
-                          <Text style={[styles.photoResultLine, { color: theme.textSecondary }]}>{nonFoodHint(photoNutrition.non_food_code)}</Text>
-                        </>
-                      )}
-                    </View>
-                  ) : null}
-
                   <Text style={[styles.hint, { color: mutedText }]}>
-                    识别结果将合并为一条摄入记录（蛋白质、碳水、钠）；水分请用手动或其它方式补充。
+                    选好照片后点「确认添加」，将在后台识别营养并自动写入；识别失败时会弹窗提示。
                   </Text>
                 </View>
               ) : (
@@ -683,14 +576,10 @@ export function RecordIntakeSheet({
                   },
                 ]}
               >
-                {aiBusy && tab === 'ai' ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <>
-                    <Text style={styles.confirmText}>确认添加</Text>
-                    <MaterialIcons name="check-circle" size={22} color="#fff" />
-                  </>
-                )}
+                <>
+                  <Text style={styles.confirmText}>确认添加</Text>
+                  <MaterialIcons name="check-circle" size={22} color="#fff" />
+                </>
               </Pressable>
             </View>
           </Animated.View>

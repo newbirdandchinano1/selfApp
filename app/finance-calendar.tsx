@@ -25,6 +25,8 @@ type Txn = {
   meta: string;
   displayAmount: number;
   transactionType: FinanceTransactionRow['transaction_type'];
+  /** 与财务首页一致：来自 `finance_transactions.ai_comment` */
+  insight?: string;
 };
 
 const weekTitles = ['一', '二', '三', '四', '五', '六', '日'];
@@ -105,6 +107,7 @@ function getTxnDisplayAmount(row: FinanceTransactionRow): number {
 
 function txnToUi(row: FinanceTransactionRow): Txn {
   const ymd = row.happened_at.slice(0, 10);
+  const trimmed = row.ai_comment?.trim();
   return {
     id: row.id,
     icon: txnIconByType(row.transaction_type),
@@ -112,6 +115,7 @@ function txnToUi(row: FinanceTransactionRow): Txn {
     meta: `${formatTimeHHmm(row.happened_at)} · ${ymd}`,
     displayAmount: getTxnDisplayAmount(row),
     transactionType: row.transaction_type,
+    insight: trimmed ? `AI 洞察：${trimmed}` : undefined,
   };
 }
 
@@ -326,6 +330,14 @@ export default function FinanceCalendarScreen() {
   const [activeTxns, setActiveTxns] = React.useState<Txn[]>([]);
   const [dayTotal, setDayTotal] = React.useState(0);
 
+  const dayAiInsightSummary = React.useMemo(() => {
+    const total = activeTxns.length;
+    const withInsight = activeTxns.filter((t) => t.insight).length;
+    if (total === 0) return { kind: 'no_txns' as const };
+    if (withInsight === 0) return { kind: 'no_ai' as const, total };
+    return { kind: 'has_ai' as const, withInsight, total };
+  }, [activeTxns]);
+
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -351,6 +363,7 @@ export default function FinanceCalendarScreen() {
   const text = isDark ? '#e2e8f0' : '#131b2e';
   const subtle = isDark ? '#94a3b8' : '#64748b';
   const outline = isDark ? 'rgba(148,163,184,0.20)' : 'rgba(194,198,214,0.45)';
+  const outlineVariant = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(194,198,214,0.26)';
   const titleColor = isDark ? '#fbbf24' : '#b45309';
   const income = isDark ? '#34d399' : '#006c49';
   const expense = isDark ? '#cbd5e1' : '#475569';
@@ -656,7 +669,11 @@ export default function FinanceCalendarScreen() {
                   <Text style={[styles.insightTagText, { color: titleColor }]}>AI 洞察</Text>
                 </View>
                 <Text style={[styles.insightBody, { color: isDark ? '#fde68a' : '#92400e' }]}>
-                  本月餐饮支出已超出过去 3 个月平均值的 12%，建议减少外卖频次以达成存款目标。
+                  {dayAiInsightSummary.kind === 'no_txns'
+                    ? '选择有流水的日期即可查看记录。在「财务」首页使用智能/拍照记账并生成点评后，含点评的流水会同步显示在下方列表中。'
+                    : dayAiInsightSummary.kind === 'no_ai'
+                      ? '当日流水暂无 AI 点评。在「财务」首页保存或编辑流水并触发智能分析后，点评会写入数据库并显示在此处。'
+                      : `当日共 ${dayAiInsightSummary.withInsight}/${dayAiInsightSummary.total} 笔流水含 AI 点评（数据与财务首页一致），详见下方。`}
                 </Text>
               </View>
 
@@ -674,23 +691,33 @@ export default function FinanceCalendarScreen() {
                       <MaterialIcons name={txn.icon} size={20} color={titleColor} />
                     </View>
                     <View style={[styles.txnMain, styles.txnMainWithBorder, { borderLeftColor: dayTotal >= 0 ? income : titleColor }]}>
-                      <Text style={[styles.txnTitle, { color: text }]}>{txn.title}</Text>
-                      <Text style={[styles.txnMeta, { color: subtle }]}>{txn.meta}</Text>
+                      <View style={styles.txnTitleRow}>
+                        <View style={styles.txnTextCol}>
+                          <Text style={[styles.txnTitle, { color: text }]}>{txn.title}</Text>
+                          <Text style={[styles.txnMeta, { color: subtle }]}>{txn.meta}</Text>
+                          {txn.insight ? (
+                            <View style={[styles.txnInsightTag, { backgroundColor: outlineVariant }]}>
+                              <MaterialIcons name="auto-awesome" size={14} color={titleColor} />
+                              <Text style={[styles.txnInsightText, { color: titleColor }]}>{txn.insight}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <Text
+                          style={[
+                            styles.txnAmount,
+                            {
+                              color:
+                                txn.transactionType === 'income'
+                                  ? income
+                                  : txn.transactionType === 'expense'
+                                    ? expenseAmountColor
+                                    : subtle,
+                            },
+                          ]}>
+                          {txn.displayAmount >= 0 ? '+' : ''}{txn.displayAmount.toFixed(2)}
+                        </Text>
+                      </View>
                     </View>
-                    <Text
-                      style={[
-                        styles.txnAmount,
-                        {
-                          color:
-                            txn.transactionType === 'income'
-                              ? income
-                              : txn.transactionType === 'expense'
-                                ? expenseAmountColor
-                                : subtle,
-                        },
-                      ]}>
-                      {txn.displayAmount >= 0 ? '+' : ''}{txn.displayAmount.toFixed(2)}
-                    </Text>
                   </View>
                 ))
               )}
@@ -909,7 +936,7 @@ const styles = StyleSheet.create({
   },
   txnRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
     marginBottom: 14,
   },
@@ -919,14 +946,27 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 2,
   },
   txnMain: {
     flex: 1,
+    minWidth: 0,
     gap: 2,
   },
   txnMainWithBorder: {
     borderLeftWidth: 4,
     paddingLeft: 10,
+  },
+  txnTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  txnTextCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
   txnTitle: {
     fontSize: 15,
@@ -936,9 +976,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+  txnInsightTag: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'flex-start',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    marginTop: 6,
+    maxWidth: '100%',
+  },
+  txnInsightText: {
+    flexShrink: 1,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.4,
+    lineHeight: 14,
+  },
   txnAmount: {
     fontSize: 15,
     fontWeight: '900',
+    flexShrink: 0,
+    paddingTop: 1,
   },
   insightCard: {
     marginTop: 8,

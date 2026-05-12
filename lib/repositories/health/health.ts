@@ -12,9 +12,9 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO health_records (
-      id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, sodium, target_sodium, record_date, quick_add_key, source_image_uri,
+      id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, sodium, target_sodium, record_date, quick_add_key, intake_display_title, intake_ai_comment, source_image_uri,
       created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
     [
       input.id,
       input.user_id,
@@ -28,6 +28,8 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
       input.target_sodium ?? 0,
       input.record_date,
       input.quick_add_key ?? null,
+      input.intake_display_title ?? null,
+      input.intake_ai_comment ?? null,
       input.source_image_uri ?? null,
     ]
   );
@@ -125,7 +127,7 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
 
   await db.runAsync(
     `UPDATE health_records
-     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, carbohydrate = ?, target_carbohydrate = ?, sodium = ?, target_sodium = ?, record_date = ?, quick_add_key = ?, source_image_uri = ?, updated_at = datetime('now'),
+     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, carbohydrate = ?, target_carbohydrate = ?, sodium = ?, target_sodium = ?, record_date = ?, quick_add_key = ?, intake_display_title = ?, intake_ai_comment = ?, source_image_uri = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
          version = version + 1
      WHERE id = ?`,
@@ -140,6 +142,8 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
       input.target_sodium ?? current.target_sodium,
       input.record_date ?? current.record_date,
       input.quick_add_key !== undefined ? input.quick_add_key : current.quick_add_key,
+      input.intake_display_title !== undefined ? input.intake_display_title : current.intake_display_title ?? null,
+      input.intake_ai_comment !== undefined ? input.intake_ai_comment : current.intake_ai_comment ?? null,
       input.source_image_uri !== undefined ? input.source_image_uri : current.source_image_uri ?? null,
       id,
     ]

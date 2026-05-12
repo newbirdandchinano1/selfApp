@@ -1,4 +1,4 @@
-import { RecordIntakeSheet } from '@/components/record-intake-sheet';
+import { RecordIntakeSheet, type RecordIntakeConfirmPayload } from '@/components/record-intake-sheet';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -28,6 +28,11 @@ import {
   setGlobalSodiumTargetMg,
 } from '@/lib/global-intake-targets';
 import {
+  analyzeFoodNutritionFromImage,
+  getZhipuApiKey,
+  parseFoodIntakeFromText,
+} from '@/lib/zhipu-image-parse';
+import {
   createQuickAddItemMap,
   formatQuickAddAmount,
   getDefaultQuickAddItems,
@@ -39,6 +44,7 @@ import {
 } from '@/lib/quick-add-cards';
 
 import {
+  ActivityIndicator,
   Animated,
   Alert,
   Dimensions,
@@ -147,6 +153,31 @@ function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'mg'): string {
 /** AI 文本一次写入多营时与 createHealthRecord.quick_add_key 对齐 */
 const HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY = 'ai_text_intake';
 
+const INTAKE_DISPLAY_TITLE_MAX = 500;
+const INTAKE_AI_COMMENT_MAX = 8000;
+
+function clampIntakeDisplayTitle(raw: string | undefined | null): string | null {
+  const t = (raw ?? '').trim();
+  if (!t) return null;
+  return t.length <= INTAKE_DISPLAY_TITLE_MAX ? t : t.slice(0, INTAKE_DISPLAY_TITLE_MAX);
+}
+
+function clampIntakeAiComment(raw: string | undefined | null): string | null {
+  const t = (raw ?? '').trim();
+  if (!t) return null;
+  return t.length <= INTAKE_AI_COMMENT_MAX ? t : t.slice(0, INTAKE_AI_COMMENT_MAX);
+}
+
+function intakeListAiComment(row: HealthRecordRow): string {
+  const c = row.intake_ai_comment?.trim();
+  return c ? `AI评价：${c}` : 'AI评价：待分析';
+}
+
+function singleIntakeLineTitle(row: HealthRecordRow, fallback: string): string {
+  const t = row.intake_display_title?.trim();
+  return t || fallback;
+}
+
 function positiveNutrientKindsCount(row: HealthRecordRow): number {
   return [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.sodium > 0].filter(Boolean).length;
 }
@@ -159,6 +190,8 @@ function firstPositiveIntakeMetric(row: HealthRecordRow): 'hydration' | 'protein
 }
 
 function combinedIntakeListTitle(row: HealthRecordRow, quickAddByKey: ReturnType<typeof createQuickAddItemMap>): string {
+  const custom = row.intake_display_title?.trim();
+  if (custom) return custom;
   if (row.source_image_uri?.trim()) return 'AI 拍照识别';
   if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) return 'AI 记录';
   if (!row.quick_add_key && row.hydration === 0) return 'AI 拍照识别';
@@ -189,6 +222,8 @@ type IntakeListLine = {
   iconBgLight: string;
   iconBgDark: string;
   iconColor: string;
+  /** 智谱解析中占位行，不可点进详情、不可滑动删除 */
+  isPlaceholder?: boolean;
 };
 
 /** 将当日多条库记录展开为列表行（一行可对应水分/蛋白质/钠中一项）。 */
@@ -215,7 +250,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         timeLine,
         amountRight: formatCombinedIntakeAmountsLine(row),
         note: '备注：暂无备注',
-        aiComment: 'AI评价：待分析',
+        aiComment: intakeListAiComment(row),
         icon: row.source_image_uri?.trim() ? 'photo-camera' : 'auto-awesome',
         iconBgLight: 'rgba(16,185,129,0.12)',
         iconBgDark: 'rgba(6,78,59,0.32)',
@@ -233,11 +268,11 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         key: `${row.id}-h`,
         recordId: row.id,
         metric: 'hydration',
-        title: qa ? qa.label : '水分',
+        title: singleIntakeLineTitle(row, qa ? qa.label : '水分'),
         timeLine,
         amountRight: formatIntakeAmount(h, 'ml'),
         note: '备注：暂无备注',
-        aiComment: 'AI评价：待分析',
+        aiComment: intakeListAiComment(row),
         icon: getMetricQuickAdd(qa, 'hydration')?.icon as keyof typeof MaterialIcons.glyphMap || 'water-drop',
         iconBgLight: 'rgba(16,185,129,0.12)',
         iconBgDark: 'rgba(6,78,59,0.32)',
@@ -251,11 +286,11 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         key: `${row.id}-p`,
         recordId: row.id,
         metric: 'protein',
-        title: metricQa ? metricQa.label : '蛋白质',
+        title: singleIntakeLineTitle(row, metricQa ? metricQa.label : '蛋白质'),
         timeLine,
         amountRight: formatIntakeAmount(p, 'g'),
         note: '备注：暂无备注',
-        aiComment: 'AI评价：待分析',
+        aiComment: intakeListAiComment(row),
         icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
         iconBgLight: 'rgba(245,158,11,0.14)',
         iconBgDark: 'rgba(120,53,15,0.32)',
@@ -269,11 +304,11 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         key: `${row.id}-s`,
         recordId: row.id,
         metric: 'sodium',
-        title: metricQa ? metricQa.label : '钠',
+        title: singleIntakeLineTitle(row, metricQa ? metricQa.label : '钠'),
         timeLine,
         amountRight: formatIntakeAmount(s, 'mg'),
         note: '备注：暂无备注',
-        aiComment: 'AI评价：待分析',
+        aiComment: intakeListAiComment(row),
         icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
         iconBgLight: 'rgba(168,85,247,0.14)',
         iconBgDark: 'rgba(88,28,135,0.32)',
@@ -287,11 +322,11 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         key: `${row.id}-c`,
         recordId: row.id,
         metric: 'carbohydrate',
-        title: metricQa ? metricQa.label : '碳水',
+        title: singleIntakeLineTitle(row, metricQa ? metricQa.label : '碳水'),
         timeLine,
         amountRight: formatIntakeAmount(c, 'g'),
         note: '备注：暂无备注',
-        aiComment: 'AI评价：待分析',
+        aiComment: intakeListAiComment(row),
         icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'rice-bowl',
         iconBgLight: 'rgba(234,179,8,0.14)',
         iconBgDark: 'rgba(113,63,18,0.32)',
@@ -717,6 +752,11 @@ export default function HealthScreen() {
   const [selectedDayIntakeTotals, setSelectedDayIntakeTotals] = React.useState<HealthIntakeDayTotals | null>(null);
   /** 选中日的原始记录行（用于摄入时间线）。 */
   const [selectedDayRecords, setSelectedDayRecords] = React.useState<HealthRecordRow[]>([]);
+  /** AI/拍照确认后、智谱解析完成前的列表占位 */
+  const [pendingIntake, setPendingIntake] = React.useState<{ id: string; kind: 'ai' | 'photo'; label: string } | null>(
+    null
+  );
+  const intakeParseLocked = pendingIntake != null;
 
   useFocusEffect(
     React.useCallback(() => {
@@ -973,6 +1013,10 @@ export default function HealthScreen() {
 
   const persistManualIntakeDelta = React.useCallback(
     async (type: 'hydration' | 'protein' | 'carbohydrate' | 'sodium', amount: number, quickAddKey?: string) => {
+      if (pendingIntake) {
+        Alert.alert('请稍候', '当前有一条摄入正在解析，解析完成后再添加。');
+        return;
+      }
       if (!user?.id || !Number.isFinite(amount) || amount <= 0) return;
       const ymd = formatLocalYmd(selectedDate);
       try {
@@ -997,7 +1041,7 @@ export default function HealthScreen() {
         /* 忽略写入失败 */
       }
     },
-    [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation]
+    [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation, pendingIntake]
   );
 
   const persistFoodPhotoIntake = React.useCallback(
@@ -1005,13 +1049,14 @@ export default function HealthScreen() {
       protein: number,
       carbohydrate: number,
       sodium: number,
-      sourceImageUri?: string | null
-    ) => {
-      if (!user?.id) return;
+      sourceImageUri?: string | null,
+      meta?: { displayTitle?: string; aiComment?: string }
+    ): Promise<boolean> => {
+      if (!user?.id) return false;
       const p = Math.max(0, Number(protein) || 0);
       const c = Math.max(0, Number(carbohydrate) || 0);
       const s = Math.max(0, Number(sodium) || 0);
-      if (p + c + s <= 0) return;
+      if (p + c + s <= 0) return false;
       const ymd = formatLocalYmd(selectedDate);
       try {
         const id = `h_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -1022,6 +1067,8 @@ export default function HealthScreen() {
           record_date: ymd,
           quick_add_key: null,
           source_image_uri: storedImageUri,
+          intake_display_title: clampIntakeDisplayTitle(meta?.displayTitle),
+          intake_ai_comment: clampIntakeAiComment(meta?.aiComment),
           hydration: 0,
           protein: p,
           carbohydrate: c,
@@ -1037,21 +1084,28 @@ export default function HealthScreen() {
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
         playIntakeFeedbackAnimation();
+        return true;
       } catch {
-        /* 忽略写入失败 */
+        return false;
       }
     },
     [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation]
   );
 
   const persistAiTextIntake = React.useCallback(
-    async (hydrationMl: number, protein: number, carbohydrate: number, sodium: number) => {
-      if (!user?.id) return;
+    async (
+      hydrationMl: number,
+      protein: number,
+      carbohydrate: number,
+      sodium: number,
+      meta?: { displayTitle?: string; aiComment?: string }
+    ): Promise<boolean> => {
+      if (!user?.id) return false;
       const h = Math.max(0, Number(hydrationMl) || 0);
       const p = Math.max(0, Number(protein) || 0);
       const c = Math.max(0, Number(carbohydrate) || 0);
       const s = Math.max(0, Number(sodium) || 0);
-      if (h + p + c + s <= 0) return;
+      if (h + p + c + s <= 0) return false;
       const ymd = formatLocalYmd(selectedDate);
       try {
         const id = `h_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -1061,6 +1115,8 @@ export default function HealthScreen() {
           record_date: ymd,
           quick_add_key: HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY,
           source_image_uri: null,
+          intake_display_title: clampIntakeDisplayTitle(meta?.displayTitle),
+          intake_ai_comment: clampIntakeAiComment(meta?.aiComment),
           hydration: h,
           protein: p,
           carbohydrate: c,
@@ -1076,8 +1132,9 @@ export default function HealthScreen() {
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
         playIntakeFeedbackAnimation();
+        return true;
       } catch {
-        /* 忽略写入失败 */
+        return false;
       }
     },
     [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation]
@@ -1129,11 +1186,128 @@ export default function HealthScreen() {
     [deleteIntakeRecordNow, user?.id]
   );
 
+  const handleRecordIntakeConfirm = React.useCallback(
+    async (payload: RecordIntakeConfirmPayload) => {
+      if (payload.mode === 'manual') {
+        if (payload.amount <= 0 || !payload.type) return;
+        await persistManualIntakeDelta(payload.type, payload.amount);
+        return;
+      }
+      if (!user?.id) {
+        Alert.alert('无法记录', '请先完成用户资料后再试。');
+        return;
+      }
+      if (pendingIntake) {
+        Alert.alert('请稍候', '当前有一条摄入正在解析，请等待完成后再试。');
+        return;
+      }
+      setSheetOpen(false);
+      const pendingId = `pending_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+      if (payload.mode === 'ai') {
+        const text = payload.text.trim();
+        if (!text) return;
+        setPendingIntake({ id: pendingId, kind: 'ai', label: text });
+        void (async () => {
+          try {
+            const r = await parseFoodIntakeFromText({ apiKey: getZhipuApiKey(), text });
+            if (!r.ok) {
+              Alert.alert('解析失败', r.error);
+              return;
+            }
+            const d = r.data;
+            const sum = d.hydration_ml + d.protein_g + d.carbohydrate_g + d.sodium_mg;
+            if (!Number.isFinite(sum) || sum <= 0) {
+              Alert.alert(
+                '无法记录',
+                '未能估算出有效摄入量，请写得更具体一些（如「一碗牛肉面、一杯牛奶」）。'
+              );
+              return;
+            }
+            const ok = await persistAiTextIntake(d.hydration_ml, d.protein_g, d.carbohydrate_g, d.sodium_mg, {
+              displayTitle: text,
+              aiComment: d.ai_evaluation?.trim(),
+            });
+            if (!ok) Alert.alert('保存失败', '请稍后重试。');
+          } catch (e) {
+            Alert.alert('解析失败', e instanceof Error ? e.message : String(e));
+          } finally {
+            setPendingIntake(null);
+          }
+        })();
+        return;
+      }
+      if (payload.mode === 'photo') {
+        setPendingIntake({ id: pendingId, kind: 'photo', label: '拍照记录' });
+        void (async () => {
+          try {
+            const r = await analyzeFoodNutritionFromImage({
+              apiKey: getZhipuApiKey(),
+              imageBase64: payload.imageBase64,
+              imageMimeType: payload.imageMimeType,
+            });
+            if (!r.ok) {
+              Alert.alert('识别失败', r.error);
+              return;
+            }
+            const d = r.data;
+            const sum = d.protein_g + d.carbohydrate_g + d.sodium_mg;
+            if (d.is_food !== 1 || sum <= 0) {
+              const hint =
+                d.is_food !== 1
+                  ? `无法按食物记录（代码 ${d.non_food_code}），请换一张清晰的食物照片。`
+                  : '估算营养均为 0，请换一张更清晰的食物照片。';
+              Alert.alert('无法记录', hint);
+              return;
+            }
+            const ok = await persistFoodPhotoIntake(d.protein_g, d.carbohydrate_g, d.sodium_mg, payload.sourceImageUri, {
+              displayTitle: d.food_name?.trim() || undefined,
+              aiComment: d.ai_evaluation?.trim(),
+            });
+            if (!ok) Alert.alert('保存失败', '请稍后重试。');
+          } catch (e) {
+            Alert.alert('识别失败', e instanceof Error ? e.message : String(e));
+          } finally {
+            setPendingIntake(null);
+          }
+        })();
+      }
+    },
+    [user?.id, pendingIntake, persistManualIntakeDelta, persistAiTextIntake, persistFoodPhotoIntake]
+  );
+
   const intakeListPreview = React.useMemo(() => {
     const lines = buildIntakeListLines(selectedDayRecords, quickAddCatalog);
+    const placeholderLine: IntakeListLine | null = pendingIntake
+      ? {
+          key: `${pendingIntake.id}-combined`,
+          recordId: pendingIntake.id,
+          metric: 'hydration',
+          title:
+            pendingIntake.kind === 'ai'
+              ? pendingIntake.label.length > 40
+                ? `${pendingIntake.label.slice(0, 40)}…`
+                : pendingIntake.label
+              : '拍照记录',
+          timeLine: '解析中',
+          amountRight: '—',
+          note: pendingIntake.kind === 'ai' ? '正在解析饮食描述…' : '正在识别食物照片…',
+          aiComment: '完成后将自动加入列表',
+          icon: 'hourglass-empty',
+          iconBgLight: 'rgba(59,130,246,0.14)',
+          iconBgDark: 'rgba(30,58,138,0.35)',
+          iconColor: '#3b82f6',
+          isPlaceholder: true,
+        }
+      : null;
+    const merged = placeholderLine ? [placeholderLine, ...lines] : lines;
     const max = 8;
-    return { lines: lines.slice(0, max), total: lines.length, hasMore: lines.length > max };
-  }, [selectedDayRecords, quickAddCatalog]);
+    return {
+      lines: merged.slice(0, max),
+      total: merged.length,
+      hasMore: merged.length > max,
+      showEmpty: lines.length === 0 && !placeholderLine,
+    };
+  }, [selectedDayRecords, quickAddCatalog, pendingIntake]);
 
   React.useEffect(() => {
     const t = setTimeout(() => {
@@ -1918,9 +2092,13 @@ export default function HealthScreen() {
                   }}
                 >
                   <TouchableOpacity
-                    style={[styles.quickAddCard, { backgroundColor: theme.surface, width: cardWidth }]}
+                    style={[styles.quickAddCard, { backgroundColor: theme.surface, width: cardWidth, opacity: intakeParseLocked ? 0.45 : 1 }]}
                     activeOpacity={0.82}
                     onPress={() => {
+                      if (intakeParseLocked) {
+                        Alert.alert('请稍候', '当前有一条摄入正在解析，解析完成后再添加。');
+                        return;
+                      }
                       void persistQuickAddIntake(item);
                     }}
                   >
@@ -1965,7 +2143,7 @@ export default function HealthScreen() {
             </TouchableOpacity>
           </View>
 
-          {intakeListPreview.total === 0 ? (
+          {intakeListPreview.showEmpty ? (
             <View
               style={[
                 styles.intakeEmptyBox,
@@ -1978,6 +2156,48 @@ export default function HealthScreen() {
             <View style={styles.intakeList}>
               {intakeListPreview.lines.map((line) => {
                 const isCombinedIntake = line.key.endsWith('-combined');
+                if (line.isPlaceholder) {
+                  return (
+                    <View
+                      key={line.key}
+                      style={[
+                        styles.intakeRow,
+                        isCombinedIntake && styles.intakeRowStacked,
+                        {
+                          backgroundColor: theme.surface,
+                          borderColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(226,232,240,0.9)',
+                          opacity: 0.92,
+                        },
+                      ]}
+                    >
+                      <View style={styles.intakeRowLeft}>
+                        <View
+                          style={[
+                            styles.intakeIconCircle,
+                            { backgroundColor: isDark ? line.iconBgDark : line.iconBgLight },
+                          ]}
+                        >
+                          <ActivityIndicator size="small" color={line.iconColor} />
+                        </View>
+                        <View style={styles.intakeRowText}>
+                          <View style={styles.intakeRowHeader}>
+                            <Text style={[styles.intakeRowTitle, { color: theme.text }]} numberOfLines={2}>
+                              {line.title}
+                            </Text>
+                            <Text style={[styles.intakeRowTime, { color: theme.textSecondary }]}>{line.timeLine}</Text>
+                          </View>
+                          <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
+                            {line.note}
+                          </Text>
+                          <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
+                            {line.aiComment}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={[styles.intakeRowAmountStacked, { color: theme.textSecondary }]}>{line.amountRight}</Text>
+                    </View>
+                  );
+                }
                 return (
                 <Swipeable
                   key={line.key}
@@ -2271,8 +2491,14 @@ export default function HealthScreen() {
         {...floatingCtaPanResponder.panHandlers}
       >
         <TouchableOpacity
-          style={[styles.floatingCtaBtn, { backgroundColor: theme.primary }]}
-          onPress={() => setSheetOpen(true)}
+          style={[styles.floatingCtaBtn, { backgroundColor: theme.primary, opacity: intakeParseLocked ? 0.42 : 1 }]}
+          onPress={() => {
+            if (intakeParseLocked) {
+              Alert.alert('请稍候', '当前有一条摄入正在解析，解析完成后再添加。');
+              return;
+            }
+            setSheetOpen(true);
+          }}
           onPressIn={() => {
             Animated.spring(ctaPressAnim, {
               toValue: 0.965,
@@ -2447,24 +2673,7 @@ export default function HealthScreen() {
       <RecordIntakeSheet
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
-        onConfirm={async (payload) => {
-          if (payload.mode === 'ai') {
-            await persistAiTextIntake(payload.hydrationMl, payload.protein, payload.carbohydrate, payload.sodium);
-            return;
-          }
-          if (payload.mode === 'photo') {
-            await persistFoodPhotoIntake(
-              payload.protein,
-              payload.carbohydrate,
-              payload.sodium,
-              payload.sourceImageUri
-            );
-            return;
-          }
-          if (payload.mode !== 'manual' || payload.amount == null || !payload.type) return;
-          if (payload.amount <= 0) return;
-          await persistManualIntakeDelta(payload.type, payload.amount);
-        }}
+        onConfirm={handleRecordIntakeConfirm}
       />
     </SafeAreaView>
   );

@@ -6,6 +6,7 @@ import {
   getFinanceTransactionById,
   updateFinanceTransaction,
 } from '@/lib/repositories/finance/finance';
+import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -226,6 +227,17 @@ export default function EditFinanceTransactionScreen() {
         note: noteDraft.trim() || null,
         extra_data: mergeExtraData(row.extra_data, extraPatch),
       });
+      if (tab !== 'transfer') {
+        await tryPersistFinanceTxnAiComment(row.id, {
+          name: title,
+          happened_at: happenedAt.toISOString(),
+          transaction_type: tab,
+          amount: signedAmount,
+          note: noteDraft.trim() || null,
+          accountLabel: selectedAccount.name,
+          categoryLabel: selectedCategory?.label ?? '未分类',
+        });
+      }
       router.back();
     } catch (e) {
       console.warn('Failed to update finance transaction:', e);

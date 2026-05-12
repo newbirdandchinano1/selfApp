@@ -22,6 +22,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 type IntakeMetric = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
 
+const HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY = 'ai_text_intake';
+
 const METRIC_ORDER: IntakeMetric[] = ['hydration', 'protein', 'carbohydrate', 'sodium'];
 
 const METRIC_META: Record<
@@ -123,6 +125,7 @@ function percentOfTarget(current: number, target: number): number {
 function sourceLabel(row: HealthRecordRow, catalog: QuickAddCardItem[]): string {
   const img = row.source_image_uri?.trim();
   if (img) return 'AI 拍照识别';
+  if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) return 'AI 文字记录';
   if (!row.quick_add_key) {
     const hasMulti =
       [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.sodium > 0].filter(Boolean).length > 1;
@@ -382,10 +385,25 @@ export default function IntakeRecordDetailScreen() {
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>记录信息</Text>
             <View style={[styles.card, { backgroundColor: theme.surface, borderColor: border }]}>
-              <View style={styles.kvRow}>
-                <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录日期</Text>
-                <Text style={[styles.kvVal, { color: theme.text }]}>{formatYmdChinese(row.record_date)}</Text>
-              </View>
+              {row.intake_display_title?.trim() ? (
+                <View style={styles.kvRow}>
+                  <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录名称</Text>
+                  <Text style={[styles.kvVal, { color: theme.text, flex: 1, textAlign: 'right' }]} numberOfLines={4}>
+                    {row.intake_display_title.trim()}
+                  </Text>
+                </View>
+              ) : null}
+              {row.intake_display_title?.trim() ? (
+                <View style={[styles.kvRow, styles.kvDivider, { borderTopColor: border }]}>
+                  <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录日期</Text>
+                  <Text style={[styles.kvVal, { color: theme.text }]}>{formatYmdChinese(row.record_date)}</Text>
+                </View>
+              ) : (
+                <View style={styles.kvRow}>
+                  <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录日期</Text>
+                  <Text style={[styles.kvVal, { color: theme.text }]}>{formatYmdChinese(row.record_date)}</Text>
+                </View>
+              )}
               <View style={[styles.kvRow, styles.kvDivider, { borderTopColor: border }]}>
                 <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录时间</Text>
                 <Text style={[styles.kvVal, { color: theme.text }]}>{formatRecordTime(row.created_at)}</Text>
@@ -403,7 +421,10 @@ export default function IntakeRecordDetailScreen() {
             <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>备注与评价</Text>
             <View style={[styles.card, { backgroundColor: theme.surface, borderColor: border, paddingVertical: 14, paddingHorizontal: 16 }]}>
               <Text style={[styles.noteBody, { color: theme.textSecondary }]}>备注：暂无备注</Text>
-              <Text style={[styles.noteBody, { color: theme.textSecondary, marginTop: 10 }]}>AI 评价：待分析（后续可接入个性化建议）</Text>
+              <Text style={[styles.noteLabel, { color: theme.text, marginTop: 12 }]}>AI 评价</Text>
+              <Text style={[styles.noteBody, { color: row.intake_ai_comment?.trim() ? theme.text : theme.textSecondary, marginTop: 6 }]}>
+                {row.intake_ai_comment?.trim() || '暂无，模型未返回点评或旧版记录无此字段。'}
+              </Text>
             </View>
           </View>
 
@@ -533,6 +554,7 @@ const styles = StyleSheet.create({
   kvKey: { fontSize: 14, fontWeight: '600' },
   kvVal: { fontSize: 14, fontWeight: '700' },
   noteBody: { fontSize: 14, fontWeight: '500', lineHeight: 22 },
+  noteLabel: { fontSize: 12, fontWeight: '800', letterSpacing: 0.6, textTransform: 'uppercase' },
   deleteBtn: {
     marginTop: 8,
     flexDirection: 'row',

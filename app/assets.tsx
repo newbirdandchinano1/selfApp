@@ -71,6 +71,18 @@ export default function AssetsScreen() {
     return `${prefix}${abs.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
   }, []);
 
+  /** 当前净资产：截断到分（向 0 取整），避免第三位小数四舍五入 */
+  const formatSignedMoneyTrunc2 = React.useCallback((value: number) => {
+    if (!Number.isFinite(value)) {
+      return '¥0.00';
+    }
+    const factor = 100;
+    const truncated = value >= 0 ? Math.floor(value * factor + 1e-9) / factor : Math.ceil(value * factor - 1e-9) / factor;
+    const abs = Math.abs(truncated);
+    const prefix = truncated < 0 ? '-¥' : '¥';
+    return `${prefix}${abs.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }, []);
+
   const formatMoney2 = React.useCallback((value: number) => {
     const abs = Math.abs(value);
     return `¥${abs.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -272,7 +284,7 @@ export default function AssetsScreen() {
         <View style={styles.hero}>
           <Text style={[styles.kicker, { color: outline }]}>当前净资产</Text>
           <View style={styles.heroRow}>
-            <Text style={[styles.netWorth, { color: netWorth < 0 ? errorRed : theme.text }]}>{formatSignedMoney0(netWorth)}</Text>
+            <Text style={[styles.netWorth, { color: netWorth < 0 ? errorRed : theme.text }]}>{formatSignedMoneyTrunc2(netWorth)}</Text>
             <Pressable
               onPress={() => router.push('/ai-finance-analysis')}
               style={({ pressed }) => [styles.pill, { backgroundColor: `${secondaryGreen}1A` }, pressed && { opacity: 0.8 }]}>
@@ -284,12 +296,12 @@ export default function AssetsScreen() {
           <View style={styles.totalsRow}>
             <View style={styles.totalBlock}>
               <Text style={[styles.totalLabel, { color: outline }]}>总资产</Text>
-              <Text style={[styles.totalValue, { color: theme.text }]}>{formatMoney0(totalAssets)}</Text>
+              <Text style={[styles.totalValue, { color: theme.text }]}>{formatMoney2(totalAssets)}</Text>
             </View>
             <View style={[styles.vDivider, { backgroundColor: `${outlineVariant}80` }]} />
             <View style={styles.totalBlock}>
               <Text style={[styles.totalLabel, { color: outline }]}>总负债</Text>
-              <Text style={[styles.totalValue, { color: errorRed }]}>{formatMoney0(totalLiabilitiesAbs)}</Text>
+              <Text style={[styles.totalValue, { color: errorRed }]}>{formatMoney2(totalLiabilitiesAbs)}</Text>
             </View>
           </View>
         </View>

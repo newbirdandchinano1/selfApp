@@ -21,6 +21,16 @@ type FilterKey = 'all' | 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
 /** AI 文本一次写入多营时与 createHealthRecord.quick_add_key 对齐（与首页一致） */
 const HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY = 'ai_text_intake';
 
+function intakeHistoryAiComment(row: HealthRecordRow): string {
+  const c = row.intake_ai_comment?.trim();
+  return c ? `AI评价：${c}` : 'AI评价：待分析';
+}
+
+function singleHistoryLineTitle(row: HealthRecordRow, fallback: string): string {
+  const t = row.intake_display_title?.trim();
+  return t || fallback;
+}
+
 function positiveNutrientKindsCount(row: HealthRecordRow): number {
   return [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.sodium > 0].filter(Boolean).length;
 }
@@ -33,6 +43,8 @@ function firstPositiveIntakeMetric(row: HealthRecordRow): Exclude<FilterKey, 'al
 }
 
 function combinedHistoryTitle(row: HealthRecordRow, quickAddByKey: ReturnType<typeof createQuickAddItemMap>): string {
+  const custom = row.intake_display_title?.trim();
+  if (custom) return custom;
   if (row.source_image_uri?.trim()) return 'AI 拍照识别';
   if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) return 'AI 记录';
   if (!row.quick_add_key && row.hydration === 0) return 'AI 拍照识别';
@@ -134,7 +146,7 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
         amount: formatCombinedHistoryAmount(row),
         time,
         note: '备注：暂无备注',
-        aiComment: 'AI评价：待分析',
+        aiComment: intakeHistoryAiComment(row),
         icon: row.source_image_uri?.trim() ? 'photo-camera' : 'auto-awesome',
         category: primary,
         filterCategories: fc,
@@ -150,11 +162,11 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
       lines.push({
         key: `${row.id}-h`,
         recordId: row.id,
-        title: includesMetric(qa, 'hydration') ? qa.label : '水分',
+        title: singleHistoryLineTitle(row, includesMetric(qa, 'hydration') ? qa.label : '水分'),
         amount: formatIntakeAmount(row.hydration, 'ml'),
         time,
         note: '备注：暂无备注',
-        aiComment: 'AI评价：待分析',
+        aiComment: intakeHistoryAiComment(row),
         icon: includesMetric(qa, 'hydration') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'water-drop',
         category: 'hydration',
         filterCategories: ['hydration'],
@@ -169,11 +181,11 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
       lines.push({
         key: `${row.id}-p`,
         recordId: row.id,
-        title: includesMetric(qa, 'protein') ? qa.label : '蛋白质',
+        title: singleHistoryLineTitle(row, includesMetric(qa, 'protein') ? qa.label : '蛋白质'),
         amount: formatIntakeAmount(row.protein, 'g'),
         time,
         note: '备注：暂无备注',
-        aiComment: 'AI评价：待分析',
+        aiComment: intakeHistoryAiComment(row),
         icon: includesMetric(qa, 'protein') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
         category: 'protein',
         filterCategories: ['protein'],
@@ -188,11 +200,11 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
       lines.push({
         key: `${row.id}-c`,
         recordId: row.id,
-        title: includesMetric(qa, 'carbohydrate') ? qa.label : '碳水',
+        title: singleHistoryLineTitle(row, includesMetric(qa, 'carbohydrate') ? qa.label : '碳水'),
         amount: formatIntakeAmount(row.carbohydrate, 'g'),
         time,
         note: '备注：暂无备注',
-        aiComment: 'AI评价：待分析',
+        aiComment: intakeHistoryAiComment(row),
         icon: includesMetric(qa, 'carbohydrate') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'rice-bowl',
         category: 'carbohydrate',
         filterCategories: ['carbohydrate'],
@@ -207,11 +219,11 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
       lines.push({
         key: `${row.id}-s`,
         recordId: row.id,
-        title: includesMetric(qa, 'sodium') ? qa.label : '钠',
+        title: singleHistoryLineTitle(row, includesMetric(qa, 'sodium') ? qa.label : '钠'),
         amount: formatIntakeAmount(row.sodium, 'mg'),
         time,
         note: '备注：暂无备注',
-        aiComment: 'AI评价：待分析',
+        aiComment: intakeHistoryAiComment(row),
         icon: includesMetric(qa, 'sodium') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
         category: 'sodium',
         filterCategories: ['sodium'],

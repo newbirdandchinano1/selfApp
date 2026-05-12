@@ -1,16 +1,32 @@
-import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
+import { analyzeAiFinanceDashboardFromText, getZhipuApiKey, type AiFinanceDashboardPayload } from '@/lib/zhipu-image-parse';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, Line, LinearGradient, Path, Stop } from 'react-native-svg';
+
+
+const AI_FINANCE_CACHE_KEY = 'ai_finance_dashboard_cache_v1';
+
+const AI_PAGE_FALLBACK_INSIGHTS: AiFinanceDashboardPayload['insights'] = [
+  {
+    title: '现金流',
+    body: '发薪后先转出一笔固定储蓄，再安排可变支出，能降低「不知不觉花完」的概率。',
+  },
+  {
+    title: '记录习惯',
+    body: '支出分类越完整，越容易发现高频小额支出；可先抓 TOP3 分类做预算上限。',
+  },
+];
 
 export default function AiFinanceAnalysisScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -29,26 +45,43 @@ export default function AiFinanceAnalysisScreen() {
   const healthStroke = 8;
   const healthR = (healthSize - healthStroke) / 2;
   const healthC = 2 * Math.PI * healthR;
-  const healthPct = 0.85;
-  const quarterLabels = ['Q1', 'Q2', 'Q3', 'Q4（预测）'];
+  const [aiDashboard, setAiDashboard] = React.useState<AiFinanceDashboardPayload | null>(null);
+  const [aiDashboardLoading, setAiDashboardLoading] = React.useState(false);
+  const [aiDashboardError, setAiDashboardError] = React.useState<string | null>(null);
+  const [savedDigest, setSavedDigest] = React.useState<string | null>(null);
+  const aiDashboardReqRef = React.useRef(0);
+  const [bootReady, setBootReady] = React.useState(false);
+  const [past6Net, setPast6Net] = React.useState<number[]>([0, 0, 0, 0, 0, 0]);
+  const [past6Income, setPast6Income] = React.useState<number[]>([0, 0, 0, 0, 0, 0]);
+  const [past6MonthKeys, setPast6MonthKeys] = React.useState<string[]>(['', '', '', '', '', '']);
   const [monthlyIncome, setMonthlyIncome] = React.useState(0);
   const [monthlyExpense, setMonthlyExpense] = React.useState(0);
   const [monthlySavingsDelta, setMonthlySavingsDelta] = React.useState(0);
   const [expenseBreakdownRows, setExpenseBreakdownRows] = React.useState<Array<{ name: string; amount: number; pct: number; color: string }>>([]);
-  const [savingsForecastSeries, setSavingsForecastSeries] = React.useState<number[]>(Array(12).fill(0));
   const [savingsForecastLabels, setSavingsForecastLabels] = React.useState<string[]>([]);
   const [savingsForecastTimeline, setSavingsForecastTimeline] = React.useState<Array<{ key: string; label: string; isForecast: boolean }>>([]);
-  const [savingsForecastGrowthPct, setSavingsForecastGrowthPct] = React.useState(0);
-  const [futureSixMonthSavings, setFutureSixMonthSavings] = React.useState(0);
+  const [incomeForecastTimeline, setIncomeForecastTimeline] = React.useState<Array<{ key: string; label: string; isForecast: boolean }>>([]);
   const [selectedForecastIndex, setSelectedForecastIndex] = React.useState(5);
   const [selectedSurplusForecastIndex, setSelectedSurplusForecastIndex] = React.useState(5);
-  const [incomeForecastSeries, setIncomeForecastSeries] = React.useState<number[]>(Array(12).fill(0));
-  const [incomeForecastTimeline, setIncomeForecastTimeline] = React.useState<Array<{ key: string; label: string; isForecast: boolean }>>([]);
   const [selectedIncomeForecastIndex, setSelectedIncomeForecastIndex] = React.useState(5);
 
   const formatCurrency = React.useCallback((value: number) => `¥${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`, []);
 
+  const savingsForecastSeries = React.useMemo(
+    () => aiDashboard?.savings_forecast_12 ?? Array.from({ length: 12 }, () => 0),
+    [aiDashboard],
+  );
+  const incomeForecastSeries = React.useMemo(
+    () => aiDashboard?.income_forecast_12 ?? Array.from({ length: 12 }, () => 0),
+    [aiDashboard],
+  );
+  const surplusForecastSeries = React.useMemo(
+    () => aiDashboard?.surplus_forecast_12 ?? Array.from({ length: 12 }, () => 0),
+    [aiDashboard],
+  );
+
   const loadMonthlyOverview = React.useCallback(async () => {
+    setBootReady(false);
     try {
       const [transactions, categories] = await Promise.all([getFinanceTransactions(), getFinanceFlowCategories()]);
       const now = new Date();
@@ -124,28 +157,16 @@ export default function AiFinanceAnalysisScreen() {
         if (txn.transaction_type === 'expense') monthExpense.set(key, (monthExpense.get(key) ?? 0) + amount);
       });
 
-      const historySavings = monthStarts.map((start) => {
+      const historyNets = monthStarts.map((start) => {
         const key = monthKey(start);
         return (monthIncome.get(key) ?? 0) - (monthExpense.get(key) ?? 0);
       });
+      const historyIncomes = monthStarts.map((start) => monthIncome.get(monthKey(start)) ?? 0);
+      const monthKeys = monthStarts.map((start) => monthKey(start));
 
-      const n = historySavings.length;
-      const xAvg = (n - 1) / 2;
-      const yAvg = historySavings.reduce((sum, value) => sum + value, 0) / Math.max(1, n);
-      const denominator = historySavings.reduce((sum, _, idx) => sum + (idx - xAvg) ** 2, 0);
-      const numerator = historySavings.reduce((sum, value, idx) => sum + (idx - xAvg) * (value - yAvg), 0);
-      const slope = denominator === 0 ? 0 : numerator / denominator;
-      const intercept = yAvg - slope * xAvg;
-
-      const futureSavings = Array.from({ length: 6 }, (_, idx) => {
-        const x = n + idx;
-        return intercept + slope * x;
-      });
-      const fullSeries = [...historySavings, ...futureSavings];
-      const futureAvg = futureSavings.reduce((sum, value) => sum + value, 0) / 6;
-      const historyAvg = historySavings.reduce((sum, value) => sum + value, 0) / 6;
-      const growthPct = historyAvg === 0 ? 0 : ((futureAvg - historyAvg) / Math.abs(historyAvg)) * 100;
-      const futureTotal = futureSavings.reduce((sum, value) => sum + value, 0);
+      setPast6Net(historyNets);
+      setPast6Income(historyIncomes);
+      setPast6MonthKeys(monthKeys);
 
       const labels = Array.from({ length: 12 }, (_, idx) => {
         const date = new Date(now.getFullYear(), now.getMonth() - 5 + idx, 1);
@@ -160,25 +181,11 @@ export default function AiFinanceAnalysisScreen() {
         };
       });
 
-      setSavingsForecastSeries(fullSeries);
       setSavingsForecastLabels(labels);
       setSavingsForecastTimeline(timeline);
-      setSavingsForecastGrowthPct(growthPct);
-      setFutureSixMonthSavings(futureTotal);
+      setIncomeForecastTimeline(timeline);
       setSelectedForecastIndex(5);
       setSelectedSurplusForecastIndex(5);
-
-      const historyIncome = monthStarts.map((start) => monthIncome.get(monthKey(start)) ?? 0);
-      const incomeAvg = historyIncome.reduce((sum, value) => sum + value, 0) / Math.max(1, n);
-      const incomeNumerator = historyIncome.reduce((sum, value, idx) => sum + (idx - xAvg) * (value - incomeAvg), 0);
-      const incomeSlope = denominator === 0 ? 0 : incomeNumerator / denominator;
-      const incomeIntercept = incomeAvg - incomeSlope * xAvg;
-      const futureIncome = Array.from({ length: 6 }, (_, idx) => {
-        const x = n + idx;
-        return Math.max(0, incomeIntercept + incomeSlope * x);
-      });
-      setIncomeForecastSeries([...historyIncome, ...futureIncome]);
-      setIncomeForecastTimeline(timeline);
       setSelectedIncomeForecastIndex(5);
     } catch (error) {
       console.warn('Failed to load monthly overview:', error);
@@ -186,16 +193,17 @@ export default function AiFinanceAnalysisScreen() {
       setMonthlyExpense(0);
       setMonthlySavingsDelta(0);
       setExpenseBreakdownRows([]);
-      setSavingsForecastSeries(Array(12).fill(0));
+      setPast6Net([0, 0, 0, 0, 0, 0]);
+      setPast6Income([0, 0, 0, 0, 0, 0]);
+      setPast6MonthKeys(['', '', '', '', '', '']);
       setSavingsForecastLabels([]);
       setSavingsForecastTimeline([]);
-      setSavingsForecastGrowthPct(0);
-      setFutureSixMonthSavings(0);
+      setIncomeForecastTimeline([]);
       setSelectedForecastIndex(5);
       setSelectedSurplusForecastIndex(5);
-      setIncomeForecastSeries(Array(12).fill(0));
-      setIncomeForecastTimeline([]);
       setSelectedIncomeForecastIndex(5);
+    } finally {
+      setBootReady(true);
     }
   }, [tertiary]);
 
@@ -224,6 +232,32 @@ export default function AiFinanceAnalysisScreen() {
     return { mapped, historyPath, futurePath, areaPath };
   }, [savingsForecastSeries]);
 
+  const surplusForecastChart = React.useMemo(() => {
+    const points = surplusForecastSeries.length ? surplusForecastSeries : Array(12).fill(0);
+    const min = Math.min(...points);
+    const max = Math.max(...points);
+    const range = Math.max(1, max - min);
+    const width = 400;
+    const topPadding = 20;
+    const bottomPadding = 160;
+    const usableHeight = bottomPadding - topPadding;
+    const stepX = width / Math.max(1, points.length - 1);
+    const mapped = points.map((value, idx) => {
+      const x = idx * stepX;
+      const y = bottomPadding - ((value - min) / range) * usableHeight;
+      return { x, y };
+    });
+    const history = mapped.slice(0, 6);
+    const future = mapped.slice(5);
+    const toPath = (list: Array<{ x: number; y: number }>) => list.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x},${p.y}`).join(' ');
+    return {
+      mapped,
+      historyPath: toPath(history),
+      futurePath: toPath(future),
+      areaPath: `${toPath(mapped)} V 200 H 0 Z`,
+    };
+  }, [surplusForecastSeries]);
+
   const selectedForecastValue = savingsForecastSeries[selectedForecastIndex] ?? 0;
   const selectedForecastItem = savingsForecastTimeline[selectedForecastIndex];
   const selectedForecastChangePct = React.useMemo(() => {
@@ -233,14 +267,14 @@ export default function AiFinanceAnalysisScreen() {
     return ((selectedForecastValue - prev) / Math.abs(prev)) * 100;
   }, [savingsForecastSeries, selectedForecastIndex, selectedForecastValue]);
 
-  const selectedSurplusValue = savingsForecastSeries[selectedSurplusForecastIndex] ?? 0;
+  const selectedSurplusValue = surplusForecastSeries[selectedSurplusForecastIndex] ?? 0;
   const selectedSurplusItem = savingsForecastTimeline[selectedSurplusForecastIndex];
   const selectedSurplusChangePct = React.useMemo(() => {
     if (selectedSurplusForecastIndex <= 0) return 0;
-    const prev = savingsForecastSeries[selectedSurplusForecastIndex - 1] ?? 0;
+    const prev = surplusForecastSeries[selectedSurplusForecastIndex - 1] ?? 0;
     if (prev === 0) return 0;
     return ((selectedSurplusValue - prev) / Math.abs(prev)) * 100;
-  }, [savingsForecastSeries, selectedSurplusForecastIndex, selectedSurplusValue]);
+  }, [surplusForecastSeries, selectedSurplusForecastIndex, selectedSurplusValue]);
 
   const incomeForecastChart = React.useMemo(() => {
     const points = incomeForecastSeries.length ? incomeForecastSeries : Array(12).fill(0);
@@ -276,6 +310,106 @@ export default function AiFinanceAnalysisScreen() {
     return ((selectedIncomeValue - prev) / Math.abs(prev)) * 100;
   }, [incomeForecastSeries, selectedIncomeForecastIndex, selectedIncomeValue]);
 
+  const aiFinanceDigest = React.useMemo(() => {
+    const lines: string[] = [];
+    const now = new Date();
+    lines.push(`锚点：${now.getFullYear()}年${now.getMonth() + 1}月（应用内「本月」）`);
+    lines.push(`本月收入(元): ${monthlyIncome.toFixed(2)}`);
+    lines.push(`本月支出(元): ${monthlyExpense.toFixed(2)}`);
+    const savingRate = monthlyIncome > 0 ? ((monthlyIncome - monthlyExpense) / monthlyIncome) * 100 : null;
+    lines.push(savingRate != null ? `隐含储蓄率: ${savingRate.toFixed(1)}%` : '隐含储蓄率: 无（本月收入为0）');
+    lines.push(`储蓄率口径较上月变化(百分点): ${monthlySavingsDelta.toFixed(2)}（由应用对比上月同口径算出）`);
+    lines.push('过去 6 个月（由旧到新；用于生成 12 点序列的前 6 个月，单位元）：');
+    for (let i = 0; i < 6; i += 1) {
+      const mk = past6MonthKeys[i]?.trim() || `第${i + 1}段`;
+      lines.push(`  - ${mk}: 月收入 ${(past6Income[i] ?? 0).toFixed(2)} ，月净储蓄(收入−支出) ${(past6Net[i] ?? 0).toFixed(2)}`);
+    }
+    if (!expenseBreakdownRows.length) {
+      lines.push('本月可聚合的支出分类：暂无或支出为0。');
+    } else {
+      lines.push('本月支出分类 TOP:');
+      expenseBreakdownRows.forEach((r) =>
+        lines.push(`  - ${r.name}: ${r.amount.toFixed(2)} 元，占本月支出 ${(r.pct * 100).toFixed(1)}%`),
+      );
+    }
+    return lines.join('\n');
+  }, [expenseBreakdownRows, monthlyExpense, monthlyIncome, monthlySavingsDelta, past6Income, past6MonthKeys, past6Net]);
+
+  const fallbackHealthScore = React.useMemo(() => {
+    if (monthlyIncome <= 0) return monthlyExpense > 0 ? 48 : 55;
+    const rate = Math.max(0, Math.min(1, (monthlyIncome - monthlyExpense) / monthlyIncome));
+    return Math.round(42 + rate * 52);
+  }, [monthlyExpense, monthlyIncome]);
+
+  const displayHealthScore = aiDashboard?.health_score ?? fallbackHealthScore;
+  const healthPct = Math.max(0.04, Math.min(1, displayHealthScore / 100));
+
+  const analysisStale = React.useMemo(
+    () => !!(savedDigest && savedDigest !== aiFinanceDigest),
+    [aiFinanceDigest, savedDigest],
+  );
+
+  const runAiAnalysis = React.useCallback(async () => {
+    const seq = ++aiDashboardReqRef.current;
+    setAiDashboardLoading(true);
+    setAiDashboardError(null);
+    try {
+      const r = await analyzeAiFinanceDashboardFromText({
+        apiKey: getZhipuApiKey(),
+        summaryText: aiFinanceDigest,
+        past6NetSavings: past6Net,
+        past6Income: past6Income,
+        maxAttempts: 12,
+        retryDelayMs: 1000,
+      });
+      if (seq !== aiDashboardReqRef.current) return;
+      if (r.ok) {
+        setAiDashboard(r.data);
+        setAiDashboardError(null);
+        setSavedDigest(aiFinanceDigest);
+        try {
+          await AsyncStorage.setItem(
+            AI_FINANCE_CACHE_KEY,
+            JSON.stringify({ digest: aiFinanceDigest, savedAt: Date.now(), payload: r.data }),
+          );
+        } catch {
+          // 忽略持久化失败
+        }
+      } else {
+        setAiDashboardError(r.error);
+      }
+    } catch (e) {
+      if (seq === aiDashboardReqRef.current) {
+        setAiDashboardError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      if (seq === aiDashboardReqRef.current) {
+        setAiDashboardLoading(false);
+      }
+    }
+  }, [aiFinanceDigest, past6Income, past6Net]);
+
+  React.useEffect(() => {
+    if (!bootReady) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(AI_FINANCE_CACHE_KEY);
+        if (cancelled || !raw) return;
+        const parsed = JSON.parse(raw) as { digest?: string; payload?: AiFinanceDashboardPayload };
+        if (parsed?.payload && !cancelled) {
+          setAiDashboard(parsed.payload);
+          if (typeof parsed.digest === 'string') setSavedDigest(parsed.digest);
+        }
+      } catch {
+        // 忽略损坏的缓存
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [bootReady]);
+
   React.useEffect(() => {
     void loadMonthlyOverview();
   }, [loadMonthlyOverview]);
@@ -286,20 +420,7 @@ export default function AiFinanceAnalysisScreen() {
     }, [loadMonthlyOverview])
   );
 
-  const toLinePath = React.useCallback((points: number[], chartHeight: number) => {
-    if (points.length === 0) return '';
-    const max = Math.max(...points);
-    const min = Math.min(...points);
-    const range = Math.max(1, max - min);
-    const stepX = points.length > 1 ? 100 / (points.length - 1) : 100;
-    return points
-      .map((point, idx) => {
-        const x = idx * stepX;
-        const y = 100 - ((point - min) / range) * chartHeight;
-        return `${idx === 0 ? 'M' : 'L'} ${x},${y}`;
-      })
-      .join(' ');
-  }, []);
+  const pageLocked = !bootReady || aiDashboardLoading;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
@@ -310,7 +431,35 @@ export default function AiFinanceAnalysisScreen() {
           </Pressable>
           <Text style={[styles.headerTitle, { color: text }]}>AI 财务分析</Text>
         </View>
+        <Pressable
+          onPress={() => void runAiAnalysis()}
+          disabled={aiDashboardLoading || !bootReady}
+          style={({ pressed }) => [
+            styles.headerAnalyzeBtn,
+            { borderColor: outline, backgroundColor: isDark ? 'rgba(96,165,250,0.12)' : 'rgba(0,88,190,0.08)' },
+            pressed && { opacity: 0.82 },
+            (aiDashboardLoading || !bootReady) && { opacity: 0.45 },
+          ]}>
+          <MaterialIcons name="auto-awesome" size={18} color={primary} />
+          <Text style={[styles.headerAnalyzeBtnText, { color: primary }]}>{aiDashboardLoading ? '分析中…' : '更新分析'}</Text>
+        </Pressable>
       </View>
+
+      {analysisStale ? (
+        <View style={[styles.staleBanner, { backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : '#fff7ed', borderColor: outline }]}>
+          <MaterialIcons name="info-outline" size={18} color={tertiary} />
+          <Text style={[styles.staleBannerText, { color: text }]}>
+            本地账单或分类已变化，以下为上次保存的分析。点击「更新分析」获取与当前数据一致的结论。
+          </Text>
+        </View>
+      ) : null}
+
+      {aiDashboardError && !aiDashboardLoading ? (
+        <View style={[styles.errorBanner, { borderColor: 'rgba(220,38,38,0.35)' }]}>
+          <MaterialIcons name="error-outline" size={18} color="#dc2626" />
+          <Text style={styles.errorBannerText}>{aiDashboardError}</Text>
+        </View>
+      ) : null}
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={[styles.summaryCard, { backgroundColor: surface }]}>
@@ -336,10 +485,6 @@ export default function AiFinanceAnalysisScreen() {
                 {monthlySavingsDelta >= 0 ? `较上月提升 ${monthlySavingsDelta.toFixed(1)}%` : `较上月下降 ${Math.abs(monthlySavingsDelta).toFixed(1)}%`}
               </Text>
             </View>
-            <Pressable style={styles.inlineRow}>
-              <Text style={[styles.linkText, { color: primary }]}>查看明细</Text>
-              <MaterialIcons name="chevron-right" size={16} color={primary} />
-            </Pressable>
           </View>
         </View>
 
@@ -348,15 +493,37 @@ export default function AiFinanceAnalysisScreen() {
           <View style={styles.healthWrap}>
             <Svg width={healthSize} height={healthSize} style={{ transform: [{ rotate: '-90deg' }] }}>
               <Circle cx={healthSize / 2} cy={healthSize / 2} r={healthR} stroke={isDark ? 'rgba(148,163,184,0.25)' : 'rgba(194,198,214,0.35)'} strokeWidth={2} fill="none" />
-              <Circle cx={healthSize / 2} cy={healthSize / 2} r={healthR} stroke={tertiary} strokeWidth={healthStroke} strokeDasharray={`${healthC * healthPct} ${healthC * (1 - healthPct)}`} strokeLinecap="butt" fill="none" />
+              <Circle
+                cx={healthSize / 2}
+                cy={healthSize / 2}
+                r={healthR}
+                stroke={tertiary}
+                strokeWidth={healthStroke}
+                strokeDasharray={`${healthC * healthPct} ${healthC * (1 - healthPct)}`}
+                strokeLinecap="butt"
+                fill="none"
+              />
             </Svg>
             <View style={styles.healthCenter}>
-              <Text style={[styles.healthScore, { color: text }]}>85</Text>
-              <Text style={[styles.healthTotal, { color: subtle }]}>/ 100</Text>
+              {aiDashboardLoading ? (
+                <ActivityIndicator size="large" color={tertiary} />
+              ) : (
+                <>
+                  <Text style={[styles.healthScore, { color: text }]}>{displayHealthScore}</Text>
+                  <Text style={[styles.healthTotal, { color: subtle }]}>/ 100</Text>
+                </>
+              )}
             </View>
           </View>
           <Text style={[styles.healthTitle, { color: text }]}>财务健康分</Text>
-          <Text style={[styles.healthDesc, { color: subtle }]}>您的财务状况处于优良等级，储蓄率稳定。</Text>
+          <Text style={[styles.healthDesc, { color: subtle }]}>
+            {aiDashboardLoading
+              ? '正在请求智谱 GLM…'
+              : aiDashboard?.health_summary ??
+                (aiDashboardError
+                  ? `智谱接口异常，圆环为本地估算（${fallbackHealthScore} 分）。可稍后重试「更新分析」。`
+                  : '暂无已保存的 AI 分析。点击右上角「更新分析」生成健康分与预测曲线；结果会保存在本机。')}
+          </Text>
         </View>
 
         <View style={styles.insightSection}>
@@ -366,21 +533,28 @@ export default function AiFinanceAnalysisScreen() {
           </View>
 
           <View style={styles.gridGap}>
-            <View style={[styles.insightCard, { backgroundColor: surfaceLow, borderColor: outline }]}>
-              <View style={styles.inlineRow}>
-                <MaterialIcons name="verified" size={18} color={secondary} />
-                <Text style={[styles.insightKicker, { color: subtle }]}>资产安全</Text>
-              </View>
-              <Text style={[styles.insightBody, { color: subtle }]}>风险预警：下月有两笔固定保险扣款，建议提前在活期账户预留 ¥4,500 资金。</Text>
-            </View>
-
-            <View style={[styles.insightCard, { backgroundColor: surfaceLow, borderColor: outline }]}>
-              <View style={styles.inlineRow}>
-                <MaterialIcons name="savings" size={18} color={primary} />
-                <Text style={[styles.insightKicker, { color: subtle }]}>投资优化</Text>
-              </View>
-              <Text style={[styles.insightBody, { color: subtle }]}>投资建议：由于本月结余超出预期，建议将闲置的 ¥5,000 转入中低风险货币基金以对冲通胀。</Text>
-            </View>
+            {aiDashboardLoading ? (
+              <>
+                <View style={[styles.insightCard, { backgroundColor: surfaceLow, borderColor: outline }]}>
+                  <ActivityIndicator size="small" color={secondary} style={{ alignSelf: 'flex-start' }} />
+                  <Text style={[styles.insightBody, { color: subtle }]}>模型正在生成分条建议…</Text>
+                </View>
+                <View style={[styles.insightCard, { backgroundColor: surfaceLow, borderColor: outline }]}>
+                  <ActivityIndicator size="small" color={primary} style={{ alignSelf: 'flex-start' }} />
+                  <Text style={[styles.insightBody, { color: subtle }]}>请稍候</Text>
+                </View>
+              </>
+            ) : (
+              (aiDashboard?.insights ?? AI_PAGE_FALLBACK_INSIGHTS).map((card, idx) => (
+                <View key={`${card.title}-${idx}`} style={[styles.insightCard, { backgroundColor: surfaceLow, borderColor: outline }]}>
+                  <View style={styles.inlineRow}>
+                    <MaterialIcons name={idx === 0 ? 'verified' : 'savings'} size={18} color={idx === 0 ? secondary : primary} />
+                    <Text style={[styles.insightKicker, { color: subtle }]}>{card.title}</Text>
+                  </View>
+                  <Text style={[styles.insightBody, { color: subtle }]}>{card.body}</Text>
+                </View>
+              ))
+            )}
           </View>
         </View>
 
@@ -411,7 +585,16 @@ export default function AiFinanceAnalysisScreen() {
 
             <View style={[styles.tipCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f8fafc', borderColor: outline }]}>
               <MaterialIcons name="lightbulb" size={18} color={tertiary} />
-              <Text style={[styles.tipText, { color: subtle }]}>本月餐饮支出波动较大，主要集中在周末的社交活动。</Text>
+              <Text style={[styles.tipText, { color: subtle }]}>
+                {aiDashboardLoading
+                  ? '正在生成支出结构点评…'
+                  : aiDashboard?.expense_breakdown_comment ??
+                    (aiDashboardError
+                      ? `上次分析失败，仍显示上一次成功的结果。可点右上角「更新分析」重试。详情：${aiDashboardError}`
+                      : expenseBreakdownRows.length > 0
+                        ? '点击右上角「更新分析」可生成支出结构解读。'
+                        : '暂无本月支出数据，模型无法分析结构；多记账后可重试。')}
+              </Text>
             </View>
           </View>
 
@@ -422,7 +605,7 @@ export default function AiFinanceAnalysisScreen() {
                 <Text style={[styles.badgeText, { color: tertiary }]}>预测</Text>
               </View>
             </View>
-            <Text style={[styles.healthDesc, { color: subtle, marginBottom: 8 }]}>展示过去 6 个月储蓄，并基于历史趋势预测未来 6 个月</Text>
+            <Text style={[styles.healthDesc, { color: subtle, marginBottom: 8 }]}>过去 6 个月与后 6 个月由 AI 根据账单生成（曲线与下方数值以模型输出为准）</Text>
 
             <View style={styles.chartBox}>
               <Svg width="100%" height="180" viewBox="0 0 400 200">
@@ -506,7 +689,7 @@ export default function AiFinanceAnalysisScreen() {
                 <Text style={[styles.badgeText, { color: primary }]}>趋势</Text>
               </View>
             </View>
-            <Text style={[styles.healthDesc, { color: subtle, marginBottom: 8 }]}>展示过去 6 个月收入，并基于历史趋势预测未来 6 个月</Text>
+            <Text style={[styles.healthDesc, { color: subtle, marginBottom: 8 }]}>过去 6 个月与后 6 个月由 AI 根据账单生成</Text>
 
             <View style={styles.chartBox}>
               <Svg width="100%" height="180" viewBox="0 0 400 200">
@@ -611,27 +794,27 @@ export default function AiFinanceAnalysisScreen() {
                 {[180, 130, 80, 30].map((y) => (
                   <Line key={`surplus-grid-${y}`} x1="0" y1={y} x2="400" y2={y} stroke={isDark ? 'rgba(148,163,184,0.16)' : '#f1f5f9'} strokeWidth="1" />
                 ))}
-                {savingsForecastChart.mapped[5] ? (
+                {surplusForecastChart.mapped[5] ? (
                   <Line
-                    x1={savingsForecastChart.mapped[5].x}
+                    x1={surplusForecastChart.mapped[5].x}
                     y1="18"
-                    x2={savingsForecastChart.mapped[5].x}
+                    x2={surplusForecastChart.mapped[5].x}
                     y2="186"
                     stroke={isDark ? 'rgba(52,211,153,0.28)' : 'rgba(0,108,73,0.28)'}
                     strokeDasharray="4 4"
                     strokeWidth="1.5"
                   />
                 ) : null}
-                <Path d={savingsForecastChart.historyPath} fill="none" stroke={secondary} strokeWidth="3" />
-                <Path d={savingsForecastChart.futurePath} fill="none" stroke={secondary} strokeDasharray="6 6" strokeWidth="3" />
+                <Path d={surplusForecastChart.historyPath} fill="none" stroke={secondary} strokeWidth="3" />
+                <Path d={surplusForecastChart.futurePath} fill="none" stroke={secondary} strokeDasharray="6 6" strokeWidth="3" />
                 <Defs>
                   <LinearGradient id="surplusForecastGrad" x1="0" y1="0" x2="0" y2="1">
                     <Stop offset="0" stopColor={secondary} stopOpacity="0.18" />
                     <Stop offset="1" stopColor={secondary} stopOpacity="0" />
                   </LinearGradient>
                 </Defs>
-                <Path d={savingsForecastChart.areaPath} fill="url(#surplusForecastGrad)" />
-                {savingsForecastChart.mapped.map((p, i) => (
+                <Path d={surplusForecastChart.areaPath} fill="url(#surplusForecastGrad)" />
+                {surplusForecastChart.mapped.map((p, i) => (
                   <Circle
                     key={`surplus-hit-${i}`}
                     cx={p.x}
@@ -642,10 +825,10 @@ export default function AiFinanceAnalysisScreen() {
                     onPress={() => setSelectedSurplusForecastIndex(i)}
                   />
                 ))}
-                {savingsForecastChart.mapped.map((p, i) => {
+                {surplusForecastChart.mapped.map((p, i) => {
                   const isSelected = i === selectedSurplusForecastIndex;
                   const isDivider = i === 5;
-                  const isLast = i === savingsForecastChart.mapped.length - 1;
+                  const isLast = i === surplusForecastChart.mapped.length - 1;
                   if (!isSelected && !isDivider && !isLast) return null;
                   return (
                     <Circle
@@ -689,6 +872,36 @@ export default function AiFinanceAnalysisScreen() {
         </View>
 
       </ScrollView>
+
+      {pageLocked ? (
+        <View
+          style={[
+            styles.screenBlocker,
+            { backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(250,248,255,0.94)' },
+          ]}
+          pointerEvents="auto">
+          <Pressable
+            onPress={() => router.back()}
+            style={[styles.blockerBackFab, { top: Math.max(insets.top, 12) + 8 }]}
+            hitSlop={12}>
+            <MaterialIcons name="arrow-back" size={22} color="#fff" />
+          </Pressable>
+          <View style={[styles.blockerInner, { backgroundColor: surface, borderColor: outline }]}>
+            {!bootReady ? (
+              <>
+                <ActivityIndicator size="large" color={primary} />
+                <Text style={[styles.blockerTitle, { color: text }]}>正在加载本地账单…</Text>
+              </>
+            ) : aiDashboardLoading ? (
+              <>
+                <ActivityIndicator size="large" color={primary} />
+                <Text style={[styles.blockerTitle, { color: text }]}>AI 分析中</Text>
+                <Text style={[styles.blockerSub, { color: subtle }]}>正在调用智谱模型，请稍候…</Text>
+              </>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -705,6 +918,39 @@ const styles = StyleSheet.create({
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 18, fontWeight: '900' },
+  headerAnalyzeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  headerAnalyzeBtnText: { fontSize: 13, fontWeight: '800' },
+  staleBanner: {
+    marginHorizontal: 18,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  staleBannerText: { flex: 1, fontSize: 13, fontWeight: '600', lineHeight: 19 },
+  errorBanner: {
+    marginHorizontal: 18,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  errorBannerText: { flex: 1, color: '#dc2626', fontSize: 13, fontWeight: '700', lineHeight: 18 },
   content: { paddingHorizontal: 18, paddingTop: 10, paddingBottom: 28, gap: 12 },
   gridGap: { gap: 12 },
   trendAxisText: { fontSize: 10, fontWeight: '700' },
@@ -776,4 +1022,54 @@ const styles = StyleSheet.create({
   insightCard: { borderRadius: 16, borderWidth: 1, padding: 14, gap: 8 },
   insightKicker: { fontSize: 11, fontWeight: '900', letterSpacing: 1.4, textTransform: 'uppercase' },
   insightBody: { fontSize: 13, lineHeight: 20, fontWeight: '600' },
+
+  screenBlocker: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 2000,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 22,
+  },
+  blockerBackFab: {
+    position: 'absolute',
+    left: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(15,23,42,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  blockerInner: {
+    width: '100%',
+    maxWidth: 340,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingVertical: 26,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    gap: 12,
+  },
+  blockerTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  blockerSub: {
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 21,
+  },
+  retryBtn: {
+    marginTop: 4,
+    paddingVertical: 12,
+    paddingHorizontal: 32,
+    borderRadius: 12,
+  },
+  retryBtnText: {
+    color: '#fff',
+    fontWeight: '900',
+    fontSize: 15,
+  },
 });

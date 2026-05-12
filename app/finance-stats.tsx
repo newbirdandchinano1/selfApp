@@ -2,11 +2,12 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
 import type { FinanceFlowCategoryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import { analyzeFinanceBillSummaryFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 type RangeTab = '周' | '月' | '年' | '自定义';
@@ -142,6 +143,9 @@ export default function FinanceStatsScreen() {
   const [rankMode, setRankMode] = React.useState<RankMode>('expense');
   const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const [categories, setCategories] = React.useState<FinanceFlowCategoryRow[]>([]);
+  const [aiBillAnalysis, setAiBillAnalysis] = React.useState<string | null>(null);
+  const [aiBillAnalysisError, setAiBillAnalysisError] = React.useState<string | null>(null);
+  const [aiBillAnalysisBusy, setAiBillAnalysisBusy] = React.useState(false);
 
   const bg = isDark ? baseTheme.background : '#e8f4fa';
   const surface = isDark ? '#1e293b' : '#ffffff';
@@ -408,6 +412,99 @@ export default function FinanceStatsScreen() {
         ? `${formatMonthDay(range.start)} - ${formatMonthDay(range.end)}`
         : `${range.start.getFullYear()}年${range.start.getMonth() + 1}月`;
 
+  const billSummaryForAi = React.useMemo(() => {
+    const parts: string[] = [];
+    parts.push(`统计区间：${rangeLabel}（${range.startYmd} 至 ${range.endYmd}）`);
+    parts.push(
+      `收入合计 ${totalIncome.toFixed(2)} 元，支出合计 ${totalExpense.toFixed(2)} 元，结余 ${balance.toFixed(2)} 元，流水 ${filteredTransactions.length} 笔（转账未计入收支分类）。`,
+    );
+
+    if (!filteredTransactions.length) {
+      return parts.join('\n');
+    }
+
+    const expenseMap = new Map<string, { amount: number; count: number }>();
+    const incomeMap = new Map<string, { amount: number; count: number }>();
+    for (const txn of filteredTransactions) {
+      const cat = txn.flow_category_id ? categoryMap.get(txn.flow_category_id) : undefined;
+      const name = cat?.name ?? '未分类';
+      if (txn.transaction_type === 'income') {
+        const cur = incomeMap.get(name) ?? { amount: 0, count: 0 };
+        cur.amount += Math.abs(txn.amount);
+        cur.count += 1;
+        incomeMap.set(name, cur);
+      } else if (txn.transaction_type !== 'transfer') {
+        const cur = expenseMap.get(name) ?? { amount: 0, count: 0 };
+        cur.amount += Math.abs(txn.amount);
+        cur.count += 1;
+        expenseMap.set(name, cur);
+      }
+    }
+
+    const expLines = Array.from(expenseMap.entries())
+      .sort((a, b) => b[1].amount - a[1].amount)
+      .slice(0, 8)
+      .map(([n, { amount, count }]) => `  - 支出「${n}」：${amount.toFixed(2)} 元（${count} 笔）`);
+    if (expLines.length) {
+      parts.push('支出分类概览：');
+      parts.push(...expLines);
+    }
+
+    const incLines = Array.from(incomeMap.entries())
+      .sort((a, b) => b[1].amount - a[1].amount)
+      .slice(0, 6)
+      .map(([n, { amount, count }]) => `  - 收入「${n}」：${amount.toFixed(2)} 元（${count} 笔）`);
+    if (incLines.length) {
+      parts.push('收入分类概览：');
+      parts.push(...incLines);
+    }
+
+    const top = [...filteredTransactions]
+      .filter((t) => t.transaction_type !== 'transfer')
+      .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+      .slice(0, 6)
+      .map((t) => {
+        const d = parseYmd(t.happened_at);
+        const typ = t.transaction_type === 'income' ? '收入' : '支出';
+        const title = (t.name?.trim() || '未命名').slice(0, 28);
+        return `  - ${d} ${typ}「${title}」${Math.abs(t.amount).toFixed(2)} 元`;
+      });
+    if (top.length) {
+      parts.push('单笔金额较高的流水（节选）：');
+      parts.push(...top);
+    }
+
+    const s = parts.join('\n');
+    return s.length > 8000 ? `${s.slice(0, 8000)}\n…（摘要已截断）` : s;
+  }, [balance, categoryMap, filteredTransactions, range.endYmd, range.startYmd, rangeLabel, totalExpense, totalIncome]);
+
+  React.useEffect(() => {
+    setAiBillAnalysis(null);
+    setAiBillAnalysisError(null);
+  }, [billSummaryForAi]);
+
+  const runAiBillAnalysis = React.useCallback(async () => {
+    setAiBillAnalysisBusy(true);
+    setAiBillAnalysisError(null);
+    try {
+      const r = await analyzeFinanceBillSummaryFromText({
+        apiKey: getZhipuApiKey(),
+        summaryText: billSummaryForAi,
+        maxAttempts: 12,
+        retryDelayMs: 1000,
+      });
+      if (r.ok) {
+        setAiBillAnalysis(r.analysis);
+      } else {
+        setAiBillAnalysisError(r.error);
+      }
+    } catch (e) {
+      setAiBillAnalysisError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAiBillAnalysisBusy(false);
+    }
+  }, [billSummaryForAi]);
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['top', 'left', 'right']}>
       <View style={[styles.header, { borderBottomColor: outline }]}>
@@ -524,16 +621,35 @@ export default function FinanceStatsScreen() {
 
           <View style={[styles.analysisCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f8fafc', borderColor: outline }]}>
             <View style={styles.analysisHeader}>
-              <Text style={styles.analysisEmoji}>🐹</Text>
-              <Text style={[styles.analysisTitle, { color: text }]}>胖咔分析了账单</Text>
+              <MaterialIcons name="auto-awesome" size={18} color={accent} />
+              <Text style={[styles.analysisTitle, { color: text }]}>AI 账单分析</Text>
             </View>
-            <Text style={[styles.analysisBody, { color: subtle }]}>
-              出门购物的时候可以记得带一个购物袋，既环保又能省下每次买塑料袋的小钱。
-            </Text>
-            <Pressable style={({ pressed }) => [styles.analysisLink, pressed && { opacity: 0.75 }]}>
-              <MaterialIcons name="auto-awesome" size={12} color={accent} />
-              <Text style={[styles.analysisLinkText, { color: accent }]}>更多消费分析，前往AI助手</Text>
-              <MaterialIcons name="arrow-forward" size={12} color={accent} />
+            {aiBillAnalysisBusy ? (
+              <View style={styles.analysisLoadingRow}>
+                <ActivityIndicator size="small" color={accent} />
+                <Text style={[styles.analysisBody, { color: subtle, flex: 1 }]}>正在调用智谱模型，请稍候…</Text>
+              </View>
+            ) : (
+              <Text style={[styles.analysisBody, { color: aiBillAnalysisError ? (isDark ? '#f87171' : '#dc2626') : subtle }]}>
+                {aiBillAnalysisError
+                  ? `获取失败：${aiBillAnalysisError}`
+                  : aiBillAnalysis ??
+                    '根据当前区间的收支、分类与高额流水摘要生成 2～5 句建议。点击下方按钮调用智谱 GLM-4-Flash（与项目内智谱接口一致），需要网络；密钥优先读取 EXPO_PUBLIC_ZHIPU_API_KEY。'}
+              </Text>
+            )}
+            <Pressable
+              onPress={() => void runAiBillAnalysis()}
+              disabled={aiBillAnalysisBusy}
+              style={({ pressed }) => [
+                styles.analysisActionBtn,
+                { backgroundColor: isDark ? 'rgba(96,165,250,0.18)' : 'rgba(37,99,235,0.10)', borderColor: outline },
+                pressed && !aiBillAnalysisBusy && { opacity: 0.88 },
+                aiBillAnalysisBusy && { opacity: 0.55 },
+              ]}>
+              <MaterialIcons name="psychology" size={18} color={accent} />
+              <Text style={[styles.analysisActionBtnText, { color: accent }]}>
+                {aiBillAnalysisBusy ? '分析中…' : aiBillAnalysis ? '重新生成' : '生成 AI 分析'}
+              </Text>
             </Pressable>
           </View>
         </View>
@@ -881,10 +997,7 @@ const styles = StyleSheet.create({
   analysisHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-  },
-  analysisEmoji: {
-    fontSize: 16,
+    gap: 8,
   },
   analysisTitle: {
     fontSize: 13,
@@ -893,6 +1006,26 @@ const styles = StyleSheet.create({
   analysisBody: {
     fontSize: 12,
     lineHeight: 18,
+  },
+  analysisLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  analysisActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  analysisActionBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
   },
   analysisLink: {
     flexDirection: 'row',

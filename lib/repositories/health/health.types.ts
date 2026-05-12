@@ -13,6 +13,10 @@ export type HealthRecordRow = {
   target_sodium: number;
   record_date: string;
   quick_add_key: string | null;
+  /** 列表/详情展示标题（如 AI 用户原文、拍照识别的食物名） */
+  intake_display_title?: string | null;
+  /** 智谱返回的口语化点评，展示在详情 */
+  intake_ai_comment?: string | null;
   /** 拍照/相册识别摄入时保存的本地图片路径（file://） */
   source_image_uri?: string | null;
   created_at: string;
@@ -35,6 +39,8 @@ export type CreateHealthRecordInput = {
   target_sodium?: number;
   record_date: string;
   quick_add_key?: string | null;
+  intake_display_title?: string | null;
+  intake_ai_comment?: string | null;
   source_image_uri?: string | null;
 };
 
@@ -51,6 +57,8 @@ export type UpdateHealthRecordInput = Partial<
     | 'target_sodium'
     | 'record_date'
     | 'quick_add_key'
+    | 'intake_display_title'
+    | 'intake_ai_comment'
     | 'source_image_uri'
   >
 >;

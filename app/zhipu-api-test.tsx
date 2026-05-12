@@ -73,9 +73,11 @@ export default function ZhipuApiTestScreen() {
     if (r.ok) {
       lines.push(`状态: 成功${r.repaired ? '（已对字段做容错修正）' : ''}`);
       if (r.data.is_food === 1) {
+        const name = r.data.food_name?.trim();
         lines.push(
-          `判定: 食物 — 蛋白质 ${r.data.protein_g} g · 碳水 ${r.data.carbohydrate_g} g · 钠 ${r.data.sodium_mg} mg`,
+          `判定: 食物${name ? ` — ${name}` : ''} — 蛋白质 ${r.data.protein_g} g · 碳水 ${r.data.carbohydrate_g} g · 钠 ${r.data.sodium_mg} mg`,
         );
+        if (r.data.ai_evaluation?.trim()) lines.push(`点评: ${r.data.ai_evaluation.trim()}`);
       } else {
         lines.push(`判定: 非食物 / 无法按食物估算 — ${nonFoodCodeHint(r.data.non_food_code)}`);
       }
@@ -84,7 +86,7 @@ export default function ZhipuApiTestScreen() {
       lines.push(`兜底数据: ${r.data.is_food === 1 ? '食物' : '非食物'} — ${nonFoodCodeHint(r.data.non_food_code)}`);
     }
     lines.push('');
-    lines.push('JSON（仅数字字段）:');
+    lines.push('JSON:');
     lines.push(JSON.stringify(r.data, null, 2));
     if (r.ok && r.rawContent) {
       lines.push('');
