@@ -646,6 +646,33 @@ export default function ProfileScreen() {
             </View>
           </Pressable>
 
+          {__DEV__ ? (
+            <Pressable
+              onPress={() => router.push('/zhipu-api-test')}
+              style={({ pressed }) => [{ marginTop: 10, opacity: pressed ? 0.88 : 1 }]}
+            >
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  paddingVertical: 12,
+                  paddingHorizontal: 14,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.15)',
+                  backgroundColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(0,88,190,0.06)',
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <MaterialIcons name="api" size={22} color={primary} />
+                  <Text style={{ fontSize: 15, fontWeight: '700', color: text }}>智谱视觉 API 连通测试</Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={22} color={outline} />
+              </View>
+            </Pressable>
+          ) : null}
+
           <View style={styles.sectionHead}>
             <View>
               <Text style={[styles.kicker, { color: outline }]}>DIGITAL IDENTITY</Text>

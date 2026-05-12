@@ -3,8 +3,8 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
+import { Directory, File, Paths } from 'expo-file-system';
 import React from 'react';
-
 
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
@@ -110,6 +110,27 @@ function formatLocalYmd(d: Date) {
   return `${y}-${m}-${day}`;
 }
 
+/** 将拍照/选图的临时 URI 复制到应用目录，便于详情页长期展示 */
+async function copyIntakePhotoToDocuments(recordId: string, sourceUri: string | null | undefined): Promise<string | null> {
+  const uri = sourceUri?.trim();
+  if (!uri) return null;
+  try {
+    const destDir = new Directory(Paths.document, 'intake_photos');
+    if (!destDir.exists) {
+      destDir.create({ intermediates: true });
+    }
+    const src = new File(uri);
+    const destFile = new File(destDir, `${recordId}.jpg`);
+    if (destFile.exists) {
+      destFile.delete();
+    }
+    src.copy(destFile);
+    return destFile.uri;
+  } catch {
+    return null;
+  }
+}
+
 /** SQLite datetime 转界面时间「HH:mm」 */
 function formatRecordTime(createdAt: string): string {
   const normalized = createdAt.includes('T') ? createdAt : `${createdAt.replace(' ', 'T')}`;
@@ -123,9 +144,42 @@ function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'mg'): string {
   return `${formatted}${unit}`;
 }
 
+/** AI 文本一次写入多营时与 createHealthRecord.quick_add_key 对齐 */
+const HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY = 'ai_text_intake';
+
+function positiveNutrientKindsCount(row: HealthRecordRow): number {
+  return [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.sodium > 0].filter(Boolean).length;
+}
+
+function firstPositiveIntakeMetric(row: HealthRecordRow): 'hydration' | 'protein' | 'carbohydrate' | 'sodium' {
+  if (row.hydration > 0) return 'hydration';
+  if (row.protein > 0) return 'protein';
+  if (row.carbohydrate > 0) return 'carbohydrate';
+  return 'sodium';
+}
+
+function combinedIntakeListTitle(row: HealthRecordRow, quickAddByKey: ReturnType<typeof createQuickAddItemMap>): string {
+  if (row.source_image_uri?.trim()) return 'AI 拍照识别';
+  if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) return 'AI 记录';
+  if (!row.quick_add_key && row.hydration === 0) return 'AI 拍照识别';
+  const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
+  return qa?.label ?? '合并摄入';
+}
+
+function formatCombinedIntakeAmountsLine(row: HealthRecordRow): string {
+  const parts: string[] = [];
+  if (row.hydration > 0) parts.push(`水 ${formatIntakeAmount(row.hydration, 'ml')}`);
+  if (row.protein > 0) parts.push(`蛋白 ${formatIntakeAmount(row.protein, 'g')}`);
+  if (row.carbohydrate > 0) parts.push(`碳水 ${formatIntakeAmount(row.carbohydrate, 'g')}`);
+  if (row.sodium > 0) parts.push(`钠 ${formatIntakeAmount(row.sodium, 'mg')}`);
+  return parts.join(' · ');
+}
+
 type IntakeListLine = {
   key: string;
   recordId: string;
+  /** 列表行对应的单一营养维度（用于详情页高亮） */
+  metric: 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
   title: string;
   timeLine: string;
   amountRight: string;
@@ -152,6 +206,23 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
 
   for (const row of orderedRows) {
     const timeLine = formatRecordTime(row.created_at);
+    if (positiveNutrientKindsCount(row) >= 2) {
+      lines.push({
+        key: `${row.id}-combined`,
+        recordId: row.id,
+        metric: firstPositiveIntakeMetric(row),
+        title: combinedIntakeListTitle(row, quickAddByKey),
+        timeLine,
+        amountRight: formatCombinedIntakeAmountsLine(row),
+        note: '备注：暂无备注',
+        aiComment: 'AI评价：待分析',
+        icon: row.source_image_uri?.trim() ? 'photo-camera' : 'auto-awesome',
+        iconBgLight: 'rgba(16,185,129,0.12)',
+        iconBgDark: 'rgba(6,78,59,0.32)',
+        iconColor: '#10b981',
+      });
+      continue;
+    }
     const h = row.hydration;
     const p = row.protein;
     const c = row.carbohydrate;
@@ -161,6 +232,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
       lines.push({
         key: `${row.id}-h`,
         recordId: row.id,
+        metric: 'hydration',
         title: qa ? qa.label : '水分',
         timeLine,
         amountRight: formatIntakeAmount(h, 'ml'),
@@ -178,6 +250,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
       lines.push({
         key: `${row.id}-p`,
         recordId: row.id,
+        metric: 'protein',
         title: metricQa ? metricQa.label : '蛋白质',
         timeLine,
         amountRight: formatIntakeAmount(p, 'g'),
@@ -195,6 +268,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
       lines.push({
         key: `${row.id}-s`,
         recordId: row.id,
+        metric: 'sodium',
         title: metricQa ? metricQa.label : '钠',
         timeLine,
         amountRight: formatIntakeAmount(s, 'mg'),
@@ -212,6 +286,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
       lines.push({
         key: `${row.id}-c`,
         recordId: row.id,
+        metric: 'carbohydrate',
         title: metricQa ? metricQa.label : '碳水',
         timeLine,
         amountRight: formatIntakeAmount(c, 'g'),
@@ -643,40 +718,42 @@ export default function HealthScreen() {
   /** 选中日的原始记录行（用于摄入时间线）。 */
   const [selectedDayRecords, setSelectedDayRecords] = React.useState<HealthRecordRow[]>([]);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    const run = async () => {
-      if (!user?.id) {
-        if (!cancelled) {
-          setHealthRecords([]);
-          setPrevWeekHealthRecords([]);
-          setSelectedDayIntakeTotals(null);
-          setSelectedDayRecords([]);
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      const run = async () => {
+        if (!user?.id) {
+          if (!cancelled) {
+            setHealthRecords([]);
+            setPrevWeekHealthRecords([]);
+            setSelectedDayIntakeTotals(null);
+            setSelectedDayRecords([]);
+          }
+          return;
         }
-        return;
-      }
-      try {
-        const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
-        if (!cancelled) {
-          setHealthRecords(week);
-          setPrevWeekHealthRecords(prevWeek);
-          setSelectedDayIntakeTotals(dayTotals);
-          setSelectedDayRecords(dayRecords);
+        try {
+          const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
+          if (!cancelled) {
+            setHealthRecords(week);
+            setPrevWeekHealthRecords(prevWeek);
+            setSelectedDayIntakeTotals(dayTotals);
+            setSelectedDayRecords(dayRecords);
+          }
+        } catch {
+          if (!cancelled) {
+            setHealthRecords([]);
+            setPrevWeekHealthRecords([]);
+            setSelectedDayIntakeTotals(null);
+            setSelectedDayRecords([]);
+          }
         }
-      } catch {
-        if (!cancelled) {
-          setHealthRecords([]);
-          setPrevWeekHealthRecords([]);
-          setSelectedDayIntakeTotals(null);
-          setSelectedDayRecords([]);
-        }
-      }
-    };
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.id, weekAnchorDate, selectedDate]);
+      };
+      void run();
+      return () => {
+        cancelled = true;
+      };
+    }, [user?.id, weekAnchorDate, selectedDate])
+  );
 
   useFocusEffect(
     React.useCallback(() => {
@@ -909,6 +986,89 @@ export default function HealthScreen() {
           targetProteinG: intakeTargetsSnapshot.proteinG,
           targetCarbohydrateG: intakeTargetsSnapshot.carbohydrateG,
           targetSodiumMg: intakeTargetsSnapshot.sodiumMg,
+        });
+        const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
+        setHealthRecords(week);
+        setPrevWeekHealthRecords(prevWeek);
+        setSelectedDayIntakeTotals(dayTotals);
+        setSelectedDayRecords(dayRecords);
+        playIntakeFeedbackAnimation();
+      } catch {
+        /* 忽略写入失败 */
+      }
+    },
+    [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation]
+  );
+
+  const persistFoodPhotoIntake = React.useCallback(
+    async (
+      protein: number,
+      carbohydrate: number,
+      sodium: number,
+      sourceImageUri?: string | null
+    ) => {
+      if (!user?.id) return;
+      const p = Math.max(0, Number(protein) || 0);
+      const c = Math.max(0, Number(carbohydrate) || 0);
+      const s = Math.max(0, Number(sodium) || 0);
+      if (p + c + s <= 0) return;
+      const ymd = formatLocalYmd(selectedDate);
+      try {
+        const id = `h_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        const storedImageUri = await copyIntakePhotoToDocuments(id, sourceImageUri);
+        await createHealthRecord({
+          id,
+          user_id: user.id,
+          record_date: ymd,
+          quick_add_key: null,
+          source_image_uri: storedImageUri,
+          hydration: 0,
+          protein: p,
+          carbohydrate: c,
+          sodium: s,
+          target_hydration: intakeTargetsSnapshot.hydrationMl,
+          target_protein: intakeTargetsSnapshot.proteinG,
+          target_carbohydrate: intakeTargetsSnapshot.carbohydrateG,
+          target_sodium: intakeTargetsSnapshot.sodiumMg,
+        });
+        const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
+        setHealthRecords(week);
+        setPrevWeekHealthRecords(prevWeek);
+        setSelectedDayIntakeTotals(dayTotals);
+        setSelectedDayRecords(dayRecords);
+        playIntakeFeedbackAnimation();
+      } catch {
+        /* 忽略写入失败 */
+      }
+    },
+    [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation]
+  );
+
+  const persistAiTextIntake = React.useCallback(
+    async (hydrationMl: number, protein: number, carbohydrate: number, sodium: number) => {
+      if (!user?.id) return;
+      const h = Math.max(0, Number(hydrationMl) || 0);
+      const p = Math.max(0, Number(protein) || 0);
+      const c = Math.max(0, Number(carbohydrate) || 0);
+      const s = Math.max(0, Number(sodium) || 0);
+      if (h + p + c + s <= 0) return;
+      const ymd = formatLocalYmd(selectedDate);
+      try {
+        const id = `h_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        await createHealthRecord({
+          id,
+          user_id: user.id,
+          record_date: ymd,
+          quick_add_key: HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY,
+          source_image_uri: null,
+          hydration: h,
+          protein: p,
+          carbohydrate: c,
+          sodium: s,
+          target_hydration: intakeTargetsSnapshot.hydrationMl,
+          target_protein: intakeTargetsSnapshot.proteinG,
+          target_carbohydrate: intakeTargetsSnapshot.carbohydrateG,
+          target_sodium: intakeTargetsSnapshot.sodiumMg,
         });
         const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
         setHealthRecords(week);
@@ -1816,7 +1976,9 @@ export default function HealthScreen() {
             </View>
           ) : (
             <View style={styles.intakeList}>
-              {intakeListPreview.lines.map((line) => (
+              {intakeListPreview.lines.map((line) => {
+                const isCombinedIntake = line.key.endsWith('-combined');
+                return (
                 <Swipeable
                   key={line.key}
                   overshootRight={false}
@@ -1834,42 +1996,88 @@ export default function HealthScreen() {
                   )}
                 >
                   <Pressable
+                    onPress={() =>
+                      router.push({
+                        pathname: '/intake-record-detail',
+                        params: {
+                          recordId: line.recordId,
+                          date: formatLocalYmd(selectedDate),
+                          metric: line.metric,
+                        },
+                      })
+                    }
                     onLongPress={() => confirmDeleteIntakeRecord(line.recordId)}
                     delayLongPress={280}
                     style={[
                       styles.intakeRow,
+                      isCombinedIntake && styles.intakeRowStacked,
                       {
                         backgroundColor: theme.surface,
                         borderColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(226,232,240,0.9)',
                       },
                     ]}
                   >
-                    <View style={styles.intakeRowLeft}>
-                      <View
-                        style={[
-                          styles.intakeIconCircle,
-                          { backgroundColor: isDark ? line.iconBgDark : line.iconBgLight },
-                        ]}
-                      >
-                        <MaterialIcons name={line.icon} size={22} color={line.iconColor} />
-                      </View>
-                      <View style={styles.intakeRowText}>
-                        <View style={styles.intakeRowHeader}>
-                          <Text style={[styles.intakeRowTitle, { color: theme.text }]}>{line.title}</Text>
-                          <Text style={[styles.intakeRowTime, { color: theme.textSecondary }]}>{line.timeLine}</Text>
+                    {isCombinedIntake ? (
+                      <>
+                        <View style={styles.intakeRowTop}>
+                          <View style={styles.intakeRowLeft}>
+                            <View
+                              style={[
+                                styles.intakeIconCircle,
+                                { backgroundColor: isDark ? line.iconBgDark : line.iconBgLight },
+                              ]}
+                            >
+                              <MaterialIcons name={line.icon} size={22} color={line.iconColor} />
+                            </View>
+                            <View style={styles.intakeRowText}>
+                              <View style={styles.intakeRowHeader}>
+                                <Text style={[styles.intakeRowTitle, { color: theme.text }]} numberOfLines={1}>
+                                  {line.title}
+                                </Text>
+                                <Text style={[styles.intakeRowTime, { color: theme.textSecondary }]}>{line.timeLine}</Text>
+                              </View>
+                              <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
+                                {line.note}
+                              </Text>
+                              <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
+                                {line.aiComment}
+                              </Text>
+                            </View>
+                          </View>
                         </View>
-                        <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
-                          {line.note}
-                        </Text>
-                        <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
-                          {line.aiComment}
-                        </Text>
-                      </View>
-                    </View>
-                    <Text style={[styles.intakeRowAmount, { color: theme.text }]}>{line.amountRight}</Text>
+                        <Text style={[styles.intakeRowAmountStacked, { color: theme.text }]}>{line.amountRight}</Text>
+                      </>
+                    ) : (
+                      <>
+                        <View style={styles.intakeRowLeft}>
+                          <View
+                            style={[
+                              styles.intakeIconCircle,
+                              { backgroundColor: isDark ? line.iconBgDark : line.iconBgLight },
+                            ]}
+                          >
+                            <MaterialIcons name={line.icon} size={22} color={line.iconColor} />
+                          </View>
+                          <View style={styles.intakeRowText}>
+                            <View style={styles.intakeRowHeader}>
+                              <Text style={[styles.intakeRowTitle, { color: theme.text }]}>{line.title}</Text>
+                              <Text style={[styles.intakeRowTime, { color: theme.textSecondary }]}>{line.timeLine}</Text>
+                            </View>
+                            <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
+                              {line.note}
+                            </Text>
+                            <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
+                              {line.aiComment}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={[styles.intakeRowAmount, { color: theme.text }]}>{line.amountRight}</Text>
+                      </>
+                    )}
                   </Pressable>
                 </Swipeable>
-              ))}
+              );
+              })}
               {intakeListPreview.hasMore ? (
                 <Text style={[styles.intakeMoreHint, { color: theme.textSecondary }]}>
                   还有 {intakeListPreview.total - intakeListPreview.lines.length} 条，点「查看全部」浏览
@@ -2240,6 +2448,19 @@ export default function HealthScreen() {
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
         onConfirm={async (payload) => {
+          if (payload.mode === 'ai') {
+            await persistAiTextIntake(payload.hydrationMl, payload.protein, payload.carbohydrate, payload.sodium);
+            return;
+          }
+          if (payload.mode === 'photo') {
+            await persistFoodPhotoIntake(
+              payload.protein,
+              payload.carbohydrate,
+              payload.sodium,
+              payload.sourceImageUri
+            );
+            return;
+          }
           if (payload.mode !== 'manual' || payload.amount == null || !payload.type) return;
           if (payload.amount <= 0) return;
           await persistManualIntakeDelta(payload.type, payload.amount);
@@ -2546,7 +2767,7 @@ const styles = StyleSheet.create({
   },
   intakeRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     borderRadius: 18,
     paddingVertical: 14,
@@ -2558,9 +2779,19 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 4,
   },
+  intakeRowStacked: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 10,
+  },
+  intakeRowTop: {
+    flexDirection: 'row',
+    width: '100%',
+    alignItems: 'flex-start',
+  },
   intakeRowLeft: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
     flex: 1,
     minWidth: 0,
@@ -2585,6 +2816,9 @@ const styles = StyleSheet.create({
   intakeRowTitle: {
     fontSize: 14,
     fontWeight: '700',
+    flex: 1,
+    minWidth: 0,
+    marginRight: 8,
   },
   intakeRowTime: {
     fontSize: 11,
@@ -2601,7 +2835,16 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     marginLeft: 8,
+    flexShrink: 0,
     alignSelf: 'flex-start',
+    maxWidth: '34%',
+    textAlign: 'right',
+  },
+  intakeRowAmountStacked: {
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 20,
+    paddingLeft: 52,
   },
   intakeMoreHint: {
     fontSize: 12,

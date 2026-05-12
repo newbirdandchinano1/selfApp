@@ -18,15 +18,61 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 type FilterKey = 'all' | 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
 
+/** AI 文本一次写入多营时与 createHealthRecord.quick_add_key 对齐（与首页一致） */
+const HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY = 'ai_text_intake';
+
+function positiveNutrientKindsCount(row: HealthRecordRow): number {
+  return [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.sodium > 0].filter(Boolean).length;
+}
+
+function firstPositiveIntakeMetric(row: HealthRecordRow): Exclude<FilterKey, 'all'> {
+  if (row.hydration > 0) return 'hydration';
+  if (row.protein > 0) return 'protein';
+  if (row.carbohydrate > 0) return 'carbohydrate';
+  return 'sodium';
+}
+
+function combinedHistoryTitle(row: HealthRecordRow, quickAddByKey: ReturnType<typeof createQuickAddItemMap>): string {
+  if (row.source_image_uri?.trim()) return 'AI 拍照识别';
+  if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) return 'AI 记录';
+  if (!row.quick_add_key && row.hydration === 0) return 'AI 拍照识别';
+  const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
+  return qa?.label ?? '合并摄入';
+}
+
+function formatCombinedHistoryAmount(row: HealthRecordRow): string {
+  const parts: string[] = [];
+  if (row.hydration > 0) parts.push(`水 ${formatIntakeAmount(row.hydration, 'ml')}`);
+  if (row.protein > 0) parts.push(`蛋白 ${formatIntakeAmount(row.protein, 'g')}`);
+  if (row.carbohydrate > 0) parts.push(`碳水 ${formatIntakeAmount(row.carbohydrate, 'g')}`);
+  if (row.sodium > 0) parts.push(`钠 ${formatIntakeAmount(row.sodium, 'mg')}`);
+  return parts.join(' · ');
+}
+
+function filterCategoriesForRow(row: HealthRecordRow): Exclude<FilterKey, 'all'>[] {
+  const out: Exclude<FilterKey, 'all'>[] = [];
+  if (row.hydration > 0) out.push('hydration');
+  if (row.protein > 0) out.push('protein');
+  if (row.carbohydrate > 0) out.push('carbohydrate');
+  if (row.sodium > 0) out.push('sodium');
+  return out;
+}
+
 type IntakeHistoryLine = {
   key: string;
+  recordId: string;
   title: string;
+  /** 与详情页路由 param 对齐 */
+  metric: Exclude<FilterKey, 'all'>;
   amount: string;
   time: string;
   note: string;
   aiComment: string;
   icon: keyof typeof MaterialIcons.glyphMap;
+  /** 筛选用主维度；合并行与 metric 一致 */
   category: Exclude<FilterKey, 'all'>;
+  /** 筛选：合并行包含的全部营养维度 */
+  filterCategories: Exclude<FilterKey, 'all'>[];
   iconBgLight: string;
   iconBgDark: string;
   iconColor: string;
@@ -78,10 +124,32 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
     Boolean(qa && getQuickAddMetricTypes(qa).includes(metric));
   for (const row of rows) {
     const time = formatRecordTime(row.created_at);
+    if (positiveNutrientKindsCount(row) >= 2) {
+      const fc = filterCategoriesForRow(row);
+      const primary = firstPositiveIntakeMetric(row);
+      lines.push({
+        key: `${row.id}-combined`,
+        recordId: row.id,
+        title: combinedHistoryTitle(row, quickAddByKey),
+        amount: formatCombinedHistoryAmount(row),
+        time,
+        note: '备注：暂无备注',
+        aiComment: 'AI评价：待分析',
+        icon: row.source_image_uri?.trim() ? 'photo-camera' : 'auto-awesome',
+        category: primary,
+        filterCategories: fc,
+        metric: primary,
+        iconBgLight: 'rgba(16,185,129,0.12)',
+        iconBgDark: 'rgba(6,78,59,0.32)',
+        iconColor: '#10b981',
+      });
+      continue;
+    }
     if (row.hydration > 0) {
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-h`,
+        recordId: row.id,
         title: includesMetric(qa, 'hydration') ? qa.label : '水分',
         amount: formatIntakeAmount(row.hydration, 'ml'),
         time,
@@ -89,6 +157,8 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
         aiComment: 'AI评价：待分析',
         icon: includesMetric(qa, 'hydration') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'water-drop',
         category: 'hydration',
+        filterCategories: ['hydration'],
+        metric: 'hydration',
         iconBgLight: 'rgba(16,185,129,0.12)',
         iconBgDark: 'rgba(6,78,59,0.32)',
         iconColor: '#10b981',
@@ -98,6 +168,7 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-p`,
+        recordId: row.id,
         title: includesMetric(qa, 'protein') ? qa.label : '蛋白质',
         amount: formatIntakeAmount(row.protein, 'g'),
         time,
@@ -105,6 +176,8 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
         aiComment: 'AI评价：待分析',
         icon: includesMetric(qa, 'protein') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
         category: 'protein',
+        filterCategories: ['protein'],
+        metric: 'protein',
         iconBgLight: 'rgba(245,158,11,0.14)',
         iconBgDark: 'rgba(120,53,15,0.32)',
         iconColor: '#f59e0b',
@@ -114,6 +187,7 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-c`,
+        recordId: row.id,
         title: includesMetric(qa, 'carbohydrate') ? qa.label : '碳水',
         amount: formatIntakeAmount(row.carbohydrate, 'g'),
         time,
@@ -121,6 +195,8 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
         aiComment: 'AI评价：待分析',
         icon: includesMetric(qa, 'carbohydrate') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'rice-bowl',
         category: 'carbohydrate',
+        filterCategories: ['carbohydrate'],
+        metric: 'carbohydrate',
         iconBgLight: 'rgba(234,179,8,0.14)',
         iconBgDark: 'rgba(113,63,18,0.32)',
         iconColor: '#eab308',
@@ -130,6 +206,7 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-s`,
+        recordId: row.id,
         title: includesMetric(qa, 'sodium') ? qa.label : '钠',
         amount: formatIntakeAmount(row.sodium, 'mg'),
         time,
@@ -137,6 +214,8 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
         aiComment: 'AI评价：待分析',
         icon: includesMetric(qa, 'sodium') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
         category: 'sodium',
+        filterCategories: ['sodium'],
+        metric: 'sodium',
         iconBgLight: 'rgba(168,85,247,0.14)',
         iconBgDark: 'rgba(88,28,135,0.32)',
         iconColor: '#a855f7',
@@ -189,7 +268,7 @@ export default function IntakeHistoryScreen() {
 
   const filteredLines = React.useMemo(() => {
     if (filter === 'all') return lines;
-    return lines.filter((line) => line.category === filter);
+    return lines.filter((line) => line.filterCategories.includes(filter));
   }, [filter, lines]);
 
   return (
@@ -248,44 +327,97 @@ export default function IntakeHistoryScreen() {
           </View>
         ) : (
           <View style={styles.list}>
-            {filteredLines.map((line) => (
-              <View
+            {filteredLines.map((line) => {
+              const isCombinedIntake = line.key.endsWith('-combined');
+              return (
+              <Pressable
                 key={line.key}
-                style={[
+                onPress={() =>
+                  router.push({
+                    pathname: '/intake-record-detail',
+                    params: {
+                      recordId: line.recordId,
+                      date: selectedDateYmd,
+                      metric: line.metric,
+                    },
+                  })
+                }
+                style={({ pressed }) => [
                   styles.row,
+                  isCombinedIntake && styles.rowStacked,
                   {
                     backgroundColor: theme.surface,
                     borderColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(226,232,240,0.9)',
+                    opacity: pressed ? 0.92 : 1,
                   },
                 ]}
               >
-                <View style={styles.rowLeft}>
-                  <View
-                    style={[
-                      styles.iconWrap,
-                      {
-                        backgroundColor: isDark ? line.iconBgDark : line.iconBgLight,
-                      },
-                    ]}
-                  >
-                    <MaterialIcons name={line.icon} size={22} color={line.iconColor} />
-                  </View>
-                  <View style={styles.rowTextWrap}>
-                    <View style={styles.rowHeader}>
-                      <Text style={[styles.rowTitle, { color: theme.text }]}>{line.title}</Text>
-                      <Text style={[styles.rowTime, { color: theme.textSecondary }]}>{line.time}</Text>
+                {isCombinedIntake ? (
+                  <>
+                    <View style={styles.rowTop}>
+                      <View style={styles.rowLeft}>
+                        <View
+                          style={[
+                            styles.iconWrap,
+                            {
+                              backgroundColor: isDark ? line.iconBgDark : line.iconBgLight,
+                            },
+                          ]}
+                        >
+                          <MaterialIcons name={line.icon} size={22} color={line.iconColor} />
+                        </View>
+                        <View style={styles.rowTextWrap}>
+                          <View style={styles.rowHeader}>
+                            <Text style={[styles.rowTitle, { color: theme.text }]} numberOfLines={1}>
+                              {line.title}
+                            </Text>
+                            <Text style={[styles.rowTime, { color: theme.textSecondary }]}>{line.time}</Text>
+                            <MaterialIcons name="chevron-right" size={22} color={theme.textSecondary} />
+                          </View>
+                          <Text style={[styles.rowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
+                            {line.note}
+                          </Text>
+                          <Text style={[styles.rowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
+                            {line.aiComment}
+                          </Text>
+                        </View>
+                      </View>
                     </View>
-                    <Text style={[styles.rowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
-                      {line.note}
-                    </Text>
-                    <Text style={[styles.rowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
-                      {line.aiComment}
-                    </Text>
-                  </View>
-                </View>
-                <Text style={[styles.rowAmount, { color: theme.text }]}>{line.amount}</Text>
-              </View>
-            ))}
+                    <Text style={[styles.rowAmountStacked, { color: theme.text }]}>{line.amount}</Text>
+                  </>
+                ) : (
+                  <>
+                    <View style={styles.rowLeft}>
+                      <View
+                        style={[
+                          styles.iconWrap,
+                          {
+                            backgroundColor: isDark ? line.iconBgDark : line.iconBgLight,
+                          },
+                        ]}
+                      >
+                        <MaterialIcons name={line.icon} size={22} color={line.iconColor} />
+                      </View>
+                      <View style={styles.rowTextWrap}>
+                        <View style={styles.rowHeader}>
+                          <Text style={[styles.rowTitle, { color: theme.text }]}>{line.title}</Text>
+                          <Text style={[styles.rowTime, { color: theme.textSecondary }]}>{line.time}</Text>
+                        </View>
+                        <Text style={[styles.rowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
+                          {line.note}
+                        </Text>
+                        <Text style={[styles.rowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
+                          {line.aiComment}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.rowAmount, { color: theme.text }]}>{line.amount}</Text>
+                    <MaterialIcons name="chevron-right" size={22} color={theme.textSecondary} style={{ marginLeft: 4 }} />
+                  </>
+                )}
+              </Pressable>
+            );
+            })}
           </View>
         )}
       </ScrollView>
@@ -359,12 +491,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
+  },
+  rowStacked: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 8,
+  },
+  rowTop: {
+    flexDirection: 'row',
+    width: '100%',
+    alignItems: 'flex-start',
   },
   rowLeft: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
     flex: 1,
     minWidth: 0,
@@ -389,6 +531,9 @@ const styles = StyleSheet.create({
   rowTitle: {
     fontSize: 15,
     fontWeight: '700',
+    flex: 1,
+    minWidth: 0,
+    marginRight: 6,
   },
   rowTime: {
     fontSize: 12,
@@ -406,5 +551,14 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginLeft: 10,
     alignSelf: 'flex-start',
+    flexShrink: 0,
+    maxWidth: '32%',
+    textAlign: 'right',
+  },
+  rowAmountStacked: {
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 20,
+    paddingLeft: 54,
   },
 });

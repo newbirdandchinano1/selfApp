@@ -1,3 +1,5 @@
+import { File } from 'expo-file-system';
+
 import { getDatabase } from '../../database.native';
 import type {
   CreateHealthRecordInput,
@@ -10,9 +12,9 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO health_records (
-      id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, sodium, target_sodium, record_date, quick_add_key,
+      id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, sodium, target_sodium, record_date, quick_add_key, source_image_uri,
       created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
     [
       input.id,
       input.user_id,
@@ -26,6 +28,7 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
       input.target_sodium ?? 0,
       input.record_date,
       input.quick_add_key ?? null,
+      input.source_image_uri ?? null,
     ]
   );
 }
@@ -122,7 +125,7 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
 
   await db.runAsync(
     `UPDATE health_records
-     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, carbohydrate = ?, target_carbohydrate = ?, sodium = ?, target_sodium = ?, record_date = ?, quick_add_key = ?, updated_at = datetime('now'),
+     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, carbohydrate = ?, target_carbohydrate = ?, sodium = ?, target_sodium = ?, record_date = ?, quick_add_key = ?, source_image_uri = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
          version = version + 1
      WHERE id = ?`,
@@ -136,7 +139,8 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
       input.sodium ?? current.sodium,
       input.target_sodium ?? current.target_sodium,
       input.record_date ?? current.record_date,
-      input.quick_add_key ?? current.quick_add_key,
+      input.quick_add_key !== undefined ? input.quick_add_key : current.quick_add_key,
+      input.source_image_uri !== undefined ? input.source_image_uri : current.source_image_uri ?? null,
       id,
     ]
   );
@@ -144,6 +148,18 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
 
 export async function deleteHealthRecord(id: string) {
   const db = await getDatabase();
+  const existing = await getHealthRecordById(id);
+  const img = existing?.source_image_uri?.trim();
+  if (img) {
+    try {
+      const f = new File(img);
+      if (f.exists) {
+        f.delete();
+      }
+    } catch {
+      /* 忽略本地文件删除失败 */
+    }
+  }
   await db.runAsync(
     `UPDATE health_records
      SET deleted_at = datetime('now'), updated_at = datetime('now'),

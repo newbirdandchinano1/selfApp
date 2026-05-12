@@ -503,6 +503,7 @@ export async function initDatabase() {
   await ensureColumn(db, 'health_records', 'quick_add_key', 'TEXT');
   await ensureColumn(db, 'health_records', 'carbohydrate', 'REAL NOT NULL DEFAULT 0');
   await ensureColumn(db, 'health_records', 'target_carbohydrate', 'REAL NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'health_records', 'source_image_uri', 'TEXT');
   await ensureColumn(db, 'finance_flow_categories', 'extra_data', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'name', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'happened_at', 'TEXT');

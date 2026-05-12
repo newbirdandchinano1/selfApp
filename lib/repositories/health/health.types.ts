@@ -13,6 +13,8 @@ export type HealthRecordRow = {
   target_sodium: number;
   record_date: string;
   quick_add_key: string | null;
+  /** 拍照/相册识别摄入时保存的本地图片路径（file://） */
+  source_image_uri?: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -33,6 +35,7 @@ export type CreateHealthRecordInput = {
   target_sodium?: number;
   record_date: string;
   quick_add_key?: string | null;
+  source_image_uri?: string | null;
 };
 
 export type UpdateHealthRecordInput = Partial<
@@ -48,6 +51,7 @@ export type UpdateHealthRecordInput = Partial<
     | 'target_sodium'
     | 'record_date'
     | 'quick_add_key'
+    | 'source_image_uri'
   >
 >;
 

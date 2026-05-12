@@ -113,6 +113,7 @@ export default function RootLayout() {
             <Stack.Screen name="edit-wish-item/[id]" />
             <Stack.Screen name="persona-detail/[slug]" />
             <Stack.Screen name="weekly-review" />
+            <Stack.Screen name="zhipu-api-test" />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
           </Stack>
