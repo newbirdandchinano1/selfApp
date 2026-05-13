@@ -28,7 +28,8 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.RECORD_AUDIO",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "package": "com.myselfManage.appdemo"
     },
@@ -67,6 +68,13 @@
         {
           "photosPermission": "用于从相册选择食物照片，识别营养成分并记录摄入。",
           "cameraPermission": "用于拍摄食物照片，识别营养成分并记录摄入。"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "sounds": [],
+          "enableBackgroundRemoteNotifications": false
         }
       ]
     ],

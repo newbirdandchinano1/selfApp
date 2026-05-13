@@ -1,6 +1,8 @@
 import { getDatabase } from '../../database.native';
 
 export type WeeklyReviewMetrics = {
+  /** 统计区间类型：近 7 个自然日（含锚定日）或本地自然周（周一至周日） */
+  rangeKind: 'rolling-7' | 'calendar-week';
   weekStartYmd: string;
   weekEndYmd: string;
   rangeDisplay: string;
@@ -44,12 +46,67 @@ export function getCurrentWeekRange(anchor: Date = new Date()): {
   };
 }
 
+/** 以锚定日为结束日，向前共 7 个自然日（含结束日） */
+export function getRollingSevenDayRange(anchor: Date = new Date()): {
+  startYmd: string;
+  endYmd: string;
+  start: Date;
+  end: Date;
+} {
+  const end = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+  const start = new Date(end);
+  start.setDate(end.getDate() - 6);
+  return {
+    start,
+    end,
+    startYmd: toYmd(start),
+    endYmd: toYmd(end),
+  };
+}
+
+/** 从 anchor 的日历日起，下一个「星期几 = reviewWeekday」的日期（若当天已是该星期几则含当天） */
+export function getNextConfiguredReviewDayOnOrAfter(anchor: Date, reviewWeekday: number): Date {
+  const d = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+  const cur = d.getDay();
+  const delta = (reviewWeekday - cur + 7) % 7;
+  d.setDate(d.getDate() + delta);
+  return d;
+}
+
+/**
+ * 以「即将到来的每周复盘日」为周期终点（含该日），向前连续 7 个自然日。
+ * 与「今日倒推七天」不同：在非复盘日也会展示至「下一次复盘日」为止的同一周区间，便于提前写每日复盘。
+ */
+export function getRollingSevenDayRangeEndingOnNextReviewDay(
+  anchor: Date,
+  reviewWeekday: number,
+): {
+  startYmd: string;
+  endYmd: string;
+  start: Date;
+  end: Date;
+} {
+  const end = getNextConfiguredReviewDayOnOrAfter(anchor, reviewWeekday);
+  const start = new Date(end);
+  start.setDate(end.getDate() - 6);
+  return {
+    start,
+    end,
+    startYmd: toYmd(start),
+    endYmd: toYmd(end),
+  };
+}
+
 function formatRangeChinese(start: Date, end: Date): string {
   return `${start.getMonth() + 1}月${start.getDate()}日 – ${end.getMonth() + 1}月${end.getDate()}日`;
 }
 
-export async function fetchWeeklyReviewMetrics(anchor: Date = new Date()): Promise<WeeklyReviewMetrics> {
-  const { startYmd, endYmd, start, end } = getCurrentWeekRange(anchor);
+export async function fetchWeeklyReviewMetrics(
+  anchor: Date = new Date(),
+  range: 'rolling-7' | 'calendar-week' = 'rolling-7',
+): Promise<WeeklyReviewMetrics> {
+  const { startYmd, endYmd, start, end } =
+    range === 'rolling-7' ? getRollingSevenDayRange(anchor) : getCurrentWeekRange(anchor);
   const db = await getDatabase();
 
   const [
@@ -109,11 +166,16 @@ export async function fetchWeeklyReviewMetrics(anchor: Date = new Date()): Promi
     ),
   ]);
 
+  const rangeDisplay = formatRangeChinese(start, end);
+  const weekTitle =
+    range === 'rolling-7' ? `近七天复盘 · ${rangeDisplay}` : `本周复盘 · ${rangeDisplay}`;
+
   return {
+    rangeKind: range,
     weekStartYmd: startYmd,
     weekEndYmd: endYmd,
-    rangeDisplay: formatRangeChinese(start, end),
-    weekTitle: `本周复盘 · ${formatRangeChinese(start, end)}`,
+    rangeDisplay,
+    weekTitle,
     tasksCompleted: Number(tasksDoneRow?.c ?? 0),
     tasksCreated: Number(tasksNewRow?.c ?? 0),
     habitCheckInTotal: Number(habitRow?.s ?? 0),
@@ -126,11 +188,13 @@ export async function fetchWeeklyReviewMetrics(anchor: Date = new Date()): Promi
 
 export function buildWeeklyReviewNarrative(m: WeeklyReviewMetrics): string {
   const sentences: string[] = [];
+  const span = m.rangeKind === 'rolling-7' ? '这七天' : '本周';
+  const spanSavings = m.rangeKind === 'rolling-7' ? '近七天' : '本周';
 
   if (m.tasksCompleted > 0) {
-    sentences.push(`本周完成了 ${m.tasksCompleted} 项任务${m.tasksCreated > 0 ? `，并新建了 ${m.tasksCreated} 项` : ''}。`);
+    sentences.push(`${span}完成了 ${m.tasksCompleted} 项任务${m.tasksCreated > 0 ? `，并新建了 ${m.tasksCreated} 项` : ''}。`);
   } else if (m.tasksCreated > 0) {
-    sentences.push(`本周新建了 ${m.tasksCreated} 项任务，完成清单还空着，下周可以挑一件先收尾。`);
+    sentences.push(`${span}新建了 ${m.tasksCreated} 项任务，完成清单还空着，下周可以挑一件先收尾。`);
   }
 
   if (m.habitCheckInTotal > 0) {
@@ -138,7 +202,7 @@ export function buildWeeklyReviewNarrative(m: WeeklyReviewMetrics): string {
   }
 
   if (m.savingsWeekTotal > 0) {
-    sentences.push(`存钱计划本周入账 ¥${m.savingsWeekTotal.toLocaleString('zh-CN')}。`);
+    sentences.push(`存钱计划${spanSavings}入账 ¥${m.savingsWeekTotal.toLocaleString('zh-CN')}。`);
   }
 
   if (m.financeExpense > 0 || m.financeIncome > 0) {
@@ -152,7 +216,7 @@ export function buildWeeklyReviewNarrative(m: WeeklyReviewMetrics): string {
   }
 
   if (sentences.length === 0) {
-    return '本周还没有太多数据记录。试着完成一件小事、打一记习惯卡或记一笔账，下周复盘会更丰富。';
+    return `${span}还没有太多数据记录。试着完成一件小事、打一记习惯卡或记一笔账，下次复盘会更丰富。`;
   }
 
   return sentences.join('');

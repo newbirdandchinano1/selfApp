@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getTasks, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -14,8 +15,9 @@ type Item = {
   title: string;
   subtitle: string;
   tone: 'error' | 'primary' | 'tertiary' | 'outline';
-  /** 有今日截止时间时用于排序：数值越小越紧迫；无日期时为 null，排在后面 */
+  /** 有截止日期时用于组内排序：时间戳升序；无日期为 null */
   dueSortKey: number | null;
+  priority: number;
 };
 
 type Section = { key: string; title: string; badge: string; tone: Item['tone']; items: Item[]; dim?: boolean };
@@ -50,6 +52,47 @@ function isSameLocalDay(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
+function startOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function addLocalDays(d: Date, n: number): Date {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+/** 含 `d` 的周的周一 0:00（本地） */
+function mondayOfWeekContaining(d: Date): Date {
+  const sod = startOfLocalDay(d);
+  const dow = sod.getDay();
+  const deltaMon = dow === 0 ? -6 : 1 - dow;
+  return addLocalDays(sod, deltaMon);
+}
+
+function ymdToLocalDate(ymd: string): Date | null {
+  const t = ymd.trim();
+  const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const day = Number(m[3]);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(day)) return null;
+  return new Date(y, mo - 1, day);
+}
+
+function addDaysToYmd(ymd: string, days: number): string {
+  const base = ymdToLocalDate(ymd);
+  if (!base) return ymd;
+  return formatLocalYmd(addLocalDays(base, days));
+}
+
+function weekEndSundayYmd(now: Date): string {
+  const mon = mondayOfWeekContaining(now);
+  const sun = addLocalDays(mon, 6);
+  return formatLocalYmd(sun);
+}
+
 function parseDueDateAsLocalMoment(dueDate: string): { date: Date; isAllDay: boolean } | null {
   const ymd = /^\d{4}-\d{2}-\d{2}$/;
   if (ymd.test(dueDate)) {
@@ -78,8 +121,65 @@ function formatDueSubtitle(dueDate: string, now: Date) {
   return now.getTime() > parsed.date.getTime() ? `今日 ${hh}:${mm} 已过期` : `今日 ${hh}:${mm}`;
 }
 
-function groupTasksToSections(rows: TaskRow[], now: Date): Section[] {
-  const today = formatLocalYmd(now);
+function getTaskDueDayYmd(t: TaskRow): string | null {
+  if (!t.due_date?.trim()) return null;
+  if (!isValidDate(t.due_date)) return null;
+  const parsed = parseDueDateAsLocalMoment(t.due_date);
+  if (!parsed) return null;
+  return formatLocalYmd(parsed.date);
+}
+
+function getTaskDueSortMs(t: TaskRow): number | null {
+  if (!t.due_date?.trim() || !isValidDate(t.due_date)) return null;
+  const parsed = parseDueDateAsLocalMoment(t.due_date);
+  return parsed ? parsed.date.getTime() : null;
+}
+
+function formatDueCaption(dueDate: string, now: Date): string {
+  const parsed = parseDueDateAsLocalMoment(dueDate);
+  if (!parsed) return '截止时间异常';
+  const dueYmd = formatLocalYmd(parsed.date);
+  const todayStart = startOfLocalDay(now).getTime();
+  const dueStart = startOfLocalDay(parsed.date).getTime();
+  const diffDays = Math.round((dueStart - todayStart) / 86400000);
+
+  if (diffDays < 0) {
+    if (parsed.isAllDay) return `已逾期 · ${dueYmd}`;
+    const hh = String(parsed.date.getHours()).padStart(2, '0');
+    const mm = String(parsed.date.getMinutes()).padStart(2, '0');
+    return `已逾期 · ${dueYmd} ${hh}:${mm}`;
+  }
+  if (diffDays === 0) return formatDueSubtitle(dueDate, now);
+  if (diffDays === 1) return parsed.isAllDay ? '明日 全天' : `明日 ${String(parsed.date.getHours()).padStart(2, '0')}:${String(parsed.date.getMinutes()).padStart(2, '0')}`;
+  if (diffDays === 2) return parsed.isAllDay ? '后天 全天' : `后天 ${String(parsed.date.getHours()).padStart(2, '0')}:${String(parsed.date.getMinutes()).padStart(2, '0')}`;
+  const m = dueYmd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return `截止 ${Number(m[2])}月${Number(m[3])}日`;
+  return `截止 ${dueYmd}`;
+}
+
+type TimeBucket = 'today' | 'soon' | 'week' | 'seven' | 'nodate' | 'exclude';
+
+function timeBucketForDueYmd(
+  dueYmd: string | null,
+  todayYmd: string,
+  soonEndYmd: string,
+  weekEndYmd: string,
+  sevenEndYmd: string,
+): TimeBucket {
+  if (!dueYmd) return 'nodate';
+  if (dueYmd <= todayYmd) return 'today';
+  if (dueYmd <= soonEndYmd) return 'soon';
+  if (dueYmd <= weekEndYmd) return 'week';
+  if (dueYmd <= sevenEndYmd) return 'seven';
+  return 'exclude';
+}
+
+function groupTasksToSections(rows: TaskRow[], now: Date, todayYmd: string): Section[] {
+  const soonEndYmd = addDaysToYmd(todayYmd, 3);
+  const weekEndYmd = weekEndSundayYmd(now);
+  const sevenEndYmd = addDaysToYmd(todayYmd, 7);
+  const lastIncludedYmd = [soonEndYmd, weekEndYmd, sevenEndYmd].reduce((m, x) => (x > m ? x : m), soonEndYmd);
+
   const hasUnfinishedChild = new Set<string>();
   rows.forEach((t) => {
     if (!t.parent_task_id) return;
@@ -89,73 +189,80 @@ function groupTasksToSections(rows: TaskRow[], now: Date): Section[] {
 
   const eligible = rows
     .filter((t) => t.status !== 'done' && t.status !== 'cancelled')
-    // 同一任务树：优先展示子任务（有未完成子任务的节点不展示）
     .filter((t) => !hasUnfinishedChild.has(t.id))
     .filter((t) => {
       const extra = parseTaskExtraData(t.extra_data);
       const assignedOn = typeof extra.frogAssignedOn === 'string' ? extra.frogAssignedOn : '';
-      return assignedOn !== today;
+      return assignedOn !== todayYmd;
     })
     .filter((t) => {
-      // 允许：没设置时间（也可作为今日青蛙候选）
-      if (!t.due_date || !String(t.due_date).trim()) return true;
-
-      // 或者：截止在今天（全天 / 具体时间）
-      if (!isValidDate(t.due_date)) return true;
-      const parsed = parseDueDateAsLocalMoment(t.due_date);
-      if (!parsed) return true;
-      return isSameLocalDay(parsed.date, now);
+      const dueYmd = getTaskDueDayYmd(t);
+      if (!t.due_date?.trim()) return true;
+      if (!dueYmd) return true;
+      return dueYmd <= lastIncludedYmd;
     });
 
-  const q1: Item[] = [];
-  const q2: Item[] = [];
-  const q3: Item[] = [];
-  const q4: Item[] = [];
+  const secToday: Item[] = [];
+  const secSoon: Item[] = [];
+  const secWeek: Item[] = [];
+  const secSeven: Item[] = [];
+  const secNodate: Item[] = [];
 
   eligible.forEach((t) => {
     const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
-    let dueSortKey: number | null = null;
-    if (t.due_date && isValidDate(t.due_date)) {
-      const parsedDue = parseDueDateAsLocalMoment(t.due_date);
-      if (parsedDue && isSameLocalDay(parsedDue.date, now)) {
-        dueSortKey = parsedDue.date.getTime();
-      }
-    }
+    const dueYmd = getTaskDueDayYmd(t);
+    const bucket = timeBucketForDueYmd(dueYmd, todayYmd, soonEndYmd, weekEndYmd, sevenEndYmd);
+    if (bucket === 'exclude') return;
+
+    const dueSortKey = getTaskDueSortMs(t);
+    const subtitle =
+      bucket === 'nodate' || !t.due_date?.trim()
+        ? '未设置截止日期'
+        : t.due_date && isValidDate(t.due_date)
+          ? formatDueCaption(t.due_date, now)
+          : '未设置截止日期';
+
     const item: Item = {
       id: t.id,
       title: t.title,
-      subtitle: dueSortKey !== null && t.due_date ? formatDueSubtitle(t.due_date, now) : '',
+      subtitle,
       tone,
       dueSortKey,
+      priority: t.priority,
     };
 
-    if (t.priority >= 4) q1.push(item);
-    else if (t.priority === 2) q2.push(item);
-    else if (t.priority === 3) q3.push(item);
-    else q4.push(item);
+    if (bucket === 'today') secToday.push(item);
+    else if (bucket === 'soon') secSoon.push(item);
+    else if (bucket === 'week') secWeek.push(item);
+    else if (bucket === 'seven') secSeven.push(item);
+    else secNodate.push(item);
   });
 
-  /** 有日期的在前；同有日期按截止时间升序（已过期/更早的时刻更靠前）；再无则按 id */
-  const sortByDueUrgencyThenId = (a: Item, b: Item) => {
-    const aDated = a.dueSortKey !== null;
-    const bDated = b.dueSortKey !== null;
-    if (aDated !== bDated) return aDated ? -1 : 1;
-    if (aDated && bDated && a.dueSortKey !== b.dueSortKey) {
-      return (a.dueSortKey as number) - (b.dueSortKey as number);
-    }
+  const sortDated = (a: Item, b: Item) => {
+    const ak = a.dueSortKey ?? Number.POSITIVE_INFINITY;
+    const bk = b.dueSortKey ?? Number.POSITIVE_INFINITY;
+    if (ak !== bk) return ak - bk;
+    if (b.priority !== a.priority) return b.priority - a.priority;
     return a.id.localeCompare(b.id);
   };
 
-  q1.sort(sortByDueUrgencyThenId);
-  q2.sort(sortByDueUrgencyThenId);
-  q3.sort(sortByDueUrgencyThenId);
-  q4.sort(sortByDueUrgencyThenId);
+  const sortNodate = (a: Item, b: Item) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    return a.id.localeCompare(b.id);
+  };
+
+  secToday.sort(sortDated);
+  secSoon.sort(sortDated);
+  secWeek.sort(sortDated);
+  secSeven.sort(sortDated);
+  secNodate.sort(sortNodate);
 
   return [
-    { key: 'q1', title: '紧急且重要', badge: '高风险', tone: 'error', items: q1 },
-    { key: 'q2', title: '重要但不紧急', badge: '深度工作', tone: 'primary', items: q2 },
-    { key: 'q3', title: '紧急但不重要', badge: '委派', tone: 'tertiary', items: q3 },
-    { key: 'q4', title: '不紧急也不重要', badge: '消除', tone: 'outline', dim: true, items: q4 },
+    { key: 'today', title: '今日', badge: '含已逾期', tone: 'error', items: secToday },
+    { key: 'soon', title: '近三天', badge: '截止较近', tone: 'primary', items: secSoon },
+    { key: 'week', title: '本周', badge: '本周末前', tone: 'tertiary', items: secWeek },
+    { key: 'seven', title: '近七天', badge: '今起7日内', tone: 'outline', items: secSeven },
+    { key: 'nodate', title: '无截止日期', badge: '可选', tone: 'outline', dim: true, items: secNodate },
   ];
 }
 
@@ -166,7 +273,9 @@ export default function AddFrogScreen() {
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
 
-  const [sections, setSections] = React.useState<Section[]>(() => groupTasksToSections([], new Date()));
+  const [sections, setSections] = React.useState<Section[]>(() =>
+    groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY)),
+  );
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -177,8 +286,10 @@ export default function AddFrogScreen() {
     try {
       const rows = await getTasks();
       const now = new Date();
+      const boundary = await loadTasksDayBoundary();
+      const todayYmd = getLogicalLocalYmd(now, boundary);
       setTaskMap(Object.fromEntries(rows.map((r) => [r.id, r])));
-      setSections(groupTasksToSections(rows, now));
+      setSections(groupTasksToSections(rows, now, todayYmd));
       setSelected((prev) => {
         const allowed = new Set(rows.map((r) => r.id));
         const next: Record<string, boolean> = {};
@@ -189,7 +300,7 @@ export default function AddFrogScreen() {
       });
     } catch (e) {
       console.warn('加载青蛙候选任务失败', e);
-      setSections(groupTasksToSections([], new Date()));
+      setSections(groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY)));
       setSelected({});
       setTaskMap({});
     } finally {
@@ -230,7 +341,8 @@ export default function AddFrogScreen() {
     if (saving || selectedIds.length === 0) return;
     setSaving(true);
     try {
-      const today = formatLocalYmd(new Date());
+      const boundary = await loadTasksDayBoundary();
+      const today = getLogicalLocalYmd(new Date(), boundary);
       const ids = selectedIds.slice();
       await Promise.all(
         ids.map(async (id) => {
@@ -282,16 +394,16 @@ export default function AddFrogScreen() {
         ]}
         showsVerticalScrollIndicator={false}>
         <View style={styles.editorial}>
-          <Text style={[styles.kicker, { color: primary }]}>高风险</Text>
-          <Text style={[styles.h1, { color: theme.text }]}>选择今日青蛙</Text>
+          <Text style={[styles.kicker, { color: primary }]}>时间线</Text>
+          <Text style={[styles.h1, { color: theme.text }]}>选择青蛙</Text>
         </View>
 
         <View style={styles.sections}>
           {!hasAnyCandidates ? (
             <View style={[styles.section, { opacity: 0.85 }]}>
-              <Text style={[styles.sectionTitle, { color: theme.text }]}>今日暂无可选青蛙</Text>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>暂无可选青蛙</Text>
               <Text style={[styles.itemSubtitle, { color: theme.textSecondary, marginTop: 8 }]}>
-                仅可从「今日且已过期」的任务中选择。你可以去任务详情里补充截止时间后再来。
+                可选范围：今日（含已逾期）、今起三天内、本周日内、再往后至「今起第7天」内的任务，或未设置截止日期的任务。请先在任务中设置截止时间，或稍后再试。
               </Text>
             </View>
           ) : null}
@@ -332,7 +444,17 @@ export default function AddFrogScreen() {
                         <View style={[styles.checkbox, { backgroundColor: 'transparent', borderColor: outlineVariant }]} />
                         <View style={styles.itemText}>
                           <Text style={[styles.itemTitle, { color: theme.textSecondary }]}>暂无任务</Text>
-                          <Text style={[styles.itemSubtitle, { color: theme.textSecondary }]}>今日该象限下没有可选青蛙</Text>
+                          <Text style={[styles.itemSubtitle, { color: theme.textSecondary }]}>
+                            {sec.key === 'today'
+                              ? '没有今日或已逾期的待办'
+                              : sec.key === 'soon'
+                                ? '没有截止日在近三天内的待办'
+                                : sec.key === 'week'
+                                  ? '没有仍在本周末前、且不属于近三天的待办'
+                                  : sec.key === 'seven'
+                                    ? '没有落在「本周结束之后、今起7天内」的待办'
+                                    : '没有未设置截止日期的待办'}
+                          </Text>
                         </View>
                       </View>
                     </View>

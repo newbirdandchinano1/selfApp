@@ -22,7 +22,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 /** 与 schedule-picker 约定的 source，避免与其它页面日程回传冲突 */
 const SCHEDULE_SOURCE = 'add-standalone-todo';
 
-const MAX_TITLE_LEN = 30;
+const MAX_TITLE_LEN = 50;
 
 type PriorityKey = 'urgent-important' | 'urgent-not-important' | 'not-urgent-important' | 'not-urgent-not-important';
 
@@ -245,6 +245,7 @@ export default function AddStandaloneTodoScreen() {
         extra_data: JSON.stringify({
           reminder: reminderText || '',
           repeat: repeatText || '',
+          schedule: scheduleMeta,
         }),
       });
       router.back();

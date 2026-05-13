@@ -274,12 +274,7 @@ export default function HabitManageScreen() {
                         },
                       ]}>
                       <Pressable
-                        onPress={() =>
-                          router.push({
-                            pathname: '/habit-detail',
-                            params: { habitId: item.id },
-                          })
-                        }
+                        onPress={() => goEditHabit(group.category, item)}
                         style={({ pressed }) => [styles.itemMainPressable, pressed && { opacity: 0.92 }]}>
                         <View style={styles.itemMain}>
                           <Text style={styles.itemEmoji}>{item.icon}</Text>

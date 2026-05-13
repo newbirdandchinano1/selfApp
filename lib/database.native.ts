@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 17;
+export const DB_VERSION = 20;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -75,6 +75,7 @@ export async function initDatabase() {
       status TEXT NOT NULL DEFAULT 'active',
       note TEXT,
       due_date TEXT,
+      inbox_entered_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
@@ -434,6 +435,25 @@ export async function initDatabase() {
       version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS daily_review_journal (
+      id TEXT PRIMARY KEY NOT NULL,
+      record_date_ymd TEXT NOT NULL UNIQUE,
+      body TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS persona_portrait_cache (
+      slug TEXT PRIMARY KEY NOT NULL,
+      cache_date_ymd TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
@@ -482,6 +502,15 @@ export async function initDatabase() {
   await ensureColumn(db, 'projects', 'category_id', 'TEXT');
   await ensureColumn(db, 'projects', 'note', 'TEXT');
   await ensureColumn(db, 'projects', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'projects', 'inbox_entered_at', 'TEXT');
+  await db.runAsync(
+    `UPDATE projects
+     SET inbox_entered_at = COALESCE(updated_at, created_at)
+     WHERE deleted_at IS NULL
+       AND category_id = ?
+       AND inbox_entered_at IS NULL`,
+    [INBOX_PROJECT_CATEGORY_ID]
+  );
   await ensureColumn(db, 'tasks', 'project_id', 'TEXT');
   await ensureColumn(db, 'tasks', 'category_id', 'TEXT');
   await ensureColumn(db, 'tasks', 'parent_task_id', 'TEXT');
@@ -627,6 +656,9 @@ export async function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_weekly_review_journal_week ON weekly_review_journal(week_start_ymd);
     CREATE INDEX IF NOT EXISTS idx_weekly_review_journal_updated ON weekly_review_journal(updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_daily_review_journal_record_date ON daily_review_journal(record_date_ymd);
+    CREATE INDEX IF NOT EXISTS idx_daily_review_journal_updated ON daily_review_journal(updated_at);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',

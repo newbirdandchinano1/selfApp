@@ -9,6 +9,8 @@ export type WeeklyCoachingInput = {
   section_next_week: string;
   executionScore: number;
   metrics: WeeklyReviewMetrics | null;
+  /** 近七日每日复盘原文汇编，供周度建议对照 */
+  dailyReviewsDigest?: string;
 };
 
 function compact(s: string, max = 600) {
@@ -23,7 +25,7 @@ function hasAnyOf(text: string, keys: string[]) {
 }
 
 function buildMetricsBlock(m: WeeklyReviewMetrics | null): string {
-  if (!m) return '（本周暂无自动统计数据或读取失败。）';
+  if (!m) return '（本周期暂无自动统计数据或读取失败。）';
   return [
     `完成任务（系统）: ${m.tasksCompleted} 项`,
     `新建任务（系统）: ${m.tasksCreated} 项`,
@@ -45,7 +47,7 @@ function buildLocalCoaching(input: WeeklyCoachingInput): string {
   ].join('\n');
 
   const lines: string[] = [];
-  lines.push(`【总览】\n周期：${input.weekRangeLabel}。你为本周自评执行分 ${score}/5。`);
+  lines.push(`【总览】\n周期：${input.weekRangeLabel}。你为本周期自评执行分 ${score}/5。`);
   lines.push('以下结合你的文字复盘与 App 内本周统计，给出参考性小结（非专业心理咨询）。');
 
   if (all.trim().length < 20) {
@@ -67,6 +69,12 @@ function buildLocalCoaching(input: WeeklyCoachingInput): string {
   lines.push('\n【数据侧参考（可与自述对照）】');
   lines.push(buildMetricsBlock(input.metrics));
 
+  const digest = (input.dailyReviewsDigest ?? '').trim();
+  if (digest.length > 0) {
+    lines.push('\n【近七日每日复盘（用户原文摘录）】');
+    lines.push(compact(digest, 1200));
+  }
+
   lines.push('\n【建议与修正提醒】');
   if (score <= 2) {
     lines.push('· 自评偏低时，优先保护睡眠与节律，把「下周」拆成 1～2 个极小的可交付项即可。');
@@ -85,7 +93,7 @@ function buildLocalCoaching(input: WeeklyCoachingInput): string {
     lines.push('· 家庭相关叙述：下周计划里显式预留「不可压缩时间」，再排工作，会减少内疚与冲突。');
   }
   if (input.metrics && input.metrics.tasksCompleted === 0 && input.section_plans.includes('完成')) {
-    lines.push('· 自述里谈到完成，但系统里本周完成任务为 0：核对是否忘了在任务里点「完成」，或任务日期不在本周。');
+    lines.push('· 自述里谈到完成，但系统里本周期完成任务为 0：核对是否忘了在任务里点「完成」，或任务日期不在统计区间内。');
   }
 
   lines.push('\n【下周可做的一件事】');
@@ -122,7 +130,7 @@ async function tryOpenAiCoaching(prompt: string): Promise<string | null> {
           {
             role: 'system',
             content:
-              '你是资深生活与效率教练，用简体中文回复。用户在做「每周复盘」。请输出结构化文本，须包含以下小节标题（逐字）：【总览】【对齐用户写下的重点】【数据侧参考】【建议与修正提醒】【下周可做的一件事】【温和结语】。语气真诚、具体、避免说教；若用户内容涉及心理危机，提醒寻求专业帮助。不要编造用户未提及的事实。',
+              '你是资深生活与效率教练，用简体中文回复。用户在做「每周复盘」，并可能附带近七日「每日复盘」原文。请输出结构化文本，须包含以下小节标题（逐字）：【总览】【对齐用户写下的重点】【数据侧参考】【建议与修正提醒】【下周可做的一件事】【温和结语】。语气真诚、具体、避免说教；若用户内容涉及心理危机，提醒寻求专业帮助。不要编造用户未提及的事实；每日复盘仅作线索，与周记冲突时以周记为主并温和指出差异。',
           },
           { role: 'user', content: prompt },
         ],
@@ -159,9 +167,18 @@ function buildPromptForModel(input: WeeklyCoachingInput): string {
     '五、下周计划（用户原文）：',
     input.section_next_week || '（未填写）',
     '',
-    'App 内本周统计（供对照，勿与用户原文矛盾时武断否定用户）：',
+    'App 内本周期统计（供对照，勿与用户原文矛盾时武断否定用户）：',
     buildMetricsBlock(input.metrics),
-  ].join('\n');
+    input.dailyReviewsDigest && input.dailyReviewsDigest.trim().length > 0
+      ? [
+          '',
+          '以下为近七日「每日复盘」用户原文（若有重复或空缺以用户周记为准）：',
+          input.dailyReviewsDigest.trim(),
+        ].join('\n')
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 export async function generateWeeklyReviewCoaching(input: WeeklyCoachingInput): Promise<string> {

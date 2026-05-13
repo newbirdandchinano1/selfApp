@@ -423,7 +423,7 @@ export default function AddHabitScreen() {
             style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.8 }]}>
             <MaterialIcons name="arrow-back" size={22} color={textSub} />
           </Pressable>
-          <Text style={[styles.headerTitle, { color: textMain }]}>{isEditMode ? '编辑打卡' : '新建打卡'}</Text>
+          <Text style={[styles.headerTitle, { color: textMain }]}>{isEditMode ? '编辑习惯' : '新建习惯'}</Text>
           <Pressable onPress={handleSave} hitSlop={10} style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
             <Text style={[styles.headerAction, { color: textMain, fontWeight: '700' }]}>{isEditMode ? '保存' : '创建打卡'}</Text>
           </Pressable>

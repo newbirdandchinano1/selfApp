@@ -139,7 +139,8 @@ export default function AddProjectScreen() {
   const [scheduleMeta, setScheduleMeta] = React.useState<ProjectScheduleMeta | null>(null);
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
   const [categories, setCategories] = React.useState<ProjectCategoryRow[]>([]);
-  const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(INBOX_PROJECT_CATEGORY_ID);
+  /** 新建项目不允许选「收集箱」：无其它分类时为 null（未分类），否则默认为第一个非收集箱分类 */
+  const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
   const appliedRouteCategoryRef = React.useRef(false);
@@ -251,12 +252,24 @@ export default function AddProjectScreen() {
     };
   }, []);
 
+  const selectableProjectCategories = React.useMemo(
+    () => categories.filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID),
+    [categories]
+  );
+
   React.useEffect(() => {
-    if (appliedRouteCategoryRef.current) return;
-    if (!routeCategoryId || categories.length === 0) return;
-    const exists = categories.some((c) => c.id === routeCategoryId);
-    if (exists) setSelectedCategoryId(routeCategoryId);
+    if (categories.length === 0 || appliedRouteCategoryRef.current) return;
     appliedRouteCategoryRef.current = true;
+    if (
+      routeCategoryId &&
+      routeCategoryId !== INBOX_PROJECT_CATEGORY_ID &&
+      categories.some((c) => c.id === routeCategoryId)
+    ) {
+      setSelectedCategoryId(routeCategoryId);
+      return;
+    }
+    const firstNonInbox = categories.find((c) => c.id !== INBOX_PROJECT_CATEGORY_ID);
+    setSelectedCategoryId(firstNonInbox?.id ?? null);
   }, [categories, routeCategoryId]);
 
   const selectedCategoryName = React.useMemo(() => {
@@ -337,7 +350,7 @@ export default function AddProjectScreen() {
               ]}>
               <View style={styles.categoryLeft}>
                 <MaterialIcons name="folder-open" size={18} color={primary} />
-              <Text style={[styles.categoryValue, { color: theme.text }]}>{selectedCategoryName || '收集箱'}</Text>
+              <Text style={[styles.categoryValue, { color: theme.text }]}>{selectedCategoryName || '未分类'}</Text>
               </View>
               <MaterialIcons name="expand-more" size={20} color={outline} />
             </Pressable>
@@ -426,7 +439,16 @@ export default function AddProjectScreen() {
         <Pressable style={styles.modalOverlay} onPress={() => setCategoryModalVisible(false)}>
           <Pressable onPress={() => {}} style={[styles.modalCard, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>选择项目分类</Text>
-            {categories.map((item) => (
+            <Pressable
+              onPress={() => {
+                setSelectedCategoryId(null);
+                setCategoryModalVisible(false);
+              }}
+              style={({ pressed }) => [styles.modalItem, pressed && { opacity: 0.8 }]}>
+              <Text style={[styles.modalItemText, { color: theme.text }]}>未分类</Text>
+              {selectedCategoryId === null ? <MaterialIcons name="check" size={18} color={primary} /> : null}
+            </Pressable>
+            {selectableProjectCategories.map((item) => (
               <Pressable
                 key={item.id}
                 onPress={() => {
@@ -435,7 +457,7 @@ export default function AddProjectScreen() {
                 }}
                 style={({ pressed }) => [styles.modalItem, pressed && { opacity: 0.8 }]}>
                 <Text style={[styles.modalItemText, { color: theme.text }]}>{item.name}</Text>
-                {selectedCategoryId === item.id && <MaterialIcons name="check" size={18} color={primary} />}
+                {selectedCategoryId === item.id ? <MaterialIcons name="check" size={18} color={primary} /> : null}
               </Pressable>
             ))}
           </Pressable>

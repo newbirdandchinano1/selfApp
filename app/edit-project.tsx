@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
+import { getDatabase } from '@/lib/database.native';
 import { deleteProject, getProjectById, getProjectCategories, updateProject } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
 import {
@@ -131,6 +132,19 @@ function extractDueDate(deadlineText: string) {
   const all = deadlineText.match(/\d{4}-\d{2}-\d{2}/g);
   if (!all?.length) return null;
   return all[all.length - 1] ?? null;
+}
+
+/** 保存失败时展示底层原因（SQLite / 约束等），避免笼统提示 */
+function formatSaveError(error: unknown): string {
+  if (error instanceof Error) {
+    const m = error.message.trim();
+    if (m) return m;
+  }
+  if (typeof error === 'string') {
+    const m = error.trim();
+    if (m) return m;
+  }
+  return '未知错误，请稍后重试。';
 }
 
 function parseProjectExtraData(raw: string | null): ProjectExtraData {
@@ -411,7 +425,8 @@ export default function EditProjectScreen() {
     }
 
     const task = payload.task;
-    const normalizedCategoryId = selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
+    const normalizedCategoryId =
+      !selectedCategoryId || selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
 
     try {
       await createTask({
@@ -456,7 +471,9 @@ export default function EditProjectScreen() {
         return;
       }
       setTitle(project.name);
-      setSelectedCategoryId(project.category_id ?? INBOX_PROJECT_CATEGORY_ID);
+      setSelectedCategoryId(
+        !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? null : project.category_id
+      );
       setNotes(project.note ?? '');
       const extraData = parseProjectExtraData(project.extra_data);
       setProjectExtraData(extraData);
@@ -518,6 +535,11 @@ export default function EditProjectScreen() {
     if (!selectedCategoryId) return '';
     return categories.find((item) => item.id === selectedCategoryId)?.name ?? '';
   }, [categories, selectedCategoryId]);
+
+  const selectableProjectCategories = React.useMemo(
+    () => categories.filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID),
+    [categories]
+  );
   const taskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
     if (scheduleMeta?.mode === 'time' && scheduleMeta.range?.start && scheduleMeta.range?.end) {
       const start = toYmd(scheduleMeta.range.start);
@@ -607,9 +629,14 @@ export default function EditProjectScreen() {
     if (saving) return;
 
     setSaving(true);
+    let committed = false;
     try {
+      const db = await getDatabase();
+      await db.execAsync('BEGIN IMMEDIATE');
+      const normalizedCategoryId =
+        !selectedCategoryId || selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
       await updateProject(projectId, {
-        category_id: selectedCategoryId,
+        category_id: normalizedCategoryId,
         name: trimmedTitle,
         note: notes.trim() || null,
         due_date: extractDueDate(deadlineText),
@@ -620,7 +647,6 @@ export default function EditProjectScreen() {
       });
       const existingTasks = await getTasksByProjectId(projectId);
       const existingTaskIds = new Set(existingTasks.map((item) => item.id));
-      const normalizedCategoryId = selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
 
       const flatWithParents = flattenSubtasksWithParents(subtasks, null);
       for (const { subtask, parent_task_id } of flatWithParents) {
@@ -648,12 +674,38 @@ export default function EditProjectScreen() {
           });
         }
       }
-      router.back();
+      await db.execAsync('COMMIT');
+      committed = true;
     } catch (error) {
-      console.warn('更新项目失败', error);
-      Alert.alert('保存失败', '项目保存失败，请稍后重试。');
+      try {
+        const db = await getDatabase();
+        await db.execAsync('ROLLBACK');
+      } catch {
+        /* 无活动事务时 ROLLBACK 可能失败，忽略 */
+      }
+      console.warn('保存项目失败', error);
+      Alert.alert('保存失败', formatSaveError(error));
     } finally {
       setSaving(false);
+    }
+
+    if (!committed) return;
+
+    try {
+      if (Platform.OS !== 'web' && router.canGoBack()) {
+        router.back();
+      } else if (Platform.OS !== 'web') {
+        router.replace('/(tabs)/tasks');
+      } else {
+        router.back();
+      }
+    } catch (e) {
+      console.warn('离开编辑页失败（数据已保存）', e);
+      try {
+        router.replace('/(tabs)/tasks');
+      } catch (e2) {
+        console.warn('备用跳转失败', e2);
+      }
     }
   }, [deadlineText, notes, projectExtraData, projectId, router, saving, scheduleMeta, selectedCategoryId, subtasks, title]);
 
@@ -871,7 +923,7 @@ export default function EditProjectScreen() {
               ]}>
               <View style={styles.categoryLeft}>
                 <MaterialIcons name="folder-open" size={18} color={primary} />
-                <Text style={[styles.categoryValue, { color: theme.text }]}>{selectedCategoryName || '收集箱'}</Text>
+                <Text style={[styles.categoryValue, { color: theme.text }]}>{selectedCategoryName || '未分类'}</Text>
               </View>
               <MaterialIcons name="expand-more" size={20} color={outline} />
             </Pressable>
@@ -981,7 +1033,16 @@ export default function EditProjectScreen() {
         <Pressable style={styles.modalOverlay} onPress={() => setCategoryModalVisible(false)}>
           <Pressable onPress={() => {}} style={[styles.modalCard, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>选择项目分类</Text>
-            {categories.map((item) => (
+            <Pressable
+              onPress={() => {
+                setSelectedCategoryId(null);
+                setCategoryModalVisible(false);
+              }}
+              style={({ pressed }) => [styles.modalItem, pressed && { opacity: 0.8 }]}>
+              <Text style={[styles.modalItemText, { color: theme.text }]}>未分类</Text>
+              {selectedCategoryId === null ? <MaterialIcons name="check" size={18} color={primary} /> : null}
+            </Pressable>
+            {selectableProjectCategories.map((item) => (
               <Pressable
                 key={item.id}
                 onPress={() => {
@@ -990,7 +1051,7 @@ export default function EditProjectScreen() {
                 }}
                 style={({ pressed }) => [styles.modalItem, pressed && { opacity: 0.8 }]}>
                 <Text style={[styles.modalItemText, { color: theme.text }]}>{item.name}</Text>
-                {selectedCategoryId === item.id && <MaterialIcons name="check" size={18} color={primary} />}
+                {selectedCategoryId === item.id ? <MaterialIcons name="check" size={18} color={primary} /> : null}
               </Pressable>
             ))}
           </Pressable>

@@ -1,6 +1,13 @@
-import { getCheckInsMapByHabitId } from '@/lib/repositories/habits/habit-check-in';
+import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
+import {
+  decrementHabitCheckInForDay,
+  getCheckInsMapByHabitId,
+  getHabitCheckInDbCountForDay,
+  incrementHabitCheckInForDay,
+} from '@/lib/repositories/habits/habit-check-in';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
+import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
@@ -8,6 +15,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   Modal,
   Platform,
@@ -144,6 +152,20 @@ function needsLightTextOnBlue(fill: string): boolean {
 /** 顶栏区内高度：上内边距 10 + 行高约 38 + 下内边距 10 */
 const TOP_BAR_BODY_H = 58;
 
+const SCREEN_TITLE = '习惯详情';
+
+function startOfLocalDay(d: Date): Date {
+  const t = new Date(d);
+  t.setHours(0, 0, 0, 0);
+  return t;
+}
+
+function habitCreatedLocalDay(createdAtSql: string): Date | null {
+  const c = new Date(createdAtSql);
+  if (Number.isNaN(c.getTime())) return null;
+  return startOfLocalDay(c);
+}
+
 export default function HabitDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -168,6 +190,13 @@ export default function HabitDetailScreen() {
   const [heatmapYear, setHeatmapYear] = React.useState(() => new Date().getFullYear());
 
   const [datePickerOpen, setDatePickerOpen] = React.useState(false);
+  const [makeUpSaving, setMakeUpSaving] = React.useState(false);
+  const [cancelMakeUpSaving, setCancelMakeUpSaving] = React.useState(false);
+  const [logicalTodayYmd, setLogicalTodayYmd] = React.useState(() =>
+    getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY)
+  );
+
+  const focusYmd = React.useMemo(() => toYMD(focusDate), [focusDate]);
 
   const reload = React.useCallback(async () => {
     if (!habitId) {
@@ -177,6 +206,8 @@ export default function HabitDetailScreen() {
     }
     setLoading(true);
     try {
+      const boundary = await loadTasksDayBoundary();
+      setLogicalTodayYmd(getLogicalLocalYmd(new Date(), boundary));
       const row = await getHabitById(habitId);
       setHabit(row ?? null);
       if (!row) {
@@ -300,6 +331,78 @@ export default function HabitDetailScreen() {
     setFocusDate(d);
   }, []);
 
+  const handleMakeUpCheckIn = React.useCallback(async () => {
+    if (!habit) return;
+    const boundary = await loadTasksDayBoundary();
+    const todayYmd = getLogicalLocalYmd(new Date(), boundary);
+    setLogicalTodayYmd(todayYmd);
+    const ymd = focusYmd;
+    if (ymd >= todayYmd) {
+      Alert.alert('提示', '补卡仅适用于已过去的日期；今天请在任务页打卡，或先选择更早的日期。');
+      return;
+    }
+    const createdDay = habitCreatedLocalDay(habit.created_at);
+    if (createdDay && startOfLocalDay(focusDate).getTime() < createdDay.getTime()) {
+      Alert.alert('提示', '所选日期早于本习惯的创建时间，无法补卡。');
+      return;
+    }
+    setMakeUpSaving(true);
+    try {
+      const { increased } = await incrementHabitCheckInForDay(habit.id, ymd, dailyGoal);
+      if (!increased) {
+        Alert.alert(
+          '已达上限',
+          dailyGoal != null
+            ? `该习惯每日最多 ${dailyGoal} 次，${ymd} 当日已记满。`
+            : '当日次数未增加（可能已达上限）。'
+        );
+        return;
+      }
+      void playHabitCheckInDing();
+      await reload();
+    } catch (e) {
+      console.warn('习惯补卡失败', e);
+      Alert.alert('操作失败', '补卡未保存，请稍后重试。');
+    } finally {
+      setMakeUpSaving(false);
+    }
+  }, [habit, focusDate, focusYmd, dailyGoal, reload]);
+
+  const handleCancelMakeUpCheckIn = React.useCallback(async () => {
+    if (!habit) return;
+    const boundary = await loadTasksDayBoundary();
+    const todayYmd = getLogicalLocalYmd(new Date(), boundary);
+    setLogicalTodayYmd(todayYmd);
+    const ymd = focusYmd;
+    if (ymd >= todayYmd) {
+      Alert.alert('提示', '取消补卡仅适用于已过去的日期；今天的打卡请在任务页双击图标撤销。');
+      return;
+    }
+    const dbBefore = await getHabitCheckInDbCountForDay(habit.id, ymd);
+    if (dbBefore <= 0) {
+      const displayCnt = checkIns[ymd] ?? 0;
+      if (displayCnt > 0) {
+        Alert.alert(
+          '无法撤销',
+          '该日次数来自旧版本地数据，未写入打卡表。如需调整请编辑习惯或清除备注中的历史打卡字段。'
+        );
+      } else {
+        Alert.alert('提示', '该日暂无打卡记录可撤销。');
+      }
+      return;
+    }
+    setCancelMakeUpSaving(true);
+    try {
+      await decrementHabitCheckInForDay(habit.id, ymd);
+      await reload();
+    } catch (e) {
+      console.warn('取消补卡失败', e);
+      Alert.alert('操作失败', '未能撤销，请稍后重试。');
+    } finally {
+      setCancelMakeUpSaving(false);
+    }
+  }, [habit, focusYmd, checkIns, reload]);
+
   if (!habitId) {
     return (
       <View style={styles.safe}>
@@ -307,7 +410,7 @@ export default function HabitDetailScreen() {
           <Pressable onPress={() => router.back()} style={styles.iconBtn}>
             <MaterialIcons name="arrow-back" size={22} color={TEXT_MAIN} />
           </Pressable>
-          <Text style={styles.topTitle}>任务详情</Text>
+          <Text style={styles.topTitle}>{SCREEN_TITLE}</Text>
           <View style={{ width: 38 }} />
         </View>
         <View style={[styles.centerMsg, { paddingTop: scrollTopPad }]}>
@@ -324,7 +427,7 @@ export default function HabitDetailScreen() {
           <Pressable onPress={() => router.back()} style={styles.iconBtn}>
             <MaterialIcons name="arrow-back" size={22} color={TEXT_MAIN} />
           </Pressable>
-          <Text style={styles.topTitle}>任务详情</Text>
+          <Text style={styles.topTitle}>{SCREEN_TITLE}</Text>
           <View style={{ width: 38 }} />
         </View>
         <View style={[styles.centerMsg, { paddingTop: scrollTopPad }]}>
@@ -334,15 +437,13 @@ export default function HabitDetailScreen() {
     );
   }
 
-  const focusYmd = toYMD(focusDate);
-
   return (
     <View style={styles.safe}>
       <View style={[styles.topBar, styles.topBarFixed, { paddingTop: insets.top + 10 }]}>
         <Pressable onPress={() => router.back()} style={styles.iconBtn}>
           <MaterialIcons name="arrow-back" size={22} color={TEXT_MAIN} />
         </Pressable>
-        <Text style={styles.topTitle}>任务详情</Text>
+        <Text style={styles.topTitle}>{SCREEN_TITLE}</Text>
         <Pressable onPress={goEdit} style={styles.iconBtn}>
           <MaterialIcons name="edit" size={20} color={TEXT_MUTED} />
         </Pressable>
@@ -371,6 +472,52 @@ export default function HabitDetailScreen() {
             <Text style={styles.dateChipText}>{focusYmd}</Text>
             <MaterialIcons name="chevron-right" size={14} color={BLUE} />
           </Pressable>
+        </View>
+
+        <View style={styles.makeUpBlock}>
+          <Text style={styles.makeUpHint}>
+            {focusYmd} 已记 <Text style={styles.makeUpHintStrong}>{checkIns[focusYmd] ?? 0}</Text> 次
+            {dailyGoal != null ? ` / 日上限 ${dailyGoal}` : ''}
+          </Text>
+          {focusYmd >= logicalTodayYmd ? (
+            <Text style={styles.makeUpSub}>补卡、取消补卡仅针对「逻辑日」之前的日期（与任务页日界一致）。</Text>
+          ) : null}
+          <View style={styles.makeUpBtnRow}>
+            <Pressable
+              style={[
+                styles.makeUpBtn,
+                styles.makeUpBtnPrimary,
+                (makeUpSaving || focusYmd >= logicalTodayYmd) && styles.makeUpBtnDisabled,
+              ]}
+              disabled={makeUpSaving || focusYmd >= logicalTodayYmd}
+              onPress={() => void handleMakeUpCheckIn()}>
+              {makeUpSaving ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <MaterialIcons name="event-available" size={18} color="#fff" />
+                  <Text style={styles.makeUpBtnText}>补卡</Text>
+                </>
+              )}
+            </Pressable>
+            <Pressable
+              style={[
+                styles.makeUpBtn,
+                styles.makeUpBtnCancel,
+                (cancelMakeUpSaving || focusYmd >= logicalTodayYmd) && styles.makeUpBtnCancelDisabled,
+              ]}
+              disabled={cancelMakeUpSaving || focusYmd >= logicalTodayYmd}
+              onPress={() => void handleCancelMakeUpCheckIn()}>
+              {cancelMakeUpSaving ? (
+                <ActivityIndicator color={RED_TEXT} size="small" />
+              ) : (
+                <>
+                  <MaterialIcons name="undo" size={18} color={RED_TEXT} />
+                  <Text style={styles.makeUpBtnCancelText}>取消补卡</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.statsRow}>
@@ -699,6 +846,31 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   dateChipText: { fontSize: 12, color: BLUE, fontWeight: '600' },
+  makeUpBlock: { gap: 8, paddingVertical: 2 },
+  makeUpHint: { fontSize: 13, color: TEXT_MUTED },
+  makeUpHintStrong: { fontWeight: '700', color: TEXT_MAIN },
+  makeUpSub: { fontSize: 11, color: TEXT_MUTED, lineHeight: 16 },
+  makeUpBtnRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  makeUpBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: 12,
+    minHeight: 44,
+  },
+  makeUpBtnPrimary: { backgroundColor: BLUE },
+  makeUpBtnDisabled: { backgroundColor: '#94a3b8', opacity: 0.85 },
+  makeUpBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  makeUpBtnCancel: {
+    backgroundColor: RED_BG,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: RED_TEXT,
+  },
+  makeUpBtnCancelDisabled: { opacity: 0.45 },
+  makeUpBtnCancelText: { color: RED_TEXT, fontWeight: '700', fontSize: 14 },
   statsRow: { flexDirection: 'row', gap: 10 },
   statCard: { flex: 1, borderRadius: 12, padding: 14 },
   statValue: { fontSize: 26, fontWeight: '600', color: GREEN_TEXT, marginBottom: 4 },

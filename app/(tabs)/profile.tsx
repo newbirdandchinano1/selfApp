@@ -1,12 +1,19 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
+import { getRollingSevenDayRange } from '@/lib/repositories/insights/weekly-review';
 import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
+import { getWeeklyReviewConfiguredWeekday, WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/lib/weekly-review-settings';
 import type { WeeklyReviewJournalRow } from '@/lib/repositories/insights/weekly-review-journal.types';
 import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { listVisions } from '@/lib/repositories/visions/vision';
 import { visionRowToProfileCarouselItem } from '@/lib/repositories/visions/vision-present';
+import {
+  createEmptyUserSkillsSnapshot,
+  loadUserSkills,
+  skillsProfilePreviewSubtitle,
+  type UserSkillsSnapshot,
+} from '@/lib/user-skills';
 import { getDefaultUser } from '@/lib/repositories/users/user';
 import type { ProfileVisionCarouselItem } from '@/lib/visions-registry';
 import type { UserRow } from '@/lib/repositories/users/user.types';
@@ -37,11 +44,6 @@ const WISH_PROFILE_PREVIEW_MAX = 12;
 function formatWishCny(value: number): string {
   if (!Number.isFinite(value) || value < 0) return '¥ 0';
   return `¥ ${Math.round(value).toLocaleString('zh-CN')}`;
-}
-
-function formatWeekRangeLabel(): string {
-  const { start, end } = getCurrentWeekRange();
-  return `${start.getMonth() + 1}月${start.getDate()}日 – ${end.getMonth() + 1}月${end.getDate()}日`;
 }
 
 function weeklyJournalStatusText(row: WeeklyReviewJournalRow | null): string {
@@ -91,6 +93,7 @@ export default function ProfileScreen() {
   const avatarUrl = user?.avatar_uri ? { uri: user.avatar_uri } : require('../../assets/profile/avatar.png');
   const visionUrl = require('../../assets/profile/vision.png');
   const progressBgUrl = require('../../assets/profile/progress.png');
+  const visionSectionYear = new Date().getFullYear();
   const displayName = user?.name?.trim() || '默认用户';
   const heightText = user?.height ? String(user.height) : '0';
   const weightText = user?.weight ? String(user.weight) : '0';
@@ -118,15 +121,50 @@ export default function ProfileScreen() {
 
   const [weeklyJournal, setWeeklyJournal] = useState<WeeklyReviewJournalRow | null | undefined>(undefined);
   const [weeklyJournalLoading, setWeeklyJournalLoading] = useState(true);
+  const [weeklyProfileRangeLabel, setWeeklyProfileRangeLabel] = useState('');
+  const [weeklyProfileGate, setWeeklyProfileGate] = useState<'loading' | 'ok' | 'no_setting' | 'wrong_day'>('loading');
+
+  const [userSkills, setUserSkills] = useState<UserSkillsSnapshot | null>(null);
+
+  const loadUserSkillsSnapshot = useCallback(async () => {
+    try {
+      const s = await loadUserSkills();
+      setUserSkills(s);
+    } catch {
+      setUserSkills(createEmptyUserSkillsSnapshot());
+    }
+  }, []);
 
   const loadWeeklyJournal = useCallback(async () => {
     setWeeklyJournalLoading(true);
+    setWeeklyProfileGate('loading');
+    setWeeklyProfileRangeLabel('');
     try {
-      const ymd = getCurrentWeekRange().startYmd;
-      const row = await getWeeklyReviewJournalByWeek(ymd);
+      const dow = await getWeeklyReviewConfiguredWeekday();
+      const today = new Date();
+      if (dow === null) {
+        setWeeklyJournal(null);
+        setWeeklyProfileRangeLabel('待设置复盘日');
+        setWeeklyProfileGate('no_setting');
+        return;
+      }
+      if (today.getDay() !== dow) {
+        setWeeklyJournal(null);
+        setWeeklyProfileRangeLabel(`每周「${WEEKLY_REVIEW_WEEKDAY_LABELS[dow]}」`);
+        setWeeklyProfileGate('wrong_day');
+        return;
+      }
+      const r = getRollingSevenDayRange(today);
+      setWeeklyProfileRangeLabel(
+        `${r.start.getMonth() + 1}月${r.start.getDate()}日 – ${r.end.getMonth() + 1}月${r.end.getDate()}日`,
+      );
+      const row = await getWeeklyReviewJournalByWeek(r.startYmd);
       setWeeklyJournal(row ?? null);
+      setWeeklyProfileGate('ok');
     } catch {
       setWeeklyJournal(null);
+      setWeeklyProfileRangeLabel('');
+      setWeeklyProfileGate('ok');
     } finally {
       setWeeklyJournalLoading(false);
     }
@@ -217,7 +255,8 @@ export default function ProfileScreen() {
       void loadProfileVisions();
       void loadProfileWishItems();
       void loadWeeklyJournal();
-    }, [loadUser, loadProfileVisions, loadProfileWishItems, loadWeeklyJournal]),
+      void loadUserSkillsSnapshot();
+    }, [loadUser, loadProfileVisions, loadProfileWishItems, loadWeeklyJournal, loadUserSkillsSnapshot]),
   );
 
   const healthBgUrl = require('../../assets/profile/health.png');
@@ -355,8 +394,8 @@ export default function ProfileScreen() {
           ]}>
           <View style={styles.sectionHead}>
             <View>
-              <Text style={[styles.kicker, { color: outline }]}>VISION WALL</Text>
-              <Text style={[styles.sectionTitle, { color: text }]}>愿景墙</Text>
+              <Text style={[styles.kicker, { color: outline }]}>YEAR GOALS</Text>
+              <Text style={[styles.sectionTitle, { color: text }]}>{visionSectionYear}年总目标</Text>
             </View>
             <Pressable onPress={() => router.push('/vision-wall')}>
               <Text style={[styles.moreText, { color: primary }]}>查看全部</Text>
@@ -396,13 +435,13 @@ export default function ProfileScreen() {
                 }}
               >
                 <Text style={{ color: outline, fontSize: 15, fontWeight: '600', textAlign: 'center', lineHeight: 22 }}>
-                  暂无愿景，可在愿景墙或此处创建第一条。
+                  暂无总目标，可在此创建第一条。
                 </Text>
                 <Pressable
                   onPress={() => router.push('/vision-create')}
                   style={({ pressed }) => [{ marginTop: 16, opacity: pressed ? 0.85 : 1 }]}
                 >
-                  <Text style={{ color: primary, fontSize: 15, fontWeight: '800' }}>创建愿景</Text>
+                  <Text style={{ color: primary, fontSize: 15, fontWeight: '800' }}>创建总目标</Text>
                 </Pressable>
               </View>
             ) : (
@@ -629,9 +668,15 @@ export default function ProfileScreen() {
               <View style={styles.weeklyEntryBody}>
                 <MaterialIcons name="edit-note" size={28} color={primary} />
                 <View style={{ flex: 1, gap: 6 }}>
-                  <Text style={[styles.weeklyEntryRange, { color: outline }]}>{formatWeekRangeLabel()}</Text>
+                  <Text style={[styles.weeklyEntryRange, { color: outline }]}>
+                    {weeklyJournalLoading ? '加载中…' : weeklyProfileRangeLabel || '近七天复盘'}
+                  </Text>
                   {weeklyJournalLoading ? (
                     <Text style={[styles.weeklyEntryMeta, { color: outline }]}>加载中…</Text>
+                  ) : weeklyProfileGate === 'no_setting' ? (
+                    <Text style={[styles.weeklyEntryMeta, { color: text }]}>请先在复盘页设置「每周复盘日」</Text>
+                  ) : weeklyProfileGate === 'wrong_day' ? (
+                    <Text style={[styles.weeklyEntryMeta, { color: text }]}>今天不可填写，请在设定的星期打开</Text>
                   ) : (
                     <Text style={[styles.weeklyEntryMeta, { color: text }]}>
                       {weeklyJournalStatusText(weeklyJournal ?? null)}
@@ -639,6 +684,44 @@ export default function ProfileScreen() {
                   )}
                   <Text style={[styles.weeklyEntryHint, { color: outline }]}>
                     按五大板块书写复盘，自评执行分后可生成 AI 建议，并记录是否调整任务、存钱与时间分配。
+                  </Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={26} color={outline} />
+              </View>
+            </View>
+          </Pressable>
+
+          <View style={styles.sectionHead}>
+            <View>
+              <Text style={[styles.kicker, { color: outline }]}>SKILLS</Text>
+              <Text style={[styles.sectionTitle, { color: text }]}>我的技能</Text>
+            </View>
+            <Pressable onPress={() => router.push('/my-skills')} hitSlop={8}>
+              <Text style={[styles.moreText, { color: primary }]}>管理</Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            onPress={() => router.push('/my-skills')}
+            style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+            <View
+              style={[
+                styles.weeklyEntryCard,
+                {
+                  backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#ffffff',
+                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)',
+                },
+              ]}>
+              <View style={[styles.weeklyEntryAccent, { backgroundColor: secondary }]} />
+              <View style={styles.weeklyEntryBody}>
+                <MaterialIcons name="psychology" size={28} color={secondary} />
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={[styles.weeklyEntryRange, { color: outline }]}>自定义维度 · AI 评估</Text>
+                  <Text style={[styles.weeklyEntryMeta, { color: text }]}>
+                    {userSkills ? skillsProfilePreviewSubtitle(userSkills) : '加载中…'}
+                  </Text>
+                  <Text style={[styles.weeklyEntryHint, { color: outline }]}>
+                    为每个技能写下自我描述后，可一键请求智谱模型给出逐条评估、综合建议与总体能力分析。
                   </Text>
                 </View>
                 <MaterialIcons name="chevron-right" size={26} color={outline} />

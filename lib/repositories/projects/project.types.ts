@@ -9,6 +9,8 @@ export type ProjectRow = {
   status: ProjectStatus;
   note: string | null;
   due_date: string | null;
+  /** 最近一次进入收集箱的时间（SQLite datetime 文本）；出箱后清空 */
+  inbox_entered_at: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;

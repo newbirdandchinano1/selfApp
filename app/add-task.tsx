@@ -318,6 +318,7 @@ export default function AddTaskScreen() {
           extra_data: JSON.stringify({
             reminder: reminderText || '',
             repeat: repeatText || '',
+            schedule: scheduleMeta,
           }),
         });
         router.back();

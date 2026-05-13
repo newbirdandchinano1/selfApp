@@ -2,13 +2,26 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import * as Notifications from 'expo-notifications';
+import { ActivityIndicator, Platform, Pressable, Text, View } from 'react-native';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { initDatabase } from '@/lib/database';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
+import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
+
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    }),
+  });
+}
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -25,6 +38,9 @@ export default function RootLayout() {
       try {
         await initDatabase();
         await loadPersistedIntakeTargets();
+        if (Platform.OS !== 'web') {
+          void ensurePersonaPortraitsForTodayInBackground();
+        }
         if (mounted) {
           setDbError(null);
           setIsDbReady(true);
@@ -59,6 +75,9 @@ export default function RootLayout() {
                     try {
                       await initDatabase();
                       await loadPersistedIntakeTargets();
+                      if (Platform.OS !== 'web') {
+                        void ensurePersonaPortraitsForTodayInBackground();
+                      }
                       setIsDbReady(true);
                     } catch (e) {
                       console.warn('数据库初始化失败', e);
@@ -113,6 +132,7 @@ export default function RootLayout() {
             <Stack.Screen name="edit-wish-item/[id]" />
             <Stack.Screen name="persona-detail/[slug]" />
             <Stack.Screen name="weekly-review" />
+            <Stack.Screen name="my-skills" />
             <Stack.Screen name="zhipu-api-test" />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />

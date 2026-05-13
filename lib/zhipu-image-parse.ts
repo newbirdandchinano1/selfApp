@@ -524,6 +524,261 @@ export async function analyzeFinanceBillSummaryFromText(
   return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
 }
 
+/** 人格画像页：智谱 glm-4-flash 返回的统一 JSON 形状 */
+export type PersonaPortraitAiData = {
+  hero_kicker: string;
+  hero_main: string;
+  hero_caption: string;
+  overview: string;
+  bullets: string[];
+  stats: { label: string; value: string; hint: string }[];
+  milestones: string[];
+  dims: { title: string; sub: string }[];
+  /** 综合洞察（ai-insight）主段落；其它 slug 可与 overview 配合 */
+  ai_quote: string;
+};
+
+const PERSONA_PORTRAIT_JSON_HINT = `{"hero_kicker":"","hero_main":"","hero_caption":"","overview":"","bullets":[],"stats":[],"milestones":[],"dims":[],"ai_quote":""}`;
+
+export type GeneratePersonaPortraitOptions = {
+  apiKey: string;
+  /** plan-completion | body-composition | hydration | savings | ai-insight */
+  personaSlug: string;
+  /** 中文本地数据摘要，由调用方组装 */
+  contextText: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+export type GeneratePersonaPortraitResult =
+  | { ok: true; data: PersonaPortraitAiData; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function clipPersonaStr(s: string, max: number): string {
+  const t = s.trim();
+  if (!t) return '';
+  return t.length <= max ? t : `${t.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function normalizePersonaPortraitJson(parsed: unknown): PersonaPortraitAiData {
+  const o = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+  const topStr = (key: string, max: number, fallback: string) => {
+    const v = o[key];
+    const s = typeof v === 'string' ? v.trim() : v != null ? String(v).trim() : '';
+    return s ? clipPersonaStr(s, max) : fallback;
+  };
+
+  let bullets: string[] = [];
+  if (Array.isArray(o.bullets)) {
+    bullets = o.bullets
+      .map(x => (typeof x === 'string' ? x : String(x)).trim())
+      .filter(Boolean)
+      .slice(0, 4)
+      .map(s => clipPersonaStr(s, 180));
+  }
+
+  const stats: { label: string; value: string; hint: string }[] = [];
+  if (Array.isArray(o.stats)) {
+    for (const row of o.stats.slice(0, 3)) {
+      if (!row || typeof row !== 'object') continue;
+      const r = row as Record<string, unknown>;
+      const label = typeof r.label === 'string' ? clipPersonaStr(r.label, 28) : clipPersonaStr(String(r.label ?? ''), 28);
+      const value = typeof r.value === 'string' ? clipPersonaStr(r.value, 24) : clipPersonaStr(String(r.value ?? ''), 24);
+      const hint = typeof r.hint === 'string' ? clipPersonaStr(r.hint, 48) : clipPersonaStr(String(r.hint ?? ''), 48);
+      if (label || value || hint) stats.push({ label: label || '项', value: value || '—', hint });
+    }
+  }
+
+  let milestones: string[] = [];
+  if (Array.isArray(o.milestones)) {
+    milestones = o.milestones
+      .map(x => clipPersonaStr(typeof x === 'string' ? x : String(x), 140))
+      .filter(Boolean)
+      .slice(0, 5);
+  }
+
+  const dims: { title: string; sub: string }[] = [];
+  if (Array.isArray(o.dims)) {
+    for (const row of o.dims.slice(0, 5)) {
+      if (!row || typeof row !== 'object') continue;
+      const r = row as Record<string, unknown>;
+      const title = typeof r.title === 'string' ? clipPersonaStr(r.title, 36) : clipPersonaStr(String(r.title ?? ''), 36);
+      const sub = typeof r.sub === 'string' ? clipPersonaStr(r.sub, 90) : clipPersonaStr(String(r.sub ?? ''), 90);
+      if (title || sub) dims.push({ title: title || '维度', sub });
+    }
+  }
+
+  return {
+    hero_kicker: topStr('hero_kicker', 28, 'INSIGHT'),
+    hero_main: topStr('hero_main', 40, '—'),
+    hero_caption: topStr('hero_caption', 100, ''),
+    overview: topStr('overview', 900, ''),
+    bullets,
+    stats,
+    milestones,
+    dims,
+    ai_quote: topStr('ai_quote', 520, ''),
+  };
+}
+
+function personaPortraitHasUsefulBody(d: PersonaPortraitAiData): boolean {
+  if (d.overview.trim().length >= 12) return true;
+  if (d.ai_quote.trim().length >= 12) return true;
+  if (d.bullets.some(b => b.trim().length >= 8)) return true;
+  return false;
+}
+
+/**
+ * 根据本地摘要生成「AI 人格画像」展示用 JSON（智谱 glm-4-flash）。
+ * 与账单分析相同：串行队列、1305 重试、JSON 围栏剥离。
+ */
+export async function generatePersonaPortraitFromContext(
+  options: GeneratePersonaPortraitOptions,
+): Promise<GeneratePersonaPortraitResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 10);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 900);
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const slug = options.personaSlug.trim();
+  if (!slug) {
+    return { ok: false, error: 'personaSlug 为空', attempts: 0 };
+  }
+  const text = options.contextText.trim();
+  if (!text) {
+    return { ok: false, error: '数据摘要为空', attempts: 0 };
+  }
+
+  const payload = JSON.stringify({
+    model: ZHIPU_GLM_4_FLASH_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: `你是自我管理类 App 里的「人格画像」文案生成器。用户会提供 persona_slug 与一段「本地真实数据摘要」（中文，已聚合脱敏）。
+你必须只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
+
+硬性规则：
+1) 语气：简体中文、温暖、具体、像懂心理学的朋友；避免说教与恐吓式措辞。
+2) 事实：不要编造摘要里未出现的具体金额、天数、百分比、体脂率、诊断；摘要不足时坦诚样本少，并给温和、通用的微习惯建议。
+3) 医疗：身体成分、饮水、营养相关文案仅供生活方式参考，不得给出疾病诊断或用药建议。
+4) 字段必须齐全（可填空字符串或空数组），类型与示例一致。
+
+persona_slug 含义（决定侧重点，但仍需填满所有字段；不适用的数组可给 0～3 条或留空数组）：
+- plan-completion：任务完成、青蛙优先级、闭环节奏。
+- body-composition：身高体重 BMI、身体自律侧写（非医疗）。
+- hydration：饮水均值与目标、节律与自我照料。
+- savings：储蓄/记账/延迟满足倾向（基于摘要中的数字）。
+- ai-insight：综合其它维度的一段「总评」式洞察，dims 给 3 条维度拆解。
+
+输出形状示例（请替换内容）：${PERSONA_PORTRAIT_JSON_HINT}`,
+      },
+      {
+        role: 'user',
+        content: `persona_slug=${slug}\n\n以下是用户本地数据摘要：\n\n${text}`,
+      },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.35,
+    max_tokens: 1400,
+  });
+
+  let lastError = '未知错误';
+  let lastHttp = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let response: Response;
+    try {
+      response = await runZhipuChatExclusive(() =>
+        fetch(ZHIPU_CHAT_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        }),
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        attempts: attempt,
+        httpStatus: 0,
+      };
+    }
+
+    const httpStatus = response.status;
+    lastHttp = httpStatus;
+    const rawText = await response.text();
+    let body: unknown = rawText;
+    try {
+      body = JSON.parse(rawText) as unknown;
+    } catch {
+      body = rawText;
+    }
+
+    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+      await sleep(retryDelayMs);
+      continue;
+    }
+
+    if (!response.ok) {
+      const msg =
+        typeof body === 'object' && body !== null && 'error' in body
+          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
+          : response.statusText;
+      lastError = msg;
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    const content = extractMessageContentFromZhipuBody(body);
+    if (!content) {
+      lastError = '响应中无有效 content';
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    let parsed: unknown;
+    try {
+      const cleaned = stripMarkdownJsonFence(content);
+      parsed = JSON.parse(cleaned) as unknown;
+    } catch {
+      lastError = '模型返回的不是合法 JSON';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
+    }
+
+    const data = normalizePersonaPortraitJson(parsed);
+    if (!personaPortraitHasUsefulBody(data)) {
+      lastError = '模型返回内容过短或无效';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
+    }
+
+    return { ok: true, data, rawContent: content.trim(), attempts: attempt };
+  }
+
+  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+}
+
 const FINANCE_TXN_COMMENT_JSON_HINT = `{"comment":"一句口语化中文点评，约20～40字"}`;
 
 export type AnalyzeFinanceTxnCommentFromTextOptions = {
@@ -680,6 +935,227 @@ export async function analyzeFinanceTxnCommentFromText(
     }
 
     return { ok: true, comment, rawContent: content.trim(), attempts: attempt };
+  }
+
+  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+}
+
+const USER_SKILLS_PORTFOLIO_JSON_HINT = `{"per_skill":[{"skill_id":"","evaluation":"","suggestions":""}],"overall_suggestions":"","profile_analysis":""}`;
+
+export type UserSkillAiPortfolioSkillRow = {
+  skill_id: string;
+  evaluation: string;
+  suggestions: string;
+};
+
+export type UserSkillAiPortfolioPayload = {
+  per_skill: UserSkillAiPortfolioSkillRow[];
+  overall_suggestions: string;
+  profile_analysis: string;
+};
+
+export type AnalyzeUserSkillsPortfolioFromTextOptions = {
+  apiKey: string;
+  /** 展示用称呼 */
+  userDisplayName: string;
+  /** 待评估的每条技能（须含稳定 skill_id） */
+  lines: { skill_id: string; dimension: string; name: string; description: string }[];
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+export type AnalyzeUserSkillsPortfolioFromTextResult =
+  | { ok: true; data: UserSkillAiPortfolioPayload; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function normalizeUserSkillAiPortfolioJson(
+  parsed: unknown,
+  expectedSkillIds: string[],
+): UserSkillAiPortfolioPayload | null {
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const o = parsed as Record<string, unknown>;
+  const overall = typeof o.overall_suggestions === 'string' ? o.overall_suggestions.trim() : '';
+  const profile = typeof o.profile_analysis === 'string' ? o.profile_analysis.trim() : '';
+  const rawArr = o.per_skill;
+  const arr = Array.isArray(rawArr) ? rawArr : [];
+  const byId = new Map<string, UserSkillAiPortfolioSkillRow>();
+  for (const item of arr) {
+    if (typeof item !== 'object' || item === null) continue;
+    const x = item as Record<string, unknown>;
+    const id = typeof x.skill_id === 'string' ? x.skill_id.trim() : '';
+    if (!id) continue;
+    const evaluation = typeof x.evaluation === 'string' ? x.evaluation.trim() : '';
+    const suggestions = typeof x.suggestions === 'string' ? x.suggestions.trim() : '';
+    byId.set(id, { skill_id: id, evaluation, suggestions });
+  }
+  const per_skill: UserSkillAiPortfolioSkillRow[] = expectedSkillIds.map(id => {
+    const row = byId.get(id);
+    if (row && (row.evaluation.length > 0 || row.suggestions.length > 0)) return row;
+    return {
+      skill_id: id,
+      evaluation: row?.evaluation?.trim() ?? '',
+      suggestions: row?.suggestions?.trim() ?? '（模型未返回该技能的有效条目，可稍后重试。）',
+    };
+  });
+  if (!overall && !profile && per_skill.every(p => !p.evaluation && !p.suggestions)) return null;
+  return {
+    per_skill,
+    overall_suggestions: overall.length > 0 ? overall : '（暂无综合建议，可稍后重试。）',
+    profile_analysis: profile.length > 0 ? profile : '（暂无总体分析，可稍后重试。）',
+  };
+}
+
+/**
+ * 根据用户自报的「维度—技能—描述」生成逐技能评估与综合建议（智谱 glm-4-flash，JSON）。
+ */
+export async function analyzeUserSkillsPortfolioFromText(
+  options: AnalyzeUserSkillsPortfolioFromTextOptions,
+): Promise<AnalyzeUserSkillsPortfolioFromTextResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 6);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 900);
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const lines = options.lines.filter(
+    l =>
+      l.skill_id.trim().length > 0 &&
+      l.dimension.trim().length > 0 &&
+      l.name.trim().length > 0 &&
+      l.description.trim().length > 0,
+  );
+  if (lines.length === 0) {
+    return { ok: false, error: '没有可评估的技能条目', attempts: 0 };
+  }
+  const expectedIds = lines.map(l => l.skill_id.trim());
+  const display = options.userDisplayName.trim() || '用户';
+  const bodyText = lines
+    .map(
+      l =>
+        `【维度】${l.dimension.trim()}\n【技能】${l.name.trim()}\n【skill_id】${l.skill_id.trim()}\n【自我描述】${l.description.trim()}`,
+    )
+    .join('\n\n---\n\n');
+
+  const userBlock = `用户称呼：${display}\n\n以下是用户自报的各维度技能与自我描述（skill_id 必须原样回填到 JSON 的 per_skill 中）：\n\n${bodyText}`;
+
+  const payload = JSON.stringify({
+    model: ZHIPU_GLM_4_FLASH_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: `你是职业发展教练与技能评估顾问。用户会提供多条「维度—技能名称—自我描述」，每条有唯一 skill_id。
+只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
+必须包含字段：
+- per_skill：数组；对输入中每一条技能各输出一项，且 skill_id 必须与输入完全一致。
+  每项含 evaluation（字符串，2～5 句中文，客观评价当前水平、亮点与不足）、suggestions（字符串，2～5 句中文，具体可执行的提升建议）。
+- overall_suggestions（字符串，5～10 句中文）：跨技能组合的发展路径、学习顺序与练习方式等综合建议。
+- profile_analysis（字符串，6～12 句中文）：对用户能力结构、优势短板、适合角色类型与中长期成长方向的总体分析。
+
+要求：基于用户自述推断，不要捏造用户未提及的具体公司/证书/项目；语气专业、友善、具体。
+
+输出形状示例（内容须替换为你的生成）：${USER_SKILLS_PORTFOLIO_JSON_HINT}`,
+      },
+      {
+        role: 'user',
+        content: userBlock,
+      },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.35,
+    max_tokens: 6000,
+  });
+
+  let lastError = '未知错误';
+  let lastHttp = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let response: Response;
+    try {
+      response = await runZhipuChatExclusive(() =>
+        fetch(ZHIPU_CHAT_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        }),
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        attempts: attempt,
+        httpStatus: 0,
+      };
+    }
+
+    const httpStatus = response.status;
+    lastHttp = httpStatus;
+    const rawText = await response.text();
+    let body: unknown = rawText;
+    try {
+      body = JSON.parse(rawText) as unknown;
+    } catch {
+      body = rawText;
+    }
+
+    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+      await sleep(retryDelayMs);
+      continue;
+    }
+
+    if (!response.ok) {
+      const msg =
+        typeof body === 'object' && body !== null && 'error' in body
+          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
+          : response.statusText;
+      lastError = msg;
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    const content = extractMessageContentFromZhipuBody(body);
+    if (!content) {
+      lastError = '响应中无有效 content';
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    let parsed: unknown;
+    try {
+      const cleaned = stripMarkdownJsonFence(content);
+      parsed = JSON.parse(cleaned) as unknown;
+    } catch {
+      lastError = '模型返回的不是合法 JSON';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
+    }
+
+    const data = normalizeUserSkillAiPortfolioJson(parsed, expectedIds);
+    if (!data) {
+      lastError = '模型未返回有效的技能评估结构';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
+    }
+
+    return { ok: true, data, rawContent: content.trim(), attempts: attempt };
   }
 
   return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };

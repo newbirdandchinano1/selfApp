@@ -1,22 +1,22 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
-  getFinanceAccounts,
-  getFinanceDailySummariesByDateRange,
-  getFinanceFlowCategories,
-  getFinanceTransactionsByYmd,
+    getFinanceAccounts,
+    getFinanceDailySummariesByDateRange,
+    getFinanceFlowCategories,
+    getFinanceTransactionsByYmd,
 } from '@/lib/repositories/finance/finance';
 import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import {
-  getHealthIntakeTotalsForUserOnDate,
-  getHealthRecordsForUserOnDate,
+    getHealthIntakeTotalsForUserOnDate,
+    getHealthRecordsForUserOnDate,
 } from '@/lib/repositories/health/health';
 import type { HealthIntakeDayTotals, HealthRecordRow } from '@/lib/repositories/health/health.types';
 import {
-  getTaskCategories,
-  getTaskDueDayAggregatesForRange,
-  getTasksDueOnDate,
-  type TaskDueDayAggregateRow,
+    getTaskCategories,
+    getTaskDueDayAggregatesForRange,
+    getTasksDueOnDate,
+    type TaskDueDayAggregateRow,
 } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -25,14 +25,14 @@ import type { DimensionValue } from 'react-native';
 import { ActivityIndicator, Dimensions, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
-  Easing,
-  FadeInDown,
-  FadeInUp,
-  LinearTransition,
-  runOnJS,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
+    Easing,
+    FadeInDown,
+    FadeInUp,
+    LinearTransition,
+    runOnJS,
+    useAnimatedStyle,
+    useSharedValue,
+    withTiming,
 } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -93,7 +93,7 @@ function formatTaskDueMeta(due: string | null, categoryLabel: string) {
 export default function CalendarScreen() {
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const baseTheme = Colors[colorScheme ?? 'light'];
+  const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
 
   const [selectedDay, setSelectedDay] = useState<number | null>(() => {
@@ -277,21 +277,22 @@ export default function CalendarScreen() {
     opacity: 0.86 + backdropOpacity.value * 0.14,
   }));
 
-  const bg = baseTheme.background;
-  const surface = baseTheme.surface;
-  const text = baseTheme.text;
-  const textMuted = baseTheme.textSecondary;
-  const outline = isDark ? 'rgba(148,163,184,0.82)' : baseTheme.textSecondary;
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.14)' : 'rgba(148,163,184,0.22)';
+  /** 与任务、我的等 Tab 同一套色板，避免日历页像「未套主题」的默认绿灰界面 */
+  const bg = isDark ? theme.background : '#faf8ff';
+  const surface = isDark ? theme.surface : '#ffffff';
+  const text = isDark ? theme.text : '#131b2e';
+  const textMuted = theme.textSecondary;
+  const outline = isDark ? 'rgba(148,163,184,0.6)' : '#727785';
+  const outlineVariant = isDark ? 'rgba(148,163,184,0.20)' : 'rgba(194,198,214,0.35)';
 
-  const primary = baseTheme.primary;
-  const secondary = isDark ? '#34d399' : '#059669';
-  const tertiary = isDark ? '#fbbf24' : '#d97706';
-  const error = isDark ? '#f87171' : '#dc2626';
+  const primary = isDark ? '#60a5fa' : '#0058be';
+  const secondary = isDark ? '#34d399' : '#006c49';
+  const tertiary = isDark ? '#fbbf24' : '#825100';
+  const error = isDark ? '#f87171' : '#ba1a1a';
 
-  const heat90 = isDark ? 'rgba(16,185,129,0.18)' : 'rgba(16,185,129,0.11)';
-  const heat70 = isDark ? 'rgba(16,185,129,0.10)' : 'rgba(16,185,129,0.07)';
-  const heat40 = isDark ? 'rgba(16,185,129,0.05)' : 'rgba(16,185,129,0.04)';
+  const heat90 = isDark ? 'rgba(96,165,250,0.20)' : 'rgba(0,88,190,0.10)';
+  const heat70 = isDark ? 'rgba(96,165,250,0.12)' : 'rgba(0,88,190,0.06)';
+  const heat40 = isDark ? 'rgba(96,165,250,0.06)' : 'rgba(0,88,190,0.04)';
 
   const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
@@ -378,7 +379,7 @@ export default function CalendarScreen() {
       : null;
 
   const cellBg = (cell: Cell) => {
-    if (cell.kind === 'empty') return isDark ? 'rgba(148,163,184,0.06)' : 'rgba(241,245,249,0.92)';
+    if (cell.kind === 'empty') return isDark ? 'rgba(148,163,184,0.06)' : 'rgba(242,243,255,0.92)';
     if (cell.kind === 'day' && cell.day === selectedDay) return surface;
     if (cell.kind === 'day' && cell.heat === '90') return heat90;
     if (cell.kind === 'day' && cell.heat === '70') return heat70;
@@ -399,7 +400,7 @@ export default function CalendarScreen() {
             <Animated.View
               style={[
                 styles.yearChip,
-                { backgroundColor: isDark ? 'rgba(16,185,129,0.14)' : 'rgba(16,185,129,0.10)' },
+                { backgroundColor: isDark ? 'rgba(96,165,250,0.14)' : 'rgba(0,88,190,0.10)' },
                 animatedMonthLabelStyle,
               ]}>
               <Text style={[styles.yearChipText, { color: primary }]}>{currentYear}</Text>
@@ -451,7 +452,7 @@ export default function CalendarScreen() {
               styles.weekHeader,
               {
                 borderBottomColor: outlineVariant,
-                backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(248,250,252,0.96)',
+                backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(242,243,255,0.96)',
               },
             ]}>
             {weekDays.map((d) => (
@@ -713,7 +714,10 @@ export default function CalendarScreen() {
         </View>
 
         {/* Tab Content */}
-        <ScrollView style={styles.sheetContent} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          style={styles.sheetContent}
+          contentContainerStyle={{ paddingBottom: 28 + Math.max(insets.bottom, 8) }}
+          showsVerticalScrollIndicator={false}>
           {activeTab === 'tasks' && (
             <View style={styles.taskList}>
               {sheetDataLoading ? (

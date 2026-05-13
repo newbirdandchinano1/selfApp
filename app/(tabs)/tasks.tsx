@@ -1,11 +1,19 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
+import {
+  INBOX_PROJECT_CATEGORY_ID,
+  INBOX_PROJECT_CATEGORY_NAME,
+  INBOX_PROJECT_RETENTION_DAYS,
+  isProjectInInboxCategory,
+} from '@/lib/repositories/projects/constants';
 import {
   createProjectCategory,
+  deleteInboxProjectsPastRetentionDays,
   deleteProjectCategory,
+  getProjectById,
   getProjectCategories,
   getProjects,
+  updateProject,
   updateProjectCategory,
 } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
@@ -27,11 +35,21 @@ import {
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import {
+  DEFAULT_TASKS_DAY_BOUNDARY,
+  formatTasksDayBoundaryLabel,
+  getLogicalLocalYmd,
+  loadTasksDayBoundary,
+  saveTasksDayBoundary,
+  type TasksDayBoundary,
+} from '@/lib/tasks-logical-day';
 import {
   Alert,
   Animated,
@@ -58,7 +76,7 @@ const HABIT_GRID_GAP = 16;
 const HABIT_GRID_COLUMNS = 4;
 
 /** 无项目待办标题长度上限（与 add-task 页面一致，避免列表与详情不一致） */
-const STANDALONE_TODO_TITLE_MAX = 30;
+const STANDALONE_TODO_TITLE_MAX = 50;
 
 function PulseDot({ color }: { color: string }) {
   const scale = React.useRef(new Animated.Value(1)).current;
@@ -243,6 +261,8 @@ type HabitSection = {
     dailyGoalMax: number | null;
     /** `extra_data.habitKind`：养成 / 戒除 */
     kind: HabitKind;
+    /** 用于按 `schedule` 判断今日是否在循环打卡日 */
+    extraData: string | null;
   }>;
 };
 
@@ -257,6 +277,71 @@ function parseHabitDailyGoalMax(extraData: string | null): number | null {
   } catch {
     return null;
   }
+}
+
+/** 与 `app/add-habit.tsx` 中 `schedule.activeTab` 一致 */
+type HabitCycleTab = '每周定期' | '每周N天' | '每月定期' | '每月N天';
+
+const HABIT_CN_WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
+
+type HabitScheduleMeta = {
+  activeTab?: HabitCycleTab | string;
+  selectedDays?: unknown;
+  weeklyNDays?: unknown;
+  monthlyFilter?: unknown;
+  monthlySpecificDays?: unknown;
+  monthlyNDays?: unknown;
+};
+
+function parseHabitSchedule(extraData: string | null): HabitScheduleMeta | null {
+  if (!extraData) return null;
+  try {
+    const p = JSON.parse(extraData) as { schedule?: unknown };
+    const s = p?.schedule;
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+    return s as HabitScheduleMeta;
+  } catch {
+    return null;
+  }
+}
+
+/** 逻辑「今天」是否为该习惯循环模式下允许打卡的日历日（每周N天/每月N天不限定具体日，始终为 true） */
+function isHabitScheduledToday(extraData: string | null, d: Date = new Date()): boolean {
+  const schedule = parseHabitSchedule(extraData);
+  const tab = schedule?.activeTab;
+  if (!tab || typeof tab !== 'string') return true;
+
+  if (tab === '每周N天' || tab === '每月N天') return true;
+
+  if (tab === '每周定期') {
+    const selected = Array.isArray(schedule.selectedDays)
+      ? schedule.selectedDays.filter((x): x is string => typeof x === 'string')
+      : [];
+    if (selected.length === 0) return false;
+    const label = HABIT_CN_WEEKDAY_LABELS[d.getDay()];
+    return selected.includes(label);
+  }
+
+  if (tab === '每月定期') {
+    const dom = d.getDate();
+    const days = Array.isArray(schedule.monthlySpecificDays)
+      ? schedule.monthlySpecificDays.filter(
+          (n): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 1 && n <= 31
+        )
+      : [];
+    if (days.length === 0) return false;
+    return days.includes(dom);
+  }
+
+  return true;
+}
+
+/** 每周/每月「定期」在非打卡日从任务页小习惯列表中隐藏（N 天模式仍始终展示） */
+function isHabitHiddenByCalendarCycleOnTasks(extraData: string | null, logicalAnchor: Date): boolean {
+  const schedule = parseHabitSchedule(extraData);
+  const tab = schedule?.activeTab;
+  if (tab !== '每周定期' && tab !== '每月定期') return false;
+  return !isHabitScheduledToday(extraData, logicalAnchor);
 }
 
 function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
@@ -287,6 +372,17 @@ function formatLocalYmd(date: Date): string {
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+/** 将逻辑日 YMD 转为本地日历日正午，与 `getLogicalLocalYmd` 的「今天」对齐，用于习惯循环星期/几号判断 */
+function logicalYmdToLocalDate(ymd: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+  if (!m) return new Date();
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return new Date();
+  return new Date(y, mo, d, 12, 0, 0, 0);
 }
 
 function formatTaskPriority(priority: number): string {
@@ -338,6 +434,29 @@ function sortTaskTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
   return clone;
 }
 
+/** 从项目任务树中查找任务行（用于与扁平 `tasks` 状态短暂不一致时的勾选完成） */
+function findTaskRowInProjectTreeMap(
+  treeMap: Record<string, TaskTreeNode[]>,
+  taskId: string
+): TaskRow | null {
+  const walk = (nodes: TaskTreeNode[]): TaskRow | null => {
+    for (const n of nodes) {
+      if (n.id === taskId) return n;
+      const ch = n.children;
+      if (ch?.length) {
+        const hit = walk(ch);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  };
+  for (const nodes of Object.values(treeMap)) {
+    const hit = walk(nodes);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 function formatScheduleDateToYMD(value: string) {
   const t = value.trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
@@ -358,6 +477,46 @@ function ymdToLocalDate(ymd: string): Date | null {
   const day = Number(m[3]);
   if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
   return new Date(year, month - 1, day);
+}
+
+/** 与项目卡片展示的截止/区间语义一致，用于列表排序 */
+function getProjectListSortDueMs(project: ProjectRow): number {
+  const schedule = parseProjectSchedule(project.extra_data);
+  if (schedule?.mode === 'time' && schedule.range?.end) {
+    const endYmd = formatScheduleDateToYMD(schedule.range.end);
+    const d = ymdToLocalDate(endYmd);
+    if (d) return d.getTime();
+    const ms = Date.parse(schedule.range.end);
+    return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+  }
+  if (project.due_date?.trim()) {
+    const ymd = formatScheduleDateToYMD(project.due_date);
+    const d = ymdToLocalDate(ymd);
+    if (d) return d.getTime();
+    const ms = Date.parse(project.due_date);
+    return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+/** 项目列表：已完成/归档在后；有截止日期（含区间结束日）按日期升序；同日按更新时间降序（与任务树一致） */
+function sortProjectsForList(rows: ProjectRow[]): ProjectRow[] {
+  const safeTime = (value: string | null | undefined) => {
+    if (!value) return 0;
+    const ms = Date.parse(value);
+    return Number.isNaN(ms) ? 0 : ms;
+  };
+  const clone = [...rows];
+  clone.sort((a, b) => {
+    const doneA = a.status === 'completed' || a.status === 'archived';
+    const doneB = b.status === 'completed' || b.status === 'archived';
+    if (doneA !== doneB) return doneA ? 1 : -1;
+    const dueA = getProjectListSortDueMs(a);
+    const dueB = getProjectListSortDueMs(b);
+    if (dueA !== dueB) return dueA - dueB;
+    return safeTime(b.updated_at) - safeTime(a.updated_at);
+  });
+  return clone;
 }
 
 function startOfLocalDay(d: Date): Date {
@@ -396,6 +555,7 @@ type FrogHeatCell = { level: number | null; ymd: string | null };
 
 function FrogCompletedHeatmap({
   tasks,
+  logicalTodayYmd,
   textMain,
   textMuted,
   accentColor,
@@ -404,6 +564,7 @@ function FrogCompletedHeatmap({
   isDark,
 }: {
   tasks: TaskRow[];
+  logicalTodayYmd: string;
   textMain: string;
   textMuted: string;
   accentColor: string;
@@ -430,8 +591,8 @@ function FrogCompletedHeatmap({
   }, [tasks]);
 
   const { weekColumns, monthTickColIndexes } = React.useMemo(() => {
-    const today = startOfLocalDay(new Date());
-    const thisMonday = mondayOfWeekContaining(today);
+    const todayCal = startOfLocalDay(new Date());
+    const thisMonday = mondayOfWeekContaining(todayCal);
     const gridStartMonday = addLocalDays(thisMonday, -(FROG_HEATMAP_WEEKS - 1) * 7);
 
     type Col = { cells: FrogHeatCell[]; monday: Date };
@@ -443,10 +604,10 @@ function FrogCompletedHeatmap({
       const cells: FrogHeatCell[] = [];
       for (let r = 0; r < 7; r++) {
         const day = addLocalDays(monday, r);
-        if (day.getTime() > today.getTime()) {
+        const ymd = formatLocalYmd(day);
+        if (ymd > logicalTodayYmd) {
           cells.push({ level: null, ymd: null });
         } else {
-          const ymd = formatLocalYmd(day);
           const n = frogDoneTasksByYmd.get(ymd)?.length ?? 0;
           cells.push({ level: Math.min(4, n), ymd });
         }
@@ -465,7 +626,7 @@ function FrogCompletedHeatmap({
     }
 
     return { weekColumns, monthTickColIndexes };
-  }, [frogDoneTasksByYmd]);
+  }, [frogDoneTasksByYmd, logicalTodayYmd]);
 
   const selectedFrogs = selectedYmd ? frogDoneTasksByYmd.get(selectedYmd) ?? [] : [];
 
@@ -631,8 +792,7 @@ function formatYmdCN(ymd: string): string {
   return `${year}年${month}月${day}日`;
 }
 
-function formatProjectDueText(dueYmd: string): string {
-  const todayYmd = formatLocalYmd(new Date());
+function formatProjectDueText(dueYmd: string, todayYmd: string): string {
   const due = ymdToLocalDate(dueYmd);
   const today = ymdToLocalDate(todayYmd);
   if (!due || !today) return `截止：${formatYmdCN(dueYmd)}`;
@@ -643,8 +803,7 @@ function formatProjectDueText(dueYmd: string): string {
   return `截止：${formatYmdCN(dueYmd)}`;
 }
 
-function formatTaskDueText(dueYmd: string): string {
-  const todayYmd = formatLocalYmd(new Date());
+function formatTaskDueText(dueYmd: string, todayYmd: string): string {
   const due = ymdToLocalDate(dueYmd);
   const today = ymdToLocalDate(todayYmd);
   if (!due || !today) return `截止：${dueYmd}`;
@@ -664,10 +823,10 @@ function getTaskPriorityCheckColor(priority: number, isDark: boolean) {
 }
 
 /** 未完成且截止日期（本地日）早于今天。 */
-function isTaskDueOverdue(dueYmd: string, isDone: boolean): boolean {
+function isTaskDueOverdue(dueYmd: string, isDone: boolean, todayYmd: string): boolean {
   if (isDone || !dueYmd.trim()) return false;
   const due = ymdToLocalDate(dueYmd);
-  const today = ymdToLocalDate(formatLocalYmd(new Date()));
+  const today = ymdToLocalDate(todayYmd);
   if (!due || !today) return false;
   return due.getTime() < today.getTime();
 }
@@ -679,6 +838,94 @@ function getProjectScheduleLabel(project: ProjectRow, schedule: ProjectScheduleM
     return `${start} ~ ${end}`;
   }
   return project.due_date ? formatScheduleDateToYMD(project.due_date) : null;
+}
+
+/** 递归：收纳、到期自动归档等需整棵树均完成或取消 */
+function areAllTasksInProjectTreeDone(nodes: TaskTreeNode[]): boolean {
+  for (const n of nodes) {
+    if (n.status !== 'done' && n.status !== 'cancelled') return false;
+    const ch = n.children;
+    if (ch.length > 0 && !areAllTasksInProjectTreeDone(ch)) return false;
+  }
+  return true;
+}
+
+/** 到期自动归入收集箱所依据的日期（区间取结束日，否则取项目 due_date） */
+function getProjectInboxAutoArchiveDueYmd(project: ProjectRow): string | null {
+  const schedule = parseProjectSchedule(project.extra_data);
+  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    return formatScheduleDateToYMD(schedule.range.end);
+  }
+  if (project.due_date?.trim()) return formatScheduleDateToYMD(project.due_date);
+  return null;
+}
+
+function isLocalYmdOnOrAfter(todayYmd: string, dueYmd: string): boolean {
+  const t = ymdToLocalDate(todayYmd);
+  const d = ymdToLocalDate(dueYmd);
+  if (!t || !d) return false;
+  return t.getTime() >= d.getTime();
+}
+
+/** 进入任务页或刷新后：已到期且任务树全部完成的项目自动归入收集箱 */
+async function autoArchiveProjectsPastDueIfNeeded(
+  rows: ProjectRow[],
+  treeMap: Record<string, TaskTreeNode[]>,
+  todayYmd: string,
+) {
+  let changed = 0;
+  for (const p of rows) {
+    if (p.status === 'completed' || p.status === 'archived') continue;
+    if (isProjectInInboxCategory(p.category_id)) continue;
+    const tree = treeMap[p.id] ?? [];
+    if (tree.length === 0) continue;
+    if (!areAllTasksInProjectTreeDone(tree)) continue;
+    const dueYmd = getProjectInboxAutoArchiveDueYmd(p);
+    if (!dueYmd) continue;
+    if (!isLocalYmdOnOrAfter(todayYmd, dueYmd)) continue;
+    try {
+      await updateProject(p.id, { category_id: INBOX_PROJECT_CATEGORY_ID, status: 'completed' });
+      changed += 1;
+    } catch (e) {
+      console.warn('到期自动收纳项目失败', p.id, e);
+    }
+  }
+  return changed;
+}
+
+function pickFirstNonInboxProjectCategoryId(categories: ProjectCategoryRow[]): string | null {
+  const row = categories.find((c) => c.id !== INBOX_PROJECT_CATEGORY_ID);
+  return row?.id ?? null;
+}
+
+/**
+ * 收集箱内且状态为「已完成」的项目，若任务树中仍有未完成/未取消的任务（例如新加任务），则恢复为「进行中」
+ * 并移出收集箱：归入当前第一个非收集箱项目分类；若仅有收集箱则 category_id 置为 null（与新建项目「未分类」一致）。
+ */
+async function reactivateInboxCompletedProjectsWithOpenTasks(
+  rows: ProjectRow[],
+  treeMap: Record<string, TaskTreeNode[]>,
+  categories: ProjectCategoryRow[]
+): Promise<number> {
+  const nextCategoryId = pickFirstNonInboxProjectCategoryId(categories);
+  let changed = 0;
+  for (const p of rows) {
+    if (p.status !== 'completed') continue;
+    if (!isProjectInInboxCategory(p.category_id)) continue;
+    const tree = treeMap[p.id] ?? [];
+    if (tree.length === 0) continue;
+    if (areAllTasksInProjectTreeDone(tree)) continue;
+    try {
+      await updateProject(p.id, {
+        status: 'active',
+        category_id: nextCategoryId,
+      });
+      changed += 1;
+    } catch (e) {
+      console.warn('收集箱已完成项目恢复进行中失败', p.id, e);
+    }
+  }
+  return changed;
 }
 
 export default function TasksScreen() {
@@ -725,6 +972,34 @@ export default function TasksScreen() {
   /** 底部「无项目待办」快捷输入框内容 */
   const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
   const [quickTodoSaving, setQuickTodoSaving] = React.useState(false);
+  const [dayBoundary, setDayBoundary] = React.useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
+  const [dayStartModalVisible, setDayStartModalVisible] = React.useState(false);
+  const [draftBoundary, setDraftBoundary] = React.useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
+  const [dayBoundaryClock, setDayBoundaryClock] = React.useState(0);
+
+  const logicalTodayYmd = React.useMemo(
+    () => getLogicalLocalYmd(new Date(), dayBoundary),
+    [dayBoundary, dayBoundaryClock],
+  );
+
+  const habitScheduleAnchorDate = React.useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
+
+  React.useEffect(() => {
+    const id = setInterval(() => setDayBoundaryClock((c) => c + 1), 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  React.useEffect(() => {
+    void loadTasksDayBoundary().then((b) => setDayBoundary(b));
+  }, []);
+
+  const projectsShownInList = React.useMemo(() => {
+    const base =
+      projectTab === 'all'
+        ? projects
+        : projects.filter((p) => (p.category_id ?? INBOX_PROJECT_CATEGORY_ID) === projectTab);
+    return sortProjectsForList(base);
+  }, [projects, projectTab]);
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
@@ -733,6 +1008,7 @@ export default function TasksScreen() {
   const projectAnim = React.useRef(new Animated.Value(0)).current;
   const bgFloatAnim = React.useRef(new Animated.Value(0)).current;
   const frogDoneBounceMap = React.useRef<Record<string, Animated.Value>>({});
+  const projectSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
 
   const loadProjects = React.useCallback(async () => {
     try {
@@ -773,13 +1049,15 @@ export default function TasksScreen() {
     }
   }, []);
 
-  const loadProjectCategories = React.useCallback(async () => {
+  const loadProjectCategories = React.useCallback(async (): Promise<ProjectCategoryRow[]> => {
     try {
       const rows = await getProjectCategories();
       setProjectCategories(rows);
+      return rows;
     } catch (err) {
       console.warn('加载项目分类失败', err);
       setProjectCategories([]);
+      return [];
     }
   }, []);
 
@@ -807,7 +1085,15 @@ export default function TasksScreen() {
         const todayCount = checkStats.get(r.id)?.todayCount ?? 0;
         const dailyGoalMax = parseHabitDailyGoalMax(r.extra_data);
         const kind = parseHabitKind(r.extra_data);
-        arr.push({ id: r.id, icon: r.icon, name: r.name, todayCount, dailyGoalMax, kind });
+        arr.push({
+          id: r.id,
+          icon: r.icon,
+          name: r.name,
+          todayCount,
+          dailyGoalMax,
+          kind,
+          extraData: r.extra_data ?? null,
+        });
         itemsByContext.set(r.context, arr);
       }
 
@@ -838,10 +1124,10 @@ export default function TasksScreen() {
     }
   }, []);
 
-  const loadProjectTasks = React.useCallback(async (rows: ProjectRow[]) => {
+  const loadProjectTasks = React.useCallback(async (rows: ProjectRow[]): Promise<Record<string, TaskTreeNode[]>> => {
     if (rows.length === 0) {
       setProjectTaskTreeMap({});
-      return;
+      return {};
     }
     try {
       const entries = await Promise.all(
@@ -850,10 +1136,13 @@ export default function TasksScreen() {
           return [project.id, tree] as const;
         })
       );
-      setProjectTaskTreeMap(Object.fromEntries(entries));
+      const map = Object.fromEntries(entries);
+      setProjectTaskTreeMap(map);
+      return map;
     } catch (err) {
       console.warn('加载项目任务失败', err);
       setProjectTaskTreeMap({});
+      return {};
     }
   }, []);
 
@@ -983,6 +1272,11 @@ export default function TasksScreen() {
   }, [loadTasks]);
 
   React.useEffect(() => {
+    if (Platform.OS === 'web') return;
+    void syncScheduledTaskReminders(tasks);
+  }, [tasks]);
+
+  React.useEffect(() => {
     loadProjectTasks(projects);
   }, [loadProjectTasks, projects]);
 
@@ -999,6 +1293,10 @@ export default function TasksScreen() {
     React.useCallback(() => {
       let cancelled = false;
       (async () => {
+        const boundary = await loadTasksDayBoundary();
+        if (cancelled) return;
+        setDayBoundary(boundary);
+        const logicalToday = getLogicalLocalYmd(new Date(), boundary);
         const storedExpanded = await loadExpandedProjectState();
         const rows = await loadProjects();
         if (cancelled) return;
@@ -1015,8 +1313,27 @@ export default function TasksScreen() {
           setExpandedProjectIds(merged);
           await saveExpandedProjectState(merged);
         }
-        await loadProjectTasks(rows);
-        await loadProjectCategories();
+        let treeMap = await loadProjectTasks(rows);
+        const archived = await autoArchiveProjectsPastDueIfNeeded(rows, treeMap, logicalToday);
+        let workingRows = rows;
+        if (archived > 0) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          workingRows = await loadProjects();
+          treeMap = await loadProjectTasks(workingRows);
+        }
+        const catRows = await loadProjectCategories();
+        const reactivated = await reactivateInboxCompletedProjectsWithOpenTasks(workingRows, treeMap, catRows);
+        if (reactivated > 0) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          const refreshed = await loadProjects();
+          await loadProjectTasks(refreshed);
+        }
+        const purgedInbox = await deleteInboxProjectsPastRetentionDays(INBOX_PROJECT_RETENTION_DAYS);
+        if (purgedInbox > 0) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          const afterPurge = await loadProjects();
+          await loadProjectTasks(afterPurge);
+        }
         await loadTasks();
         await loadHabits();
       })();
@@ -1041,8 +1358,8 @@ export default function TasksScreen() {
   }, [taskTab, tasks]);
 
   /**
-   * 架构意图：「待办」区块只展示未挂 `project_id` 的顶层任务，与项目树数据源解耦；
-   * 适合杂项/灵感，避免与项目内子任务重复展示（子任务带 parent_task_id）。
+   * 架构意图：「待办」区块只展示未挂 `project_id` 的顶层任务；「任务列表」四象限只展示挂项目或带父任务的行，
+   * 二者数据源上互不重复（独立待办不参与矩阵分类与计数）。
    */
   const standaloneTodos = React.useMemo(() => {
     const list = tasks.filter((t) => !t.project_id && !t.parent_task_id);
@@ -1066,7 +1383,7 @@ export default function TasksScreen() {
   );
 
   const todayFrogs = React.useMemo(() => {
-    const today = formatLocalYmd(new Date());
+    const today = logicalTodayYmd;
     return tasks
       .filter((t) => {
         const meta = parseTaskMeta(t.extra_data);
@@ -1082,7 +1399,7 @@ export default function TasksScreen() {
         const updB = b.updated_at ? Date.parse(b.updated_at) : 0;
         return updB - updA;
       });
-  }, [tasks]);
+  }, [tasks, logicalTodayYmd]);
 
   const frogCarouselCardWidth = React.useMemo(
     () => Math.min(196, Math.max(152, Dimensions.get('window').width * 0.46)),
@@ -1095,8 +1412,10 @@ export default function TasksScreen() {
     const q01: TaskRow[] = []; // 紧急但不重要
     const q00: TaskRow[] = []; // 不紧急不重要
 
-    // 无项目顶层待办只在底部「待办」区块展示，避免与四象限重复
-    const forMatrix = filteredTasks.filter((t) => t.project_id || t.parent_task_id);
+    // 顶部「待办」与「任务列表」四象限分离：无项目、无父任务的独立待办只出现在待办区，不计入矩阵
+    const forMatrix = filteredTasks.filter(
+      (t) => t.status !== 'done' && t.status !== 'cancelled' && (!!t.project_id || !!t.parent_task_id),
+    );
 
     forMatrix.forEach((t) => {
       if (t.priority >= 4) q11.push(t);
@@ -1238,9 +1557,41 @@ export default function TasksScreen() {
     [getFrogDoneBounce]
   );
 
+  const moveProjectToInboxById = React.useCallback(async (projectId: string) => {
+    try {
+      await updateProject(projectId, {
+        category_id: INBOX_PROJECT_CATEGORY_ID,
+        status: 'completed',
+      });
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      projectSwipeableRefs.current[projectId]?.close();
+      await loadProjects();
+    } catch (err) {
+      console.warn('收纳项目失败', err);
+      Alert.alert('操作失败', '未能将项目移至收集箱，请稍后重试。');
+    }
+  }, [loadProjects]);
+
+  const handleProjectSwipeArchive = React.useCallback(
+    (project: ProjectRow) => {
+      const tree = projectTaskTreeMap[project.id] ?? [];
+      if (!areAllTasksInProjectTreeDone(tree)) {
+        Alert.alert(
+          '暂时无法收纳',
+          '请先完成项目内的全部任务（或将任务标记为取消）后，再将项目归纳到收集箱。',
+        );
+        projectSwipeableRefs.current[project.id]?.close();
+        return;
+      }
+      void moveProjectToInboxById(project.id);
+    },
+    [moveProjectToInboxById, projectTaskTreeMap]
+  );
+
   const toggleTaskDone = React.useCallback(
     async (taskId: string) => {
-      const current = tasks.find((t) => t.id === taskId);
+      const current =
+        tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
       const wasDone = current.status === 'done' || current.status === 'cancelled';
@@ -1259,6 +1610,56 @@ export default function TasksScreen() {
 
       try {
         await updateTask(taskId, { status: nextStatus, completed_at: nextCompletedAt });
+        if (nextStatus === 'done' && current.project_id) {
+          const pid = current.project_id;
+          const proj = projects.find((p) => p.id === pid);
+          if (
+            proj &&
+            proj.status !== 'completed' &&
+            proj.status !== 'archived' &&
+            !isProjectInInboxCategory(proj.category_id)
+          ) {
+            const nextTreeMap = updateTaskInProjectTree(projectTaskTreeMap, taskId, (node) => ({
+              ...node,
+              status: nextStatus,
+              completed_at: nextCompletedAt,
+            }));
+            const tree = nextTreeMap[pid] ?? [];
+            if (tree.length > 0 && areAllTasksInProjectTreeDone(tree)) {
+              const dueYmd = getProjectInboxAutoArchiveDueYmd(proj);
+              const dueHint = dueYmd
+                ? `若选「否」，将在截止日期 ${formatYmdCN(dueYmd)} 到达后自动归纳到收集箱。`
+                : `若选「否」，请之后在项目卡片上左滑「收纳」手动归纳到收集箱。`;
+              Alert.alert(
+                `「${proj.name}」进度已达 100%`,
+                `项目内全部任务均已完成（或已取消）。是否现在将项目归纳到收集箱？\n\n${dueHint}`,
+                [
+                  { text: '否', style: 'cancel' },
+                  { text: '是', onPress: () => void moveProjectToInboxById(pid) },
+                ],
+              );
+            }
+          }
+        }
+        if (current.project_id) {
+          const pid = current.project_id;
+          void (async () => {
+            try {
+              const proj = await getProjectById(pid);
+              if (!proj || proj.status !== 'completed' || !isProjectInInboxCategory(proj.category_id)) return;
+              const tree = await getTasksByProjectId(pid);
+              const cats = await getProjectCategories();
+              const n = await reactivateInboxCompletedProjectsWithOpenTasks([proj], { [pid]: tree }, cats);
+              if (n > 0) {
+                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                const rr = await loadProjects();
+                await loadProjectTasks(rr);
+              }
+            } catch (e) {
+              console.warn('收集箱已完成项目恢复状态同步失败', e);
+            }
+          })();
+        }
       } catch (err) {
         console.warn('更新任务状态失败', err);
         // fallback: reload to ensure consistency
@@ -1266,7 +1667,7 @@ export default function TasksScreen() {
         await loadProjectTasks(projects);
       }
     },
-    [loadProjectTasks, loadTasks, projects, tasks, updateTaskInProjectTree]
+    [loadProjectTasks, loadProjects, loadTasks, moveProjectToInboxById, projectTaskTreeMap, projects, tasks, updateTaskInProjectTree]
   );
 
   /** 从任务 Tab 底部快捷创建「无项目」待办，写入 tasks 表，与四象限列表共用 `tasks` 状态 */
@@ -1563,6 +1964,105 @@ export default function TasksScreen() {
     taskTab,
   ]);
 
+  const openDayStartModal = React.useCallback(() => {
+    setDraftBoundary(dayBoundary);
+    setDayStartModalVisible(true);
+  }, [dayBoundary]);
+
+  const closeDayStartModal = React.useCallback(() => setDayStartModalVisible(false), []);
+
+  const saveDayBoundaryFromModal = React.useCallback(async () => {
+    try {
+      await saveTasksDayBoundary(draftBoundary);
+      setDayBoundary(draftBoundary);
+      setDayStartModalVisible(false);
+      await loadHabits();
+    } catch (e) {
+      console.warn('保存日界失败', e);
+      Alert.alert('保存失败', '未能保存日界设置，请稍后重试。');
+    }
+  }, [draftBoundary, loadHabits]);
+
+  const applyDefaultDayBoundary = React.useCallback(() => {
+    setDraftBoundary({ ...DEFAULT_TASKS_DAY_BOUNDARY });
+  }, []);
+
+  /** 四象限行：左侧勾选完成/取消，点击标题区域进入编辑 */
+  const renderMatrixTaskRow = (t: TaskRow, accentColor: string, dueMuted: { bg: string; text: string }) => {
+    const isDone = t.status === 'done' || t.status === 'cancelled';
+    const meta = parseTaskMeta(t.extra_data);
+    const due = t.due_date?.slice(0, 10) ?? '';
+    const repeat = (meta.repeat ?? '').trim();
+    const reminder = (meta.reminder ?? '').trim();
+    const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
+    const overdue = isTaskDueOverdue(due, isDone, logicalTodayYmd);
+    return (
+      <View key={t.id} style={styles.taskRow}>
+        <Pressable
+          hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+          onPress={() => void toggleTaskDone(t.id)}
+          accessibilityRole="button"
+          accessibilityLabel={isDone ? '标记为未完成' : '标记为已完成'}>
+          <MaterialIcons name={isDone ? 'check-circle' : 'radio-button-unchecked'} size={20} color={accentColor} />
+        </Pressable>
+        <ScalePressable style={{ flex: 1, minWidth: 0 }} onPress={() => openTask(t.id)} scaleTo={0.985}>
+          <View style={styles.taskBody}>
+            {!!parentTitle && (
+              <Text style={[styles.taskParentHint, { color: outline }]} numberOfLines={1}>
+                上级任务：{parentTitle}
+              </Text>
+            )}
+            <Text
+              style={[
+                styles.taskText,
+                { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.42 : 1 },
+              ]}
+              numberOfLines={1}>
+              {t.title}
+            </Text>
+            {!!due ? (
+              <View style={styles.deadlineRow}>
+                <View
+                  style={[
+                    styles.deadlineBadge,
+                    { backgroundColor: overdue ? `${error}22` : dueMuted.bg },
+                  ]}>
+                  <Text style={[styles.deadlineText, { color: overdue ? error : dueMuted.text }]}>{formatTaskDueText(due, logicalTodayYmd)}</Text>
+                </View>
+                {overdue ? (
+                  <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
+                    <MaterialIcons name="report-problem" size={12} color={error} />
+                    <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+            {!!repeat || !!reminder ? (
+              <View style={styles.metaRow}>
+                {!!repeat ? (
+                  <>
+                    <MaterialIcons name="refresh" size={12} color={outline} />
+                    <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                      {repeat}
+                    </Text>
+                  </>
+                ) : null}
+                {!!reminder ? (
+                  <>
+                    <MaterialIcons name="notifications-active" size={12} color={outline} />
+                    <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
+                      {reminder}
+                    </Text>
+                  </>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        </ScalePressable>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
       <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -1633,10 +2133,18 @@ export default function TasksScreen() {
                   <Text style={[styles.sectionTitle, { color: theme.text }]}>今日青蛙</Text>
                   <MaterialIcons name="eco" size={20} color={secondary} />
                 </View>
-                <ScalePressable onPress={() => router.push('/add-frog')} style={({ pressed }) => [styles.ghostBtn, { borderColor: `${secondary}44` }, pressed && { opacity: 0.8 }]}>
-                  <MaterialIcons name="add" size={14} color={secondary} />
-                  <Text style={[styles.ghostBtnText, { color: secondary }]}>添加青蛙</Text>
-                </ScalePressable>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  <ScalePressable
+                    onPress={openDayStartModal}
+                    style={({ pressed }) => [styles.ghostBtn, { borderColor: `${outline}44` }, pressed && { opacity: 0.8 }]}>
+                    <MaterialIcons name="schedule" size={14} color={outline} />
+                    <Text style={[styles.ghostBtnText, { color: outline }]}>日界 {formatTasksDayBoundaryLabel(dayBoundary)}</Text>
+                  </ScalePressable>
+                  <ScalePressable onPress={() => router.push('/add-frog')} style={({ pressed }) => [styles.ghostBtn, { borderColor: `${secondary}44` }, pressed && { opacity: 0.8 }]}>
+                    <MaterialIcons name="add" size={14} color={secondary} />
+                    <Text style={[styles.ghostBtnText, { color: secondary }]}>添加青蛙</Text>
+                  </ScalePressable>
+                </View>
               </View>
 
               <Animated.View
@@ -1756,6 +2264,7 @@ export default function TasksScreen() {
 
               <FrogCompletedHeatmap
                 tasks={tasks}
+                logicalTodayYmd={logicalTodayYmd}
                 textMain={theme.text}
                 textMuted={outline}
                 accentColor={secondary}
@@ -1766,928 +2275,6 @@ export default function TasksScreen() {
             </View>
           </View>
 
-          <View style={[styles.section, styles.stackedSection]}>
-            <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 8 }]}>任务列表</Text>
-            <SegmentTabs
-              tabs={taskTabs}
-              active={taskTab}
-              onChange={setTaskTab}
-              onLongPressTab={(key, label) => openCategoryMenu('project', label, key)}
-              color={primary}
-              muted={outline}
-            />
-
-            <Animated.View style={{ opacity: matrixAnim, transform: [{ translateY: matrixAnim.interpolate({ inputRange: [0, 1], outputRange: [18, 0] }) }] }}>
-              <View style={[styles.matrixWrap, { borderColor: outlineVariant, backgroundColor: `${outlineVariant}28` }]}>
-                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-                  <View style={styles.quadHead}>
-                    <View style={styles.quadTitleRow}>
-                      <PulseDot color={error} />
-                      <Text style={[styles.quadTitle, { color: error }]}>紧急且重要 (立即执行)</Text>
-                    </View>
-                  </View>
-                  {matrixGroups.q11.length === 0 ? (
-                    <EmptyPlaceholder
-                      icon="task-alt"
-                      title="暂无任务"
-                      subtitle="把重要紧急的事项放进来，优先处理。"
-                      color={error}
-                      muted={outline}
-                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
-                    />
-                  ) : (
-                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                      {matrixGroups.q11.map((t) => {
-                        const isDone = t.status === 'done' || t.status === 'cancelled';
-                        const meta = parseTaskMeta(t.extra_data);
-                        const due = t.due_date?.slice(0, 10) ?? '';
-                        const repeat = (meta.repeat ?? '').trim();
-                        const reminder = (meta.reminder ?? '').trim();
-                        const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
-                        const overdue = isTaskDueOverdue(due, isDone);
-                        return (
-                          <ScalePressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)} scaleTo={0.985}>
-                            <MaterialIcons name={isDone ? 'check-circle' : 'radio-button-unchecked'} size={20} color={error} />
-                            <View style={styles.taskBody}>
-                              {!!parentTitle && (
-                                <Text style={[styles.taskParentHint, { color: outline }]} numberOfLines={1}>
-                                  上级任务：{parentTitle}
-                                </Text>
-                              )}
-                              <Text
-                                style={[
-                                  styles.taskText,
-                                  { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.42 : 1 },
-                                ]}
-                                numberOfLines={1}>
-                                {t.title}
-                              </Text>
-                              {!!due ? (
-                                <View style={styles.deadlineRow}>
-                                  <View
-                                    style={[
-                                      styles.deadlineBadge,
-                                      { backgroundColor: overdue ? `${error}22` : `${error}14` },
-                                    ]}>
-                                    <Text style={[styles.deadlineText, { color: error }]}>{formatTaskDueText(due)}</Text>
-                                  </View>
-                                  {overdue ? (
-                                    <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
-                                      <MaterialIcons name="report-problem" size={12} color={error} />
-                                      <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
-                                    </View>
-                                  ) : null}
-                                </View>
-                              ) : null}
-                              {!!repeat || !!reminder ? (
-                                <View style={styles.metaRow}>
-                                  {!!repeat ? (
-                                    <>
-                                      <MaterialIcons name="refresh" size={12} color={outline} />
-                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
-                                        {repeat}
-                                      </Text>
-                                    </>
-                                  ) : null}
-                                  {!!reminder ? (
-                                    <>
-                                      <MaterialIcons name="notifications-active" size={12} color={outline} />
-                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
-                                        {reminder}
-                                      </Text>
-                                    </>
-                                  ) : null}
-                                </View>
-                              ) : null}
-                            </View>
-                          </ScalePressable>
-                        );
-                      })}
-                    </ScrollView>
-                  )}
-                </View>
-                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-                  <View style={styles.quadHead}>
-                    <View style={styles.quadTitleRow}>
-                      <View style={[styles.dot, { backgroundColor: primary }]} />
-                      <Text style={[styles.quadTitle, { color: primary }]}>不紧急但重要 (计划执行)</Text>
-                    </View>
-                  </View>
-                  {matrixGroups.q10.length === 0 ? (
-                    <EmptyPlaceholder
-                      icon="event-available"
-                      title="暂无任务"
-                      subtitle="把重要但不紧急的任务安排进计划。"
-                      color={primary}
-                      muted={outline}
-                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
-                    />
-                  ) : (
-                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                      {matrixGroups.q10.map((t) => {
-                        const isDone = t.status === 'done' || t.status === 'cancelled';
-                        const meta = parseTaskMeta(t.extra_data);
-                        const due = t.due_date?.slice(0, 10) ?? '';
-                        const repeat = (meta.repeat ?? '').trim();
-                        const reminder = (meta.reminder ?? '').trim();
-                        const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
-                        const overdue = isTaskDueOverdue(due, isDone);
-                        return (
-                          <ScalePressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)} scaleTo={0.985}>
-                            <MaterialIcons name={isDone ? 'check-circle' : 'radio-button-unchecked'} size={20} color={primary} />
-                            <View style={styles.taskBody}>
-                              {!!parentTitle && (
-                                <Text style={[styles.taskParentHint, { color: outline }]} numberOfLines={1}>
-                                  上级任务：{parentTitle}
-                                </Text>
-                              )}
-                              <Text
-                                style={[
-                                  styles.taskText,
-                                  { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.42 : 1 },
-                                ]}
-                                numberOfLines={1}>
-                                {t.title}
-                              </Text>
-                              {!!due ? (
-                                <View style={styles.deadlineRow}>
-                                  <View
-                                    style={[
-                                      styles.deadlineBadge,
-                                      { backgroundColor: overdue ? `${error}22` : `${primary}14` },
-                                    ]}>
-                                    <Text style={[styles.deadlineText, { color: overdue ? error : primary }]}>{formatTaskDueText(due)}</Text>
-                                  </View>
-                                  {overdue ? (
-                                    <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
-                                      <MaterialIcons name="report-problem" size={12} color={error} />
-                                      <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
-                                    </View>
-                                  ) : null}
-                                </View>
-                              ) : null}
-                              {!!repeat || !!reminder ? (
-                                <View style={styles.metaRow}>
-                                  {!!repeat ? (
-                                    <>
-                                      <MaterialIcons name="refresh" size={12} color={outline} />
-                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
-                                        {repeat}
-                                      </Text>
-                                    </>
-                                  ) : null}
-                                  {!!reminder ? (
-                                    <>
-                                      <MaterialIcons name="notifications-active" size={12} color={outline} />
-                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
-                                        {reminder}
-                                      </Text>
-                                    </>
-                                  ) : null}
-                                </View>
-                              ) : null}
-                            </View>
-                          </ScalePressable>
-                        );
-                      })}
-                    </ScrollView>
-                  )}
-                </View>
-                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-                  <View style={styles.quadHead}>
-                    <View style={styles.quadTitleRow}>
-                      <View style={[styles.dot, { backgroundColor: tertiary }]} />
-                      <Text style={[styles.quadTitle, { color: tertiary }]}>紧急但不重要 (委派他人)</Text>
-                    </View>
-                  </View>
-                  {matrixGroups.q01.length === 0 ? (
-                    <EmptyPlaceholder
-                      icon="groups"
-                      title="暂无任务"
-                      subtitle="需要委派/协调的事项可以放这里。"
-                      color={tertiary}
-                      muted={outline}
-                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
-                    />
-                  ) : (
-                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                      {matrixGroups.q01.map((t) => {
-                        const isDone = t.status === 'done' || t.status === 'cancelled';
-                        const meta = parseTaskMeta(t.extra_data);
-                        const due = t.due_date?.slice(0, 10) ?? '';
-                        const repeat = (meta.repeat ?? '').trim();
-                        const reminder = (meta.reminder ?? '').trim();
-                        const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
-                        const overdue = isTaskDueOverdue(due, isDone);
-                        return (
-                          <ScalePressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)} scaleTo={0.985}>
-                            <MaterialIcons name={isDone ? 'check-circle' : 'radio-button-unchecked'} size={20} color={tertiary} />
-                            <View style={styles.taskBody}>
-                              {!!parentTitle && (
-                                <Text style={[styles.taskParentHint, { color: outline }]} numberOfLines={1}>
-                                  上级任务：{parentTitle}
-                                </Text>
-                              )}
-                              <Text
-                                style={[
-                                  styles.taskText,
-                                  { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.42 : 1 },
-                                ]}
-                                numberOfLines={1}>
-                                {t.title}
-                              </Text>
-                              {!!due ? (
-                                <View style={styles.deadlineRow}>
-                                  <View
-                                    style={[
-                                      styles.deadlineBadge,
-                                      { backgroundColor: overdue ? `${error}22` : `${tertiary}14` },
-                                    ]}>
-                                    <Text style={[styles.deadlineText, { color: overdue ? error : tertiary }]}>{formatTaskDueText(due)}</Text>
-                                  </View>
-                                  {overdue ? (
-                                    <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
-                                      <MaterialIcons name="report-problem" size={12} color={error} />
-                                      <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
-                                    </View>
-                                  ) : null}
-                                </View>
-                              ) : null}
-                              {!!repeat || !!reminder ? (
-                                <View style={styles.metaRow}>
-                                  {!!repeat ? (
-                                    <>
-                                      <MaterialIcons name="refresh" size={12} color={outline} />
-                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
-                                        {repeat}
-                                      </Text>
-                                    </>
-                                  ) : null}
-                                  {!!reminder ? (
-                                    <>
-                                      <MaterialIcons name="notifications-active" size={12} color={outline} />
-                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
-                                        {reminder}
-                                      </Text>
-                                    </>
-                                  ) : null}
-                                </View>
-                              ) : null}
-                            </View>
-                          </ScalePressable>
-                        );
-                      })}
-                    </ScrollView>
-                  )}
-                </View>
-                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-                  <View style={styles.quadHead}>
-                    <View style={styles.quadTitleRow}>
-                      <View style={[styles.dot, { backgroundColor: outline }]} />
-                      <Text style={[styles.quadTitle, { color: outline }]}>不紧急不重要 (尽量消除)</Text>
-                    </View>
-                  </View>
-                  {matrixGroups.q00.length === 0 ? (
-                    <EmptyPlaceholder
-                      icon="self-improvement"
-                      title="暂无任务"
-                      subtitle="不重要不紧急的事，能不做就不做。"
-                      color={outline}
-                      muted={outline}
-                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
-                    />
-                  ) : (
-                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                      {matrixGroups.q00.map((t) => {
-                        const isDone = t.status === 'done' || t.status === 'cancelled';
-                        const meta = parseTaskMeta(t.extra_data);
-                        const due = t.due_date?.slice(0, 10) ?? '';
-                        const repeat = (meta.repeat ?? '').trim();
-                        const reminder = (meta.reminder ?? '').trim();
-                        const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
-                        const overdue = isTaskDueOverdue(due, isDone);
-                        return (
-                          <ScalePressable key={t.id} style={styles.taskRow} onPress={() => openTask(t.id)} scaleTo={0.985}>
-                            <MaterialIcons name={isDone ? 'check-circle' : 'radio-button-unchecked'} size={20} color={outline} />
-                            <View style={styles.taskBody}>
-                              {!!parentTitle && (
-                                <Text style={[styles.taskParentHint, { color: outline }]} numberOfLines={1}>
-                                  上级任务：{parentTitle}
-                                </Text>
-                              )}
-                              <Text
-                                style={[
-                                  styles.taskText,
-                                  { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.42 : 1 },
-                                ]}
-                                numberOfLines={1}>
-                                {t.title}
-                              </Text>
-                              {!!due ? (
-                                <View style={styles.deadlineRow}>
-                                  <View
-                                    style={[
-                                      styles.deadlineBadge,
-                                      { backgroundColor: overdue ? `${error}22` : `${outline}12` },
-                                    ]}>
-                                    <Text style={[styles.deadlineText, { color: overdue ? error : outline }]}>{formatTaskDueText(due)}</Text>
-                                  </View>
-                                  {overdue ? (
-                                    <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
-                                      <MaterialIcons name="report-problem" size={12} color={error} />
-                                      <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
-                                    </View>
-                                  ) : null}
-                                </View>
-                              ) : null}
-                              {!!repeat || !!reminder ? (
-                                <View style={styles.metaRow}>
-                                  {!!repeat ? (
-                                    <>
-                                      <MaterialIcons name="refresh" size={12} color={outline} />
-                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
-                                        {repeat}
-                                      </Text>
-                                    </>
-                                  ) : null}
-                                  {!!reminder ? (
-                                    <>
-                                      <MaterialIcons name="notifications-active" size={12} color={outline} />
-                                      <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
-                                        {reminder}
-                                      </Text>
-                                    </>
-                                  ) : null}
-                                </View>
-                              ) : null}
-                            </View>
-                          </ScalePressable>
-                        );
-                      })}
-                    </ScrollView>
-                  )}
-                </View>
-              </View>
-            </Animated.View>
-          </View>
-
-          <Animated.View style={{ opacity: projectAnim, transform: [{ translateY: projectAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
-            <View style={[styles.section, styles.stackedSection]}>
-              <View style={styles.sectionCard}>
-                <View style={styles.headerRow}>
-                  <View style={styles.titleRow}>
-                    <Text style={[styles.sectionTitle, { color: theme.text }]}>项目列表</Text>
-                    <Text style={[styles.sectionMeta, { color: outline }]}>共 {projects.length} 个活跃项目</Text>
-                  </View>
-                  <ScalePressable
-                    onPress={() =>
-                      router.push(
-                        projectTab === 'all'
-                          ? '/add-project'
-                          : { pathname: '/add-project', params: { categoryId: projectTab } },
-                      )
-                    }
-                    style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
-                    <MaterialIcons name="add-circle" size={14} color={primary} />
-                    <Text style={[styles.ghostBtnText, { color: primary }]}>新建项目</Text>
-                  </ScalePressable>
-                </View>
-                <SegmentTabs
-                  tabs={projectTabs}
-                  active={projectTab}
-                  onChange={setProjectTab}
-                  onLongPressTab={(key, label) => openCategoryMenu('project', label, key)}
-                  color={primary}
-                  muted={outline}
-                />
-                {(projectTab === 'all'
-                  ? projects
-                  : projects.filter((project) => (project.category_id ?? INBOX_PROJECT_CATEGORY_ID) === projectTab)
-                ).map((project, index) => {
-                  const isFirst = index === 0;
-                  const isCompleted = project.status === 'completed' || project.status === 'archived';
-                  const schedule = parseProjectSchedule(project.extra_data);
-                  const dueDateLabel = getProjectScheduleLabel(project, schedule);
-                  const isRangeSchedule = !!(schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end);
-                  const todayYmd = formatLocalYmd(new Date());
-                  const rangeEndYmd = isRangeSchedule ? formatScheduleDateToYMD(schedule!.range!.end) : null;
-                  const dueYmd = !isRangeSchedule && project.due_date ? formatScheduleDateToYMD(project.due_date) : null;
-                  const isExpiredRange = (() => {
-                    if (!rangeEndYmd) return false;
-                    const end = ymdToLocalDate(rangeEndYmd);
-                    const today = ymdToLocalDate(todayYmd);
-                    if (!end || !today) return false;
-                    return today.getTime() > end.getTime();
-                  })();
-                  const isExpiredDue = (() => {
-                    if (!dueYmd) return false;
-                    const due = ymdToLocalDate(dueYmd);
-                    const today = ymdToLocalDate(todayYmd);
-                    if (!due || !today) return false;
-                    return today.getTime() > due.getTime();
-                  })();
-                  const noteText = project.note?.trim();
-                  const categoryLabel = !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? '收集箱' : projectCategoryMap.get(project.category_id) ?? '未分类';
-                  const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
-                  const hasRepeat = !!schedule?.repeatOption && schedule.repeatOption !== '不重复';
-                  const taskTree = sortTaskTree(projectTaskTreeMap[project.id] ?? []);
-                  const isExpanded = !!expandedProjectIds[project.id];
-                  const progress = (() => {
-                    // 只统计项目的直接子任务（第一层），不递归统计更深层级
-                    const total = taskTree.length;
-                    const done = taskTree.reduce((acc, n) => {
-                      if (n.status === 'done' || n.status === 'cancelled') return acc + 1;
-                      return acc;
-                    }, 0);
-                    const ratio = total > 0 ? done / total : 0;
-                    return { total, done, ratio };
-                  })();
-
-                  const openEditTask = (id: string) => {
-                    router.push({ pathname: '/edit-task', params: { id } });
-                  };
-
-                  const renderTaskTree = (nodes: TaskTreeNode[], level: number): React.ReactNode => {
-                    if (nodes.length === 0 || level > 3) return null;
-                    return nodes.map((node) => {
-                      const isDone = node.status === 'done' || node.status === 'cancelled';
-                      const childrenAll = Array.isArray(node.children) ? node.children : [];
-                      const children = level < 3 ? childrenAll : [];
-                      const hasAnyChildren = childrenAll.length > 0;
-                      const hasChildrenToRender = children.length > 0;
-                      const hasDeeperLevels = level === 3 && hasAnyChildren;
-                      const canToggleCollapse = level === 1 && hasAnyChildren;
-                      const isCollapsed = canToggleCollapse ? !!collapsedTaskIds[node.id] : false;
-                      const isExpandedTask = canToggleCollapse ? !isCollapsed : true;
-                      const noteText = (node.note ?? '').trim();
-                      const hintPaddingLeft =
-                        10 +
-                        level * TASK_INDENT +
-                        (canToggleCollapse ? 22 + 8 : 0) +
-                        14 +
-                        8;
-                      return (
-                        <React.Fragment key={node.id}>
-                          <Pressable
-                            onPress={() => openEditTask(node.id)}
-                            hitSlop={8}
-                            style={({ pressed }) => [
-                              styles.projectTaskRow,
-                              {
-                                paddingLeft: 10,
-                                paddingVertical: 10,
-                                marginTop: 6,
-                                borderRadius: 10,
-                                backgroundColor: isDark ? 'rgba(15, 23, 42, 0.72)' : '#fff',
-                                borderBottomWidth: StyleSheet.hairlineWidth,
-                                borderBottomColor: isDark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(203,213,225,0.9)',
-                                opacity: pressed ? 0.85 : 1,
-                              },
-                            ]}>
-                            <View style={styles.treeColumns}>
-                              {Array.from({ length: level }).map((_, idx) => (
-                                <View key={`${node.id}_col_${idx}`} style={[styles.treeColumn, { width: TASK_INDENT }]}>
-                                  {/* keep column width for indentation; no connector line */}
-                                </View>
-                              ))}
-                            </View>
-                            <View
-                              style={[
-                                styles.statusCircle,
-                                { borderColor: primary, backgroundColor: isDone ? primary : 'transparent' },
-                              ]}>
-                              {isDone ? <MaterialIcons name="check" size={12} color="#fff" /> : null}
-                            </View>
-                            <View style={styles.projectTaskMain}>
-                              <View style={styles.taskTitleRow}>
-                                <Text
-                                  style={[
-                                    styles.projectTaskText,
-                                    {
-                                      color: isDone ? '#6b7280' : theme.text,
-                                      textDecorationLine: isDone ? 'line-through' : 'none',
-                                      opacity: isDone ? 0.85 : 1,
-                                    },
-                                  ]}
-                                  numberOfLines={1}>
-                                  {node.title}
-                                </Text>
-                                {level === 1 && isDone ? <Text style={styles.taskDoneTag}>已完成</Text> : null}
-                              </View>
-                              {(() => {
-                                const meta = parseTaskMeta(node.extra_data);
-                                const priorityLabel = formatTaskPriority(node.priority);
-                                const priorityColor = getTaskPriorityColor(node.priority, isDark);
-                                const dueDate = node.due_date?.slice(0, 10) ?? '';
-                                const reminder = (meta.reminder ?? '').trim();
-                                const repeat = (meta.repeat ?? '').trim();
-                                const dueOverdue = isTaskDueOverdue(dueDate, isDone);
-                                return (
-                                  <View style={styles.projectTaskMetaRow}>
-                                    {!!priorityLabel && (
-                                      <View style={[styles.projectTaskMetaChip, { backgroundColor: `${priorityColor}14`, borderColor: `${priorityColor}40` }]}>
-                                        <MaterialIcons name="flag" size={11} color={priorityColor} />
-                                        <Text style={[styles.projectTaskMetaText, { color: priorityColor }]}>{priorityLabel}</Text>
-                                      </View>
-                                    )}
-                                    {!!dueDate && (
-                                      <View
-                                        style={[
-                                          styles.projectTaskMetaChip,
-                                          { borderColor: outlineVariant },
-                                          dueOverdue && { backgroundColor: `${error}14`, borderColor: `${error}44` },
-                                        ]}>
-                                        <MaterialIcons name="event" size={11} color={dueOverdue ? error : outline} />
-                                        <Text style={[styles.projectTaskMetaText, { color: dueOverdue ? error : outline }]}>{formatTaskDueText(dueDate)}</Text>
-                                      </View>
-                                    )}
-                                    {dueOverdue ? (
-                                      <View style={[styles.projectTaskMetaChip, { backgroundColor: `${error}18`, borderColor: `${error}55` }]}>
-                                        <MaterialIcons name="report-problem" size={11} color={error} />
-                                        <Text style={[styles.projectTaskMetaText, { color: error }]}>已过期</Text>
-                                      </View>
-                                    ) : null}
-                                    {!!repeat && (
-                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
-                                        <MaterialIcons name="repeat" size={11} color={outline} />
-                                        <Text style={[styles.projectTaskMetaText, { color: outline }]}>{repeat}</Text>
-                                      </View>
-                                    )}
-                                    {!!reminder && (
-                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
-                                        <MaterialIcons name="notifications-active" size={11} color={outline} />
-                                        <Text style={[styles.projectTaskMetaText, { color: outline }]}>{reminder}</Text>
-                                      </View>
-                                    )}
-                                  </View>
-                                );
-                              })()}
-                              {hasAnyChildren ? (() => {
-                                const directTotal = childrenAll.length;
-                                if (directTotal <= 0) return null;
-                                const directDone = childrenAll.reduce((acc, child) => {
-                                  if (child.status === 'done' || child.status === 'cancelled') return acc + 1;
-                                  return acc;
-                                }, 0);
-                                const ratio = directDone / directTotal;
-                                return (
-                                  <>
-                                    <View style={styles.projectTaskProgressRow}>
-                                      <Text style={[styles.projectTaskProgressLabel, { color: outline }]}>
-                                        进度 {directDone}/{directTotal}
-                                      </Text>
-                                      <Text style={[styles.projectTaskProgressLabel, { color: outline }]}>
-                                        {Math.round(ratio * 100)}%
-                                      </Text>
-                                    </View>
-                                    <View
-                                      style={[
-                                        styles.projectTaskProgressTrack,
-                                        { backgroundColor: isDark ? 'rgba(148,163,184,0.14)' : '#e2e7ff' },
-                                      ]}>
-                                      <View
-                                        style={[
-                                          styles.projectTaskProgressFill,
-                                          { backgroundColor: primary, width: `${Math.round(ratio * 100)}%` },
-                                        ]}
-                                      />
-                                    </View>
-                                  </>
-                                );
-                              })() : null}
-                              {!!noteText && (
-                                <View style={[styles.projectTaskNoteWrap, { backgroundColor: `${primary}0E`, borderLeftColor: primary }]}>
-                                  <Text style={[styles.projectTaskNoteText, { color: theme.textSecondary }]} numberOfLines={2}>
-                                    {noteText}
-                                  </Text>
-                                </View>
-                              )}
-                            </View>
-                          </Pressable>
-                          {hasChildrenToRender && isExpandedTask ? renderTaskTree(children, level + 1) : null}
-                          {hasDeeperLevels && isExpandedTask ? (
-                            <Text
-                              style={[
-                                styles.projectTaskEllipsisInline,
-                                {
-                                  color: '#6b7280',
-                                  paddingLeft: hintPaddingLeft,
-                                },
-                              ]}>
-                              还有更深层级任务
-                            </Text>
-                          ) : null}
-                        </React.Fragment>
-                      );
-                    });
-                  };
-
-                  const hasAnyTasks = taskTree.length > 0;
-                  return (
-                    <ScalePressable
-                      key={project.id}
-                      onPress={() => openProject(project.id)}
-                      hitSlop={6}
-                      scaleTo={0.988}
-                      style={[
-                        styles.projectCard,
-                        {
-                          backgroundColor: isFirst ? card : soft,
-                          opacity: isFirst ? 1 : 0.86,
-                        },
-                      ]}>
-                      <View
-                        style={[
-                          styles.projectHead,
-                          { borderLeftColor: primary },
-                        ]}>
-                        <View style={styles.projectHeadLeft}>
-                          <MaterialIcons name={isFirst ? 'inventory-2' : 'data-usage'} size={22} color={primary} />
-                          <View style={styles.projectHeadMainColumn}>
-                            <Text style={[styles.projectTitle, { color: theme.text }]}>{project.name}</Text>
-                            <View style={styles.projectSubRow}>
-                              {dueDateLabel ? (
-                                <Text style={[styles.projectSub, { color: outline }]}>
-                                  {isRangeSchedule
-                                    ? isExpiredRange && rangeEndYmd
-                                      ? `已于：${formatYmdCN(rangeEndYmd)} 过期`
-                                      : dueDateLabel
-                                    : isExpiredDue && dueYmd
-                                      ? `已于：${formatYmdCN(dueYmd)} 过期`
-                                      : dueYmd
-                                        ? formatProjectDueText(dueYmd)
-                                        : `截止 ${dueDateLabel}`}
-                                </Text>
-                              ) : (
-                                <Text style={[styles.projectSub, { color: outline }]}>无截止日期</Text>
-                              )}
-                              <Text style={[styles.projectSub, { color: outline }]}>•</Text>
-                              <Text style={[styles.projectSub, { color: outline }]}>分类 {categoryLabel}</Text>
-                            </View>
-                            {noteText ? (
-                              <View style={[styles.projectNoteWrap, { backgroundColor: `${primary}12`, borderLeftColor: primary }]}>
-                                <Text style={[styles.projectNote, { color: theme.textSecondary }]} numberOfLines={2}>
-                                  {noteText}
-                                </Text>
-                              </View>
-                            ) : null}
-                            <View style={styles.projectMetaRow}>
-                              <Text style={[styles.projectSubStrong, { color: primary }]}>{project.status === 'active' ? '进行中' : project.status === 'paused' ? '已暂停' : isCompleted ? '已完成' : '未知状态'}</Text>
-                              {(hasReminder || hasRepeat) && <Text style={[styles.projectSub, { color: outline }]}>•</Text>}
-                              {hasReminder && (
-                                <View style={styles.projectFlag}>
-                                  <MaterialIcons name="notifications-active" size={11} color={primary} />
-                                  <Text style={[styles.projectFlagText, { color: primary }]}>提醒</Text>
-                                </View>
-                              )}
-                              {hasRepeat && (
-                                <View style={styles.projectFlag}>
-                                  <MaterialIcons name="repeat" size={11} color={primary} />
-                                  <Text style={[styles.projectFlagText, { color: primary }]}>重复</Text>
-                                </View>
-                              )}
-                            </View>
-                            {progress.total > 0 ? (
-                              <>
-                                <View style={styles.projectProgressRow}>
-                                  <Text style={[styles.projectProgressLabel, { color: outline }]}>
-                                    进度 {progress.done}/{progress.total}
-                                  </Text>
-                                  <Text style={[styles.projectProgressLabel, { color: outline }]}>
-                                    {Math.round(progress.ratio * 100)}%
-                                  </Text>
-                                </View>
-                                <View
-                                  style={[
-                                    styles.projectProgressTrack,
-                                    { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : '#e2e7ff' },
-                                  ]}>
-                                  <View
-                                    style={[
-                                      styles.projectProgressFill,
-                                      { backgroundColor: primary, width: `${Math.round(progress.ratio * 100)}%` },
-                                    ]}
-                                  />
-                                </View>
-                              </>
-                            ) : null}
-                          </View>
-                        </View>
-                        <View style={styles.projectHeadRight}>
-                          <Pressable
-                            onPress={(e) => {
-                              e.stopPropagation();
-                              openQuickAddTaskForProject(project);
-                            }}
-                            hitSlop={8}
-                            accessibilityRole="button"
-                            accessibilityLabel={`为「${project.name}」快捷添加任务`}
-                            style={({ pressed }) => [styles.projectQuickAddBtn, pressed && { opacity: 0.75 }]}>
-                            <MaterialIcons name="add-task" size={20} color={primary} />
-                          </Pressable>
-                          {hasAnyTasks ? (
-                            <Pressable
-                              onPress={(e) => {
-                                e.stopPropagation();
-                                toggleProjectExpand(project.id);
-                              }}
-                              hitSlop={8}
-                              style={({ pressed }) => [styles.projectExpandBtn, pressed && { opacity: 0.75 }]}>
-                              <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={20} color={outline} />
-                            </Pressable>
-                          ) : null}
-                        </View>
-                      </View>
-                      {(!hasAnyTasks || isExpanded) && (
-                        <View style={[styles.projectTaskBody, { borderTopColor: outlineVariant }]}>
-                          {!hasAnyTasks ? (
-                            <Text style={[styles.projectTaskEmpty, { color: outline }]}>暂无任务</Text>
-                          ) : (
-                            <>
-                              {renderTaskTree(taskTree, 1)}
-                            </>
-                          )}
-                        </View>
-                      )}
-                    </ScalePressable>
-                  );
-                })}
-                {(projectTab === 'all'
-                  ? projects
-                  : projects.filter((project) => (project.category_id ?? INBOX_PROJECT_CATEGORY_ID) === projectTab)
-                ).length === 0 && (
-                  <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
-                    <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
-                      <View style={styles.projectHeadLeft}>
-                        <MaterialIcons name="folder-open" size={22} color={outline} />
-                        <View style={styles.projectHeadMainColumn}>
-                          <Text style={[styles.projectTitle, { color: theme.textSecondary }]}>暂无项目</Text>
-                          <Text style={[styles.projectSub, { color: outline }]}>可点击右上角“新建项目”添加</Text>
-                        </View>
-                      </View>
-                    </View>
-                  </View>
-                )}
-              </View>
-            </View>
-          </Animated.View>
-
-          <View style={[styles.section, styles.stackedSection]}>
-            <View style={styles.sectionCard}>
-              <View style={styles.habitHeaderRow}>
-                <Text style={[styles.sectionTitle, { color: theme.text }]}>小习惯</Text>
-                <ScalePressable
-                  onPress={() => router.push('/habit-manage')}
-                  style={({ pressed }) => [
-                    styles.ghostBtn,
-                    { borderColor: `${primary}44` },
-                    pressed && { opacity: 0.8 },
-                  ]}>
-                  <MaterialIcons name="dashboard" size={14} color={primary} />
-                  <Text style={[styles.ghostBtnText, { color: primary }]}>管理习惯</Text>
-                </ScalePressable>
-              </View>
-
-              {habitSections.map((section) => {
-                const isOpen = expandedHabitSections[section.id] ?? true;
-                return (
-                  <View key={section.id} style={styles.habitSection}>
-                    <Pressable
-                      onPress={() => toggleHabitSection(section.id)}
-                      style={({ pressed }) => [
-                        styles.habitSectionToggle,
-                        { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : 'rgba(148,163,184,0.14)' },
-                        pressed && { opacity: 0.8 },
-                      ]}>
-                      <Text style={[styles.habitSectionToggleText, { color: outline }]}>
-                        {section.title}・{section.items.length}
-                      </Text>
-                      <MaterialIcons name={isOpen ? 'expand-less' : 'expand-more'} size={16} color={outline} />
-                    </Pressable>
-
-                    {isOpen ? (
-                      <View style={styles.habitItemsRow} onLayout={onHabitItemsRowLayout}>
-                        {section.items.map((item) => {
-                          const hasProgress = item.todayCount > 0;
-                          const goalMet =
-                            item.dailyGoalMax != null
-                              ? item.todayCount >= item.dailyGoalMax
-                              : item.todayCount > 0;
-                          const isBreak = item.kind === 'break';
-
-                          const openHabitEdit = () =>
-                            router.push({
-                              pathname: '/add-habit',
-                              params: {
-                                mode: 'edit',
-                                name: item.name,
-                                icon: item.icon,
-                                context: section.title,
-                                habitId: item.id,
-                              },
-                            });
-
-                          const partialBorderBuild = isDark ? 'rgba(52,211,153,0.5)' : 'rgba(0,108,73,0.42)';
-                          const partialBorderBreak = isDark ? 'rgba(251,191,36,0.62)' : 'rgba(180,83,9,0.48)';
-                          const partialBorder = isBreak ? partialBorderBreak : partialBorderBuild;
-                          const progressBadgeBg = isBreak
-                            ? isDark
-                              ? 'rgba(234,88,12,0.92)'
-                              : 'rgba(194,65,12,0.9)'
-                            : isDark
-                              ? 'rgba(52,211,153,0.92)'
-                              : 'rgba(0,108,73,0.88)';
-
-                          return (
-                            <View key={item.id} style={[styles.habitItem, { width: habitGridItemWidth }]}>
-                              <Pressable
-                                onPress={() => handleHabitIconPress(item)}
-                                onLongPress={openHabitEdit}
-                                delayLongPress={260}
-                                style={({ pressed }) => [styles.habitIconPressable, pressed && { opacity: 0.86 }]}>
-                                <View style={styles.habitIconWrap}>
-                                  {isBreak ? (
-                                    <View style={[styles.habitKindBadge, { borderColor: card }]}>
-                                      <Text style={styles.habitKindBadgeText}>戒</Text>
-                                    </View>
-                                  ) : null}
-                                  <View
-                                    style={[
-                                      styles.habitIconCircle,
-                                      {
-                                        borderColor: goalMet
-                                          ? secondary
-                                          : hasProgress
-                                            ? partialBorder
-                                            : isDark
-                                              ? 'rgba(148,163,184,0.42)'
-                                              : 'rgba(148,163,184,0.5)',
-                                        borderStyle: goalMet ? 'solid' : 'dashed',
-                                        backgroundColor: card,
-                                      },
-                                    ]}>
-                                    <Text style={[styles.habitIconText, goalMet && styles.habitIconTextDone]}>
-                                      {item.icon}
-                                    </Text>
-                                    {goalMet ? (
-                                      <View style={styles.habitIconDoneOverlay} pointerEvents="none">
-                                        <MaterialIcons name="check" size={30} color={secondary} />
-                                      </View>
-                                    ) : null}
-                                  </View>
-                                  {goalMet ? (
-                                    <View style={[styles.habitTodayBadge, { borderColor: card, backgroundColor: secondary }]}>
-                                      <MaterialIcons name="check" size={11} color="#fff" />
-                                    </View>
-                                  ) : hasProgress ? (
-                                    <View
-                                      style={[
-                                        styles.habitTodayBadge,
-                                        {
-                                          borderColor: card,
-                                          backgroundColor: progressBadgeBg,
-                                        },
-                                      ]}>
-                                      <Text style={styles.habitTodayBadgeCount}>{item.todayCount}</Text>
-                                    </View>
-                                  ) : null}
-                                </View>
-                              </Pressable>
-                              <Pressable
-                                onPress={() => void handleHabitIncrement(item.id, item.dailyGoalMax)}
-                                onLongPress={openHabitEdit}
-                                delayLongPress={260}
-                                style={({ pressed }) => [styles.habitNamePressable, pressed && { opacity: 0.86 }]}>
-                                <Text style={[styles.habitItemText, { color: theme.text }]} numberOfLines={2}>
-                                  {item.name}
-                                </Text>
-                              </Pressable>
-                            </View>
-                          );
-                        })}
-                        <Pressable
-                          onPress={() => router.push('/add-habit')}
-                          style={({ pressed }) => [
-                            styles.habitItem,
-                            { width: habitGridItemWidth },
-                            pressed && { opacity: 0.86 },
-                          ]}>
-                          <View
-                            style={[
-                              styles.habitAddCircle,
-                              { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.12)' },
-                            ]}>
-                            <MaterialIcons name="add" size={34} color={isDark ? '#94a3b8' : '#9ca3af'} />
-                          </View>
-                          <Text style={[styles.habitAddText, { color: isDark ? '#94a3b8' : '#9ca3af' }]}>添加打卡</Text>
-                        </Pressable>
-                      </View>
-                    ) : null}
-                  </View>
-                );
-              })}
-            </View>
-          </View>
 
           <View style={[styles.section, styles.stackedSection]}>
             <View style={styles.sectionCard}>
@@ -2775,11 +2362,12 @@ export default function TasksScreen() {
                   showsVerticalScrollIndicator={false}>
                   {standaloneTodos.map((t) => {
                     const isDone = t.status === 'done' || t.status === 'cancelled';
+                    const noteText = (t.note ?? '').trim();
                     const meta = parseTaskMeta(t.extra_data);
                     const due = t.due_date?.slice(0, 10) ?? '';
                     const repeat = (meta.repeat ?? '').trim();
                     const reminder = (meta.reminder ?? '').trim();
-                    const overdue = isTaskDueOverdue(due, isDone);
+                    const overdue = isTaskDueOverdue(due, isDone, logicalTodayYmd);
                     const checkColor = getTaskPriorityCheckColor(t.priority, isDark);
                     return (
                       <View key={t.id} style={styles.standaloneTodoSwipeWrap}>
@@ -2833,6 +2421,20 @@ export default function TasksScreen() {
                               numberOfLines={2}>
                               {t.title}
                             </Text>
+                            {!!noteText ? (
+                              <Text
+                                style={[
+                                  styles.standaloneTodoNote,
+                                  {
+                                    color: theme.textSecondary,
+                                    textDecorationLine: isDone ? 'line-through' : 'none',
+                                    opacity: isDone ? 0.42 : 1,
+                                  },
+                                ]}
+                                numberOfLines={2}>
+                                {noteText}
+                              </Text>
+                            ) : null}
                             {!!due ? (
                               <View style={styles.deadlineRow}>
                                 <View
@@ -2841,7 +2443,7 @@ export default function TasksScreen() {
                                     { backgroundColor: overdue ? `${error}22` : `${primary}14` },
                                   ]}>
                                   <Text style={[styles.deadlineText, { color: overdue ? error : primary }]}>
-                                    {formatTaskDueText(due)}
+                                    {formatTaskDueText(due, logicalTodayYmd)}
                                   </Text>
                                 </View>
                                 {overdue ? (
@@ -2880,6 +2482,728 @@ export default function TasksScreen() {
                   })}
                 </ScrollView>
               )}
+            </View>
+          </View>
+
+          <View style={[styles.section, styles.stackedSection]}>
+            <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 8 }]}>任务列表</Text>
+            <SegmentTabs
+              tabs={taskTabs}
+              active={taskTab}
+              onChange={setTaskTab}
+              onLongPressTab={(key, label) => openCategoryMenu('project', label, key)}
+              color={primary}
+              muted={outline}
+            />
+
+            <Animated.View style={{ opacity: matrixAnim, transform: [{ translateY: matrixAnim.interpolate({ inputRange: [0, 1], outputRange: [18, 0] }) }] }}>
+              <View style={[styles.matrixWrap, { borderColor: outlineVariant, backgroundColor: `${outlineVariant}28` }]}>
+                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}>
+                    <View style={styles.quadTitleRow}>
+                      <PulseDot color={error} />
+                      <Text style={[styles.quadTitle, { color: error }]}>紧急且重要 (立即执行)</Text>
+                    </View>
+                  </View>
+                  {matrixGroups.q11.length === 0 ? (
+                    <EmptyPlaceholder
+                      icon="task-alt"
+                      title="暂无任务"
+                      subtitle="把重要紧急的事项放进来，优先处理。"
+                      color={error}
+                      muted={outline}
+                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
+                    />
+                  ) : (
+                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                      {matrixGroups.q11.map((t) => renderMatrixTaskRow(t, error, { bg: `${error}14`, text: error }))}
+                    </ScrollView>
+                  )}
+                </View>
+                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}>
+                    <View style={styles.quadTitleRow}>
+                      <View style={[styles.dot, { backgroundColor: primary }]} />
+                      <Text style={[styles.quadTitle, { color: primary }]}>不紧急但重要 (计划执行)</Text>
+                    </View>
+                  </View>
+                  {matrixGroups.q10.length === 0 ? (
+                    <EmptyPlaceholder
+                      icon="event-available"
+                      title="暂无任务"
+                      subtitle="把重要但不紧急的任务安排进计划。"
+                      color={primary}
+                      muted={outline}
+                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
+                    />
+                  ) : (
+                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                      {matrixGroups.q10.map((t) => renderMatrixTaskRow(t, primary, { bg: `${primary}14`, text: primary }))}
+                    </ScrollView>
+                  )}
+                </View>
+                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}>
+                    <View style={styles.quadTitleRow}>
+                      <View style={[styles.dot, { backgroundColor: tertiary }]} />
+                      <Text style={[styles.quadTitle, { color: tertiary }]}>紧急但不重要 (委派他人)</Text>
+                    </View>
+                  </View>
+                  {matrixGroups.q01.length === 0 ? (
+                    <EmptyPlaceholder
+                      icon="groups"
+                      title="暂无任务"
+                      subtitle="需要委派/协调的事项可以放这里。"
+                      color={tertiary}
+                      muted={outline}
+                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
+                    />
+                  ) : (
+                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                      {matrixGroups.q01.map((t) => renderMatrixTaskRow(t, tertiary, { bg: `${tertiary}14`, text: tertiary }))}
+                    </ScrollView>
+                  )}
+                </View>
+                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}>
+                    <View style={styles.quadTitleRow}>
+                      <View style={[styles.dot, { backgroundColor: outline }]} />
+                      <Text style={[styles.quadTitle, { color: outline }]}>不紧急不重要 (尽量消除)</Text>
+                    </View>
+                  </View>
+                  {matrixGroups.q00.length === 0 ? (
+                    <EmptyPlaceholder
+                      icon="self-improvement"
+                      title="暂无任务"
+                      subtitle="不重要不紧急的事，能不做就不做。"
+                      color={outline}
+                      muted={outline}
+                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
+                    />
+                  ) : (
+                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                      {matrixGroups.q00.map((t) => renderMatrixTaskRow(t, outline, { bg: `${outline}12`, text: outline }))}
+                    </ScrollView>
+                  )}
+                </View>
+              </View>
+            </Animated.View>
+          </View>
+
+          <Animated.View style={{ opacity: projectAnim, transform: [{ translateY: projectAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+            <View style={[styles.section, styles.stackedSection]}>
+              <View style={styles.sectionCard}>
+                <View style={styles.headerRow}>
+                  <View style={styles.titleRow}>
+                    <Text style={[styles.sectionTitle, { color: theme.text }]}>项目列表</Text>
+                    <Text style={[styles.sectionMeta, { color: outline }]}>共 {projects.length} 个活跃项目</Text>
+                  </View>
+                  <ScalePressable
+                    onPress={() =>
+                      router.push(
+                        projectTab === 'all'
+                          ? '/add-project'
+                          : { pathname: '/add-project', params: { categoryId: projectTab } },
+                      )
+                    }
+                    style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
+                    <MaterialIcons name="add-circle" size={14} color={primary} />
+                    <Text style={[styles.ghostBtnText, { color: primary }]}>新建项目</Text>
+                  </ScalePressable>
+                </View>
+                <SegmentTabs
+                  tabs={projectTabs}
+                  active={projectTab}
+                  onChange={setProjectTab}
+                  onLongPressTab={(key, label) => openCategoryMenu('project', label, key)}
+                  color={primary}
+                  muted={outline}
+                />
+                {projectsShownInList.map((project, index) => {
+                  const isFirst = index === 0;
+                  const isCompleted = project.status === 'completed' || project.status === 'archived';
+                  const schedule = parseProjectSchedule(project.extra_data);
+                  const dueDateLabel = getProjectScheduleLabel(project, schedule);
+                  const isRangeSchedule = !!(schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end);
+                  const todayYmd = logicalTodayYmd;
+                  const rangeEndYmd = isRangeSchedule ? formatScheduleDateToYMD(schedule!.range!.end) : null;
+                  const dueYmd = !isRangeSchedule && project.due_date ? formatScheduleDateToYMD(project.due_date) : null;
+                  const isExpiredRange = (() => {
+                    if (!rangeEndYmd) return false;
+                    const end = ymdToLocalDate(rangeEndYmd);
+                    const today = ymdToLocalDate(todayYmd);
+                    if (!end || !today) return false;
+                    return today.getTime() > end.getTime();
+                  })();
+                  const isExpiredDue = (() => {
+                    if (!dueYmd) return false;
+                    const due = ymdToLocalDate(dueYmd);
+                    const today = ymdToLocalDate(todayYmd);
+                    if (!due || !today) return false;
+                    return today.getTime() > due.getTime();
+                  })();
+                  const noteText = project.note?.trim();
+                  const categoryLabel = !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? '收集箱' : projectCategoryMap.get(project.category_id) ?? '未分类';
+                  const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
+                  const hasRepeat = !!schedule?.repeatOption && schedule.repeatOption !== '不重复';
+                  const taskTree = sortTaskTree(projectTaskTreeMap[project.id] ?? []);
+                  const isExpanded = !!expandedProjectIds[project.id];
+                  const progress = (() => {
+                    // 只统计项目的直接子任务（第一层），不递归统计更深层级
+                    const total = taskTree.length;
+                    const done = taskTree.reduce((acc, n) => {
+                      if (n.status === 'done' || n.status === 'cancelled') return acc + 1;
+                      return acc;
+                    }, 0);
+                    const ratio = total > 0 ? done / total : 0;
+                    return { total, done, ratio };
+                  })();
+
+                  const openEditTask = (id: string) => {
+                    router.push({ pathname: '/edit-task', params: { id } });
+                  };
+
+                  const renderTaskTree = (nodes: TaskTreeNode[], level: number): React.ReactNode => {
+                    if (nodes.length === 0 || level > 3) return null;
+                    return nodes.map((node) => {
+                      const isDone = node.status === 'done' || node.status === 'cancelled';
+                      const childrenAll = Array.isArray(node.children) ? node.children : [];
+                      const children = level < 3 ? childrenAll : [];
+                      const hasAnyChildren = childrenAll.length > 0;
+                      const hasChildrenToRender = children.length > 0;
+                      const hasDeeperLevels = level === 3 && hasAnyChildren;
+                      const canToggleCollapse = level === 1 && hasAnyChildren;
+                      const isCollapsed = canToggleCollapse ? !!collapsedTaskIds[node.id] : false;
+                      const isExpandedTask = canToggleCollapse ? !isCollapsed : true;
+                      const noteText = (node.note ?? '').trim();
+                      const hintPaddingLeft =
+                        10 +
+                        level * TASK_INDENT +
+                        (canToggleCollapse ? 22 + 8 : 0) +
+                        14 +
+                        8;
+                      return (
+                        <React.Fragment key={node.id}>
+                          <View
+                            style={[
+                              styles.projectTaskRow,
+                              {
+                                paddingLeft: 10,
+                                paddingVertical: 10,
+                                marginTop: 6,
+                                borderRadius: 10,
+                                backgroundColor: isDark ? 'rgba(15, 23, 42, 0.72)' : '#fff',
+                                borderBottomWidth: StyleSheet.hairlineWidth,
+                                borderBottomColor: isDark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(203,213,225,0.9)',
+                              },
+                            ]}>
+                            <View style={styles.treeColumns}>
+                              {Array.from({ length: level }).map((_, idx) => (
+                                <View key={`${node.id}_col_${idx}`} style={[styles.treeColumn, { width: TASK_INDENT }]}>
+                                  {/* keep column width for indentation; no connector line */}
+                                </View>
+                              ))}
+                            </View>
+                            <Pressable
+                              onPress={(e) => {
+                                e.stopPropagation?.();
+                                void toggleTaskDone(node.id);
+                              }}
+                              hitSlop={10}
+                              accessibilityRole="button"
+                              accessibilityLabel={isDone ? '标记为未完成' : '标记为已完成'}>
+                              <View
+                                style={[
+                                  styles.statusCircle,
+                                  { borderColor: primary, backgroundColor: isDone ? primary : 'transparent' },
+                                ]}>
+                                {isDone ? <MaterialIcons name="check" size={12} color="#fff" /> : null}
+                              </View>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => openEditTask(node.id)}
+                              hitSlop={8}
+                              style={({ pressed }) => [{ flex: 1, minWidth: 0 }, pressed && { opacity: 0.85 }]}>
+                              <View style={styles.projectTaskMain}>
+                              <View style={styles.taskTitleRow}>
+                                <Text
+                                  style={[
+                                    styles.projectTaskText,
+                                    {
+                                      color: isDone ? '#6b7280' : theme.text,
+                                      textDecorationLine: isDone ? 'line-through' : 'none',
+                                      opacity: isDone ? 0.85 : 1,
+                                    },
+                                  ]}
+                                  numberOfLines={1}>
+                                  {node.title}
+                                </Text>
+                                {level === 1 && isDone ? <Text style={styles.taskDoneTag}>已完成</Text> : null}
+                              </View>
+                              {(() => {
+                                const meta = parseTaskMeta(node.extra_data);
+                                const priorityLabel = formatTaskPriority(node.priority);
+                                const priorityColor = getTaskPriorityColor(node.priority, isDark);
+                                const dueDate = node.due_date?.slice(0, 10) ?? '';
+                                const reminder = (meta.reminder ?? '').trim();
+                                const repeat = (meta.repeat ?? '').trim();
+                                const dueOverdue = isTaskDueOverdue(dueDate, isDone, logicalTodayYmd);
+                                return (
+                                  <View style={styles.projectTaskMetaRow}>
+                                    {!!priorityLabel && (
+                                      <View style={[styles.projectTaskMetaChip, { backgroundColor: `${priorityColor}14`, borderColor: `${priorityColor}40` }]}>
+                                        <MaterialIcons name="flag" size={11} color={priorityColor} />
+                                        <Text style={[styles.projectTaskMetaText, { color: priorityColor }]}>{priorityLabel}</Text>
+                                      </View>
+                                    )}
+                                    {!!dueDate && (
+                                      <View
+                                        style={[
+                                          styles.projectTaskMetaChip,
+                                          { borderColor: outlineVariant },
+                                          dueOverdue && { backgroundColor: `${error}14`, borderColor: `${error}44` },
+                                        ]}>
+                                        <MaterialIcons name="event" size={11} color={dueOverdue ? error : outline} />
+                                        <Text style={[styles.projectTaskMetaText, { color: dueOverdue ? error : outline }]}>{formatTaskDueText(dueDate, logicalTodayYmd)}</Text>
+                                      </View>
+                                    )}
+                                    {dueOverdue ? (
+                                      <View style={[styles.projectTaskMetaChip, { backgroundColor: `${error}18`, borderColor: `${error}55` }]}>
+                                        <MaterialIcons name="report-problem" size={11} color={error} />
+                                        <Text style={[styles.projectTaskMetaText, { color: error }]}>已过期</Text>
+                                      </View>
+                                    ) : null}
+                                    {!!repeat && (
+                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
+                                        <MaterialIcons name="repeat" size={11} color={outline} />
+                                        <Text style={[styles.projectTaskMetaText, { color: outline }]}>{repeat}</Text>
+                                      </View>
+                                    )}
+                                    {!!reminder && (
+                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
+                                        <MaterialIcons name="notifications-active" size={11} color={outline} />
+                                        <Text style={[styles.projectTaskMetaText, { color: outline }]}>{reminder}</Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                );
+                              })()}
+                              {hasAnyChildren ? (() => {
+                                const directTotal = childrenAll.length;
+                                if (directTotal <= 0) return null;
+                                const directDone = childrenAll.reduce((acc, child) => {
+                                  if (child.status === 'done' || child.status === 'cancelled') return acc + 1;
+                                  return acc;
+                                }, 0);
+                                const ratio = directDone / directTotal;
+                                return (
+                                  <>
+                                    <View style={styles.projectTaskProgressRow}>
+                                      <Text style={[styles.projectTaskProgressLabel, { color: outline }]}>
+                                        进度 {directDone}/{directTotal}
+                                      </Text>
+                                      <Text style={[styles.projectTaskProgressLabel, { color: outline }]}>
+                                        {Math.round(ratio * 100)}%
+                                      </Text>
+                                    </View>
+                                    <View
+                                      style={[
+                                        styles.projectTaskProgressTrack,
+                                        { backgroundColor: isDark ? 'rgba(148,163,184,0.14)' : '#e2e7ff' },
+                                      ]}>
+                                      <View
+                                        style={[
+                                          styles.projectTaskProgressFill,
+                                          { backgroundColor: primary, width: `${Math.round(ratio * 100)}%` },
+                                        ]}
+                                      />
+                                    </View>
+                                  </>
+                                );
+                              })() : null}
+                              {!!noteText && (
+                                <View style={[styles.projectTaskNoteWrap, { backgroundColor: `${primary}0E`, borderLeftColor: primary }]}>
+                                  <Text style={[styles.projectTaskNoteText, { color: theme.textSecondary }]} numberOfLines={2}>
+                                    {noteText}
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                            </Pressable>
+                          </View>
+                          {hasChildrenToRender && isExpandedTask ? renderTaskTree(children, level + 1) : null}
+                          {hasDeeperLevels && isExpandedTask ? (
+                            <Text
+                              style={[
+                                styles.projectTaskEllipsisInline,
+                                {
+                                  color: '#6b7280',
+                                  paddingLeft: hintPaddingLeft,
+                                },
+                              ]}>
+                              还有更深层级任务
+                            </Text>
+                          ) : null}
+                        </React.Fragment>
+                      );
+                    });
+                  };
+
+                  const hasAnyTasks = taskTree.length > 0;
+                  const canSwipeArchiveToInbox =
+                    project.status !== 'completed' &&
+                    project.status !== 'archived' &&
+                    !isProjectInInboxCategory(project.category_id);
+                  return (
+                    <View key={project.id} style={styles.projectSwipeWrap}>
+                      <Swipeable
+                        ref={(r) => {
+                          projectSwipeableRefs.current[project.id] = r;
+                        }}
+                        enabled={canSwipeArchiveToInbox}
+                        overshootRight={false}
+                        friction={2}
+                        renderRightActions={() => (
+                          <View style={styles.projectSwipeActions}>
+                            <Pressable
+                              onPress={() => void handleProjectSwipeArchive(project)}
+                              style={({ pressed }) => [
+                                styles.projectSwipeArchive,
+                                { opacity: pressed ? 0.9 : 1, backgroundColor: secondary },
+                              ]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`将 ${project.name} 归纳到收集箱`}>
+                              <MaterialIcons name="inventory-2" size={22} color="#fff" />
+                              <Text style={styles.projectSwipeArchiveText} numberOfLines={1}>
+                                收纳
+                              </Text>
+                            </Pressable>
+                          </View>
+                        )}>
+                        <View
+                          style={[
+                            styles.projectCard,
+                            {
+                              backgroundColor: isFirst ? card : soft,
+                              opacity: isFirst ? 1 : 0.86,
+                            },
+                          ]}>
+                      <ScalePressable
+                        onPress={() => openProject(project.id)}
+                        hitSlop={6}
+                        scaleTo={0.988}
+                        style={styles.projectHeadPressable}>
+                      <View
+                        style={[
+                          styles.projectHead,
+                          { borderLeftColor: primary },
+                        ]}>
+                        <View style={styles.projectHeadLeft}>
+                          <MaterialIcons name={isFirst ? 'inventory-2' : 'data-usage'} size={22} color={primary} />
+                          <View style={styles.projectHeadMainColumn}>
+                            <Text style={[styles.projectTitle, { color: theme.text }]}>{project.name}</Text>
+                            <View style={styles.projectSubRow}>
+                              {dueDateLabel ? (
+                                <Text style={[styles.projectSub, { color: outline }]}>
+                                  {isRangeSchedule
+                                    ? isExpiredRange && rangeEndYmd
+                                      ? `已于：${formatYmdCN(rangeEndYmd)} 过期`
+                                      : dueDateLabel
+                                    : isExpiredDue && dueYmd
+                                      ? `已于：${formatYmdCN(dueYmd)} 过期`
+                                      : dueYmd
+                                        ? formatProjectDueText(dueYmd, logicalTodayYmd)
+                                        : `截止 ${dueDateLabel}`}
+                                </Text>
+                              ) : (
+                                <Text style={[styles.projectSub, { color: outline }]}>无截止日期</Text>
+                              )}
+                              <Text style={[styles.projectSub, { color: outline }]}>•</Text>
+                              <Text style={[styles.projectSub, { color: outline }]}>分类 {categoryLabel}</Text>
+                            </View>
+                            {noteText ? (
+                              <View style={[styles.projectNoteWrap, { backgroundColor: `${primary}12`, borderLeftColor: primary }]}>
+                                <Text style={[styles.projectNote, { color: theme.textSecondary }]} numberOfLines={2}>
+                                  {noteText}
+                                </Text>
+                              </View>
+                            ) : null}
+                            <View style={styles.projectMetaRow}>
+                              <Text style={[styles.projectSubStrong, { color: primary }]}>{project.status === 'active' ? '进行中' : project.status === 'paused' ? '已暂停' : isCompleted ? '已完成' : '未知状态'}</Text>
+                              {(hasReminder || hasRepeat) && <Text style={[styles.projectSub, { color: outline }]}>•</Text>}
+                              {hasReminder && (
+                                <View style={styles.projectFlag}>
+                                  <MaterialIcons name="notifications-active" size={11} color={primary} />
+                                  <Text style={[styles.projectFlagText, { color: primary }]}>提醒</Text>
+                                </View>
+                              )}
+                              {hasRepeat && (
+                                <View style={styles.projectFlag}>
+                                  <MaterialIcons name="repeat" size={11} color={primary} />
+                                  <Text style={[styles.projectFlagText, { color: primary }]}>重复</Text>
+                                </View>
+                              )}
+                            </View>
+                            {progress.total > 0 ? (
+                              <>
+                                <View style={styles.projectProgressRow}>
+                                  <Text style={[styles.projectProgressLabel, { color: outline }]}>
+                                    进度 {progress.done}/{progress.total}
+                                  </Text>
+                                  <Text style={[styles.projectProgressLabel, { color: outline }]}>
+                                    {Math.round(progress.ratio * 100)}%
+                                  </Text>
+                                </View>
+                                <View
+                                  style={[
+                                    styles.projectProgressTrack,
+                                    { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : '#e2e7ff' },
+                                  ]}>
+                                  <View
+                                    style={[
+                                      styles.projectProgressFill,
+                                      { backgroundColor: primary, width: `${Math.round(progress.ratio * 100)}%` },
+                                    ]}
+                                  />
+                                </View>
+                              </>
+                            ) : null}
+                          </View>
+                        </View>
+                        <View style={styles.projectHeadRight}>
+                          <Pressable
+                            onPress={(e) => {
+                              e.stopPropagation();
+                              openQuickAddTaskForProject(project);
+                            }}
+                            hitSlop={8}
+                            accessibilityRole="button"
+                            accessibilityLabel={`为「${project.name}」快捷添加任务`}
+                            style={({ pressed }) => [styles.projectQuickAddBtn, pressed && { opacity: 0.75 }]}>
+                            <MaterialIcons name="add-task" size={20} color={primary} />
+                          </Pressable>
+                          {hasAnyTasks ? (
+                            <Pressable
+                              onPress={(e) => {
+                                e.stopPropagation();
+                                toggleProjectExpand(project.id);
+                              }}
+                              hitSlop={8}
+                              style={({ pressed }) => [styles.projectExpandBtn, pressed && { opacity: 0.75 }]}>
+                              <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={20} color={outline} />
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      </View>
+                      </ScalePressable>
+                      {(!hasAnyTasks || isExpanded) && (
+                        <View style={[styles.projectTaskBody, { borderTopColor: outlineVariant }]}>
+                          {!hasAnyTasks ? (
+                            <Text style={[styles.projectTaskEmpty, { color: outline }]}>暂无任务</Text>
+                          ) : (
+                            <>
+                              {renderTaskTree(taskTree, 1)}
+                            </>
+                          )}
+                        </View>
+                      )}
+                        </View>
+                      </Swipeable>
+                    </View>
+                  );
+                })}
+                {projectsShownInList.length === 0 && (
+                  <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
+                    <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
+                      <View style={styles.projectHeadLeft}>
+                        <MaterialIcons name="folder-open" size={22} color={outline} />
+                        <View style={styles.projectHeadMainColumn}>
+                          <Text style={[styles.projectTitle, { color: theme.textSecondary }]}>暂无项目</Text>
+                          <Text style={[styles.projectSub, { color: outline }]}>可点击右上角“新建项目”添加</Text>
+                        </View>
+                      </View>
+                    </View>
+                  </View>
+                )}
+              </View>
+            </View>
+          </Animated.View>
+
+          <View style={[styles.section, styles.stackedSection]}>
+            <View style={styles.sectionCard}>
+              <View style={styles.habitHeaderRow}>
+                <Text style={[styles.sectionTitle, { color: theme.text }]}>小习惯</Text>
+                <ScalePressable
+                  onPress={() => router.push('/habit-manage')}
+                  style={({ pressed }) => [
+                    styles.ghostBtn,
+                    { borderColor: `${primary}44` },
+                    pressed && { opacity: 0.8 },
+                  ]}>
+                  <MaterialIcons name="dashboard" size={14} color={primary} />
+                  <Text style={[styles.ghostBtnText, { color: primary }]}>管理习惯</Text>
+                </ScalePressable>
+              </View>
+
+              {habitSections.map((section) => {
+                const isOpen = expandedHabitSections[section.id] ?? true;
+                const visibleHabitItems = section.items.filter(
+                  (it) => !isHabitHiddenByCalendarCycleOnTasks(it.extraData, habitScheduleAnchorDate)
+                );
+                return (
+                  <View key={section.id} style={styles.habitSection}>
+                    <Pressable
+                      onPress={() => toggleHabitSection(section.id)}
+                      style={({ pressed }) => [
+                        styles.habitSectionToggle,
+                        { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : 'rgba(148,163,184,0.14)' },
+                        pressed && { opacity: 0.8 },
+                      ]}>
+                      <Text style={[styles.habitSectionToggleText, { color: outline }]}>
+                        {section.title}・{visibleHabitItems.length}
+                      </Text>
+                      <MaterialIcons name={isOpen ? 'expand-less' : 'expand-more'} size={16} color={outline} />
+                    </Pressable>
+
+                    {isOpen ? (
+                      <View style={styles.habitItemsRow} onLayout={onHabitItemsRowLayout}>
+                        {visibleHabitItems.map((item) => {
+                          const scheduleAllowsToday = isHabitScheduledToday(item.extraData, habitScheduleAnchorDate);
+                          const hasProgress = item.todayCount > 0;
+                          const goalMet =
+                            item.dailyGoalMax != null
+                              ? item.todayCount >= item.dailyGoalMax
+                              : item.todayCount > 0;
+                          const isBreak = item.kind === 'break';
+
+                          const openHabitDetail = () =>
+                            router.push({
+                              pathname: '/habit-detail',
+                              params: { habitId: item.id },
+                            });
+
+                          const partialBorderBuild = isDark ? 'rgba(52,211,153,0.5)' : 'rgba(0,108,73,0.42)';
+                          const partialBorderBreak = isDark ? 'rgba(251,191,36,0.62)' : 'rgba(180,83,9,0.48)';
+                          const partialBorder = isBreak ? partialBorderBreak : partialBorderBuild;
+                          const progressBadgeBg = isBreak
+                            ? isDark
+                              ? 'rgba(234,88,12,0.92)'
+                              : 'rgba(194,65,12,0.9)'
+                            : isDark
+                              ? 'rgba(52,211,153,0.92)'
+                              : 'rgba(0,108,73,0.88)';
+
+                          return (
+                            <View key={item.id} style={[styles.habitItem, { width: habitGridItemWidth }]}>
+                              <Pressable
+                                onPress={() => {
+                                  if (!scheduleAllowsToday) return;
+                                  handleHabitIconPress(item);
+                                }}
+                                onLongPress={openHabitDetail}
+                                delayLongPress={260}
+                                style={({ pressed }) => [
+                                  styles.habitIconPressable,
+                                  pressed && scheduleAllowsToday && { opacity: 0.86 },
+                                ]}>
+                                <View style={styles.habitIconWrap}>
+                                  {isBreak ? (
+                                    <View style={[styles.habitKindBadge, { borderColor: card }]}>
+                                      <Text style={styles.habitKindBadgeText}>戒</Text>
+                                    </View>
+                                  ) : null}
+                                  <View
+                                    style={[
+                                      styles.habitIconCircle,
+                                      {
+                                        borderColor: goalMet
+                                          ? secondary
+                                          : hasProgress
+                                            ? partialBorder
+                                            : isDark
+                                              ? 'rgba(148,163,184,0.42)'
+                                              : 'rgba(148,163,184,0.5)',
+                                        borderStyle: goalMet ? 'solid' : 'dashed',
+                                        backgroundColor: card,
+                                        opacity: scheduleAllowsToday ? 1 : 0.45,
+                                      },
+                                    ]}>
+                                    <Text style={[styles.habitIconText, goalMet && styles.habitIconTextDone]}>
+                                      {item.icon}
+                                    </Text>
+                                    {goalMet ? (
+                                      <View style={styles.habitIconDoneOverlay} pointerEvents="none">
+                                        <MaterialIcons name="check" size={30} color={secondary} />
+                                      </View>
+                                    ) : null}
+                                    {!scheduleAllowsToday ? (
+                                      <View style={styles.habitIconLockOverlay} pointerEvents="none">
+                                        <MaterialIcons name="lock" size={26} color={isDark ? '#e2e8f0' : '#475569'} />
+                                      </View>
+                                    ) : null}
+                                  </View>
+                                  {goalMet ? (
+                                    <View style={[styles.habitTodayBadge, { borderColor: card, backgroundColor: secondary }]}>
+                                      <MaterialIcons name="check" size={11} color="#fff" />
+                                    </View>
+                                  ) : hasProgress ? (
+                                    <View
+                                      style={[
+                                        styles.habitTodayBadge,
+                                        {
+                                          borderColor: card,
+                                          backgroundColor: progressBadgeBg,
+                                        },
+                                      ]}>
+                                      <Text style={styles.habitTodayBadgeCount}>{item.todayCount}</Text>
+                                    </View>
+                                  ) : null}
+                                </View>
+                              </Pressable>
+                              <Pressable
+                                onPress={() => {
+                                  if (!scheduleAllowsToday) return;
+                                  void handleHabitIncrement(item.id, item.dailyGoalMax);
+                                }}
+                                onLongPress={openHabitDetail}
+                                delayLongPress={260}
+                                style={({ pressed }) => [
+                                  styles.habitNamePressable,
+                                  pressed && scheduleAllowsToday && { opacity: 0.86 },
+                                ]}>
+                                <Text
+                                  style={[
+                                    styles.habitItemText,
+                                    { color: theme.text, opacity: scheduleAllowsToday ? 1 : 0.5 },
+                                  ]}
+                                  numberOfLines={2}>
+                                  {item.name}
+                                </Text>
+                              </Pressable>
+                            </View>
+                          );
+                        })}
+                        <Pressable
+                          onPress={() => router.push('/add-habit')}
+                          style={({ pressed }) => [
+                            styles.habitItem,
+                            { width: habitGridItemWidth },
+                            pressed && { opacity: 0.86 },
+                          ]}>
+                          <View
+                            style={[
+                              styles.habitAddCircle,
+                              { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.12)' },
+                            ]}>
+                            <MaterialIcons name="add" size={34} color={isDark ? '#94a3b8' : '#9ca3af'} />
+                          </View>
+                          <Text style={[styles.habitAddText, { color: isDark ? '#94a3b8' : '#9ca3af' }]}>添加打卡</Text>
+                        </Pressable>
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })}
             </View>
           </View>
 
@@ -2972,6 +3296,47 @@ export default function TasksScreen() {
                 <Pressable onPress={saveCategory} style={({ pressed }) => [styles.editorPrimaryBtn, { backgroundColor: primary }, pressed && { opacity: 0.9 }]}>
                   <Text style={styles.editorPrimaryText}>确认</Text>
                 </Pressable>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={dayStartModalVisible} transparent animationType="fade" onRequestClose={closeDayStartModal}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={closeDayStartModal} />
+          <View pointerEvents="box-none" style={styles.modalCenter}>
+            <View style={[styles.editorCard, { backgroundColor: modalCardBg }]}>
+              <Text style={[styles.editorTitle, { color: theme.text }]}>每日完成日界</Text>
+              <Text style={[styles.editorHint, { color: outline }]}>
+                习惯打卡、今日青蛙与热力图等统计以此时间为新一天的起点（默认 00:00）。
+              </Text>
+              <DateTimePicker
+                value={new Date(2000, 0, 1, draftBoundary.hour, draftBoundary.minute)}
+                mode="time"
+                is24Hour
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                themeVariant={isDark ? 'dark' : 'light'}
+                onChange={(_, date) => {
+                  if (date) setDraftBoundary({ hour: date.getHours(), minute: date.getMinutes() });
+                }}
+              />
+              <View style={[styles.editorActions, { justifyContent: 'space-between', width: '100%' }]}>
+                <Pressable
+                  onPress={applyDefaultDayBoundary}
+                  style={({ pressed }) => [styles.editorGhostBtn, pressed && { opacity: 0.8 }]}>
+                  <Text style={[styles.editorGhostText, { color: outline }]}>恢复默认</Text>
+                </Pressable>
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <Pressable onPress={closeDayStartModal} style={({ pressed }) => [styles.editorGhostBtn, pressed && { opacity: 0.8 }]}>
+                    <Text style={[styles.editorGhostText, { color: outline }]}>取消</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void saveDayBoundaryFromModal()}
+                    style={({ pressed }) => [styles.editorPrimaryBtn, { backgroundColor: primary }, pressed && { opacity: 0.9 }]}>
+                    <Text style={styles.editorPrimaryText}>保存</Text>
+                  </Pressable>
+                </View>
               </View>
             </View>
           </View>
@@ -3260,6 +3625,31 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 2,
   },
+  projectSwipeWrap: { marginBottom: 10 },
+  projectSwipeActions: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginLeft: -10,
+  },
+  projectSwipeArchive: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'stretch',
+    minWidth: 100,
+    paddingHorizontal: 16,
+    borderTopRightRadius: 14,
+    borderBottomRightRadius: 14,
+    gap: 8,
+  },
+  projectSwipeArchiveText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
+    flexShrink: 0,
+  },
+  /** 仅包住项目标题行，避免整块卡片拦截下方任务勾选 */
+  projectHeadPressable: { alignSelf: 'stretch' },
   projectHead: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3509,6 +3899,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  habitIconLockOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 38,
+    backgroundColor: 'rgba(15, 23, 42, 0.22)',
+  },
   habitTodayBadge: {
     position: 'absolute',
     right: -2,
@@ -3533,6 +3930,7 @@ const styles = StyleSheet.create({
   habitAddText: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
 
   standaloneTodoSubtitle: { fontSize: 12, fontWeight: '600' },
+  standaloneTodoNote: { fontSize: 12, fontWeight: '500', lineHeight: 16 },
   quickTodoShell: {
     flexDirection: 'row',
     alignItems: 'center',

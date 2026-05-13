@@ -1,7 +1,13 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { generateWeeklyReviewCoaching } from '@/lib/weekly-review-coaching';
-import { fetchWeeklyReviewMetrics, getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
+import { fetchWeeklyReviewMetrics, getRollingSevenDayRange, getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
+import {
+  getWeeklyReviewConfiguredWeekday,
+  isTodayConfiguredWeeklyReviewDay,
+  setWeeklyReviewConfiguredWeekday,
+  WEEKLY_REVIEW_WEEKDAY_LABELS,
+} from '@/lib/weekly-review-settings';
 import type { WeeklyReviewMetrics } from '@/lib/repositories/insights/weekly-review';
 import {
   getWeeklyReviewJournalByWeek,
@@ -9,13 +15,16 @@ import {
   updateWeeklyReviewAdjustFlags,
   upsertWeeklyReviewJournal,
 } from '@/lib/repositories/insights/weekly-review-journal';
+import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { Stack, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -36,9 +45,124 @@ function formatMetricInt(n: number): string {
   return String(Math.round(n));
 }
 
-function formatWeekRangeLabel(): string {
-  const { start, end } = getCurrentWeekRange();
+function formatRangeLabel(start: Date, end: Date): string {
   return `${start.getMonth() + 1}月${start.getDate()}日 – ${end.getMonth() + 1}月${end.getDate()}日`;
+}
+
+const DAILY_BODY_VERSION = 1 as const;
+
+type DailyFieldKey = 'audit_tasks' | 'audit_issues' | 'insight_high' | 'insight_block' | 'iter_top3' | 'iter_tweak';
+
+type DailyStructured = Record<DailyFieldKey, string>;
+
+function createEmptyDailyFields(): DailyStructured {
+  return {
+    audit_tasks: '',
+    audit_issues: '',
+    insight_high: '',
+    insight_block: '',
+    iter_top3: '',
+    iter_tweak: '',
+  };
+}
+
+function serializeDailyBody(f: DailyStructured): string {
+  return JSON.stringify({
+    v: DAILY_BODY_VERSION,
+    audit_tasks: f.audit_tasks,
+    audit_issues: f.audit_issues,
+    insight_high: f.insight_high,
+    insight_block: f.insight_block,
+    iter_top3: f.iter_top3,
+    iter_tweak: f.iter_tweak,
+  });
+}
+
+function parseDailyBody(raw: string | null | undefined): DailyStructured {
+  const empty = createEmptyDailyFields();
+  if (!raw || !String(raw).trim()) return empty;
+  const s = String(raw).trim();
+  try {
+    const o = JSON.parse(s) as Record<string, unknown>;
+    if (o && typeof o === 'object' && o.v === DAILY_BODY_VERSION) {
+      return {
+        audit_tasks: String(o.audit_tasks ?? ''),
+        audit_issues: String(o.audit_issues ?? ''),
+        insight_high: String(o.insight_high ?? ''),
+        insight_block: String(o.insight_block ?? ''),
+        iter_top3: String(o.iter_top3 ?? ''),
+        iter_tweak: String(o.iter_tweak ?? ''),
+      };
+    }
+  } catch {
+    // 旧版整段文本：落入「完成任务」便于继续编辑
+  }
+  return { ...empty, audit_tasks: s };
+}
+
+const DAILY_FIELD_LABELS: Record<DailyFieldKey, string> = {
+  audit_tasks: '完成任务',
+  audit_issues: '遗留问题',
+  insight_high: '效率高点',
+  insight_block: '障碍点',
+  iter_top3: '明日 Top 3 目标',
+  iter_tweak: '执行微调',
+};
+
+const DAILY_FORM_SECTIONS: {
+  sectionTitle: string;
+  fields: { key: DailyFieldKey; label: string; placeholder: string; minH: number }[];
+}[] = [
+  {
+    sectionTitle: '今日总结 (Audit)',
+    fields: [
+      { key: 'audit_tasks', label: '完成任务', placeholder: '[ ] A, [ ] B…', minH: 72 },
+      { key: 'audit_issues', label: '遗留问题', placeholder: '…', minH: 72 },
+    ],
+  },
+  {
+    sectionTitle: '今日洞察 (Insight)',
+    fields: [
+      { key: 'insight_high', label: '效率高点', placeholder: '例如：上午深度工作 2 小时', minH: 72 },
+      { key: 'insight_block', label: '障碍点', placeholder: '例如：被频繁的消息通知打断', minH: 72 },
+    ],
+  },
+  {
+    sectionTitle: '明日迭代 (Iteration)',
+    fields: [
+      { key: 'iter_top3', label: '明日 Top 3 目标', placeholder: '1. … 2. … 3. …', minH: 88 },
+      { key: 'iter_tweak', label: '执行微调', placeholder: '例如：明天把手机放在客厅再开始工作', minH: 72 },
+    ],
+  },
+];
+
+type DailyEntry = { ymd: string; label: string; fields: DailyStructured };
+
+function dailyEntryPreviewText(fields: DailyStructured): string {
+  const bits = (Object.keys(DAILY_FIELD_LABELS) as DailyFieldKey[])
+    .map(k => fields[k].trim().replace(/\s+/g, ' '))
+    .filter(Boolean);
+  return bits.join(' · ');
+}
+
+function buildDailyReviewsDigest(entries: DailyEntry[]): string {
+  const blocks: string[] = [];
+  for (const e of entries) {
+    const parts: string[] = [];
+    for (const k of Object.keys(DAILY_FIELD_LABELS) as DailyFieldKey[]) {
+      const v = e.fields[k].trim();
+      if (v) parts.push(`${DAILY_FIELD_LABELS[k]}：${v}`);
+    }
+    if (parts.length === 0) continue;
+    blocks.push(`【${e.label}】\n${parts.join('\n')}`);
+  }
+  return blocks.join('\n\n');
+}
+
+function toYmdLocal(d: Date): string {
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  return `${d.getFullYear()}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
 const PLACEHOLDERS = {
@@ -67,8 +191,16 @@ export default function WeeklyReviewScreen() {
   const secondary = isDark ? '#34d399' : '#006c49';
   const tertiary = isDark ? '#fbbf24' : '#825100';
 
-  const weekStartYmd = useMemo(() => getCurrentWeekRange().startYmd, []);
-  const weekRangeLabel = useMemo(() => formatWeekRangeLabel(), []);
+  const [periodStartYmd, setPeriodStartYmd] = useState('');
+  const [weekRangeLabel, setWeekRangeLabel] = useState('');
+  const [configuredDow, setConfiguredDow] = useState<number | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [canEdit, setCanEdit] = useState(false);
+
+  const [dailyEntries, setDailyEntries] = useState<DailyEntry[]>([]);
+  const [dailyPeriodLabel, setDailyPeriodLabel] = useState('');
+  const [expandedDailyYmd, setExpandedDailyYmd] = useState<string | null>(null);
+  const [dailySavingYmd, setDailySavingYmd] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -90,7 +222,65 @@ export default function WeeklyReviewScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [row, m] = await Promise.all([getWeeklyReviewJournalByWeek(weekStartYmd), fetchWeeklyReviewMetrics()]);
+      const today = new Date();
+      const dow = await getWeeklyReviewConfiguredWeekday();
+      setConfiguredDow(dow);
+
+      const rolling =
+        dow !== null ? getRollingSevenDayRangeEndingOnNextReviewDay(today, dow) : getRollingSevenDayRange(today);
+
+      setDailyPeriodLabel(
+        dow !== null
+          ? `${formatRangeLabel(rolling.start, rolling.end)} · 周期终点：${rolling.end.getMonth() + 1}月${rolling.end.getDate()}日（${
+              WEEKLY_REVIEW_WEEKDAY_LABELS[dow]
+            }）`
+          : `${formatRangeLabel(rolling.start, rolling.end)}（尚未设置复盘日时，暂以今日为终点倒推 7 天）`,
+      );
+
+      const dailyRows = await listDailyReviewsBetween(rolling.startYmd, rolling.endYmd);
+      const byYmd = new Map(dailyRows.map(r => [r.record_date_ymd, parseDailyBody(r.body ?? '')]));
+      const nextDaily: DailyEntry[] = [];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(rolling.start);
+        d.setDate(rolling.start.getDate() + i);
+        const ymd = toYmdLocal(d);
+        nextDaily.push({
+          ymd,
+          label: `${d.getMonth() + 1}月${d.getDate()}日 ${WEEKLY_REVIEW_WEEKDAY_LABELS[d.getDay()]}`,
+          fields: byYmd.get(ymd) ?? createEmptyDailyFields(),
+        });
+      }
+      setDailyEntries(nextDaily);
+      setExpandedDailyYmd(rolling.endYmd);
+
+      const allowed = dow !== null && isTodayConfiguredWeeklyReviewDay(dow, today);
+      setCanEdit(allowed);
+
+      if (!allowed) {
+        setPeriodStartYmd('');
+        setWeekRangeLabel('');
+        setMetrics(null);
+        setSectionSummary('');
+        setSectionPlans('');
+        setSectionReflect('');
+        setSectionLearnings('');
+        setSectionNext('');
+        setExecutionScore(0);
+        setAiCoaching(null);
+        setAdjustTasks(false);
+        setAdjustSavings(false);
+        setAdjustPlans(false);
+        return;
+      }
+
+      setPeriodStartYmd(rolling.startYmd);
+      setWeekRangeLabel(formatRangeLabel(rolling.start, rolling.end));
+
+      const metricsAnchor = new Date(rolling.end.getFullYear(), rolling.end.getMonth(), rolling.end.getDate());
+      const [row, m] = await Promise.all([
+        getWeeklyReviewJournalByWeek(rolling.startYmd),
+        fetchWeeklyReviewMetrics(metricsAnchor, 'rolling-7'),
+      ]);
       setMetrics(m);
       if (row) {
         setSectionSummary(row.section_summary ?? '');
@@ -103,23 +293,38 @@ export default function WeeklyReviewScreen() {
         setAdjustTasks(row.adjust_tasks === 1);
         setAdjustSavings(row.adjust_savings === 1);
         setAdjustPlans(row.adjust_plans === 1);
+      } else {
+        setSectionSummary('');
+        setSectionPlans('');
+        setSectionReflect('');
+        setSectionLearnings('');
+        setSectionNext('');
+        setExecutionScore(0);
+        setAiCoaching(null);
+        setAdjustTasks(false);
+        setAdjustSavings(false);
+        setAdjustPlans(false);
       }
     } catch {
       setMetrics(null);
+      setDailyEntries([]);
+      setDailyPeriodLabel('');
     } finally {
       setLoading(false);
     }
-  }, [weekStartYmd]);
+  }, []);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
 
   const persistDraft = useCallback(async () => {
     setSaving(true);
     try {
       await upsertWeeklyReviewJournal({
-        week_start_ymd: weekStartYmd,
+        week_start_ymd: periodStartYmd,
         section_summary: sectionSummary,
         section_plans: sectionPlans,
         section_reflect: sectionReflect,
@@ -137,7 +342,7 @@ export default function WeeklyReviewScreen() {
       setSaving(false);
     }
   }, [
-    weekStartYmd,
+    periodStartYmd,
     sectionSummary,
     sectionPlans,
     sectionReflect,
@@ -150,13 +355,21 @@ export default function WeeklyReviewScreen() {
   ]);
 
   const onSaveDraft = useCallback(async () => {
+    if (!canEdit || !periodStartYmd) {
+      Alert.alert('暂不可保存', '仅在已设定的「每周复盘日」当天可填写与保存；请先设置复盘日，并在对应日期打开本页。');
+      return;
+    }
     await persistDraft();
-    Alert.alert('已保存', '本周复盘草稿已写入本地。');
-  }, [persistDraft]);
+    Alert.alert('已保存', '复盘草稿已写入本地。');
+  }, [canEdit, periodStartYmd, persistDraft]);
 
   const onGenerateAi = useCallback(async () => {
+    if (!canEdit || !periodStartYmd) {
+      Alert.alert('暂不可用', '仅在复盘日当天可生成 AI 建议。');
+      return;
+    }
     if (executionScore < 1 || executionScore > 5) {
-      Alert.alert('请先自评', '请为「本周执行结果」选择 1～5 星后再生成建议。');
+      Alert.alert('请先自评', '请为「本周期执行结果」选择 1～5 星后再生成建议。');
       return;
     }
     const totalLen =
@@ -181,8 +394,9 @@ export default function WeeklyReviewScreen() {
         section_next_week: sectionNext,
         executionScore,
         metrics,
+        dailyReviewsDigest: buildDailyReviewsDigest(dailyEntries),
       });
-      await setWeeklyReviewCoachingText(weekStartYmd, coaching);
+      await setWeeklyReviewCoachingText(periodStartYmd, coaching);
       setAiCoaching(coaching);
     } catch (e) {
       console.warn('weekly review ai', e);
@@ -199,13 +413,19 @@ export default function WeeklyReviewScreen() {
     sectionNext,
     weekRangeLabel,
     metrics,
-    weekStartYmd,
+    periodStartYmd,
     persistDraft,
+    canEdit,
+    dailyEntries,
   ]);
 
   const onSaveAdjustIntent = useCallback(async () => {
+    if (!canEdit || !periodStartYmd) {
+      Alert.alert('暂不可保存', '仅在复盘日当天可保存调整意向。');
+      return;
+    }
     try {
-      await updateWeeklyReviewAdjustFlags(weekStartYmd, {
+      await updateWeeklyReviewAdjustFlags(periodStartYmd, {
         adjust_tasks: adjustTasks,
         adjust_savings: adjustSavings,
         adjust_plans: adjustPlans,
@@ -214,7 +434,38 @@ export default function WeeklyReviewScreen() {
     } catch {
       Alert.alert('保存失败', '请稍后再试');
     }
-  }, [weekStartYmd, adjustTasks, adjustSavings, adjustPlans]);
+  }, [canEdit, periodStartYmd, adjustTasks, adjustSavings, adjustPlans]);
+
+  const setDailyFieldForYmd = useCallback((ymd: string, key: DailyFieldKey, value: string) => {
+    setDailyEntries(prev =>
+      prev.map(e => (e.ymd === ymd ? { ...e, fields: { ...e.fields, [key]: value } } : e)),
+    );
+  }, []);
+
+  const onSaveDaily = useCallback(async (ymd: string, fields: DailyStructured) => {
+    setDailySavingYmd(ymd);
+    try {
+      await upsertDailyReviewJournal(ymd, serializeDailyBody(fields));
+      Alert.alert('已保存', `${ymd} 的每日复盘已写入本地。`);
+    } catch (e) {
+      console.warn('daily review save', e);
+      Alert.alert('保存失败', '请稍后再试');
+    } finally {
+      setDailySavingYmd(null);
+    }
+  }, []);
+
+  const onPickWeekday = useCallback(async (d: number) => {
+    try {
+      await setWeeklyReviewConfiguredWeekday(d);
+      setConfiguredDow(d);
+      setPickerOpen(false);
+      Alert.alert('已保存', `已设定每周「${WEEKLY_REVIEW_WEEKDAY_LABELS[d]}」为复盘日。统计区间为该日当天向前连续 7 个自然日（含当天）。`);
+      void load();
+    } catch {
+      Alert.alert('失败', '请稍后再试');
+    }
+  }, [load]);
 
   const inputSurface = isDark ? 'rgba(15,23,42,0.55)' : '#f4f6ff';
   const inputBorder = outlineVariant;
@@ -231,7 +482,13 @@ export default function WeeklyReviewScreen() {
             <MaterialIcons name="arrow-back" size={24} color={primary} />
           </Pressable>
           <Text style={[styles.topTitle, { color: text }]}>每周复盘</Text>
-          <View style={{ width: 28 }} />
+          <Pressable
+            onPress={() => setPickerOpen(true)}
+            hitSlop={12}
+            accessibilityLabel="设置复盘日"
+            style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1, padding: 4 }]}>
+            <MaterialIcons name="event-available" size={24} color={primary} />
+          </Pressable>
         </View>
 
         {loading ? (
@@ -243,30 +500,154 @@ export default function WeeklyReviewScreen() {
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             contentContainerStyle={[styles.scroll, { paddingBottom: 28 + insets.bottom }]}>
-            <Text style={[styles.weekTag, { color: outline }]}>本周 · {weekRangeLabel}</Text>
+            <View
+              style={[
+                styles.settingsRow,
+                {
+                  backgroundColor: surface,
+                  borderColor: outlineVariant,
+                },
+              ]}>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={[styles.settingsLabel, { color: outline }]}>每周复盘日</Text>
+                <Text style={[styles.settingsValue, { color: text }]}>
+                  {configuredDow === null ? '尚未设置' : `每周${WEEKLY_REVIEW_WEEKDAY_LABELS[configuredDow]}`}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => setPickerOpen(true)}
+                style={({ pressed }) => [
+                  styles.settingsBtn,
+                  { borderColor: outlineVariant, backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,88,190,0.08)', opacity: pressed ? 0.88 : 1 },
+                ]}>
+                <MaterialIcons name="edit-calendar" size={18} color={primary} />
+                <Text style={[styles.settingsBtnText, { color: primary }]}>设置复盘日</Text>
+              </Pressable>
+            </View>
+
+            {canEdit ? (
+              <Text style={[styles.weekTag, { color: outline }]}>近七天 · {weekRangeLabel}</Text>
+            ) : (
+              <View style={[styles.gateCard, { backgroundColor: isDark ? 'rgba(30,41,59,0.65)' : '#fff7ed', borderColor: outlineVariant }]}>
+                <MaterialIcons name="lock-clock" size={22} color={tertiary} />
+                <Text style={[styles.gateTitle, { color: text }]}>
+                  {configuredDow === null ? '请先设置每周复盘日' : '今天不是复盘日'}
+                </Text>
+                <Text style={[styles.gateBody, { color: outline }]}>
+                  {configuredDow === null
+                    ? '指定每周的固定一天进行复盘；仅在当天可填写内容并保存。数据参考为当天向前连续 7 个自然日（含当天）。'
+                    : `今天是「${WEEKLY_REVIEW_WEEKDAY_LABELS[new Date().getDay()]}」，已设定为每周「${
+                        WEEKLY_REVIEW_WEEKDAY_LABELS[configuredDow]
+                      }」复盘。请在对应日期再来填写。`}
+                </Text>
+              </View>
+            )}
+
             <Text style={[styles.intro, { color: outline }]}>
-              以下由你亲自书写。保存后可一键生成 AI 建议；若配置了环境变量 EXPO_PUBLIC_OPENAI_API_KEY，将优先调用
-              OpenAI，否则使用本地规则汇总。
+              {canEdit
+                ? '以下由你亲自书写。保存后可一键生成 AI 建议；若配置了环境变量 EXPO_PUBLIC_OPENAI_API_KEY，将优先调用 OpenAI，否则使用本地规则汇总。'
+                : '到达复盘日后，可基于近七天数据与五大板块完成书写与保存。'}
             </Text>
 
-            <WeeklyMetricsReferenceCard
-              open={metricsOpen}
-              onToggle={() => setMetricsOpen(v => !v)}
-              metrics={metrics}
-              isDark={isDark}
-              surface={surface}
-              text={text}
-              outline={outline}
-              outlineVariant={outlineVariant}
-              primary={primary}
-              secondary={secondary}
-              tertiary={tertiary}
-            />
+            <View style={[styles.dailySectionCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
+              <View style={[styles.dailySectionAccent, { backgroundColor: secondary }]} />
+              <View style={styles.dailySectionInner}>
+                <Text style={[styles.dailySectionTitle, { color: text }]}>每日复盘</Text>
+                <Text style={[styles.dailyPeriodLine, { color: primary }]}>{dailyPeriodLabel}</Text>
+                <Text style={[styles.dailySectionHint, { color: outline }]}>
+                  区间以「下一次每周复盘日」为终点向前 7 天（与周度统计一致）；任意日期可填写。生成周度 AI 建议时会参考本周期内各日已填内容。
+                </Text>
+                {dailyEntries.map(entry => {
+                  const open = expandedDailyYmd === entry.ymd;
+                  const previewRaw = dailyEntryPreviewText(entry.fields);
+                  const previewShort =
+                    previewRaw.length > 48 ? `${previewRaw.slice(0, 48)}…` : previewRaw || '（未填写）';
+                  return (
+                    <View key={entry.ymd} style={[styles.dailyDayCard, { borderColor: outlineVariant }]}>
+                      <Pressable
+                        onPress={() => setExpandedDailyYmd(open ? null : entry.ymd)}
+                        style={({ pressed }) => [styles.dailyDayHead, { opacity: pressed ? 0.88 : 1 }]}>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={[styles.dailyDayTitle, { color: text }]}>{entry.label}</Text>
+                          <Text style={[styles.dailyDayPreview, { color: outline }]} numberOfLines={1}>
+                            {previewShort}
+                          </Text>
+                        </View>
+                        <MaterialIcons name={open ? 'expand-less' : 'expand-more'} size={26} color={primary} />
+                      </Pressable>
+                      {open ? (
+                        <View style={[styles.dailyDayBody, { borderTopColor: outlineVariant }]}>
+                          {DAILY_FORM_SECTIONS.map(sec => (
+                            <View key={sec.sectionTitle} style={styles.dailyFormSection}>
+                              <Text style={[styles.dailyFormSectionTitle, { color: text }]}>{sec.sectionTitle}</Text>
+                              {sec.fields.map(f => (
+                                <View key={f.key} style={styles.dailyFieldBlock}>
+                                  <Text style={[styles.dailyFieldLabel, { color: outline }]}>{f.label}</Text>
+                                  <TextInput
+                                    value={entry.fields[f.key]}
+                                    onChangeText={t => setDailyFieldForYmd(entry.ymd, f.key, t)}
+                                    placeholder={f.placeholder}
+                                    placeholderTextColor={outline}
+                                    multiline
+                                    textAlignVertical="top"
+                                    style={[
+                                      styles.dailyFieldInput,
+                                      {
+                                        minHeight: f.minH,
+                                        backgroundColor: inputSurface,
+                                        borderColor: inputBorder,
+                                        color: text,
+                                      },
+                                    ]}
+                                  />
+                                </View>
+                              ))}
+                            </View>
+                          ))}
+                          <Pressable
+                            onPress={() => void onSaveDaily(entry.ymd, entry.fields)}
+                            disabled={dailySavingYmd === entry.ymd}
+                            style={({ pressed }) => [
+                              styles.dailySaveBtn,
+                              { backgroundColor: secondary, opacity: pressed || dailySavingYmd === entry.ymd ? 0.75 : 1 },
+                            ]}>
+                            {dailySavingYmd === entry.ymd ? (
+                              <ActivityIndicator color="#fff" />
+                            ) : (
+                              <Text style={styles.dailySaveBtnText}>保存该日</Text>
+                            )}
+                          </Pressable>
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
 
+            {canEdit ? (
+              <WeeklyMetricsReferenceCard
+                open={metricsOpen}
+                onToggle={() => setMetricsOpen(v => !v)}
+                metrics={metrics}
+                isDark={isDark}
+                surface={surface}
+                text={text}
+                outline={outline}
+                outlineVariant={outlineVariant}
+                primary={primary}
+                secondary={secondary}
+                tertiary={tertiary}
+              />
+            ) : null}
+
+            {canEdit ? (
+              <>
             <SectionTitle color={text} n="一" title="汇总本周事件" />
             <Field
               value={sectionSummary}
               onChangeText={setSectionSummary}
+              editable={canEdit}
               placeholder={PLACEHOLDERS.summary}
               inputSurface={inputSurface}
               inputBorder={inputBorder}
@@ -278,6 +659,7 @@ export default function WeeklyReviewScreen() {
             <Field
               value={sectionPlans}
               onChangeText={setSectionPlans}
+              editable={canEdit}
               placeholder={PLACEHOLDERS.plans}
               inputSurface={inputSurface}
               inputBorder={inputBorder}
@@ -289,6 +671,7 @@ export default function WeeklyReviewScreen() {
             <Field
               value={sectionReflect}
               onChangeText={setSectionReflect}
+              editable={canEdit}
               placeholder={PLACEHOLDERS.reflect}
               inputSurface={inputSurface}
               inputBorder={inputBorder}
@@ -300,6 +683,7 @@ export default function WeeklyReviewScreen() {
             <Field
               value={sectionLearnings}
               onChangeText={setSectionLearnings}
+              editable={canEdit}
               placeholder={PLACEHOLDERS.learnings}
               inputSurface={inputSurface}
               inputBorder={inputBorder}
@@ -311,6 +695,7 @@ export default function WeeklyReviewScreen() {
             <Field
               value={sectionNext}
               onChangeText={setSectionNext}
+              editable={canEdit}
               placeholder={PLACEHOLDERS.next}
               inputSurface={inputSurface}
               inputBorder={inputBorder}
@@ -318,15 +703,15 @@ export default function WeeklyReviewScreen() {
               hintColor={outline}
             />
 
-            <Text style={[styles.scoreTitle, { color: text }]}>本周执行结果自评</Text>
+            <Text style={[styles.scoreTitle, { color: text }]}>本周期执行结果自评</Text>
             <Text style={[styles.scoreHint, { color: outline }]}>1 星偏低，5 星代表整体执行满意</Text>
             <View style={styles.starsRow}>
               {[1, 2, 3, 4, 5].map(n => (
-                <Pressable key={n} onPress={() => setExecutionScore(n)} hitSlop={6}>
+                <Pressable key={n} disabled={!canEdit} onPress={() => setExecutionScore(n)} hitSlop={6}>
                   <MaterialIcons
                     name={executionScore >= n ? 'star' : 'star-border'}
                     size={36}
-                    color={executionScore >= n ? tertiary : outline}
+                    color={!canEdit ? outlineVariant : executionScore >= n ? tertiary : outline}
                   />
                 </Pressable>
               ))}
@@ -335,19 +720,25 @@ export default function WeeklyReviewScreen() {
             <View style={styles.btnRow}>
               <Pressable
                 onPress={() => void onSaveDraft()}
-                disabled={saving}
+                disabled={saving || !canEdit}
                 style={({ pressed }) => [
                   styles.btnSecondary,
-                  { borderColor: outlineVariant, opacity: pressed || saving ? 0.82 : 1 },
+                  {
+                    borderColor: outlineVariant,
+                    opacity: pressed || saving || !canEdit ? 0.55 : 1,
+                  },
                 ]}>
                 {saving ? <ActivityIndicator color={primary} /> : <Text style={[styles.btnSecondaryText, { color: primary }]}>保存草稿</Text>}
               </Pressable>
               <Pressable
                 onPress={() => void onGenerateAi()}
-                disabled={aiBusy}
+                disabled={aiBusy || !canEdit}
                 style={({ pressed }) => [
                   styles.btnPrimary,
-                  { backgroundColor: primary, opacity: pressed || aiBusy ? 0.88 : 1 },
+                  {
+                    backgroundColor: primary,
+                    opacity: pressed || aiBusy || !canEdit ? 0.55 : 1,
+                  },
                 ]}>
                 {aiBusy ? (
                   <ActivityIndicator color="#fff" />
@@ -366,32 +757,39 @@ export default function WeeklyReviewScreen() {
                 <Text style={[styles.adjustTitle, { color: text }]}>是否愿意据此做调整？（自选）</Text>
                 <CheckRow
                   checked={adjustTasks}
-                  onToggle={() => setAdjustTasks(v => !v)}
+                  onToggle={() => canEdit && setAdjustTasks(v => !v)}
                   label="调整任务安排 / 优先级"
                   textColor={text}
                   outline={outline}
                   primary={primary}
+                  disabled={!canEdit}
                 />
                 <CheckRow
                   checked={adjustSavings}
-                  onToggle={() => setAdjustSavings(v => !v)}
+                  onToggle={() => canEdit && setAdjustSavings(v => !v)}
                   label="检查或修正存钱计划节奏"
                   textColor={text}
                   outline={outline}
                   primary={primary}
+                  disabled={!canEdit}
                 />
                 <CheckRow
                   checked={adjustPlans}
-                  onToggle={() => setAdjustPlans(v => !v)}
+                  onToggle={() => canEdit && setAdjustPlans(v => !v)}
                   label="重新安排时间、兼顾生活与工作"
                   textColor={text}
                   outline={outline}
                   primary={primary}
+                  disabled={!canEdit}
                 />
 
                 <Pressable
                   onPress={() => void onSaveAdjustIntent()}
-                  style={({ pressed }) => [styles.btnWide, { backgroundColor: secondary, opacity: pressed ? 0.9 : 1 }]}>
+                  disabled={!canEdit}
+                  style={({ pressed }) => [
+                    styles.btnWide,
+                    { backgroundColor: secondary, opacity: pressed || !canEdit ? 0.55 : 1 },
+                  ]}>
                   <Text style={styles.btnWideText}>保存调整意向</Text>
                 </Pressable>
 
@@ -402,9 +800,61 @@ export default function WeeklyReviewScreen() {
                 </View>
               </View>
             ) : null}
+              </>
+            ) : null}
           </ScrollView>
         )}
       </KeyboardAvoidingView>
+
+      <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
+        <View style={styles.modalRoot}>
+          <Pressable
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => setPickerOpen(false)}
+            accessibilityRole="button"
+            accessibilityLabel="关闭"
+          />
+          <View
+            style={[
+              styles.modalSheet,
+              {
+                backgroundColor: surface,
+                borderColor: outlineVariant,
+                paddingBottom: Math.max(insets.bottom, 20),
+              },
+            ]}>
+            <Text style={[styles.modalTitle, { color: text }]}>选择每周复盘日</Text>
+            <Text style={[styles.modalHint, { color: outline }]}>
+              仅在所选星期的那一天可填写与保存；统计区间为该日向前连续 7 个自然日（含当天）。
+            </Text>
+            <View style={styles.modalList}>
+              {WEEKLY_REVIEW_WEEKDAY_LABELS.map((lab, i) => (
+                <Pressable
+                  key={lab}
+                  onPress={() => void onPickWeekday(i)}
+                  style={({ pressed }) => [
+                    styles.modalRow,
+                    {
+                      borderColor: outlineVariant,
+                      opacity: pressed ? 0.88 : 1,
+                      backgroundColor:
+                        configuredDow === i
+                          ? isDark
+                            ? 'rgba(96,165,250,0.14)'
+                            : 'rgba(0,88,190,0.08)'
+                          : isDark
+                            ? 'rgba(15,23,42,0.4)'
+                            : '#f8fafc',
+                    },
+                  ]}>
+                  <Text style={[styles.modalRowText, { color: text }]}>{lab}</Text>
+                  {configuredDow === i ? <MaterialIcons name="check-circle" size={22} color={primary} /> : null}
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -588,7 +1038,9 @@ function WeeklyMetricsReferenceCard({
                     </View>
                   </View>
                   <Text style={[styles.metricsFootnote, { color: outline }]}>
-                    周期：本周一至周日（本地日期）。收入/支出仅含对应类型的记账流水。
+                    {metrics.rangeKind === 'rolling-7'
+                      ? '周期：复盘日当天起向前连续 7 个自然日（含当天），按本地日期汇总。收入/支出仅含对应类型的记账流水。'
+                      : '周期：本周一至周日（本地日期）。收入/支出仅含对应类型的记账流水。'}
                   </Text>
                 </>
               )}
@@ -649,6 +1101,7 @@ function SectionTitle({ n, title, color }: { n: string; title: string; color: st
 function Field({
   value,
   onChangeText,
+  editable = true,
   placeholder,
   inputSurface,
   inputBorder,
@@ -657,6 +1110,7 @@ function Field({
 }: {
   value: string;
   onChangeText: (t: string) => void;
+  editable?: boolean;
   placeholder: string;
   inputSurface: string;
   inputBorder: string;
@@ -667,6 +1121,7 @@ function Field({
     <TextInput
       value={value}
       onChangeText={onChangeText}
+      editable={editable}
       placeholder={placeholder}
       placeholderTextColor={hintColor}
       multiline
@@ -690,6 +1145,7 @@ function CheckRow({
   textColor,
   outline,
   primary,
+  disabled,
 }: {
   checked: boolean;
   onToggle: () => void;
@@ -697,9 +1153,10 @@ function CheckRow({
   textColor: string;
   outline: string;
   primary: string;
+  disabled?: boolean;
 }) {
   return (
-    <Pressable onPress={onToggle} style={styles.checkRow}>
+    <Pressable onPress={onToggle} disabled={disabled} style={[styles.checkRow, disabled ? { opacity: 0.45 } : null]}>
       <MaterialIcons name={checked ? 'check-box' : 'check-box-outline-blank'} size={24} color={checked ? primary : outline} />
       <Text style={[styles.checkLabel, { color: textColor }]}>{label}</Text>
     </Pressable>
@@ -727,8 +1184,130 @@ const styles = StyleSheet.create({
   topTitle: { fontSize: 18, fontWeight: '900' },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: { paddingHorizontal: 18, paddingTop: 16, gap: 12 },
+  settingsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  settingsLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 0.6 },
+  settingsValue: { fontSize: 16, fontWeight: '900' },
+  settingsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  settingsBtnText: { fontSize: 14, fontWeight: '800' },
+  gateCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
+    gap: 8,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+  },
+  gateTitle: { fontSize: 16, fontWeight: '900', marginTop: 2 },
+  gateBody: { fontSize: 13, lineHeight: 20, fontWeight: '600' },
+  modalRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  modalSheet: {
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    gap: 12,
+  },
+  modalTitle: { fontSize: 18, fontWeight: '900' },
+  modalHint: { fontSize: 13, lineHeight: 19, fontWeight: '600' },
+  modalList: { gap: 8, marginTop: 4 },
+  modalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+  },
+  modalRowText: { fontSize: 16, fontWeight: '800' },
   weekTag: { fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
   intro: { fontSize: 13, lineHeight: 20, fontWeight: '600', marginBottom: 4 },
+  dailySectionCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  dailySectionAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+    zIndex: 1,
+  },
+  dailySectionInner: {
+    paddingLeft: 18,
+    paddingRight: 14,
+    paddingVertical: 14,
+    gap: 10,
+  },
+  dailySectionTitle: { fontSize: 17, fontWeight: '900', letterSpacing: -0.2 },
+  dailyPeriodLine: { fontSize: 12, fontWeight: '800', lineHeight: 18 },
+  dailySectionHint: { fontSize: 12, lineHeight: 18, fontWeight: '600' },
+  dailyDayCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: 'hidden',
+    marginTop: 2,
+  },
+  dailyDayHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  dailyDayTitle: { fontSize: 15, fontWeight: '900' },
+  dailyDayPreview: { fontSize: 12, fontWeight: '600', marginTop: 4 },
+  dailyDayBody: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    paddingTop: 10,
+    gap: 14,
+  },
+  dailyFormSection: { gap: 10 },
+  dailyFormSectionTitle: { fontSize: 14, fontWeight: '900', marginTop: 2 },
+  dailyFieldBlock: { gap: 6 },
+  dailyFieldLabel: { fontSize: 12, fontWeight: '800' },
+  dailyFieldInput: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
+  },
+  dailySaveBtn: {
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  dailySaveBtnText: { color: '#fff', fontSize: 15, fontWeight: '900' },
   metricsCard: {
     borderRadius: 22,
     borderWidth: 1,

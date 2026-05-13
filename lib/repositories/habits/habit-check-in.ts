@@ -1,4 +1,5 @@
 import { getDatabase } from '../../database.native';
+import { getLogicalLocalYmd, loadTasksDayBoundary } from '../../tasks-logical-day';
 
 export function habitCheckInRowId(habitId: string, recordDateYmd: string): string {
   return `hci_${habitId}_${recordDateYmd.replace(/-/g, '')}`;
@@ -80,7 +81,8 @@ export async function incrementTodayHabitCheckIn(
   habitId: string,
   maxDaily: number | null
 ): Promise<IncrementTodayHabitCheckInResult> {
-  const today = localTodayYmd();
+  const boundary = await loadTasksDayBoundary();
+  const today = getLogicalLocalYmd(new Date(), boundary);
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ count: number }>(
     `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
@@ -93,9 +95,52 @@ export async function incrementTodayHabitCheckIn(
   return { nextCount: next, increased: true };
 }
 
+/** 指定 `recordDateYmd`（YYYY-MM-DD）当日次数 +1；若传入 `maxDaily` 则不超过当日上限 */
+export async function incrementHabitCheckInForDay(
+  habitId: string,
+  recordDateYmd: string,
+  maxDaily: number | null
+): Promise<IncrementTodayHabitCheckInResult> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ count: number }>(
+    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
+    [habitId, recordDateYmd]
+  );
+  const cur = row?.count ?? 0;
+  if (maxDaily !== null && cur >= maxDaily) return { nextCount: cur, increased: false };
+  const next = cur + 1;
+  await upsertHabitDayCount(habitId, recordDateYmd, next);
+  return { nextCount: next, increased: true };
+}
+
+/** 仅数据库中该日有效打卡次数（不含 extra_data 旧字段合并） */
+export async function getHabitCheckInDbCountForDay(habitId: string, recordDateYmd: string): Promise<number> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ count: number }>(
+    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
+    [habitId, recordDateYmd]
+  );
+  return row?.count ?? 0;
+}
+
+/** 指定日次数 -1（不低于 0）；为 0 时软删该日记录。返回新的当日合计次数 */
+export async function decrementHabitCheckInForDay(habitId: string, recordDateYmd: string): Promise<number> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ count: number }>(
+    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
+    [habitId, recordDateYmd]
+  );
+  const cur = row?.count ?? 0;
+  if (cur <= 0) return 0;
+  const next = cur - 1;
+  await upsertHabitDayCount(habitId, recordDateYmd, next);
+  return next;
+}
+
 /** 本地「今天」该习惯打卡次数 -1（不低于 0），返回新的当日合计次数 */
 export async function decrementTodayHabitCheckIn(habitId: string): Promise<number> {
-  const today = localTodayYmd();
+  const boundary = await loadTasksDayBoundary();
+  const today = getLogicalLocalYmd(new Date(), boundary);
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ count: number }>(
     `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
@@ -116,18 +161,11 @@ export type HabitCheckInListStat = {
   todayCount: number;
 };
 
-function localTodayYmd(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
 /** 列表页批量统计：累计打卡天数、今日次数 */
 export async function getHabitCheckInListStats(): Promise<Map<string, HabitCheckInListStat>> {
   const db = await getDatabase();
-  const today = localTodayYmd();
+  const boundary = await loadTasksDayBoundary();
+  const today = getLogicalLocalYmd(new Date(), boundary);
 
   const dayRows = await db.getAllAsync<{ habit_id: string; c: number }>(
     `SELECT hci.habit_id AS habit_id, COUNT(*) AS c
