@@ -7,6 +7,7 @@ import {
 } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
+import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -154,18 +155,6 @@ const TOP_BAR_BODY_H = 58;
 
 const SCREEN_TITLE = '习惯详情';
 
-function startOfLocalDay(d: Date): Date {
-  const t = new Date(d);
-  t.setHours(0, 0, 0, 0);
-  return t;
-}
-
-function habitCreatedLocalDay(createdAtSql: string): Date | null {
-  const c = new Date(createdAtSql);
-  if (Number.isNaN(c.getTime())) return null;
-  return startOfLocalDay(c);
-}
-
 export default function HabitDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -236,6 +225,11 @@ export default function HabitDetailScreen() {
   );
 
   const extraParsed = habit ? parseExtra(habit.extra_data) : {};
+  const habitReminder = React.useMemo(
+    () => (habit ? parseHabitReminder(habit.extra_data) : { enabled: false as const }),
+    [habit]
+  );
+  const habitReminderClock = formatHabitReminderClock(habitReminder);
   const quantify = extraParsed.quantify as { unit?: string; dailyGoal?: number | null } | undefined;
   const quoteText =
     habit?.note && habit.note.trim()
@@ -341,11 +335,6 @@ export default function HabitDetailScreen() {
       Alert.alert('提示', '补卡仅适用于已过去的日期；今天请在任务页打卡，或先选择更早的日期。');
       return;
     }
-    const createdDay = habitCreatedLocalDay(habit.created_at);
-    if (createdDay && startOfLocalDay(focusDate).getTime() < createdDay.getTime()) {
-      Alert.alert('提示', '所选日期早于本习惯的创建时间，无法补卡。');
-      return;
-    }
     setMakeUpSaving(true);
     try {
       const { increased } = await incrementHabitCheckInForDay(habit.id, ymd, dailyGoal);
@@ -366,7 +355,7 @@ export default function HabitDetailScreen() {
     } finally {
       setMakeUpSaving(false);
     }
-  }, [habit, focusDate, focusYmd, dailyGoal, reload]);
+  }, [habit, focusYmd, dailyGoal, reload]);
 
   const handleCancelMakeUpCheckIn = React.useCallback(async () => {
     if (!habit) return;
@@ -458,6 +447,12 @@ export default function HabitDetailScreen() {
         showsVerticalScrollIndicator={false}>
         <View style={styles.card}>
           <Text style={styles.titleText}>{habit.name}</Text>
+          {habitReminder.enabled && habitReminderClock ? (
+            <View style={styles.reminderBadgeRow} accessibilityLabel={`已开启每日提醒 ${habitReminderClock}`}>
+              <MaterialIcons name="notifications-active" size={16} color={BLUE} />
+              <Text style={styles.reminderBadgeText}>每日提醒 · {habitReminderClock}</Text>
+            </View>
+          ) : null}
         </View>
 
         <View style={styles.quoteCard}>
@@ -798,6 +793,13 @@ const styles = StyleSheet.create({
     borderColor: CARD_BORDER,
   },
   titleText: { fontSize: 18, fontWeight: '600', color: TEXT_MAIN },
+  reminderBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 10,
+  },
+  reminderBadgeText: { fontSize: 13, fontWeight: '600', color: BLUE },
   quoteCard: {
     backgroundColor: CARD,
     borderRadius: 12,

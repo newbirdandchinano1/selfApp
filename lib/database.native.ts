@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 20;
+export const DB_VERSION = 23;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -119,6 +119,15 @@ export async function initDatabase() {
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
       version INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS task_execution_events (
+      id TEXT PRIMARY KEY NOT NULL,
+      task_id TEXT,
+      action TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      task_title TEXT,
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS accounts (
@@ -398,6 +407,18 @@ export async function initDatabase() {
       extra_data TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS goal_dimensions (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS wish_items (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL,
@@ -407,6 +428,8 @@ export async function initDatabase() {
       desire_level INTEGER NOT NULL DEFAULT 3 CHECK (desire_level >= 1 AND desire_level <= 5),
       reason TEXT,
       reference_image_uri TEXT,
+      ai_comment TEXT,
+      ai_review_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
@@ -544,6 +567,10 @@ export async function initDatabase() {
   await ensureColumn(db, 'finance_transactions', 'amount', 'REAL');
   await ensureColumn(db, 'finance_transactions', 'note', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'wish_items', 'ai_comment', 'TEXT');
+  await ensureColumn(db, 'wish_items', 'ai_review_at', 'TEXT');
+
+  await ensureColumn(db, 'task_execution_events', 'task_title', 'TEXT');
 
   // Ensure legacy rows have a default category_id once column exists
   await db.runAsync(
@@ -619,6 +646,8 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
     CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
     CREATE INDEX IF NOT EXISTS idx_task_items_task_id ON task_items(task_id);
+    CREATE INDEX IF NOT EXISTS idx_task_execution_events_created_at ON task_execution_events(created_at);
+    CREATE INDEX IF NOT EXISTS idx_task_execution_events_task_id ON task_execution_events(task_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_updated_at ON accounts(updated_at);
     CREATE INDEX IF NOT EXISTS idx_account_transactions_account_id ON account_transactions(account_id);
     CREATE INDEX IF NOT EXISTS idx_finance_accounts_updated_at ON finance_accounts(updated_at);
@@ -650,6 +679,9 @@ export async function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_visions_updated_at ON visions(updated_at);
     CREATE INDEX IF NOT EXISTS idx_visions_sort_order ON visions(sort_order);
+
+    CREATE INDEX IF NOT EXISTS idx_goal_dimensions_updated_at ON goal_dimensions(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_goal_dimensions_sort_order ON goal_dimensions(sort_order);
 
     CREATE INDEX IF NOT EXISTS idx_wish_items_updated_at ON wish_items(updated_at);
     CREATE INDEX IF NOT EXISTS idx_wish_items_category_id ON wish_items(category_id);
@@ -791,6 +823,7 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS finance_accounts;
     DROP TABLE IF EXISTS account_transactions;
     DROP TABLE IF EXISTS accounts;
+    DROP TABLE IF EXISTS task_execution_events;
     DROP TABLE IF EXISTS task_items;
     DROP TABLE IF EXISTS tasks;
     DROP TABLE IF EXISTS projects;
@@ -805,6 +838,7 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS cash_flow_holdings;
     DROP TABLE IF EXISTS cash_flow_profile;
     DROP TABLE IF EXISTS wish_items;
+    DROP TABLE IF EXISTS goal_dimensions;
     DROP TABLE IF EXISTS visions;
     DROP TABLE IF EXISTS users;
     DROP TABLE IF EXISTS app_meta;

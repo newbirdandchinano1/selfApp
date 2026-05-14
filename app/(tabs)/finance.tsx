@@ -13,17 +13,20 @@ import {
   getFinanceAccountsWithBalance,
   getFinanceFlowCategories,
   getFinanceTransactions,
+  validateFinanceLedgerBalanceAfterChange,
 } from '@/lib/repositories/finance/finance';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import { isFinanceTransactionExcludedFromBudget } from '@/lib/repositories/finance/finance-transaction-extra';
-import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
+import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import { consumeFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import { getZhipuApiKey, parseFinanceOneLinerFromText } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
+import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
@@ -32,6 +35,7 @@ import {
   Dimensions,
   Easing,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -44,11 +48,11 @@ import {
   TextInput,
   View,
   ViewStyle,
+  type KeyboardEvent,
 } from 'react-native';
-import Svg, { Circle, Path } from 'react-native-svg';
-import Constants from 'expo-constants';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Circle, Path } from 'react-native-svg';
 
 type SpeechRecognitionApi = typeof import('@jamsch/expo-speech-recognition');
 
@@ -67,6 +71,20 @@ type Txn = {
 
 type SheetTab = 'sentence' | 'expense' | 'income' | 'transfer';
 
+type AccountPickerTarget = 'sheet' | 'transferFrom' | 'transferTo';
+
+function readTransferLeg(extra_data: string | null): 'out' | 'in' | null {
+  if (!extra_data) return null;
+  try {
+    const raw = JSON.parse(extra_data) as unknown;
+    if (!raw || typeof raw !== 'object') return null;
+    const leg = (raw as Record<string, unknown>).transfer_leg;
+    return leg === 'out' || leg === 'in' ? leg : null;
+  } catch {
+    return null;
+  }
+}
+
 function buildTxnAiInsightLine(
   txn: FinanceTransactionRow,
   opts: { zhipuReady: boolean; generatingId: string | null; skippedIds: Set<string> },
@@ -79,10 +97,16 @@ function buildTxnAiInsightLine(
   return { text: 'AI 评价：排队生成中…', isAiBody: false };
 }
 
-/** 与 `getFinanceAccountsWithBalance` 中按账户汇总 balance 的规则一致：收入 +、支出 -、转账 0。 */
+/** 与 `getFinanceAccountsWithBalance` 中按账户汇总 balance 的规则一致：收入 +、支出 -、转账按转出/转入计入。 */
 function getTxnNetWorthTotalDelta(txn: FinanceTransactionRow): number {
   if (txn.transaction_type === 'income') return Math.abs(txn.amount);
   if (txn.transaction_type === 'expense') return -Math.abs(txn.amount);
+  if (txn.transaction_type === 'transfer') {
+    const leg = readTransferLeg(txn.extra_data);
+    const absAmount = Math.abs(txn.amount);
+    if (leg === 'out') return -absAmount;
+    if (leg === 'in') return absAmount;
+  }
   return 0;
 }
 
@@ -260,6 +284,9 @@ export default function FinanceScreen() {
   const [isDatePickerVisible, setIsDatePickerVisible] = React.useState(false);
   const [isTimePickerVisible, setIsTimePickerVisible] = React.useState(false);
   const [isAccountPickerVisible, setIsAccountPickerVisible] = React.useState(false);
+  const [accountPickerTarget, setAccountPickerTarget] = React.useState<AccountPickerTarget>('sheet');
+  const [transferFromAccountId, setTransferFromAccountId] = React.useState<string | null>(null);
+  const [transferToAccountId, setTransferToAccountId] = React.useState<string | null>(null);
   const [isSavingTransaction, setIsSavingTransaction] = React.useState(false);
   const [financeTransactions, setFinanceTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
@@ -299,6 +326,8 @@ export default function FinanceScreen() {
   const [speechTriedOnce, setSpeechTriedOnce] = React.useState(false);
   const [sentenceLedgerPreview, setSentenceLedgerPreview] = React.useState<SentenceLedgerPreviewState>(null);
   const [isSentencePreviewBusy, setIsSentencePreviewBusy] = React.useState(false);
+  /** 手动记账弹窗内键盘高度，用于整体上移弹层并收缩可滚动区域，避免一句话输入框被 IME 遮挡 */
+  const [sheetKeyboardInset, setSheetKeyboardInset] = React.useState(0);
   const budgetBaseInputRef = React.useRef<TextInput>(null);
 
   const baseBottomAnim = React.useRef(new Animated.Value(collapsedBottom)).current;
@@ -346,9 +375,11 @@ export default function FinanceScreen() {
   const loadFinanceAccounts = React.useCallback(async () => {
     try {
       const rows = await getFinanceAccountsWithBalance();
+      financeAccountsRef.current = rows;
       setFinanceAccounts(rows);
     } catch (error) {
       console.warn('Failed to load finance accounts:', error);
+      financeAccountsRef.current = [];
       setFinanceAccounts([]);
     }
   }, []);
@@ -385,14 +416,6 @@ export default function FinanceScreen() {
     void loadMonthBudgetSettings().then(setMonthBudgetSettings);
   }, []);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      void loadFinanceTransactions();
-      void loadFinanceAccounts();
-      void loadMonthBudgetSettings().then(setMonthBudgetSettings);
-    }, [loadFinanceAccounts, loadFinanceTransactions])
-  );
-
   const speechSubsRef = React.useRef<Array<{ remove?: () => void }>>([]);
   const clearSpeechSubs = React.useCallback(() => {
     speechSubsRef.current.forEach((s) => s.remove?.());
@@ -406,10 +429,43 @@ export default function FinanceScreen() {
   const manualSheetMaxHeight = React.useMemo(() => Dimensions.get('window').height - insets.top - 10, [insets.top]);
   /** 顶栏 + Tab 区域估算高度，余量给下方可滚动内容 */
   const MANUAL_SHEET_CHROME_HEIGHT = 124;
-  const manualSheetBodyMaxHeight = React.useMemo(
-    () => Math.max(200, manualSheetMaxHeight - MANUAL_SHEET_CHROME_HEIGHT),
-    [manualSheetMaxHeight]
+
+  const sheetModalMaxHeight = React.useMemo(
+    () => Math.max(200, manualSheetMaxHeight - sheetKeyboardInset),
+    [manualSheetMaxHeight, sheetKeyboardInset]
   );
+  const sheetModalBodyMaxHeight = React.useMemo(
+    () => Math.max(200, sheetModalMaxHeight - MANUAL_SHEET_CHROME_HEIGHT),
+    [sheetModalMaxHeight]
+  );
+
+  React.useEffect(() => {
+    if (!isSheetVisible) {
+      setSheetKeyboardInset(0);
+      return;
+    }
+    const winH = Dimensions.get('window').height;
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = (e: KeyboardEvent) => {
+      const { height, screenY } = e.endCoordinates;
+      const h = Math.max(0, Math.round(height));
+      /** 用「屏幕底 − 键盘顶」与 height 取较小值，避免与系统上报高度叠算导致白底离键盘还差一截 */
+      if (Platform.OS === 'ios' && screenY > 0 && screenY < winH) {
+        const fromScreenY = Math.max(0, Math.round(winH - screenY));
+        setSheetKeyboardInset(Math.min(h, fromScreenY));
+        return;
+      }
+      setSheetKeyboardInset(h);
+    };
+    const onHide = () => setSheetKeyboardInset(0);
+    const subShow = Keyboard.addListener(showEvent, onShow);
+    const subHide = Keyboard.addListener(hideEvent, onHide);
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, [isSheetVisible]);
 
   const heroTranslateY = revealAnim.interpolate({
     inputRange: [0, 1],
@@ -467,6 +523,12 @@ export default function FinanceScreen() {
     const absAmount = Math.abs(txn.amount);
     if (txn.transaction_type === 'income') return absAmount;
     if (txn.transaction_type === 'expense') return -absAmount;
+    if (txn.transaction_type === 'transfer') {
+      const leg = readTransferLeg(txn.extra_data);
+      if (leg === 'out') return -absAmount;
+      if (leg === 'in') return absAmount;
+      return 0;
+    }
     return txn.amount;
   }, []);
 
@@ -1060,6 +1122,16 @@ export default function FinanceScreen() {
     [showNetAmounts]
   );
 
+  /** 列表展示：资产类余额不低于 0，负债类不高于 0（与记账约束一致） */
+  const formatCurrencyBalanceForAccount = React.useCallback(
+    (acc: FinanceAccountBalanceRow) => {
+      if (!showNetAmounts) return hiddenAmountText;
+      const v = acc.sign_rule < 0 ? Math.min(0, acc.balance ?? 0) : Math.max(0, acc.balance ?? 0);
+      return formatCurrencyBalance(v);
+    },
+    [formatCurrencyBalance, showNetAmounts]
+  );
+
   const accountIcon = React.useCallback(
     (account: FinanceAccountBalanceRow): keyof typeof MaterialIcons.glyphMap => {
       const extra = accountExtraMap.get(account.id);
@@ -1118,7 +1190,7 @@ export default function FinanceScreen() {
       ['1', '2', '3', 'backspace'],
       ['4', '5', '6', '+'],
       ['7', '8', '9', '-'],
-      ['0', '0', '.', 'done'],
+      ['0', '.', 'done'],
     ],
     []
   );
@@ -1131,11 +1203,29 @@ export default function FinanceScreen() {
   const selectedAccount = React.useMemo(() => {
     return financeAccounts.find((account) => account.id === selectedAccountId) ?? financeAccounts[0] ?? null;
   }, [financeAccounts, selectedAccountId]);
+  const transferFromAccount = React.useMemo(
+    () => (transferFromAccountId ? financeAccounts.find((a) => a.id === transferFromAccountId) ?? null : null),
+    [financeAccounts, transferFromAccountId]
+  );
+  const transferToAccount = React.useMemo(
+    () => (transferToAccountId ? financeAccounts.find((a) => a.id === transferToAccountId) ?? null : null),
+    [financeAccounts, transferToAccountId]
+  );
+  const transferSaveReady =
+    transferFromAccount != null &&
+    transferToAccount != null &&
+    transferFromAccount.id !== transferToAccount.id &&
+    transferFromAccount.sign_rule === 1 &&
+    transferToAccount.sign_rule === 1;
   const sheetDateLabel = `${selectedHappenedAt.getMonth() + 1}月${selectedHappenedAt.getDate()}日`;
   const sheetTimeLabel = `${String(selectedHappenedAt.getHours()).padStart(2, '0')}:${String(selectedHappenedAt.getMinutes()).padStart(2, '0')}`;
   const hasAccounts = financeAccounts.length > 0;
   const amountNumber = Number(sheetAmount);
-  const canSaveTransaction = Boolean(selectedAccount) && Number.isFinite(amountNumber) && amountNumber > 0 && !isSavingTransaction;
+  const canSaveTransaction =
+    Number.isFinite(amountNumber) &&
+    amountNumber > 0 &&
+    !isSavingTransaction &&
+    (activeSheetTab === 'transfer' ? transferSaveReady : Boolean(selectedAccount));
   const canSaveSentence =
     Boolean(selectedAccount) &&
     sheetSentence.trim().length > 0 &&
@@ -1149,6 +1239,20 @@ export default function FinanceScreen() {
       setSelectedAccountId(financeAccounts[0].id);
     }
   }, [financeAccounts, selectedAccountId]);
+
+  React.useEffect(() => {
+    if (!isSheetVisible || activeSheetTab !== 'transfer') return;
+    const list = financeAccounts;
+    if (!list.length) return;
+    setTransferFromAccountId((prevFrom) => {
+      const fromId = prevFrom && list.some((a) => a.id === prevFrom) ? prevFrom : list[0].id;
+      setTransferToAccountId((prevTo) => {
+        if (prevTo && list.some((a) => a.id === prevTo) && prevTo !== fromId) return prevTo;
+        return list.find((a) => a.id !== fromId)?.id ?? fromId;
+      });
+      return fromId;
+    });
+  }, [isSheetVisible, activeSheetTab, financeAccounts]);
 
   React.useEffect(() => {
     if (activeSheetTab === 'sentence') return;
@@ -1172,10 +1276,60 @@ export default function FinanceScreen() {
     setIsDatePickerVisible(false);
     setIsTimePickerVisible(false);
     setIsAccountPickerVisible(false);
+    setAccountPickerTarget('sheet');
     setSelectedCategoryKey(nextTab === 'income' ? 'salary' : 'food');
     setSentenceLedgerPreview(null);
     setIsSentencePreviewBusy(false);
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      void (async () => {
+        try {
+          await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+          if (cancelled) return;
+
+          const intent = consumeFinanceSheetLaunchIntent();
+          if (intent) {
+            const list = financeAccountsRef.current;
+            if (list.length > 0) {
+              if (intent.kind === 'manual') {
+                resetSheetForm(intent.tab);
+                const accId =
+                  intent.accountId && list.some((a) => a.id === intent.accountId) ? intent.accountId : list[0].id;
+                setSelectedAccountId(accId);
+                setIsSheetVisible(true);
+              } else {
+                const assetOnly = list.filter((a) => a.sign_rule === 1);
+                if (assetOnly.length < 2) {
+                  Alert.alert('无法转账', '至少需要两个资产账户才能进行转账。');
+                } else {
+                  resetSheetForm('transfer');
+                  const fromId =
+                    intent.fromAccountId && assetOnly.some((a) => a.id === intent.fromAccountId)
+                      ? intent.fromAccountId
+                      : assetOnly[0].id;
+                  const toId = assetOnly.find((a) => a.id !== fromId)?.id ?? assetOnly[1]?.id ?? fromId;
+                  setTransferFromAccountId(fromId);
+                  setTransferToAccountId(toId);
+                  setIsSheetVisible(true);
+                }
+              }
+            }
+          }
+
+          const settings = await loadMonthBudgetSettings();
+          if (!cancelled) setMonthBudgetSettings(settings);
+        } catch (e) {
+          console.warn('Finance tab focus refresh failed:', e);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [loadFinanceAccounts, loadFinanceTransactions, resetSheetForm])
+  );
 
   const closeSheet = React.useCallback(() => {
     if (isSavingTransaction || isParsingSentence || isSentencePreviewBusy) return;
@@ -1183,6 +1337,7 @@ export default function FinanceScreen() {
     setIsDatePickerVisible(false);
     setIsTimePickerVisible(false);
     setIsAccountPickerVisible(false);
+    setAccountPickerTarget('sheet');
     setIsSheetVisible(false);
   }, [isParsingSentence, isSavingTransaction, isSentencePreviewBusy, speechApi]);
 
@@ -1228,10 +1383,38 @@ export default function FinanceScreen() {
     setIsBudgetAdjustVisible(false);
   }, [currentMonthKey]);
 
-  const handleSelectAccount = React.useCallback((accountId: string) => {
-    setSelectedAccountId(accountId);
-    setIsAccountPickerVisible(false);
-  }, []);
+  const handleSelectAccount = React.useCallback(
+    (accountId: string) => {
+      if (accountPickerTarget === 'transferFrom') {
+        if (accountId === transferToAccountId) {
+          Alert.alert(
+            '不能同一账户转账',
+            financeAccounts.length < 2
+              ? '请先添加至少两个资产账户后再进行转账。'
+              : '转出账户与入账账户不能相同，请选择其他账户。',
+          );
+          return;
+        }
+        setTransferFromAccountId(accountId);
+      } else if (accountPickerTarget === 'transferTo') {
+        if (accountId === transferFromAccountId) {
+          Alert.alert(
+            '不能同一账户转账',
+            financeAccounts.length < 2
+              ? '请先添加至少两个资产账户后再进行转账。'
+              : '转出账户与入账账户不能相同，请选择其他账户。',
+          );
+          return;
+        }
+        setTransferToAccountId(accountId);
+      } else {
+        setSelectedAccountId(accountId);
+      }
+      setIsAccountPickerVisible(false);
+      setAccountPickerTarget('sheet');
+    },
+    [accountPickerTarget, financeAccounts.length, transferFromAccountId, transferToAccountId],
+  );
 
   const handleDatePickerChange = React.useCallback((event: { type?: string }, date?: Date) => {
     if (Platform.OS === 'android' && event?.type === 'dismissed') {
@@ -1342,12 +1525,112 @@ export default function FinanceScreen() {
 
   const handleSaveTransaction = React.useCallback(async () => {
     speechApi?.ExpoSpeechRecognitionModule.stop();
-    if (!selectedAccount) {
-      Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
+
+    if (activeSheetTab === 'transfer') {
+      if (!transferFromAccount || !transferToAccount) {
+        Alert.alert('请选择账户', '需要选择扣款账户与入账账户。');
+        return;
+      }
+      if (transferFromAccount.id === transferToAccount.id) {
+        Alert.alert('账户相同', '扣款与入账账户不能是同一个。');
+        return;
+      }
+      if (transferFromAccount.sign_rule !== 1 || transferToAccount.sign_rule !== 1) {
+        Alert.alert(
+          '暂不支持',
+          '转账目前仅在资产类账户之间可用。若涉及信用卡/负债账户，请用「支出」或「收入」分别记账。',
+        );
+        return;
+      }
+      if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+        Alert.alert('请输入金额', '转账金额需要大于 0。');
+        return;
+      }
+      const ts = Date.now();
+      const rnd = Math.random().toString(16).slice(2);
+      const groupId = `tg_${ts}_${rnd}`;
+      const idOut = `ft_${ts}_out_${rnd}`;
+      const idIn = `ft_${ts}_in_${rnd}`;
+      const happenedAt = selectedHappenedAt.toISOString();
+      const absAmount = amountNumber;
+      const noteTrim = sheetNote.trim() || null;
+      const fromName = transferFromAccount.name;
+      const toName = transferToAccount.name;
+      const titleOut = `转至「${toName}」`;
+      const titleIn = `转自「${fromName}」`;
+
+      const extraOut = JSON.stringify({
+        manual: true,
+        transfer_group_id: groupId,
+        transfer_leg: 'out',
+        counterparty_account_id: transferToAccount.id,
+        counterparty_account_name: toName,
+      });
+      const extraIn = JSON.stringify({
+        manual: true,
+        transfer_group_id: groupId,
+        transfer_leg: 'in',
+        counterparty_account_id: transferFromAccount.id,
+        counterparty_account_name: fromName,
+      });
+      const errFrom = validateFinanceLedgerBalanceAfterChange(
+        transferFromAccount.sign_rule,
+        transferFromAccount.balance ?? 0,
+        'transfer',
+        absAmount,
+        extraOut
+      );
+      const errTo = validateFinanceLedgerBalanceAfterChange(
+        transferToAccount.sign_rule,
+        transferToAccount.balance ?? 0,
+        'transfer',
+        absAmount,
+        extraIn
+      );
+      if (errFrom || errTo) {
+        Alert.alert('无法转账', errFrom ?? errTo ?? '转出或转入后账户余额不符合类型约束。');
+        return;
+      }
+
+      try {
+        setIsSavingTransaction(true);
+        await createFinanceTransaction({
+          id: idOut,
+          name: titleOut,
+          happened_at: happenedAt,
+          account_id: transferFromAccount.id,
+          transaction_type: 'transfer',
+          amount: absAmount,
+          note: noteTrim,
+          extra_data: extraOut,
+        });
+        await createFinanceTransaction({
+          id: idIn,
+          name: titleIn,
+          happened_at: happenedAt,
+          account_id: transferToAccount.id,
+          transaction_type: 'transfer',
+          amount: absAmount,
+          note: noteTrim,
+          extra_data: extraIn,
+        });
+        setIsSheetVisible(false);
+        resetSheetForm('sentence');
+        await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+      } catch (error) {
+        console.warn('Failed to create transfer transactions:', error);
+        Alert.alert(
+          '保存失败',
+          error instanceof Error && error.message.trim() ? error.message : '转账记录保存失败，请稍后重试。',
+        );
+      } finally {
+        setIsSavingTransaction(false);
+      }
       return;
     }
-    if (activeSheetTab === 'transfer') {
-      Alert.alert('暂未开放', '转账功能稍后支持，请先使用支出或收入记账。');
+
+    if (!selectedAccount) {
+      Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
       return;
     }
 
@@ -1366,15 +1649,21 @@ export default function FinanceScreen() {
         }
         const parsed = resolved.parsed;
 
-        if (selectedAccount.sign_rule < 0 && selectedAccount.balance === 0 && parsed.transaction_type === 'income') {
-          Alert.alert('无法记录收入', '该债务账户当前负债为 0，只能记录支出。');
-          return;
-        }
-
         const cat = pickSheetCategoryForParsed(parsed.transaction_type, parsed.category_label, expenseCategories, incomeCategories);
         const transactionType = parsed.transaction_type;
         const amountAbs = parsed.amount;
         const signedAmount = selectedAccount.sign_rule > 0 ? amountAbs : -amountAbs;
+        const boundsErr = validateFinanceLedgerBalanceAfterChange(
+          selectedAccount.sign_rule,
+          selectedAccount.balance ?? 0,
+          transactionType,
+          signedAmount,
+          null
+        );
+        if (boundsErr) {
+          Alert.alert('无法记账', boundsErr);
+          return;
+        }
 
         try {
           setIsSavingTransaction(true);
@@ -1397,21 +1686,15 @@ export default function FinanceScreen() {
               ...(transactionType === 'expense' && !sheetIncludeInBudget ? { exclude_from_budget: true } : {}),
             }),
           });
-          await tryPersistFinanceTxnAiComment(txnId, {
-            name: parsed.name,
-            happened_at: selectedHappenedAt.toISOString(),
-            transaction_type: transactionType,
-            amount: signedAmount,
-            note: line,
-            accountLabel: selectedAccount.name,
-            categoryLabel: cat.label,
-          });
           setIsSheetVisible(false);
           resetSheetForm('sentence');
           await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
         } catch (error) {
           console.warn('Failed to create finance transaction:', error);
-          Alert.alert('保存失败', '手动记账保存失败，请稍后重试。');
+          Alert.alert(
+            '保存失败',
+            error instanceof Error && error.message.trim() ? error.message : '手动记账保存失败，请稍后重试。',
+          );
         } finally {
           setIsSavingTransaction(false);
         }
@@ -1425,13 +1708,19 @@ export default function FinanceScreen() {
       Alert.alert('请输入金额', '记账金额需要大于 0。');
       return;
     }
-    if (selectedAccount.sign_rule < 0 && selectedAccount.balance === 0 && activeSheetTab === 'income') {
-      Alert.alert('无法记录收入', '该债务账户当前负债为 0，只能记录支出。');
-      return;
-    }
-
     const transactionType = activeSheetTab;
     const signedAmount = selectedAccount.sign_rule > 0 ? amountNumber : -amountNumber;
+    const manualBoundsErr = validateFinanceLedgerBalanceAfterChange(
+      selectedAccount.sign_rule,
+      selectedAccount.balance ?? 0,
+      transactionType,
+      signedAmount,
+      null
+    );
+    if (manualBoundsErr) {
+      Alert.alert('无法记账', manualBoundsErr);
+      return;
+    }
     const fallbackName = transactionType === 'income' ? '收入' : '支出';
     const title = sheetNote.trim() || selectedCategory?.label || fallbackName;
 
@@ -1454,21 +1743,15 @@ export default function FinanceScreen() {
           ...(transactionType === 'expense' && !sheetIncludeInBudget ? { exclude_from_budget: true } : {}),
         }),
       });
-      await tryPersistFinanceTxnAiComment(txnId, {
-        name: title,
-        happened_at: selectedHappenedAt.toISOString(),
-        transaction_type: transactionType,
-        amount: signedAmount,
-        note: sheetNote.trim() || null,
-        accountLabel: selectedAccount.name,
-        categoryLabel: selectedCategory?.label ?? '未分类',
-      });
       setIsSheetVisible(false);
       resetSheetForm('sentence');
       await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
     } catch (error) {
       console.warn('Failed to create finance transaction:', error);
-      Alert.alert('保存失败', '手动记账保存失败，请稍后重试。');
+      Alert.alert(
+        '保存失败',
+        error instanceof Error && error.message.trim() ? error.message : '手动记账保存失败，请稍后重试。',
+      );
     } finally {
       setIsSavingTransaction(false);
     }
@@ -1489,6 +1772,8 @@ export default function FinanceScreen() {
     sheetNote,
     sheetSentence,
     speechApi,
+    transferFromAccount,
+    transferToAccount,
   ]);
 
   const handleOpenComposer = React.useCallback((): boolean => {
@@ -1756,13 +2041,13 @@ export default function FinanceScreen() {
                             {showNetAmounts ? formatCurrencyWithDecimals(budgetTotalAmount) : hiddenAmountText}
                           </Text>
                         </View>
-                        <View style={[styles.budgetProgressTrack, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#e8ecf4' }]}>
+                        <View style={[styles.budgetProgressTrack, { backgroundColor: isDark ? 'rgba(96,165,250,0.2)' : '#e3eefc' }]}>
                           <View
                             style={[
                               styles.budgetProgressFill,
                               {
                                 width: `${budgetUsedPercent}%`,
-                                backgroundColor: isDark ? 'rgba(148,163,184,0.35)' : '#d8dde8',
+                                backgroundColor: isDark ? '#60a5fa' : '#3b82f6',
                               },
                             ]}
                           />
@@ -1974,7 +2259,7 @@ export default function FinanceScreen() {
                     <Text style={[styles.accountKicker, { color: kickerColor }]}>
                       {acc.account_no ? `${acc.name} (${acc.account_no})` : acc.name}
                     </Text>
-                    <Text style={[styles.accountValue, { color: valueColor }]}>{formatCurrencyBalance(acc.balance)}</Text>
+                    <Text style={[styles.accountValue, { color: valueColor }]}>{formatCurrencyBalanceForAccount(acc)}</Text>
                   </Pressable>
                 );
               })
@@ -2191,8 +2476,10 @@ export default function FinanceScreen() {
             style={[
               styles.sheetContainer,
               {
-                paddingBottom: Math.max(16, insets.bottom),
-                maxHeight: manualSheetMaxHeight,
+                /** 键盘打开时不再塞一条「安全区」底内边距，避免白底卡片里键盘与内容之间多出一条空带 */
+                paddingBottom: sheetKeyboardInset > 0 ? 0 : Math.max(16, insets.bottom),
+                maxHeight: sheetModalMaxHeight,
+                marginBottom: sheetKeyboardInset,
                 backgroundColor: surface,
               },
             ]}>
@@ -2226,8 +2513,12 @@ export default function FinanceScreen() {
             </View>
 
             <ScrollView
-              style={[styles.sheetBodyScroll, { maxHeight: manualSheetBodyMaxHeight }]}
-              contentContainerStyle={styles.sheetBodyScrollContent}
+              style={[styles.sheetBodyScroll, { maxHeight: sheetModalBodyMaxHeight }]}
+              contentContainerStyle={
+                sheetKeyboardInset > 0
+                  ? [styles.sheetBodyScrollContent, styles.sheetBodyScrollContentKeyboardOpen]
+                  : styles.sheetBodyScrollContent
+              }
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator
               nestedScrollEnabled
@@ -2236,24 +2527,75 @@ export default function FinanceScreen() {
               <>
                 <View style={styles.transferContent}>
                   <View style={styles.transferAccountRow}>
-                    <Pressable style={[styles.transferAccountCard, { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant }]}>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsTimePickerVisible(false);
+                        setAccountPickerTarget('transferFrom');
+                        setIsAccountPickerVisible(true);
+                      }}
+                      style={({ pressed }) => [
+                        styles.transferAccountCard,
+                        { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
+                        pressed && { opacity: 0.88 },
+                      ]}>
                       <Text style={[styles.transferAccountLabel, { color: subtle }]}>扣款账户</Text>
                       <View style={styles.transferAccountValueRow}>
-                        <MaterialIcons name="account-balance-wallet" size={20} color={tertiary} />
-                        <Text style={[styles.transferAccountValue, { color: text }]}>活期账户</Text>
+                        <MaterialIcons
+                          name={transferFromAccount ? accountIcon(transferFromAccount) : 'account-balance-wallet'}
+                          size={20}
+                          color={tertiary}
+                        />
+                        <Text style={[styles.transferAccountValue, { color: text }]} numberOfLines={1}>
+                          {transferFromAccount?.name ?? '选择账户'}
+                        </Text>
                       </View>
                     </Pressable>
-                    <View style={styles.transferArrowWrap}>
-                      <MaterialIcons name="arrow-right-alt" size={28} color={subtle} />
-                    </View>
-                    <Pressable style={[styles.transferAccountCard, { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant }]}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="交换扣款与入账账户"
+                      onPress={() => {
+                        setTransferFromAccountId(transferToAccountId);
+                        setTransferToAccountId(transferFromAccountId);
+                      }}
+                      style={({ pressed }) => [styles.transferArrowWrap, pressed && { opacity: 0.75 }]}>
+                      <MaterialIcons name="swap-horiz" size={28} color={subtle} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsTimePickerVisible(false);
+                        setAccountPickerTarget('transferTo');
+                        setIsAccountPickerVisible(true);
+                      }}
+                      style={({ pressed }) => [
+                        styles.transferAccountCard,
+                        { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
+                        pressed && { opacity: 0.88 },
+                      ]}>
                       <Text style={[styles.transferAccountLabel, { color: subtle }]}>入账账户</Text>
                       <View style={styles.transferAccountValueRow}>
-                        <MaterialIcons name="savings" size={20} color={primary} />
-                        <Text style={[styles.transferAccountValue, { color: text }]}>Vault</Text>
+                        <MaterialIcons
+                          name={transferToAccount ? accountIcon(transferToAccount) : 'savings'}
+                          size={20}
+                          color={primary}
+                        />
+                        <Text style={[styles.transferAccountValue, { color: text }]} numberOfLines={1}>
+                          {transferToAccount?.name ?? '选择账户'}
+                        </Text>
                       </View>
                     </Pressable>
                   </View>
+
+                  {transferFromAccount && transferToAccount ? (
+                    transferFromAccount.id === transferToAccount.id ? (
+                      <Text style={[styles.transferHintText, { color: subtle }]}>请选择两个不同的账户。</Text>
+                    ) : transferFromAccount.sign_rule !== 1 || transferToAccount.sign_rule !== 1 ? (
+                      <Text style={[styles.transferHintText, { color: subtle }]}>
+                        转账目前仅在资产类账户之间可用。
+                      </Text>
+                    ) : null
+                  ) : null}
 
                   <View style={styles.transferAmountWrap}>
                     <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
@@ -2281,6 +2623,21 @@ export default function FinanceScreen() {
                       <MaterialIcons name="schedule" size={14} color={subtle} />
                       <Text style={[styles.transferDateText, { color: text }]}>{sheetTimeLabel}</Text>
                     </Pressable>
+                  </View>
+
+                  <View style={[styles.sheetNoteRow, { marginTop: 4 }]}>
+                    <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                      <TextInput
+                        value={sheetNote}
+                        onChangeText={setSheetNote}
+                        multiline
+                        scrollEnabled
+                        textAlignVertical="top"
+                        style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent', minHeight: 56 }]}
+                        placeholder="备注（可选）"
+                        placeholderTextColor={subtle}
+                      />
+                    </View>
                   </View>
 
                   {isDatePickerVisible ? (
@@ -2433,7 +2790,10 @@ export default function FinanceScreen() {
                       onPress={() => {
                         setIsDatePickerVisible(false);
                         setIsTimePickerVisible(false);
-                        setIsAccountPickerVisible((prev) => !prev);
+                        setIsAccountPickerVisible((prev) => {
+                          if (!prev) setAccountPickerTarget('sheet');
+                          return !prev;
+                        });
                       }}
                       style={({ pressed }) => [
                         styles.configChip,
@@ -2493,7 +2853,7 @@ export default function FinanceScreen() {
 
                   {activeSheetTab === 'sentence' ? (
                     <View style={styles.sheetSentenceBlock}>
-                      <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant, minHeight: 100 }]}>
+                      <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant, minHeight: 130 }]}>
                         <TextInput
                           value={sheetSentence}
                           onChangeText={setSheetSentence}
@@ -2698,44 +3058,6 @@ export default function FinanceScreen() {
                     </View>
                   </Modal>
 
-                  <Modal visible={isAccountPickerVisible} transparent animationType="fade" onRequestClose={() => setIsAccountPickerVisible(false)}>
-                    <View style={styles.pickerModalOverlay}>
-                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsAccountPickerVisible(false)} />
-                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
-                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
-                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择账户</Text>
-                          <Pressable onPress={() => setIsAccountPickerVisible(false)} style={styles.pickerModalCloseBtn}>
-                            <MaterialIcons name="close" size={22} color={subtle} />
-                          </Pressable>
-                        </View>
-                        <View style={styles.pickerModalBody}>
-                          <ScrollView style={styles.accountPickerScroll} contentContainerStyle={styles.accountPickerList} showsVerticalScrollIndicator={false}>
-                            {financeAccounts.map((account) => {
-                              const selected = account.id === selectedAccount?.id;
-                              return (
-                                <Pressable
-                                  key={account.id}
-                                  onPress={() => handleSelectAccount(account.id)}
-                                  style={({ pressed }) => [
-                                    styles.accountPickerItem,
-                                    { backgroundColor: selected ? `${tertiary}18` : isDark ? '#161d2b' : '#f2f3ff', borderColor: selected ? tertiary : outlineVariant },
-                                    pressed ? { opacity: 0.84 } : null,
-                                  ]}>
-                                  <MaterialIcons name={accountIcon(account)} size={18} color={selected ? tertiary : subtle} />
-                                  <View style={styles.accountPickerTextCol}>
-                                    <Text style={[styles.accountPickerName, { color: text }]}>{account.name}</Text>
-                                    <Text style={[styles.accountPickerBalance, { color: subtle }]}>{formatCurrencyBalance(account.balance)}</Text>
-                                  </View>
-                                  {selected ? <MaterialIcons name="check" size={18} color={tertiary} /> : null}
-                                </Pressable>
-                              );
-                            })}
-                          </ScrollView>
-                        </View>
-                      </View>
-                    </View>
-                  </Modal>
-
                   {activeSheetTab !== 'sentence' ? (
                     <>
                   <View style={styles.amountPreview}>
@@ -2775,16 +3097,93 @@ export default function FinanceScreen() {
               </>
             )}
             </ScrollView>
+
+            <Modal
+              visible={isAccountPickerVisible}
+              transparent
+              animationType="fade"
+              onRequestClose={() => {
+                setIsAccountPickerVisible(false);
+                setAccountPickerTarget('sheet');
+              }}>
+              <View style={styles.pickerModalOverlay}>
+                <Pressable
+                  style={styles.pickerModalBackdrop}
+                  onPress={() => {
+                    setIsAccountPickerVisible(false);
+                    setAccountPickerTarget('sheet');
+                  }}
+                />
+                <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
+                  <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                    <Text style={[styles.pickerModalTitle, { color: text }]}>
+                      {accountPickerTarget === 'transferFrom'
+                        ? '选择扣款账户'
+                        : accountPickerTarget === 'transferTo'
+                          ? '选择入账账户'
+                          : '选择账户'}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        setIsAccountPickerVisible(false);
+                        setAccountPickerTarget('sheet');
+                      }}
+                      style={styles.pickerModalCloseBtn}>
+                      <MaterialIcons name="close" size={22} color={subtle} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.pickerModalBody}>
+                    <ScrollView style={styles.accountPickerScroll} contentContainerStyle={styles.accountPickerList} showsVerticalScrollIndicator={false}>
+                      {financeAccounts.map((account) => {
+                        const selected =
+                          accountPickerTarget === 'transferFrom'
+                            ? account.id === transferFromAccountId
+                            : accountPickerTarget === 'transferTo'
+                              ? account.id === transferToAccountId
+                              : account.id === selectedAccount?.id;
+                        const transferPickBlocked =
+                          (accountPickerTarget === 'transferFrom' && account.id === transferToAccountId) ||
+                          (accountPickerTarget === 'transferTo' && account.id === transferFromAccountId);
+                        return (
+                          <Pressable
+                            key={account.id}
+                            disabled={transferPickBlocked}
+                            onPress={() => handleSelectAccount(account.id)}
+                            style={({ pressed }) => [
+                              styles.accountPickerItem,
+                              {
+                                backgroundColor: selected ? `${tertiary}18` : isDark ? '#161d2b' : '#f2f3ff',
+                                borderColor: selected ? tertiary : outlineVariant,
+                              },
+                              transferPickBlocked ? { opacity: 0.45 } : null,
+                              pressed && !transferPickBlocked ? { opacity: 0.84 } : null,
+                            ]}>
+                            <MaterialIcons name={accountIcon(account)} size={18} color={selected ? tertiary : subtle} />
+                            <View style={styles.accountPickerTextCol}>
+                              <Text style={[styles.accountPickerName, { color: text }]}>{account.name}</Text>
+                              <Text style={[styles.accountPickerBalance, { color: subtle }]}>{formatCurrencyBalanceForAccount(account)}</Text>
+                            </View>
+                            {selected ? <MaterialIcons name="check" size={18} color={tertiary} /> : null}
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                </View>
+              </View>
+            </Modal>
           </View>
         </View>
       </Modal>
 
       <Modal visible={isBudgetAdjustVisible} animationType="slide" transparent onRequestClose={closeBudgetAdjust}>
         <KeyboardAvoidingView
-          style={styles.sheetOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <Pressable style={styles.sheetBackdrop} onPress={closeBudgetAdjust} />
-          <View style={[styles.budgetDetailsSheet, { paddingBottom: Math.max(24, insets.bottom), backgroundColor: surface }]}>
+          style={styles.budgetKeyboardAvoidingRoot}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={0}>
+          <View style={styles.budgetModalOverlayInner}>
+            <Pressable style={styles.sheetBackdrop} onPress={closeBudgetAdjust} />
+            <View style={[styles.budgetDetailsSheet, { paddingBottom: Math.max(24, insets.bottom), backgroundColor: surface }]}>
             <View style={styles.budgetDetailsHeader}>
               <Text style={[styles.budgetDetailsTitle, { color: text }]}>
                 {budgetSheetMonthNumber}月预算详情
@@ -2882,6 +3281,7 @@ export default function FinanceScreen() {
             </Pressable>
 
             <View style={[styles.budgetDetailsHomeIndicator, { backgroundColor: isDark ? '#9ca3af' : '#111827' }]} />
+            </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -3541,6 +3941,15 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     backgroundColor: 'rgba(0,0,0,0.25)',
   },
+  /** 预算 Modal：KAV 只负责 flex:1；底对齐与遮罩在内层，避免 padding 与 flex 居中叠算产生大块空白 */
+  budgetKeyboardAvoidingRoot: {
+    flex: 1,
+  },
+  budgetModalOverlayInner: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.25)',
+  },
   sheetBackdrop: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 0,
@@ -3559,6 +3968,9 @@ const styles = StyleSheet.create({
   },
   sheetBodyScrollContent: {
     paddingBottom: 6,
+  },
+  sheetBodyScrollContentKeyboardOpen: {
+    paddingBottom: 0,
   },
   sheetHeader: {
     paddingHorizontal: 18,
@@ -3874,6 +4286,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  transferHintText: {
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+    paddingHorizontal: 12,
+    marginTop: -8,
+  },
   transferAmountWrap: {
     minHeight: 112,
     alignItems: 'center',
@@ -4148,6 +4567,7 @@ const styles = StyleSheet.create({
     maxWidth: 480,
     alignSelf: 'center',
     width: '100%',
+    zIndex: 1,
   },
   budgetDetailsHeader: {
     flexDirection: 'row',

@@ -36,6 +36,108 @@ async function assertTransactionAmountSign(accountId: string, amount: number) {
   }
 }
 
+/** 与 `getFinanceAccountsWithBalance` 中按账户汇总 balance 的规则一致（收入 +、支出 -、转账按 leg）。 */
+export function computeTransactionLedgerEffect(
+  transactionType: string,
+  amount: number,
+  extraData: string | null | undefined
+): number {
+  if (transactionType === 'income') return Math.abs(amount);
+  if (transactionType === 'expense') return -Math.abs(amount);
+  if (transactionType === 'transfer') {
+    let leg: string | undefined;
+    try {
+      if (extraData) {
+        const raw = JSON.parse(extraData) as unknown;
+        if (raw && typeof raw === 'object') {
+          const v = (raw as Record<string, unknown>).transfer_leg;
+          leg = typeof v === 'string' ? v : undefined;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    if (leg === 'out') return -Math.abs(amount);
+    if (leg === 'in') return Math.abs(amount);
+    return 0;
+  }
+  return -Math.abs(amount);
+}
+
+const FINANCE_BALANCE_EPS = 1e-4;
+
+function assertFinanceBalanceWithinSignRule(signRule: number, balance: number): void {
+  if (signRule > 0 && balance < -FINANCE_BALANCE_EPS) {
+    throw new Error('资产类账户余额不能为负数。');
+  }
+  if (signRule < 0 && balance > FINANCE_BALANCE_EPS) {
+    throw new Error('负债类账户余额不能为正数。');
+  }
+}
+
+/** 保存后余额是否满足「资产 ≥0、负债 ≤0」；返回 `null` 表示通过，否则为中文错误说明。 */
+export function validateFinanceLedgerBalanceAfterChange(
+  signRule: number,
+  currentBalance: number,
+  transactionType: string,
+  amount: number,
+  extraData: string | null | undefined
+): string | null {
+  try {
+    const delta = computeTransactionLedgerEffect(transactionType, amount, extraData);
+    assertFinanceBalanceWithinSignRule(signRule, currentBalance + delta);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : '余额不符合账户类型约束。';
+  }
+}
+
+async function getFinanceAccountComputedBalance(accountId: string): Promise<number> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ balance: number }>(
+    `
+    SELECT COALESCE(SUM(
+      CASE
+        WHEN t.transaction_type = 'income' THEN ABS(t.amount)
+        WHEN t.transaction_type = 'expense' THEN -ABS(t.amount)
+        WHEN t.transaction_type = 'transfer' THEN
+          CASE json_extract(t.extra_data, '$.transfer_leg')
+            WHEN 'out' THEN -ABS(t.amount)
+            WHEN 'in' THEN ABS(t.amount)
+            ELSE 0
+          END
+        ELSE -ABS(t.amount)
+      END
+    ), 0) AS balance
+    FROM finance_transactions t
+    WHERE t.deleted_at IS NULL AND t.account_id = ?
+    `,
+    [accountId]
+  );
+  return row?.balance ?? 0;
+}
+
+/**
+ * 将用户在表单中输入的金额转为「账本余额」目标值（与 `getFinanceAccountsWithBalance` 一致）。
+ * 负债：正数表示负债规模，对应账本 ≤0；资产：非负。
+ */
+export function financeTargetLedgerFromUserBalanceInput(input: {
+  userNumeric: number;
+  signRule: number;
+  accountType: string;
+}): number {
+  const isLiability = input.signRule < 0 || input.accountType === 'liability';
+  if (isLiability) return -Math.abs(input.userNumeric);
+  return Math.max(0, input.userNumeric);
+}
+
+/** 输入框预填：负债为正数，资产为非负 */
+export function financeBalanceInputTextFromLedger(ledger: number, signRule: number, accountType: string): string {
+  const isLiability = signRule < 0 || accountType === 'liability';
+  if (isLiability) return Math.abs(Math.min(0, ledger)).toFixed(2);
+  return Math.max(0, ledger).toFixed(2);
+}
+
 export async function createFinanceAccount(input: CreateFinanceAccountInput) {
   const db = await getDatabase();
   await db.runAsync(
@@ -73,7 +175,12 @@ export async function getFinanceAccountsWithBalance() {
           WHEN t.id IS NULL THEN 0
           WHEN t.transaction_type = 'income' THEN ABS(t.amount)
           WHEN t.transaction_type = 'expense' THEN -ABS(t.amount)
-          WHEN t.transaction_type = 'transfer' THEN 0
+          WHEN t.transaction_type = 'transfer' THEN
+            CASE json_extract(t.extra_data, '$.transfer_leg')
+              WHEN 'out' THEN -ABS(t.amount)
+              WHEN 'in' THEN ABS(t.amount)
+              ELSE 0
+            END
           ELSE -ABS(t.amount)
         END
       ), 0) AS balance
@@ -258,6 +365,18 @@ export async function deleteFinanceFlowCategory(id: string) {
 
 export async function createFinanceTransaction(input: CreateFinanceTransactionInput) {
   await assertTransactionAmountSign(input.account_id, input.amount);
+  const account = await getFinanceAccountById(input.account_id);
+  if (!account) {
+    throw new Error('finance account not found');
+  }
+  const curBalance = await getFinanceAccountComputedBalance(input.account_id);
+  const delta = computeTransactionLedgerEffect(
+    input.transaction_type ?? 'expense',
+    input.amount,
+    input.extra_data ?? null
+  );
+  assertFinanceBalanceWithinSignRule(account.sign_rule, curBalance + delta);
+
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO finance_transactions (
@@ -277,6 +396,86 @@ export async function createFinanceTransaction(input: CreateFinanceTransactionIn
       input.extra_data ?? null,
     ]
   );
+}
+
+const FINANCE_BALANCE_ADJUST_EPS = 1e-4;
+
+/**
+ * 通过一笔「余额校正」流水把账户账本余额对齐到目标值（不改变账户元数据）。
+ */
+export async function applyFinanceAccountBalanceCorrection(input: {
+  accountId: string;
+  targetLedgerBalance: number;
+  note?: string | null;
+}): Promise<void> {
+  const account = await getFinanceAccountById(input.accountId);
+  if (!account) {
+    throw new Error('finance account not found');
+  }
+
+  let target = input.targetLedgerBalance;
+  if (account.sign_rule > 0 && target < 0) target = 0;
+  if (account.sign_rule < 0 && target > 0) target = 0;
+
+  const current = await getFinanceAccountComputedBalance(input.accountId);
+  const delta = target - current;
+  if (Math.abs(delta) < FINANCE_BALANCE_ADJUST_EPS) return;
+
+  const id = `ft_badj_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const happened_at = new Date().toISOString();
+  const extra = JSON.stringify({ reason: 'balance_correction' });
+  const note = input.note ?? null;
+
+  if (account.sign_rule > 0) {
+    if (delta > 0) {
+      await createFinanceTransaction({
+        id,
+        name: '余额校正',
+        happened_at,
+        account_id: input.accountId,
+        transaction_type: 'income',
+        amount: delta,
+        note,
+        extra_data: extra,
+      });
+    } else {
+      await createFinanceTransaction({
+        id,
+        name: '余额校正',
+        happened_at,
+        account_id: input.accountId,
+        transaction_type: 'expense',
+        amount: -delta,
+        note,
+        extra_data: extra,
+      });
+    }
+    return;
+  }
+
+  if (delta > 0) {
+    await createFinanceTransaction({
+      id,
+      name: '余额校正',
+      happened_at,
+      account_id: input.accountId,
+      transaction_type: 'income',
+      amount: -delta,
+      note,
+      extra_data: extra,
+    });
+  } else {
+    await createFinanceTransaction({
+      id,
+      name: '余额校正',
+      happened_at,
+      account_id: input.accountId,
+      transaction_type: 'expense',
+      amount: delta,
+      note,
+      extra_data: extra,
+    });
+  }
 }
 
 export async function getFinanceTransactionById(id: string) {
@@ -338,7 +537,12 @@ export async function getFinanceDailySummariesByDateRange(startYmd: string, endY
         CASE
           WHEN t.transaction_type = 'income' THEN ABS(t.amount)
           WHEN t.transaction_type = 'expense' THEN -ABS(t.amount)
-          WHEN t.transaction_type = 'transfer' THEN 0
+          WHEN t.transaction_type = 'transfer' THEN
+            CASE json_extract(t.extra_data, '$.transfer_leg')
+              WHEN 'out' THEN -ABS(t.amount)
+              WHEN 'in' THEN ABS(t.amount)
+              ELSE 0
+            END
           ELSE -ABS(t.amount)
         END AS effect_amount
       FROM finance_transactions t
@@ -372,7 +576,31 @@ export async function updateFinanceTransaction(id: string, input: UpdateFinanceT
 
   const nextAccountId = input.account_id ?? current.account_id;
   const nextAmount = input.amount ?? current.amount;
+  const nextType = input.transaction_type ?? current.transaction_type;
+  const nextExtra = input.extra_data ?? current.extra_data;
   await assertTransactionAmountSign(nextAccountId, nextAmount);
+
+  const oldEffect = computeTransactionLedgerEffect(current.transaction_type, current.amount, current.extra_data);
+  const newEffect = computeTransactionLedgerEffect(nextType, nextAmount, nextExtra);
+
+  if (current.account_id === nextAccountId) {
+    const acct = await getFinanceAccountById(nextAccountId);
+    if (acct) {
+      const cur = await getFinanceAccountComputedBalance(nextAccountId);
+      assertFinanceBalanceWithinSignRule(acct.sign_rule, cur - oldEffect + newEffect);
+    }
+  } else {
+    const oldAcct = await getFinanceAccountById(current.account_id);
+    const newAcct = await getFinanceAccountById(nextAccountId);
+    if (oldAcct) {
+      const curOld = await getFinanceAccountComputedBalance(current.account_id);
+      assertFinanceBalanceWithinSignRule(oldAcct.sign_rule, curOld - oldEffect);
+    }
+    if (newAcct) {
+      const curNew = await getFinanceAccountComputedBalance(nextAccountId);
+      assertFinanceBalanceWithinSignRule(newAcct.sign_rule, curNew + newEffect);
+    }
+  }
 
   await db.runAsync(
     `UPDATE finance_transactions
@@ -386,11 +614,11 @@ export async function updateFinanceTransaction(id: string, input: UpdateFinanceT
       input.happened_at ?? current.happened_at,
       nextAccountId,
       input.ai_comment ?? current.ai_comment,
-      input.transaction_type ?? current.transaction_type,
+      nextType,
       input.flow_category_id ?? current.flow_category_id,
       nextAmount,
       input.note ?? current.note,
-      input.extra_data ?? current.extra_data,
+      nextExtra,
       id,
     ]
   );
@@ -398,6 +626,18 @@ export async function updateFinanceTransaction(id: string, input: UpdateFinanceT
 
 export async function deleteFinanceTransaction(id: string) {
   const db = await getDatabase();
+  const current = await db.getFirstAsync<FinanceTransactionRow>(
+    'SELECT * FROM finance_transactions WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+    [id]
+  );
+  if (current) {
+    const acct = await getFinanceAccountById(current.account_id);
+    if (acct) {
+      const cur = await getFinanceAccountComputedBalance(current.account_id);
+      const oldEffect = computeTransactionLedgerEffect(current.transaction_type, current.amount, current.extra_data);
+      assertFinanceBalanceWithinSignRule(acct.sign_rule, cur - oldEffect);
+    }
+  }
   await db.runAsync(
     `UPDATE finance_transactions
      SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1

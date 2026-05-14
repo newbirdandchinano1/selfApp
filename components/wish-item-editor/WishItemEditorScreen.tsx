@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { createWishItem, getWishItemById, updateWishItem } from '@/lib/repositories/wish-list/wish-list';
+import { clearWishItemAiReview, createWishItem, getWishItemById, updateWishItem } from '@/lib/repositories/wish-list/wish-list';
+import { tryPersistWishItemAiComment } from '@/lib/repositories/wish-list/wish-item-ai-comment';
 import {
   createCustomCategoryId,
   DEFAULT_WISH_CATEGORIES,
@@ -9,10 +10,12 @@ import {
   loadCustomWishCategories,
   loadDefaultNameOverrides,
   loadDefaultPriorityOverrides,
+  loadHiddenDefaultCategoryIds,
   mergeWishCategories,
   saveCustomWishCategories,
   saveDefaultNameOverrides,
   saveDefaultPriorityOverrides,
+  saveHiddenDefaultCategoryIds,
   type WishCategoryDef,
 } from '@/lib/wish-categories';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -54,6 +57,7 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
   const [customCategories, setCustomCategories] = useState<WishCategoryDef[]>([]);
   const [defaultPriorityOverrides, setDefaultPriorityOverrides] = useState<Record<string, number>>({});
   const [defaultNameOverrides, setDefaultNameOverrides] = useState<Record<string, string>>({});
+  const [hiddenDefaultCategoryIds, setHiddenDefaultCategoryIds] = useState<string[]>([]);
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
   const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
@@ -83,8 +87,14 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
   const surfaceLow = isDark ? '#1f2937' : '#f2f3ff';
 
   const categoryOptions = useMemo(
-    () => mergeWishCategories(customCategories, defaultPriorityOverrides, defaultNameOverrides),
-    [customCategories, defaultPriorityOverrides, defaultNameOverrides],
+    () =>
+      mergeWishCategories(
+        customCategories,
+        defaultPriorityOverrides,
+        defaultNameOverrides,
+        hiddenDefaultCategoryIds,
+      ),
+    [customCategories, defaultPriorityOverrides, defaultNameOverrides, hiddenDefaultCategoryIds],
   );
 
   const selectedCategoryLabel = useMemo(() => {
@@ -113,7 +123,12 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
         setEditLoadState('error');
         return;
       }
-      const merged = mergeWishCategories(customCategories, defaultPriorityOverrides, defaultNameOverrides);
+      const merged = mergeWishCategories(
+        customCategories,
+        defaultPriorityOverrides,
+        defaultNameOverrides,
+        hiddenDefaultCategoryIds,
+      );
       const cid = row.category_id ?? '';
       const hasCat = merged.some(c => c.id === cid);
       setName(row.name);
@@ -130,21 +145,23 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
     return () => {
       cancelled = true;
     };
-  }, [mode, categoriesLoaded, customCategories, defaultPriorityOverrides, defaultNameOverrides]);
+  }, [mode, categoriesLoaded, customCategories, defaultPriorityOverrides, defaultNameOverrides, hiddenDefaultCategoryIds]);
 
   useEffect(() => {
     let alive = true;
     void (async () => {
       try {
-        const [list, priorityOv, nameOv] = await Promise.all([
+        const [list, priorityOv, nameOv, hiddenDefaults] = await Promise.all([
           loadCustomWishCategories(),
           loadDefaultPriorityOverrides(),
           loadDefaultNameOverrides(),
+          loadHiddenDefaultCategoryIds(),
         ]);
         if (alive) {
           setCustomCategories(list);
           setDefaultPriorityOverrides(priorityOv);
           setDefaultNameOverrides(nameOv);
+          setHiddenDefaultCategoryIds(hiddenDefaults);
         }
       } finally {
         if (alive) {
@@ -190,7 +207,12 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
       const trimmed = newCategoryName.trim();
       const dupMsg = findDuplicateCategoryName(
         trimmed,
-        mergeWishCategories(customCategories, defaultPriorityOverrides, defaultNameOverrides),
+        mergeWishCategories(
+          customCategories,
+          defaultPriorityOverrides,
+          defaultNameOverrides,
+          hiddenDefaultCategoryIds,
+        ),
       );
       if (dupMsg) {
         setCategorySaveError(dupMsg);
@@ -223,7 +245,12 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
       const trimmed = newCategoryName.trim();
       const dupMsg = findDuplicateCategoryName(
         trimmed,
-        mergeWishCategories(customCategories, defaultPriorityOverrides, defaultNameOverrides),
+        mergeWishCategories(
+          customCategories,
+          defaultPriorityOverrides,
+          defaultNameOverrides,
+          hiddenDefaultCategoryIds,
+        ),
         editingCategoryId,
       );
       if (dupMsg) {
@@ -265,7 +292,12 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
     const trimmed = newCategoryName.trim();
     const dupMsg = findDuplicateCategoryName(
       trimmed,
-      mergeWishCategories(customCategories, defaultPriorityOverrides, defaultNameOverrides),
+      mergeWishCategories(
+        customCategories,
+        defaultPriorityOverrides,
+        defaultNameOverrides,
+        hiddenDefaultCategoryIds,
+      ),
       editingCategoryId,
     );
     if (dupMsg) {
@@ -289,6 +321,7 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
     customCategories,
     defaultPriorityOverrides,
     defaultNameOverrides,
+    hiddenDefaultCategoryIds,
     editingCategoryId,
     newCategoryName,
     newCategoryPriority,
@@ -298,6 +331,70 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
     categoryModalMode === 'edit' && editingCategoryId
       ? isBuiltinWishCategoryId(editingCategoryId)
       : false;
+
+  const deleteEditingCategory = useCallback(async () => {
+    if (!editingCategoryId) return;
+
+    const merged = mergeWishCategories(
+      customCategories,
+      defaultPriorityOverrides,
+      defaultNameOverrides,
+      hiddenDefaultCategoryIds,
+    );
+    if (merged.length <= 1) {
+      Alert.alert('无法删除', '至少需要保留 1 个类别。');
+      return;
+    }
+
+    if (isBuiltinWishCategoryId(editingCategoryId)) {
+      const base = DEFAULT_WISH_CATEGORIES.find(d => d.id === editingCategoryId);
+      if (!base) return;
+      const nextHidden = [...new Set([...hiddenDefaultCategoryIds, editingCategoryId])];
+      const nextNames = { ...defaultNameOverrides };
+      delete nextNames[editingCategoryId];
+      const nextPriorities = { ...defaultPriorityOverrides };
+      delete nextPriorities[editingCategoryId];
+      try {
+        await Promise.all([
+          saveHiddenDefaultCategoryIds(nextHidden),
+          saveDefaultNameOverrides(nextNames),
+          saveDefaultPriorityOverrides(nextPriorities),
+        ]);
+        setHiddenDefaultCategoryIds(nextHidden);
+        setDefaultNameOverrides(nextNames);
+        setDefaultPriorityOverrides(nextPriorities);
+        if (selectedCategoryId === editingCategoryId) {
+          setSelectedCategoryId('');
+          setUnresolvedCategoryLabel(null);
+        }
+        closeCategoryModal();
+      } catch {
+        Alert.alert('删除失败', '请稍后重试');
+      }
+      return;
+    }
+
+    const next = customCategories.filter(c => c.id !== editingCategoryId);
+    try {
+      await saveCustomWishCategories(next);
+      setCustomCategories(next);
+      if (selectedCategoryId === editingCategoryId) {
+        setSelectedCategoryId('');
+        setUnresolvedCategoryLabel(null);
+      }
+      closeCategoryModal();
+    } catch {
+      Alert.alert('删除失败', '请稍后重试');
+    }
+  }, [
+    closeCategoryModal,
+    customCategories,
+    defaultNameOverrides,
+    defaultPriorityOverrides,
+    editingCategoryId,
+    hiddenDefaultCategoryIds,
+    selectedCategoryId,
+  ]);
 
   const pickReferenceImage = useCallback(async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -338,7 +435,7 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
     setSaving(true);
     try {
       if (mode.kind === 'create') {
-        await createWishItem({
+        const newId = await createWishItem({
           name: trimmedName,
           price: priceNum,
           category_id: selectedCategoryId || null,
@@ -346,6 +443,13 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
           desire_level: desireLevel,
           reason: reason.trim() || null,
           reference_image_uri: referenceImageUri,
+        });
+        void tryPersistWishItemAiComment(newId, {
+          name: trimmedName,
+          price: priceNum,
+          categoryLabel: selectedCategoryLabel?.trim() || null,
+          desire_level: desireLevel,
+          reason: reason.trim() || null,
         });
       } else {
         const labelOut = (selectedCategoryLabel || unresolvedCategoryLabel || '').trim() || null;
@@ -359,6 +463,7 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
           reason: reason.trim() || null,
           ...(refChanged ? { reference_image_uri: referenceImageUri } : {}),
         });
+        await clearWishItemAiReview(mode.id);
       }
       router.back();
     } catch (e) {
@@ -435,12 +540,15 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
         {mode.kind === 'create' || editLoadState === 'ready' ? (
           <>
         <View style={styles.section}>
-          <View style={[styles.underlineWrap, { borderBottomColor: outlineVariant }]}>
+          <View style={[styles.nameUnderlineWrap, { borderBottomColor: outlineVariant }]}>
             <TextInput
               value={name}
               onChangeText={setName}
               placeholder="输入好物名称..."
               placeholderTextColor={outline}
+              {...(Platform.OS === 'android'
+                ? { textAlignVertical: 'center' as const, includeFontPadding: false }
+                : {})}
               style={[styles.nameInput, { color: text }]}
             />
           </View>
@@ -471,7 +579,7 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
             <View style={styles.field}>
               <Text style={[styles.fieldLabel, { color: outline }]}>所属类别</Text>
               <Text style={[styles.categorySortHint, { color: outline }]}>
-                列表按优先级从高到低排序；长按标签可编辑。
+                列表按优先级从高到低排序；长按标签可编辑或从列表移除。
               </Text>
               <Pressable
                 accessibilityRole="button"
@@ -499,13 +607,13 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
                   <View style={styles.categoryWrap}>
                     {(categoriesLoaded
                       ? categoryOptions
-                      : mergeWishCategories([], {}, {})
+                      : mergeWishCategories([], {}, {}, hiddenDefaultCategoryIds)
                     ).map(item => {
                       const active = item.id === selectedCategoryId;
                       return (
                         <Pressable
                           key={item.id}
-                          accessibilityHint="长按可编辑类别"
+                          accessibilityHint="长按可编辑或移除类别"
                           delayLongPress={420}
                           onPress={() => {
                             setSelectedCategoryId(item.id);
@@ -660,7 +768,9 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
                     : '编辑类别'}
               </Text>
               <Text style={[styles.modalHint, { color: outline }]}>
-                可修改名称与优先级；数值越大在列表中越靠前。
+                {categoryModalMode === 'create'
+                  ? '数值越大在列表中越靠前。'
+                  : '可修改名称与优先级；可从列表中移除（至少保留 1 个）。数值越大越靠前。'}
               </Text>
               <Text style={[styles.modalFieldLabel, { color: outline }]}>类别名称</Text>
               <TextInput
@@ -702,6 +812,42 @@ export function WishItemEditorScreen({ mode }: WishItemEditorScreenProps) {
                   </Text>
                 </Pressable>
               </View>
+              {categoryModalMode === 'edit' && editingCategoryId ? (
+                <Pressable
+                  onPress={() => {
+                    if (!editingCategoryId) return;
+                    const merged = mergeWishCategories(
+                      customCategories,
+                      defaultPriorityOverrides,
+                      defaultNameOverrides,
+                      hiddenDefaultCategoryIds,
+                    );
+                    if (merged.length <= 1) {
+                      Alert.alert('无法删除', '至少需要保留 1 个类别。');
+                      return;
+                    }
+                    const label = newCategoryName.trim() || '该类别';
+                    Alert.alert(
+                      editingIsBuiltin ? '移除类别' : '删除类别',
+                      editingIsBuiltin
+                        ? `确定从列表中移除「${label}」吗？已选该类别的心愿仍可保存，建议在保存前重新选择类别。`
+                        : `确定删除「${label}」吗？使用该类别的心愿仍可保存，建议在保存前重新选择类别。`,
+                      [
+                        { text: '取消', style: 'cancel' },
+                        {
+                          text: editingIsBuiltin ? '移除' : '删除',
+                          style: 'destructive',
+                          onPress: () => void deleteEditingCategory(),
+                        },
+                      ],
+                    );
+                  }}
+                  style={styles.modalDeleteBtn}>
+                  <Text style={styles.modalDeleteText}>
+                    {editingIsBuiltin ? '从列表移除' : '删除类别'}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           </KeyboardAvoidingView>
         </View>
@@ -761,12 +907,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
   },
+  /** 大号标题输入避免与 underlineWrap 的垂直居中对齐裁切字形（尤其 Android） */
+  nameUnderlineWrap: {
+    borderBottomWidth: 1,
+    paddingBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    minHeight: 48,
+  },
   nameInput: {
     flex: 1,
     fontSize: 30,
     fontWeight: '800',
     letterSpacing: -0.4,
     padding: 0,
+    minHeight: Platform.OS === 'android' ? 46 : 40,
+    lineHeight: Platform.OS === 'ios' ? 36 : undefined,
   },
   sectionCard: {
     borderRadius: 16,
@@ -930,6 +1086,17 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '800',
+  },
+  modalDeleteBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  modalDeleteText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#dc2626',
   },
   starRow: {
     flexDirection: 'row',

@@ -160,3 +160,33 @@ export async function deleteWishItem(id: string) {
     [id]
   );
 }
+
+/** 清空单条 AI 评价（不修改 updated_at；用于编辑保存后等待重新生成）。 */
+export async function clearWishItemAiReview(id: string) {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE wish_items SET
+      ai_comment = NULL,
+      ai_review_at = NULL,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+      version = version + 1
+    WHERE id = ? AND deleted_at IS NULL`,
+    [id]
+  );
+}
+
+/** 写入单条 AI 评价（不修改 updated_at，避免触发「需重新生成」的误判）。 */
+export async function patchWishItemAiReview(id: string, ai_comment: string) {
+  const db = await getDatabase();
+  const trimmed = ai_comment.trim();
+  if (!trimmed) return;
+  await db.runAsync(
+    `UPDATE wish_items SET
+      ai_comment = ?,
+      ai_review_at = datetime('now'),
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+      version = version + 1
+    WHERE id = ? AND deleted_at IS NULL`,
+    [trimmed, id]
+  );
+}

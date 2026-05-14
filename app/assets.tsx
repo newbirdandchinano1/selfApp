@@ -193,6 +193,34 @@ export default function AssetsScreen() {
     [accountTypes, parseUiMeta],
   );
 
+  /** 分组标题合计：自定义/混合组内可能含负债账户，按「资产 ≥0、负债 ≤0」折算后汇总 */
+  const groupMixedLedgerSum = React.useCallback(
+    (rows: FinanceAccountBalanceRow[]) =>
+      rows.reduce((sum, a) => {
+        if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
+        if (isLiabilityAccount(a)) return sum + Math.abs(Math.min(0, a.balance ?? 0));
+        return sum + Math.max(0, a.balance ?? 0);
+      }, 0),
+    [isLiabilityAccount],
+  );
+
+  const sumLiabilityDebtMagnitudes = React.useCallback(
+    (rows: FinanceAccountBalanceRow[]) =>
+      rows.reduce((sum, a) => {
+        if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
+        return sum + Math.abs(Math.min(0, a.balance ?? 0));
+      }, 0),
+    [],
+  );
+
+  const formatAccountRowBalance = React.useCallback(
+    (acc: FinanceAccountBalanceRow) =>
+      isLiabilityAccount(acc)
+        ? formatDebtMoney2(Math.min(0, acc.balance ?? 0))
+        : formatMoney2(Math.max(0, acc.balance ?? 0)),
+    [isLiabilityAccount, formatDebtMoney2, formatMoney2],
+  );
+
   const totalAssets = React.useMemo(
     () =>
       accounts.reduce((sum, a) => {
@@ -207,7 +235,7 @@ export default function AssetsScreen() {
       accounts.reduce((sum, a) => {
         if (!isLiabilityAccount(a)) return sum;
         if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
-        return sum + Math.abs(a.balance ?? 0);
+        return sum + Math.abs(Math.min(0, a.balance ?? 0));
       }, 0),
     [accounts, isLiabilityAccount],
   );
@@ -230,14 +258,6 @@ export default function AssetsScreen() {
   const investPct = hasAssets ? investTotal / totalAssets : 0;
 
   const ringPct = hasAssets ? Math.round(((cashTotal + bankTotal + investTotal) / totalAssets) * 100) : 0;
-
-  /** 分组标题上的合计：与页头总资产/总负债一致，跳过「不计入」标记的账户 */
-  const groupSumAbs = React.useCallback((rows: FinanceAccountBalanceRow[]) => {
-    return rows.reduce((sum, a) => {
-      if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
-      return sum + Math.abs(a.balance ?? 0);
-    }, 0);
-  }, []);
 
   const accountIcon = React.useCallback(
     (acc: FinanceAccountBalanceRow) => {
@@ -374,7 +394,7 @@ export default function AssetsScreen() {
                 <MaterialIcons name="wallet" size={20} color={tertiaryAmber} />
                 <Text style={[styles.groupTitle, { color: theme.text }]}>现金与钱包</Text>
               </View>
-              <Text style={[styles.groupSum, { color: tertiaryAmber }]}>{formatMoney2(groupSumAbs(grouped.cash_wallet))}</Text>
+              <Text style={[styles.groupSum, { color: tertiaryAmber }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.cash_wallet))}</Text>
             </View>
 
             {grouped.cash_wallet.length === 0 ? (
@@ -414,7 +434,7 @@ export default function AssetsScreen() {
                       <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '现金/钱包'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatMoney2(acc.balance)}</Text>
+                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatAccountRowBalance(acc)}</Text>
                 </Pressable>
               ))
             )}
@@ -426,7 +446,7 @@ export default function AssetsScreen() {
                 <MaterialIcons name="account-balance" size={20} color={primaryBlue} />
                 <Text style={[styles.groupTitle, { color: theme.text }]}>银行账户</Text>
               </View>
-              <Text style={[styles.groupSum, { color: primaryBlue }]}>{formatMoney2(groupSumAbs(grouped.bank))}</Text>
+              <Text style={[styles.groupSum, { color: primaryBlue }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.bank))}</Text>
             </View>
 
             {grouped.bank.length === 0 ? (
@@ -466,7 +486,7 @@ export default function AssetsScreen() {
                       <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '银行账户'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatMoney2(acc.balance)}</Text>
+                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatAccountRowBalance(acc)}</Text>
                 </Pressable>
               ))
             )}
@@ -478,7 +498,7 @@ export default function AssetsScreen() {
                 <MaterialIcons name="show-chart" size={20} color={secondaryGreen} />
                 <Text style={[styles.groupTitle, { color: theme.text }]}>投资项目</Text>
               </View>
-              <Text style={[styles.groupSum, { color: secondaryGreen }]}>{formatMoney2(groupSumAbs(grouped.investment))}</Text>
+              <Text style={[styles.groupSum, { color: secondaryGreen }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.investment))}</Text>
             </View>
 
             {grouped.investment.length === 0 ? (
@@ -518,7 +538,7 @@ export default function AssetsScreen() {
                       <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '投资账户'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatMoney2(acc.balance)}</Text>
+                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatAccountRowBalance(acc)}</Text>
                 </Pressable>
               ))
             )}
@@ -531,7 +551,7 @@ export default function AssetsScreen() {
                   <MaterialIcons name="tune" size={20} color={outline} />
                   <Text style={[styles.groupTitle, { color: theme.text }]}>{g.name}</Text>
                 </View>
-                <Text style={[styles.groupSum, { color: outline }]}>{formatMoney0(groupSumAbs(g.rows))}</Text>
+                <Text style={[styles.groupSum, { color: outline }]}>{formatMoney0(groupMixedLedgerSum(g.rows))}</Text>
               </View>
 
               {g.rows.length === 0 ? (
@@ -571,7 +591,7 @@ export default function AssetsScreen() {
                         <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : g.name}</Text>
                       </View>
                     </View>
-                    <Text style={[styles.accountAmount, { color: theme.text }]}>{formatMoney2(acc.balance)}</Text>
+                    <Text style={[styles.accountAmount, { color: theme.text }]}>{formatAccountRowBalance(acc)}</Text>
                   </Pressable>
                 ))
               )}
@@ -585,7 +605,7 @@ export default function AssetsScreen() {
                   <MaterialIcons name="tune" size={20} color={outline} />
                   <Text style={[styles.groupTitle, { color: theme.text }]}>其他</Text>
                 </View>
-                <Text style={[styles.groupSum, { color: outline }]}>{formatMoney0(groupSumAbs(grouped.unknown))}</Text>
+                <Text style={[styles.groupSum, { color: outline }]}>{formatMoney0(groupMixedLedgerSum(grouped.unknown))}</Text>
               </View>
 
               {grouped.unknown.map((acc) => (
@@ -606,7 +626,7 @@ export default function AssetsScreen() {
                       <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '其他'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatMoney2(acc.balance)}</Text>
+                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatAccountRowBalance(acc)}</Text>
                 </Pressable>
               ))}
             </View>
@@ -618,7 +638,7 @@ export default function AssetsScreen() {
                 <MaterialIcons name="credit-card-off" size={20} color={errorRed} />
                 <Text style={[styles.groupTitle, { color: errorRed }]}>负债</Text>
               </View>
-              <Text style={[styles.groupSum, { color: errorRed }]}>{formatDebtMoney2(groupSumAbs(grouped.liability))}</Text>
+              <Text style={[styles.groupSum, { color: errorRed }]}>{formatDebtMoney2(sumLiabilityDebtMagnitudes(grouped.liability))}</Text>
             </View>
 
             <View style={styles.debtList}>
@@ -659,7 +679,7 @@ export default function AssetsScreen() {
                         <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '负债账户'}</Text>
                       </View>
                     </View>
-                    <Text style={[styles.accountAmount, { color: errorRed }]}>{formatDebtMoney2(acc.balance)}</Text>
+                    <Text style={[styles.accountAmount, { color: errorRed }]}>{formatAccountRowBalance(acc)}</Text>
                   </Pressable>
                 ))
               )}

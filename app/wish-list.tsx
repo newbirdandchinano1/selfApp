@@ -2,10 +2,17 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { deleteWishItem, listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
+import {
+  clearWishListRationalAiCache,
+  computeWishListRationalFingerprint,
+  getWishListRationalAiCache,
+  saveWishListRationalAiCache,
+} from '@/lib/repositories/wish-list/wish-list-rational-ai-cache';
+import { analyzeWishListRationalReviewFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -33,6 +40,22 @@ function subtitleForRow(row: WishItemRow): string {
   return '未填写类别与理由';
 }
 
+function buildWishListAiContextText(rows: WishItemRow[], quarterGoal: number, totalPrice: number): string {
+  const lines = rows.map((row, idx) => {
+    const cat = row.category_label?.trim() || '未分类';
+    const reason = row.reason?.trim().replace(/\s+/g, ' ') ?? '';
+    const reasonShort = reason.length > 120 ? `${reason.slice(0, 117)}…` : reason;
+    return `${idx + 1}. ${row.name}｜预估 ¥${row.price}｜欲望 ${row.desire_level}/5｜${cat}${reasonShort ? `｜理由：${reasonShort}` : ''}`;
+  });
+  return [
+    `参考季度目标金额：¥${quarterGoal.toLocaleString('zh-CN')}（用于理解「占 Q 目标比例」等语境，非强制预算）`,
+    `清单共 ${rows.length} 条，总预估支出 ¥${totalPrice.toLocaleString('zh-CN')}`,
+    '',
+    '条目明细：',
+    ...lines,
+  ].join('\n');
+}
+
 export default function WishListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -44,6 +67,15 @@ export default function WishListScreen() {
   const [items, setItems] = useState<WishItemRow[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  const zhipuReady = Boolean(getZhipuApiKey().trim());
+  /** 大于 0 时表示用户点击了「刷新 AI 评审」，须强制走网络并写库。 */
+  const [rationalRefreshToken, setRationalRefreshToken] = useState(0);
+  const [aiHeadline, setAiHeadline] = useState<string | null>(null);
+  const [aiReview, setAiReview] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const rationalRunRef = useRef(0);
 
   const reload = useCallback(async () => {
     setLoadError(null);
@@ -83,6 +115,104 @@ export default function WishListScreen() {
     const sorted = [...items].sort((a, b) => b.desire_level - a.desire_level || b.price - a.price);
     return sorted[0]?.name ?? null;
   }, [items]);
+
+  const wishListAiContextText = useMemo(() => {
+    if (items.length === 0) return '';
+    const total = items.reduce((sum, row) => sum + (Number.isFinite(row.price) ? row.price : 0), 0);
+    return buildWishListAiContextText(items, quarterTarget, total);
+  }, [items]);
+
+  const wishListFp = useMemo(() => computeWishListRationalFingerprint(items), [items]);
+
+  useEffect(() => {
+    if (initialLoading) return;
+
+    const reqId = ++rationalRunRef.current;
+
+    void (async () => {
+      if (rationalRunRef.current !== reqId) return;
+
+      if (items.length === 0) {
+        setAiHeadline(null);
+        setAiReview(null);
+        setAiError(null);
+        setAiLoading(false);
+        await clearWishListRationalAiCache();
+        if (rationalRunRef.current !== reqId) return;
+        setRationalRefreshToken(0);
+        return;
+      }
+
+      const fp = wishListFp;
+      const cached = await getWishListRationalAiCache();
+      if (rationalRunRef.current !== reqId) return;
+
+      const forceNetwork = rationalRefreshToken > 0;
+      const cacheHit = Boolean(cached && cached.fingerprint === fp && !forceNetwork);
+      if (cacheHit && cached) {
+        setAiHeadline(cached.headline?.trim() || null);
+        setAiReview(cached.review?.trim() || null);
+        setAiError(null);
+        setAiLoading(false);
+        return;
+      }
+
+      const key = getZhipuApiKey().trim();
+      if (!key) {
+        setAiHeadline(null);
+        setAiReview(null);
+        setAiError(null);
+        setAiLoading(false);
+        setRationalRefreshToken(0);
+        return;
+      }
+
+      const ctx = wishListAiContextText.trim();
+      if (!ctx) {
+        setAiLoading(false);
+        setRationalRefreshToken(0);
+        return;
+      }
+
+      setAiLoading(true);
+      setAiError(null);
+
+      const r = await analyzeWishListRationalReviewFromText({ apiKey: key, contextText: ctx });
+      if (rationalRunRef.current !== reqId) return;
+      setAiLoading(false);
+
+      if (!r.ok) {
+        setAiError(r.error);
+        setAiHeadline(null);
+        setAiReview(null);
+        setRationalRefreshToken(0);
+        return;
+      }
+
+      setAiHeadline(r.headline);
+      setAiReview(r.review);
+      await saveWishListRationalAiCache({
+        fingerprint: fp,
+        headline: r.headline,
+        review: r.review,
+      });
+      if (rationalRunRef.current !== reqId) return;
+      setRationalRefreshToken(0);
+    })();
+  }, [initialLoading, wishListFp, items.length, wishListAiContextText, zhipuReady, rationalRefreshToken]);
+
+  const bumpAiRefresh = useCallback(() => {
+    setRationalRefreshToken(t => t + 1);
+  }, []);
+
+  const aiHeadingDisplay = useMemo(() => {
+    if (items.length === 0) return '从添加第一条开始';
+    if (aiHeadline?.trim()) return aiHeadline.trim();
+    return topDesireName ? '关注高欲望单品' : '建议策略性延后';
+  }, [items.length, aiHeadline, topDesireName]);
+
+  const showAiPending =
+    zhipuReady && items.length > 0 && (aiLoading || (!aiHeadline && !aiReview && !aiError));
 
   const requestDeleteWish = useCallback(
     (row: WishItemRow) => {
@@ -165,9 +295,7 @@ export default function WishListScreen() {
               <MaterialIcons name="auto-awesome" size={18} color={primary} />
               <Text style={[styles.aiKicker, { color: primary }]}>AI 理性评审</Text>
             </View>
-            <Text style={[styles.aiHeading, { color: text }]}>
-              {items.length === 0 ? '从添加第一条开始' : topDesireName ? '关注高欲望单品' : '建议策略性延后'}
-            </Text>
+            <Text style={[styles.aiHeading, { color: text }]}>{aiHeadingDisplay}</Text>
           </View>
           <View style={[styles.aiBody, { borderTopColor: borderSoft }]}>
             {items.length === 0 ? (
@@ -176,24 +304,72 @@ export default function WishListScreen() {
               </Text>
             ) : (
               <>
-                <Text style={[styles.aiText, { color: outline }]}>
-                  当前共
-                  <Text style={[styles.aiTextStrong, { color: text }]}> {items.length} </Text>
-                  条心愿，总预估
-                  <Text style={[styles.aiTextStrong, { color: text }]}> {formatCny(summary.total)} </Text>
-                  。
-                  {topDesireName ? (
-                    <>
-                      {' '}
-                      其中<Text style={[styles.aiTextStrong, { color: text }]}> {topDesireName} </Text>
-                      欲望等级较高，可优先评估必要性再下单。
-                    </>
-                  ) : null}
-                </Text>
-                <Text style={[styles.aiText, { color: outline }]}>
-                  <Text style={[styles.aiAdviceTag, { color: primary }]}>提示：</Text>
-                  以上为占位说明；完整 AI 评审可后续接入模型与现金流数据。
-                </Text>
+                {aiReview?.trim() ? (
+                  <Text style={[styles.aiText, { color: outline }]}>{aiReview.trim()}</Text>
+                ) : (
+                  <>
+                    <Text style={[styles.aiText, { color: outline }]}>
+                      当前共
+                      <Text style={[styles.aiTextStrong, { color: text }]}> {items.length} </Text>
+                      条心愿，总预估
+                      <Text style={[styles.aiTextStrong, { color: text }]}> {formatCny(summary.total)} </Text>
+                      。
+                      {topDesireName ? (
+                        <>
+                          {' '}
+                          其中<Text style={[styles.aiTextStrong, { color: text }]}> {topDesireName} </Text>
+                          欲望等级较高，可优先评估必要性再下单。
+                        </>
+                      ) : null}
+                    </Text>
+                    {showAiPending ? (
+                      <View style={styles.aiPendingRow}>
+                        <ActivityIndicator size="small" color={primary} />
+                        <Text style={[styles.aiPendingText, { color: outline }]}>正在请求智谱 GLM…</Text>
+                      </View>
+                    ) : null}
+                    {aiError ? (
+                      <Text style={[styles.aiText, { color: '#b45309' }]}>
+                        生成失败：{aiError}。可点击「刷新 AI 评审」重试。
+                      </Text>
+                    ) : null}
+                  </>
+                )}
+
+                {!zhipuReady ? (
+                  <Text style={[styles.aiText, { color: outline }]}>
+                    <Text style={[styles.aiAdviceTag, { color: primary }]}>提示：</Text>
+                    配置智谱 API 密钥（EXPO_PUBLIC_ZHIPU_API_KEY）后，可由模型根据上文明细生成理性消费评审，与记账、备忘等能力共用同一密钥。
+                  </Text>
+                ) : null}
+
+                {aiReview?.trim() ? (
+                  <Text style={[styles.aiText, { color: outline }]}>
+                    <Text style={[styles.aiAdviceTag, { color: primary }]}>说明：</Text>
+                    内容由智谱模型根据本地清单生成，仅供自我观察参考，不构成消费或投资建议。
+                  </Text>
+                ) : null}
+
+                {zhipuReady && items.length > 0 ? (
+                  <Pressable
+                    onPress={() => bumpAiRefresh()}
+                    disabled={aiLoading}
+                    style={({ pressed }) => [
+                      styles.aiRefreshBtn,
+                      {
+                        borderColor: borderSoft,
+                        backgroundColor: isDark ? 'rgba(30,41,59,0.6)' : 'rgba(255,255,255,0.75)',
+                        opacity: aiLoading ? 0.55 : pressed ? 0.88 : 1,
+                      },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="刷新 AI 理性评审">
+                    <MaterialIcons name="refresh" size={18} color={primary} />
+                    <Text style={[styles.aiRefreshBtnText, { color: primary }]}>
+                      {aiLoading ? '刷新中…' : '刷新 AI 评审'}
+                    </Text>
+                  </Pressable>
+                ) : null}
               </>
             )}
           </View>
@@ -244,29 +420,47 @@ export default function WishListScreen() {
                         borderLeftWidth: highlighted ? 4 : 0,
                       },
                     ]}>
-                    <View style={[styles.itemIconWrap, { backgroundColor: cardSoft }]}>
-                      {thumb ? (
-                        <Image source={{ uri: thumb }} style={styles.itemThumb} contentFit="cover" transition={150} />
-                      ) : (
-                        <MaterialIcons name="card-giftcard" size={28} color={text} />
-                      )}
-                    </View>
-                    <View style={styles.itemContent}>
-                      <View style={styles.itemTextWrap}>
-                        <Text style={[styles.itemName, { color: text }]}>{row.name}</Text>
-                        <Text style={[styles.itemSubtitle, { color: outline }]} numberOfLines={2}>
-                          {subtitleForRow(row)}
-                        </Text>
+                    <View style={styles.itemMainRow}>
+                      <View style={[styles.itemIconWrap, { backgroundColor: cardSoft }]}>
+                        {thumb ? (
+                          <Image source={{ uri: thumb }} style={styles.itemThumb} contentFit="cover" transition={150} />
+                        ) : (
+                          <MaterialIcons name="card-giftcard" size={28} color={text} />
+                        )}
                       </View>
-                      <View style={styles.itemPriceWrap}>
-                        <Text style={[styles.itemPrice, { color: tertiary }]}>{formatCny(row.price)}</Text>
-                        <Text
-                          style={[styles.itemPriority, { color: highlighted ? primary : outline }]}
-                          numberOfLines={1}>
-                          {desireLevelLabel(row.desire_level)}
-                        </Text>
+                      <View style={styles.itemContent}>
+                        <View style={styles.itemTextWrap}>
+                          <Text style={[styles.itemName, { color: text }]}>{row.name}</Text>
+                          <Text style={[styles.itemSubtitle, { color: outline }]} numberOfLines={2}>
+                            {subtitleForRow(row)}
+                          </Text>
+                        </View>
+                        <View style={styles.itemPriceWrap}>
+                          <Text style={[styles.itemPrice, { color: tertiary }]}>{formatCny(row.price)}</Text>
+                          <Text
+                            style={[styles.itemPriority, { color: highlighted ? primary : outline }]}
+                            numberOfLines={1}>
+                            {desireLevelLabel(row.desire_level)}
+                          </Text>
+                        </View>
                       </View>
                     </View>
+                    {row.ai_comment?.trim() ? (
+                      <View
+                        style={[
+                          styles.itemAiFooter,
+                          {
+                            borderTopColor: borderSoft,
+                            backgroundColor: isDark ? 'rgba(30,41,59,0.5)' : 'rgba(99,102,241,0.07)',
+                          },
+                        ]}>
+                        <View style={styles.itemAiKickerRow}>
+                          <MaterialIcons name="auto-awesome" size={14} color={primary} />
+                          <Text style={[styles.itemAiKicker, { color: primary }]}>AI 评价</Text>
+                        </View>
+                        <Text style={[styles.itemAiBody, { color: outline }]}>{row.ai_comment.trim()}</Text>
+                      </View>
+                    ) : null}
                   </View>
                 </Pressable>
               </Swipeable>
@@ -453,6 +647,32 @@ const styles = StyleSheet.create({
   aiAdviceTag: {
     fontWeight: '700',
   },
+  aiPendingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 2,
+  },
+  aiPendingText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  aiRefreshBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 4,
+    alignSelf: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  aiRefreshBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
   listSection: {
     gap: 12,
   },
@@ -507,11 +727,16 @@ const styles = StyleSheet.create({
   },
   itemCard: {
     borderRadius: 20,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
+    overflow: 'hidden',
+    flexDirection: 'column',
+    alignItems: 'stretch',
+  },
+  itemMainRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
   },
   itemIconWrap: {
     width: 56,
@@ -542,6 +767,29 @@ const styles = StyleSheet.create({
   itemSubtitle: {
     marginTop: 4,
     fontSize: 14,
+    fontWeight: '500',
+  },
+  itemAiFooter: {
+    borderTopWidth: 1,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 13,
+    gap: 6,
+  },
+  itemAiKickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  itemAiKicker: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  itemAiBody: {
+    fontSize: 13,
+    lineHeight: 19,
     fontWeight: '500',
   },
   itemPriceWrap: {

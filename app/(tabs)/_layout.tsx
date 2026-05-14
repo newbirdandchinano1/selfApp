@@ -48,6 +48,8 @@ export default function TabLayout() {
         name="tasks"
         options={{
           title: '任务',
+          /** 键盘弹出时隐藏底栏，避免 ScrollView 键盘 inset 与 Tab 占位叠加产生大块空白 */
+          tabBarHideOnKeyboard: true,
           tabBarIcon: ({ color }) => <MaterialIcons size={24} name="check-circle-outline" color={color} />,
         }}
       />

@@ -1,11 +1,22 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
-import { createFinanceAccount, createFinanceTransaction, deleteFinanceAccountTypeByName, getFinanceAccountTypes, getFinanceAccounts } from '@/lib/repositories/finance/finance';
+import {
+  applyFinanceAccountBalanceCorrection,
+  createFinanceAccount,
+  createFinanceTransaction,
+  deleteFinanceAccountTypeByName,
+  financeBalanceInputTextFromLedger,
+  financeTargetLedgerFromUserBalanceInput,
+  getFinanceAccountTypes,
+  getFinanceAccounts,
+  getFinanceAccountsWithBalance,
+  updateFinanceAccount,
+} from '@/lib/repositories/finance/finance';
 import { getCustomAccountTypeDraft, getCustomAccountTypeOptions, removeCustomAccountTypeOption, setCustomAccountTypeDraft } from '@/lib/state/account-type-draft';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
     Alert,
@@ -30,13 +41,21 @@ const BASE_TYPE_OPTIONS: { key: Exclude<AccountType, 'custom'>; label: string; i
 
 export default function AddAccountScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ editAccountId?: string }>();
+  const editAccountId = typeof params.editAccountId === 'string' ? params.editAccountId.trim() : '';
+  const isEditMode = editAccountId.length > 0;
+
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
 
+  const editExtraBaselineRef = React.useRef<Record<string, unknown>>({});
+  const editLedgerMetaRef = React.useRef<{ sign_rule: number; account_type: string }>({ sign_rule: 1, account_type: 'asset' });
+
   const [accountType, setAccountType] = React.useState<AccountType>('bank');
   const [accountName, setAccountName] = React.useState('');
+  const [accountNo, setAccountNo] = React.useState('');
   const [balance, setBalance] = React.useState('');
   const [notes, setNotes] = React.useState('');
   const [iconKey, setIconKey] = React.useState<string>(() => getCustomAccountTypeDraft().iconKey || 'savings');
@@ -44,6 +63,7 @@ export default function AddAccountScreen() {
   const [customTypeName, setCustomTypeName] = React.useState(() => getCustomAccountTypeDraft().name);
   const [customIsLiability, setCustomIsLiability] = React.useState(() => getCustomAccountTypeDraft().isLiability);
   const [customTypeOptions, setCustomTypeOptions] = React.useState<Array<{ name: string; isLiability: boolean; iconKey: string }>>([]);
+  const [editSheetReady, setEditSheetReady] = React.useState(!isEditMode);
 
   // Page-level accent: brown / deep yellow
   const accentColor = isDark ? '#D97706' : '#B45309';
@@ -55,7 +75,8 @@ export default function AddAccountScreen() {
   const canSave =
     accountName.trim().length > 0 &&
     (accountType !== 'custom' || customTypeName.trim().length > 0) &&
-    !saving;
+    !saving &&
+    (!isEditMode || editSheetReady);
   const isSelectedLiability = accountType === 'liability' || (accountType === 'custom' && customIsLiability);
 
   const loadCustomTypeOptions = React.useCallback(async () => {
@@ -76,6 +97,57 @@ export default function AddAccountScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
+      if (isEditMode) {
+        let alive = true;
+        setEditSheetReady(false);
+        void (async () => {
+          try {
+            const rows = await getFinanceAccountsWithBalance();
+            if (!alive) return;
+            const row = rows.find((r) => r.id === editAccountId);
+            if (!row) {
+              Alert.alert('账户不存在', '该账户可能已被删除。', [{ text: '确定', onPress: () => router.back() }]);
+              return;
+            }
+            setAccountName(row.name);
+            setAccountNo(row.account_no ?? '');
+            setNotes(row.note ?? '');
+            editLedgerMetaRef.current = { sign_rule: row.sign_rule, account_type: row.account_type };
+            setBalance(financeBalanceInputTextFromLedger(row.balance ?? 0, row.sign_rule, row.account_type));
+            let parsed: Record<string, unknown> = {};
+            try {
+              parsed = row.extra_data ? (JSON.parse(row.extra_data) as Record<string, unknown>) : {};
+            } catch {
+              parsed = {};
+            }
+            editExtraBaselineRef.current = { ...parsed };
+            const uiType = parsed.ui_account_type;
+            if (uiType === 'cash_wallet' || uiType === 'bank' || uiType === 'investment' || uiType === 'liability' || uiType === 'custom') {
+              setAccountType(uiType);
+            } else if (row.account_type === 'liability') {
+              setAccountType('liability');
+            } else {
+              setAccountType('bank');
+            }
+            if (typeof parsed.ui_custom_type_name === 'string') setCustomTypeName(parsed.ui_custom_type_name);
+            if (typeof parsed.ui_is_liability === 'boolean') setCustomIsLiability(parsed.ui_is_liability);
+            const ik = parsed.ui_icon_key;
+            if (typeof ik === 'string' && ik.length > 0) setIconKey(ik);
+            setEditSheetReady(true);
+          } catch (e) {
+            console.warn('Failed to load account for edit:', e);
+            if (alive) {
+              Alert.alert('加载失败', '请稍后重试。', [{ text: '确定', onPress: () => router.back() }]);
+            }
+          }
+        })();
+        return () => {
+          alive = false;
+        };
+      }
+
+      setEditSheetReady(true);
+      setBalance('');
       const draft = getCustomAccountTypeDraft();
       setCustomTypeName(draft.name);
       setCustomIsLiability(draft.isLiability);
@@ -83,13 +155,56 @@ export default function AddAccountScreen() {
       if (accountType === 'custom' && draft.iconKey) {
         setIconKey(draft.iconKey);
       }
-    }, [accountType, loadCustomTypeOptions]),
+    }, [accountType, editAccountId, isEditMode, loadCustomTypeOptions, router]),
   );
 
   const onSave = React.useCallback(async () => {
     const name = accountName.trim();
     if (!name) {
       Alert.alert('请输入账户名称', '账户名称不能为空。');
+      return;
+    }
+
+    if (isEditMode) {
+      if (!editSheetReady) return;
+      const normalizedBalanceText = balance.trim().replace(/[^\d.-]/g, '');
+      const balanceNum = normalizedBalanceText ? Number(normalizedBalanceText) : 0;
+      if (!Number.isFinite(balanceNum)) {
+        Alert.alert('余额无效', '请输入正确的数字金额。');
+        return;
+      }
+      const meta = editLedgerMetaRef.current;
+      const targetLedger = financeTargetLedgerFromUserBalanceInput({
+        userNumeric: balanceNum,
+        signRule: meta.sign_rule as -1 | 1,
+        accountType: meta.account_type,
+      });
+
+      setSaving(true);
+      try {
+        const mergedExtra = {
+          ...editExtraBaselineRef.current,
+          ui_account_type: accountType === 'custom' ? 'custom' : accountType,
+          ui_custom_type_name: accountType === 'custom' ? customTypeName.trim() || null : null,
+          ui_is_liability: accountType === 'custom' ? customIsLiability : null,
+          ui_icon_key: iconKey,
+        };
+        await updateFinanceAccount(editAccountId, {
+          name,
+          account_no: accountNo.trim() ? accountNo.trim() : null,
+          note: notes.trim() ? notes.trim() : null,
+          extra_data: JSON.stringify(mergedExtra),
+        });
+        await applyFinanceAccountBalanceCorrection({
+          accountId: editAccountId,
+          targetLedgerBalance: targetLedger,
+        });
+        router.back();
+      } catch (e) {
+        Alert.alert('保存失败', e instanceof Error && e.message.trim() ? e.message : '请稍后重试。');
+      } finally {
+        setSaving(false);
+      }
       return;
     }
 
@@ -120,6 +235,7 @@ export default function AddAccountScreen() {
       await createFinanceAccount({
         id: accountId,
         name,
+        account_no: accountNo.trim() ? accountNo.trim() : null,
         account_type: accountTypeDb,
         sign_rule: signRule,
         note: notes.trim() ? notes.trim() : null,
@@ -153,7 +269,21 @@ export default function AddAccountScreen() {
     } finally {
       setSaving(false);
     }
-  }, [accountName, accountType, balance, notes, iconKey, router, customIsLiability, customTypeName, isSelectedLiability]);
+  }, [
+    accountName,
+    accountNo,
+    accountType,
+    balance,
+    customIsLiability,
+    customTypeName,
+    editAccountId,
+    editSheetReady,
+    iconKey,
+    isEditMode,
+    isSelectedLiability,
+    notes,
+    router,
+  ]);
 
   const handleBalanceChange = React.useCallback((text: string) => {
     let s = text.replace(/[^\d.-]/g, '');
@@ -202,7 +332,7 @@ export default function AddAccountScreen() {
           style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.75 }]}>
           <MaterialIcons name="arrow-back" size={22} color={theme.text} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: theme.text }]}>添加账户</Text>
+        <Text style={[styles.headerTitle, { color: theme.text }]}>{isEditMode ? '编辑账户' : '添加账户'}</Text>
         <View style={styles.headerSpacer} />
       </View>
 
@@ -213,8 +343,11 @@ export default function AddAccountScreen() {
             { paddingBottom: 120 + Math.max(insets.bottom, 12) },
           ]}
           showsVerticalScrollIndicator={false}>
-          <View style={styles.section}>
+          <View style={[styles.section, isEditMode && { opacity: 0.48 }]} pointerEvents={isEditMode ? 'none' : 'auto'}>
             <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>选择账户类型</Text>
+            {isEditMode ? (
+              <Text style={[styles.balanceEditFootnote, { color: theme.textSecondary }]}>创建后不可修改类型；可改名称、卡号、图标与备注</Text>
+            ) : null}
             <View style={styles.typeGrid}>
               {BASE_TYPE_OPTIONS.map((t) => {
                 const active = t.key === accountType;
@@ -355,8 +488,26 @@ export default function AddAccountScreen() {
               </View>
 
               <View style={styles.field}>
-                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>{isSelectedLiability ? '当前负债' : '当前余额'}</Text>
-                <View style={[styles.balanceRow, { borderBottomColor: outlineVariant }]}> 
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>卡号 / 尾号 (选填)</Text>
+                <TextInput
+                  value={accountNo}
+                  onChangeText={setAccountNo}
+                  placeholder="例如：6222 **** 1234"
+                  placeholderTextColor={outlineVariant}
+                  style={[styles.textInput, { color: theme.text, borderBottomColor: outlineVariant }]}
+                />
+              </View>
+
+              <View style={styles.field}>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>
+                  {isSelectedLiability ? '当前负债' : '当前余额'}
+                </Text>
+                {isEditMode ? (
+                  <Text style={[styles.balanceEditFootnote, { color: theme.textSecondary }]}>
+                    与流水汇总一致；修改数字并保存后，会记一笔「余额校正」流水。
+                  </Text>
+                ) : null}
+                <View style={[styles.balanceRow, { borderBottomColor: outlineVariant }]}>
                   <Text style={[styles.currency, { color: accentColor }]}>¥</Text>
                   <TextInput
                     value={balance}
@@ -364,6 +515,7 @@ export default function AddAccountScreen() {
                     placeholder="0.00"
                     placeholderTextColor={outlineVariant}
                     keyboardType="decimal-pad"
+                    editable={!isEditMode || editSheetReady}
                     style={[styles.balanceInput, { color: theme.text }]}
                   />
                 </View>
@@ -434,7 +586,7 @@ export default function AddAccountScreen() {
                 { backgroundColor: accentColor, opacity: !canSave ? 0.5 : pressed ? 0.92 : 1 },
                 pressed && { transform: [{ scale: 0.98 }] },
               ]}>
-              <Text style={styles.doneText}>{saving ? '保存中...' : '完成'}</Text>
+              <Text style={styles.doneText}>{saving ? '保存中...' : isEditMode ? '保存修改' : '完成'}</Text>
             </Pressable>
           </View>
         </View>
@@ -530,6 +682,13 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 2,
     textTransform: 'uppercase',
+  },
+  balanceEditFootnote: {
+    fontSize: 11,
+    fontWeight: '600',
+    lineHeight: 16,
+    marginBottom: 6,
+    marginTop: -2,
   },
   textInput: {
     borderBottomWidth: 1,

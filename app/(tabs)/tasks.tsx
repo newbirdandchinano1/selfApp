@@ -25,6 +25,7 @@ import {
   type TaskTreeNode,
   updateTask,
 } from '@/lib/repositories/tasks/task';
+import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import {
@@ -54,6 +55,7 @@ import {
   Alert,
   Animated,
   Easing,
+  Keyboard,
   LayoutAnimation,
   Modal,
   Platform,
@@ -65,6 +67,7 @@ import {
   TextInput,
   UIManager,
   View,
+  type KeyboardEvent,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
@@ -972,6 +975,61 @@ export default function TasksScreen() {
   /** 底部「无项目待办」快捷输入框内容 */
   const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
   const [quickTodoSaving, setQuickTodoSaving] = React.useState(false);
+  /** 键盘占用高度：用于主列表底部留白，避免快捷待办被键盘挡住后无法滚到位 */
+  const [mainScrollKeyboardPad, setMainScrollKeyboardPad] = React.useState(0);
+  const mainScrollRef = React.useRef<ScrollView>(null);
+  const quickTodoAnchorRef = React.useRef<View>(null);
+  const mainScrollOffsetYRef = React.useRef(0);
+  const keyboardHeightRef = React.useRef(0);
+  const quickTodoInputFocusedRef = React.useRef(false);
+
+  const scrollQuickTodoAboveKeyboard = React.useCallback(() => {
+    const kb = keyboardHeightRef.current;
+    if (kb <= 0) return;
+    quickTodoAnchorRef.current?.measureInWindow((x, y, w, h) => {
+      const winH = Dimensions.get('window').height;
+      const margin = 16;
+      const visibleBottom = winH - kb - margin;
+      const inputBottom = y + h;
+      if (inputBottom <= visibleBottom) return;
+      const delta = inputBottom - visibleBottom;
+      const nextY = mainScrollOffsetYRef.current + delta;
+      mainScrollRef.current?.scrollTo({ y: Math.max(0, nextY), animated: true });
+    });
+  }, []);
+
+  React.useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const winH = Dimensions.get('window').height;
+    const onShow = (e: KeyboardEvent) => {
+      const { height, screenY } = e.endCoordinates;
+      let h = Math.max(0, Math.round(height));
+      if (Platform.OS === 'ios' && screenY > 0 && screenY < winH) {
+        const fromScreenY = Math.max(0, Math.round(winH - screenY));
+        h = Math.min(h, fromScreenY);
+      }
+      keyboardHeightRef.current = h;
+      setMainScrollKeyboardPad(h);
+      if (quickTodoInputFocusedRef.current) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            scrollQuickTodoAboveKeyboard();
+          });
+        });
+      }
+    };
+    const onHide = () => {
+      keyboardHeightRef.current = 0;
+      setMainScrollKeyboardPad(0);
+    };
+    const subShow = Keyboard.addListener(showEvent, onShow);
+    const subHide = Keyboard.addListener(hideEvent, onHide);
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, [scrollQuickTodoAboveKeyboard]);
   const [dayBoundary, setDayBoundary] = React.useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
   const [dayStartModalVisible, setDayStartModalVisible] = React.useState(false);
   const [draftBoundary, setDraftBoundary] = React.useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
@@ -1610,6 +1668,11 @@ export default function TasksScreen() {
 
       try {
         await updateTask(taskId, { status: nextStatus, completed_at: nextCompletedAt });
+        try {
+          await insertTaskExecutionEvent(taskId, wasDone ? 'reopened' : 'completed', current.title ?? null);
+        } catch (logErr) {
+          console.warn('记录待办执行事件失败', logErr);
+        }
         if (nextStatus === 'done' && current.project_id) {
           const pid = current.project_id;
           const proj = projects.find((p) => p.id === pid);
@@ -2115,11 +2178,18 @@ export default function TasksScreen() {
       </View>
 
       <ScrollView
+        ref={mainScrollRef}
         style={styles.scroll}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingBottom: 18 + mainScrollKeyboardPad }]}
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled
-        keyboardShouldPersistTaps="handled">
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        onScroll={(e) => {
+          mainScrollOffsetYRef.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
+      >
         <Animated.View
           style={{
             opacity: pageFadeAnim,
@@ -2285,65 +2355,89 @@ export default function TasksScreen() {
                     暂不挂项目 · 进行中 {standaloneTodoOpenCount} 条
                   </Text>
                 </View>
-                <ScalePressable
-                  onPress={openStandaloneTaskComposer}
-                  style={({ pressed }) => [
-                    styles.ghostBtn,
-                    { borderColor: `${tertiary}44` },
-                    pressed && { opacity: 0.8 },
-                  ]}>
-                  <MaterialIcons name="playlist-add" size={14} color={tertiary} />
-                  <Text style={[styles.ghostBtnText, { color: tertiary }]}>详细新建</Text>
-                </ScalePressable>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  <ScalePressable
+                    onPress={() => router.push('/tasks-overview')}
+                    style={({ pressed }) => [
+                      styles.ghostBtn,
+                      { borderColor: `${primary}44` },
+                      pressed && { opacity: 0.8 },
+                    ]}>
+                    <MaterialIcons name="insights" size={14} color={primary} />
+                    <Text style={[styles.ghostBtnText, { color: primary }]}>待办总览</Text>
+                  </ScalePressable>
+                  <ScalePressable
+                    onPress={openStandaloneTaskComposer}
+                    style={({ pressed }) => [
+                      styles.ghostBtn,
+                      { borderColor: `${tertiary}44` },
+                      pressed && { opacity: 0.8 },
+                    ]}>
+                    <MaterialIcons name="playlist-add" size={14} color={tertiary} />
+                    <Text style={[styles.ghostBtnText, { color: tertiary }]}>详细新建</Text>
+                  </ScalePressable>
+                </View>
               </View>
 
               {/* 快捷输入：胶囊容器 + 左侧图标区 + 圆形发送，与上方「详细新建」表单区分 */}
-              <View
-                style={[
-                  styles.quickTodoShell,
-                  {
-                    backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : '#ffffff',
-                    borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(203,213,225,0.85)',
-                    shadowColor: '#000',
-                  },
-                ]}>
-                <View style={[styles.quickTodoIconBadge, { backgroundColor: isDark ? `${secondary}22` : `${secondary}14` }]}>
-                  <MaterialIcons name="bolt" size={18} color={secondary} />
-                </View>
-                <TextInput
-                  value={quickTodoDraft}
-                  onChangeText={(t) => setQuickTodoDraft(t.slice(0, STANDALONE_TODO_TITLE_MAX))}
-                  placeholder="快速记一条…"
-                  placeholderTextColor={outline}
-                  returnKeyType="done"
-                  blurOnSubmit={false}
-                  multiline={false}
-                  {...(Platform.OS === 'android'
-                    ? ({ textAlignVertical: 'center', includeFontPadding: false } as const)
-                    : {})}
-                  onSubmitEditing={() => void submitQuickStandaloneTodo()}
-                  style={[styles.quickTodoInput, { color: theme.text }]}
-                />
-                <Pressable
-                  onPress={() => void submitQuickStandaloneTodo()}
-                  disabled={quickTodoSaving}
-                  accessibilityRole="button"
-                  accessibilityLabel="添加待办"
-                  style={({ pressed }) => [
-                    styles.quickTodoSendBtn,
+              <View ref={quickTodoAnchorRef} collapsable={false}>
+                <View
+                  style={[
+                    styles.quickTodoShell,
                     {
-                      backgroundColor: secondary,
-                      opacity: quickTodoSaving ? 0.5 : pressed ? 0.88 : 1,
+                      backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : '#ffffff',
+                      borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(203,213,225,0.85)',
+                      shadowColor: '#000',
                     },
                   ]}>
-                  {quickTodoSaving ? (
-                    <Text style={styles.quickTodoSendBtnDots}>…</Text>
-                  ) : (
-                    <MaterialIcons name="arrow-upward" size={22} color="#fff" />
-                  )}
-                </Pressable>
+                  <View style={[styles.quickTodoIconBadge, { backgroundColor: isDark ? `${secondary}22` : `${secondary}14` }]}>
+                    <MaterialIcons name="bolt" size={18} color={secondary} />
+                  </View>
+                  <TextInput
+                    value={quickTodoDraft}
+                    onChangeText={(t) => setQuickTodoDraft(t.slice(0, STANDALONE_TODO_TITLE_MAX))}
+                    placeholder="快速记一条…"
+                    placeholderTextColor={outline}
+                    returnKeyType="done"
+                    blurOnSubmit={false}
+                    multiline={false}
+                    {...(Platform.OS === 'android'
+                      ? ({ textAlignVertical: 'center', includeFontPadding: false } as const)
+                      : {})}
+                    onSubmitEditing={() => void submitQuickStandaloneTodo()}
+                    onFocus={() => {
+                      quickTodoInputFocusedRef.current = true;
+                      const delay = Platform.OS === 'ios' ? 90 : 180;
+                      setTimeout(() => {
+                        scrollQuickTodoAboveKeyboard();
+                      }, delay);
+                    }}
+                    onBlur={() => {
+                      quickTodoInputFocusedRef.current = false;
+                    }}
+                    style={[styles.quickTodoInput, { color: theme.text }]}
+                  />
+                  <Pressable
+                    onPress={() => void submitQuickStandaloneTodo()}
+                    disabled={quickTodoSaving}
+                    accessibilityRole="button"
+                    accessibilityLabel="添加待办"
+                    style={({ pressed }) => [
+                      styles.quickTodoSendBtn,
+                      {
+                        backgroundColor: secondary,
+                        opacity: quickTodoSaving ? 0.5 : pressed ? 0.88 : 1,
+                      },
+                    ]}>
+                    {quickTodoSaving ? (
+                      <Text style={styles.quickTodoSendBtnDots}>…</Text>
+                    ) : (
+                      <MaterialIcons name="arrow-upward" size={22} color="#fff" />
+                    )}
+                  </Pressable>
+                </View>
+                <Text style={[styles.quickTodoHint, { color: outline }]}>回车或点右侧按钮即可保存 · 最多 {STANDALONE_TODO_TITLE_MAX} 字</Text>
               </View>
-              <Text style={[styles.quickTodoHint, { color: outline }]}>回车或点右侧按钮即可保存 · 最多 {STANDALONE_TODO_TITLE_MAX} 字</Text>
 
               {standaloneTodos.length === 0 ? (
                 <EmptyPlaceholder

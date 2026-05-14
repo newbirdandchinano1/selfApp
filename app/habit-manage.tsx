@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { getHabitCheckInListStats } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
+import { cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
 import { getHabits, deleteHabit as deleteHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -154,6 +155,7 @@ export default function HabitManageScreen() {
           void (async () => {
             try {
               await deleteHabitById(item.id);
+              void cancelScheduledHabitReminder(item.id);
               await loadHabits();
             } catch (err) {
               console.warn('删除习惯失败', err);

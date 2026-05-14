@@ -9,6 +9,8 @@ export type WishItemRow = {
   desire_level: number;
   reason: string | null;
   reference_image_uri: string | null;
+  ai_comment: string | null;
+  ai_review_at: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;

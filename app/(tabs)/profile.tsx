@@ -15,6 +15,8 @@ import {
   type UserSkillsSnapshot,
 } from '@/lib/user-skills';
 import { getDefaultUser } from '@/lib/repositories/users/user';
+import { listMemos } from '@/lib/memos';
+import { listUserWeaknesses } from '@/lib/user-weaknesses';
 import type { ProfileVisionCarouselItem } from '@/lib/visions-registry';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -89,6 +91,7 @@ export default function ProfileScreen() {
   const secondary = isDark ? '#34d399' : '#006c49';
   const tertiary = isDark ? '#fbbf24' : '#825100';
   const wishAccent = isDark ? '#f472b6' : '#b42375';
+  const weaknessAccent = isDark ? '#fb923c' : '#c2410c';
 
   const avatarUrl = user?.avatar_uri ? { uri: user.avatar_uri } : require('../../assets/profile/avatar.png');
   const visionUrl = require('../../assets/profile/vision.png');
@@ -182,6 +185,28 @@ export default function ProfileScreen() {
     }
   }, []);
 
+  const [memoCount, setMemoCount] = useState(0);
+
+  const loadMemoCount = useCallback(async () => {
+    try {
+      const rows = await listMemos();
+      setMemoCount(rows.length);
+    } catch {
+      setMemoCount(0);
+    }
+  }, []);
+
+  const [weaknessCount, setWeaknessCount] = useState(0);
+
+  const loadWeaknessCount = useCallback(async () => {
+    try {
+      const rows = await listUserWeaknesses();
+      setWeaknessCount(rows.length);
+    } catch {
+      setWeaknessCount(0);
+    }
+  }, []);
+
   const [activeVisionIndex, setActiveVisionIndex] = useState(0);
   const isUserInteractingVisionRef = useRef(false);
   const visionListRef = useRef<FlatList<ProfileVisionCarouselItem>>(null);
@@ -256,7 +281,17 @@ export default function ProfileScreen() {
       void loadProfileWishItems();
       void loadWeeklyJournal();
       void loadUserSkillsSnapshot();
-    }, [loadUser, loadProfileVisions, loadProfileWishItems, loadWeeklyJournal, loadUserSkillsSnapshot]),
+      void loadMemoCount();
+      void loadWeaknessCount();
+    }, [
+      loadUser,
+      loadProfileVisions,
+      loadProfileWishItems,
+      loadWeeklyJournal,
+      loadUserSkillsSnapshot,
+      loadMemoCount,
+      loadWeaknessCount,
+    ]),
   );
 
   const healthBgUrl = require('../../assets/profile/health.png');
@@ -642,6 +677,82 @@ export default function ProfileScreen() {
               })}
             </ScrollView>
           )}
+
+          <View style={styles.sectionHead}>
+            <View>
+              <Text style={[styles.kicker, { color: outline }]}>MEMO</Text>
+              <Text style={[styles.sectionTitle, { color: text }]}>备忘录</Text>
+            </View>
+            <Pressable onPress={() => router.push('/memo-list')} hitSlop={8}>
+              <Text style={[styles.moreText, { color: primary }]}>查看全部</Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            onPress={() => router.push('/memo-list')}
+            style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+            <View
+              style={[
+                styles.weeklyEntryCard,
+                {
+                  backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#ffffff',
+                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(130,81,0,0.14)',
+                },
+              ]}>
+              <View style={[styles.weeklyEntryAccent, { backgroundColor: tertiary }]} />
+              <View style={styles.weeklyEntryBody}>
+                <MaterialIcons name="description" size={28} color={tertiary} />
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={[styles.weeklyEntryRange, { color: outline }]}>本地备忘 · 离线保存</Text>
+                  <Text style={[styles.weeklyEntryMeta, { color: text }]}>
+                    {memoCount === 0 ? '暂无备忘，点此添加' : `共 ${memoCount} 条备忘`}
+                  </Text>
+                  <Text style={[styles.weeklyEntryHint, { color: outline }]}>
+                    支持多条备忘、标题与正文；数据保存在本机，可在列表页添加或删除。
+                  </Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={26} color={outline} />
+              </View>
+            </View>
+          </Pressable>
+
+          <View style={styles.sectionHead}>
+            <View>
+              <Text style={[styles.kicker, { color: outline }]}>SELF-AWARENESS</Text>
+              <Text style={[styles.sectionTitle, { color: text }]}>我的缺点</Text>
+            </View>
+            <Pressable onPress={() => router.push('/weakness-list')} hitSlop={8}>
+              <Text style={[styles.moreText, { color: primary }]}>查看全部</Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            onPress={() => router.push('/weakness-list')}
+            style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+            <View
+              style={[
+                styles.weeklyEntryCard,
+                {
+                  backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#ffffff',
+                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,65,12,0.14)',
+                },
+              ]}>
+              <View style={[styles.weeklyEntryAccent, { backgroundColor: weaknessAccent }]} />
+              <View style={styles.weeklyEntryBody}>
+                <MaterialIcons name="psychology-alt" size={28} color={weaknessAccent} />
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={[styles.weeklyEntryRange, { color: outline }]}>自我觉察 · 本机保存</Text>
+                  <Text style={[styles.weeklyEntryMeta, { color: text }]}>
+                    {weaknessCount === 0 ? '尚未记录，点此添加' : `共 ${weaknessCount} 条缺点记录`}
+                  </Text>
+                  <Text style={[styles.weeklyEntryHint, { color: outline }]}>
+                    写下缺点与具体表现并保存后，将自动请求智谱生成分析与建议并保存在本机（需配置 API 密钥）；也可在列表中手动重新生成。
+                  </Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={26} color={outline} />
+              </View>
+            </View>
+          </Pressable>
 
           <View style={styles.sectionHead}>
             <View>

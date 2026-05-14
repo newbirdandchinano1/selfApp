@@ -28,6 +28,10 @@ export type VisionExtraPayload = {
   customBgUri?: string;
   /** 计数 / 手动目标进度：当前累计值（字符串存数字，便于 JSON） */
   currentAmount?: string;
+  /** 总目标所属维度（先建维度再在维度下建总目标） */
+  dimensionId?: string;
+  /** 冗余展示名，避免维度删除后卡片无标题 */
+  dimensionName?: string;
 };
 
 /** 从 extra 解析关联项目列表（兼容仅 linkedProjectId 的旧数据） */

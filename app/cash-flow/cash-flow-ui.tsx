@@ -1,8 +1,5 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { CASH_FLOW_EMPTY_STATE } from '@/lib/repositories/cash-flow/cash-flow.defaults';
 import {
   loadCashFlowState,
   newCashFlowHoldingId,
@@ -10,6 +7,7 @@ import {
   newExpenseFlowLineId,
   persistCashFlowState,
 } from '@/lib/repositories/cash-flow/cash-flow';
+import { CASH_FLOW_EMPTY_STATE } from '@/lib/repositories/cash-flow/cash-flow.defaults';
 import type {
   CashFlowExpenseBucket,
   CashFlowState,
@@ -17,8 +15,11 @@ import type {
   IncomeItem,
   Quadrant,
 } from '@/lib/repositories/cash-flow/cash-flow.types';
+import { analyzeCashFlowDashboardFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { MaterialIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Swipeable } from 'react-native-gesture-handler';
 import {
   ActivityIndicator,
   Alert,
@@ -29,6 +30,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type ExpenseFlowType = CashFlowExpenseBucket;
@@ -184,6 +186,90 @@ function formatMoney(value: number) {
   return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 }
 
+const CASH_FLOW_AI_CACHE_KEY = 'cash_flow_dashboard_ai_v1';
+
+function computeCashFlowAiFingerprint(state: CashFlowState, metrics: Metrics): string {
+  return JSON.stringify({
+    necessaryExpenses: state.necessaryExpenses,
+    unnecessaryExpenses: state.unnecessaryExpenses,
+    goals: state.goals,
+    incomes: [...state.incomes]
+      .map((i) => [i.id, i.name, i.amount, i.quadrant])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    holdings: [...state.holdings]
+      .map((h) => [h.id, h.name, h.principal, h.inflow, h.outflow, h.extra])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    expenseLines: [...state.expenseLines]
+      .map((l) => [l.id, l.name, l.amount, l.bucket])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    pattern: metrics.pattern,
+    freedomProgress: Math.round(metrics.freedomProgress * 100) / 100,
+    passiveRatio: Math.round(metrics.passiveRatio * 100) / 100,
+    freeCashFlow: Math.round(metrics.freeCashFlow * 100) / 100,
+    totalIncome: Math.round(metrics.totalIncome * 100) / 100,
+    totalExpenses: Math.round(metrics.totalExpenses * 100) / 100,
+  });
+}
+
+function buildCashFlowAiSummaryText(state: CashFlowState, metrics: Metrics): string {
+  const lines: string[] = [];
+  lines.push('【说明】以下为应用内「现金流图」同一套口径的月度模型数据，非银行对账单。');
+  lines.push('');
+  lines.push('【汇总指标】');
+  lines.push(`财务形态：${metrics.pattern}`);
+  lines.push(`财务自由进度(被动收入÷必要支出)：${metrics.freedomProgress.toFixed(1)}%`);
+  lines.push(`被动收入占比：${metrics.passiveRatio.toFixed(1)}%`);
+  lines.push(`主动收入(E/S)：${formatMoney(metrics.activeIncome)}`);
+  lines.push(`被动收入(B/I+资产净流入)：${formatMoney(metrics.totalPassiveIncome)}`);
+  lines.push(`月度总收入：${formatMoney(metrics.totalIncome)}`);
+  lines.push(`月度总流出(必要+非必要+负债月供)：${formatMoney(metrics.totalExpenses)}`);
+  lines.push(`自由现金流：${formatMoney(metrics.freeCashFlow)}`);
+  lines.push(`资产净流入(口袋)：${formatMoney(metrics.assetInflow)}`);
+  lines.push(`负债净流出(月供等)：${formatMoney(metrics.liabilityOutflow)}`);
+  lines.push(`台账资产本金合计(约)：${formatMoney(metrics.totalAssetsValue)}`);
+  lines.push(`台账负债本金合计(约)：${formatMoney(metrics.totalLiabilitiesValue)}`);
+  lines.push(`目标被动收入：${formatMoney(state.goals.targetPassiveIncome)}；目标月数：${state.goals.targetMonths}`);
+  lines.push('');
+  lines.push('【收入明细】');
+  if (state.incomes.length === 0) {
+    lines.push('（无）');
+  } else {
+    for (const i of state.incomes) {
+      lines.push(`- ${i.name || '未命名'}｜${formatMoney(i.amount)}｜象限${i.quadrant}`);
+    }
+  }
+  lines.push('');
+  lines.push('【资产负债台账·现金流】');
+  const holdRows = metrics.categorizedHoldings;
+  const maxH = 36;
+  const slice = holdRows.slice(0, maxH);
+  for (const h of slice) {
+    const tag = h.isAsset ? '资产(净入袋)' : '负债(消耗)';
+    lines.push(
+      `- ${h.name || '未命名'}｜${tag}｜净现金流 ${h.netCashflow >= 0 ? '+' : ''}${formatMoney(h.netCashflow)}｜流入${formatMoney(h.inflow)}流出${formatMoney(h.outflow)}｜本金约${formatMoney(h.principal)}`
+    );
+  }
+  if (holdRows.length > maxH) {
+    lines.push(`… 另有 ${holdRows.length - maxH} 条台账未列出`);
+  }
+  if (holdRows.length === 0) {
+    lines.push('（无）');
+  }
+  lines.push('');
+  lines.push('【生活流出】');
+  lines.push(`必要支出(汇总)：${formatMoney(state.necessaryExpenses)}`);
+  lines.push(`非必要消费(汇总)：${formatMoney(state.unnecessaryExpenses)}`);
+  lines.push('支出流水行：');
+  if (state.expenseLines.length === 0) {
+    lines.push('（无单独行，可能仅填了汇总）');
+  } else {
+    for (const l of state.expenseLines) {
+      lines.push(`- ${l.name || '未命名'}｜${l.bucket === 'necessary' ? '必要' : '非必要'}｜${formatMoney(l.amount)}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 type ToastState = { message: string; type: 'success' | 'warning' } | null;
 
 type CashFlowContextValue = {
@@ -275,7 +361,7 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
 
   const headerTitle =
     route === 'dashboard'
-      ? 'CASHFLOW引擎'
+      ? '现金流图'
       : VIEW_TITLES[route as Exclude<ActiveTab, 'dashboard'>];
 
   const navigateToSection = useCallback(
@@ -409,6 +495,54 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
   );
 }
 
+const PANORAMA_BREAKDOWN_MAX = 4;
+
+type PanoramaBreakLine = {
+  key: string;
+  name: string;
+  amount: string;
+  amountColor?: string;
+};
+
+function PanoramaBreakdown({
+  lines,
+  emptyHint,
+  subtleColor,
+  dividerColor,
+}: {
+  lines: PanoramaBreakLine[];
+  emptyHint: string;
+  subtleColor: string;
+  dividerColor: string;
+}) {
+  if (!lines.length) {
+    return (
+      <View style={[styles.panoramaBreakList, { borderBottomColor: dividerColor }]}>
+        <Text style={[styles.panoramaBreakEmpty, { color: subtleColor }]} numberOfLines={2}>
+          {emptyHint}
+        </Text>
+      </View>
+    );
+  }
+  const shown = lines.slice(0, PANORAMA_BREAKDOWN_MAX);
+  const rest = lines.length - shown.length;
+  return (
+    <View style={[styles.panoramaBreakList, { borderBottomColor: dividerColor }]}>
+      {shown.map((l) => (
+        <View key={l.key} style={styles.panoramaBreakRow}>
+          <Text style={[styles.panoramaBreakName, { color: subtleColor }]} numberOfLines={1}>
+            {l.name}
+          </Text>
+          <Text style={[styles.panoramaBreakAmt, { color: l.amountColor ?? subtleColor }]}>{l.amount}</Text>
+        </View>
+      ))}
+      {rest > 0 ? (
+        <Text style={[styles.panoramaBreakMore, { color: subtleColor }]}>还有 {rest} 项</Text>
+      ) : null}
+    </View>
+  );
+}
+
 function MobileDashboard({
   state,
   metrics,
@@ -431,6 +565,207 @@ function MobileDashboard({
   const card = [styles.card, { backgroundColor: surface, borderColor: border }];
   const statCard = [styles.card, { backgroundColor: surface, borderColor: border, flex: 1 }];
   const fp = Math.min(metrics.freedomProgress, 100);
+
+  const activePanoramaLines = useMemo(
+    () =>
+      [...state.incomes]
+        .filter((i) => ['E', 'S'].includes(i.quadrant))
+        .sort((a, b) => b.amount - a.amount)
+        .map((i) => ({
+          key: i.id,
+          name: i.name.trim() || '未命名',
+          amount: formatMoney(i.amount),
+        })),
+    [state.incomes]
+  );
+
+  const passivePanoramaLines = useMemo(() => {
+    type PassiveSortRow = {
+      key: string;
+      name: string;
+      amount: string;
+      sortVal: number;
+      amountColor?: string;
+    };
+    const bi: PassiveSortRow[] = state.incomes
+      .filter((i) => ['B', 'I'].includes(i.quadrant))
+      .map((i) => ({
+        key: i.id,
+        name: i.name.trim() || '未命名',
+        amount: formatMoney(i.amount),
+        sortVal: i.amount,
+      }));
+    const ast: PassiveSortRow[] = metrics.categorizedHoldings
+      .filter((h) => h.isAsset)
+      .map((h) => ({
+        key: `h-${h.id}`,
+        name: h.name.trim() || '资产项',
+        amount: `+${formatMoney(h.netCashflow)}`,
+        amountColor: '#059669',
+        sortVal: h.netCashflow,
+      }));
+    return [...bi, ...ast]
+      .sort((a, b) => b.sortVal - a.sortVal)
+      .map(({ key, name, amount, amountColor }) => ({ key, name, amount, amountColor }));
+  }, [state.incomes, metrics.categorizedHoldings]);
+
+  const assetPanoramaLines = useMemo(
+    () =>
+      [...metrics.categorizedHoldings]
+        .filter((h) => h.isAsset)
+        .sort((a, b) => b.netCashflow - a.netCashflow)
+        .map((h) => ({
+          key: h.id,
+          name: h.name.trim() || '未命名',
+          amount: `+${formatMoney(h.netCashflow)}`,
+          amountColor: '#059669',
+        })),
+    [metrics.categorizedHoldings]
+  );
+
+  const liabilityPanoramaLines = useMemo(
+    () =>
+      [...metrics.categorizedHoldings]
+        .filter((h) => !h.isAsset)
+        .sort((a, b) => Math.abs(b.netCashflow) - Math.abs(a.netCashflow))
+        .map((h) => ({
+          key: h.id,
+          name: h.name.trim() || '未命名',
+          amount: `-${formatMoney(Math.abs(h.netCashflow))}`,
+          amountColor: '#f43f5e',
+        })),
+    [metrics.categorizedHoldings]
+  );
+
+  const expensePanoramaLines = useMemo((): PanoramaBreakLine[] => {
+    const rows: PanoramaBreakLine[] = [];
+    if (state.necessaryExpenses > 0) {
+      rows.push({ key: 'nec', name: '必要支出', amount: formatMoney(state.necessaryExpenses) });
+    }
+    if (state.unnecessaryExpenses > 0) {
+      rows.push({ key: 'unn', name: '非必要消费', amount: formatMoney(state.unnecessaryExpenses) });
+    }
+    if (metrics.liabilityOutflow > 0) {
+      rows.push({
+        key: 'liab-pay',
+        name: '负债月供',
+        amount: formatMoney(metrics.liabilityOutflow),
+        amountColor: '#f43f5e',
+      });
+    }
+    return rows;
+  }, [state.necessaryExpenses, state.unnecessaryExpenses, metrics.liabilityOutflow]);
+
+  const fcfPanoramaLines = useMemo(
+    (): PanoramaBreakLine[] => [
+      {
+        key: 'ti',
+        name: '月度总收入',
+        amount: formatMoney(metrics.totalIncome),
+        amountColor: '#059669',
+      },
+      {
+        key: 'te',
+        name: '月度总流出',
+        amount: formatMoney(metrics.totalExpenses),
+        amountColor: '#f43f5e',
+      },
+    ],
+    [metrics.totalIncome, metrics.totalExpenses]
+  );
+
+  const zhipuReady = Boolean(getZhipuApiKey().trim());
+  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiRefreshTick, setAiRefreshTick] = useState(0);
+  const forceAiRefreshRef = useRef(false);
+  const aiRequestId = useRef(0);
+
+  const aiFingerprint = useMemo(() => computeCashFlowAiFingerprint(state, metrics), [state, metrics]);
+  const aiSummaryText = useMemo(() => buildCashFlowAiSummaryText(state, metrics), [state, metrics]);
+
+  const onRefreshAiAdvice = useCallback(() => {
+    forceAiRefreshRef.current = true;
+    setAiLoading(true);
+    setAiError(null);
+    setAiRefreshTick((t) => t + 1);
+  }, []);
+
+  useEffect(() => {
+    const reqId = ++aiRequestId.current;
+    let cancelled = false;
+
+    (async () => {
+      if (!zhipuReady) {
+        setAiAnalysis(null);
+        setAiError(
+          '未检测到智谱 API 密钥：请设置 EXPO_PUBLIC_ZHIPU_API_KEY（与记账、心愿清单等能力共用）。',
+        );
+        setAiLoading(false);
+        return;
+      }
+
+      const force = forceAiRefreshRef.current;
+      forceAiRefreshRef.current = false;
+
+      if (!force) {
+        try {
+          const raw = await AsyncStorage.getItem(CASH_FLOW_AI_CACHE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw) as { fp: string; analysis: string };
+            if (parsed.fp === aiFingerprint && typeof parsed.analysis === 'string' && parsed.analysis.trim()) {
+              if (cancelled || reqId !== aiRequestId.current) return;
+              setAiAnalysis(parsed.analysis.trim());
+              setAiError(null);
+              setAiLoading(false);
+              return;
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+
+      if (cancelled || reqId !== aiRequestId.current) return;
+      setAiLoading(true);
+      setAiError(null);
+
+      try {
+        const res = await analyzeCashFlowDashboardFromText({
+          apiKey: getZhipuApiKey(),
+          summaryText: aiSummaryText,
+        });
+        if (cancelled || reqId !== aiRequestId.current) return;
+        if (res.ok) {
+          setAiAnalysis(res.analysis);
+          try {
+            await AsyncStorage.setItem(
+              CASH_FLOW_AI_CACHE_KEY,
+              JSON.stringify({ fp: aiFingerprint, analysis: res.analysis }),
+            );
+          } catch {
+            /* ignore */
+          }
+        } else {
+          setAiAnalysis(null);
+          setAiError(res.error);
+        }
+      } catch (e) {
+        if (cancelled || reqId !== aiRequestId.current) return;
+        setAiAnalysis(null);
+        setAiError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled && reqId === aiRequestId.current) {
+          setAiLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [aiFingerprint, aiSummaryText, zhipuReady, aiRefreshTick]);
 
   return (
     <View style={styles.section}>
@@ -581,6 +916,12 @@ function MobileDashboard({
               },
             ]}>
             <Text style={styles.incomeBoxK}>主动收入 (E/S)</Text>
+            <PanoramaBreakdown
+              lines={activePanoramaLines}
+              emptyHint="暂无 E/S 收入项，可在记一笔中添加"
+              subtleColor={subtle}
+              dividerColor={border}
+            />
             <Text style={[styles.incomeBoxV, { color: text }]}>{formatMoney(metrics.activeIncome)}</Text>
           </Pressable>
           <Pressable
@@ -594,7 +935,13 @@ function MobileDashboard({
                 opacity: pressed ? 0.85 : 1,
               },
             ]}>
-            <Text style={styles.incomeBoxKPassive}>被动收入 (B/I)</Text>
+            <Text style={styles.incomeBoxKPassive}>被动收入 (B/I+资产)</Text>
+            <PanoramaBreakdown
+              lines={passivePanoramaLines}
+              emptyHint="暂无 B/I 收入与资产净流入"
+              subtleColor={subtle}
+              dividerColor={border}
+            />
             <Text style={[styles.incomeBoxV, { color: text }]}>{formatMoney(metrics.totalPassiveIncome)}</Text>
           </Pressable>
         </View>
@@ -613,6 +960,12 @@ function MobileDashboard({
               },
             ]}>
             <Text style={styles.flowBoxK}>资产 (流入口袋)</Text>
+            <PanoramaBreakdown
+              lines={assetPanoramaLines}
+              emptyHint="暂无净流入资产，可在台账中登记"
+              subtleColor={subtle}
+              dividerColor={border}
+            />
             <Text style={styles.flowBoxAsset}>+{formatMoney(metrics.assetInflow)}</Text>
           </Pressable>
           <Pressable
@@ -626,6 +979,12 @@ function MobileDashboard({
               },
             ]}>
             <Text style={styles.flowBoxKL}>负债 (把钱掏走)</Text>
+            <PanoramaBreakdown
+              lines={liabilityPanoramaLines}
+              emptyHint="暂无负债消耗项"
+              subtleColor={subtle}
+              dividerColor={border}
+            />
             <Text style={styles.flowBoxLiab}>-{formatMoney(metrics.liabilityOutflow)}</Text>
           </Pressable>
         </View>
@@ -643,6 +1002,12 @@ function MobileDashboard({
             },
           ]}>
           <Text style={styles.expenseK}>总流出 (生活+还款)</Text>
+          <PanoramaBreakdown
+            lines={expensePanoramaLines}
+            emptyHint="暂无支出与负债月供记录"
+            subtleColor={subtle}
+            dividerColor={border}
+          />
           <Text style={[styles.expenseV, { color: text }]}>{formatMoney(metrics.totalExpenses)}</Text>
           <Text style={[styles.expenseHint, { color: subtle }]}>
             留存的现金将被通胀侵蚀，除非买入资产
@@ -660,6 +1025,7 @@ function MobileDashboard({
             },
           ]}>
           <Text style={styles.fcfK}>自由现金流</Text>
+          <PanoramaBreakdown lines={fcfPanoramaLines} emptyHint="" subtleColor={subtle} dividerColor={border} />
           <Text
             style={[
               styles.fcfV,
@@ -670,6 +1036,42 @@ function MobileDashboard({
           </Text>
           <Text style={[styles.fcfHint, { color: subtle }]}>总收入 − 总流出（生活+还款）</Text>
         </View>
+      </View>
+
+      <View style={[styles.aiAdviceCard, { backgroundColor: surface, borderColor: border }]}>
+        <View style={styles.aiAdviceHeaderRow}>
+          <View style={styles.aiAdviceTitleRow}>
+            <MaterialIcons name="auto-awesome" size={18} color="#7c3aed" />
+            <Text style={[styles.aiAdviceTitle, { color: text }]}>AI 综合分析与建议</Text>
+          </View>
+          <Pressable
+            onPress={onRefreshAiAdvice}
+            disabled={aiLoading || !zhipuReady}
+            accessibilityRole="button"
+            accessibilityLabel="重新生成 AI 建议"
+            hitSlop={8}
+            style={({ pressed }) => [
+              styles.aiAdviceRefreshBtn,
+              { opacity: pressed || aiLoading || !zhipuReady ? 0.45 : 1 },
+            ]}>
+            {aiLoading ? (
+              <ActivityIndicator size="small" color={subtle} />
+            ) : (
+              <MaterialIcons name="refresh" size={22} color={subtle} />
+            )}
+          </Pressable>
+        </View>
+        {aiLoading && !aiAnalysis ? (
+          <View style={styles.aiAdviceLoadingRow}>
+            <ActivityIndicator color={subtle} />
+            <Text style={[styles.aiAdviceLoadingText, { color: subtle }]}>正在根据本页数据生成建议…</Text>
+          </View>
+        ) : null}
+        {aiError ? <Text style={[styles.aiAdviceError, { color: '#f43f5e' }]}>{aiError}</Text> : null}
+        {aiAnalysis ? <Text style={[styles.aiAdviceBody, { color: text }]}>{aiAnalysis}</Text> : null}
+        {!aiLoading && !aiAnalysis && !aiError ? (
+          <Text style={[styles.aiAdviceLoadingText, { color: subtle }]}>暂无建议</Text>
+        ) : null}
       </View>
     </View>
   );
@@ -1647,6 +2049,26 @@ const styles = StyleSheet.create({
   toastText: { flex: 1, color: '#fff', fontSize: 14, fontWeight: '600' },
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: 16, paddingTop: 16 },
+  aiAdviceCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    padding: 16,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  aiAdviceHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  aiAdviceTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 },
+  aiAdviceTitle: { fontSize: 15, fontWeight: '900', flexShrink: 1 },
+  aiAdviceRefreshBtn: { padding: 4, marginLeft: 8 },
+  aiAdviceLoadingRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6 },
+  aiAdviceLoadingText: { fontSize: 12 },
+  aiAdviceBody: { fontSize: 13, lineHeight: 22, marginTop: 4 },
+  aiAdviceError: { fontSize: 12, lineHeight: 18, marginTop: 4 },
   section: { gap: 0 },
   heroCard: {
     borderRadius: 24,
@@ -1759,30 +2181,56 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 16,
     borderWidth: 1,
-    alignItems: 'center',
+    alignItems: 'stretch',
   },
-  incomeBoxK: { fontSize: 11, color: '#2563eb', fontWeight: '600', marginBottom: 6 },
-  incomeBoxKPassive: { fontSize: 11, color: '#059669', fontWeight: '600', marginBottom: 6 },
-  incomeBoxV: { fontSize: 15, fontWeight: '800' },
+  incomeBoxK: { fontSize: 11, color: '#2563eb', fontWeight: '600', marginBottom: 6, textAlign: 'center' },
+  incomeBoxKPassive: { fontSize: 11, color: '#059669', fontWeight: '600', marginBottom: 6, textAlign: 'center' },
+  incomeBoxV: { fontSize: 15, fontWeight: '800', textAlign: 'center', marginTop: 6 },
   arrowCenter: { alignItems: 'center', paddingVertical: 2 },
   flowBox: {
     flex: 1,
     padding: 12,
     borderRadius: 16,
     borderWidth: 1,
+    alignItems: 'stretch',
   },
-  flowBoxK: { fontSize: 11, color: '#059669', fontWeight: '800', marginBottom: 6 },
-  flowBoxKL: { fontSize: 11, color: '#f43f5e', fontWeight: '800', marginBottom: 6 },
-  flowBoxAsset: { fontSize: 16, fontWeight: '900', color: '#059669' },
-  flowBoxLiab: { fontSize: 16, fontWeight: '900', color: '#f43f5e' },
-  expenseBlock: { padding: 16, borderRadius: 16, borderWidth: 1, alignItems: 'center', width: '100%' },
-  expenseK: { fontSize: 11, color: '#d97706', fontWeight: '800', marginBottom: 6 },
-  expenseV: { fontSize: 22, fontWeight: '900' },
+  flowBoxK: { fontSize: 11, color: '#059669', fontWeight: '800', marginBottom: 6, textAlign: 'center' },
+  flowBoxKL: { fontSize: 11, color: '#f43f5e', fontWeight: '800', marginBottom: 6, textAlign: 'center' },
+  flowBoxAsset: { fontSize: 16, fontWeight: '900', color: '#059669', textAlign: 'center', marginTop: 6 },
+  flowBoxLiab: { fontSize: 16, fontWeight: '900', color: '#f43f5e', textAlign: 'center', marginTop: 6 },
+  expenseBlock: {
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: 'stretch',
+    width: '100%',
+  },
+  expenseK: { fontSize: 11, color: '#d97706', fontWeight: '800', marginBottom: 6, textAlign: 'center' },
+  expenseV: { fontSize: 22, fontWeight: '900', textAlign: 'center', marginTop: 6 },
   expenseHint: { fontSize: 10, marginTop: 8, textAlign: 'center' },
-  fcfBlock: { padding: 16, borderRadius: 16, borderWidth: 1, alignItems: 'center', width: '100%' },
-  fcfK: { fontSize: 11, color: '#4f46e5', fontWeight: '800', marginBottom: 6 },
-  fcfV: { fontSize: 22, fontWeight: '900' },
+  fcfBlock: {
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: 'stretch',
+    width: '100%',
+  },
+  fcfK: { fontSize: 11, color: '#4f46e5', fontWeight: '800', marginBottom: 6, textAlign: 'center' },
+  fcfV: { fontSize: 22, fontWeight: '900', textAlign: 'center', marginTop: 6 },
   fcfHint: { fontSize: 10, marginTop: 8, textAlign: 'center' },
+  panoramaBreakList: {
+    alignSelf: 'stretch',
+    marginTop: 2,
+    marginBottom: 2,
+    paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 4,
+  },
+  panoramaBreakRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  panoramaBreakName: { flex: 1, fontSize: 10, fontWeight: '600' },
+  panoramaBreakAmt: { fontSize: 10, fontWeight: '800', maxWidth: '52%' },
+  panoramaBreakMore: { fontSize: 9, fontWeight: '700', marginTop: 2, fontStyle: 'italic' },
+  panoramaBreakEmpty: { fontSize: 10, lineHeight: 14 },
   segment: { flexDirection: 'row', borderRadius: 14, padding: 4, marginBottom: 4 },
   segmentBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   segmentText: { fontSize: 14, fontWeight: '800' },

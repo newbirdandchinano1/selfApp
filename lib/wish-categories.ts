@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const STORAGE_KEY = '@wish_custom_categories_v1';
 const DEFAULT_PRIORITY_OVERRIDES_KEY = '@wish_default_category_priorities_v1';
 const DEFAULT_NAME_OVERRIDES_KEY = '@wish_default_category_names_v1';
+const HIDDEN_DEFAULT_IDS_KEY = '@wish_hidden_default_category_ids_v1';
 
 export type WishCategoryDef = {
   id: string;
@@ -11,7 +12,7 @@ export type WishCategoryDef = {
   priority: number;
 };
 
-/** 内置类别（不可从存储中删除，仅参与合并排序） */
+/** 内置类别；可通过隐藏 ID 从列表中移除，但至少应保留一个可见类别（由 UI 约束） */
 export const DEFAULT_WISH_CATEGORIES: WishCategoryDef[] = [
   { id: 'default:数码', name: '数码', priority: 60 },
   { id: 'default:家居', name: '家居', priority: 55 },
@@ -21,19 +22,24 @@ export const DEFAULT_WISH_CATEGORIES: WishCategoryDef[] = [
   { id: 'default:其他', name: '其他', priority: 10 },
 ];
 
+const BUILTIN_ID_SET = new Set(DEFAULT_WISH_CATEGORIES.map(d => d.id));
+
 function normalizeName(name: string): string {
   return name.trim();
 }
 
 /**
  * 合并内置（可带名称、优先级覆盖）、自定义类别，按 priority 降序；同优先级按名称排序。
+ * `hiddenDefaultCategoryIds` 中已标记的内置类别不会出现在结果中（用户侧视为已删除）。
  */
 export function mergeWishCategories(
   custom: WishCategoryDef[],
   defaultPriorityOverrides: Record<string, number> = {},
   defaultNameOverrides: Record<string, string> = {},
+  hiddenDefaultCategoryIds: string[] = [],
 ): WishCategoryDef[] {
-  const defaults = DEFAULT_WISH_CATEGORIES.map(d => {
+  const hidden = new Set(hiddenDefaultCategoryIds);
+  const defaults = DEFAULT_WISH_CATEGORIES.filter(d => !hidden.has(d.id)).map(d => {
     const nameOv = defaultNameOverrides[d.id];
     const displayName =
       nameOv !== undefined && normalizeName(nameOv).length > 0 ? normalizeName(nameOv) : d.name;
@@ -134,6 +140,28 @@ export async function loadDefaultNameOverrides(): Promise<Record<string, string>
 
 export async function saveDefaultNameOverrides(overrides: Record<string, string>): Promise<void> {
   await AsyncStorage.setItem(DEFAULT_NAME_OVERRIDES_KEY, JSON.stringify(overrides));
+}
+
+export async function loadHiddenDefaultCategoryIds(): Promise<string[]> {
+  const raw = await AsyncStorage.getItem(HIDDEN_DEFAULT_IDS_KEY);
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: string[] = [];
+  for (const item of parsed) {
+    if (typeof item === 'string' && BUILTIN_ID_SET.has(item)) out.push(item);
+  }
+  return [...new Set(out)];
+}
+
+export async function saveHiddenDefaultCategoryIds(ids: string[]): Promise<void> {
+  const unique = [...new Set(ids.filter(id => BUILTIN_ID_SET.has(id)))].sort();
+  await AsyncStorage.setItem(HIDDEN_DEFAULT_IDS_KEY, JSON.stringify(unique));
 }
 
 export function createCustomCategoryId(): string {

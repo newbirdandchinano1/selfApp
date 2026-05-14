@@ -1,7 +1,16 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
-import { deleteFinanceAccount, getFinanceAccountsWithBalance, getFinanceTransactionsByAccountId, updateFinanceAccount } from '@/lib/repositories/finance/finance';
+import {
+  applyFinanceAccountBalanceCorrection,
+  deleteFinanceAccount,
+  financeBalanceInputTextFromLedger,
+  financeTargetLedgerFromUserBalanceInput,
+  getFinanceAccountsWithBalance,
+  getFinanceTransactionsByAccountId,
+  updateFinanceAccount,
+} from '@/lib/repositories/finance/finance';
+import { setFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import {
   isFinanceAccountExcludedFromAggregates,
   mergeFinanceAccountExcludeFromTotalAssets,
@@ -11,7 +20,19 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type DetailItem = {
@@ -47,6 +68,9 @@ export default function AccountDetailScreen() {
   const [account, setAccount] = React.useState<FinanceAccountBalanceRow | null>(null);
   const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const [deleting, setDeleting] = React.useState(false);
+  const [balanceModalOpen, setBalanceModalOpen] = React.useState(false);
+  const [balanceDraft, setBalanceDraft] = React.useState('');
+  const [savingBalance, setSavingBalance] = React.useState(false);
   /** 切换「不计入总资产」写入中的防抖态，避免连点 */
   const [savingExcludeFromTotal, setSavingExcludeFromTotal] = React.useState(false);
   const routeAccountId = typeof params.accountId === 'string' ? params.accountId : '';
@@ -163,6 +187,92 @@ export default function AccountDetailScreen() {
     },
     [account?.extra_data, account?.id, loadAccountDetail, routeAccountId, savingExcludeFromTotal],
   );
+
+  const resolvedAccountId = account?.id ?? routeAccountId;
+
+  const handleBalanceDraftChange = React.useCallback((text: string) => {
+    let s = text.replace(/[^\d.-]/g, '');
+    const negative = s.startsWith('-');
+    s = s.replace(/-/g, '');
+    const dot = s.indexOf('.');
+    if (dot !== -1) {
+      s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '');
+    }
+    if (negative) s = `-${s}`;
+    setBalanceDraft(s);
+  }, []);
+
+  const openBalanceEditor = React.useCallback(() => {
+    if (!account) {
+      Alert.alert('无法编辑', '未找到账户信息。');
+      return;
+    }
+    setBalanceDraft(
+      financeBalanceInputTextFromLedger(account.balance ?? 0, account.sign_rule, account.account_type),
+    );
+    setBalanceModalOpen(true);
+  }, [account]);
+
+  const onConfirmBalanceEdit = React.useCallback(async () => {
+    if (!account || savingBalance) return;
+    const normalized = balanceDraft.trim().replace(/[^\d.-]/g, '');
+    const n = normalized ? Number(normalized) : 0;
+    if (!Number.isFinite(n)) {
+      Alert.alert('金额无效', '请输入正确的数字。');
+      return;
+    }
+    const targetLedger = financeTargetLedgerFromUserBalanceInput({
+      userNumeric: n,
+      signRule: account.sign_rule,
+      accountType: account.account_type,
+    });
+    try {
+      setSavingBalance(true);
+      await applyFinanceAccountBalanceCorrection({
+        accountId: account.id,
+        targetLedgerBalance: targetLedger,
+      });
+      setBalanceModalOpen(false);
+      await loadAccountDetail();
+    } catch (e) {
+      Alert.alert('保存失败', e instanceof Error && e.message.trim() ? e.message : '请稍后重试。');
+    } finally {
+      setSavingBalance(false);
+    }
+  }, [account, balanceDraft, loadAccountDetail, savingBalance]);
+
+  const onPressEditAccountMeta = React.useCallback(() => {
+    if (!resolvedAccountId) {
+      Alert.alert('无法编辑', '未找到账户信息。');
+      return;
+    }
+    router.push({ pathname: '/add-account', params: { editAccountId: resolvedAccountId } });
+  }, [resolvedAccountId, router]);
+
+  const onPressBookkeeping = React.useCallback(() => {
+    if (!resolvedAccountId) {
+      Alert.alert('无法记账', '未找到账户信息。');
+      return;
+    }
+    setFinanceSheetLaunchIntent({ kind: 'manual', tab: 'sentence', accountId: resolvedAccountId });
+    router.push('/(tabs)/finance');
+  }, [resolvedAccountId, router]);
+
+  const onPressTransfer = React.useCallback(() => {
+    if (!resolvedAccountId) {
+      Alert.alert('无法转账', '未找到账户信息。');
+      return;
+    }
+    if (isLiabilityAccount || accountSignRule !== 1) {
+      Alert.alert(
+        '不支持转账',
+        '仅在两个资产账户（钱包/银行卡等）之间可转账。负债请使用「记账」登记还款或新增负债。',
+      );
+      return;
+    }
+    setFinanceSheetLaunchIntent({ kind: 'transfer', fromAccountId: resolvedAccountId });
+    router.push('/(tabs)/finance');
+  }, [accountSignRule, isLiabilityAccount, resolvedAccountId, router]);
 
   const onDeleteAccount = React.useCallback(() => {
     if (deleting) return;
@@ -285,7 +395,16 @@ export default function AccountDetailScreen() {
           showsVerticalScrollIndicator={false}>
           <View style={[styles.accountCard, { backgroundColor: cardBg }]}>
             <View style={styles.accountTopRow}>
-              <View style={styles.accountMetaRow}>
+              <Pressable
+                onPress={onPressEditAccountMeta}
+                disabled={!resolvedAccountId}
+                accessibilityRole="button"
+                accessibilityLabel="编辑账户名称、卡号与图标"
+                style={({ pressed }) => [
+                  styles.accountMetaPressable,
+                  !resolvedAccountId && { opacity: 0.5 },
+                  pressed && resolvedAccountId && { opacity: 0.82 },
+                ]}>
                 <View style={styles.avatarOuter}>
                   <View style={styles.avatarInner}>
                     <MaterialIcons name={accountIcon(account)} size={20} color="#111827" />
@@ -294,11 +413,12 @@ export default function AccountDetailScreen() {
                     </View>
                   </View>
                 </View>
-                <View>
+                <View style={styles.accountTitleCol}>
                   <Text style={[styles.accountName, { color: titleText }]}>{detailName}</Text>
                   <Text style={[styles.accountDesc, { color: subtleText }]}>{detailDesc}</Text>
                 </View>
-              </View>
+                <MaterialIcons name="chevron-right" size={22} color={subtleText} style={styles.accountMetaChevron} />
+              </Pressable>
             </View>
 
             <View style={[styles.dashedDivider, { borderColor }]} />
@@ -308,15 +428,19 @@ export default function AccountDetailScreen() {
               <View style={styles.balanceRow}>
                 {(() => {
                   const rawBalance = account?.balance ?? 0;
-                  const normalizedBalance = isLiabilityAccount ? -Math.abs(rawBalance) : rawBalance;
-                  const balancePrefix = normalizedBalance < 0 ? '-' : '';
+                  const displayBalance = isLiabilityAccount ? Math.min(0, rawBalance) : Math.max(0, rawBalance);
+                  const balancePrefix = displayBalance < 0 ? '-' : '';
                   return (
                 <Text style={[styles.balanceText, { color: titleText }]}>
-                      {`${balancePrefix}${formatMoney(normalizedBalance)}`}
+                      {`${balancePrefix}${formatMoney(displayBalance)}`}
                 </Text>
                   );
                 })()}
-                <Pressable style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
+                <Pressable
+                  onPress={openBalanceEditor}
+                  accessibilityRole="button"
+                  accessibilityLabel="编辑余额"
+                  style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
                   <MaterialIcons name="edit" size={16} color={subtleText} />
                 </Pressable>
               </View>
@@ -347,6 +471,7 @@ export default function AccountDetailScreen() {
 
             <View style={styles.actionRow}>
               <Pressable
+                onPress={onPressBookkeeping}
                 style={({ pressed }) => [
                   styles.actionBtn,
                   { backgroundColor: surface, borderColor },
@@ -355,6 +480,7 @@ export default function AccountDetailScreen() {
                 <Text style={[styles.actionBtnText, { color: titleText }]}>记账</Text>
               </Pressable>
               <Pressable
+                onPress={onPressTransfer}
                 style={({ pressed }) => [
                   styles.actionBtn,
                   { backgroundColor: surface, borderColor },
@@ -375,8 +501,16 @@ export default function AccountDetailScreen() {
 
             {monthSections.map((section) => (
               <View key={section.id} style={styles.monthSection}>
-                <View style={styles.monthHeaderRow}>
-                  <View>
+                <View
+                  style={[
+                    styles.monthHeaderRow,
+                    {
+                      borderBottomColor: borderColor,
+                      borderBottomWidth: section.expanded ? StyleSheet.hairlineWidth : 0,
+                      paddingBottom: section.expanded ? 14 : 10,
+                    },
+                  ]}>
+                  <View style={styles.monthHeaderTextCol}>
                     <Text style={[styles.monthTitle, { color: titleText }]}>{section.monthLabel}</Text>
                     {!isLiabilityAccount ? (
                       <Text style={[styles.monthMeta, { color: subtleText }]}>
@@ -389,35 +523,83 @@ export default function AccountDetailScreen() {
                   <MaterialIcons
                     name={section.expanded ? 'keyboard-arrow-down' : 'keyboard-arrow-right'}
                     size={22}
-                    color="#c4c7d0"
+                    color={subtleText}
                   />
                 </View>
 
                 {section.expanded && section.details && section.details.length > 0 ? (
                   <View style={styles.dayDetailBlock}>
                     {section.details.map((day) => (
-                      <View key={`${section.id}-${day.dateLabel}`}>
-                        <Text style={[styles.dayTitle, { color: subtleText }]}>{day.dateLabel}</Text>
-                        {day.items.map((item) => (
-                          <View key={item.id}>
-                            <View style={styles.detailItemRow}>
-                              <View style={styles.detailLeft}>
-                                <Text style={[styles.detailTime, { color: titleText }]}>{item.time}</Text>
-                                <View style={styles.tagPill}>
-                                  <Text style={styles.tagText}>{item.tag}</Text>
-                                  <Text style={styles.tagEmoji}>{item.emoji}</Text>
+                      <View
+                        key={`${section.id}-${day.dateLabel}`}
+                        style={[
+                          styles.dayGroupCard,
+                          {
+                            backgroundColor: isDark ? 'rgba(31, 41, 55, 0.55)' : '#f9fafb',
+                            borderColor,
+                          },
+                        ]}>
+                        <View
+                          style={[
+                            styles.dayGroupHeader,
+                            { borderBottomColor: borderColor },
+                          ]}>
+                          <View style={[styles.dayGroupDot, { backgroundColor: isDark ? '#60a5fa' : '#3b82f6' }]} />
+                          <Text style={[styles.dayTitle, { color: titleText }]}>{day.dateLabel}</Text>
+                        </View>
+                        {day.items.map((item, itemIndex) => {
+                          const trimmed = item.amount.replace(/\s/g, '');
+                          const amountColor =
+                            trimmed.startsWith('+')
+                              ? isDark
+                                ? '#34d399'
+                                : '#059669'
+                              : trimmed.startsWith('-')
+                                ? isDark
+                                  ? '#f87171'
+                                  : '#dc2626'
+                                : titleText;
+                          const isLast = itemIndex === day.items.length - 1;
+                          return (
+                            <View
+                              key={item.id}
+                              style={[
+                                styles.detailEntry,
+                                !isLast && {
+                                  borderBottomWidth: StyleSheet.hairlineWidth,
+                                  borderBottomColor: borderColor,
+                                },
+                              ]}>
+                              <View style={styles.detailItemRow}>
+                                <View style={styles.detailLeft}>
+                                  <Text style={[styles.detailTime, { color: subtleText }]}>{item.time}</Text>
+                                  <View
+                                    style={[
+                                      styles.tagPill,
+                                      { backgroundColor: isDark ? 'rgba(250, 204, 21, 0.22)' : '#FEF08A' },
+                                    ]}>
+                                    <Text style={[styles.tagText, { color: titleText }]}>{item.tag}</Text>
+                                    <Text style={styles.tagEmoji}>{item.emoji}</Text>
+                                  </View>
                                 </View>
+                                <Text style={[styles.detailAmount, { color: amountColor }]}>{item.amount}</Text>
                               </View>
-                              <Text style={[styles.detailAmount, { color: titleText }]}>{item.amount}</Text>
-                            </View>
-                            <View style={styles.sourceRow}>
-                              <View style={[styles.sourceIcon, { borderColor }]}>
-                                <View style={styles.sourceIconLine} />
+                              <View style={styles.sourceRow}>
+                                <View
+                                  style={[
+                                    styles.sourceIcon,
+                                    {
+                                      borderColor,
+                                      backgroundColor: isDark ? 'rgba(55, 65, 81, 0.6)' : '#ffffff',
+                                    },
+                                  ]}>
+                                  <View style={styles.sourceIconLine} />
+                                </View>
+                                <Text style={[styles.sourceText, { color: subtleText }]}>{item.flowLabel}</Text>
                               </View>
-                              <Text style={[styles.sourceText, { color: '#9ca3af' }]}>{item.flowLabel}</Text>
                             </View>
-                          </View>
-                        ))}
+                          );
+                        })}
                       </View>
                     ))}
                     <View style={[styles.sectionDivider, { backgroundColor: borderColor }]} />
@@ -430,6 +612,54 @@ export default function AccountDetailScreen() {
           </View>
         </ScrollView>
       </View>
+
+      <Modal transparent animationType="fade" visible={balanceModalOpen} onRequestClose={() => !savingBalance && setBalanceModalOpen(false)}>
+        <View style={styles.balanceModalRoot}>
+          <Pressable style={styles.balanceModalBackdrop} onPress={() => !savingBalance && setBalanceModalOpen(false)} />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.balanceModalCenter}
+            pointerEvents="box-none">
+            <View style={[styles.balanceModalCard, { backgroundColor: cardBg, borderColor }]}>
+            <Text style={[styles.balanceModalTitle, { color: titleText }]}>调整{isLiabilityAccount ? '负债' : '余额'}</Text>
+            <Text style={[styles.balanceModalHint, { color: subtleText }]}>
+              {isLiabilityAccount
+                ? '请输入负债金额（正数表示欠款规模）。保存后将记一笔「余额校正」流水。'
+                : '保存后将记一笔「余额校正」流水，与当前流水汇总对齐。'}
+            </Text>
+            <View style={[styles.balanceModalInputRow, { borderColor }]}>
+              <Text style={[styles.balanceModalCurrency, { color: titleText }]}>¥</Text>
+              <TextInput
+                value={balanceDraft}
+                onChangeText={handleBalanceDraftChange}
+                placeholder="0.00"
+                placeholderTextColor={subtleText}
+                keyboardType="decimal-pad"
+                editable={!savingBalance}
+                style={[styles.balanceModalInput, { color: titleText }]}
+              />
+            </View>
+            <View style={styles.balanceModalActions}>
+              <Pressable
+                onPress={() => !savingBalance && setBalanceModalOpen(false)}
+                style={({ pressed }) => [styles.balanceModalBtn, { borderColor }, pressed && { opacity: 0.85 }]}>
+                <Text style={[styles.balanceModalBtnText, { color: titleText }]}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void onConfirmBalanceEdit()}
+                disabled={savingBalance}
+                style={({ pressed }) => [
+                  styles.balanceModalBtn,
+                  styles.balanceModalBtnPrimary,
+                  { backgroundColor: isDark ? '#2563eb' : '#1d4ed8', opacity: savingBalance ? 0.55 : pressed ? 0.9 : 1 },
+                ]}>
+                <Text style={styles.balanceModalBtnPrimaryText}>{savingBalance ? '保存中…' : '保存'}</Text>
+              </Pressable>
+            </View>
+          </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -485,10 +715,25 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     justifyContent: 'space-between',
   },
-  accountMetaRow: {
+  accountMetaPressable: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    minWidth: 0,
+    borderRadius: 14,
+    paddingVertical: 4,
+    paddingRight: 2,
+    marginHorizontal: -4,
+    marginTop: -4,
+  },
+  accountTitleCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  accountMetaChevron: {
+    flexShrink: 0,
+    opacity: 0.65,
   },
   avatarOuter: {
     width: 40,
@@ -603,7 +848,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 20,
+    marginBottom: 24,
   },
   detailsTitleWrap: {
     position: 'relative',
@@ -625,18 +870,24 @@ const styles = StyleSheet.create({
     opacity: 0.85,
   },
   monthSection: {
-    marginBottom: 6,
+    marginBottom: 22,
   },
   monthHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 10,
+    paddingTop: 12,
+    paddingBottom: 10,
+  },
+  monthHeaderTextCol: {
+    flex: 1,
+    minWidth: 0,
+    marginRight: 8,
   },
   monthTitle: {
     fontSize: 17,
     fontWeight: '800',
-    marginBottom: 2,
+    marginBottom: 6,
   },
   monthMeta: {
     fontSize: 12,
@@ -651,16 +902,43 @@ const styles = StyleSheet.create({
     color: '#d1d5db',
   },
   dayDetailBlock: {
-    marginTop: 10,
+    marginTop: 4,
+    gap: 14,
+  },
+  dayGroupCard: {
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 4,
+  },
+  dayGroupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  dayGroupDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   dayTitle: {
-    fontSize: 13,
-    marginBottom: 10,
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+    flex: 1,
+  },
+  detailEntry: {
+    paddingVertical: 14,
   },
   detailItemRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 12,
   },
   detailLeft: {
     flexDirection: 'row',
@@ -674,31 +952,34 @@ const styles = StyleSheet.create({
   tagPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FEF08A',
     borderRadius: 999,
     paddingLeft: 12,
     paddingRight: 10,
-    paddingVertical: 4,
+    paddingVertical: 6,
     gap: 4,
+    maxWidth: '68%',
   },
   tagText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#111827',
+    flexShrink: 1,
   },
   tagEmoji: {
     fontSize: 16,
   },
   detailAmount: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
+    textAlign: 'right',
+    flexShrink: 0,
+    marginLeft: 8,
   },
   sourceRow: {
-    marginTop: 6,
-    marginLeft: 54,
+    marginTop: 10,
+    marginLeft: 50,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   sourceIcon: {
     width: 14,
@@ -716,9 +997,81 @@ const styles = StyleSheet.create({
   },
   sourceText: {
     fontSize: 12,
+    lineHeight: 16,
   },
   sectionDivider: {
     height: 1,
-    marginTop: 16,
+    marginTop: 20,
+  },
+  balanceModalRoot: {
+    flex: 1,
+  },
+  balanceModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  balanceModalCenter: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 22,
+  },
+  balanceModalCard: {
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  balanceModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 8,
+  },
+  balanceModalHint: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 16,
+  },
+  balanceModalInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    marginBottom: 18,
+  },
+  balanceModalCurrency: {
+    fontSize: 20,
+    fontWeight: '800',
+    marginRight: 4,
+  },
+  balanceModalInput: {
+    flex: 1,
+    fontSize: 22,
+    fontWeight: '800',
+    paddingVertical: 10,
+  },
+  balanceModalActions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  balanceModalBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  balanceModalBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  balanceModalBtnPrimary: {
+    borderWidth: 0,
+  },
+  balanceModalBtnPrimaryText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#ffffff',
   },
 });

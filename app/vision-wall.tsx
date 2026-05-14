@@ -1,6 +1,12 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
+  createGoalDimension,
+  deleteGoalDimension,
+  listGoalDimensions,
+} from '@/lib/repositories/goal-dimensions/goal-dimension';
+import type { GoalDimensionRow } from '@/lib/repositories/goal-dimensions/goal-dimension.types';
+import {
   deleteVision,
   getVisionRowById,
   listVisions,
@@ -14,12 +20,23 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-type WallEntry = { id: string; card: VisionWallCardModel };
+type WallEntry = { id: string; card: VisionWallCardModel; dimensionId: string | null; dimensionName: string | null };
 
 function formatStoredAmount(n: number): string {
   if (!Number.isFinite(n)) return '0';
@@ -195,19 +212,34 @@ export default function VisionWallScreen() {
   const isDark = colorScheme === 'dark';
 
   const [wallEntries, setWallEntries] = useState<WallEntry[]>([]);
+  const [goalDimensions, setGoalDimensions] = useState<GoalDimensionRow[]>([]);
+  const [newDimModalVisible, setNewDimModalVisible] = useState(false);
+  const [newDimTitle, setNewDimTitle] = useState('');
+  const [newDimBusy, setNewDimBusy] = useState(false);
 
   const loadWallEntries = useCallback(async () => {
     try {
-      const rows = await listVisions();
+      const [rows, dims] = await Promise.all([listVisions(), listGoalDimensions()]);
+      setGoalDimensions(dims);
       const dbEntries: WallEntry[] = await Promise.all(
-        rows.map(async r => ({
-          id: r.id,
-          card: await visionRowToWallCard(r),
-        })),
+        rows.map(async r => {
+          const ex = parseVisionExtra(r.extra_data);
+          const dimensionId =
+            typeof ex?.dimensionId === 'string' && ex.dimensionId.trim() ? ex.dimensionId.trim() : null;
+          const dimensionName =
+            typeof ex?.dimensionName === 'string' && ex.dimensionName.trim() ? ex.dimensionName.trim() : null;
+          return {
+            id: r.id,
+            card: await visionRowToWallCard(r),
+            dimensionId,
+            dimensionName,
+          };
+        }),
       );
       setWallEntries(dbEntries);
     } catch {
       setWallEntries([]);
+      setGoalDimensions([]);
     }
   }, []);
 
@@ -237,7 +269,7 @@ export default function VisionWallScreen() {
   );
 
   const requestDeleteVision = useCallback((entry: WallEntry) => {
-    Alert.alert('删除愿景', '确定删除这条愿景吗？删除后将从愿景墙与我的页移除；在同步或恢复功能前可能无法找回。', [
+    Alert.alert('删除总目标', '确定删除这条总目标吗？删除后将从总目标墙与我的页移除；在同步或恢复功能前可能无法找回。', [
       { text: '取消', style: 'cancel' },
       {
         text: '删除',
@@ -256,102 +288,409 @@ export default function VisionWallScreen() {
     ]);
   }, []);
 
+  const requestDeleteDimension = useCallback((dimensionId: string, title: string) => {
+    Alert.alert(
+      '删除维度',
+      `确定删除维度「${title}」吗？该维度下的总目标不会删除，将显示在「其他维度」分组中。`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              try {
+                await deleteGoalDimension(dimensionId);
+                await loadWallEntries();
+              } catch {
+                Alert.alert('删除失败', '无法删除该维度，请稍后重试。');
+              }
+            })();
+          },
+        },
+      ],
+    );
+  }, [loadWallEntries]);
+
+  const wallSections = useMemo(() => {
+    const byDim = new Map<string, WallEntry[]>();
+    const unassigned: WallEntry[] = [];
+    for (const e of wallEntries) {
+      if (e.dimensionId) {
+        const arr = byDim.get(e.dimensionId) ?? [];
+        arr.push(e);
+        byDim.set(e.dimensionId, arr);
+      } else {
+        unassigned.push(e);
+      }
+    }
+    const out: { key: string; title: string; entries: WallEntry[] }[] = [];
+    const consumed = new Set<string>();
+    for (const d of goalDimensions) {
+      out.push({ key: d.id, title: d.title, entries: byDim.get(d.id) ?? [] });
+      consumed.add(d.id);
+    }
+    for (const [kid, entries] of byDim) {
+      if (consumed.has(kid)) continue;
+      const title = entries[0]?.dimensionName?.trim() || '其他维度';
+      out.push({ key: kid, title, entries });
+    }
+    if (unassigned.length > 0) {
+      out.push({ key: '_ungrouped', title: '未归类（旧数据）', entries: unassigned });
+    }
+    return out;
+  }, [wallEntries, goalDimensions]);
+
+  const confirmCreateDimension = useCallback(async () => {
+    const t = newDimTitle.trim();
+    if (!t) {
+      Alert.alert('提示', '请填写维度名称');
+      return;
+    }
+    setNewDimBusy(true);
+    try {
+      const id = `gd_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      await createGoalDimension({ id, title: t });
+      await loadWallEntries();
+      setNewDimModalVisible(false);
+      setNewDimTitle('');
+    } catch {
+      Alert.alert('保存失败', '无法创建维度，请稍后重试。');
+    } finally {
+      setNewDimBusy(false);
+    }
+  }, [loadWallEntries, newDimTitle]);
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? 'rgba(15,23,42,0.95)' : theme.background }]}>
-      <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.85)' }]}>
-        <View style={styles.headerLeading}>
-          <Pressable
-            onPress={() => router.back()}
-            style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialIcons
-              name="arrow-back"
-              size={22}
-              color={isDark ? 'rgba(248,250,252,0.92)' : 'rgba(15,23,42,0.92)'}
-            />
-          </Pressable>
-        </View>
-        <View style={styles.headerCenter}>
-          <Text
-            style={[styles.headerTitle, { color: isDark ? 'rgba(248,250,252,0.95)' : 'rgba(15,23,42,0.95)' }]}
-            numberOfLines={1}
-          >
-            愿景墙
-          </Text>
-        </View>
-        <View style={styles.headerTrailing}>
-          <Pressable
-            onPress={() => router.push('/vision-create')}
-            style={({ pressed }) => [styles.headerCreateBtn, pressed && { opacity: 0.88 }]}
-          >
-            <MaterialIcons name="add" size={17} color="#fff" />
-            <Text style={styles.headerCreateBtnText}>创建愿景</Text>
-          </Pressable>
-        </View>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={{ marginTop: 8, marginBottom: 16 }}>
-          <Text style={[styles.kicker, { color: isDark ? 'rgba(148,163,184,0.95)' : 'rgba(114,119,133,0.95)' }]}>
-            Life Manifesto
-          </Text>
-          <Text style={[styles.heroTitle, { color: theme.text }]}>未来的数字索引</Text>
-          <Text style={[styles.heroDesc, { color: theme.text }]}>
-            将长期的渴望转化为可量化的愿景，追踪每一个向着终点前进的刻度。
-          </Text>
-        </View>
-
-        <View style={{ gap: 16 }}>
-          {wallEntries.length === 0 ? (
-            <View style={{ paddingVertical: 36, paddingHorizontal: 12, alignItems: 'center' }}>
-              <Text
-                style={{
-                  fontSize: 15,
-                  fontWeight: '600',
-                  color: isDark ? 'rgba(148,163,184,0.9)' : 'rgba(114,119,133,0.9)',
-                  textAlign: 'center',
-                  lineHeight: 22,
-                }}
+    <>
+      <SafeAreaView style={[styles.container, { backgroundColor: isDark ? 'rgba(15,23,42,0.95)' : theme.background }]}>
+        <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.85)' }]}>
+          <View style={styles.headerTitleWrap} pointerEvents="none">
+            <Text
+              style={[styles.headerTitle, { color: isDark ? 'rgba(248,250,252,0.95)' : 'rgba(15,23,42,0.95)' }]}
+              numberOfLines={1}
+            >
+              总目标墙
+            </Text>
+          </View>
+          <View style={styles.headerBar}>
+            <View style={styles.headerLeading}>
+              <Pressable
+                onPress={() => router.back()}
+                style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}
               >
-                暂无愿景，点击右上角「创建愿景」添加第一条。
-              </Text>
-            </View>
-          ) : (
-            wallEntries.map(entry => (
-              <Swipeable
-                key={entry.id}
-                overshootRight={false}
-                rightThreshold={48}
-                renderRightActions={() => (
-                  <Pressable
-                    onPress={() => requestDeleteVision(entry)}
-                    style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}
-                    accessibilityRole="button"
-                    accessibilityLabel={`删除愿景 ${entry.card.title}`}
-                  >
-                    <MaterialIcons name="delete-outline" size={24} color="#fff" />
-                    <Text style={styles.swipeDeleteText}>删除</Text>
-                  </Pressable>
-                )}
-              >
-                <VisionCard
-                  card={entry.card}
-                  visionId={entry.id}
-                  onOpenDetail={() =>
-                    router.push({ pathname: '/vision-detail/[id]', params: { id: entry.id } })
-                  }
-                  onAdjustAmount={onAdjustVisionAmount}
+                <MaterialIcons
+                  name="arrow-back"
+                  size={22}
+                  color={isDark ? 'rgba(248,250,252,0.92)' : 'rgba(15,23,42,0.92)'}
                 />
-              </Swipeable>
-            ))
-          )}
+              </Pressable>
+            </View>
+            <View style={styles.headerSpacer} />
+            <View style={styles.headerTrailing} />
+          </View>
         </View>
 
-        <Text style={[styles.footerText, { color: isDark ? 'rgba(226,232,240,0.45)' : 'rgba(114,119,133,0.45)' }]}>
-          The Quantified Life • © 2024
-        </Text>
-      </ScrollView>
-    </SafeAreaView>
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          <View style={{ marginTop: 8, marginBottom: 16 }}>
+            <Text style={[styles.kicker, { color: isDark ? 'rgba(148,163,184,0.95)' : 'rgba(114,119,133,0.95)' }]}>
+              Life Manifesto
+            </Text>
+            <Text style={[styles.heroTitle, { color: theme.text }]}>未来的数字索引</Text>
+            <Text style={[styles.heroDesc, { color: theme.text }]}>
+              先建立维度（如财富、健康、事业、技能），再在维度下创建可量化的总目标，追踪通向终点的每一步。
+            </Text>
+          </View>
+
+          <Pressable
+            onPress={() => {
+              setNewDimTitle('');
+              setNewDimModalVisible(true);
+            }}
+            style={({ pressed }) => [styles.newDimRowBtn, pressed && { opacity: 0.88 }]}
+          >
+            <MaterialIcons name="folder-special" size={20} color="#0058be" />
+            <Text style={styles.newDimRowBtnText}>新建维度</Text>
+            <MaterialIcons name="chevron-right" size={20} color="rgba(114,119,133,0.55)" style={{ marginLeft: 'auto' }} />
+          </Pressable>
+
+          <View style={styles.dimensionList}>
+            {goalDimensions.length === 0 && wallEntries.length === 0 ? (
+              <View style={{ paddingVertical: 28, paddingHorizontal: 12, alignItems: 'center' }}>
+                <Text
+                  style={{
+                    fontSize: 15,
+                    fontWeight: '600',
+                    color: isDark ? 'rgba(148,163,184,0.9)' : 'rgba(114,119,133,0.9)',
+                    textAlign: 'center',
+                    lineHeight: 22,
+                  }}
+                >
+                  暂无维度与总目标。请先点「新建维度」创建财富、健康等分类，再在各维度下添加总目标。
+                </Text>
+              </View>
+            ) : (
+              wallSections.map(section => {
+                const isLegacy = section.key === '_ungrouped';
+                const count = section.entries.length;
+                const panelBorder = isLegacy
+                  ? isDark
+                    ? 'rgba(251,191,36,0.32)'
+                    : 'rgba(245,158,11,0.42)'
+                  : isDark
+                    ? 'rgba(148,163,184,0.18)'
+                    : 'rgba(15,23,42,0.08)';
+                const panelBg = isDark ? 'rgba(30,41,59,0.78)' : 'rgba(255,255,255,0.98)';
+                const iosShadow =
+                  Platform.OS === 'ios'
+                    ? {
+                        shadowColor: '#0f172a',
+                        shadowOffset: { width: 0, height: 10 },
+                        shadowOpacity: isDark ? 0.45 : 0.08,
+                        shadowRadius: isDark ? 16 : 20,
+                      }
+                    : {};
+                const androidElev = Platform.OS === 'android' ? (isDark ? 4 : 5) : 0;
+                const isDeletableDimension = goalDimensions.some(d => d.id === section.key);
+
+                const dimensionPanelView = (
+                  <View
+                    style={[
+                      styles.dimensionPanel,
+                      { backgroundColor: panelBg, borderColor: panelBorder },
+                      iosShadow,
+                      androidElev > 0 ? { elevation: androidElev } : null,
+                    ]}
+                  >
+                    <View style={styles.dimensionHeader}>
+                      <View style={styles.dimensionHeaderTop}>
+                        <View style={styles.dimensionAccentBar} />
+                        <View style={styles.dimensionHeaderTextCol}>
+                          <View style={styles.dimensionTitleRow}>
+                            <Text
+                              style={[
+                                styles.dimensionSectionTitle,
+                                { color: isDark ? 'rgba(248,250,252,0.96)' : 'rgba(15,23,42,0.94)' },
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {section.title}
+                            </Text>
+                            {isLegacy ? (
+                              <View
+                                style={[
+                                  styles.legacyTag,
+                                  {
+                                    borderColor: isDark ? 'rgba(251,191,36,0.45)' : 'rgba(245,158,11,0.55)',
+                                    backgroundColor: isDark ? 'rgba(251,191,36,0.12)' : 'rgba(245,158,11,0.12)',
+                                  },
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.legacyTagText,
+                                    { color: isDark ? 'rgba(253,230,138,0.95)' : 'rgba(180,83,9,0.95)' },
+                                  ]}
+                                >
+                                  旧数据
+                                </Text>
+                              </View>
+                            ) : null}
+                          </View>
+                          <Text
+                            style={[
+                              styles.dimensionSubtitle,
+                              {
+                                color: isDark ? 'rgba(148,163,184,0.88)' : 'rgba(114,119,133,0.88)',
+                              },
+                            ]}
+                          >
+                            {count > 0 ? `共 ${count} 个总目标` : '该维度下还没有总目标'}
+                          </Text>
+                        </View>
+                        <Pressable
+                          onPress={() => {
+                            if (section.key === '_ungrouped') {
+                              router.push('/vision-create');
+                            } else {
+                              router.push({ pathname: '/vision-create', params: { dimensionId: section.key } });
+                            }
+                          }}
+                          style={({ pressed }) => [styles.sectionAddBtn, pressed && { opacity: 0.85 }]}
+                        >
+                          <MaterialIcons name="add" size={17} color="#0058be" />
+                          <Text style={styles.sectionAddBtnText}>添加</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+
+                    <View
+                      style={[
+                        styles.dimensionDivider,
+                        {
+                          backgroundColor: isDark ? 'rgba(148,163,184,0.14)' : 'rgba(15,23,42,0.06)',
+                        },
+                      ]}
+                    />
+
+                    <View style={styles.dimensionBody}>
+                      {count === 0 ? (
+                        <View
+                          style={[
+                            styles.dimensionEmptyPlate,
+                            {
+                              borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(114,119,133,0.22)',
+                              backgroundColor: isDark ? 'rgba(15,23,42,0.35)' : 'rgba(248,250,252,0.65)',
+                            },
+                          ]}
+                        >
+                          <MaterialIcons
+                            name="track-changes"
+                            size={24}
+                            color={isDark ? 'rgba(148,163,184,0.55)' : 'rgba(114,119,133,0.5)'}
+                          />
+                          <Text
+                            style={[
+                              styles.dimensionEmptyText,
+                              { color: isDark ? 'rgba(148,163,184,0.82)' : 'rgba(114,119,133,0.82)' },
+                            ]}
+                          >
+                            点击右侧「添加」，创建该维度下的第一条总目标
+                          </Text>
+                        </View>
+                      ) : (
+                        section.entries.map(entry => (
+                          <Swipeable
+                            key={entry.id}
+                            overshootRight={false}
+                            rightThreshold={48}
+                            renderRightActions={() => (
+                              <Pressable
+                                onPress={() => requestDeleteVision(entry)}
+                                style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}
+                                accessibilityRole="button"
+                                accessibilityLabel={`删除总目标 ${entry.card.title}`}
+                              >
+                                <MaterialIcons name="delete-outline" size={24} color="#fff" />
+                                <Text style={styles.swipeDeleteText}>删除</Text>
+                              </Pressable>
+                            )}
+                          >
+                            <VisionCard
+                              card={entry.card}
+                              visionId={entry.id}
+                              onOpenDetail={() =>
+                                router.push({ pathname: '/vision-detail/[id]', params: { id: entry.id } })
+                              }
+                              onAdjustAmount={onAdjustVisionAmount}
+                            />
+                          </Swipeable>
+                        ))
+                      )}
+                    </View>
+                  </View>
+                );
+
+                return isDeletableDimension ? (
+                  <Swipeable
+                    key={section.key}
+                    overshootRight={false}
+                    rightThreshold={48}
+                    renderRightActions={() => (
+                      <Pressable
+                        onPress={() => requestDeleteDimension(section.key, section.title)}
+                        style={({ pressed }) => [
+                          styles.swipeDeleteAction,
+                          styles.swipeDeleteDimensionBar,
+                          pressed && { opacity: 0.92 },
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`删除维度 ${section.title}`}
+                      >
+                        <MaterialIcons name="delete-outline" size={24} color="#fff" />
+                        <Text style={styles.swipeDeleteText}>删除</Text>
+                      </Pressable>
+                    )}
+                  >
+                    {dimensionPanelView}
+                  </Swipeable>
+                ) : (
+                  <View key={section.key}>{dimensionPanelView}</View>
+                );
+              })
+            )}
+          </View>
+
+          <Text style={[styles.footerText, { color: isDark ? 'rgba(226,232,240,0.45)' : 'rgba(114,119,133,0.45)' }]}>
+            The Quantified Life • © 2024
+          </Text>
+        </ScrollView>
+      </SafeAreaView>
+
+      <Modal
+        visible={newDimModalVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => !newDimBusy && setNewDimModalVisible(false)}
+      >
+        <View style={styles.dimModalRoot}>
+          <Pressable style={styles.dimModalBackdrop} onPress={() => !newDimBusy && setNewDimModalVisible(false)} />
+          <View
+            style={[
+              styles.dimModalCard,
+              {
+                backgroundColor: isDark ? 'rgba(30,41,59,0.98)' : '#fff',
+                borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.5)',
+              },
+            ]}
+          >
+            <Text style={[styles.dimModalTitle, { color: theme.text }]}>新建维度</Text>
+            <Text style={[styles.dimModalHint, { color: isDark ? 'rgba(148,163,184,0.9)' : 'rgba(114,119,133,0.88)' }]}>
+              例如：财富、健康、事业、技能
+            </Text>
+            <TextInput
+              value={newDimTitle}
+              onChangeText={setNewDimTitle}
+              placeholder="维度名称"
+              placeholderTextColor={isDark ? 'rgba(148,163,184,0.45)' : 'rgba(114,119,133,0.45)'}
+              editable={!newDimBusy}
+              style={[
+                styles.dimModalInput,
+                {
+                  color: theme.text,
+                  backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : 'rgba(234,237,255,0.9)',
+                  borderColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.45)',
+                },
+              ]}
+            />
+            <View style={styles.dimModalActions}>
+              <Pressable
+                onPress={() => !newDimBusy && setNewDimModalVisible(false)}
+                style={[
+                  styles.dimModalBtnGhost,
+                  { borderColor: isDark ? 'rgba(148,163,184,0.3)' : 'rgba(194,198,214,0.65)' },
+                ]}
+              >
+                <Text style={[styles.dimModalBtnGhostText, { color: isDark ? 'rgba(148,163,184,0.95)' : 'rgba(114,119,133,0.9)' }]}>
+                  取消
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void confirmCreateDimension()}
+                disabled={newDimBusy}
+                style={[styles.dimModalBtnPrimary, { opacity: newDimBusy ? 0.65 : 1 }]}
+              >
+                {newDimBusy ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.dimModalBtnPrimaryText}>创建</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -362,24 +701,32 @@ const styles = StyleSheet.create({
   header: {
     height: 56,
     paddingHorizontal: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
+    position: 'relative',
+    justifyContent: 'center',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(148,163,184,0.15)',
+  },
+  headerTitleWrap: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 56,
+  },
+  headerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: '100%',
   },
   headerLeading: {
     width: 44,
     alignItems: 'flex-start',
     justifyContent: 'center',
   },
-  headerCenter: {
+  headerSpacer: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
   },
   headerTrailing: {
-    minWidth: 44,
+    width: 44,
     alignItems: 'flex-end',
     justifyContent: 'center',
   },
@@ -394,26 +741,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     letterSpacing: -0.3,
-  },
-  headerCreateBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 14,
-    backgroundColor: '#0058be',
-    shadowColor: '#0058be',
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-  },
-  headerCreateBtnText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: -0.2,
+    textAlign: 'center',
   },
 
   content: {
@@ -439,6 +767,197 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     opacity: 0.75,
     lineHeight: 20,
+  },
+
+  newDimRowBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,88,190,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(0,88,190,0.18)',
+  },
+  newDimRowBtnText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0058be',
+    letterSpacing: -0.2,
+  },
+
+  dimensionList: {
+    gap: 20,
+    marginTop: 12,
+  },
+  dimensionPanel: {
+    borderRadius: 22,
+    borderWidth: 1,
+    overflow: 'visible',
+  },
+  dimensionHeader: {
+    paddingTop: 4,
+  },
+  dimensionHeaderTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 2,
+    gap: 12,
+  },
+  dimensionAccentBar: {
+    width: 4,
+    marginTop: 5,
+    minHeight: 36,
+    borderRadius: 2,
+    backgroundColor: '#0058be',
+  },
+  dimensionHeaderTextCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 5,
+  },
+  dimensionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minWidth: 0,
+  },
+  dimensionSectionTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 18,
+    fontWeight: '900',
+    letterSpacing: -0.35,
+  },
+  legacyTag: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  legacyTagText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  dimensionSubtitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  dimensionDivider: {
+    height: StyleSheet.hairlineWidth * 2,
+    marginHorizontal: 16,
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  dimensionBody: {
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 16,
+    gap: 14,
+  },
+  dimensionEmptyPlate: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 24,
+    paddingHorizontal: 18,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+  },
+  dimensionEmptyText: {
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 19,
+  },
+
+  sectionAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,88,190,0.1)',
+    alignSelf: 'flex-start',
+    marginTop: 2,
+  },
+  sectionAddBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0058be',
+  },
+
+  dimModalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 22,
+  },
+  dimModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  dimModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 20,
+  },
+  dimModalTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    marginBottom: 6,
+  },
+  dimModalHint: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  dimModalInput: {
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  dimModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 18,
+  },
+  dimModalBtnGhost: {
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  dimModalBtnGhostText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  dimModalBtnPrimary: {
+    minWidth: 96,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 12,
+    backgroundColor: '#0058be',
+  },
+  dimModalBtnPrimaryText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
   },
 
   card: {
@@ -575,6 +1094,13 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     marginVertical: 2,
     gap: 4,
+  },
+  /** 维度整块左滑删除时，红色操作条与卡片等高 */
+  swipeDeleteDimensionBar: {
+    flex: 1,
+    alignSelf: 'stretch',
+    marginVertical: 0,
+    minHeight: 120,
   },
   swipeDeleteText: {
     color: '#fff',

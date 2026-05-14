@@ -1,15 +1,18 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { createGoalDimension, listGoalDimensions } from '@/lib/repositories/goal-dimensions/goal-dimension';
+import type { GoalDimensionRow } from '@/lib/repositories/goal-dimensions/goal-dimension.types';
 import { getProjects } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { createVision } from '@/lib/repositories/visions/vision';
 import type { VisionExtraPayload, VisionLinkedProjectRef } from '@/lib/repositories/visions/vision.types';
 import { visionTrackKindFromCreateTab } from '@/lib/repositories/visions/vision.types';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { MaterialIcons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
-import { useRouter } from 'expo-router';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -79,6 +82,13 @@ type BackgroundOption =
 
 export default function VisionCreateScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ dimensionId?: string }>();
+  const dimensionIdFromRoute =
+    typeof params.dimensionId === 'string'
+      ? params.dimensionId
+      : Array.isArray(params.dimensionId)
+        ? params.dimensionId[0]
+        : undefined;
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
@@ -134,6 +144,36 @@ export default function VisionCreateScreen() {
   const [projectRows, setProjectRows] = useState<ProjectRow[]>([]);
   const [projectListLoading, setProjectListLoading] = useState(false);
 
+  const [goalDimensions, setGoalDimensions] = useState<GoalDimensionRow[]>([]);
+  const [selectedDimensionId, setSelectedDimensionId] = useState<string | null>(null);
+  const [newDimModalVisible, setNewDimModalVisible] = useState(false);
+  const [newDimTitle, setNewDimTitle] = useState('');
+  const [newDimBusy, setNewDimBusy] = useState(false);
+
+  const loadGoalDimensions = useCallback(async () => {
+    try {
+      const rows = await listGoalDimensions();
+      setGoalDimensions(rows);
+    } catch {
+      setGoalDimensions([]);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadGoalDimensions();
+    }, [loadGoalDimensions]),
+  );
+
+  useEffect(() => {
+    const id = dimensionIdFromRoute?.trim();
+    if (!id) return;
+    setSelectedDimensionId(prev => {
+      if (goalDimensions.some(d => d.id === id)) return id;
+      return prev;
+    });
+  }, [dimensionIdFromRoute, goalDimensions]);
+
   const openEndDatePicker = useCallback(() => {
     const today = startOfLocalDay(new Date());
     const parsed = parseYmd(endDate);
@@ -151,6 +191,28 @@ export default function VisionCreateScreen() {
     setEndDate(clampEndDateToKind(formatYmd(endDateDraft), countdownKind));
     setEndDatePickerVisible(false);
   }, [countdownKind, endDateDraft]);
+
+  const confirmCreateDimension = useCallback(async () => {
+    const t = newDimTitle.trim();
+    if (!t) {
+      Alert.alert('提示', '请填写维度名称');
+      return;
+    }
+    setNewDimBusy(true);
+    try {
+      const id = `gd_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      await createGoalDimension({ id, title: t });
+      await loadGoalDimensions();
+      setSelectedDimensionId(id);
+      setNewDimModalVisible(false);
+      setNewDimTitle('');
+    } catch (e) {
+      console.warn('createGoalDimension failed', e);
+      Alert.alert('保存失败', '无法创建维度，请稍后重试。');
+    } finally {
+      setNewDimBusy(false);
+    }
+  }, [loadGoalDimensions, newDimTitle]);
 
   const openProjectPicker = useCallback(() => {
     setProjectPickerVisible(true);
@@ -225,7 +287,14 @@ export default function VisionCreateScreen() {
   const onSave = async () => {
     const title = visionName.trim();
     if (!title) {
-      Alert.alert('提示', '请填写愿景名称');
+      Alert.alert('提示', '请填写总目标名称');
+      return;
+    }
+
+    const dimId = selectedDimensionId?.trim();
+    const dimRow = dimId ? goalDimensions.find(d => d.id === dimId) : undefined;
+    if (!dimRow) {
+      Alert.alert('提示', '请先选择所属维度，或新建一个维度（例如：财富、健康、事业、技能）。');
       return;
     }
 
@@ -234,6 +303,8 @@ export default function VisionCreateScreen() {
     const directionForDb = trackType === 0 || trackType === 3 ? direction : null;
 
     const extra: VisionExtraPayload = {
+      dimensionId: dimRow.id,
+      dimensionName: dimRow.title.trim(),
       goalTotal,
       step,
       unit,
@@ -286,26 +357,29 @@ export default function VisionCreateScreen() {
     <>
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.85)' }]}>
-        <View style={styles.headerLeading}>
-          <Pressable
-            onPress={() => router.back()}
-            style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialIcons name="close" size={20} color={isDark ? 'rgba(248,250,252,0.92)' : 'rgba(15,23,42,0.92)'} />
-          </Pressable>
-        </View>
-        <View style={styles.headerCenter}>
+        <View style={styles.headerTitleWrap} pointerEvents="none">
           <Text style={[styles.headerTitle, { color: textColor }]} numberOfLines={1}>
-            新建愿景
+            新建总目标
           </Text>
         </View>
-        <View style={styles.headerTrailing}>
-          <Pressable
-            onPress={onSave}
-            style={({ pressed }) => [styles.headerCreateBtn, pressed && { opacity: 0.88 }]}
-          >
-            <Text style={styles.headerCreateBtnText}>创建愿景</Text>
-          </Pressable>
+        <View style={styles.headerBar}>
+          <View style={styles.headerLeading}>
+            <Pressable
+              onPress={() => router.back()}
+              style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}
+            >
+              <MaterialIcons name="close" size={20} color={isDark ? 'rgba(248,250,252,0.92)' : 'rgba(15,23,42,0.92)'} />
+            </Pressable>
+          </View>
+          <View style={styles.headerSpacer} />
+          <View style={styles.headerTrailing}>
+            <Pressable
+              onPress={onSave}
+              style={({ pressed }) => [styles.headerCreateBtn, pressed && { opacity: 0.88 }]}
+            >
+              <Text style={styles.headerCreateBtnText}>创建</Text>
+            </Pressable>
+          </View>
         </View>
       </View>
 
@@ -318,14 +392,83 @@ export default function VisionCreateScreen() {
         >
           <View style={{ gap: 18 }}>
             <View style={{ gap: 8 }}>
-              <Text style={[styles.label, { color: outline }]}>愿景名称</Text>
+              <Text style={[styles.label, { color: outline }]}>总目标名称</Text>
               <TextInput
                 value={visionName}
                 onChangeText={setVisionName}
-                placeholder="输入愿景名称..."
+                placeholder="输入总目标名称..."
                 placeholderTextColor={placeholderColor}
                 style={[styles.input, { color: textColor, backgroundColor: 'rgba(234,237,255,0.9)' }]}
               />
+            </View>
+
+            <View style={{ gap: 10 }}>
+              <Text style={[styles.label, { color: outline }]}>所属维度</Text>
+              <Text
+                style={{
+                  fontSize: 12,
+                  fontWeight: '600',
+                  color: isDark ? 'rgba(148,163,184,0.85)' : 'rgba(114,119,133,0.85)',
+                  lineHeight: 17,
+                }}
+              >
+                先创建维度（如财富、健康、事业、技能），再选择总目标所属维度。
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                {goalDimensions.map(d => {
+                  const sel = selectedDimensionId === d.id;
+                  return (
+                    <Pressable
+                      key={d.id}
+                      onPress={() => setSelectedDimensionId(d.id)}
+                      style={({ pressed }) => [
+                        styles.dimChip,
+                        {
+                          backgroundColor: sel
+                            ? visionPrimary
+                            : isDark
+                              ? 'rgba(30,41,59,0.55)'
+                              : 'rgba(234,237,255,0.95)',
+                          borderColor: sel ? visionPrimary : isDark ? 'rgba(148,163,184,0.25)' : 'rgba(194,198,214,0.45)',
+                          opacity: pressed ? 0.88 : 1,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 13,
+                          fontWeight: '800',
+                          color: sel ? '#fff' : textColor,
+                        }}
+                        numberOfLines={1}
+                      >
+                        {d.title}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+                <Pressable
+                  onPress={() => {
+                    setNewDimTitle('');
+                    setNewDimModalVisible(true);
+                  }}
+                  style={({ pressed }) => [
+                    styles.dimChip,
+                    {
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 4,
+                      backgroundColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(255,255,255,0.9)',
+                      borderColor: isDark ? 'rgba(148,163,184,0.35)' : 'rgba(194,198,214,0.55)',
+                      borderStyle: 'dashed',
+                      opacity: pressed ? 0.88 : 1,
+                    },
+                  ]}
+                >
+                  <MaterialIcons name="add" size={18} color={visionPrimary} />
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: visionPrimary }}>新建维度</Text>
+                </Pressable>
+              </View>
             </View>
 
             <View style={{ gap: 8 }}>
@@ -794,6 +937,65 @@ export default function VisionCreateScreen() {
     </SafeAreaView>
 
     <Modal
+      visible={newDimModalVisible}
+      animationType="fade"
+      transparent
+      onRequestClose={() => !newDimBusy && setNewDimModalVisible(false)}
+    >
+      <View style={styles.dateModalRoot}>
+        <Pressable style={styles.dateModalBackdrop} onPress={() => !newDimBusy && setNewDimModalVisible(false)} />
+        <View
+          style={[
+            styles.dateModalCard,
+            {
+              backgroundColor: theme.background,
+              borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.5)',
+              marginBottom: Math.max(insets.bottom, 16) + 8,
+            },
+          ]}
+        >
+          <Text style={[styles.dateModalTitle, { color: textColor }]}>新建维度</Text>
+          <Text style={{ fontSize: 12, fontWeight: '600', color: outline, marginBottom: 10 }}>
+            例如：财富、健康、事业、技能
+          </Text>
+          <TextInput
+            value={newDimTitle}
+            onChangeText={setNewDimTitle}
+            placeholder="维度名称"
+            placeholderTextColor={placeholderColor}
+            editable={!newDimBusy}
+            style={[
+              styles.input,
+              { color: textColor, backgroundColor: isDark ? 'rgba(30,41,59,0.45)' : 'rgba(234,237,255,0.9)' },
+            ]}
+          />
+          <View style={[styles.dateModalActions, { marginTop: 16 }]}>
+            <Pressable
+              onPress={() => !newDimBusy && setNewDimModalVisible(false)}
+              style={[
+                styles.dateModalBtnGhost,
+                { borderColor: isDark ? 'rgba(148,163,184,0.3)' : 'rgba(194,198,214,0.65)' },
+              ]}
+            >
+              <Text style={[styles.dateModalBtnGhostText, { color: outline }]}>取消</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => void confirmCreateDimension()}
+              disabled={newDimBusy}
+              style={[styles.dateModalBtnPrimary, { backgroundColor: visionPrimary, opacity: newDimBusy ? 0.65 : 1 }]}
+            >
+              {newDimBusy ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.dateModalBtnPrimaryText}>创建</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+
+    <Modal
       visible={projectPickerVisible}
       animationType="slide"
       transparent
@@ -956,24 +1158,32 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 12,
     height: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
+    position: 'relative',
+    justifyContent: 'center',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(148,163,184,0.18)',
+  },
+  headerTitleWrap: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 88,
+  },
+  headerBar: {
+    width: '100%',
+    height: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   headerLeading: {
     width: 44,
     alignItems: 'flex-start',
     justifyContent: 'center',
   },
-  headerCenter: {
+  headerSpacer: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
   },
   headerTrailing: {
-    minWidth: 96,
     alignItems: 'flex-end',
     justifyContent: 'center',
   },
@@ -989,6 +1199,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '800',
     letterSpacing: -0.3,
+    textAlign: 'center',
   },
   headerCreateBtn: {
     paddingHorizontal: 14,
@@ -1020,6 +1231,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.6,
     textTransform: 'uppercase',
+  },
+  dimChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+    borderWidth: 1,
   },
   input: {
     width: '100%',

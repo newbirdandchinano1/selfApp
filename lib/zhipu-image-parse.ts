@@ -524,6 +524,338 @@ export async function analyzeFinanceBillSummaryFromText(
   return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
 }
 
+const CASH_FLOW_DASHBOARD_JSON_HINT = `{"analysis":"3～7句中文建议，口语化、可操作，不要markdown"}`;
+
+export type AnalyzeCashFlowDashboardFromTextOptions = {
+  apiKey: string;
+  /** 由调用方从本地现金流图状态与汇总指标组装的结构化中文摘要 */
+  summaryText: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+export type AnalyzeCashFlowDashboardFromTextResult =
+  | { ok: true; analysis: string; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+/**
+ * 根据「现金流图」页本地数据摘要生成中文分析与建议（智谱 glm-4-flash，JSON 含 analysis 字段）。
+ */
+export async function analyzeCashFlowDashboardFromText(
+  options: AnalyzeCashFlowDashboardFromTextOptions,
+): Promise<AnalyzeCashFlowDashboardFromTextResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 12);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 1000);
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const text = options.summaryText.trim();
+  if (!text) {
+    return { ok: false, error: '摘要为空', attempts: 0 };
+  }
+
+  const payload = JSON.stringify({
+    model: ZHIPU_GLM_4_FLASH_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: `你是个人财务应用里「现金流图」模块的顾问，熟悉 ESBI 四象限、主动/被动收入、资产负债净现金流与自由现金流等概念。
+用户会提供从本地数据库聚合的中文摘要（已脱敏为名称与金额，无真实账号）。
+只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
+必须包含字段 analysis（字符串）：
+- 用 3～7 句口语化中文，综合点评当前结构（如被动收入占比、财务自由进度、负债消耗、非必要支出、资产性净流入等），给出可执行的下一步建议；
+- 不要逐条复读摘要里的每一个数字；不要捏造摘要中未出现的条目或金额；
+- 若数据几乎为空，友好引导用户先补全收入、支出与资产负债台账。
+
+输出形状示例（内容替换为你的生成）：${CASH_FLOW_DASHBOARD_JSON_HINT}`,
+      },
+      {
+        role: 'user',
+        content: `以下是用户现金流图数据摘要，请生成 analysis 字段：\n\n${text}`,
+      },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.3,
+    max_tokens: 800,
+  });
+
+  let lastError = '未知错误';
+  let lastHttp = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let response: Response;
+    try {
+      response = await runZhipuChatExclusive(() =>
+        fetch(ZHIPU_CHAT_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        }),
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        attempts: attempt,
+        httpStatus: 0,
+      };
+    }
+
+    const httpStatus = response.status;
+    lastHttp = httpStatus;
+    const rawText = await response.text();
+    let body: unknown = rawText;
+    try {
+      body = JSON.parse(rawText) as unknown;
+    } catch {
+      body = rawText;
+    }
+
+    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+      await sleep(retryDelayMs);
+      continue;
+    }
+
+    if (!response.ok) {
+      const msg =
+        typeof body === 'object' && body !== null && 'error' in body
+          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
+          : response.statusText;
+      lastError = msg;
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    const content = extractMessageContentFromZhipuBody(body);
+    if (!content) {
+      lastError = '响应中无有效 content';
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    let parsed: unknown;
+    try {
+      const cleaned = stripMarkdownJsonFence(content);
+      parsed = JSON.parse(cleaned) as unknown;
+    } catch {
+      lastError = '模型返回的不是合法 JSON';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
+    }
+
+    const analysis = normalizeFinanceStatsAnalysisJson(parsed);
+    if (!analysis) {
+      lastError = '模型未返回有效的 analysis 文案';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
+    }
+
+    return { ok: true, analysis, rawContent: content.trim(), attempts: attempt };
+  }
+
+  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+}
+
+const WISH_LIST_RATIONAL_REVIEW_JSON_HINT = `{"headline":"一句中文概括（建议不超过24字）","review":"2～6句理性消费分析与建议，口语化、可操作，不要markdown"}`;
+
+export type AnalyzeWishListRationalReviewFromTextOptions = {
+  apiKey: string;
+  /** 心愿清单与汇总的中文上下文，由调用方从本地数据组装 */
+  contextText: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+export type AnalyzeWishListRationalReviewFromTextResult =
+  | { ok: true; headline: string; review: string; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function normalizeWishListRationalReviewJson(parsed: unknown): { headline: string; review: string } | null {
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const o = parsed as Record<string, unknown>;
+  let headline = typeof o.headline === 'string' ? o.headline.trim() : '';
+  let review = typeof o.review === 'string' ? o.review.trim() : '';
+  if (!review && typeof o.analysis === 'string') {
+    review = (o.analysis as string).trim();
+  }
+  if (!review && typeof o.body === 'string') {
+    review = (o.body as string).trim();
+  }
+  if (!headline && typeof o.title === 'string') {
+    headline = (o.title as string).trim();
+  }
+  if (headline.length > 48) headline = `${headline.slice(0, 45)}…`;
+  if (review.length > 1200) review = `${review.slice(0, 1197)}…`;
+  if (!review) return null;
+  if (!headline) {
+    const one = review.split(/[。！？\n]/)[0]?.trim() ?? review;
+    headline = one.length > 24 ? `${one.slice(0, 21)}…` : one || '理性消费评审';
+  }
+  return { headline, review };
+}
+
+/**
+ * 根据本地心愿清单摘要生成「理性消费」中文标题与正文（智谱 glm-4-flash，JSON）。
+ */
+export async function analyzeWishListRationalReviewFromText(
+  options: AnalyzeWishListRationalReviewFromTextOptions,
+): Promise<AnalyzeWishListRationalReviewFromTextResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 8);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 800);
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const text = options.contextText.trim();
+  if (!text) {
+    return { ok: false, error: '清单上下文为空', attempts: 0 };
+  }
+
+  const payload = JSON.stringify({
+    model: ZHIPU_GLM_4_FLASH_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: `你是个人生活规划应用里的消费顾问。用户会提供本地「欲望/心愿清单」的聚合摘要（中文，已脱敏；仅名称、价格、欲望等级、类别与自填理由等）。
+只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
+必须包含两个字符串字段：
+- headline：用一句话概括当前清单的消费风险或优先级焦点，建议不超过 24 个汉字，语气克制、不羞辱用户。
+- review：用 2～6 句口语化中文，从必要性、预算压力、欲望等级与理由一致性、可延后或替代方案等角度给出理性建议；不要重复逐条念清单；不要捏造摘要中未出现的商品或金额；若条目很少，可鼓励先沉淀需求再下单。
+
+输出形状示例（内容须替换为你的生成）：${WISH_LIST_RATIONAL_REVIEW_JSON_HINT}`,
+      },
+      {
+        role: 'user',
+        content: `以下是心愿清单上下文，请生成 headline 与 review 字段：\n\n${text}`,
+      },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.35,
+    max_tokens: 800,
+  });
+
+  let lastError = '未知错误';
+  let lastHttp = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let response: Response;
+    try {
+      response = await runZhipuChatExclusive(() =>
+        fetch(ZHIPU_CHAT_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        }),
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        attempts: attempt,
+        httpStatus: 0,
+      };
+    }
+
+    const httpStatus = response.status;
+    lastHttp = httpStatus;
+    const rawText = await response.text();
+    let body: unknown = rawText;
+    try {
+      body = JSON.parse(rawText) as unknown;
+    } catch {
+      body = rawText;
+    }
+
+    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+      await sleep(retryDelayMs);
+      continue;
+    }
+
+    if (!response.ok) {
+      const msg =
+        typeof body === 'object' && body !== null && 'error' in body
+          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
+          : response.statusText;
+      lastError = msg;
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    const content = extractMessageContentFromZhipuBody(body);
+    if (!content) {
+      lastError = '响应中无有效 content';
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    let parsed: unknown;
+    try {
+      const cleaned = stripMarkdownJsonFence(content);
+      parsed = JSON.parse(cleaned) as unknown;
+    } catch {
+      lastError = '模型返回的不是合法 JSON';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
+    }
+
+    const normalized = normalizeWishListRationalReviewJson(parsed);
+    if (!normalized) {
+      lastError = '模型未返回有效的评审正文';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
+    }
+
+    return {
+      ok: true,
+      headline: normalized.headline,
+      review: normalized.review,
+      rawContent: content.trim(),
+      attempts: attempt,
+    };
+  }
+
+  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+}
+
 /** 人格画像页：智谱 glm-4-flash 返回的统一 JSON 形状 */
 export type PersonaPortraitAiData = {
   hero_kicker: string;
@@ -938,6 +1270,404 @@ export async function analyzeFinanceTxnCommentFromText(
   }
 
   return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+}
+
+const WISH_ITEM_AI_COMMENT_JSON_HINT = `{"comment":"2～4句理性消费与必要性角度的中文点评，口语化、不羞辱用户"}`;
+
+export type AnalyzeWishItemAiCommentFromTextOptions = {
+  apiKey: string;
+  /** 单条心愿的中文摘要（名称、价格、欲望等级、类别、理由等） */
+  summaryText: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+export type AnalyzeWishItemAiCommentFromTextResult =
+  | { ok: true; comment: string; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function normalizeWishItemAiCommentJson(parsed: unknown): string {
+  const o = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+  const raw = o.comment;
+  let s = typeof raw === 'string' ? raw.trim() : raw != null ? String(raw).trim() : '';
+  s = s.replace(/^(AI|点评|评价)[：:\s]*/i, '').trim();
+  if (s.length > 520) s = `${s.slice(0, 517)}…`;
+  return s;
+}
+
+/**
+ * 为单条「欲望/心愿」条目生成理性消费向中文评价（智谱 glm-4-flash，JSON 含 comment 字段）。
+ */
+export async function analyzeWishItemAiCommentFromText(
+  options: AnalyzeWishItemAiCommentFromTextOptions,
+): Promise<AnalyzeWishItemAiCommentFromTextResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 8);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 800);
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const text = options.summaryText.trim();
+  if (!text) {
+    return { ok: false, error: '摘要为空', attempts: 0 };
+  }
+
+  const payload = JSON.stringify({
+    model: ZHIPU_GLM_4_FLASH_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: `你是个人生活规划应用里的消费顾问。用户会提供「单条」本地心愿/欲望清单摘要（中文，已脱敏）。
+只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
+必须包含字段 comment（字符串）：
+- 用 2～4 句口语化中文，从必要性、预算感、欲望等级与理由是否自洽、可延后或替代思路等角度点评；
+- 语气克制、友善，不羞辱用户；不要编造摘要中未出现的商品细节或金额；
+- 总字数建议 80～260 字，不要超过 400 字。
+
+输出形状示例（内容替换为你的生成）：${WISH_ITEM_AI_COMMENT_JSON_HINT}`,
+      },
+      {
+        role: 'user',
+        content: `以下是单条心愿摘要，请生成 comment 字段：\n\n${text}`,
+      },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.35,
+    max_tokens: 520,
+  });
+
+  let lastError = '未知错误';
+  let lastHttp = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let response: Response;
+    try {
+      response = await runZhipuChatExclusive(() =>
+        fetch(ZHIPU_CHAT_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        }),
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        attempts: attempt,
+        httpStatus: 0,
+      };
+    }
+
+    const httpStatus = response.status;
+    lastHttp = httpStatus;
+    const rawText = await response.text();
+    let body: unknown = rawText;
+    try {
+      body = JSON.parse(rawText) as unknown;
+    } catch {
+      body = rawText;
+    }
+
+    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+      await sleep(retryDelayMs);
+      continue;
+    }
+
+    if (!response.ok) {
+      const msg =
+        typeof body === 'object' && body !== null && 'error' in body
+          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
+          : response.statusText;
+      lastError = msg;
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    const content = extractMessageContentFromZhipuBody(body);
+    if (!content) {
+      lastError = '响应中无有效 content';
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    let parsed: unknown;
+    try {
+      const cleaned = stripMarkdownJsonFence(content);
+      parsed = JSON.parse(cleaned) as unknown;
+    } catch {
+      lastError = '模型返回的不是合法 JSON';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
+    }
+
+    const comment = normalizeWishItemAiCommentJson(parsed);
+    if (!comment) {
+      lastError = '模型未返回有效的 comment 文案';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
+    }
+
+    return { ok: true, comment, rawContent: content.trim(), attempts: attempt };
+  }
+
+  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+}
+
+const MEMO_REVIEW_JSON_HINT = `{"evaluation":"约80～200字的中文评价","suggestions":"3～6条可执行建议，可用换行分隔"}`;
+
+export type AnalyzeMemoReviewFromTextOptions = {
+  apiKey: string;
+  /** 完整备忘文本：含标题与正文，由调用方格式化 */
+  memoContextText: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+export type AnalyzeMemoReviewFromTextResult =
+  | { ok: true; evaluation: string; suggestions: string; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+/** 备忘等场景限制长度；缺点 AI 用 full 保留模型全文，不在此截断。 */
+export type MemoReviewJsonNormalizeMode = 'memo' | 'full';
+
+function normalizeMemoReviewJson(
+  parsed: unknown,
+  mode: MemoReviewJsonNormalizeMode = 'memo',
+): { evaluation: string; suggestions: string } | null {
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const o = parsed as Record<string, unknown>;
+  let evaluation = typeof o.evaluation === 'string' ? o.evaluation.trim() : '';
+  let suggestions = typeof o.suggestions === 'string' ? o.suggestions.trim() : '';
+  if (!evaluation && typeof o.comment === 'string') {
+    evaluation = (o.comment as string).trim();
+  }
+  if (!suggestions && typeof o.advice === 'string') {
+    suggestions = (o.advice as string).trim();
+  }
+  if (mode === 'memo') {
+    if (evaluation.length > 500) evaluation = `${evaluation.slice(0, 497)}…`;
+    if (suggestions.length > 800) suggestions = `${suggestions.slice(0, 797)}…`;
+  }
+  if (!evaluation && !suggestions) return null;
+  if (!evaluation) evaluation = '（模型未单独输出评价，见下方建议。）';
+  if (!suggestions) suggestions = '（模型未单独输出建议，可结合上文评价自行拆解行动项。）';
+  return { evaluation, suggestions };
+}
+
+async function runZhipuJsonEvaluationSuggestionsReview(options: {
+  apiKey: string;
+  contextText: string;
+  emptyContextError: string;
+  systemInstruction: string;
+  userMessage: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  /** 默认 memo：截断过长字段；full 保留全文（缺点分析等） */
+  reviewJsonNormalize?: MemoReviewJsonNormalizeMode;
+  maxTokens?: number;
+}): Promise<AnalyzeMemoReviewFromTextResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 8);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 800);
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const text = options.contextText.trim();
+  if (!text) {
+    return { ok: false, error: options.emptyContextError, attempts: 0 };
+  }
+
+  const normalizeMode = options.reviewJsonNormalize ?? 'memo';
+  const maxTokens = options.maxTokens ?? 900;
+
+  const payload = JSON.stringify({
+    model: ZHIPU_GLM_4_FLASH_MODEL,
+    messages: [
+      { role: 'system', content: options.systemInstruction },
+      { role: 'user', content: options.userMessage },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.4,
+    max_tokens: maxTokens,
+  });
+
+  let lastError = '未知错误';
+  let lastHttp = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let response: Response;
+    try {
+      response = await runZhipuChatExclusive(() =>
+        fetch(ZHIPU_CHAT_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        }),
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        attempts: attempt,
+        httpStatus: 0,
+      };
+    }
+
+    const httpStatus = response.status;
+    lastHttp = httpStatus;
+    const rawText = await response.text();
+    let body: unknown = rawText;
+    try {
+      body = JSON.parse(rawText) as unknown;
+    } catch {
+      body = rawText;
+    }
+
+    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+      await sleep(retryDelayMs);
+      continue;
+    }
+
+    if (!response.ok) {
+      const msg =
+        typeof body === 'object' && body !== null && 'error' in body
+          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
+          : response.statusText;
+      lastError = msg;
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    const content = extractMessageContentFromZhipuBody(body);
+    if (!content) {
+      lastError = '响应中无有效 content';
+      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    let parsed: unknown;
+    try {
+      const cleaned = stripMarkdownJsonFence(content);
+      parsed = JSON.parse(cleaned) as unknown;
+    } catch {
+      lastError = '模型返回的不是合法 JSON';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
+    }
+
+    const normalized = normalizeMemoReviewJson(parsed, normalizeMode);
+    if (!normalized) {
+      lastError = '模型未返回有效的评价与建议';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
+    }
+
+    return {
+      ok: true,
+      evaluation: normalized.evaluation,
+      suggestions: normalized.suggestions,
+      rawContent: content.trim(),
+      attempts: attempt,
+    };
+  }
+
+  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+}
+
+/**
+ * 根据单条备忘录的标题与正文生成中文「评价」与「建议」（智谱 glm-4-flash，JSON）。
+ */
+export async function analyzeMemoReviewFromText(
+  options: AnalyzeMemoReviewFromTextOptions,
+): Promise<AnalyzeMemoReviewFromTextResult> {
+  const text = options.memoContextText.trim();
+  return runZhipuJsonEvaluationSuggestionsReview({
+    apiKey: options.apiKey,
+    contextText: text,
+    emptyContextError: '备忘内容为空',
+    systemInstruction: `你是个人效率应用里的备忘教练。用户会提供一条本地备忘录的「标题」与「正文」（均为中文或中英混排）。
+只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
+必须包含两个字符串字段：
+- evaluation：对这条备忘内容的整体评价（是否清晰、是否可执行、是否缺关键信息等），2～5 句中文，总字数约 80～220 字；语气友善、具体，不要人身攻击；不要编造用户未写明的具体日程或金额。
+- suggestions：基于该备忘给出的 3～6 条可执行改进建议（如何改写、如何拆任务、如何补全要素等），用中文分号或换行分隔即可，总字数建议不超过 400 字。
+
+输出形状示例（内容须替换为你的生成）：${MEMO_REVIEW_JSON_HINT}`,
+    userMessage: `请根据以下备忘录内容生成 evaluation 与 suggestions 字段：\n\n${text}`,
+    maxAttempts: options.maxAttempts,
+    retryDelayMs: options.retryDelayMs,
+  });
+}
+
+export type AnalyzeWeaknessReviewFromTextOptions = {
+  apiKey: string;
+  /** 缺点名称与详情的格式化文本，由调用方生成 */
+  weaknessContextText: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+/**
+ * 根据用户自述的缺点名称与详情生成中文「分析回应」与「改进建议」（智谱 glm-4-flash，JSON；字段名与备忘评价一致：evaluation / suggestions）。
+ */
+export async function analyzeWeaknessReviewFromText(
+  options: AnalyzeWeaknessReviewFromTextOptions,
+): Promise<AnalyzeMemoReviewFromTextResult> {
+  const text = options.weaknessContextText.trim();
+  return runZhipuJsonEvaluationSuggestionsReview({
+    apiKey: options.apiKey,
+    contextText: text,
+    emptyContextError: '缺点描述为空',
+    systemInstruction: `你是个人成长应用中的「自我觉察」陪练。用户会自愿写下自己认为的一个缺点名称与详细说明，用于自我梳理，数据仅存于用户本机。
+只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
+必须包含两个字符串字段：
+- evaluation：对用户自述内容的善意、具体回应（可涉及常见心理机制、认知重构角度、自我同情等），2～5 句中文，总字数约 80～220 字；禁止羞辱、贴负面人格标签或绝对化评判；不要编造用户未写明的经历或事实；若内容可能涉及临床心理健康问题，不要下诊断，可温和提醒必要时寻求专业心理咨询或医疗支持。
+- suggestions：给出多条可执行的改进或应对策略（微习惯、环境设计、沟通、时间管理等），用中文分号或换行分隔；若条目较多可充分展开，须写完整、勿用「见上文」等省略。
+
+输出形状示例（内容须替换为你的生成）：${MEMO_REVIEW_JSON_HINT}`,
+    userMessage: `请根据以下用户自述的缺点信息生成 evaluation 与 suggestions 字段：\n\n${text}`,
+    maxAttempts: options.maxAttempts,
+    retryDelayMs: options.retryDelayMs,
+    reviewJsonNormalize: 'full',
+    maxTokens: 8192,
+  });
 }
 
 const USER_SKILLS_PORTFOLIO_JSON_HINT = `{"per_skill":[{"skill_id":"","evaluation":"","suggestions":""}],"overall_suggestions":"","profile_analysis":""}`;

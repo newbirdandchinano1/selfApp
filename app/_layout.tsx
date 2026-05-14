@@ -128,6 +128,8 @@ export default function RootLayout() {
             <Stack.Screen name="habit-detail" />
             <Stack.Screen name="add-item" />
             <Stack.Screen name="wish-list" />
+            <Stack.Screen name="memo-list" />
+            <Stack.Screen name="memo-edit/[id]" />
             <Stack.Screen name="add-wish-item" />
             <Stack.Screen name="edit-wish-item/[id]" />
             <Stack.Screen name="persona-detail/[slug]" />

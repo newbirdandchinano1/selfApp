@@ -1,13 +1,15 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
 import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { type HabitKind, parseHabitKind } from '@/lib/repositories/habits/habit-kind';
 import { MaterialIcons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type CycleTab = '每周定期' | '每周N天' | '每月定期' | '每月N天';
@@ -17,6 +19,16 @@ const WEEKEND_DAYS = ['周六', '周日'];
 const MONTH_FILTERS = ['上旬', '中旬', '下旬', '单号', '双号', '全选'];
 const PRESET_MONTHLY_N_DAYS = [5, 10, 15, 20, 25];
 const DEFAULT_QUANTIFY_UNIT = '次';
+
+function defaultReminderTime(): Date {
+  const d = new Date();
+  d.setHours(20, 0, 0, 0);
+  return d;
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
 
 /** 打卡图标备选（emoji，便于跨端一致显示） */
 const HABIT_ICON_CHOICES = [
@@ -150,6 +162,10 @@ export default function AddHabitScreen() {
   const [habitNote, setHabitNote] = React.useState('');
   const [habitKind, setHabitKind] = React.useState<HabitKind>('build');
   const [iconPickerOpen, setIconPickerOpen] = React.useState(false);
+  const [reminderOpen, setReminderOpen] = React.useState(false);
+  const [reminderEnabled, setReminderEnabled] = React.useState(false);
+  const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
+  const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
 
   const bg = isDark ? theme.background : '#f8fafc';
   const card = isDark ? 'rgba(15,23,42,0.72)' : '#fff';
@@ -263,6 +279,20 @@ export default function AddHabitScreen() {
                 else setDailyGoal(Math.min(99, Math.max(1, g)));
               }
             }
+
+            const rem = parsed?.reminder;
+            if (rem && typeof rem === 'object' && !Array.isArray(rem) && rem.enabled === true) {
+              setReminderEnabled(true);
+              const hh = typeof rem.hour === 'number' ? rem.hour : 20;
+              const mm = typeof rem.minute === 'number' ? rem.minute : 0;
+              setReminderTime(() => {
+                const d = defaultReminderTime();
+                d.setHours(Math.max(0, Math.min(23, Math.round(hh))), Math.max(0, Math.min(59, Math.round(mm))), 0, 0);
+                return d;
+              });
+            } else {
+              setReminderEnabled(false);
+            }
           } catch {
             // ignore extra_data parse errors
           }
@@ -325,6 +355,10 @@ export default function AddHabitScreen() {
 
     const unitResolved = unitInput.trim() || DEFAULT_QUANTIFY_UNIT;
 
+    const reminderPayload = reminderEnabled
+      ? { enabled: true as const, hour: reminderTime.getHours(), minute: reminderTime.getMinutes() }
+      : { enabled: false as const };
+
     const extraData = JSON.stringify({
       ...existingExtra,
       habitKind,
@@ -344,10 +378,12 @@ export default function AddHabitScreen() {
         monthlySpecificDays,
         monthlyNDays,
       },
+      reminder: reminderPayload,
     });
 
     const note = habitNote.trim() || null;
 
+    let savedHabitId: string;
     if (isEditMode && habitId) {
       await updateHabit(habitId, {
         context,
@@ -358,6 +394,7 @@ export default function AddHabitScreen() {
         note,
         extra_data: extraData,
       });
+      savedHabitId = habitId;
     } else {
       const id = `hb_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
       await createHabit({
@@ -370,7 +407,23 @@ export default function AddHabitScreen() {
         note,
         extra_data: extraData,
       });
+      savedHabitId = id;
     }
+
+    const { permissionDenied } = await syncHabitReminderNotification({
+      habitId: savedHabitId,
+      enabled: reminderEnabled,
+      hour: reminderTime.getHours(),
+      minute: reminderTime.getMinutes(),
+      title: name,
+    });
+    if (reminderEnabled && permissionDenied) {
+      Alert.alert(
+        '提示',
+        '已保存习惯，但系统未授予通知权限，每日提醒将无法送达。可在系统设置中为本应用开启通知。'
+      );
+    }
+
     router.back();
   }, [
     activeMonthlyFilter,
@@ -388,6 +441,8 @@ export default function AddHabitScreen() {
     monthlyNDays,
     monthlySpecificDays,
     quantifyEnabled,
+    reminderEnabled,
+    reminderTime,
     router,
     selectedContext,
     selectedDays,
@@ -594,6 +649,56 @@ export default function AddHabitScreen() {
                       textColor={textMain}
                       mutedColor={textSub}
                     />
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+
+          <View>
+            {renderSectionHeader('notifications-active', '打卡提醒', reminderOpen, () => setReminderOpen((v) => !v))}
+            {reminderOpen ? (
+              <View style={[styles.sectionCard, { backgroundColor: card, borderColor: border }]}>
+                <View style={styles.quantifyTop}>
+                  <View style={{ flex: 1, paddingRight: 8 }}>
+                    <Text style={[styles.quantifyTitle, { color: textMain }]}>每日提醒打卡</Text>
+                    <Text style={[styles.quantifyHint, { color: textSub }]}>
+                      在设定时间推送本地通知（可选）
+                      {Platform.OS === 'web' ? '；网页版不会登记系统提醒' : ''}
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={() => setReminderEnabled((v) => !v)}
+                    style={[
+                      styles.switchTrack,
+                      { backgroundColor: reminderEnabled ? '#4CD964' : isDark ? '#334155' : '#e5e7eb' },
+                    ]}>
+                    <View style={[styles.switchDot, reminderEnabled && styles.switchDotOn]} />
+                  </Pressable>
+                </View>
+
+                {reminderEnabled ? (
+                  <View style={[styles.quantifyBody, { borderTopColor: border }]}>
+                    <Pressable
+                      onPress={() => {
+                        if (Platform.OS === 'web') return;
+                        setReminderTimePickerOpen(true);
+                      }}
+                      style={[
+                        styles.reminderTimeRow,
+                        { borderColor: border, backgroundColor: softCard },
+                        Platform.OS === 'web' && { opacity: 0.65 },
+                      ]}>
+                      <Text style={[styles.numberLabel, { color: textMain }]}>提醒时间</Text>
+                      <View style={styles.reminderTimeRight}>
+                        <Text style={[styles.reminderTimeValue, { color: textMain }]}>
+                          {pad2(reminderTime.getHours())}:{pad2(reminderTime.getMinutes())}
+                        </Text>
+                        {Platform.OS !== 'web' ? (
+                          <MaterialIcons name="schedule" size={20} color={textSub} />
+                        ) : null}
+                      </View>
+                    </Pressable>
                   </View>
                 ) : null}
               </View>
@@ -815,6 +920,41 @@ export default function AddHabitScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={reminderTimePickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setReminderTimePickerOpen(false)}>
+        <View style={styles.iconModalRoot}>
+          <Pressable style={styles.iconModalBackdrop} onPress={() => setReminderTimePickerOpen(false)} />
+          <View style={[styles.reminderPickerCard, { backgroundColor: card, borderColor: border }]}>
+            <Text style={[styles.iconModalTitle, { color: textMain }]}>选择提醒时间</Text>
+            <DateTimePicker
+              value={reminderTime}
+              mode="time"
+              display={Platform.OS === 'ios' ? 'spinner' : 'spinner'}
+              themeVariant={isDark ? 'dark' : 'light'}
+              locale={Platform.OS === 'ios' ? 'zh_CN' : undefined}
+              onChange={(_, date) => {
+                if (date) setReminderTime(date);
+              }}
+            />
+            <View style={styles.reminderPickerActions}>
+              <Pressable
+                onPress={() => setReminderTimePickerOpen(false)}
+                style={({ pressed }) => [styles.reminderPickerBtnGhost, { borderColor: border }, pressed && { opacity: 0.85 }]}>
+                <Text style={[styles.reminderPickerBtnGhostText, { color: textSub }]}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setReminderTimePickerOpen(false)}
+                style={({ pressed }) => [styles.reminderPickerBtnPrimary, { backgroundColor: yellow }, pressed && { opacity: 0.9 }]}>
+                <Text style={styles.reminderPickerBtnPrimaryText}>确定</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -888,6 +1028,46 @@ const styles = StyleSheet.create({
   iconPickerEmoji: { fontSize: 26 },
   iconModalCloseBtn: { alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 16, marginTop: 4 },
   iconModalCloseText: { fontSize: 14, fontWeight: '700' },
+  reminderTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  reminderTimeRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  reminderTimeValue: { fontSize: 17, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  reminderPickerCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 12,
+    maxWidth: 400,
+    alignSelf: 'center',
+    width: '100%',
+  },
+  reminderPickerActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 12,
+  },
+  reminderPickerBtnGhost: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  reminderPickerBtnGhostText: { fontSize: 15, fontWeight: '700' },
+  reminderPickerBtnPrimary: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+  },
+  reminderPickerBtnPrimaryText: { fontSize: 15, fontWeight: '800', color: '#111827' },
   nameInput: {
     flex: 1,
     borderRadius: 12,

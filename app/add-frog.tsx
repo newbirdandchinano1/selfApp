@@ -135,6 +135,11 @@ function getTaskDueSortMs(t: TaskRow): number | null {
   return parsed ? parsed.date.getTime() : null;
 }
 
+/** 与任务 Tab「待办」一致：无项目且无父任务的独立待办不作为今日青蛙候选 */
+function isStandaloneTodoTask(t: TaskRow): boolean {
+  return !t.project_id && !t.parent_task_id;
+}
+
 function formatDueCaption(dueDate: string, now: Date): string {
   const parsed = parseDueDateAsLocalMoment(dueDate);
   if (!parsed) return '截止时间异常';
@@ -189,6 +194,7 @@ function groupTasksToSections(rows: TaskRow[], now: Date, todayYmd: string): Sec
 
   const eligible = rows
     .filter((t) => t.status !== 'done' && t.status !== 'cancelled')
+    .filter((t) => !isStandaloneTodoTask(t))
     .filter((t) => !hasUnfinishedChild.has(t.id))
     .filter((t) => {
       const extra = parseTaskExtraData(t.extra_data);
@@ -291,7 +297,7 @@ export default function AddFrogScreen() {
       setTaskMap(Object.fromEntries(rows.map((r) => [r.id, r])));
       setSections(groupTasksToSections(rows, now, todayYmd));
       setSelected((prev) => {
-        const allowed = new Set(rows.map((r) => r.id));
+        const allowed = new Set(rows.filter((r) => !isStandaloneTodoTask(r)).map((r) => r.id));
         const next: Record<string, boolean> = {};
         Object.keys(prev).forEach((k) => {
           if (allowed.has(k) && prev[k]) next[k] = true;

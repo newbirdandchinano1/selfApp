@@ -437,12 +437,18 @@ export default function WeeklyReviewScreen() {
   }, [canEdit, periodStartYmd, adjustTasks, adjustSavings, adjustPlans]);
 
   const setDailyFieldForYmd = useCallback((ymd: string, key: DailyFieldKey, value: string) => {
+    if (ymd !== toYmdLocal(new Date())) return;
     setDailyEntries(prev =>
       prev.map(e => (e.ymd === ymd ? { ...e, fields: { ...e.fields, [key]: value } } : e)),
     );
   }, []);
 
   const onSaveDaily = useCallback(async (ymd: string, fields: DailyStructured) => {
+    const todayYmd = toYmdLocal(new Date());
+    if (ymd !== todayYmd) {
+      Alert.alert('暂不可保存', '每日复盘仅支持填写与保存「今天」的内容。');
+      return;
+    }
     setDailySavingYmd(ymd);
     try {
       await upsertDailyReviewJournal(ymd, serializeDailyBody(fields));
@@ -469,6 +475,7 @@ export default function WeeklyReviewScreen() {
 
   const inputSurface = isDark ? 'rgba(15,23,42,0.55)' : '#f4f6ff';
   const inputBorder = outlineVariant;
+  const todayYmd = toYmdLocal(new Date());
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right', 'bottom']}>
@@ -555,10 +562,11 @@ export default function WeeklyReviewScreen() {
                 <Text style={[styles.dailySectionTitle, { color: text }]}>每日复盘</Text>
                 <Text style={[styles.dailyPeriodLine, { color: primary }]}>{dailyPeriodLabel}</Text>
                 <Text style={[styles.dailySectionHint, { color: outline }]}>
-                  区间以「下一次每周复盘日」为终点向前 7 天（与周度统计一致）；任意日期可填写。生成周度 AI 建议时会参考本周期内各日已填内容。
+                  区间以「下一次每周复盘日」为终点向前 7 天（与周度统计一致）；仅「今天」可填写与保存，其他日期仅可查看已保存内容。生成周度 AI 建议时会参考本周期内各日已填内容。
                 </Text>
                 {dailyEntries.map(entry => {
                   const open = expandedDailyYmd === entry.ymd;
+                  const isTodayEntry = entry.ymd === todayYmd;
                   const previewRaw = dailyEntryPreviewText(entry.fields);
                   const previewShort =
                     previewRaw.length > 48 ? `${previewRaw.slice(0, 48)}…` : previewRaw || '（未填写）';
@@ -568,7 +576,15 @@ export default function WeeklyReviewScreen() {
                         onPress={() => setExpandedDailyYmd(open ? null : entry.ymd)}
                         style={({ pressed }) => [styles.dailyDayHead, { opacity: pressed ? 0.88 : 1 }]}>
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={[styles.dailyDayTitle, { color: text }]}>{entry.label}</Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <Text style={[styles.dailyDayTitle, { color: text }]}>{entry.label}</Text>
+                            {!isTodayEntry ? (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                <MaterialIcons name="lock-outline" size={16} color={outline} />
+                                <Text style={{ fontSize: 11, fontWeight: '800', color: outline }}>仅查看</Text>
+                              </View>
+                            ) : null}
+                          </View>
                           <Text style={[styles.dailyDayPreview, { color: outline }]} numberOfLines={1}>
                             {previewShort}
                           </Text>
@@ -590,6 +606,7 @@ export default function WeeklyReviewScreen() {
                                     placeholderTextColor={outline}
                                     multiline
                                     textAlignVertical="top"
+                                    editable={isTodayEntry}
                                     style={[
                                       styles.dailyFieldInput,
                                       {
@@ -597,6 +614,7 @@ export default function WeeklyReviewScreen() {
                                         backgroundColor: inputSurface,
                                         borderColor: inputBorder,
                                         color: text,
+                                        opacity: isTodayEntry ? 1 : 0.72,
                                       },
                                     ]}
                                   />
@@ -604,19 +622,32 @@ export default function WeeklyReviewScreen() {
                               ))}
                             </View>
                           ))}
-                          <Pressable
-                            onPress={() => void onSaveDaily(entry.ymd, entry.fields)}
-                            disabled={dailySavingYmd === entry.ymd}
-                            style={({ pressed }) => [
-                              styles.dailySaveBtn,
-                              { backgroundColor: secondary, opacity: pressed || dailySavingYmd === entry.ymd ? 0.75 : 1 },
-                            ]}>
-                            {dailySavingYmd === entry.ymd ? (
-                              <ActivityIndicator color="#fff" />
-                            ) : (
-                              <Text style={styles.dailySaveBtnText}>保存该日</Text>
-                            )}
-                          </Pressable>
+                          {isTodayEntry ? (
+                            <Pressable
+                              onPress={() => void onSaveDaily(entry.ymd, entry.fields)}
+                              disabled={dailySavingYmd === entry.ymd}
+                              style={({ pressed }) => [
+                                styles.dailySaveBtn,
+                                { backgroundColor: secondary, opacity: pressed || dailySavingYmd === entry.ymd ? 0.75 : 1 },
+                              ]}>
+                              {dailySavingYmd === entry.ymd ? (
+                                <ActivityIndicator color="#fff" />
+                              ) : (
+                                <Text style={styles.dailySaveBtnText}>保存该日</Text>
+                              )}
+                            </Pressable>
+                          ) : (
+                            <View
+                              style={[
+                                styles.dailySaveBtn,
+                                {
+                                  backgroundColor: isDark ? 'rgba(148,163,184,0.14)' : 'rgba(194,198,214,0.35)',
+                                  opacity: 1,
+                                },
+                              ]}>
+                              <Text style={[styles.dailySaveBtnText, { color: outline }]}>非当日，不可编辑与保存</Text>
+                            </View>
+                          )}
                         </View>
                       ) : null}
                     </View>

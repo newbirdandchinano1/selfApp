@@ -16,7 +16,7 @@ import type {
   UpdateSavingsPlanInput,
 } from '@/lib/repositories/savings-plan/savings-plan.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
@@ -100,20 +100,32 @@ function daysBetweenIso(startIso: string, endIso: string) {
   return Math.max(0, Math.round(ms / 86400000));
 }
 
-/** 表内存 ISO 日期（YYYY-MM-DD）展示为「M月D日」 */
-function formatIsoDateChinese(iso: string) {
+/** 表内存 ISO 日期（YYYY-MM-DD）展示为「YYYY年M月D日」；omitYearIf 与年份一致时省略年（用于同年区间后半段） */
+function formatIsoDateChinese(iso: string, ctx?: { omitYearIf?: number }) {
   const parts = iso.split('-').map((x) => parseInt(x, 10));
+  const y = parts[0];
   const m = parts[1];
   const d = parts[2];
-  if (!m || !d) return iso;
-  return `${m}月${d}日`;
+  if (!y || !m || !d) return iso;
+  if (ctx?.omitYearIf != null && y === ctx.omitYearIf) {
+    return `${m}月${d}日`;
+  }
+  return `${y}年${m}月${d}日`;
 }
+
+/** 区间连接符两侧加零宽空格，便于窄屏在起止日期之间换行 */
+const DATE_RANGE_SEP = '\u200B–\u200B';
 
 function formatPlanDateRangeFromRow(row: SavingsPlanRow) {
   if (row.start_date === row.end_date) {
     return formatIsoDateChinese(row.start_date);
   }
-  return `${formatIsoDateChinese(row.start_date)}–${formatIsoDateChinese(row.end_date)}`;
+  const ys = parseIsoDateLocal(row.start_date).getFullYear();
+  const ye = parseIsoDateLocal(row.end_date).getFullYear();
+  if (ys === ye) {
+    return `${formatIsoDateChinese(row.start_date)}${DATE_RANGE_SEP}${formatIsoDateChinese(row.end_date, { omitYearIf: ys })}`;
+  }
+  return `${formatIsoDateChinese(row.start_date)}${DATE_RANGE_SEP}${formatIsoDateChinese(row.end_date)}`;
 }
 
 function formatIntAmount(value: number) {
@@ -196,17 +208,22 @@ function PlanCard({
           <Image source={{ uri: item.imageUri }} style={styles.planThumb} resizeMode="cover" />
         </View>
         <View style={styles.planBody}>
-          <View style={styles.planTitleRow}>
+          <View style={styles.planHeaderBlock}>
             <Text
               style={[
                 styles.planTitle,
                 goalCompleted && styles.planTitleGoalDone,
                 goalCompleted && Platform.OS === 'android' ? styles.planTitleGoalDoneAndroid : null,
               ]}
-              numberOfLines={1}>
+              numberOfLines={2}>
               {item.title}
             </Text>
-            <View style={[styles.categoryPill, goalCompleted && styles.categoryPillGoalDone]}>
+            <View
+              style={[
+                styles.categoryPill,
+                styles.planDatePill,
+                goalCompleted && styles.categoryPillGoalDone,
+              ]}>
               <Text style={[styles.categoryPillText, goalCompleted && styles.planMutedText]}>{item.category}</Text>
             </View>
           </View>
@@ -472,51 +489,16 @@ function PlanFormSheet({
     }
   }, [visible]);
 
-  const openAndroidDatePicker = React.useCallback(
-    (which: 'start' | 'end') => {
-      if (Platform.OS !== 'android') return;
-      Keyboard.dismiss();
-      if (which === 'start') {
-        DateTimePickerAndroid.open({
-          value: startDate,
-          mode: 'date',
-          onChange: (event, selectedDate) => {
-            if (event.type === 'dismissed') return;
-            if (!selectedDate) return;
-            setStartDate(selectedDate);
-            setEndDate((prev) => {
-              const minEnd = addCalendarDays(selectedDate, 1);
-              return prev.getTime() < minEnd.getTime() ? minEnd : prev;
-            });
-          },
-          positiveButton: { label: '确定' },
-          negativeButton: { label: '取消' },
-          title: '选择起始日期',
-        });
-      } else {
-        DateTimePickerAndroid.open({
-          value: endDate,
-          mode: 'date',
-          minimumDate: minEndDateForPicker,
-          onChange: (event, selectedDate) => {
-            if (event.type === 'dismissed') return;
-            if (selectedDate) setEndDate(selectedDate);
-          },
-          positiveButton: { label: '确定' },
-          negativeButton: { label: '取消' },
-          title: '选择结束日期',
-        });
-      }
-    },
-    [startDate, endDate, minEndDateForPicker],
-  );
-
-  const closeIosDatePickers = React.useCallback(() => {
+  const closeDatePickerOverlay = React.useCallback(() => {
     setShowStartDatePicker(false);
     setShowEndDatePicker(false);
   }, []);
 
-  const handleStartDateChange = (_e: unknown, date?: Date) => {
+  const handleStartDateChange = (event: DateTimePickerEvent, date?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowStartDatePicker(false);
+    }
+    if (event.type === 'dismissed') return;
     if (!date) return;
     setStartDate(date);
     setEndDate((prev) => {
@@ -525,7 +507,11 @@ function PlanFormSheet({
     });
   };
 
-  const handleEndDateChange = (_e: unknown, date?: Date) => {
+  const handleEndDateChange = (event: DateTimePickerEvent, date?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowEndDatePicker(false);
+    }
+    if (event.type === 'dismissed') return;
     if (date) setEndDate(date);
   };
 
@@ -581,92 +567,85 @@ function PlanFormSheet({
     }
   };
 
-  const iosDatePickerOpen = visible && (showStartDatePicker || showEndDatePicker);
+  const datePickerOverlayOpen = visible && (showStartDatePicker || showEndDatePicker);
 
   return (
-    <>
-      <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-        <KeyboardAvoidingView style={sheetStyles.kav} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <View style={sheetStyles.overlay}>
-            <Pressable
-              style={sheetStyles.backdrop}
-              onPress={() => {
-                Keyboard.dismiss();
-                onClose();
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="关闭"
-            />
-            <View style={[sheetStyles.card, { paddingBottom: Math.max(28, insetsBottom + 88) }]}>
-              <ScrollView
-                keyboardShouldPersistTaps="handled"
-                keyboardDismissMode="on-drag"
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={sheetStyles.cardScroll}>
-                <View style={sheetStyles.sheetHead}>
-                  <PlanIconButton uri={planIconUri} onPickImage={pickPlanIcon} />
-                  <View style={sheetStyles.sheetTitleWrap}>
-                    <Text style={sheetStyles.sheetTitle}>{isEdit ? '编辑存钱计划' : '自由存钱计划'}</Text>
-                  </View>
-                  <View style={sheetStyles.sheetHeadSpacer} />
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView style={sheetStyles.kav} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={sheetStyles.overlay}>
+          <Pressable
+            style={sheetStyles.backdrop}
+            onPress={() => {
+              Keyboard.dismiss();
+              onClose();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="关闭"
+          />
+          <View style={[sheetStyles.card, { paddingBottom: Math.max(28, insetsBottom + 88) }]}>
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={sheetStyles.cardScroll}>
+              <View style={sheetStyles.sheetHead}>
+                <PlanIconButton uri={planIconUri} onPickImage={pickPlanIcon} />
+                <View style={sheetStyles.sheetTitleWrap}>
+                  <Text style={sheetStyles.sheetTitle}>{isEdit ? '编辑存钱计划' : '自由存钱计划'}</Text>
                 </View>
+                <View style={sheetStyles.sheetHeadSpacer} />
+              </View>
 
-                <View style={sheetStyles.inputRow}>
-                  <TextInput
-                    style={sheetStyles.rowInput}
-                    placeholder="输入你的存钱计划"
-                    placeholderTextColor={SheetC.textMuted}
-                    value={planName}
-                    onChangeText={setPlanName}
-                  />
-                  <Pressable style={({ pressed }) => [sheetStyles.vaultBtn, pressed && { opacity: 0.85 }]}>
-                    <Text style={sheetStyles.vaultBtnText}>存钱库</Text>
-                  </Pressable>
-                </View>
-
-                <Pressable
-                  style={({ pressed }) => [sheetStyles.inputRow, sheetStyles.inputRowPress, pressed && { opacity: 0.92 }]}
-                  onPress={() => {
-                    if (Platform.OS === 'android') {
-                      openAndroidDatePicker('start');
-                    } else {
-                      setShowEndDatePicker(false);
-                      setShowStartDatePicker((v) => !v);
-                    }
-                  }}>
-                  <Text style={sheetStyles.rowLabel}>起始日期</Text>
-                  <Text style={sheetStyles.rowValue}>{formatChineseDate(startDate)}</Text>
+              <View style={sheetStyles.inputRow}>
+                <TextInput
+                  style={sheetStyles.rowInput}
+                  placeholder="输入你的存钱计划"
+                  placeholderTextColor={SheetC.textMuted}
+                  value={planName}
+                  onChangeText={setPlanName}
+                />
+                <Pressable style={({ pressed }) => [sheetStyles.vaultBtn, pressed && { opacity: 0.85 }]}>
+                  <Text style={sheetStyles.vaultBtnText}>存钱库</Text>
                 </Pressable>
+              </View>
 
-                <Pressable
-                  style={({ pressed }) => [sheetStyles.inputRow, sheetStyles.inputRowPress, pressed && { opacity: 0.92 }]}
-                  onPress={() => {
-                    if (Platform.OS === 'android') {
-                      openAndroidDatePicker('end');
-                    } else {
-                      setShowStartDatePicker(false);
-                      setShowEndDatePicker((v) => !v);
-                    }
-                  }}>
-                  <Text style={sheetStyles.rowLabel}>结束日期</Text>
-                  <Text style={sheetStyles.rowValue}>{formatChineseDate(endDate)}</Text>
+              <Pressable
+                style={({ pressed }) => [sheetStyles.inputRow, sheetStyles.inputRowPress, pressed && { opacity: 0.92 }]}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setShowEndDatePicker(false);
+                  setShowStartDatePicker((v) => !v);
+                }}>
+                <Text style={sheetStyles.rowLabel}>起始日期</Text>
+                <Text style={sheetStyles.rowValue}>{formatChineseDate(startDate)}</Text>
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [sheetStyles.inputRow, sheetStyles.inputRowPress, pressed && { opacity: 0.92 }]}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setShowStartDatePicker(false);
+                  setShowEndDatePicker((v) => !v);
+                }}>
+                <Text style={sheetStyles.rowLabel}>结束日期</Text>
+                <Text style={sheetStyles.rowValue}>{formatChineseDate(endDate)}</Text>
+              </Pressable>
+
+              <View style={[sheetStyles.inputRow, sheetStyles.amountRow]}>
+                <Text style={sheetStyles.amountYuan}>¥</Text>
+                <TextInput
+                  style={sheetStyles.amountInput}
+                  value={targetAmount}
+                  onChangeText={(t) => setTargetAmount(t.replace(/\D/g, '').slice(0, 8))}
+                  placeholder="5000"
+                  placeholderTextColor={SheetC.textMuted}
+                  keyboardType="number-pad"
+                  maxLength={8}
+                />
+                <Pressable style={({ pressed }) => [sheetStyles.tagBtn, pressed && { opacity: 0.88 }]}>
+                  <Text style={sheetStyles.tagBtnText}>目标金额</Text>
                 </Pressable>
-
-                <View style={[sheetStyles.inputRow, sheetStyles.amountRow]}>
-                  <Text style={sheetStyles.amountYuan}>¥</Text>
-                  <TextInput
-                    style={sheetStyles.amountInput}
-                    value={targetAmount}
-                    onChangeText={(t) => setTargetAmount(t.replace(/\D/g, '').slice(0, 8))}
-                    placeholder="5000"
-                    placeholderTextColor={SheetC.textMuted}
-                    keyboardType="number-pad"
-                    maxLength={8}
-                  />
-                  <Pressable style={({ pressed }) => [sheetStyles.tagBtn, pressed && { opacity: 0.88 }]}>
-                    <Text style={sheetStyles.tagBtnText}>目标金额</Text>
-                  </Pressable>
-                </View>
+              </View>
             </ScrollView>
 
             <Pressable
@@ -679,41 +658,48 @@ function PlanFormSheet({
           </View>
         </View>
       </KeyboardAvoidingView>
-    </Modal>
 
-      {Platform.OS !== 'android' ? (
-        <Modal
-          visible={iosDatePickerOpen}
-          transparent
-          animationType="fade"
-          presentationStyle="overFullScreen"
-          statusBarTranslucent
-          onRequestClose={closeIosDatePickers}>
-          <View style={sheetStyles.dateIosOverlay}>
-            <Pressable style={sheetStyles.dateIosScrim} onPress={closeIosDatePickers} accessibilityLabel="关闭日期选择" />
-            <View style={[sheetStyles.dateIosSheet, { paddingBottom: Math.max(16, insetsBottom + 8) }]}>
-              <View style={sheetStyles.dateIosHeader}>
-                <Text style={sheetStyles.dateIosTitle}>
-                  {showStartDatePicker ? '选择起始日期' : '选择结束日期'}
-                </Text>
-                <Pressable onPress={closeIosDatePickers} hitSlop={12}>
-                  <Text style={sheetStyles.dateDoneText}>完成</Text>
-                </Pressable>
-              </View>
-              <DateTimePicker
-                value={showStartDatePicker ? startDate : endDate}
-                mode="date"
-                display="spinner"
-                themeVariant="light"
-                locale={Platform.OS === 'ios' ? 'zh_CN' : undefined}
-                minimumDate={showEndDatePicker ? minEndDateForPicker : undefined}
-                onChange={showStartDatePicker ? handleStartDateChange : handleEndDateChange}
+      {datePickerOverlayOpen &&
+        (Platform.OS === 'ios' ? (
+          <View style={[StyleSheet.absoluteFill, { zIndex: 999, elevation: 99 }]} pointerEvents="box-none">
+            <View style={sheetStyles.dateIosOverlay}>
+              <Pressable
+                style={sheetStyles.dateIosScrim}
+                onPress={closeDatePickerOverlay}
+                accessibilityLabel="关闭日期选择"
               />
+              <View style={[sheetStyles.dateIosSheet, { paddingBottom: Math.max(16, insetsBottom + 8) }]}>
+                <View style={sheetStyles.dateIosHeader}>
+                  <Text style={sheetStyles.dateIosTitle}>
+                    {showStartDatePicker ? '选择起始日期' : '选择结束日期'}
+                  </Text>
+                  <Pressable onPress={closeDatePickerOverlay} hitSlop={12}>
+                    <Text style={sheetStyles.dateDoneText}>完成</Text>
+                  </Pressable>
+                </View>
+                <DateTimePicker
+                  value={showStartDatePicker ? startDate : endDate}
+                  mode="date"
+                  display="spinner"
+                  themeVariant="light"
+                  locale="zh_CN"
+                  minimumDate={showEndDatePicker ? minEndDateForPicker : undefined}
+                  onChange={showStartDatePicker ? handleStartDateChange : handleEndDateChange}
+                />
+              </View>
             </View>
           </View>
-        </Modal>
-      ) : null}
-    </>
+        ) : (
+          <DateTimePicker
+            key={showStartDatePicker ? 'plan-date-start' : 'plan-date-end'}
+            value={showStartDatePicker ? startDate : endDate}
+            mode="date"
+            display="default"
+            minimumDate={showEndDatePicker ? minEndDateForPicker : undefined}
+            onChange={showStartDatePicker ? handleStartDateChange : handleEndDateChange}
+          />
+        ))}
+    </Modal>
   );
 }
 
@@ -1455,25 +1441,27 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  planTitleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+  planHeaderBlock: {
     marginBottom: 4,
-    gap: 8,
   },
   planTitle: {
     fontFamily: DISPLAY_FONT,
     fontSize: 16,
     fontWeight: '700',
     color: C.luminaDark,
-    flex: 1,
   },
   categoryPill: {
     backgroundColor: C.slate100,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
+  },
+  planDatePill: {
+    marginTop: 6,
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+    borderRadius: 12,
+    paddingVertical: 4,
   },
   categoryPillText: {
     fontSize: 12,
