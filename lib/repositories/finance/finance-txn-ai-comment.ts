@@ -1,4 +1,4 @@
-import { analyzeFinanceTxnCommentFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeFinanceTxnCommentFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 import { updateFinanceTransaction } from './finance';
 
 /** 生成智谱摘要所需字段（与列表展示口径一致）。 */
@@ -42,7 +42,7 @@ export async function tryPersistFinanceTxnAiComment(
   txnId: string,
   input: FinanceTxnAiSummaryInput,
 ): Promise<{ ok: true; comment: string } | { ok: false }> {
-  const key = getZhipuApiKey().trim();
+  const key = getActiveAiLlmApiKey().trim();
   if (!key) return { ok: false };
   const summaryText = buildFinanceTxnAiSummaryText(input);
   const r = await analyzeFinanceTxnCommentFromText({

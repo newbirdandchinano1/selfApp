@@ -3,7 +3,7 @@ import {
   weaknessContextForAiReview,
   type UserWeaknessItem,
 } from '@/lib/user-weaknesses';
-import { analyzeWeaknessReviewFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeWeaknessReviewFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 
 const weaknessAiInFlight = new Set<string>();
 
@@ -77,7 +77,7 @@ export async function runWeaknessAiReview(
     return { ok: true, row, skipped: true };
   }
 
-  const key = getZhipuApiKey().trim();
+  const key = getActiveAiLlmApiKey().trim();
   if (!key) {
     clearWeaknessAiAnalysisPending(row.id);
     return { ok: false, error: '未配置智谱 API 密钥' };

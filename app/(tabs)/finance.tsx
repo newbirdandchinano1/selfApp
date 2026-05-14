@@ -20,7 +20,12 @@ import { isFinanceTransactionExcludedFromBudget } from '@/lib/repositories/finan
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { consumeFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
-import { getZhipuApiKey, parseFinanceOneLinerFromText } from '@/lib/zhipu-image-parse';
+import {
+  getActiveAiLlmApiKey,
+  getActiveAiLlmProviderLabel,
+  isActiveAiLlmConfigured,
+  parseFinanceOneLinerFromText,
+} from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
@@ -93,7 +98,14 @@ function buildTxnAiInsightLine(
   if (trimmed) return { text: `AI 评价：${trimmed}`, isAiBody: true };
   if (opts.skippedIds.has(txn.id)) return { text: 'AI 评价：生成失败，离开再进入本页或重新加载列表后可重试', isAiBody: false };
   if (txn.id === opts.generatingId) return { text: 'AI 评价：正在生成…', isAiBody: false };
-  if (!opts.zhipuReady) return { text: 'AI 评价：未配置智谱密钥，无法自动生成（EXPO_PUBLIC_ZHIPU_API_KEY）', isAiBody: false };
+  if (!opts.zhipuReady) {
+    const prov = getActiveAiLlmProviderLabel();
+    const env =
+      prov === '豆包'
+        ? 'EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）'
+        : 'EXPO_PUBLIC_ZHIPU_API_KEY';
+    return { text: `AI 评价：未配置${prov}密钥，无法自动生成（${env}）`, isAiBody: false };
+  }
   return { text: 'AI 评价：排队生成中…', isAiBody: false };
 }
 
@@ -533,7 +545,7 @@ export default function FinanceScreen() {
   }, []);
 
   const runTxnAiBackfill = React.useCallback(async () => {
-    const key = getZhipuApiKey().trim();
+    const key = getActiveAiLlmApiKey().trim();
     if (!key || txnAiBackfillRunning.current) return;
     txnAiBackfillRunning.current = true;
     try {
@@ -678,15 +690,16 @@ export default function FinanceScreen() {
     [hasMoreHistoryDays, isLoadingMoreDays, loadMoreHistoryDays]
   );
 
-  const zhipuTxnReady = Boolean(getZhipuApiKey().trim());
+  const zhipuTxnReady = isActiveAiLlmConfigured();
+  const aiLlmProviderLabel = getActiveAiLlmProviderLabel();
 
-  /** 智谱 glm-4-flash 优先，失败则本地规则（与 `parseFinanceOneLinerFromText` / 调试页同源密钥）。 */
+  /** 当前选择的文本模型优先，失败则本地规则（与 `parseFinanceOneLinerFromText` / 调试页同源密钥）。 */
   const resolveFinanceSentenceLine = React.useCallback(async (line: string): Promise<SentenceResolveResult> => {
     const trimmed = line.trim();
     if (!trimmed) {
       return { ok: false, error: '请输入用一句话描述这笔账。' };
     }
-    const key = getZhipuApiKey().trim();
+    const key = getActiveAiLlmApiKey().trim();
     if (key) {
       const r = await parseFinanceOneLinerFromText({
         apiKey: key,
@@ -2746,8 +2759,12 @@ export default function FinanceScreen() {
                         ]}
                         numberOfLines={2}>
                         {zhipuTxnReady
-                          ? '已配置智谱密钥：一句话将优先由 AI（glm-4-flash）解析，失败时回退本地规则。'
-                          : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
+                          ? aiLlmProviderLabel === '豆包'
+                            ? '已配置豆包密钥：一句话将优先由 AI 解析，失败时回退本地规则。'
+                            : '已配置智谱密钥：一句话将优先由 AI（glm-4-flash）解析，失败时回退本地规则。'
+                          : aiLlmProviderLabel === '豆包'
+                            ? '未检测到豆包密钥：仅能用本地规则（需句中含阿拉伯数字金额）。在「我的」配置 EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）后启用 AI。'
+                            : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
                       </Text>
                     </View>
                     <Pressable

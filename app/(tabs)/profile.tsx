@@ -19,12 +19,24 @@ import { listMemos } from '@/lib/memos';
 import { listUserWeaknesses } from '@/lib/user-weaknesses';
 import type { ProfileVisionCarouselItem } from '@/lib/visions-registry';
 import type { UserRow } from '@/lib/repositories/users/user.types';
+import type { AiLlmProviderId } from '@/lib/ai-llm-provider-preference';
+import {
+  getPreferredAiLlmProviderSync,
+  loadAiLlmProviderPreference,
+  setPreferredAiLlmProvider,
+} from '@/lib/ai-llm-provider-preference';
+import {
+  probeGeminiTextAndVisionConnectivity,
+  type GeminiConnectivityProbeRow,
+} from '@/lib/gemini-generative';
+import { getGeminiApiKey, getGeminiApiKeyFromEnv, getZhipuApiKeyFromEnv } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   Dimensions,
   FlatList,
@@ -81,6 +93,25 @@ export default function ProfileScreen() {
   const theme = Colors[scheme];
   const isDark = colorScheme === 'dark';
   const [user, setUser] = useState<UserRow | null>(null);
+  const [aiLlmProvider, setAiLlmProvider] = useState<AiLlmProviderId>(() => getPreferredAiLlmProviderSync());
+
+  const [geminiProbeLoading, setGeminiProbeLoading] = useState(false);
+  const [geminiProbeRows, setGeminiProbeRows] = useState<GeminiConnectivityProbeRow[] | null>(null);
+  const [geminiProbeError, setGeminiProbeError] = useState<string | null>(null);
+
+  const runGeminiConnectivityProbe = useCallback(async () => {
+    setGeminiProbeLoading(true);
+    setGeminiProbeError(null);
+    setGeminiProbeRows(null);
+    try {
+      const rows = await probeGeminiTextAndVisionConnectivity(getGeminiApiKey());
+      setGeminiProbeRows(rows);
+    } catch (e) {
+      setGeminiProbeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGeminiProbeLoading(false);
+    }
+  }, []);
 
   const bg = isDark ? theme.background : '#faf8ff';
   const surface = isDark ? theme.surface : '#ffffff';
@@ -283,6 +314,9 @@ export default function ProfileScreen() {
       void loadUserSkillsSnapshot();
       void loadMemoCount();
       void loadWeaknessCount();
+      void loadAiLlmProviderPreference().then(() => {
+        setAiLlmProvider(getPreferredAiLlmProviderSync());
+      });
     }, [
       loadUser,
       loadProfileVisions,
@@ -832,13 +866,172 @@ export default function ProfileScreen() {
                     {userSkills ? skillsProfilePreviewSubtitle(userSkills) : '加载中…'}
                   </Text>
                   <Text style={[styles.weeklyEntryHint, { color: outline }]}>
-                    为每个技能写下自我描述后，可一键请求智谱模型给出逐条评估、综合建议与总体能力分析。
+                    为每个技能写下自我描述后，可一键请求当前选择的 AI 模型（下方可切换智谱 / 豆包）给出逐条评估、综合建议与总体能力分析。
                   </Text>
                 </View>
                 <MaterialIcons name="chevron-right" size={26} color={outline} />
               </View>
             </View>
           </Pressable>
+
+          <View style={styles.sectionHead}>
+            <View>
+              <Text style={[styles.kicker, { color: outline }]}>AI</Text>
+              <Text style={[styles.sectionTitle, { color: text }]}>文本与识图引擎</Text>
+            </View>
+          </View>
+
+          <View
+            style={{
+              marginTop: 6,
+              padding: 14,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)',
+              backgroundColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(0,88,190,0.04)',
+              gap: 10,
+            }}
+          >
+            <Text style={{ fontSize: 13, color: outline, lineHeight: 19 }}>
+              记账、备忘、心愿、画像、饮食识图等共用同一引擎选择。智谱支持环境变量 EXPO_PUBLIC_ZHIPU_API_KEY（未设置时可使用应用内置渠道）；豆包（火山方舟）支持
+              EXPO_PUBLIC_ARK_API_KEY（亦可使用旧名 EXPO_PUBLIC_GEMINI_API_KEY）优先，未设置时使用应用内置 Ark 密钥。
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <Pressable
+                onPress={() => {
+                  void setPreferredAiLlmProvider('zhipu').then(() => setAiLlmProvider('zhipu'));
+                }}
+                style={({ pressed }) => [
+                  {
+                    flex: 1,
+                    paddingVertical: 12,
+                    borderRadius: 10,
+                    alignItems: 'center',
+                    borderWidth: 2,
+                    borderColor: aiLlmProvider === 'zhipu' ? primary : outlineVariant,
+                    backgroundColor:
+                      aiLlmProvider === 'zhipu'
+                        ? isDark
+                          ? 'rgba(96,165,250,0.15)'
+                          : 'rgba(0,88,190,0.08)'
+                        : 'transparent',
+                    opacity: pressed ? 0.85 : 1,
+                  },
+                ]}
+              >
+                <Text style={{ fontSize: 14, fontWeight: '800', color: text }}>智谱 GLM</Text>
+                <Text style={{ fontSize: 11, color: outline, marginTop: 4, textAlign: 'center' }}>
+                  {getZhipuApiKeyFromEnv() ? '已设置 ZHIPU 环境变量' : '未设置环境变量时将走内置'}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  void setPreferredAiLlmProvider('gemini').then(() => setAiLlmProvider('gemini'));
+                }}
+                style={({ pressed }) => [
+                  {
+                    flex: 1,
+                    paddingVertical: 12,
+                    borderRadius: 10,
+                    alignItems: 'center',
+                    borderWidth: 2,
+                    borderColor: aiLlmProvider === 'gemini' ? primary : outlineVariant,
+                    backgroundColor:
+                      aiLlmProvider === 'gemini'
+                        ? isDark
+                          ? 'rgba(96,165,250,0.15)'
+                          : 'rgba(0,88,190,0.08)'
+                        : 'transparent',
+                    opacity: pressed ? 0.85 : 1,
+                  },
+                ]}
+              >
+                <Text style={{ fontSize: 14, fontWeight: '800', color: text }}>豆包（火山方舟）</Text>
+                <Text style={{ fontSize: 11, color: outline, marginTop: 4, textAlign: 'center' }}>
+                  {getGeminiApiKeyFromEnv() ? '已设置 ARK / GEMINI 环境变量' : '使用内置密钥（可设环境变量覆盖）'}
+                </Text>
+              </Pressable>
+            </View>
+
+            <Text style={{ fontSize: 12, color: outline, lineHeight: 18 }}>
+              若已填密钥仍失败：请确认写在项目根目录{' '}
+              <Text style={{ fontWeight: '800', color: text }}>EXPO_PUBLIC_ARK_API_KEY</Text>
+              ，修改后需重新启动 Expo；本页下方测试可看到具体 HTTP 状态与返回 JSON。
+            </Text>
+
+            <Pressable
+              onPress={() => void runGeminiConnectivityProbe()}
+              disabled={geminiProbeLoading}
+              style={({ pressed }) => [
+                {
+                  marginTop: 4,
+                  paddingVertical: 12,
+                  paddingHorizontal: 14,
+                  borderRadius: 10,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexDirection: 'row',
+                  gap: 10,
+                  borderWidth: 1,
+                  borderColor: isDark ? 'rgba(148,163,184,0.35)' : 'rgba(0,88,190,0.22)',
+                  backgroundColor: isDark ? 'rgba(30,41,59,0.5)' : 'rgba(255,255,255,0.85)',
+                  opacity: pressed || geminiProbeLoading ? 0.75 : 1,
+                },
+              ]}
+            >
+              {geminiProbeLoading ? (
+                <ActivityIndicator size="small" color={primary} />
+              ) : (
+                <MaterialIcons name="cloud-done" size={20} color={primary} />
+              )}
+              <Text style={{ fontSize: 14, fontWeight: '800', color: text }}>
+                {geminiProbeLoading ? '正在请求豆包…' : '测试豆包连通性（文本 + 识图）'}
+              </Text>
+            </Pressable>
+
+            {geminiProbeError ? (
+              <Text
+                selectable
+                style={{ fontSize: 12, color: '#b91c1c', lineHeight: 18, fontFamily: 'monospace' }}
+              >
+                {geminiProbeError}
+              </Text>
+            ) : null}
+
+            {geminiProbeRows && geminiProbeRows.length > 0 ? (
+              <ScrollView
+                style={{ maxHeight: 280 }}
+                nestedScrollEnabled
+                showsVerticalScrollIndicator
+              >
+                <Text
+                  selectable
+                  style={{
+                    fontSize: 11,
+                    lineHeight: 16,
+                    color: text,
+                    fontFamily: 'monospace',
+                  }}
+                >
+                  {JSON.stringify(
+                    geminiProbeRows.map(r => ({
+                      label: r.label,
+                      model: r.model,
+                      httpStatus: r.httpStatus,
+                      httpOk: r.httpOk,
+                      hasModelText: r.hasModelText,
+                      extractedText: r.extractedText,
+                      diagnostic: r.diagnostic ?? null,
+                      bodySnippet:
+                        r.bodySnippet.length > 1800 ? `${r.bodySnippet.slice(0, 1800)}…` : r.bodySnippet,
+                    })),
+                    null,
+                    2,
+                  )}
+                </Text>
+              </ScrollView>
+            ) : null}
+          </View>
 
           {__DEV__ ? (
             <Pressable

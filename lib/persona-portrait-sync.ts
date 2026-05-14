@@ -10,7 +10,7 @@ import {
 } from '@/lib/repositories/insights/persona-portrait-cache';
 import { getDefaultUser } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
-import { generatePersonaPortraitFromContext, getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { generatePersonaPortraitFromContext, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 
 export function localCalendarYmd(d = new Date()): string {
   const y = d.getFullYear();
@@ -90,7 +90,7 @@ export async function ensurePersonaPortraitsForTodayInBackground(): Promise<void
 
       const context = buildPersonaContextText(slug, u, metrics, rows);
       const res = await generatePersonaPortraitFromContext({
-        apiKey: getZhipuApiKey(),
+        apiKey: getActiveAiLlmApiKey(),
         personaSlug: slug,
         contextText: context,
       });

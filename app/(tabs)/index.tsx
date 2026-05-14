@@ -29,7 +29,7 @@ import {
 } from '@/lib/global-intake-targets';
 import {
   analyzeFoodNutritionFromImage,
-  getZhipuApiKey,
+  getActiveAiLlmApiKey,
   parseFoodIntakeFromText,
 } from '@/lib/zhipu-image-parse';
 import {
@@ -1209,7 +1209,7 @@ export default function HealthScreen() {
         setPendingIntake({ id: pendingId, kind: 'ai', label: text });
         void (async () => {
           try {
-            const r = await parseFoodIntakeFromText({ apiKey: getZhipuApiKey(), text });
+            const r = await parseFoodIntakeFromText({ apiKey: getActiveAiLlmApiKey(), text });
             if (!r.ok) {
               Alert.alert('解析失败', r.error);
               return;
@@ -1241,7 +1241,7 @@ export default function HealthScreen() {
         void (async () => {
           try {
             const r = await analyzeFoodNutritionFromImage({
-              apiKey: getZhipuApiKey(),
+              apiKey: getActiveAiLlmApiKey(),
               imageBase64: payload.imageBase64,
               imageMimeType: payload.imageMimeType,
             });

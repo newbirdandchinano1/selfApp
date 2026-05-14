@@ -9,7 +9,7 @@ import {
   setMemoAiReview,
   type MemoItem,
 } from '@/lib/memos';
-import { analyzeMemoReviewFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
@@ -44,7 +44,7 @@ export default function MemoListScreen() {
   const borderSoft = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.25)';
   const cardBg = isDark ? '#111827' : '#ffffff';
 
-  const zhipuReady = Boolean(getZhipuApiKey().trim());
+  const zhipuReady = isActiveAiLlmConfigured();
 
   const [items, setItems] = useState<MemoItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -76,7 +76,7 @@ export default function MemoListScreen() {
 
   const runAiForMemo = useCallback(
     async (row: MemoItem): Promise<{ ok: true } | { ok: false; error: string }> => {
-      const key = getZhipuApiKey().trim();
+      const key = getActiveAiLlmApiKey().trim();
       if (!key) return { ok: false, error: '未配置智谱 API 密钥' };
       const ctx = memoContextForAiReview(row);
       if (!ctx) return { ok: false, error: '该备忘标题与正文均为空' };

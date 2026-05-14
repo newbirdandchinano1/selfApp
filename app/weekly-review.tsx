@@ -400,7 +400,7 @@ export default function WeeklyReviewScreen() {
       setAiCoaching(coaching);
     } catch (e) {
       console.warn('weekly review ai', e);
-      Alert.alert('生成失败', '请检查网络；未配置 OpenAI 密钥时将使用本地规则生成。');
+      Alert.alert('生成失败', '请检查网络；未配置当前所选引擎的 API 密钥时将使用本地规则生成。');
     } finally {
       setAiBusy(false);
     }
@@ -552,7 +552,7 @@ export default function WeeklyReviewScreen() {
 
             <Text style={[styles.intro, { color: outline }]}>
               {canEdit
-                ? '以下由你亲自书写。保存后可一键生成 AI 建议；若配置了环境变量 EXPO_PUBLIC_OPENAI_API_KEY，将优先调用 OpenAI，否则使用本地规则汇总。'
+                ? '以下由你亲自书写。保存后可一键生成 AI 建议；在「我的」页选择智谱或豆包；智谱可配 EXPO_PUBLIC_ZHIPU_API_KEY，豆包可配 EXPO_PUBLIC_ARK_API_KEY（未设置环境变量时两者均有应用内置密钥兜底）。均不可用时使用本地规则汇总。'
                 : '到达复盘日后，可基于近七天数据与五大板块完成书写与保存。'}
             </Text>
 

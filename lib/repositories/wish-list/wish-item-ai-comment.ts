@@ -1,4 +1,4 @@
-import { analyzeWishItemAiCommentFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeWishItemAiCommentFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 
 import { patchWishItemAiReview } from './wish-list';
 import type { WishItemRow } from './wish-list.types';
@@ -45,7 +45,7 @@ export async function tryPersistWishItemAiComment(
   id: string,
   input: WishItemAiSummaryInput,
 ): Promise<{ ok: true; comment: string } | { ok: false }> {
-  const key = getZhipuApiKey().trim();
+  const key = getActiveAiLlmApiKey().trim();
   if (!key) return { ok: false };
   const summaryText = buildWishItemAiSummaryText(input);
   const r = await analyzeWishItemAiCommentFromText({

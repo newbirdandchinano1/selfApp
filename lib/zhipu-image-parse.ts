@@ -1,9 +1,26 @@
 /**
  * 智谱 GLM 视觉模型：图片 → JSON（chat/completions）
  * 默认密钥内置在应用中；若设置了 EXPO_PUBLIC_ZHIPU_API_KEY 则优先使用该环境变量（便于轮换而无需改代码）。
+ *
+ * 另支持豆包（火山方舟 Responses）：在「我的」页切换提供商。密钥优先读 EXPO_PUBLIC_ARK_API_KEY，其次 EXPO_PUBLIC_GEMINI_API_KEY（兼容旧名）；未设置时使用应用内置 Ark 密钥。
  */
 
+import {
+  getPreferredAiLlmProviderSync,
+  type AiLlmProviderId,
+} from '@/lib/ai-llm-provider-preference';
+import {
+  GEMINI_TEXT_MODEL_DEFAULT,
+  GEMINI_VISION_MODEL_DEFAULT,
+  geminiGenerateContentWithRetries,
+  type GeminiInlineUserPart,
+} from '@/lib/gemini-generative';
+
 const ZHIPU_EMBEDDED_API_KEY = 'd0ab5a5e402040d291d9b77f58996d32.nL1sXtGfaUMXzW7W';
+
+/** 内置 Ark 密钥（环境变量 EXPO_PUBLIC_ARK_API_KEY / EXPO_PUBLIC_GEMINI_API_KEY 优先） */
+const GEMINI_EMBEDDED_API_KEY =
+  'ark-7000f340-7c9e-4c84-8661-c6998ee2aa5f-61452';
 
 const ZHIPU_CHAT_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 
@@ -72,78 +89,47 @@ export async function parseImageToJson(options: ParseImageToJsonOptions): Promis
   const mime = (options.imageMimeType ?? 'image/jpeg').trim() || 'image/jpeg';
   const jsonTemplate = (options.jsonTemplate ?? DEFAULT_JSON_TEMPLATE).trim();
 
-  const dataUrl = mime.includes('/') ? `data:${mime};base64,${options.imageBase64}` : `data:image/jpeg;base64,${options.imageBase64}`;
-
-  try {
-    const response = await runZhipuChatExclusive(() =>
-      fetch(ZHIPU_CHAT_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${key}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'glm-4.6v-flash',
-          response_format: { type: 'json_object' },
-          temperature: 0.1,
-          messages: [
-            {
-              role: 'system',
-              content: `你是一个图片解析工具。严格按照以下规则输出：
+  const systemContent = `你是一个图片解析工具。严格按照以下规则输出：
 1. 只返回一个标准JSON对象
 2. 完全遵循我给你的JSON格式和字段类型
 3. 不要添加任何JSON以外的内容（包括解释、说明、代码块）
 4. 如果无法识别某个字段，填null或默认值
 
 必须严格遵循的JSON格式：
-${jsonTemplate}`,
-            },
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: question },
-                { type: 'image_url', image_url: { url: dataUrl } },
-              ],
-            },
-          ],
-        }),
-      }),
-    );
+${jsonTemplate}`;
 
-    const httpStatus = response.status;
-    const data = (await response.json()) as {
-      error?: { message?: string; code?: string };
-      choices?: { message?: { content?: string } }[];
-    };
+  try {
+    const dr = await dispatchZhipuOrGeminiVisionChat({
+      apiKey: key,
+      systemContent,
+      userText: question,
+      imageBase64: options.imageBase64,
+      imageMimeType: mime,
+      temperature: 0.1,
+      maxTokens: 4096,
+      maxAttempts: 8,
+      retryDelayMs: 1000,
+      forceJsonObject: true,
+    });
 
-    if (!response.ok) {
-      const msg = data.error?.message ?? response.statusText ?? '请求失败';
-      return { ok: false, error: msg, httpStatus, details: data };
+    if (!dr.ok) {
+      return { ok: false, error: dr.error, httpStatus: dr.httpStatus, details: dr.details };
     }
 
-    const content = data.choices?.[0]?.message?.content;
-    if (typeof content !== 'string' || !content.trim()) {
-      return {
-        ok: false,
-        error: '响应中无有效 content',
-        httpStatus,
-        details: data,
-      };
-    }
-
+    const content = dr.text.trim();
     let parsed: unknown;
     try {
-      parsed = JSON.parse(content.trim());
+      parsed = JSON.parse(stripMarkdownJsonFence(content));
     } catch {
       return {
         ok: false,
         error: '模型返回的不是合法 JSON',
-        httpStatus,
+        httpStatus: dr.httpStatus,
         details: { contentSnippet: content.slice(0, 500) },
       };
     }
 
-    return { ok: true, data: parsed, rawContent: content.trim() };
+    return { ok: true, data: parsed, rawContent: content };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return { ok: false, error: `网络或解析异常: ${message}` };
@@ -158,6 +144,584 @@ export function getZhipuApiKeyFromEnv(): string {
 /** 环境变量优先，否则使用应用内置密钥 */
 export function getZhipuApiKey(): string {
   return getZhipuApiKeyFromEnv() || ZHIPU_EMBEDDED_API_KEY;
+}
+
+export function getGeminiApiKeyFromEnv(): string {
+  if (typeof process === 'undefined') return '';
+  return (process.env.EXPO_PUBLIC_ARK_API_KEY ?? process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '').trim();
+}
+
+/** 环境变量优先，否则使用应用内置密钥 */
+export function getGeminiApiKey(): string {
+  return getGeminiApiKeyFromEnv() || GEMINI_EMBEDDED_API_KEY;
+}
+
+export type ZhipuConnectivityProbeResult = {
+  httpStatus: number;
+  httpOk: boolean;
+  bodySnippet: string;
+};
+
+/** 最小文本請求，用於「我的」頁連通性測試（顯示原始 JSON）。 */
+export async function probeZhipuTextConnectivity(apiKey: string): Promise<ZhipuConnectivityProbeResult> {
+  const key = apiKey.trim();
+  if (!key) {
+    return { httpStatus: 0, httpOk: false, bodySnippet: '未配置 API 金鑰' };
+  }
+  const payload = JSON.stringify({
+    model: ZHIPU_GLM_4_FLASH_MODEL,
+    messages: [{ role: 'user', content: '只回复这两个字母：OK' }],
+    max_tokens: 32,
+    temperature: 0,
+  });
+  try {
+    const response = await runZhipuChatExclusive(() =>
+      fetch(ZHIPU_CHAT_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        body: payload,
+      }),
+    );
+    const raw = await response.text();
+    return {
+      httpStatus: response.status,
+      httpOk: response.ok,
+      bodySnippet: raw.length > 2400 ? `${raw.slice(0, 2400)}…` : raw,
+    };
+  } catch (e) {
+    return {
+      httpStatus: 0,
+      httpOk: false,
+      bodySnippet: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+/** 按当前用户选择的提供商返回对应 API Key（智谱 / 豆包·Ark）。 */
+export function getActiveAiLlmApiKey(): string {
+  return getPreferredAiLlmProviderSync() === 'gemini' ? getGeminiApiKey() : getZhipuApiKey();
+}
+
+export function isActiveAiLlmConfigured(): boolean {
+  return Boolean(getActiveAiLlmApiKey().trim());
+}
+
+export function getActiveAiLlmProviderLabel(): '智谱' | '豆包' {
+  return getPreferredAiLlmProviderSync() === 'gemini' ? '豆包' : '智谱';
+}
+
+export type { AiLlmProviderId };
+
+type DispatchTextChatOk = { ok: true; text: string; attempts: number; httpStatus: number };
+type DispatchTextChatFail = {
+  ok: false;
+  error: string;
+  attempts: number;
+  httpStatus?: number;
+  details?: unknown;
+};
+type DispatchTextChatResult = DispatchTextChatOk | DispatchTextChatFail;
+
+/**
+ * 文本 chat：按用户偏好走智谱 glm-4-flash 或豆包（方舟 Responses）。
+ * `forceJsonObject`：智谱侧加 `response_format`；豆包侧在系统提示中附加 JSON 输出约束。
+ */
+async function dispatchZhipuOrGeminiTextChat(options: {
+  apiKey: string;
+  systemContent: string;
+  userContent: string;
+  temperature: number;
+  maxTokens: number;
+  maxAttempts: number;
+  retryDelayMs: number;
+  forceJsonObject: boolean;
+}): Promise<DispatchTextChatResult> {
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+
+  if (getPreferredAiLlmProviderSync() === 'gemini') {
+    const gr = await geminiGenerateContentWithRetries({
+      apiKey: key,
+      model: GEMINI_TEXT_MODEL_DEFAULT,
+      systemInstruction: options.systemContent,
+      userParts: [{ kind: 'text', text: options.userContent }],
+      temperature: options.temperature,
+      maxOutputTokens: options.maxTokens,
+      responseMimeType: options.forceJsonObject ? 'application/json' : undefined,
+      maxAttempts: options.maxAttempts,
+      retryDelayMs: options.retryDelayMs,
+    });
+    if (!gr.ok) {
+      return {
+        ok: false,
+        error: gr.error,
+        attempts: gr.attempts,
+        httpStatus: gr.httpStatus,
+        details: gr.details,
+      };
+    }
+    return { ok: true, text: gr.text, attempts: gr.attempts, httpStatus: gr.httpStatus };
+  }
+
+  const payloadObj: Record<string, unknown> = {
+    model: ZHIPU_GLM_4_FLASH_MODEL,
+    messages: [
+      { role: 'system', content: options.systemContent },
+      { role: 'user', content: options.userContent },
+    ],
+    temperature: options.temperature,
+    max_tokens: options.maxTokens,
+  };
+  if (options.forceJsonObject) {
+    payloadObj.response_format = { type: 'json_object' };
+  }
+  const payload = JSON.stringify(payloadObj);
+
+  let lastError = '未知错误';
+  let lastHttp = 0;
+
+  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    let response: Response;
+    try {
+      response = await runZhipuChatExclusive(() =>
+        fetch(ZHIPU_CHAT_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        }),
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        attempts: attempt,
+        httpStatus: 0,
+      };
+    }
+
+    const httpStatus = response.status;
+    lastHttp = httpStatus;
+    const rawText = await response.text();
+    let body: unknown = rawText;
+    try {
+      body = JSON.parse(rawText) as unknown;
+    } catch {
+      body = rawText;
+    }
+
+    if (bodyIndicatesZhipu1305(body) && attempt < options.maxAttempts) {
+      await sleep(options.retryDelayMs);
+      continue;
+    }
+
+    if (!response.ok) {
+      const msg =
+        typeof body === 'object' && body !== null && 'error' in body
+          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
+          : response.statusText;
+      lastError = msg;
+      if (bodyIndicatesZhipu1305(body) && attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    const content = extractMessageContentFromZhipuBody(body);
+    if (!content) {
+      lastError = '响应中无有效 content';
+      if (bodyIndicatesZhipu1305(body) && attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      if (attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    return { ok: true, text: content, attempts: attempt, httpStatus };
+  }
+
+  return { ok: false, error: lastError, attempts: options.maxAttempts, httpStatus: lastHttp };
+}
+
+type DispatchVisionChatOk = { ok: true; text: string; attempts: number; httpStatus: number };
+type DispatchVisionChatFail = {
+  ok: false;
+  error: string;
+  attempts: number;
+  httpStatus?: number;
+  details?: unknown;
+};
+type DispatchVisionChatResult = DispatchVisionChatOk | DispatchVisionChatFail;
+
+/** 视觉：智谱 glm-4.6v-flash 或豆包多模态（识图）。 */
+async function dispatchZhipuOrGeminiVisionChat(options: {
+  apiKey: string;
+  systemContent: string;
+  userText: string;
+  imageBase64: string;
+  imageMimeType: string;
+  temperature: number;
+  maxTokens: number;
+  maxAttempts: number;
+  retryDelayMs: number;
+  forceJsonObject: boolean;
+  /** 智谱视觉模型 id */
+  zhipuVisionModel?: string;
+}): Promise<DispatchVisionChatResult> {
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const mime = (options.imageMimeType ?? 'image/jpeg').trim() || 'image/jpeg';
+  const rawB64 = options.imageBase64?.trim() ?? '';
+  if (!rawB64) {
+    return { ok: false, error: '图片数据为空', attempts: 0 };
+  }
+
+  if (getPreferredAiLlmProviderSync() === 'gemini') {
+    const userParts: GeminiInlineUserPart[] = [
+      { kind: 'text', text: options.userText },
+      { kind: 'image', mimeType: mime, base64: rawB64 },
+    ];
+    const gr = await geminiGenerateContentWithRetries({
+      apiKey: key,
+      model: GEMINI_VISION_MODEL_DEFAULT,
+      systemInstruction: options.systemContent,
+      userParts,
+      temperature: options.temperature,
+      maxOutputTokens: options.maxTokens,
+      responseMimeType: options.forceJsonObject ? 'application/json' : undefined,
+      maxAttempts: options.maxAttempts,
+      retryDelayMs: options.retryDelayMs,
+    });
+    if (!gr.ok) {
+      return {
+        ok: false,
+        error: gr.error,
+        attempts: gr.attempts,
+        httpStatus: gr.httpStatus,
+        details: gr.details,
+      };
+    }
+    return { ok: true, text: gr.text, attempts: gr.attempts, httpStatus: gr.httpStatus };
+  }
+
+  const dataUrl = mime.includes('/') ? `data:${mime};base64,${rawB64}` : `data:image/jpeg;base64,${rawB64}`;
+  const zhipuModel = options.zhipuVisionModel ?? 'glm-4.6v-flash';
+  const payloadObj: Record<string, unknown> = {
+    model: zhipuModel,
+    temperature: options.temperature,
+    messages: [
+      { role: 'system', content: options.systemContent },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: options.userText },
+          { type: 'image_url', image_url: { url: dataUrl } },
+        ],
+      },
+    ],
+    max_tokens: options.maxTokens,
+  };
+  if (options.forceJsonObject) {
+    payloadObj.response_format = { type: 'json_object' };
+  }
+  const payload = JSON.stringify(payloadObj);
+
+  let lastError = '未知错误';
+  let lastHttp = 0;
+
+  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    let response: Response;
+    try {
+      response = await runZhipuChatExclusive(() =>
+        fetch(ZHIPU_CHAT_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        }),
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        attempts: attempt,
+        httpStatus: 0,
+      };
+    }
+
+    const httpStatus = response.status;
+    lastHttp = httpStatus;
+    const rawText = await response.text();
+    let body: unknown = rawText;
+    try {
+      body = JSON.parse(rawText) as unknown;
+    } catch {
+      body = rawText;
+    }
+
+    if (bodyIndicatesZhipu1305(body) && attempt < options.maxAttempts) {
+      await sleep(options.retryDelayMs);
+      continue;
+    }
+
+    if (!response.ok) {
+      const msg =
+        typeof body === 'object' && body !== null && 'error' in body
+          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
+          : response.statusText;
+      lastError = msg;
+      if (bodyIndicatesZhipu1305(body) && attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    const content = extractMessageContentFromZhipuBody(body);
+    if (!content) {
+      lastError = '响应中无有效 content';
+      if (bodyIndicatesZhipu1305(body) && attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      if (attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+    }
+
+    return { ok: true, text: content, attempts: attempt, httpStatus };
+  }
+
+  return { ok: false, error: lastError, attempts: options.maxAttempts, httpStatus: lastHttp };
+}
+
+type LoopTextJsonFinish<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; details?: unknown };
+
+/**
+ * 文本 JSON：外层重试（智谱 1305 / 豆包 429、503 与 JSON 解析失败），每次请求内为单轮 dispatch。
+ */
+async function loopTextJsonLlmWithRetries<T>(options: {
+  apiKey: string;
+  systemContent: string;
+  userContent: string;
+  temperature: number;
+  maxTokens: number;
+  maxAttempts: number;
+  retryDelayMs: number;
+  finish: (parsed: unknown, rawText: string, attempt: number) => LoopTextJsonFinish<T>;
+}): Promise<
+  | { ok: true; value: T; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown }
+> {
+  let lastError = '未知错误';
+  let lastHttp = 0;
+  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    const dr = await dispatchZhipuOrGeminiTextChat({
+      apiKey: options.apiKey,
+      systemContent: options.systemContent,
+      userContent: options.userContent,
+      temperature: options.temperature,
+      maxTokens: options.maxTokens,
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      forceJsonObject: true,
+    });
+    if (!dr.ok) {
+      lastError = dr.error;
+      lastHttp = dr.httpStatus ?? 0;
+      const p = getPreferredAiLlmProviderSync();
+      const retryable =
+        (p === 'zhipu' && bodyIndicatesZhipu1305(dr.details)) ||
+        (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503));
+      if (retryable && attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus: lastHttp, details: dr.details };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stripMarkdownJsonFence(dr.text)) as unknown;
+    } catch {
+      lastError = '模型返回的不是合法 JSON';
+      if (attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      return {
+        ok: false,
+        error: lastError,
+        attempts: attempt,
+        httpStatus: dr.httpStatus,
+        details: { snippet: dr.text.slice(0, 400) },
+      };
+    }
+    const fin = options.finish(parsed, dr.text.trim(), attempt);
+    if (fin.ok) {
+      return { ok: true, value: fin.value, rawContent: dr.text.trim(), attempts: attempt };
+    }
+    lastError = fin.error;
+    if (attempt < options.maxAttempts) {
+      await sleep(options.retryDelayMs);
+      continue;
+    }
+    return { ok: false, error: lastError, attempts: attempt, httpStatus: dr.httpStatus, details: fin.details };
+  }
+  return { ok: false, error: lastError, attempts: options.maxAttempts, httpStatus: lastHttp };
+}
+
+type LoopVisionJsonFinish<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; details?: unknown };
+
+/** 视觉 JSON：与 `loopTextJsonLlmWithRetries` 同理，走识图模型。 */
+async function loopVisionJsonLlmWithRetries<T>(options: {
+  apiKey: string;
+  systemContent: string;
+  userText: string;
+  imageBase64: string;
+  imageMimeType: string;
+  temperature: number;
+  maxTokens: number;
+  maxAttempts: number;
+  retryDelayMs: number;
+  zhipuVisionModel?: string;
+  finish: (parsed: unknown, rawText: string, attempt: number) => LoopVisionJsonFinish<T>;
+}): Promise<
+  | { ok: true; value: T; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown }
+> {
+  let lastError = '未知错误';
+  let lastHttp = 0;
+  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    const dr = await dispatchZhipuOrGeminiVisionChat({
+      apiKey: options.apiKey,
+      systemContent: options.systemContent,
+      userText: options.userText,
+      imageBase64: options.imageBase64,
+      imageMimeType: options.imageMimeType,
+      temperature: options.temperature,
+      maxTokens: options.maxTokens,
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      forceJsonObject: true,
+      zhipuVisionModel: options.zhipuVisionModel,
+    });
+    if (!dr.ok) {
+      lastError = dr.error;
+      lastHttp = dr.httpStatus ?? 0;
+      const p = getPreferredAiLlmProviderSync();
+      const retryable =
+        (p === 'zhipu' && bodyIndicatesZhipu1305(dr.details)) ||
+        (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503));
+      if (retryable && attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus: lastHttp, details: dr.details };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stripMarkdownJsonFence(dr.text)) as unknown;
+    } catch {
+      lastError = '模型返回的不是合法 JSON';
+      if (attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      return {
+        ok: false,
+        error: lastError,
+        attempts: attempt,
+        httpStatus: dr.httpStatus,
+        details: { snippet: dr.text.slice(0, 400) },
+      };
+    }
+    const fin = options.finish(parsed, dr.text.trim(), attempt);
+    if (fin.ok) {
+      return { ok: true, value: fin.value, rawContent: dr.text.trim(), attempts: attempt };
+    }
+    lastError = fin.error;
+    if (attempt < options.maxAttempts) {
+      await sleep(options.retryDelayMs);
+      continue;
+    }
+    return { ok: false, error: lastError, attempts: attempt, httpStatus: dr.httpStatus, details: fin.details };
+  }
+  return { ok: false, error: lastError, attempts: options.maxAttempts, httpStatus: lastHttp };
+}
+
+/** 纯文本（无 JSON 约束），用于每周复盘教练等。 */
+async function loopPlainTextLlmWithRetries(options: {
+  apiKey: string;
+  systemContent: string;
+  userContent: string;
+  temperature: number;
+  maxTokens: number;
+  maxAttempts: number;
+  retryDelayMs: number;
+}): Promise<
+  | { ok: true; text: string; attempts: number; httpStatus: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown }
+> {
+  let lastError = '未知错误';
+  let lastHttp = 0;
+  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    const dr = await dispatchZhipuOrGeminiTextChat({
+      apiKey: options.apiKey,
+      systemContent: options.systemContent,
+      userContent: options.userContent,
+      temperature: options.temperature,
+      maxTokens: options.maxTokens,
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      forceJsonObject: false,
+    });
+    if (!dr.ok) {
+      lastError = dr.error;
+      lastHttp = dr.httpStatus ?? 0;
+      const p = getPreferredAiLlmProviderSync();
+      const retryable =
+        (p === 'zhipu' && bodyIndicatesZhipu1305(dr.details)) ||
+        (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503));
+      if (retryable && attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus: lastHttp, details: dr.details };
+    }
+    const t = dr.text.trim();
+    if (!t) {
+      lastError = '响应中无有效文本';
+      if (attempt < options.maxAttempts) {
+        await sleep(options.retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus: dr.httpStatus };
+    }
+    return { ok: true, text: t, attempts: attempt, httpStatus: dr.httpStatus };
+  }
+  return { ok: false, error: lastError, attempts: options.maxAttempts, httpStatus: lastHttp };
 }
 
 /** 纯文字描述一餐 → 估算蛋白质、碳水、钠与「应计入」的水分（毫升） */
@@ -250,12 +814,7 @@ export async function parseFoodIntakeFromText(
   }
   const question = (options.question ?? '分析这段饮食描述，估算蛋白质、碳水化合物、钠与应计入记录的水分（毫升）').trim();
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `只返回严格JSON，不要任何解释和markdown（含代码块）。顶层为一个对象，且必须包含 result；result 内字段：food_summary（简短中文概括所吃所喝）、hydration_ml、protein_g、carbohydrate_g、sodium_mg、ai_evaluation。
+  const systemContent = `只返回严格JSON，不要任何解释和markdown（含代码块）。顶层为一个对象，且必须包含 result；result 内字段：food_summary（简短中文概括所吃所喝）、hydration_ml、protein_g、carbohydrate_g、sodium_mg、ai_evaluation。
 
 hydration_ml（毫升，非负）的计入规则（必须遵守）：
 - **应计入**：用户明确提到的汤、羹、粥、饮品（水、茶、咖啡、奶茶、果汁、汽水、酒等）、牛奶/豆浆等流质、以及**水果**中可视为饮水的部分（可用常见经验估算，如一个中等苹果约对应少量水等，合理即可）。
@@ -264,85 +823,38 @@ hydration_ml（毫升，非负）的计入规则（必须遵守）：
 - ai_evaluation：1～3 句口语化中文，从均衡膳食、控盐、搭配等角度点评这一餐；勿重复罗列数字。
 
 必须遵循的形状：
-${FOOD_TEXT_INTAKE_JSON_TEMPLATE}`,
-      },
-      {
-        role: 'user',
-        content: `${question}：${text}`,
-      },
-    ],
-    response_format: { type: 'json_object' },
-    temperature: 0.0,
-    max_tokens: 1024,
-  });
+${FOOD_TEXT_INTAKE_JSON_TEMPLATE}`;
 
   let lastError = '未知错误';
   let lastHttp = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
+    const dr = await dispatchZhipuOrGeminiTextChat({
+      apiKey: key,
+      systemContent,
+      userContent: `${question}：${text}`,
+      temperature: 0.0,
+      maxTokens: 1024,
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      forceJsonObject: true,
+    });
 
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+    if (!dr.ok) {
+      lastError = dr.error;
+      lastHttp = dr.httpStatus ?? 0;
+      const p = getPreferredAiLlmProviderSync();
+      const retryable =
+        (p === 'zhipu' && bodyIndicatesZhipu1305(dr.details)) ||
+        (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503));
+      if (retryable && attempt < maxAttempts) {
         await sleep(retryDelayMs);
         continue;
       }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
+      return { ok: false, error: lastError, attempts: attempt, httpStatus: lastHttp, details: dr.details };
     }
 
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
+    const content = dr.text.trim();
     let parsed: unknown;
     try {
       const cleaned = stripMarkdownJsonFence(content);
@@ -353,11 +865,11 @@ ${FOOD_TEXT_INTAKE_JSON_TEMPLATE}`,
         await sleep(retryDelayMs);
         continue;
       }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
+      return { ok: false, error: lastError, attempts: attempt, httpStatus: dr.httpStatus, details: { snippet: content.slice(0, 400) } };
     }
 
     const data = normalizeFoodTextIntakeFromResult(parsed);
-    return { ok: true, data, rawContent: content.trim(), attempts: attempt };
+    return { ok: true, data, rawContent: content, attempts: attempt };
   }
 
   return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
@@ -404,124 +916,36 @@ export async function analyzeFinanceBillSummaryFromText(
     return { ok: false, error: '摘要为空', attempts: 0 };
   }
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `你是个人记账应用里的财务助手。用户会提供一段时间内的本地记账统计摘要（中文，已脱敏聚合）。
+  const systemContent = `你是个人记账应用里的财务助手。用户会提供一段时间内的本地记账统计摘要（中文，已脱敏聚合）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段 analysis（字符串）：
 - 用 2～5 句口语化中文，从消费习惯、储蓄、分类结构、可执行的小建议等角度点评；
 - 不要重复罗列摘要中的每一个数字；不要捏造摘要中未出现的交易或金额；
 - 若摘要显示几乎没有收支或笔数为 0，仅友好说明需要多记账才能分析习惯。
 
-输出形状示例（内容替换为你的生成）：${FINANCE_STATS_ANALYSIS_JSON_HINT}`,
-      },
-      {
-        role: 'user',
-        content: `以下是统计摘要，请生成 analysis 字段：\n\n${text}`,
-      },
-    ],
-    response_format: { type: 'json_object' },
+输出形状示例（内容替换为你的生成）：${FINANCE_STATS_ANALYSIS_JSON_HINT}`;
+
+  const lr = await loopTextJsonLlmWithRetries<string>({
+    apiKey: key,
+    systemContent,
+    userContent: `以下是统计摘要，请生成 analysis 字段：\n\n${text}`,
     temperature: 0.25,
-    max_tokens: 600,
+    maxTokens: 600,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => {
+      const analysis = normalizeFinanceStatsAnalysisJson(parsed);
+      if (!analysis) {
+        return { ok: false, error: '模型未返回有效的 analysis 文案', details: parsed };
+      }
+      return { ok: true, value: analysis };
+    },
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
-    }
-
-    const analysis = normalizeFinanceStatsAnalysisJson(parsed);
-    if (!analysis) {
-      lastError = '模型未返回有效的 analysis 文案';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
-    }
-
-    return { ok: true, analysis, rawContent: content.trim(), attempts: attempt };
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
-
-  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+  return { ok: true, analysis: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
 }
 
 const CASH_FLOW_DASHBOARD_JSON_HINT = `{"analysis":"3～7句中文建议，口语化、可操作，不要markdown"}`;
@@ -555,12 +979,7 @@ export async function analyzeCashFlowDashboardFromText(
     return { ok: false, error: '摘要为空', attempts: 0 };
   }
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `你是个人财务应用里「现金流图」模块的顾问，熟悉 ESBI 四象限、主动/被动收入、资产负债净现金流与自由现金流等概念。
+  const systemContent = `你是个人财务应用里「现金流图」模块的顾问，熟悉 ESBI 四象限、主动/被动收入、资产负债净现金流与自由现金流等概念。
 用户会提供从本地数据库聚合的中文摘要（已脱敏为名称与金额，无真实账号）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段 analysis（字符串）：
@@ -568,112 +987,29 @@ export async function analyzeCashFlowDashboardFromText(
 - 不要逐条复读摘要里的每一个数字；不要捏造摘要中未出现的条目或金额；
 - 若数据几乎为空，友好引导用户先补全收入、支出与资产负债台账。
 
-输出形状示例（内容替换为你的生成）：${CASH_FLOW_DASHBOARD_JSON_HINT}`,
-      },
-      {
-        role: 'user',
-        content: `以下是用户现金流图数据摘要，请生成 analysis 字段：\n\n${text}`,
-      },
-    ],
-    response_format: { type: 'json_object' },
+输出形状示例（内容替换为你的生成）：${CASH_FLOW_DASHBOARD_JSON_HINT}`;
+
+  const lr = await loopTextJsonLlmWithRetries<string>({
+    apiKey: key,
+    systemContent,
+    userContent: `以下是用户现金流图数据摘要，请生成 analysis 字段：\n\n${text}`,
     temperature: 0.3,
-    max_tokens: 800,
+    maxTokens: 800,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => {
+      const analysis = normalizeFinanceStatsAnalysisJson(parsed);
+      if (!analysis) {
+        return { ok: false, error: '模型未返回有效的 analysis 文案', details: parsed };
+      }
+      return { ok: true, value: analysis };
+    },
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
-    }
-
-    const analysis = normalizeFinanceStatsAnalysisJson(parsed);
-    if (!analysis) {
-      lastError = '模型未返回有效的 analysis 文案';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
-    }
-
-    return { ok: true, analysis, rawContent: content.trim(), attempts: attempt };
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
-
-  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+  return { ok: true, analysis: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
 }
 
 const WISH_LIST_RATIONAL_REVIEW_JSON_HINT = `{"headline":"一句中文概括（建议不超过24字）","review":"2～6句理性消费分析与建议，口语化、可操作，不要markdown"}`;
@@ -731,129 +1067,41 @@ export async function analyzeWishListRationalReviewFromText(
     return { ok: false, error: '清单上下文为空', attempts: 0 };
   }
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `你是个人生活规划应用里的消费顾问。用户会提供本地「欲望/心愿清单」的聚合摘要（中文，已脱敏；仅名称、价格、欲望等级、类别与自填理由等）。
+  const systemContent = `你是个人生活规划应用里的消费顾问。用户会提供本地「欲望/心愿清单」的聚合摘要（中文，已脱敏；仅名称、价格、欲望等级、类别与自填理由等）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含两个字符串字段：
 - headline：用一句话概括当前清单的消费风险或优先级焦点，建议不超过 24 个汉字，语气克制、不羞辱用户。
 - review：用 2～6 句口语化中文，从必要性、预算压力、欲望等级与理由一致性、可延后或替代方案等角度给出理性建议；不要重复逐条念清单；不要捏造摘要中未出现的商品或金额；若条目很少，可鼓励先沉淀需求再下单。
 
-输出形状示例（内容须替换为你的生成）：${WISH_LIST_RATIONAL_REVIEW_JSON_HINT}`,
-      },
-      {
-        role: 'user',
-        content: `以下是心愿清单上下文，请生成 headline 与 review 字段：\n\n${text}`,
-      },
-    ],
-    response_format: { type: 'json_object' },
+输出形状示例（内容须替换为你的生成）：${WISH_LIST_RATIONAL_REVIEW_JSON_HINT}`;
+
+  const lr = await loopTextJsonLlmWithRetries<{ headline: string; review: string }>({
+    apiKey: key,
+    systemContent,
+    userContent: `以下是心愿清单上下文，请生成 headline 与 review 字段：\n\n${text}`,
     temperature: 0.35,
-    max_tokens: 800,
+    maxTokens: 800,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => {
+      const normalized = normalizeWishListRationalReviewJson(parsed);
+      if (!normalized) {
+        return { ok: false, error: '模型未返回有效的评审正文', details: parsed };
+      }
+      return { ok: true, value: normalized };
+    },
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
-    }
-
-    const normalized = normalizeWishListRationalReviewJson(parsed);
-    if (!normalized) {
-      lastError = '模型未返回有效的评审正文';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
-    }
-
-    return {
-      ok: true,
-      headline: normalized.headline,
-      review: normalized.review,
-      rawContent: content.trim(),
-      attempts: attempt,
-    };
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
-
-  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+  return {
+    ok: true,
+    headline: lr.value.headline,
+    review: lr.value.review,
+    rawContent: lr.rawContent,
+    attempts: lr.attempts,
+  };
 }
 
 /** 人格画像页：智谱 glm-4-flash 返回的统一 JSON 形状 */
@@ -982,12 +1230,7 @@ export async function generatePersonaPortraitFromContext(
     return { ok: false, error: '数据摘要为空', attempts: 0 };
   }
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `你是自我管理类 App 里的「人格画像」文案生成器。用户会提供 persona_slug 与一段「本地真实数据摘要」（中文，已聚合脱敏）。
+  const systemContent = `你是自我管理类 App 里的「人格画像」文案生成器。用户会提供 persona_slug 与一段「本地真实数据摘要」（中文，已聚合脱敏）。
 你必须只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 
 硬性规则：
@@ -1003,112 +1246,29 @@ persona_slug 含义（决定侧重点，但仍需填满所有字段；不适用�
 - savings：储蓄/记账/延迟满足倾向（基于摘要中的数字）。
 - ai-insight：综合其它维度的一段「总评」式洞察，dims 给 3 条维度拆解。
 
-输出形状示例（请替换内容）：${PERSONA_PORTRAIT_JSON_HINT}`,
-      },
-      {
-        role: 'user',
-        content: `persona_slug=${slug}\n\n以下是用户本地数据摘要：\n\n${text}`,
-      },
-    ],
-    response_format: { type: 'json_object' },
+输出形状示例（请替换内容）：${PERSONA_PORTRAIT_JSON_HINT}`;
+
+  const lr = await loopTextJsonLlmWithRetries<PersonaPortraitAiData>({
+    apiKey: key,
+    systemContent,
+    userContent: `persona_slug=${slug}\n\n以下是用户本地数据摘要：\n\n${text}`,
     temperature: 0.35,
-    max_tokens: 1400,
+    maxTokens: 1400,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => {
+      const data = normalizePersonaPortraitJson(parsed);
+      if (!personaPortraitHasUsefulBody(data)) {
+        return { ok: false, error: '模型返回内容过短或无效', details: parsed };
+      }
+      return { ok: true, value: data };
+    },
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
-    }
-
-    const data = normalizePersonaPortraitJson(parsed);
-    if (!personaPortraitHasUsefulBody(data)) {
-      lastError = '模型返回内容过短或无效';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
-    }
-
-    return { ok: true, data, rawContent: content.trim(), attempts: attempt };
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
-
-  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+  return { ok: true, data: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
 }
 
 const FINANCE_TXN_COMMENT_JSON_HINT = `{"comment":"一句口语化中文点评，约20～40字"}`;
@@ -1151,12 +1311,7 @@ export async function analyzeFinanceTxnCommentFromText(
     return { ok: false, error: '摘要为空', attempts: 0 };
   }
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `你是个人记账应用里的财务助手。用户会提供「单条」本地记账摘要（中文）。
+  const systemContent = `你是个人记账应用里的财务助手。用户会提供「单条」本地记账摘要（中文）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段 comment（字符串）：
 - 用 1 句口语化中文点评该笔记录（习惯、预算感、记账清晰度、转账合理性等择一相关角度即可）；
@@ -1164,112 +1319,30 @@ export async function analyzeFinanceTxnCommentFromText(
 - 长度控制在 40 字以内为佳，最多不超过 80 字；
 - 转账类可简短提醒注意账户对应关系即可。
 
-输出形状示例（内容替换为你的生成）：${FINANCE_TXN_COMMENT_JSON_HINT}`,
-      },
-      {
-        role: 'user',
-        content: `以下是单条记账摘要，请生成 comment 字段：\n\n${text}`,
-      },
-    ],
-    response_format: { type: 'json_object' },
+输出形状示例（内容替换为你的生成）：${FINANCE_TXN_COMMENT_JSON_HINT}`;
+
+  const lr = await loopTextJsonLlmWithRetries<string>({
+    apiKey: key,
+    systemContent,
+    userContent: `以下是单条记账摘要，请生成 comment 字段：\n\n${text}`,
     temperature: 0.35,
-    max_tokens: 200,
+    /** 豆包 seed 等模型可能在 JSON 前消耗较多输出额度；200 易截断导致解析失败，智谱侧略放宽无妨。 */
+    maxTokens: 1024,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => {
+      const comment = normalizeFinanceTxnCommentJson(parsed);
+      if (!comment) {
+        return { ok: false, error: '模型未返回有效的 comment 文案', details: parsed };
+      }
+      return { ok: true, value: comment };
+    },
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
-    }
-
-    const comment = normalizeFinanceTxnCommentJson(parsed);
-    if (!comment) {
-      lastError = '模型未返回有效的 comment 文案';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
-    }
-
-    return { ok: true, comment, rawContent: content.trim(), attempts: attempt };
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
-
-  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+  return { ok: true, comment: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
 }
 
 const WISH_ITEM_AI_COMMENT_JSON_HINT = `{"comment":"2～4句理性消费与必要性角度的中文点评，口语化、不羞辱用户"}`;
@@ -1312,124 +1385,36 @@ export async function analyzeWishItemAiCommentFromText(
     return { ok: false, error: '摘要为空', attempts: 0 };
   }
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `你是个人生活规划应用里的消费顾问。用户会提供「单条」本地心愿/欲望清单摘要（中文，已脱敏）。
+  const systemContent = `你是个人生活规划应用里的消费顾问。用户会提供「单条」本地心愿/欲望清单摘要（中文，已脱敏）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段 comment（字符串）：
 - 用 2～4 句口语化中文，从必要性、预算感、欲望等级与理由是否自洽、可延后或替代思路等角度点评；
 - 语气克制、友善，不羞辱用户；不要编造摘要中未出现的商品细节或金额；
 - 总字数建议 80～260 字，不要超过 400 字。
 
-输出形状示例（内容替换为你的生成）：${WISH_ITEM_AI_COMMENT_JSON_HINT}`,
-      },
-      {
-        role: 'user',
-        content: `以下是单条心愿摘要，请生成 comment 字段：\n\n${text}`,
-      },
-    ],
-    response_format: { type: 'json_object' },
+输出形状示例（内容替换为你的生成）：${WISH_ITEM_AI_COMMENT_JSON_HINT}`;
+
+  const lr = await loopTextJsonLlmWithRetries<string>({
+    apiKey: key,
+    systemContent,
+    userContent: `以下是单条心愿摘要，请生成 comment 字段：\n\n${text}`,
     temperature: 0.35,
-    max_tokens: 520,
+    maxTokens: 520,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => {
+      const comment = normalizeWishItemAiCommentJson(parsed);
+      if (!comment) {
+        return { ok: false, error: '模型未返回有效的 comment 文案', details: parsed };
+      }
+      return { ok: true, value: comment };
+    },
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
-    }
-
-    const comment = normalizeWishItemAiCommentJson(parsed);
-    if (!comment) {
-      lastError = '模型未返回有效的 comment 文案';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
-    }
-
-    return { ok: true, comment, rawContent: content.trim(), attempts: attempt };
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
-
-  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+  return { ok: true, comment: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
 }
 
 const MEMO_REVIEW_JSON_HINT = `{"evaluation":"约80～200字的中文评价","suggestions":"3～6条可执行建议，可用换行分隔"}`;
@@ -1499,117 +1484,36 @@ async function runZhipuJsonEvaluationSuggestionsReview(options: {
   const normalizeMode = options.reviewJsonNormalize ?? 'memo';
   const maxTokens = options.maxTokens ?? 900;
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      { role: 'system', content: options.systemInstruction },
-      { role: 'user', content: options.userMessage },
-    ],
-    response_format: { type: 'json_object' },
+  const lr = await loopTextJsonLlmWithRetries<{ evaluation: string; suggestions: string }>({
+    apiKey: key,
+    systemContent: options.systemInstruction,
+    userContent: options.userMessage,
     temperature: 0.4,
-    max_tokens: maxTokens,
+    maxTokens,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => {
+      const normalized = normalizeMemoReviewJson(parsed, normalizeMode);
+      if (!normalized) {
+        return { ok: false, error: '模型未返回有效的评价与建议', details: parsed };
+      }
+      return {
+        ok: true,
+        value: { evaluation: normalized.evaluation, suggestions: normalized.suggestions },
+      };
+    },
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
-    }
-
-    const normalized = normalizeMemoReviewJson(parsed, normalizeMode);
-    if (!normalized) {
-      lastError = '模型未返回有效的评价与建议';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
-    }
-
-    return {
-      ok: true,
-      evaluation: normalized.evaluation,
-      suggestions: normalized.suggestions,
-      rawContent: content.trim(),
-      attempts: attempt,
-    };
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
-
-  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+  return {
+    ok: true,
+    evaluation: lr.value.evaluation,
+    suggestions: lr.value.suggestions,
+    rawContent: lr.rawContent,
+    attempts: lr.attempts,
+  };
 }
 
 /**
@@ -1634,6 +1538,53 @@ export async function analyzeMemoReviewFromText(
     maxAttempts: options.maxAttempts,
     retryDelayMs: options.retryDelayMs,
   });
+}
+
+const WEEKLY_REVIEW_COACHING_SYSTEM_PROMPT =
+  '你是资深生活与效率教练，用简体中文回复。用户在做「每周复盘」，并可能附带近七日「每日复盘」原文。请输出结构化文本，须包含以下小节标题（逐字）：【总览】【对齐用户写下的重点】【数据侧参考】【建议与修正提醒】【下周可做的一件事】【温和结语】。语气真诚、具体、避免说教；若用户内容涉及心理危机，提醒寻求专业帮助。不要编造用户未提及的事实；每日复盘仅作线索，与周记冲突时以周记为主并温和指出差异。';
+
+export type GenerateWeeklyReviewCoachingFromTextOptions = {
+  apiKey: string;
+  userPrompt: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+export type GenerateWeeklyReviewCoachingFromTextResult =
+  | { ok: true; text: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+/**
+ * 每周复盘：纯文本教练回复（智谱 glm-4-flash；与项目内其他智谱能力共用密钥与请求排队）。
+ */
+export async function generateWeeklyReviewCoachingFromText(
+  options: GenerateWeeklyReviewCoachingFromTextOptions,
+): Promise<GenerateWeeklyReviewCoachingFromTextResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 6);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 800);
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const userPrompt = options.userPrompt.trim();
+  if (!userPrompt) {
+    return { ok: false, error: '复盘内容为空', attempts: 0 };
+  }
+
+  const pr = await loopPlainTextLlmWithRetries({
+    apiKey: key,
+    systemContent: WEEKLY_REVIEW_COACHING_SYSTEM_PROMPT,
+    userContent: userPrompt,
+    temperature: 0.65,
+    maxTokens: 2048,
+    maxAttempts,
+    retryDelayMs,
+  });
+
+  if (!pr.ok) {
+    return { ok: false, error: pr.error, attempts: pr.attempts, httpStatus: pr.httpStatus, details: pr.details };
+  }
+  return { ok: true, text: pr.text, attempts: pr.attempts };
 }
 
 export type AnalyzeWeaknessReviewFromTextOptions = {
@@ -1768,12 +1719,7 @@ export async function analyzeUserSkillsPortfolioFromText(
 
   const userBlock = `用户称呼：${display}\n\n以下是用户自报的各维度技能与自我描述（skill_id 必须原样回填到 JSON 的 per_skill 中）：\n\n${bodyText}`;
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `你是职业发展教练与技能评估顾问。用户会提供多条「维度—技能名称—自我描述」，每条有唯一 skill_id。
+  const systemContent = `你是职业发展教练与技能评估顾问。用户会提供多条「维度—技能名称—自我描述」，每条有唯一 skill_id。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段：
 - per_skill：数组；对输入中每一条技能各输出一项，且 skill_id 必须与输入完全一致。
@@ -1783,112 +1729,29 @@ export async function analyzeUserSkillsPortfolioFromText(
 
 要求：基于用户自述推断，不要捏造用户未提及的具体公司/证书/项目；语气专业、友善、具体。
 
-输出形状示例（内容须替换为你的生成）：${USER_SKILLS_PORTFOLIO_JSON_HINT}`,
-      },
-      {
-        role: 'user',
-        content: userBlock,
-      },
-    ],
-    response_format: { type: 'json_object' },
+输出形状示例（内容须替换为你的生成）：${USER_SKILLS_PORTFOLIO_JSON_HINT}`;
+
+  const lr = await loopTextJsonLlmWithRetries<UserSkillAiPortfolioPayload>({
+    apiKey: key,
+    systemContent,
+    userContent: userBlock,
     temperature: 0.35,
-    max_tokens: 6000,
+    maxTokens: 6000,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => {
+      const data = normalizeUserSkillAiPortfolioJson(parsed, expectedIds);
+      if (!data) {
+        return { ok: false, error: '模型未返回有效的技能评估结构', details: parsed };
+      }
+      return { ok: true, value: data };
+    },
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
-    }
-
-    const data = normalizeUserSkillAiPortfolioJson(parsed, expectedIds);
-    if (!data) {
-      lastError = '模型未返回有效的技能评估结构';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
-    }
-
-    return { ok: true, data, rawContent: content.trim(), attempts: attempt };
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
-
-  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+  return { ok: true, data: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
 }
 
 const FINANCE_ONE_LINER_JSON_HINT = `{"transaction_type":"expense","amount":28,"name":"午饭","category_label":"餐饮"}`;
@@ -1959,12 +1822,7 @@ export async function parseFinanceOneLinerFromText(
     return { ok: false, error: '输入为空', attempts: 0 };
   }
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `你是个人记账应用里的解析器。用户会输入一句中文口语化记账描述（可含金额、收支方向、事由）。
+  const systemContent = `你是个人记账应用里的解析器。用户会输入一句中文口语化记账描述（可含金额、收支方向、事由）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段：
 1) transaction_type：字符串，仅允许 "expense" 或 "income"。默认支出；若明确为工资/奖金/到账/退款/回款/进账等则为收入。
@@ -1974,120 +1832,42 @@ export async function parseFinanceOneLinerFromText(
 
 若用户话里没有任何可解析的金额，不要猜测金额，此时仍输出 JSON 但 amount 填 0（调用方将判为失败）。
 
-输出形状示例（内容替换）：${FINANCE_ONE_LINER_JSON_HINT}`,
-      },
-      {
-        role: 'user',
-        content: `请解析以下一句话记账：\n\n${text.slice(0, 500)}`,
-      },
-    ],
-    response_format: { type: 'json_object' },
+输出形状示例（内容替换）：${FINANCE_ONE_LINER_JSON_HINT}`;
+
+  const lr = await loopTextJsonLlmWithRetries<{
+    transaction_type: 'expense' | 'income';
+    amount: number;
+    name: string;
+    category_label: string | null;
+  }>({
+    apiKey: key,
+    systemContent,
+    userContent: `请解析以下一句话记账：\n\n${text.slice(0, 500)}`,
     temperature: 0.1,
-    max_tokens: 400,
+    maxTokens: 400,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => {
+      const norm = normalizeFinanceOneLinerPayload(parsed);
+      if (!norm || !Number.isFinite(norm.amount) || norm.amount <= 0) {
+        return { ok: false, error: '未能从话中解析出有效金额与标题', details: parsed };
+      }
+      return { ok: true, value: norm };
+    },
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
-    }
-
-    const norm = normalizeFinanceOneLinerPayload(parsed);
-    if (!norm || !Number.isFinite(norm.amount) || norm.amount <= 0) {
-      lastError = '未能从话中解析出有效金额与标题';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: parsed };
-    }
-
-    return {
-      ok: true,
-      transaction_type: norm.transaction_type,
-      amount: norm.amount,
-      name: norm.name,
-      category_label: norm.category_label,
-      rawContent: content.trim(),
-      attempts: attempt,
-    };
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
-
-  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+  return {
+    ok: true,
+    transaction_type: lr.value.transaction_type,
+    amount: lr.value.amount,
+    name: lr.value.name,
+    category_label: lr.value.category_label,
+    rawContent: lr.rawContent,
+    attempts: lr.attempts,
+  };
 }
 
 export type AiFinanceDashboardInsight = { title: string; body: string };
@@ -2266,12 +2046,16 @@ export async function analyzeAiFinanceDashboardFromText(
     return { ok: false, error: '摘要为空', attempts: 0 };
   }
 
-  const payload = JSON.stringify({
-    model: ZHIPU_GLM_4_FLASH_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `你是个人记账应用里的财务顾问。用户会提供「本月及近月」聚合后的中文统计摘要（来自本地数据库，已脱敏）。
+  const past6Net =
+    Array.isArray(options.past6NetSavings) && options.past6NetSavings.length === 6
+      ? options.past6NetSavings.map(v => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0))
+      : [0, 0, 0, 0, 0, 0];
+  const past6Income =
+    Array.isArray(options.past6Income) && options.past6Income.length === 6
+      ? options.past6Income.map(v => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0))
+      : [0, 0, 0, 0, 0, 0];
+
+  const systemContent = `你是个人记账应用里的财务顾问。用户会提供「本月及近月」聚合后的中文统计摘要（来自本地数据库，已脱敏）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 
 必须包含字段：
@@ -2283,112 +2067,26 @@ export async function analyzeAiFinanceDashboardFromText(
 6) income_forecast_12：长度恰好 12 的数字数组（元）。索引 0～5 与摘要中过去 6 个月每月收入合计一致或接近；6～11 为未来 6 个月收入预测（非负）。
 7) surplus_forecast_12：长度恰好 12 的数字数组（元），表示每月「盈余/可储蓄」口径；通常可与净储蓄同趋势，但允许你根据摘要微调；索引 0～5 与过去 6 个月实际盈余对齐，6～11 为预测。
 
-输出形状示例（内容请替换）：${AI_FINANCE_DASHBOARD_JSON_HINT}`,
-      },
-      {
-        role: 'user',
-        content: `请根据以下摘要生成上述 JSON：\n\n${text.slice(0, 9500)}`,
-      },
-    ],
-    response_format: { type: 'json_object' },
+输出形状示例（内容请替换）：${AI_FINANCE_DASHBOARD_JSON_HINT}`;
+
+  const lr = await loopTextJsonLlmWithRetries<AiFinanceDashboardPayload>({
+    apiKey: key,
+    systemContent,
+    userContent: `请根据以下摘要生成上述 JSON：\n\n${text.slice(0, 9500)}`,
     temperature: 0.2,
-    max_tokens: 3200,
+    maxTokens: 3200,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => ({
+      ok: true,
+      value: normalizeAiFinanceDashboardPayload(parsed, { past6Net, past6Income }),
+    }),
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-        attempts: attempt,
-        httpStatus: 0,
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: body };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return { ok: false, error: lastError, attempts: attempt, httpStatus, details: { snippet: content.slice(0, 400) } };
-    }
-
-    const past6Net =
-      Array.isArray(options.past6NetSavings) && options.past6NetSavings.length === 6
-        ? options.past6NetSavings.map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0))
-        : [0, 0, 0, 0, 0, 0];
-    const past6Income =
-      Array.isArray(options.past6Income) && options.past6Income.length === 6
-        ? options.past6Income.map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0))
-        : [0, 0, 0, 0, 0, 0];
-
-    const data = normalizeAiFinanceDashboardPayload(parsed, { past6Net, past6Income });
-    return { ok: true, data, rawContent: content.trim(), attempts: attempt };
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
-
-  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+  return { ok: true, data: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
 }
 
 export type ZhipuVisionChatRawOptions = {
@@ -2444,73 +2142,52 @@ export async function zhipuVisionChatRaw(options: ZhipuVisionChatRawOptions): Pr
   }
 
   const mime = (options.imageMimeType ?? 'image/jpeg').trim() || 'image/jpeg';
-  const dataUrl = mime.includes('/') ? `data:${mime};base64,${options.imageBase64}` : `data:image/jpeg;base64,${options.imageBase64}`;
   const userText = (options.userPrompt ?? '随便聊聊这张图里有什么、你的感受也行。').trim() || '随便聊聊这张图。';
-
-  const payload = JSON.stringify({
-    model: 'glm-4.6v-flash',
-    temperature: 0.7,
-    messages: [
-      {
-        role: 'system',
-        content:
-          '用户会发图片。请用自然、口语化的中文像朋友一样分享你看到的内容和联想，不必遵守固定输出格式，不要用 JSON。',
-      },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: userText },
-          { type: 'image_url', image_url: { url: dataUrl } },
-        ],
-      },
-    ],
-  });
 
   let lastHttpStatus = 0;
   let lastBody: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      return {
-        httpStatus: 0,
-        body: { error: e instanceof Error ? e.message : String(e) },
-        attempts: attempt,
-      };
+    const dr = await dispatchZhipuOrGeminiVisionChat({
+      apiKey: key,
+      systemContent:
+        '用户会发图片。请用自然、口语化的中文像朋友一样分享你看到的内容和联想，不必遵守固定输出格式，不要用 JSON。',
+      userText,
+      imageBase64: options.imageBase64,
+      imageMimeType: mime,
+      temperature: 0.7,
+      maxTokens: 2048,
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      forceJsonObject: false,
+      zhipuVisionModel: 'glm-4.6v-flash',
+    });
+
+    if (dr.ok) {
+      const trimmed = dr.text.trim();
+      if (trimmed) {
+        const synBody = { choices: [{ message: { content: trimmed } }] };
+        return { httpStatus: dr.httpStatus, body: synBody, attempts: attempt };
+      }
+      lastBody = { error: 'empty_response' };
+    } else {
+      lastBody = dr.details ?? { error: dr.error };
     }
 
-    const httpStatus = response.status;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      // 非 JSON
-    }
-    lastHttpStatus = httpStatus;
-    lastBody = body;
-
-    if (bodyHasValidCompletion(body)) {
-      return { httpStatus, body, attempts: attempt };
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
+    lastHttpStatus = dr.httpStatus ?? lastHttpStatus;
+    const p = getPreferredAiLlmProviderSync();
+    const outboundDetails = dr.ok ? undefined : dr.details;
+    const retryable =
+      (dr.ok && !dr.text.trim() && attempt < maxAttempts) ||
+      (!dr.ok &&
+        ((p === 'zhipu' && bodyIndicatesZhipu1305(outboundDetails)) ||
+          (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503))));
+    if (retryable && attempt < maxAttempts) {
       await sleep(retryDelayMs);
       continue;
     }
 
-    return { httpStatus, body, attempts: attempt };
+    return { httpStatus: dr.httpStatus ?? lastHttpStatus, body: lastBody, attempts: attempt };
   }
 
   return { httpStatus: lastHttpStatus, body: lastBody, attempts: maxAttempts };
@@ -2691,135 +2368,43 @@ export async function analyzeFoodNutritionFromImage(
   }
 
   const mime = (options.imageMimeType ?? 'image/jpeg').trim() || 'image/jpeg';
-  const dataUrl = mime.includes('/') ? `data:${mime};base64,${rawB64}` : `data:image/jpeg;base64,${rawB64}`;
 
-  const payload = JSON.stringify({
-    model: 'glm-4.6v-flash',
-    response_format: { type: 'json_object' },
+  const systemContent = `你是营养成分估算助手，根据用户上传的食物照片输出 JSON。\n${FOOD_NUTRITION_SCHEMA_TEXT}`;
+  const userText =
+    '请分析这张图片中的食物（若有），估算蛋白质、碳水化合物、钠含量，并输出 food_name 与 ai_evaluation，严格按系统要求的 JSON 字段与类型。';
+
+  const lr = await loopVisionJsonLlmWithRetries<{ data: FoodNutritionJson; repaired: boolean }>({
+    apiKey: key,
+    systemContent,
+    userText,
+    imageBase64: rawB64,
+    imageMimeType: mime,
     temperature: 0.1,
-    messages: [
-      {
-        role: 'system',
-        content: `你是营养成分估算助手，根据用户上传的食物照片输出 JSON。\n${FOOD_NUTRITION_SCHEMA_TEXT}`,
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: '请分析这张图片中的食物（若有），估算蛋白质、碳水化合物、钠含量，并输出 food_name 与 ai_evaluation，严格按系统要求的 JSON 字段与类型。',
-          },
-          { type: 'image_url', image_url: { url: dataUrl } },
-        ],
-      },
-    ],
+    maxTokens: 4096,
+    maxAttempts,
+    retryDelayMs,
+    zhipuVisionModel: 'glm-4.6v-flash',
+    finish: parsed => {
+      const { data, repaired } = normalizeFoodNutritionPayload(parsed);
+      return { ok: true, value: { data, repaired } };
+    },
   });
 
-  let lastError = '未知错误';
-  let lastHttp = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let response: Response;
-    try {
-      response = await runZhipuChatExclusive(() =>
-        fetch(ZHIPU_CHAT_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
-          body: payload,
-        }),
-      );
-    } catch (e) {
-      lastError = e instanceof Error ? e.message : String(e);
-      return {
-        ok: false,
-        error: `网络异常: ${lastError}`,
-        attempts: attempt,
-        httpStatus: 0,
-        data: { ...FOOD_NUTRITION_FALLBACK, non_food_code: 2 },
-      };
-    }
-
-    const httpStatus = response.status;
-    lastHttp = httpStatus;
-    const rawText = await response.text();
-    let body: unknown = rawText;
-    try {
-      body = JSON.parse(rawText) as unknown;
-    } catch {
-      body = rawText;
-    }
-
-    if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-      await sleep(retryDelayMs);
-      continue;
-    }
-
-    if (!response.ok) {
-      const msg =
-        typeof body === 'object' && body !== null && 'error' in body
-          ? String((body as { error?: { message?: string } }).error?.message ?? response.statusText)
-          : response.statusText;
-      lastError = msg;
-      if (bodyIndicatesZhipu1305(body) && attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return {
-        ok: false,
-        error: lastError,
-        attempts: attempt,
-        httpStatus,
-        data: { ...FOOD_NUTRITION_FALLBACK, non_food_code: 2 },
-      };
-    }
-
-    const content = extractMessageContentFromZhipuBody(body);
-    if (!content) {
-      lastError = '响应中无有效 content';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return {
-        ok: false,
-        error: lastError,
-        attempts: attempt,
-        httpStatus,
-        data: { ...FOOD_NUTRITION_FALLBACK },
-      };
-    }
-
-    let parsed: unknown;
-    try {
-      const cleaned = stripMarkdownJsonFence(content);
-      parsed = JSON.parse(cleaned) as unknown;
-    } catch {
-      lastError = '模型返回的不是合法 JSON';
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-        continue;
-      }
-      return {
-        ok: false,
-        error: lastError,
-        attempts: attempt,
-        httpStatus,
-        data: { ...FOOD_NUTRITION_FALLBACK, non_food_code: 2 },
-      };
-    }
-
-    const { data, repaired } = normalizeFoodNutritionPayload(parsed);
-    return { ok: true, data, attempts: attempt, rawContent: content, repaired };
+  if (!lr.ok) {
+    return {
+      ok: false,
+      error: lr.error,
+      attempts: lr.attempts,
+      httpStatus: lr.httpStatus,
+      data: { ...FOOD_NUTRITION_FALLBACK, non_food_code: 2 },
+    };
   }
 
   return {
-    ok: false,
-    error: lastError,
-    attempts: maxAttempts,
-    httpStatus: lastHttp,
-    data: { ...FOOD_NUTRITION_FALLBACK, non_food_code: 2 },
+    ok: true,
+    data: lr.value.data,
+    attempts: lr.attempts,
+    rawContent: lr.rawContent,
+    repaired: lr.value.repaired,
   };
 }

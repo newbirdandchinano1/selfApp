@@ -14,7 +14,7 @@ import type { UserRow } from '@/lib/repositories/users/user.types';
 import { buildPersonaContextText, localCalendarYmd } from '@/lib/persona-portrait-sync';
 import {
   generatePersonaPortraitFromContext,
-  getZhipuApiKey,
+  getActiveAiLlmApiKey,
   type PersonaPortraitAiData,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -214,7 +214,7 @@ export default function PersonaDetailScreen() {
         setPortraitError('');
         const context = buildPersonaContextText(slug as PersonaPortraitCacheSlug, u, metrics, rows);
         const res = await generatePersonaPortraitFromContext({
-          apiKey: getZhipuApiKey(),
+          apiKey: getActiveAiLlmApiKey(),
           personaSlug: slug,
           contextText: context,
         });

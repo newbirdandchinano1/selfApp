@@ -1,6 +1,6 @@
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
-import { analyzeAiFinanceDashboardFromText, getZhipuApiKey, type AiFinanceDashboardPayload } from '@/lib/zhipu-image-parse';
+import { analyzeAiFinanceDashboardFromText, getActiveAiLlmApiKey, type AiFinanceDashboardPayload } from '@/lib/zhipu-image-parse';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -355,7 +355,7 @@ export default function AiFinanceAnalysisScreen() {
     setAiDashboardError(null);
     try {
       const r = await analyzeAiFinanceDashboardFromText({
-        apiKey: getZhipuApiKey(),
+        apiKey: getActiveAiLlmApiKey(),
         summaryText: aiFinanceDigest,
         past6NetSavings: past6Net,
         past6Income: past6Income,

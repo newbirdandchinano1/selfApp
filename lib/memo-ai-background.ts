@@ -1,5 +1,5 @@
 import { memoContextForAiReview, setMemoAiReview, type MemoItem } from '@/lib/memos';
-import { analyzeMemoReviewFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeMemoReviewFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 
 /**
  * 新建备忘保存后调用：在后台请求智谱生成评价与建议并写入本地（不阻塞 UI；无密钥或内容为空则静默跳过）。
@@ -7,7 +7,7 @@ import { analyzeMemoReviewFromText, getZhipuApiKey } from '@/lib/zhipu-image-par
 export function startMemoAiReviewInBackground(row: MemoItem): void {
   void (async () => {
     try {
-      const key = getZhipuApiKey().trim();
+      const key = getActiveAiLlmApiKey().trim();
       if (!key) return;
       const ctx = memoContextForAiReview(row);
       if (!ctx) return;

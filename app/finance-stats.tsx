@@ -2,7 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
 import type { FinanceFlowCategoryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
-import { analyzeFinanceBillSummaryFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeFinanceBillSummaryFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -488,7 +488,7 @@ export default function FinanceStatsScreen() {
     setAiBillAnalysisError(null);
     try {
       const r = await analyzeFinanceBillSummaryFromText({
-        apiKey: getZhipuApiKey(),
+        apiKey: getActiveAiLlmApiKey(),
         summaryText: billSummaryForAi,
         maxAttempts: 12,
         retryDelayMs: 1000,

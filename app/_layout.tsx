@@ -10,6 +10,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { initDatabase } from '@/lib/database';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
+import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
 
 if (Platform.OS !== 'web') {
@@ -38,6 +39,7 @@ export default function RootLayout() {
       try {
         await initDatabase();
         await loadPersistedIntakeTargets();
+        await loadAiLlmProviderPreference();
         if (Platform.OS !== 'web') {
           void ensurePersonaPortraitsForTodayInBackground();
         }
@@ -75,6 +77,7 @@ export default function RootLayout() {
                     try {
                       await initDatabase();
                       await loadPersistedIntakeTargets();
+                      await loadAiLlmProviderPreference();
                       if (Platform.OS !== 'web') {
                         void ensurePersonaPortraitsForTodayInBackground();
                       }

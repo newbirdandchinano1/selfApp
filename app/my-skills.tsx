@@ -14,7 +14,7 @@ import {
 } from '@/lib/user-skills';
 import {
   analyzeUserSkillsPortfolioFromText,
-  getZhipuApiKey,
+  getActiveAiLlmApiKey,
   type UserSkillAiPortfolioPayload,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -183,7 +183,7 @@ export default function MySkillsScreen() {
   const runnableCount = linesForAi.length;
 
   const onRunAi = async () => {
-    const key = getZhipuApiKey().trim();
+    const key = getActiveAiLlmApiKey().trim();
     if (!key) {
       Alert.alert('无法调用 AI', '请配置智谱 API 密钥（环境变量 EXPO_PUBLIC_ZHIPU_API_KEY 或应用内置渠道）。');
       return;

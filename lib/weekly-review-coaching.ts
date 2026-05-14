@@ -1,4 +1,5 @@
 import type { WeeklyReviewMetrics } from '@/lib/repositories/insights/weekly-review';
+import { generateWeeklyReviewCoachingFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 
 export type WeeklyCoachingInput = {
   weekRangeLabel: string;
@@ -108,43 +109,11 @@ function buildLocalCoaching(input: WeeklyCoachingInput): string {
   return lines.join('\n');
 }
 
-async function tryOpenAiCoaching(prompt: string): Promise<string | null> {
-  const apiKey =
-    (typeof process !== 'undefined' && process.env.EXPO_PUBLIC_OPENAI_API_KEY) ||
-    (typeof process !== 'undefined' && process.env.EXPO_PUBLIC_WEEKLY_REVIEW_OPENAI_KEY) ||
-    '';
-  if (!apiKey.trim()) return null;
-
-  try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey.trim()}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        temperature: 0.65,
-        max_tokens: 1400,
-        messages: [
-          {
-            role: 'system',
-            content:
-              '你是资深生活与效率教练，用简体中文回复。用户在做「每周复盘」，并可能附带近七日「每日复盘」原文。请输出结构化文本，须包含以下小节标题（逐字）：【总览】【对齐用户写下的重点】【数据侧参考】【建议与修正提醒】【下周可做的一件事】【温和结语】。语气真诚、具体、避免说教；若用户内容涉及心理危机，提醒寻求专业帮助。不要编造用户未提及的事实；每日复盘仅作线索，与周记冲突时以周记为主并温和指出差异。',
-          },
-          { role: 'user', content: prompt },
-        ],
-      }),
-    });
-    if (!res.ok) return null;
-    const json = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const text = json.choices?.[0]?.message?.content?.trim();
-    return text || null;
-  } catch {
-    return null;
-  }
+async function tryZhipuWeeklyCoaching(prompt: string): Promise<string | null> {
+  const key = getActiveAiLlmApiKey().trim();
+  if (!key) return null;
+  const r = await generateWeeklyReviewCoachingFromText({ apiKey: key, userPrompt: prompt });
+  return r.ok ? r.text : null;
 }
 
 function buildPromptForModel(input: WeeklyCoachingInput): string {
@@ -183,7 +152,7 @@ function buildPromptForModel(input: WeeklyCoachingInput): string {
 
 export async function generateWeeklyReviewCoaching(input: WeeklyCoachingInput): Promise<string> {
   const prompt = buildPromptForModel(input);
-  const remote = await tryOpenAiCoaching(prompt);
+  const remote = await tryZhipuWeeklyCoaching(prompt);
   if (remote) return remote;
   return buildLocalCoaching(input);
 }

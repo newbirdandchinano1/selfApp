@@ -15,7 +15,7 @@ import type {
   IncomeItem,
   Quadrant,
 } from '@/lib/repositories/cash-flow/cash-flow.types';
-import { analyzeCashFlowDashboardFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeCashFlowDashboardFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
@@ -674,7 +674,7 @@ function MobileDashboard({
     [metrics.totalIncome, metrics.totalExpenses]
   );
 
-  const zhipuReady = Boolean(getZhipuApiKey().trim());
+  const zhipuReady = isActiveAiLlmConfigured();
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -733,7 +733,7 @@ function MobileDashboard({
 
       try {
         const res = await analyzeCashFlowDashboardFromText({
-          apiKey: getZhipuApiKey(),
+          apiKey: getActiveAiLlmApiKey(),
           summaryText: aiSummaryText,
         });
         if (cancelled || reqId !== aiRequestId.current) return;

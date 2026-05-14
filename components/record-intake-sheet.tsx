@@ -1,7 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
-  getZhipuApiKey,
+  getActiveAiLlmApiKey,
   parseFoodIntakeFromText,
   type FoodTextIntakeJson,
 } from '@/lib/zhipu-image-parse';
@@ -184,7 +184,7 @@ export function RecordIntakeSheet({
     setAiBusy(true);
     setAiError(null);
     try {
-      const r = await parseFoodIntakeFromText({ apiKey: getZhipuApiKey(), text: t });
+      const r = await parseFoodIntakeFromText({ apiKey: getActiveAiLlmApiKey(), text: t });
       if (!r.ok) {
         setAiError(r.error);
         setAiResolved(null);

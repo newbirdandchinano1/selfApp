@@ -14,7 +14,7 @@ import {
   clearWeaknessAiAnalysisPending,
   runWeaknessAiReview,
 } from '@/lib/weakness-ai-background';
-import { getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -49,7 +49,7 @@ export default function WeaknessListScreen() {
   const borderSoft = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.25)';
   const cardBg = isDark ? '#111827' : '#ffffff';
 
-  const zhipuReady = Boolean(getZhipuApiKey().trim());
+  const zhipuReady = isActiveAiLlmConfigured();
 
   const [items, setItems] = useState<UserWeaknessItem[]>([]);
   const [loading, setLoading] = useState(true);

@@ -2,7 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
   analyzeFoodNutritionFromImage,
-  getZhipuApiKey,
+  getActiveAiLlmApiKey,
   TINY_TEST_JPEG_BASE64,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -97,7 +97,7 @@ export default function ZhipuApiTestScreen() {
   };
 
   const runAnalyze = async (mode: 'tiny' | 'picker') => {
-    const key = getZhipuApiKey();
+    const key = getActiveAiLlmApiKey();
     setBusy(true);
     setLog('分析中…');
     try {

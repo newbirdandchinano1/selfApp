@@ -8,7 +8,7 @@ import {
   getWishListRationalAiCache,
   saveWishListRationalAiCache,
 } from '@/lib/repositories/wish-list/wish-list-rational-ai-cache';
-import { analyzeWishListRationalReviewFromText, getZhipuApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeWishListRationalReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -68,7 +68,7 @@ export default function WishListScreen() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const zhipuReady = Boolean(getZhipuApiKey().trim());
+  const zhipuReady = isActiveAiLlmConfigured();
   /** 大于 0 时表示用户点击了「刷新 AI 评审」，须强制走网络并写库。 */
   const [rationalRefreshToken, setRationalRefreshToken] = useState(0);
   const [aiHeadline, setAiHeadline] = useState<string | null>(null);
@@ -157,7 +157,7 @@ export default function WishListScreen() {
         return;
       }
 
-      const key = getZhipuApiKey().trim();
+      const key = getActiveAiLlmApiKey().trim();
       if (!key) {
         setAiHeadline(null);
         setAiReview(null);
