@@ -2,8 +2,17 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import {
-  getMonthKey,
+  budgetDaysLeftIncludingToday,
+  budgetPeriodLengthDays,
+  clampBudgetRefreshDay,
+  DEFAULT_BUDGET_REFRESH_DAY,
+  getBudgetMonthKeyForDate,
+  getBudgetPeriodStartForDate,
+  getNextBudgetPeriodStart,
+  getPreviousBudgetPeriodStart,
+  loadBudgetRefreshDay,
   loadMonthBudgetSettings,
+  persistBudgetRefreshDay,
   persistMonthBudgetSettings,
   type MonthBudgetSetting,
 } from '@/lib/finance-monthly-budget';
@@ -346,6 +355,9 @@ export default function FinanceScreen() {
   /** 预算卡与月度汇总是否显示真实金额（false 时显示 ****） */
   const [showNetAmounts, setShowNetAmounts] = React.useState(true);
   const [monthBudgetSettings, setMonthBudgetSettings] = React.useState<Record<string, MonthBudgetSetting>>({});
+  /** 预算周期刷新日（每月几日起算新一周期），默认 1 日。 */
+  const [budgetRefreshDay, setBudgetRefreshDay] = React.useState(DEFAULT_BUDGET_REFRESH_DAY);
+  const [budgetRefreshDayDraft, setBudgetRefreshDayDraft] = React.useState(DEFAULT_BUDGET_REFRESH_DAY);
   const [isBudgetAdjustVisible, setIsBudgetAdjustVisible] = React.useState(false);
   const [budgetBaseDraft, setBudgetBaseDraft] = React.useState('');
   const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
@@ -454,6 +466,7 @@ export default function FinanceScreen() {
 
   React.useEffect(() => {
     void loadMonthBudgetSettings().then(setMonthBudgetSettings);
+    void loadBudgetRefreshDay().then(setBudgetRefreshDay);
   }, []);
 
   const speechSubsRef = React.useRef<Array<{ remove?: () => void }>>([]);
@@ -998,47 +1011,62 @@ export default function FinanceScreen() {
     [getTxnDisplayAmount, monthlyTransactions]
   );
 
+  const budgetPeriodStart = getBudgetPeriodStartForDate(today, budgetRefreshDay);
+  const budgetPeriodEndExclusive = getNextBudgetPeriodStart(budgetPeriodStart, budgetRefreshDay);
+  const budgetPeriodTransactions = React.useMemo(() => {
+    return financeTransactions.filter((txn) => {
+      const happenedAt = new Date(txn.happened_at);
+      return happenedAt >= budgetPeriodStart && happenedAt < budgetPeriodEndExclusive;
+    });
+  }, [financeTransactions, budgetPeriodStart, budgetPeriodEndExclusive]);
+
   const monthlyBudgetExpense = React.useMemo(
     () =>
-      monthlyTransactions.reduce((sum, txn) => {
+      budgetPeriodTransactions.reduce((sum, txn) => {
         const displayAmount = getTxnDisplayAmount(txn);
         if (displayAmount >= 0) return sum;
         if (isFinanceTransactionExcludedFromBudget(txn.extra_data)) return sum;
         return sum + Math.abs(displayAmount);
       }, 0),
-    [getTxnDisplayAmount, monthlyTransactions]
+    [getTxnDisplayAmount, budgetPeriodTransactions]
   );
   const monthlySurplus = monthlyIncome - monthlyExpense;
   const savingsRate = monthlyIncome > 0 ? (monthlySurplus / monthlyIncome) * 100 : 0;
 
-  const calendarAnchor = `${today.getFullYear()}-${today.getMonth()}`;
-  const prevMonthTransactions = React.useMemo(() => {
-    const y = today.getFullYear();
-    const m = today.getMonth();
-    const start = new Date(y, m - 1, 1);
-    const end = new Date(y, m, 1);
+  const prevBudgetPeriodStart = getPreviousBudgetPeriodStart(budgetPeriodStart, budgetRefreshDay);
+  const prevBudgetPeriodEndExclusive = budgetPeriodStart;
+  const prevBudgetPeriodTransactions = React.useMemo(() => {
     return financeTransactions.filter((txn) => {
       const happenedAt = new Date(txn.happened_at);
-      return happenedAt >= start && happenedAt < end;
+      return happenedAt >= prevBudgetPeriodStart && happenedAt < prevBudgetPeriodEndExclusive;
     });
-  }, [financeTransactions, calendarAnchor]);
-  const prevMonthIncome = React.useMemo(
+  }, [financeTransactions, prevBudgetPeriodStart, prevBudgetPeriodEndExclusive]);
+  const prevBudgetPeriodIncome = React.useMemo(
     () =>
-      prevMonthTransactions.reduce((sum, txn) => {
+      prevBudgetPeriodTransactions.reduce((sum, txn) => {
         const displayAmount = getTxnDisplayAmount(txn);
         return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
       }, 0),
-    [getTxnDisplayAmount, prevMonthTransactions]
+    [getTxnDisplayAmount, prevBudgetPeriodTransactions]
   );
-  const prevMonthExpense = React.useMemo(
+  const prevBudgetPeriodExpense = React.useMemo(
     () =>
-      prevMonthTransactions.reduce((sum, txn) => {
+      prevBudgetPeriodTransactions.reduce((sum, txn) => {
         const displayAmount = getTxnDisplayAmount(txn);
         return displayAmount < 0 ? sum + Math.abs(displayAmount) : sum;
       }, 0),
-    [getTxnDisplayAmount, prevMonthTransactions]
+    [getTxnDisplayAmount, prevBudgetPeriodTransactions]
   );
-  const lastMonthRemaining = Math.max(0, prevMonthIncome - prevMonthExpense);
+  const lastMonthRemaining = Math.max(0, prevBudgetPeriodIncome - prevBudgetPeriodExpense);
+
+  const budgetPeriodIncome = React.useMemo(
+    () =>
+      budgetPeriodTransactions.reduce((sum, txn) => {
+        const displayAmount = getTxnDisplayAmount(txn);
+        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
+      }, 0),
+    [getTxnDisplayAmount, budgetPeriodTransactions]
+  );
 
   const hiddenAmountText = '****';
   const monthlyIncomeText = showNetAmounts ? formatCurrencyWithDecimals(monthlyIncome) : hiddenAmountText;
@@ -1047,10 +1075,9 @@ export default function FinanceScreen() {
   const monthlySurplusColor = monthlySurplus > 0 ? secondary : monthlySurplus < 0 ? '#dc2626' : text;
   const savingRateText = showNetAmounts ? `${savingsRate.toFixed(1)}%` : '--';
 
-  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-  const dayOfMonth = today.getDate();
-  const daysLeftIncludingToday = Math.max(1, daysInMonth - dayOfMonth + 1);
-  const currentMonthKey = getMonthKey(today);
+  const budgetPeriodTotalDays = budgetPeriodLengthDays(budgetPeriodStart, budgetPeriodEndExclusive);
+  const daysLeftIncludingToday = budgetDaysLeftIncludingToday(today, budgetPeriodEndExclusive);
+  const currentMonthKey = getBudgetMonthKeyForDate(today, budgetRefreshDay);
   const budgetSheetMonthNumber = parseInt(currentMonthKey.split('-')[1] ?? '1', 10);
   const persistedBudgetSetting = monthBudgetSettings[currentMonthKey];
   const effectiveBaseBudget =
@@ -1067,13 +1094,18 @@ export default function FinanceScreen() {
   const budgetUsedPercentRaw = budgetTotalAmount > 0 ? (monthlyBudgetExpense / budgetTotalAmount) * 100 : 0;
   const budgetUsedPercent = Math.min(100, Math.max(0, budgetUsedPercentRaw));
   const dailyBudgetAmount =
-    monthlyIncome > 0
-      ? monthlyIncome / daysInMonth
+    budgetPeriodIncome > 0
+      ? budgetPeriodIncome / budgetPeriodTotalDays
       : budgetSurplusAmount > 0
         ? budgetSurplusAmount / daysLeftIncludingToday
         : budgetTotalAmount / daysLeftIncludingToday;
   const todayAvailableAmount = Math.max(0, dailyBudgetAmount - todayBudgetExpenseTotal);
   const todayBudgetUsagePct = dailyBudgetAmount > 0 ? Math.min(1, todayBudgetExpenseTotal / dailyBudgetAmount) : 0;
+
+  const budgetUiNaturalMonth = budgetRefreshDay === DEFAULT_BUDGET_REFRESH_DAY;
+  const budgetUiScopeShort = budgetUiNaturalMonth ? '本月' : '本周期';
+  const budgetUiPrevCarryLabel = budgetUiNaturalMonth ? '上月剩余' : '上周期剩余';
+  const budgetUiIncludePrevLabel = budgetUiNaturalMonth ? '包含上月结余' : '包含上周期结余';
 
   /** 净资产汇总：排除标记为「不计入总资产/总负债」的账户，与资产页 hero、账户详情开关一致 */
   const netTotalForTrend = React.useMemo(
@@ -1457,6 +1489,8 @@ export default function FinanceScreen() {
 
           const settings = await loadMonthBudgetSettings();
           if (!cancelled) setMonthBudgetSettings(settings);
+          const rd = await loadBudgetRefreshDay();
+          if (!cancelled) setBudgetRefreshDay(rd);
         } catch (e) {
           console.warn('Finance tab focus refresh failed:', e);
         }
@@ -1487,8 +1521,9 @@ export default function FinanceScreen() {
     const inc = row?.includeLastBalance ?? false;
     setBudgetBaseDraft(base.toFixed(2));
     setModalIncludeLast(inc);
+    setBudgetRefreshDayDraft(budgetRefreshDay);
     setIsBudgetAdjustVisible(true);
-  }, [monthBudgetSettings, currentMonthKey]);
+  }, [monthBudgetSettings, currentMonthKey, budgetRefreshDay]);
 
   const handleSaveBudgetAdjust = React.useCallback(() => {
     const normalized = budgetBaseDraft.trim().replace(/,/g, '');
@@ -1497,6 +1532,9 @@ export default function FinanceScreen() {
       Alert.alert('金额无效', '请输入大于等于 0 的月预算基数。');
       return;
     }
+    const nextRefresh = clampBudgetRefreshDay(budgetRefreshDayDraft);
+    void persistBudgetRefreshDay(nextRefresh);
+    setBudgetRefreshDay(nextRefresh);
     setMonthBudgetSettings((prev) => {
       const next = {
         ...prev,
@@ -1506,7 +1544,7 @@ export default function FinanceScreen() {
       return next;
     });
     setIsBudgetAdjustVisible(false);
-  }, [budgetBaseDraft, currentMonthKey, modalIncludeLast]);
+  }, [budgetBaseDraft, budgetRefreshDayDraft, currentMonthKey, modalIncludeLast]);
 
   const handleResetBudgetAdjust = React.useCallback(() => {
     setMonthBudgetSettings((prev) => {
@@ -2158,7 +2196,7 @@ export default function FinanceScreen() {
                   <View style={styles.budgetTopRow}>
                     <View style={styles.budgetTopMain}>
                       <View style={styles.budgetTitleRow}>
-                        <Text style={[styles.budgetSurplusTitle, { color: subtle }]}>本月预算结余</Text>
+                        <Text style={[styles.budgetSurplusTitle, { color: subtle }]}>{budgetUiScopeShort}预算结余</Text>
                       </View>
                       <View style={styles.budgetAmountRow}>
                         <Pressable
@@ -3355,7 +3393,7 @@ export default function FinanceScreen() {
 
             <View style={styles.budgetDetailsTotalWrap}>
               <View style={[styles.budgetDetailsTotalCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb' }]}>
-                <Text style={[styles.budgetDetailsTotalLabel, { color: subtle }]}>本月预算</Text>
+                <Text style={[styles.budgetDetailsTotalLabel, { color: subtle }]}>{budgetUiScopeShort}预算</Text>
                 <Text style={[styles.budgetDetailsTotalValue, { color: text }]}>
                   {formatCurrencyWithDecimals(budgetPreviewTotal)}
                 </Text>
@@ -3364,9 +3402,9 @@ export default function FinanceScreen() {
 
             <View style={styles.budgetDetailsComposition}>
               <View style={styles.budgetDetailsCompositionTop}>
-                <Text style={[styles.budgetDetailsCompositionTitle, { color: subtle }]}>本月预算构成</Text>
+                <Text style={[styles.budgetDetailsCompositionTitle, { color: subtle }]}>{budgetUiScopeShort}预算构成</Text>
                 <View style={styles.budgetDetailsSwitchRow}>
-                  <Text style={[styles.budgetDetailsSwitchLabel, { color: subtle }]}>包含上月结余</Text>
+                  <Text style={[styles.budgetDetailsSwitchLabel, { color: subtle }]}>{budgetUiIncludePrevLabel}</Text>
                   <Switch
                     value={modalIncludeLast}
                     onValueChange={setModalIncludeLast}
@@ -3374,6 +3412,38 @@ export default function FinanceScreen() {
                     thumbColor="#ffffff"
                     ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
                   />
+                </View>
+              </View>
+
+              <View style={styles.budgetRefreshDayBlock}>
+                <View style={styles.budgetRefreshDayTextCol}>
+                  <Text style={[styles.budgetRefreshDayTitle, { color: text }]}>预算刷新日</Text>
+                  <Text style={[styles.budgetRefreshDayHint, { color: subtle }]}>
+                    每月该日 0 点起进入新预算周期；默认 1 日即按自然月。短月会与当月最后一天对齐。
+                  </Text>
+                </View>
+                <View style={styles.budgetRefreshDayStepper}>
+                  <Pressable
+                    onPress={() => setBudgetRefreshDayDraft((d) => Math.max(1, d - 1))}
+                    style={({ pressed }) => [
+                      styles.budgetRefreshDayStepBtn,
+                      { borderColor: outlineVariant, opacity: pressed ? 0.84 : 1 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="预算刷新日减一">
+                    <MaterialIcons name="remove" size={22} color={text} />
+                  </Pressable>
+                  <Text style={[styles.budgetRefreshDayValue, { color: text }]}>{budgetRefreshDayDraft}</Text>
+                  <Pressable
+                    onPress={() => setBudgetRefreshDayDraft((d) => Math.min(31, d + 1))}
+                    style={({ pressed }) => [
+                      styles.budgetRefreshDayStepBtn,
+                      { borderColor: outlineVariant, opacity: pressed ? 0.84 : 1 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="预算刷新日加一">
+                    <MaterialIcons name="add" size={22} color={text} />
+                  </Pressable>
                 </View>
               </View>
 
@@ -3416,7 +3486,7 @@ export default function FinanceScreen() {
                       opacity: modalIncludeLast ? 1 : 0.5,
                     },
                   ]}>
-                  <Text style={[styles.budgetDetailsBreakdownLabel, { color: subtle }]}>上月剩余</Text>
+                  <Text style={[styles.budgetDetailsBreakdownLabel, { color: subtle }]}>{budgetUiPrevCarryLabel}</Text>
                   <Text
                     style={[
                       styles.budgetDetailsBreakdownAmount,
@@ -4804,6 +4874,45 @@ const styles = StyleSheet.create({
   },
   budgetDetailsSwitchLabel: {
     fontSize: 14,
+  },
+  budgetRefreshDayBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 16,
+    paddingVertical: 4,
+  },
+  budgetRefreshDayTextCol: {
+    flex: 1,
+    gap: 4,
+  },
+  budgetRefreshDayTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  budgetRefreshDayHint: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  budgetRefreshDayStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  budgetRefreshDayStepBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  budgetRefreshDayValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    minWidth: 28,
+    textAlign: 'center',
   },
   budgetDetailsBreakdownRow: {
     flexDirection: 'row',

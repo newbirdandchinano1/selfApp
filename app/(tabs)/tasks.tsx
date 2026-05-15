@@ -1445,16 +1445,15 @@ export default function TasksScreen() {
         standaloneTodoPassesDayBoundaryFilter(t, dayBoundary, logicalTodayYmd)
     );
     const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
+    const createdMs = (t: TaskRow) => {
+      const ms = Date.parse(t.created_at);
+      return Number.isNaN(ms) ? 0 : ms;
+    };
     return list.slice().sort((a, b) => {
       const da = isDoneRow(a);
       const db = isDoneRow(b);
       if (da !== db) return da ? 1 : -1;
-      const dueA = a.due_date ? Date.parse(a.due_date) : Number.POSITIVE_INFINITY;
-      const dueB = b.due_date ? Date.parse(b.due_date) : Number.POSITIVE_INFINITY;
-      if (dueA !== dueB) return dueA - dueB;
-      const updA = a.updated_at ? Date.parse(a.updated_at) : 0;
-      const updB = b.updated_at ? Date.parse(b.updated_at) : 0;
-      return updB - updA;
+      return createdMs(a) - createdMs(b);
     });
   }, [tasks, dayBoundary, logicalTodayYmd]);
 

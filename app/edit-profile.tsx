@@ -25,6 +25,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { getDefaultUser, updateDefaultUser } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 
+import { invalidateDailyIntakeAiTargetsCache } from '@/lib/daily-intake-ai-targets';
+
 const GENDER_OPTIONS = ['男', '女'] as const;
 const LIFESTYLE_OPTIONS = ['长期静坐不运动', '健身', '高强度锻炼'] as const;
 const GOAL_OPTIONS = ['无', '减脂', '增肌'] as const;
@@ -88,6 +90,7 @@ export default function EditProfileScreen() {
         height: Number(height),
         weight: Number(weight),
       });
+      await invalidateDailyIntakeAiTargetsCache();
       Alert.alert('保存成功');
       router.dismissTo('/(tabs)/profile');
     } catch (error) {

@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { markGithubKvSliceDirty } from '@/lib/github-sqlite-dirty-track';
 
 const STORAGE_KEY = 'weekly_review_weekday_dow';
 
@@ -17,6 +18,13 @@ export async function setWeeklyReviewConfiguredWeekday(dow: number): Promise<voi
   const n = Math.round(dow);
   if (n < 0 || n > 6) throw new Error('invalid weekday');
   await AsyncStorage.setItem(STORAGE_KEY, String(n));
+  markGithubKvSliceDirty('weekly_review');
+}
+
+/** 清除周复盘「固定星期几」配置（与云端 null 对齐）。 */
+export async function clearWeeklyReviewConfiguredWeekday(): Promise<void> {
+  await AsyncStorage.removeItem(STORAGE_KEY);
+  markGithubKvSliceDirty('weekly_review');
 }
 
 export function isTodayConfiguredWeeklyReviewDay(configuredDow: number, now: Date = new Date()): boolean {

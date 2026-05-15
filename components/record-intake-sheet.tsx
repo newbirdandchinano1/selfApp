@@ -40,6 +40,8 @@ export type RecordIntakeConfirmPayload =
       imageBase64: string;
       imageMimeType: string;
       sourceImageUri: string | null;
+      /** 选填，与图片一并交给识别模型 */
+      photoNote?: string;
     };
 
 function getUnitByType(type: ManualType): ConfirmUnit {
@@ -83,6 +85,7 @@ export function RecordIntakeSheet({
   const [photoUri, setPhotoUri] = React.useState<string | null>(null);
   const [photoBase64, setPhotoBase64] = React.useState<string | null>(null);
   const [photoMime, setPhotoMime] = React.useState('image/jpeg');
+  const [photoNote, setPhotoNote] = React.useState('');
   const [photoError, setPhotoError] = React.useState<string | null>(null);
   const [aiBusy, setAiBusy] = React.useState(false);
   const [aiError, setAiError] = React.useState<string | null>(null);
@@ -153,6 +156,7 @@ export function RecordIntakeSheet({
     setPhotoUri(null);
     setPhotoBase64(null);
     setPhotoMime('image/jpeg');
+    setPhotoNote('');
     setPhotoError(null);
     setAiBusy(false);
     setAiError(null);
@@ -283,12 +287,14 @@ export function RecordIntakeSheet({
       return;
     }
     if (tab === 'photo' && photoBase64) {
+      const note = photoNote.trim();
       await Promise.resolve(
         onConfirm?.({
           mode: 'photo',
           imageBase64: photoBase64,
           imageMimeType: photoMime,
           sourceImageUri: photoUri,
+          ...(note ? { photoNote: note } : {}),
         })
       );
       onClose();
@@ -486,8 +492,21 @@ export function RecordIntakeSheet({
                     <Text style={[styles.photoErrorText, { color: '#ef4444' }]}>{photoError}</Text>
                   ) : null}
 
+                  <View style={[styles.photoNoteWrap, { backgroundColor: inputBg, borderColor: border }]}>
+                    <Text style={[styles.photoNoteLabel, { color: mutedText }]}>文字说明（选填）</Text>
+                    <TextInput
+                      value={photoNote}
+                      onChangeText={setPhotoNote}
+                      multiline
+                      placeholder="例如：半份、两人分食、菜名补充…"
+                      placeholderTextColor={isDark ? 'rgba(148,163,184,0.7)' : 'rgba(100,116,139,0.7)'}
+                      style={[styles.photoNoteInput, { color: theme.text }]}
+                      textAlignVertical="top"
+                    />
+                  </View>
+
                   <Text style={[styles.hint, { color: mutedText }]}>
-                    选好照片后点「确认添加」，将在后台识别营养并自动写入；识别失败时会弹窗提示。
+                    须先选择或拍摄照片；可选填说明帮助更准确估算。点「确认添加」后在后台识别并写入；失败时会提示。
                   </Text>
                 </View>
               ) : (
@@ -617,6 +636,9 @@ const styles = StyleSheet.create({
   tabText: { fontSize: 11, fontWeight: '800' },
   inputSection: { gap: 10 },
   photoWrap: { gap: 12 },
+  photoNoteWrap: { borderRadius: 16, borderWidth: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 12 },
+  photoNoteLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 0.4, marginBottom: 8 },
+  photoNoteInput: { fontSize: 15, lineHeight: 22, minHeight: 72, paddingVertical: 0 },
   photoActionRow: { flexDirection: 'row', gap: 10 },
   photoActionBtn: {
     flex: 1,

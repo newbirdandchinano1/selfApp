@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { markGithubKvSliceDirty } from '@/lib/github-sqlite-dirty-track';
 
 const STORAGE_KEY = 'user_skills_portfolio_v1';
 
@@ -69,7 +70,7 @@ function normalizeDimension(raw: unknown): UserSkillDimension | null {
   return { id, title, skills };
 }
 
-function normalizeSnapshot(parsed: unknown): UserSkillsSnapshot {
+export function normalizeUserSkillsSnapshot(parsed: unknown): UserSkillsSnapshot {
   if (typeof parsed !== 'object' || parsed === null) return createEmptyUserSkillsSnapshot();
   const o = parsed as Record<string, unknown>;
   const dimsRaw = o.dimensions;
@@ -99,7 +100,7 @@ export async function loadUserSkills(): Promise<UserSkillsSnapshot> {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
     if (!raw?.trim()) return createEmptyUserSkillsSnapshot();
     const parsed = JSON.parse(raw) as unknown;
-    return normalizeSnapshot(parsed);
+    return normalizeUserSkillsSnapshot(parsed);
   } catch {
     return createEmptyUserSkillsSnapshot();
   }
@@ -107,6 +108,7 @@ export async function loadUserSkills(): Promise<UserSkillsSnapshot> {
 
 export async function saveUserSkills(snapshot: UserSkillsSnapshot): Promise<void> {
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  markGithubKvSliceDirty('user_skills');
 }
 
 export function countSkillsInSnapshot(s: UserSkillsSnapshot): number {

@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { markGithubKvSliceDirty } from '@/lib/github-sqlite-dirty-track';
 
 /** 旧版个人页单条备忘，首次读取时迁移为一条列表项 */
 const LEGACY_SINGLE_MEMO_KEY = 'profile_screen_memo_v1';
@@ -86,14 +87,27 @@ async function readListAfterMigration(): Promise<MemoItem[]> {
       updated_at: now,
     };
     await AsyncStorage.setItem(MEMO_LIST_KEY, JSON.stringify([one]));
+    markGithubKvSliceDirty('memos');
     await AsyncStorage.removeItem(LEGACY_SINGLE_MEMO_KEY);
     return [one];
   }
   return [];
 }
 
+/** 从云备份 kv payload 解析备忘列表（与 `listMemos` 存盘格式一致）。 */
+export function memoItemsFromBackupPayload(payload: unknown): MemoItem[] {
+  if (!Array.isArray(payload)) return [];
+  return parseList(JSON.stringify(payload));
+}
+
 async function writeList(items: MemoItem[]): Promise<void> {
   await AsyncStorage.setItem(MEMO_LIST_KEY, JSON.stringify(items));
+  markGithubKvSliceDirty('memos');
+}
+
+/** 云恢复：用备份中的备忘列表整表覆盖本地（不经由单条编辑 API）。 */
+export async function replaceMemosFromCloudRestore(items: MemoItem[]): Promise<void> {
+  await writeList(items);
 }
 
 export async function listMemos(): Promise<MemoItem[]> {

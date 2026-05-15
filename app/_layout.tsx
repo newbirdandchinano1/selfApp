@@ -12,6 +12,8 @@ import { initDatabase } from '@/lib/database';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
+import { hydrateGithubCloudDirtyFromStorage } from '@/lib/github-sqlite-dirty-track';
+import { runSilentGithubCloudSyncIfRemoteNewer } from '@/lib/github-cloud-launch';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
 
 if (Platform.OS !== 'web') {
@@ -39,6 +41,10 @@ export default function RootLayout() {
     const run = async () => {
       try {
         await initDatabase();
+        await hydrateGithubCloudDirtyFromStorage();
+        if (Platform.OS !== 'web') {
+          void runSilentGithubCloudSyncIfRemoteNewer();
+        }
         await loadPersistedIntakeTargets();
         await loadAiLlmProviderPreference();
         if (Platform.OS !== 'web') {
@@ -77,6 +83,10 @@ export default function RootLayout() {
                     setDbError(null);
                     try {
                       await initDatabase();
+                      await hydrateGithubCloudDirtyFromStorage();
+                      if (Platform.OS !== 'web') {
+                        void runSilentGithubCloudSyncIfRemoteNewer();
+                      }
                       await loadPersistedIntakeTargets();
                       await loadAiLlmProviderPreference();
                       if (Platform.OS !== 'web') {

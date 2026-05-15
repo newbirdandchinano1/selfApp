@@ -29,6 +29,8 @@ import {
   probeGeminiTextAndVisionConnectivity,
   type GeminiConnectivityProbeRow,
 } from '@/lib/gemini-generative';
+import { getLastFullGithubBackupAtIso } from '@/lib/github-full-backup-local-meta';
+import { triggerGithubCloudRestoreFromFullBackup } from '@/lib/github-cloud-restore';
 import { triggerGithubCloudSync } from '@/lib/github-cloud-sync';
 import { getGeminiApiKey, getGeminiApiKeyFromEnv, getZhipuApiKeyFromEnv } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -40,6 +42,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   Dimensions,
   FlatList,
   Modal,
@@ -78,6 +81,12 @@ function weeklyJournalStatusText(row: WeeklyReviewJournalRow | null): string {
   return '点开写下你的本周故事';
 }
 
+function formatZhFullBackupTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
 function wishListIconForRow(row: WishItemRow): ComponentProps<typeof MaterialIcons>['name'] {
   const id = row.category_id ?? '';
   const lab = (row.category_label ?? '').toLowerCase();
@@ -103,6 +112,9 @@ export default function ProfileScreen() {
   const [geminiProbeRows, setGeminiProbeRows] = useState<GeminiConnectivityProbeRow[] | null>(null);
   const [geminiProbeError, setGeminiProbeError] = useState<string | null>(null);
   const [cloudBackupBusy, setCloudBackupBusy] = useState(false);
+  const [cloudRestoreBusy, setCloudRestoreBusy] = useState(false);
+  const githubCloudOpAbortRef = useRef<AbortController | null>(null);
+  const [lastFullGithubBackupAtIso, setLastFullGithubBackupAtIso] = useState<string | null>(null);
   const [githubDiagModal, setGithubDiagModal] = useState<{
     visible: boolean;
     title: string;
@@ -110,17 +122,60 @@ export default function ProfileScreen() {
     body: string;
   }>({ visible: false, title: '', subtitle: '', body: '' });
 
+  const loadLastFullGithubBackupMeta = useCallback(async () => {
+    try {
+      const iso = await getLastFullGithubBackupAtIso();
+      setLastFullGithubBackupAtIso(iso);
+    } catch {
+      setLastFullGithubBackupAtIso(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', next => {
+      if (next === 'background') {
+        githubCloudOpAbortRef.current?.abort();
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  const startGithubCloudOp = useCallback(() => {
+    githubCloudOpAbortRef.current?.abort();
+    const ac = new AbortController();
+    githubCloudOpAbortRef.current = ac;
+    return ac;
+  }, []);
+
+  const endGithubCloudOp = useCallback((ac: AbortController) => {
+    if (githubCloudOpAbortRef.current === ac) {
+      githubCloudOpAbortRef.current = null;
+    }
+  }, []);
+
   const runCloudBackup = useCallback(async () => {
+    const ac = startGithubCloudOp();
     setCloudBackupBusy(true);
     try {
-      const r = await triggerGithubCloudSync();
+      const r = await triggerGithubCloudSync({ signal: ac.signal });
       if (r.ok) {
+        const iso = r.lastFullBackupAt ?? null;
+        if (iso) setLastFullGithubBackupAtIso(iso);
+        else void loadLastFullGithubBackupMeta();
+        const timeLine =
+          iso != null
+            ? `\n\n本次备份时间（已写入仓库 last-full-backup.json、manifest 与本机）：${formatZhFullBackupTime(iso)}`
+            : '';
         const sub = r.upload.commitUrl ? `\n\nmanifest 提交：${r.upload.commitUrl}` : '';
         const multi =
           r.multiFileBackup != null
-            ? `\n\n已上传 ${r.multiFileBackup.fileCount} 个 JSON 文件到「${r.multiFileBackup.root}/」\n（sqlite/ 每表一文件、kv/ 备忘与偏好、manifest.json 索引）。`
+            ? `\n\n已上传 ${r.multiFileBackup.fileCount} 个 JSON 文件到「${r.multiFileBackup.root}/」\n（sqlite/ 每表一文件、kv/ 备忘与偏好、last-full-backup.json、manifest.json 索引）。`
             : '';
-        Alert.alert('云备份', `各表与本地 KV 已分别写入仓库。${multi}${sub}`);
+        Alert.alert('云备份', `各表与本地 KV 已分别写入仓库。${multi}${timeLine}${sub}`);
+      } else if (r.reason === 'aborted') {
+        Alert.alert('云备份已中止', r.message);
+      } else if (r.reason === 'unsupported_platform') {
+        Alert.alert('云备份不可用', r.message);
       } else {
         setGithubDiagModal({
           visible: true,
@@ -130,9 +185,10 @@ export default function ProfileScreen() {
         });
       }
     } finally {
+      endGithubCloudOp(ac);
       setCloudBackupBusy(false);
     }
-  }, []);
+  }, [endGithubCloudOp, loadLastFullGithubBackupMeta, startGithubCloudOp]);
 
   const runGeminiConnectivityProbe = useCallback(async () => {
     setGeminiProbeLoading(true);
@@ -336,6 +392,65 @@ export default function ProfileScreen() {
     }
   }, []);
 
+  const runCloudRestore = useCallback(async () => {
+    const ac = startGithubCloudOp();
+    setCloudRestoreBusy(true);
+    try {
+      const r = await triggerGithubCloudRestoreFromFullBackup({ signal: ac.signal });
+      if (r.ok) {
+        setLastFullGithubBackupAtIso(r.cloudLastUpdated);
+        void loadUser();
+        void loadProfileVisions();
+        void loadProfileWishItems();
+        void loadWeeklyJournal();
+        void loadUserSkillsSnapshot();
+        void loadMemoCount();
+        void loadWeaknessCount();
+        void loadAiLlmProviderPreference().then(() => setAiLlmProvider(getPreferredAiLlmProviderSync()));
+        const kvLine = r.kvKeys.length > 0 ? `\n已恢复 KV：${r.kvKeys.join('、')}` : '';
+        const warnBlock =
+          r.warnings.length > 0 ? `\n\n注意：\n${r.warnings.map(w => `· ${w}`).join('\n')}` : '';
+        Alert.alert(
+          '从云同步完成',
+          `已用云端快照覆盖本地。\nSQLite：${r.sqliteTables} 张表，共 ${r.sqliteRows} 行。${kvLine}\n\n云端时间：${formatZhFullBackupTime(r.cloudLastUpdated)}${warnBlock}`,
+        );
+      } else if (r.reason === 'aborted') {
+        Alert.alert('从云同步已中止', r.message);
+      } else {
+        setGithubDiagModal({
+          visible: true,
+          title: '从云同步失败',
+          subtitle: r.message,
+          body: r.diagnosticText,
+        });
+      }
+    } finally {
+      endGithubCloudOp(ac);
+      setCloudRestoreBusy(false);
+    }
+  }, [
+    endGithubCloudOp,
+    loadUser,
+    loadProfileVisions,
+    loadProfileWishItems,
+    loadWeeklyJournal,
+    loadUserSkillsSnapshot,
+    loadMemoCount,
+    loadWeaknessCount,
+    startGithubCloudOp,
+  ]);
+
+  const requestCloudRestore = useCallback(() => {
+    Alert.alert(
+      '从云同步',
+      '将按 GitHub 上 manifest.json 所列文件，用云端全量备份覆盖本机 SQLite 与备忘、缺点、技能、周复盘星期、AI 引擎偏好等数据。未备份到云端的本地改动将丢失。确定继续？',
+      [
+        { text: '取消', style: 'cancel' },
+        { text: '确定覆盖并同步', style: 'destructive', onPress: () => void runCloudRestore() },
+      ],
+    );
+  }, [runCloudRestore]);
+
   useEffect(() => {
     loadUser();
   }, [loadUser]);
@@ -349,6 +464,7 @@ export default function ProfileScreen() {
       void loadUserSkillsSnapshot();
       void loadMemoCount();
       void loadWeaknessCount();
+      void loadLastFullGithubBackupMeta();
       void loadAiLlmProviderPreference().then(() => {
         setAiLlmProvider(getPreferredAiLlmProviderSync());
       });
@@ -360,6 +476,7 @@ export default function ProfileScreen() {
       loadUserSkillsSnapshot,
       loadMemoCount,
       loadWeaknessCount,
+      loadLastFullGithubBackupMeta,
     ]),
   );
 
@@ -918,8 +1035,8 @@ export default function ProfileScreen() {
 
           <Pressable
             onPress={() => void runCloudBackup()}
-            disabled={cloudBackupBusy}
-            style={({ pressed }) => [{ opacity: pressed || cloudBackupBusy ? 0.88 : 1 }]}
+            disabled={cloudBackupBusy || cloudRestoreBusy}
+            style={({ pressed }) => [{ opacity: pressed || cloudBackupBusy || cloudRestoreBusy ? 0.88 : 1 }]}
           >
             <View
               style={{
@@ -945,8 +1062,49 @@ export default function ProfileScreen() {
                   <Text style={{ fontSize: 15, fontWeight: '800', color: text }}>一键全量备份到 GitHub</Text>
                   <Text style={{ fontSize: 12, color: outline, marginTop: 4, lineHeight: 17 }}>
                     每张 SQLite 表单独一个 JSON（默认目录 backups/selfapp/sqlite/），备忘与技能等写入
-                    backups/selfapp/kv/，最后写 manifest.json。根目录可用 EXPO_PUBLIC_GITHUB_BACKUP_ROOT
-                    修改；账单自动同步仍用 EXPO_PUBLIC_GITHUB_BACKUP_PATH 单文件。
+                    backups/selfapp/kv/，并上传 last-full-backup.json 与 manifest.json（均含备份时间）。根目录可用
+                    EXPO_PUBLIC_GITHUB_BACKUP_ROOT 修改；账单自动同步仍用 EXPO_PUBLIC_GITHUB_BACKUP_PATH 单文件。
+                  </Text>
+                  <Text style={{ fontSize: 11, color: outline, marginTop: 8, lineHeight: 16 }}>
+                    {lastFullGithubBackupAtIso
+                      ? `上次全量备份（本机记录）：${formatZhFullBackupTime(lastFullGithubBackupAtIso)}`
+                      : '尚未在本机记录全量备份时间（成功备份一次后将显示）。'}
+                  </Text>
+                </View>
+              </View>
+              <MaterialIcons name="chevron-right" size={24} color={outline} />
+            </View>
+          </Pressable>
+
+          <Pressable
+            onPress={() => requestCloudRestore()}
+            disabled={cloudBackupBusy || cloudRestoreBusy}
+            style={({ pressed }) => [{ opacity: pressed || cloudBackupBusy || cloudRestoreBusy ? 0.88 : 1 }]}
+          >
+            <View
+              style={{
+                marginTop: 10,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingVertical: 14,
+                paddingHorizontal: 14,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: isDark ? 'rgba(248,113,113,0.35)' : 'rgba(185,28,28,0.25)',
+                backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#ffffff',
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1, paddingRight: 8 }}>
+                {cloudRestoreBusy ? (
+                  <ActivityIndicator size="small" color={isDark ? '#f87171' : '#b91c1c'} />
+                ) : (
+                  <MaterialIcons name="cloud-download" size={26} color={isDark ? '#f87171' : '#b91c1c'} />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontWeight: '800', color: text }}>从云同步到本机</Text>
+                  <Text style={{ fontSize: 12, color: outline, marginTop: 4, lineHeight: 17 }}>
+                    读取同一备份根目录下的 manifest.json，将云端 sqlite/ 与 kv/ 覆盖写入本机。操作前请确认已备份；与「一键全量备份」使用相同环境变量。
                   </Text>
                 </View>
               </View>

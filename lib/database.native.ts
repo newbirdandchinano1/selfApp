@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { enableGithubSqliteMutationTrackingOnDatabase } from '@/lib/github-sqlite-dirty-track';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
@@ -812,6 +813,8 @@ export async function initDatabase() {
       /* 旧库可能尚无 cash_flow 表；忽略 */
     }
   }
+
+  enableGithubSqliteMutationTrackingOnDatabase(db as never);
 
   return db;
 }

@@ -27,9 +27,17 @@ import {
   setGlobalProteinTargetG,
   setGlobalSodiumTargetMg,
 } from '@/lib/global-intake-targets';
+import { ensureDailyAiIntakeTargetsForToday, type DailyAiIntakeTargetsRow } from '@/lib/daily-intake-ai-targets';
+import {
+  calculateNutritionV2,
+  mapGenderToNutritionGender,
+  mapGoalToNutritionGoal,
+  mapLifestyleToActivityLevel,
+} from '@/lib/nutrition-heuristic';
 import {
   analyzeFoodNutritionFromImage,
   getActiveAiLlmApiKey,
+  isActiveAiLlmConfigured,
   parseFoodIntakeFromText,
 } from '@/lib/zhipu-image-parse';
 import {
@@ -429,6 +437,13 @@ function goalMatchesSuggestion(goal: number, suggestion: number) {
   return Math.round(goal) === Math.round(suggestion);
 }
 
+function dailyAiTargetForTab(row: DailyAiIntakeTargetsRow, tab: '水分' | '蛋白质' | '碳水' | '钠'): number {
+  if (tab === '水分') return row.hydration_ml;
+  if (tab === '蛋白质') return row.protein_g;
+  if (tab === '碳水') return row.carbohydrate_g;
+  return row.sodium_mg;
+}
+
 type AssistantSuggestKind = 'best' | 'avg' | 'community';
 
 function addDays(d: Date, days: number) {
@@ -497,88 +512,6 @@ function sodiumStatusDesc(percent: number) {
   if (percent <= 60) return '保持在理想范围，心血管压力低';
   if (percent <= 90) return '略偏高，注意饮食清淡';
   return '摄入偏高，建议减少加工食品';
-}
-
-type NutritionV2ActivityLevel = 'Sedentary' | 'Fitness' | 'High-Intensity';
-type NutritionV2Goal = 'None' | 'Fat Loss' | 'Muscle Gain';
-type NutritionV2Gender = 'Male' | 'Female';
-
-function mapLifestyleToActivityLevel(lifestyle?: string | null): NutritionV2ActivityLevel {
-  if (lifestyle === '健身') return 'Fitness';
-  if (lifestyle === '高强度锻炼') return 'High-Intensity';
-  return 'Sedentary';
-}
-
-function mapGoalToNutritionGoal(goal?: string | null): NutritionV2Goal {
-  if (goal === '减脂') return 'Fat Loss';
-  if (goal === '增肌') return 'Muscle Gain';
-  return 'None';
-}
-
-function mapGenderToNutritionGender(gender?: string | null): NutritionV2Gender {
-  return gender === '男' ? 'Male' : 'Female';
-}
-
-function calculateNutritionV2(
-  weight: number,
-  height: number,
-  age: number,
-  gender: NutritionV2Gender,
-  activityLevel: NutritionV2ActivityLevel,
-  goal: NutritionV2Goal,
-  actualSodium: number
-) {
-  void height;
-  const PROTEIN_MULTIPLIER_CAP = 1.8;
-  const PROTEIN_GRAMS_CAP = 130;
-  const WATER_ML_CAP = 4000;
-  const SODIUM_MG_CAP = 2500;
-  const CARBOHYDRATE_G_CAP = 420;
-
-  let proteinMultiplier = 1.0;
-  if (activityLevel === 'Fitness') proteinMultiplier = 1.5;
-  if (activityLevel === 'High-Intensity') proteinMultiplier = 2.0;
-
-  if (age >= 65) proteinMultiplier += 0.2;
-  if (goal === 'Fat Loss') proteinMultiplier += 0.2;
-  if (goal === 'Muscle Gain') proteinMultiplier += 0.3;
-  proteinMultiplier = Math.min(proteinMultiplier, PROTEIN_MULTIPLIER_CAP);
-
-  const totalProteinG = Math.min(weight * proteinMultiplier, PROTEIN_GRAMS_CAP);
-  let carbohydrateMultiplier = 3.2;
-  if (activityLevel === 'Fitness') carbohydrateMultiplier = 4.0;
-  if (activityLevel === 'High-Intensity') carbohydrateMultiplier = 4.8;
-  if (goal === 'Fat Loss') carbohydrateMultiplier -= 0.35;
-  if (goal === 'Muscle Gain') carbohydrateMultiplier += 0.4;
-  carbohydrateMultiplier = Math.max(2.2, carbohydrateMultiplier);
-  const totalCarbohydrateG = Math.min(weight * carbohydrateMultiplier, CARBOHYDRATE_G_CAP);
-
-  const baseSodium = 1500;
-  let sodiumActivityBonus = activityLevel === 'Sedentary' ? 0 : activityLevel === 'Fitness' ? 500 : 1000;
-  if (activityLevel === 'High-Intensity' && gender === 'Male') {
-    sodiumActivityBonus += 200;
-  }
-  const sodiumGoalBonus = goal === 'Muscle Gain' ? 200 : 0;
-  const totalSodiumMg = Math.min(baseSodium + sodiumActivityBonus + sodiumGoalBonus, SODIUM_MG_CAP);
-
-  const waterMultiplier = age < 30 ? 35 : age <= 55 ? 30 : 25;
-  let totalWaterMl = weight * waterMultiplier;
-  if (activityLevel === 'Fitness') totalWaterMl += 300;
-  if (activityLevel === 'High-Intensity') totalWaterMl += 600;
-  if (goal === 'Fat Loss') totalWaterMl += 300;
-  if (goal === 'Muscle Gain') totalWaterMl += 200;
-  if (actualSodium > totalSodiumMg) {
-    const excessSodium = actualSodium - totalSodiumMg;
-    totalWaterMl += excessSodium * 0.282;
-  }
-  totalWaterMl = Math.min(totalWaterMl, WATER_ML_CAP);
-
-  return {
-    Water_ml: Math.round(totalWaterMl),
-    Protein_g: Math.round(totalProteinG),
-    Carbohydrate_g: Math.round(totalCarbohydrateG),
-    Sodium_mg: Math.round(totalSodiumMg),
-  };
 }
 
 const CircularProgress = ({
@@ -662,6 +595,9 @@ export default function HealthScreen() {
   );
   /** 智能建议中选中的推荐项；与 manualGoal 一致时有值，手动输入不匹配任一项时为 null */
   const [assistantSuggestSelection, setAssistantSuggestSelection] = React.useState<AssistantSuggestKind | null>(null);
+  /** 每日至多一次 AI 估算的四项目标（本地缓存），用于「今日最佳」行 */
+  const [dailyAiTargets, setDailyAiTargets] = React.useState<DailyAiIntakeTargetsRow | null>(null);
+  const [dailyAiLoading, setDailyAiLoading] = React.useState(false);
   const today = React.useMemo(() => normalizeDate(new Date()), []);
   const [selectedDate, setSelectedDate] = React.useState(() => normalizeDate(new Date()));
   const [weekAnchorDate, setWeekAnchorDate] = React.useState(() => normalizeDate(new Date()));
@@ -816,6 +752,36 @@ export default function HealthScreen() {
         cancelled = true;
       };
     }, [user?.id, weekAnchorDate, selectedDate])
+  );
+
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      const run = async () => {
+        if (!user?.id) {
+          setDailyAiTargets(null);
+          setDailyAiLoading(false);
+          return;
+        }
+        const ymd = formatLocalYmd(new Date());
+        setDailyAiLoading(true);
+        try {
+          const r = await ensureDailyAiIntakeTargetsForToday({ user, todayYmd: ymd });
+          if (cancelled) return;
+          if (r.status === 'cached' || r.status === 'fresh') {
+            setDailyAiTargets(r.row);
+          } else {
+            setDailyAiTargets(null);
+          }
+        } finally {
+          if (!cancelled) setDailyAiLoading(false);
+        }
+      };
+      void run();
+      return () => {
+        cancelled = true;
+      };
+    }, [user])
   );
 
   useFocusEffect(
@@ -1260,13 +1226,19 @@ export default function HealthScreen() {
         return;
       }
       if (payload.mode === 'photo') {
-        setPendingIntake({ id: pendingId, kind: 'photo', label: '拍照记录' });
+        const photoNote = payload.photoNote?.trim() ?? '';
+        setPendingIntake({
+          id: pendingId,
+          kind: 'photo',
+          label: photoNote.length > 0 ? photoNote : '拍照记录',
+        });
         void (async () => {
           try {
             const r = await analyzeFoodNutritionFromImage({
               apiKey: getActiveAiLlmApiKey(),
               imageBase64: payload.imageBase64,
               imageMimeType: payload.imageMimeType,
+              ...(photoNote ? { supplementText: photoNote } : {}),
             });
             if (!r.ok) {
               Alert.alert('识别失败', r.error);
@@ -1282,8 +1254,11 @@ export default function HealthScreen() {
               Alert.alert('无法记录', hint);
               return;
             }
+            const foodName = d.food_name?.trim() ?? '';
+            const displayTitleRaw =
+              photoNote.length > 0 ? (foodName.length > 0 ? `${photoNote} · ${foodName}` : photoNote) : foodName;
             const ok = await persistFoodPhotoIntake(d.protein_g, d.carbohydrate_g, d.sodium_mg, payload.sourceImageUri, {
-              displayTitle: d.food_name?.trim() || undefined,
+              displayTitle: clampIntakeDisplayTitle(displayTitleRaw) ?? undefined,
               aiComment: d.ai_evaluation?.trim(),
             });
             if (!ok) Alert.alert('保存失败', '请稍后重试。');
@@ -1306,11 +1281,7 @@ export default function HealthScreen() {
           recordId: pendingIntake.id,
           metric: 'hydration',
           title:
-            pendingIntake.kind === 'ai'
-              ? pendingIntake.label.length > 40
-                ? `${pendingIntake.label.slice(0, 40)}…`
-                : pendingIntake.label
-              : '拍照记录',
+            pendingIntake.label.length > 40 ? `${pendingIntake.label.slice(0, 40)}…` : pendingIntake.label,
           timeLine: '解析中',
           amountRight: '—',
           note: pendingIntake.kind === 'ai' ? '正在解析饮食描述…' : '正在识别食物照片…',
@@ -1609,23 +1580,33 @@ export default function HealthScreen() {
     }
   }, [assistantTab, healthRecords,user]);
 
-  const suggestNumeric = React.useMemo(
-    () => ({
-      best: Math.round(Number(bestValue) || 0),
+  const suggestNumeric = React.useMemo(() => {
+    const fallbackBest = Math.round(Number(bestValue) || 0);
+    const ai =
+      dailyAiTargets != null && !dailyAiLoading
+        ? Math.round(dailyAiTargetForTab(dailyAiTargets, assistantTab))
+        : null;
+    const best = ai != null && ai > 0 ? ai : fallbackBest;
+    return {
+      best,
       avg: Math.round(Number(avgValue) || 0),
       community: Math.round(Number(communityValue) || 0),
-    }),
-    [bestValue, avgValue, communityValue]
-  );
+    };
+  }, [assistantTab, bestValue, avgValue, communityValue, dailyAiTargets, dailyAiLoading]);
 
   const assistantSuggestRows = React.useMemo(
     () =>
       [
-        { kind: 'best' as const, tag: '今日最佳(基于你的活动和身体指标计算)' },
+        {
+          kind: 'best' as const,
+          tag: dailyAiTargets
+            ? 'AI 今日建议（综合档案与近7日摄入，每日更新一次）'
+            : '今日最佳(基于你的活动和身体指标计算)',
+        },
         { kind: 'avg' as const, tag: '上周平均(基于您的日常活动指标计算)' },
         { kind: 'community' as const, tag: '社群达标(基于您的身体指标计算)' },
       ] as const,
-    []
+    [dailyAiTargets]
   );
 
   /** 输入框与推荐行双向同步：多行数值相同时保留当前选中项，避免被固定写成「总是 best」 */
@@ -2608,6 +2589,17 @@ export default function HealthScreen() {
               <MaterialIcons name="auto-awesome" size={18} color={currentAssistant.accent} />
               <Text style={[styles.suggestIntroText, { color: theme.textSecondary }]}>基于您的历史记录和今日活动：</Text>
             </View>
+            {dailyAiLoading ? (
+              <Text style={[styles.suggestAiHint, { color: theme.textSecondary }]}>正在生成今日 AI 摄入建议…</Text>
+            ) : null}
+            {!dailyAiLoading && dailyAiTargets?.rationale_zh ? (
+              <Text style={[styles.suggestAiRationale, { color: theme.text }]}>{dailyAiTargets.rationale_zh}</Text>
+            ) : null}
+            {!dailyAiLoading && !dailyAiTargets && isActiveAiLlmConfigured() === false ? (
+              <Text style={[styles.suggestAiHint, { color: theme.textSecondary }]}>
+                未配置 AI 密钥时「今日最佳」使用本地公式；可在「我的」中配置智谱或豆包后获得每日 AI 目标。
+              </Text>
+            ) : null}
 
             <View style={styles.suggestList}>
               {assistantSuggestRows.map((row) => {
@@ -3278,6 +3270,20 @@ const styles = StyleSheet.create({
   suggestIntroText: {
     fontSize: 13,
     fontWeight: '500',
+  },
+  suggestAiHint: {
+    fontSize: 12,
+    fontWeight: '500',
+    lineHeight: 18,
+    marginTop: -4,
+    marginBottom: 10,
+  },
+  suggestAiRationale: {
+    fontSize: 12,
+    fontWeight: '500',
+    lineHeight: 18,
+    marginTop: -6,
+    marginBottom: 12,
   },
   suggestList: {
     gap: 10,

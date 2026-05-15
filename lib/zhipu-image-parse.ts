@@ -875,6 +875,160 @@ ${FOOD_TEXT_INTAKE_JSON_TEMPLATE}`;
   return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
 }
 
+/** 首页「智能建议」：结合用户档案与摄入摘要，估算当日四项摄入目标 */
+export type DailyIntakeTargetsEstimateJson = {
+  hydration_ml: number;
+  protein_g: number;
+  carbohydrate_g: number;
+  sodium_mg: number;
+  /** 1～2 句中文，说明主要调整依据（勿编造未提供的数据） */
+  rationale_zh?: string;
+};
+
+export type EstimateDailyIntakeTargetsFromContextOptions = {
+  apiKey: string;
+  /** 由调用方组装的用户档案、近7日摄入与本地公式参考值（中文） */
+  contextBlock: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+export type EstimateDailyIntakeTargetsFromContextResult =
+  | { ok: true; data: DailyIntakeTargetsEstimateJson; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function clampDailyIntakeTargetsEstimate(raw: DailyIntakeTargetsEstimateJson): DailyIntakeTargetsEstimateJson {
+  const clamp = (n: number, lo: number, hi: number) => {
+    if (!Number.isFinite(n)) return lo;
+    return Math.round(Math.min(hi, Math.max(lo, n)));
+  };
+  let rationale = typeof raw.rationale_zh === 'string' ? raw.rationale_zh.trim() : '';
+  if (rationale.length > 400) rationale = `${rationale.slice(0, 400)}…`;
+  return {
+    hydration_ml: clamp(raw.hydration_ml, 800, 5000),
+    protein_g: clamp(raw.protein_g, 35, 220),
+    carbohydrate_g: clamp(raw.carbohydrate_g, 80, 550),
+    sodium_mg: clamp(raw.sodium_mg, 1000, 3200),
+    rationale_zh: rationale || undefined,
+  };
+}
+
+function normalizeDailyIntakeTargetsEstimateJson(parsed: unknown): DailyIntakeTargetsEstimateJson | null {
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const o = parsed as Record<string, unknown>;
+  const pickNum = (v: unknown): number => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string' && v.trim()) {
+      const n = Number(v.replace(/,/g, '').trim());
+      return Number.isFinite(n) ? n : NaN;
+    }
+    return NaN;
+  };
+  const hydration_ml = pickNum(o.hydration_ml);
+  const protein_g = pickNum(o.protein_g);
+  const carbohydrate_g = pickNum(o.carbohydrate_g);
+  const sodium_mg = pickNum(o.sodium_mg);
+  if (![hydration_ml, protein_g, carbohydrate_g, sodium_mg].every(Number.isFinite)) return null;
+  const rationale_zh = typeof o.rationale_zh === 'string' ? o.rationale_zh : undefined;
+  return clampDailyIntakeTargetsEstimate({
+    hydration_ml,
+    protein_g,
+    carbohydrate_g,
+    sodium_mg,
+    rationale_zh,
+  });
+}
+
+/**
+ * 根据用户档案与近七日摄入摘要，输出当日水分/蛋白质/碳水/钠目标（JSON）。
+ * 与 `parseFoodIntakeFromText` 类似：串行队列、1305 重试、JSON 围栏剥离。
+ */
+export async function estimateDailyIntakeTargetsFromContext(
+  options: EstimateDailyIntakeTargetsFromContextOptions,
+): Promise<EstimateDailyIntakeTargetsFromContextResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 12);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 1000);
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const context = options.contextBlock.trim();
+  if (!context) {
+    return { ok: false, error: '上下文为空', attempts: 0 };
+  }
+
+  const systemContent = `你是注册营养师风格的助手，用数据与常识为用户估算「今日摄入目标」。
+只输出严格 JSON 对象，不要 markdown、不要代码围栏、不要任何 JSON 以外的文字。
+字段与类型（必须全部出现）：
+- hydration_ml：数字，全日饮水目标（毫升），合理范围约 1200～4000
+- protein_g：数字，蛋白质目标（克）
+- carbohydrate_g：数字，碳水化合物目标（克）
+- sodium_mg：数字，钠目标（毫克），一般不低于 1000、不高于 3000，除非用户持续极高强度出汗且档案支持
+- rationale_zh：字符串，1～2 句简体中文，概括你如何综合「用户身体档案」「近7日实际摄入」「本地公式参考值」得到上述目标；勿编造未在上下文中出现的疾病诊断或实验室数据；若信息不足，说明保守处理。
+
+须遵守：
+- 结合用户性别、年龄、身高体重、运动与目标（减脂/增肌）与近7日各营养素摄入趋势做微调；若近几日某营养素持续明显偏低或偏高，目标应温和纠正而非极端跳变。
+- 钠目标需兼顾运动出汗与心血管风险：久坐偏低、高强度可略高。
+- 输出数值须为合理整数或最多一位小数的数字（建议四舍五入为整数）。`;
+
+  let lastError = '未知错误';
+  let lastHttp = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const dr = await dispatchZhipuOrGeminiTextChat({
+      apiKey: key,
+      systemContent,
+      userContent: `请根据以下上下文生成 hydration_ml、protein_g、carbohydrate_g、sodium_mg 与 rationale_zh：\n\n${context}`,
+      temperature: 0.15,
+      maxTokens: 768,
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      forceJsonObject: true,
+    });
+
+    if (!dr.ok) {
+      lastError = dr.error;
+      lastHttp = dr.httpStatus ?? 0;
+      const p = getPreferredAiLlmProviderSync();
+      const retryable =
+        (p === 'zhipu' && bodyIndicatesZhipu1305(dr.details)) ||
+        (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503));
+      if (retryable && attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus: lastHttp, details: dr.details };
+    }
+
+    const content = dr.text.trim();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stripMarkdownJsonFence(content)) as unknown;
+    } catch {
+      lastError = '模型返回的不是合法 JSON';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus: dr.httpStatus, details: { snippet: content.slice(0, 400) } };
+    }
+
+    const data = normalizeDailyIntakeTargetsEstimateJson(parsed);
+    if (!data) {
+      lastError = 'JSON 字段不完整或无法解析';
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, error: lastError, attempts: attempt, httpStatus: dr.httpStatus, details: { snippet: content.slice(0, 400) } };
+    }
+
+    return { ok: true, data, rawContent: content, attempts: attempt };
+  }
+
+  return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
+}
+
 const FINANCE_STATS_ANALYSIS_JSON_HINT = `{"analysis":"2～5句中文个人财务建议，口语化、可操作，不要markdown"}`;
 
 export type AnalyzeFinanceBillSummaryFromTextOptions = {
@@ -2307,6 +2461,8 @@ export type AnalyzeFoodNutritionOptions = {
   apiKey: string;
   imageBase64: string;
   imageMimeType?: string;
+  /** 用户选填的补充说明（如份量、菜名提示），与图片一并交给模型参考 */
+  supplementText?: string;
   maxAttempts?: number;
   retryDelayMs?: number;
 };
@@ -2455,8 +2611,12 @@ export async function analyzeFoodNutritionFromImage(
   const mime = (options.imageMimeType ?? 'image/jpeg').trim() || 'image/jpeg';
 
   const systemContent = `你是营养成分估算助手，根据用户上传的食物照片输出 JSON。\n${FOOD_NUTRITION_SCHEMA_TEXT}`;
-  const userText =
+  let userText =
     '请分析这张图片中的食物（若有），估算蛋白质、碳水化合物、钠含量，并输出 food_name 与 ai_evaluation，严格按系统要求的 JSON 字段与类型。';
+  const extra = options.supplementText?.trim();
+  if (extra) {
+    userText += `\n\n用户补充说明（请结合图片与说明一起判断份量、种类与可食部分）：\n${extra}`;
+  }
 
   const lr = await loopVisionJsonLlmWithRetries<{ data: FoodNutritionJson; repaired: boolean }>({
     apiKey: key,

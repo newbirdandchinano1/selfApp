@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { markGithubKvSliceDirty } from '@/lib/github-sqlite-dirty-track';
 
 const STORAGE_KEY = '@selfapp/ai_llm_provider_id';
 
@@ -31,5 +32,7 @@ export async function setPreferredAiLlmProvider(id: AiLlmProviderId): Promise<vo
     await AsyncStorage.setItem(STORAGE_KEY, cachedProvider);
   } catch {
     // 忽略持久化失败，内存缓存仍生效
+    return;
   }
+  markGithubKvSliceDirty('ai_llm_provider');
 }

@@ -5,6 +5,8 @@
  * Token 必须由调用方注入（如 SecureStore / 用户输入 / 构建期 env），切勿提交到仓库。
  */
 
+import { fetchWithTimeoutAndRetry, isAbortError } from '@/lib/github-fetch-retry';
+
 const GITHUB_API = 'https://api.github.com';
 const DEFAULT_API_VERSION = '2022-11-28';
 
@@ -31,9 +33,34 @@ export type GitHubBackupUploadFail = {
   bodyText?: string;
   /** 含 URL、HTTP 状态、响应正文、原生网络错误等，供界面完整展示 */
   diagnosticText: string;
+  /** 用户进入后台中止或 AbortSignal */
+  aborted?: boolean;
 };
 
 export type GitHubBackupUploadResult = GitHubBackupUploadOk | GitHubBackupUploadFail;
+
+export type GitHubDownloadOk = { ok: true; text: string };
+
+export type GitHubDownloadFail = {
+  ok: false;
+  status?: number;
+  message: string;
+  diagnosticText: string;
+  aborted?: boolean;
+};
+
+export type GitHubDownloadResult = GitHubDownloadOk | GitHubDownloadFail;
+
+function decodeBase64Utf8GithubField(b64: string): string {
+  const clean = b64.replace(/\s/g, '');
+  if (typeof globalThis.atob !== 'function') {
+    throw new Error('globalThis.atob 不可用，无法解码 GitHub 文件内容');
+  }
+  const bin = globalThis.atob(clean);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+  return new TextDecoder('utf-8').decode(bytes);
+}
 
 const DEFAULT_BACKUP_PATH = 'backups/user_data.json';
 
@@ -209,11 +236,16 @@ export class GitHubBackupManager {
    */
   async uploadBackup(
     payload: string | Uint8Array,
-    options?: { message?: string },
+    options?: { message?: string; signal?: AbortSignal },
   ): Promise<GitHubBackupUploadResult> {
     if (!this.token || !this.owner || !this.repo || !this.path) {
       const msg = 'GitHub 配置不完整：token / owner / repo / path 均不能为空';
       return { ok: false, message: msg, diagnosticText: msg };
+    }
+
+    if (options?.signal?.aborted) {
+      const msg = '操作已中止（例如应用进入后台）';
+      return { ok: false, message: msg, diagnosticText: msg, aborted: true };
     }
 
     const url = this.contentsUrl();
@@ -222,11 +254,16 @@ export class GitHubBackupManager {
     // —— GET：取 sha（完整记录响应，便于排查）——
     let getRes: Response;
     try {
-      getRes = await fetch(url, {
-        method: 'GET',
-        headers: this.authHeaders(),
-      });
+      getRes = await fetchWithTimeoutAndRetry(
+        url,
+        { method: 'GET', headers: this.authHeaders() },
+        { signal: options?.signal },
+      );
     } catch (e) {
+      if (isAbortError(e) || options?.signal?.aborted) {
+        const msg = '已中止：获取云端文件信息（常见于切到后台或主动取消）';
+        return { ok: false, message: msg, diagnosticText: formatFetchThrownDiagnostic('GET', url, e), aborted: true };
+      }
       const diagnosticText = formatFetchThrownDiagnostic('GET', url, e);
       return {
         ok: false,
@@ -284,45 +321,109 @@ export class GitHubBackupManager {
       putJsonBody.sha = existingSha;
     }
 
-    let putRes: Response;
-    try {
-      putRes = await fetch(url, {
-        method: 'PUT',
-        headers: {
-          ...this.authHeaders(),
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(putJsonBody),
-      });
-    } catch (e) {
-      const diagnosticText = [
-        formatFetchThrownDiagnostic('PUT', url, e),
-        '',
-        '（PUT 前 GET 已成功；若需对照，GET 判定为「' + (existingSha ? `已有文件 sha=${existingSha.slice(0, 7)}…` : '新文件无 sha') + '」）',
-      ].join('\n');
-      return {
-        ok: false,
-        message: '上传备份失败（网络层）',
-        diagnosticText,
-      };
-    }
+    let putRes!: Response;
+    let putBodyText = '';
+    let conflictRetryDone = false;
 
-    const putBodyText = await putRes.text().catch(() => '(读取响应正文失败)');
-
-    if (putRes.status === 200 || putRes.status === 201) {
-      let commitUrl: string | undefined;
+    for (;;) {
       try {
-        const json = putBodyText ? JSON.parse(putBodyText) : null;
-        if (json && typeof json === 'object' && json !== null) {
-          const commit = (json as { commit?: { html_url?: string } }).commit;
-          if (commit && typeof commit.html_url === 'string') {
-            commitUrl = commit.html_url;
-          }
+        putRes = await fetchWithTimeoutAndRetry(
+          url,
+          {
+            method: 'PUT',
+            headers: {
+              ...this.authHeaders(),
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(putJsonBody),
+          },
+          { signal: options?.signal },
+        );
+      } catch (e) {
+        if (isAbortError(e) || options?.signal?.aborted) {
+          const msg = '已中止：上传备份（常见于切到后台或网络多次超时）';
+          return {
+            ok: false,
+            message: msg,
+            diagnosticText: [
+              formatFetchThrownDiagnostic('PUT', url, e),
+              '',
+              '（PUT 前 GET 已成功；若需对照，GET 判定为「' +
+                (existingSha ? `已有文件 sha=${existingSha.slice(0, 7)}…` : '新文件无 sha') +
+                '」）',
+            ].join('\n'),
+            aborted: true,
+          };
         }
-      } catch {
-        /* ignore */
+        const diagnosticText = [
+          formatFetchThrownDiagnostic('PUT', url, e),
+          '',
+          '（PUT 前 GET 已成功；若需对照，GET 判定为「' +
+            (existingSha ? `已有文件 sha=${existingSha.slice(0, 7)}…` : '新文件无 sha') +
+            '」）',
+        ].join('\n');
+        return {
+          ok: false,
+          message: '上传备份失败（网络层）',
+          diagnosticText,
+        };
       }
-      return { ok: true, status: putRes.status, commitUrl };
+
+      putBodyText = await putRes.text().catch(() => '(读取响应正文失败)');
+
+      if (putRes.status === 200 || putRes.status === 201) {
+        let commitUrl: string | undefined;
+        try {
+          const json = putBodyText ? JSON.parse(putBodyText) : null;
+          if (json && typeof json === 'object' && json !== null) {
+            const commit = (json as { commit?: { html_url?: string } }).commit;
+            if (commit && typeof commit.html_url === 'string') {
+              commitUrl = commit.html_url;
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+        return { ok: true, status: putRes.status, commitUrl };
+      }
+
+      if (putRes.status === 409 && !conflictRetryDone) {
+        conflictRetryDone = true;
+        let get2: Response;
+        try {
+          get2 = await fetchWithTimeoutAndRetry(
+            url,
+            { method: 'GET', headers: this.authHeaders() },
+            { signal: options?.signal },
+          );
+        } catch {
+          break;
+        }
+        const get2Text = await get2.text().catch(() => '');
+        if (get2.status === 200) {
+          let parsed2: unknown = null;
+          try {
+            parsed2 = get2Text ? JSON.parse(get2Text) : null;
+          } catch {
+            parsed2 = null;
+          }
+          const freshSha = readJsonSha(parsed2);
+          if (freshSha) {
+            putJsonBody.sha = freshSha;
+          } else {
+            delete putJsonBody.sha;
+          }
+          try {
+            base64Content = payloadToBase64(payload);
+            putJsonBody.content = base64Content;
+          } catch {
+            break;
+          }
+          continue;
+        }
+      }
+
+      break;
     }
 
     const diagnosticText = [
@@ -347,5 +448,137 @@ export class GitHubBackupManager {
       bodyText: putBodyText || undefined,
       diagnosticText,
     };
+  }
+
+  /**
+   * 下载仓库内单个文件 UTF-8 文本（Contents API，适用于 JSON 等文本备份）。
+   */
+  async downloadUtf8Text(options?: { signal?: AbortSignal }): Promise<GitHubDownloadResult> {
+    if (!this.token || !this.owner || !this.repo || !this.path) {
+      const msg = 'GitHub 配置不完整：token / owner / repo / path 均不能为空';
+      return { ok: false, message: msg, diagnosticText: msg };
+    }
+
+    if (options?.signal?.aborted) {
+      const msg = '操作已中止（例如应用进入后台）';
+      return { ok: false, message: msg, diagnosticText: msg, aborted: true };
+    }
+
+    const url = this.contentsUrl();
+    let res: Response;
+    try {
+      res = await fetchWithTimeoutAndRetry(
+        url,
+        { method: 'GET', headers: this.authHeaders() },
+        { signal: options?.signal },
+      );
+    } catch (e) {
+      if (isAbortError(e) || options?.signal?.aborted) {
+        return {
+          ok: false,
+          message: '下载已中止（常见于切到后台）',
+          diagnosticText: formatFetchThrownDiagnostic('GET', url, e),
+          aborted: true,
+        };
+      }
+      return {
+        ok: false,
+        message: '下载失败（网络层）',
+        diagnosticText: formatFetchThrownDiagnostic('GET', url, e),
+      };
+    }
+
+    const text = await res.text().catch(() => '(读取响应正文失败)');
+
+    if (res.status === 404) {
+      return {
+        ok: false,
+        status: 404,
+        message: '仓库中不存在该路径文件',
+        diagnosticText: formatHttpDiagnostic('下载文件（GET）', 'GET', url, res.status, text),
+      };
+    }
+
+    if (res.status !== 200) {
+      return {
+        ok: false,
+        status: res.status,
+        message: `下载失败：HTTP ${res.status}`,
+        diagnosticText: formatHttpDiagnostic('下载文件（GET）', 'GET', url, res.status, text),
+      };
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      return {
+        ok: false,
+        message: '响应不是合法 JSON',
+        diagnosticText: formatHttpDiagnostic('解析 GitHub 响应 JSON', 'GET', url, res.status, text),
+      };
+    }
+
+    if (parsed === null || typeof parsed !== 'object') {
+      return {
+        ok: false,
+        message: 'GitHub 响应 JSON 格式异常',
+        diagnosticText: text.slice(0, 4000),
+      };
+    }
+
+    const encoding = (parsed as { encoding?: unknown }).encoding;
+    const content = (parsed as { content?: unknown }).content;
+    if (encoding !== 'base64' || typeof content !== 'string' || !content.trim()) {
+      const downloadUrl = (parsed as { download_url?: unknown }).download_url;
+      if (typeof downloadUrl === 'string' && downloadUrl.startsWith('http')) {
+        try {
+          const rawRes = await fetchWithTimeoutAndRetry(
+            downloadUrl,
+            { method: 'GET' },
+            { signal: options?.signal },
+          );
+          const rawText = await rawRes.text();
+          if (!rawRes.ok) {
+            return {
+              ok: false,
+              status: rawRes.status,
+              message: `download_url 拉取失败：HTTP ${rawRes.status}`,
+              diagnosticText: rawText.slice(0, 4000),
+            };
+          }
+          return { ok: true, text: rawText };
+        } catch (e) {
+          if (isAbortError(e) || options?.signal?.aborted) {
+            return {
+              ok: false,
+              message: 'download_url 拉取已中止',
+              diagnosticText: serializeUnknownError(e),
+              aborted: true,
+            };
+          }
+          return {
+            ok: false,
+            message: 'download_url 拉取失败（网络层）',
+            diagnosticText: serializeUnknownError(e),
+          };
+        }
+      }
+      return {
+        ok: false,
+        message: '不是单文件内容响应（可能为目录 listing 或 LFS）',
+        diagnosticText: JSON.stringify(parsed, null, 2).slice(0, 4000),
+      };
+    }
+
+    try {
+      return { ok: true, text: decodeBase64Utf8GithubField(content) };
+    } catch (e) {
+      return {
+        ok: false,
+        message: 'Base64 解码失败',
+        diagnosticText: serializeUnknownError(e),
+      };
+    }
   }
 }

@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { markGithubKvSliceDirty } from '@/lib/github-sqlite-dirty-track';
 
 const WEAKNESS_LIST_KEY = 'user_weaknesses_v1';
 
@@ -75,8 +76,20 @@ async function readList(): Promise<UserWeaknessItem[]> {
   return parseList(raw);
 }
 
+/** 从云备份 kv payload 解析缺点列表。 */
+export function userWeaknessItemsFromBackupPayload(payload: unknown): UserWeaknessItem[] {
+  if (!Array.isArray(payload)) return [];
+  return parseList(JSON.stringify(payload));
+}
+
 async function writeList(items: UserWeaknessItem[]): Promise<void> {
   await AsyncStorage.setItem(WEAKNESS_LIST_KEY, JSON.stringify(items));
+  markGithubKvSliceDirty('user_weaknesses');
+}
+
+/** 云恢复：用备份中的缺点列表整表覆盖本地。 */
+export async function replaceUserWeaknessesFromCloudRestore(items: UserWeaknessItem[]): Promise<void> {
+  await writeList(items);
 }
 
 export async function listUserWeaknesses(): Promise<UserWeaknessItem[]> {
