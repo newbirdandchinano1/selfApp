@@ -29,6 +29,7 @@ import {
   probeGeminiTextAndVisionConnectivity,
   type GeminiConnectivityProbeRow,
 } from '@/lib/gemini-generative';
+import { triggerGithubCloudSync } from '@/lib/github-cloud-sync';
 import { getGeminiApiKey, getGeminiApiKeyFromEnv, getZhipuApiKeyFromEnv } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -37,11 +38,14 @@ import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Dimensions,
   FlatList,
+  Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -98,6 +102,37 @@ export default function ProfileScreen() {
   const [geminiProbeLoading, setGeminiProbeLoading] = useState(false);
   const [geminiProbeRows, setGeminiProbeRows] = useState<GeminiConnectivityProbeRow[] | null>(null);
   const [geminiProbeError, setGeminiProbeError] = useState<string | null>(null);
+  const [cloudBackupBusy, setCloudBackupBusy] = useState(false);
+  const [githubDiagModal, setGithubDiagModal] = useState<{
+    visible: boolean;
+    title: string;
+    subtitle: string;
+    body: string;
+  }>({ visible: false, title: '', subtitle: '', body: '' });
+
+  const runCloudBackup = useCallback(async () => {
+    setCloudBackupBusy(true);
+    try {
+      const r = await triggerGithubCloudSync();
+      if (r.ok) {
+        const sub = r.upload.commitUrl ? `\n\nmanifest 提交：${r.upload.commitUrl}` : '';
+        const multi =
+          r.multiFileBackup != null
+            ? `\n\n已上传 ${r.multiFileBackup.fileCount} 个 JSON 文件到「${r.multiFileBackup.root}/」\n（sqlite/ 每表一文件、kv/ 备忘与偏好、manifest.json 索引）。`
+            : '';
+        Alert.alert('云备份', `各表与本地 KV 已分别写入仓库。${multi}${sub}`);
+      } else {
+        setGithubDiagModal({
+          visible: true,
+          title: '云备份失败',
+          subtitle: r.message,
+          body: r.diagnosticText,
+        });
+      }
+    } finally {
+      setCloudBackupBusy(false);
+    }
+  }, []);
 
   const runGeminiConnectivityProbe = useCallback(async () => {
     setGeminiProbeLoading(true);
@@ -876,6 +911,51 @@ export default function ProfileScreen() {
 
           <View style={styles.sectionHead}>
             <View>
+              <Text style={[styles.kicker, { color: outline }]}>BACKUP</Text>
+              <Text style={[styles.sectionTitle, { color: text }]}>云备份</Text>
+            </View>
+          </View>
+
+          <Pressable
+            onPress={() => void runCloudBackup()}
+            disabled={cloudBackupBusy}
+            style={({ pressed }) => [{ opacity: pressed || cloudBackupBusy ? 0.88 : 1 }]}
+          >
+            <View
+              style={{
+                marginTop: 6,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingVertical: 14,
+                paddingHorizontal: 14,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)',
+                backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#ffffff',
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1, paddingRight: 8 }}>
+                {cloudBackupBusy ? (
+                  <ActivityIndicator size="small" color={primary} />
+                ) : (
+                  <MaterialIcons name="cloud-upload" size={26} color={primary} />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontWeight: '800', color: text }}>一键全量备份到 GitHub</Text>
+                  <Text style={{ fontSize: 12, color: outline, marginTop: 4, lineHeight: 17 }}>
+                    每张 SQLite 表单独一个 JSON（默认目录 backups/selfapp/sqlite/），备忘与技能等写入
+                    backups/selfapp/kv/，最后写 manifest.json。根目录可用 EXPO_PUBLIC_GITHUB_BACKUP_ROOT
+                    修改；账单自动同步仍用 EXPO_PUBLIC_GITHUB_BACKUP_PATH 单文件。
+                  </Text>
+                </View>
+              </View>
+              <MaterialIcons name="chevron-right" size={24} color={outline} />
+            </View>
+          </Pressable>
+
+          <View style={styles.sectionHead}>
+            <View>
               <Text style={[styles.kicker, { color: outline }]}>AI</Text>
               <Text style={[styles.sectionTitle, { color: text }]}>文本与识图引擎</Text>
             </View>
@@ -1165,6 +1245,77 @@ export default function ProfileScreen() {
           </View>
         </Animated.View>
       </ScrollView>
+
+      <Modal
+        visible={githubDiagModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setGithubDiagModal(s => ({ ...s, visible: false }))}
+      >
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            justifyContent: 'center',
+            paddingHorizontal: 16,
+            paddingVertical: 24,
+          }}
+        >
+          <View
+            style={{
+              maxHeight: '88%',
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: outlineVariant,
+              backgroundColor: surface,
+              overflow: 'hidden',
+            }}
+          >
+            <View style={{ paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 }}>
+              <Text style={{ fontSize: 17, fontWeight: '900', color: text }}>{githubDiagModal.title}</Text>
+              {githubDiagModal.subtitle.trim() ? (
+                <Text style={{ fontSize: 14, fontWeight: '700', color: primary, marginTop: 8 }}>
+                  {githubDiagModal.subtitle}
+                </Text>
+              ) : null}
+              <Text style={{ fontSize: 12, color: outline, marginTop: 6, lineHeight: 17 }}>
+                以下为完整接口 / 网络诊断信息，可长按文字复制。
+              </Text>
+            </View>
+            <ScrollView
+              style={{ maxHeight: Dimensions.get('window').height * 0.62 }}
+              contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 12 }}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+            >
+              <Text
+                selectable
+                style={{
+                  fontSize: 11,
+                  lineHeight: 16,
+                  color: text,
+                  fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+                }}
+              >
+                {githubDiagModal.body || '(无详情)'}
+              </Text>
+            </ScrollView>
+            <Pressable
+              onPress={() => setGithubDiagModal(s => ({ ...s, visible: false }))}
+              style={({ pressed }) => ({
+                paddingVertical: 14,
+                alignItems: 'center',
+                borderTopWidth: 1,
+                borderTopColor: outlineVariant,
+                backgroundColor: isDark ? 'rgba(30,41,59,0.4)' : 'rgba(0,88,190,0.06)',
+                opacity: pressed ? 0.88 : 1,
+              })}
+            >
+              <Text style={{ fontSize: 15, fontWeight: '800', color: primary }}>关闭</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

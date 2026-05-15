@@ -20,6 +20,7 @@ import { isFinanceTransactionExcludedFromBudget } from '@/lib/repositories/finan
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { consumeFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
+import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
 import {
   getActiveAiLlmApiKey,
   getActiveAiLlmProviderLabel,
@@ -434,6 +435,7 @@ export default function FinanceScreen() {
             try {
               await deleteFinanceTransaction(txnId);
               await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+              scheduleGithubFinanceCloudSyncDebounced();
             } catch (error) {
               console.warn('Failed to delete finance transaction:', error);
               Alert.alert('删除失败', '请稍后重试。');
@@ -1300,6 +1302,7 @@ export default function FinanceScreen() {
           }),
         });
         await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+        scheduleGithubFinanceCloudSyncDebounced();
       } catch (error) {
         console.warn('Auto ledger from clipboard image failed:', error);
         Alert.alert(
@@ -1750,6 +1753,7 @@ export default function FinanceScreen() {
         setIsSheetVisible(false);
         resetSheetForm('sentence');
         await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+        scheduleGithubFinanceCloudSyncDebounced();
       } catch (error) {
         console.warn('Failed to create transfer transactions:', error);
         Alert.alert(
@@ -1832,6 +1836,7 @@ export default function FinanceScreen() {
               }),
             });
             await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+            scheduleGithubFinanceCloudSyncDebounced();
           } catch (error) {
             console.warn('Failed to create finance transaction:', error);
             Alert.alert(
@@ -1893,6 +1898,7 @@ export default function FinanceScreen() {
       setIsSheetVisible(false);
       resetSheetForm('sentence');
       await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+      scheduleGithubFinanceCloudSyncDebounced();
     } catch (error) {
       console.warn('Failed to create finance transaction:', error);
       Alert.alert(
