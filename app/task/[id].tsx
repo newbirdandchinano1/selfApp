@@ -286,10 +286,12 @@ export default function TaskDetailScreen() {
     if (!picked || picked.source !== scheduleSource) return;
 
     let nextDueDate: string | null = null;
-    if (picked.mode === 'time' && picked.range?.end) {
-      nextDueDate = picked.range.end;
-    } else if (picked.date) {
-      nextDueDate = picked.date;
+    if (picked.repeatOption === '不重复') {
+      if (picked.mode === 'time' && picked.range?.end) {
+        nextDueDate = picked.range.end;
+      } else if (picked.date) {
+        nextDueDate = picked.date;
+      }
     }
 
     const currentMeta = parseTaskMeta(extraData);

@@ -24,6 +24,7 @@ import {
   getActiveAiLlmApiKey,
   getActiveAiLlmProviderLabel,
   isActiveAiLlmConfigured,
+  parseFinanceOneLinerFromImage,
   parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -72,6 +73,8 @@ type Txn = {
   amountColor: string;
   insight: string;
   insightIsAiBody: boolean;
+  /** 已配置模型且 AI 评价尚未写入：生成中或队列等待 */
+  insightPendingAi: boolean;
 };
 
 type SheetTab = 'sentence' | 'expense' | 'income' | 'transfer';
@@ -93,20 +96,24 @@ function readTransferLeg(extra_data: string | null): 'out' | 'in' | null {
 function buildTxnAiInsightLine(
   txn: FinanceTransactionRow,
   opts: { zhipuReady: boolean; generatingId: string | null; skippedIds: Set<string> },
-): { text: string; isAiBody: boolean } {
+): { text: string; isAiBody: boolean; pendingAi: boolean } {
   const trimmed = txn.ai_comment?.trim();
-  if (trimmed) return { text: `AI 评价：${trimmed}`, isAiBody: true };
-  if (opts.skippedIds.has(txn.id)) return { text: 'AI 评价：生成失败，离开再进入本页或重新加载列表后可重试', isAiBody: false };
-  if (txn.id === opts.generatingId) return { text: 'AI 评价：正在生成…', isAiBody: false };
+  if (trimmed) return { text: `AI 评价：${trimmed}`, isAiBody: true, pendingAi: false };
+  if (opts.skippedIds.has(txn.id)) {
+    return { text: 'AI 评价：生成失败，离开再进入本页或重新加载列表后可重试', isAiBody: false, pendingAi: false };
+  }
+  if (txn.id === opts.generatingId) {
+    return { text: 'AI 正在分析这笔收支…', isAiBody: false, pendingAi: true };
+  }
   if (!opts.zhipuReady) {
     const prov = getActiveAiLlmProviderLabel();
     const env =
       prov === '豆包'
         ? 'EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）'
         : 'EXPO_PUBLIC_ZHIPU_API_KEY';
-    return { text: `AI 评价：未配置${prov}密钥，无法自动生成（${env}）`, isAiBody: false };
+    return { text: `AI 评价：未配置${prov}密钥，无法自动生成（${env}）`, isAiBody: false, pendingAi: false };
   }
-  return { text: 'AI 评价：排队生成中…', isAiBody: false };
+  return { text: 'AI 分析排队中，请稍候…', isAiBody: false, pendingAi: true };
 }
 
 /** 与 `getFinanceAccountsWithBalance` 中按账户汇总 balance 的规则一致：收入 +、支出 -、转账按转出/转入计入。 */
@@ -236,9 +243,24 @@ function TxnItem({
           </View>
           <Text style={[styles.txnAmount, { color: item.amountColor }]}>{item.amount}</Text>
         </View>
-        <View style={[styles.insightTag, { backgroundColor: outlineVariant }]}>
-          <MaterialIcons name="auto-awesome" size={14} color={item.insightIsAiBody ? item.iconColor : themeSubtle} />
-          <Text style={[styles.insightText, { color: item.insightIsAiBody ? item.iconColor : themeSubtle }]}>{item.insight}</Text>
+        <View
+          style={[
+            styles.insightTag,
+            { backgroundColor: outlineVariant },
+            item.insightPendingAi ? styles.insightTagPendingAi : null,
+          ]}>
+          {item.insightPendingAi ? (
+            <ActivityIndicator size="small" color={themeSubtle} />
+          ) : (
+            <MaterialIcons name="auto-awesome" size={14} color={item.insightIsAiBody ? item.iconColor : themeSubtle} />
+          )}
+          <Text
+            style={[
+              styles.insightText,
+              { color: item.insightIsAiBody ? item.iconColor : themeSubtle, flexShrink: 1 },
+            ]}>
+            {item.insight}
+          </Text>
         </View>
       </View>
     </Animated.View>
@@ -326,7 +348,11 @@ export default function FinanceScreen() {
   const [isBudgetAdjustVisible, setIsBudgetAdjustVisible] = React.useState(false);
   const [budgetBaseDraft, setBudgetBaseDraft] = React.useState('');
   const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
-  const [visibleDayCount, setVisibleDayCount] = React.useState(1);
+  /** 收支明细：除「今天」外，初次最多再展示的历史日数（2 → 今天+前两日共三天） */
+  const INITIAL_HISTORY_DAY_SLICES = 2;
+  /** 触底后继续加载的历史日数（按有记录的自然日聚合） */
+  const LOAD_MORE_HISTORY_DAY_STEP = 3;
+  const [visibleDayCount, setVisibleDayCount] = React.useState(INITIAL_HISTORY_DAY_SLICES);
   const [isLoadingMoreDays, setIsLoadingMoreDays] = React.useState(false);
   const [sheetImageUris, setSheetImageUris] = React.useState<string[]>([]);
   /** 支出是否计入本月预算（收入页不展示该项，保存时也不会写入排除标记） */
@@ -663,7 +689,7 @@ export default function FinanceScreen() {
   }, [historyDayKeys, visibleDayCount]);
 
   React.useEffect(() => {
-    setVisibleDayCount(1);
+    setVisibleDayCount(INITIAL_HISTORY_DAY_SLICES);
     setIsLoadingMoreDays(false);
   }, [todayDayKey, financeTransactions.length]);
 
@@ -672,7 +698,9 @@ export default function FinanceScreen() {
       return;
     }
     setIsLoadingMoreDays(true);
-    setVisibleDayCount((prev) => Math.min(prev + 1, historyDayKeys.length));
+    setVisibleDayCount((prev) =>
+      Math.min(prev + LOAD_MORE_HISTORY_DAY_STEP, historyDayKeys.length),
+    );
     setIsLoadingMoreDays(false);
   }, [hasMoreHistoryDays, historyDayKeys.length, isLoadingMoreDays]);
 
@@ -776,6 +804,7 @@ export default function FinanceScreen() {
           amountColor,
           insight: aiLine.text,
           insightIsAiBody: aiLine.isAiBody,
+          insightPendingAi: aiLine.pendingAi,
         };
       });
   }, [
@@ -865,6 +894,7 @@ export default function FinanceScreen() {
         amountColor,
         insight: aiLine.text,
         insightIsAiBody: aiLine.isAiBody,
+        insightPendingAi: aiLine.pendingAi,
       });
     });
 
@@ -936,6 +966,7 @@ export default function FinanceScreen() {
         amountColor,
         insight: aiLine.text,
         insightIsAiBody: aiLine.isAiBody,
+        insightPendingAi: aiLine.pendingAi,
       };
     });
   }, [accountNameMap, formatCurrencyWithDecimals, generatingTxnAiId, getDayKey, getTxnDisplayAmount, secondary, sortedTransactions, subtle, tertiary, text, todayDayKey, visibleDayKeySet, zhipuTxnReady, txnAiFailEpoch]);
@@ -1198,6 +1229,88 @@ export default function FinanceScreen() {
     [primary, secondary, subtle, tertiary]
   );
 
+  const processAutoLedgerFromClipboardImage = React.useCallback(
+    async (imageDataUri: string, account: FinanceAccountBalanceRow) => {
+      const key = getActiveAiLlmApiKey().trim();
+      if (!key) {
+        const prov = getActiveAiLlmProviderLabel();
+        const env =
+          prov === '豆包'
+            ? 'EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）'
+            : 'EXPO_PUBLIC_ZHIPU_API_KEY';
+        Alert.alert('无法自动记账', `未配置 ${prov} 密钥（${env}）。`);
+        return;
+      }
+
+      try {
+        const resolved = await parseFinanceOneLinerFromImage({ apiKey: key, imageDataUri });
+        if (!resolved.ok) {
+          Alert.alert('截图识别失败', resolved.error);
+          return;
+        }
+
+        const parsed = {
+          transaction_type: resolved.transaction_type,
+          amount: resolved.amount,
+          name: resolved.name,
+          category_label: resolved.category_label,
+        };
+
+        const cat = pickSheetCategoryForParsed(
+          parsed.transaction_type,
+          parsed.category_label,
+          expenseCategories,
+          incomeCategories,
+        );
+        const transactionType = parsed.transaction_type;
+        const amountAbs = parsed.amount;
+        const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
+        const boundsErr = validateFinanceLedgerBalanceAfterChange(
+          account.sign_rule,
+          account.balance ?? 0,
+          transactionType,
+          signedAmount,
+          null,
+        );
+        if (boundsErr) {
+          Alert.alert('无法记账', boundsErr);
+          return;
+        }
+
+        const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        const happenedAtIso = new Date().toISOString();
+        const noteLine = `剪贴板截图 · ${parsed.name}`;
+
+        await createFinanceTransaction({
+          id: txnId,
+          name: parsed.name,
+          happened_at: happenedAtIso,
+          account_id: account.id,
+          transaction_type: transactionType,
+          amount: signedAmount,
+          note: noteLine,
+          extra_data: JSON.stringify({
+            manual: true,
+            sentence: true,
+            parse_source: 'ai',
+            from_clipboard_screenshot: true,
+            category_key: cat.key,
+            category_label: cat.label,
+            attachments: [{ type: 'image', uri: imageDataUri }],
+          }),
+        });
+        await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+      } catch (error) {
+        console.warn('Auto ledger from clipboard image failed:', error);
+        Alert.alert(
+          '自动记账失败',
+          error instanceof Error && error.message.trim() ? error.message : '请稍后重试。',
+        );
+      }
+    },
+    [expenseCategories, incomeCategories, loadFinanceAccounts, loadFinanceTransactions],
+  );
+
   const keypadRows = React.useMemo(
     () => [
       ['1', '2', '3', 'backspace'],
@@ -1306,7 +1419,14 @@ export default function FinanceScreen() {
           const intent = consumeFinanceSheetLaunchIntent();
           if (intent) {
             const list = financeAccountsRef.current;
-            if (list.length > 0) {
+            if (intent.kind === 'auto_ledger_clipboard_image') {
+              if (list.length > 0) {
+                const account = list[0];
+                void processAutoLedgerFromClipboardImage(intent.imageDataUri, account);
+              } else {
+                Alert.alert('无法自动记账', '请先添加至少一个账户。');
+              }
+            } else if (list.length > 0) {
               if (intent.kind === 'manual') {
                 resetSheetForm(intent.tab);
                 const accId =
@@ -1341,7 +1461,7 @@ export default function FinanceScreen() {
       return () => {
         cancelled = true;
       };
-    }, [loadFinanceAccounts, loadFinanceTransactions, resetSheetForm])
+    }, [loadFinanceAccounts, loadFinanceTransactions, processAutoLedgerFromClipboardImage, resetSheetForm])
   );
 
   const closeSheet = React.useCallback(() => {
@@ -1653,67 +1773,81 @@ export default function FinanceScreen() {
         Alert.alert('请输入内容', '用一句话描述这笔账，需包含金额。');
         return;
       }
-      setIsParsingSentence(true);
-      try {
-        const resolved = await resolveFinanceSentenceLine(line);
-        if (!resolved.ok) {
-          Alert.alert('无法识别', resolved.error);
-          return;
-        }
-        const parsed = resolved.parsed;
 
-        const cat = pickSheetCategoryForParsed(parsed.transaction_type, parsed.category_label, expenseCategories, incomeCategories);
-        const transactionType = parsed.transaction_type;
-        const amountAbs = parsed.amount;
-        const signedAmount = selectedAccount.sign_rule > 0 ? amountAbs : -amountAbs;
-        const boundsErr = validateFinanceLedgerBalanceAfterChange(
-          selectedAccount.sign_rule,
-          selectedAccount.balance ?? 0,
-          transactionType,
-          signedAmount,
-          null
-        );
-        if (boundsErr) {
-          Alert.alert('无法记账', boundsErr);
-          return;
-        }
+      const account = selectedAccount;
+      const happenedAtIso = selectedHappenedAt.toISOString();
+      const includeInBudget = sheetIncludeInBudget;
 
+      setIsSheetVisible(false);
+      resetSheetForm('sentence');
+
+      void (async () => {
         try {
-          setIsSavingTransaction(true);
-          const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-          await createFinanceTransaction({
-            id: txnId,
-            name: parsed.name,
-            happened_at: selectedHappenedAt.toISOString(),
-            account_id: selectedAccount.id,
-            transaction_type: transactionType,
-            amount: signedAmount,
-            note: line,
-            extra_data: JSON.stringify({
-              manual: true,
-              sentence: true,
-              parse_source: resolved.source,
-              category_key: cat.key,
-              category_label: cat.label,
-              attachments: null,
-              ...(transactionType === 'expense' && !sheetIncludeInBudget ? { exclude_from_budget: true } : {}),
-            }),
-          });
-          setIsSheetVisible(false);
-          resetSheetForm('sentence');
-          await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+          const resolved = await resolveFinanceSentenceLine(line);
+          if (!resolved.ok) {
+            Alert.alert('无法识别', resolved.error);
+            return;
+          }
+          const parsed = resolved.parsed;
+
+          const cat = pickSheetCategoryForParsed(
+            parsed.transaction_type,
+            parsed.category_label,
+            expenseCategories,
+            incomeCategories,
+          );
+          const transactionType = parsed.transaction_type;
+          const amountAbs = parsed.amount;
+          const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
+          const boundsErr = validateFinanceLedgerBalanceAfterChange(
+            account.sign_rule,
+            account.balance ?? 0,
+            transactionType,
+            signedAmount,
+            null,
+          );
+          if (boundsErr) {
+            Alert.alert('无法记账', boundsErr);
+            return;
+          }
+
+          try {
+            const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+            await createFinanceTransaction({
+              id: txnId,
+              name: parsed.name,
+              happened_at: happenedAtIso,
+              account_id: account.id,
+              transaction_type: transactionType,
+              amount: signedAmount,
+              note: line,
+              extra_data: JSON.stringify({
+                manual: true,
+                sentence: true,
+                parse_source: resolved.source,
+                category_key: cat.key,
+                category_label: cat.label,
+                attachments: null,
+                ...(transactionType === 'expense' && !includeInBudget ? { exclude_from_budget: true } : {}),
+              }),
+            });
+            await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+          } catch (error) {
+            console.warn('Failed to create finance transaction:', error);
+            Alert.alert(
+              '保存失败',
+              error instanceof Error && error.message.trim() ? error.message : '手动记账保存失败，请稍后重试。',
+            );
+          }
         } catch (error) {
-          console.warn('Failed to create finance transaction:', error);
+          console.warn('Sentence ledger pipeline failed:', error);
           Alert.alert(
             '保存失败',
-            error instanceof Error && error.message.trim() ? error.message : '手动记账保存失败，请稍后重试。',
+            error instanceof Error && error.message.trim() ? error.message : '一句话记账处理失败，请稍后重试。',
           );
-        } finally {
-          setIsSavingTransaction(false);
         }
-      } finally {
-        setIsParsingSentence(false);
-      }
+      })();
+
       return;
     }
 
@@ -3322,7 +3456,7 @@ const styles = StyleSheet.create({
   },
   headerInner: {
     height: 48,
-    paddingHorizontal: 18,
+    paddingHorizontal: 20,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -3354,7 +3488,7 @@ const styles = StyleSheet.create({
     maxWidth: 420,
     alignSelf: 'center',
     width: '100%',
-    paddingHorizontal: 18,
+    paddingHorizontal: 20,
     paddingTop: 16,
     gap: 18,
   },
@@ -3638,8 +3772,8 @@ const styles = StyleSheet.create({
   txnSwipeForeground: {
     borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 8,
-    paddingRight: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     overflow: 'hidden',
   },
   swipeDeleteTrack: {
@@ -3670,6 +3804,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    /** 与 `txnSwipeForeground` 左内边距一致，使「今日」与时间轴脉络线同一列 */
+    paddingLeft: 16,
   },
   sectionMetaText: {
     fontSize: 12,
@@ -3699,7 +3835,8 @@ const styles = StyleSheet.create({
   },
   dayDivider: {
     height: 1,
-    marginLeft: 52,
+    /** 与列表项正文列起点对齐：`txnSwipeForeground` 左内边距 + 图标 40 + `txnItem` gap 12 */
+    marginLeft: 68,
     marginTop: 2,
     marginBottom: 2,
     opacity: 0.72,
@@ -3709,14 +3846,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    /** 与列表卡片左内边距一致，日期角标中心与 `timelineLine`（16+20）对齐 */
+    paddingLeft: 16,
   },
   historyDayBadgeWrap: {
     width: 40,
-    height: 22,
-    borderRadius: 11,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 8,
+    zIndex: 1,
   },
   historyDayBadgeText: {
     fontSize: 10,
@@ -3725,7 +3864,6 @@ const styles = StyleSheet.create({
   },
   historyDayHeaderRight: {
     flex: 1,
-    paddingTop: 8,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
@@ -3760,7 +3898,7 @@ const styles = StyleSheet.create({
   carousel: {
     paddingVertical: 10,
     gap: 12,
-    paddingRight: 18,
+    paddingRight: 20,
   },
   accountCard: {
     width: 200,
@@ -3788,17 +3926,20 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
   },
   timelineWrap: {
+    position: 'relative',
     paddingTop: 12,
     paddingBottom: 8,
     gap: 18,
   },
   timelineLine: {
     position: 'absolute',
-    left: 19,
+    /** 与 `txnSwipeForeground` 水平内边距 + 图标列宽度一半对齐（内边距 16 + 20） */
+    left: 36,
     top: 14,
     bottom: 0,
     width: 1,
     opacity: 0.8,
+    zIndex: 0,
   },
   txnItem: {
     flexDirection: 'row',
@@ -3889,6 +4030,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 10,
     opacity: 0.95,
+    maxWidth: '100%',
+  },
+  insightTagPendingAi: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(148, 163, 184, 0.45)',
   },
   insightText: {
     fontSize: 10,
@@ -3897,8 +4043,8 @@ const styles = StyleSheet.create({
   },
   composerWrap: {
     position: 'absolute',
-    left: 18,
-    right: 18,
+    left: 20,
+    right: 20,
     alignItems: 'center',
     zIndex: 100,
     elevation: 20,

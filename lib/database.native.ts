@@ -539,6 +539,10 @@ export async function initDatabase() {
   await ensureColumn(db, 'tasks', 'parent_task_id', 'TEXT');
   await ensureColumn(db, 'tasks', 'note', 'TEXT');
   await ensureColumn(db, 'tasks', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'tasks', 'sort_order', 'INTEGER');
+  await db.runAsync(
+    `UPDATE tasks SET sort_order = 1000 WHERE deleted_at IS NULL AND sort_order IS NULL`
+  );
   await ensureColumn(db, 'habits', 'note', 'TEXT');
   await ensureColumn(db, 'finance_accounts', 'account_no', 'TEXT');
   await ensureColumn(db, 'finance_accounts', 'account_type', 'TEXT');

@@ -137,12 +137,35 @@ async function copyIntakePhotoToDocuments(recordId: string, sourceUri: string | 
   }
 }
 
-/** SQLite datetime 转界面时间「HH:mm」 */
+/**
+ * SQLite `datetime('now')` 等为 UTC 无时区字符串；`new Date(...)` 易被当作本地时刻解析而错位。
+ * 无时区后缀时按 UTC 解析，再映射到北京时间展示/比较。
+ */
+function parseHealthRecordUtcInstant(raw: string): Date {
+  const trimmed = raw.trim();
+  if (!trimmed) return new Date(NaN);
+  let iso = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T');
+  if (!/Z$/i.test(iso) && !/[+-]\d{2}:?\d{2}$/.test(iso)) {
+    iso = `${iso}Z`;
+  }
+  return new Date(iso);
+}
+
+/** SQLite datetime → 北京时间「HH:mm」 */
 function formatRecordTime(createdAt: string): string {
-  const normalized = createdAt.includes('T') ? createdAt : `${createdAt.replace(' ', 'T')}`;
-  const d = new Date(normalized);
+  const d = parseHealthRecordUtcInstant(createdAt);
   if (Number.isNaN(d.getTime())) return '';
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Shanghai',
+    hourCycle: 'h23',
+  }).formatToParts(d);
+  const h = parts.find((p) => p.type === 'hour')?.value ?? '';
+  const m = parts.find((p) => p.type === 'minute')?.value ?? '';
+  if (!h || !m) return '';
+  return `${h.padStart(2, '0')}:${m.padStart(2, '0')}`;
 }
 
 function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'mg'): string {
@@ -231,10 +254,10 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
   const lines: IntakeListLine[] = [];
   const quickAddByKey = createQuickAddItemMap(quickAddCatalog);
   const orderedRows = [...rows].sort((a, b) => {
-    const ta = new Date(a.created_at).getTime();
-    const tb = new Date(b.created_at).getTime();
+    const ta = parseHealthRecordUtcInstant(a.created_at).getTime();
+    const tb = parseHealthRecordUtcInstant(b.created_at).getTime();
     if (tb !== ta) return tb - ta;
-    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    return parseHealthRecordUtcInstant(b.updated_at).getTime() - parseHealthRecordUtcInstant(a.updated_at).getTime();
   });
   const getMetricQuickAdd = (qa: QuickAddCardItem | undefined, metric: 'hydration' | 'protein' | 'carbohydrate' | 'sodium') =>
     qa && getQuickAddMetricTypes(qa).includes(metric) ? qa : undefined;

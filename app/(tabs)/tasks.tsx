@@ -404,6 +404,24 @@ function getTaskPriorityColor(priority: number, isDark: boolean) {
   return isDark ? '#94a3b8' : '#727785';
 }
 
+/**
+ * 首页「待办」条带：已完成/已取消项在完成时刻所属的逻辑日早于「当前逻辑日」时不再展示（跨日界进入新一天后自动收起）。
+ * 无可靠时间戳的旧数据仍展示，避免误藏。
+ */
+function standaloneTodoPassesDayBoundaryFilter(
+  task: TaskRow,
+  boundary: TasksDayBoundary,
+  logicalTodayYmd: string
+): boolean {
+  if (task.status !== 'done' && task.status !== 'cancelled') return true;
+  const raw = task.completed_at?.trim() || task.updated_at?.trim();
+  if (!raw) return true;
+  const ms = Date.parse(raw);
+  if (Number.isNaN(ms)) return true;
+  const doneLogicalYmd = getLogicalLocalYmd(new Date(ms), boundary);
+  return doneLogicalYmd >= logicalTodayYmd;
+}
+
 function sortTaskTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
   const safeTime = (value: string | null | undefined) => {
     if (!value) return 0;
@@ -425,6 +443,9 @@ function sortTaskTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
     const doneA = a.status === 'done' || a.status === 'cancelled';
     const doneB = b.status === 'done' || b.status === 'cancelled';
     if (doneA !== doneB) return doneA ? 1 : -1;
+    const soA = a.sort_order ?? 1000;
+    const soB = b.sort_order ?? 1000;
+    if (soA !== soB) return soA - soB;
     if (a.priority !== b.priority) return b.priority - a.priority;
     const dueA = safeDate(a.due_date);
     const dueB = safeDate(b.due_date);
@@ -979,7 +1000,6 @@ export default function TasksScreen() {
   const [mainScrollKeyboardPad, setMainScrollKeyboardPad] = React.useState(0);
   const mainScrollRef = React.useRef<ScrollView>(null);
   const quickTodoAnchorRef = React.useRef<View>(null);
-  const mainScrollOffsetYRef = React.useRef(0);
   const keyboardHeightRef = React.useRef(0);
   const quickTodoInputFocusedRef = React.useRef(false);
 
@@ -992,9 +1012,7 @@ export default function TasksScreen() {
       const visibleBottom = winH - kb - margin;
       const inputBottom = y + h;
       if (inputBottom <= visibleBottom) return;
-      const delta = inputBottom - visibleBottom;
-      const nextY = mainScrollOffsetYRef.current + delta;
-      mainScrollRef.current?.scrollTo({ y: Math.max(0, nextY), animated: true });
+      mainScrollRef.current?.scrollToEnd({ animated: true });
     });
   }, []);
 
@@ -1420,7 +1438,12 @@ export default function TasksScreen() {
    * 二者数据源上互不重复（独立待办不参与矩阵分类与计数）。
    */
   const standaloneTodos = React.useMemo(() => {
-    const list = tasks.filter((t) => !t.project_id && !t.parent_task_id);
+    const list = tasks.filter(
+      (t) =>
+        !t.project_id &&
+        !t.parent_task_id &&
+        standaloneTodoPassesDayBoundaryFilter(t, dayBoundary, logicalTodayYmd)
+    );
     const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
     return list.slice().sort((a, b) => {
       const da = isDoneRow(a);
@@ -1433,7 +1456,7 @@ export default function TasksScreen() {
       const updB = b.updated_at ? Date.parse(b.updated_at) : 0;
       return updB - updA;
     });
-  }, [tasks]);
+  }, [tasks, dayBoundary, logicalTodayYmd]);
 
   const standaloneTodoOpenCount = React.useMemo(
     () => standaloneTodos.filter((t) => t.status !== 'done' && t.status !== 'cancelled').length,
@@ -2180,15 +2203,11 @@ export default function TasksScreen() {
       <ScrollView
         ref={mainScrollRef}
         style={styles.scroll}
-        contentContainerStyle={[styles.content, { paddingBottom: 18 + mainScrollKeyboardPad }]}
+        contentContainerStyle={[styles.content, { paddingBottom: 0 }]}
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
-        onScroll={(e) => {
-          mainScrollOffsetYRef.current = e.nativeEvent.contentOffset.y;
-        }}
-        scrollEventThrottle={16}
       >
         <Animated.View
           style={{
@@ -2757,7 +2776,7 @@ export default function TasksScreen() {
                     router.push({ pathname: '/edit-task', params: { id } });
                   };
 
-                  const renderTaskTree = (nodes: TaskTreeNode[], level: number): React.ReactNode => {
+                  const renderTaskLevel = (nodes: TaskTreeNode[], level: number): React.ReactNode => {
                     if (nodes.length === 0 || level > 3) return null;
                     return nodes.map((node) => {
                       const isDone = node.status === 'done' || node.status === 'cancelled';
@@ -2777,7 +2796,7 @@ export default function TasksScreen() {
                         14 +
                         8;
                       return (
-                        <React.Fragment key={node.id}>
+                        <View key={node.id}>
                           <View
                             style={[
                               styles.projectTaskRow,
@@ -2925,7 +2944,7 @@ export default function TasksScreen() {
                             </View>
                             </Pressable>
                           </View>
-                          {hasChildrenToRender && isExpandedTask ? renderTaskTree(children, level + 1) : null}
+                          {hasChildrenToRender && isExpandedTask ? renderTaskLevel(children, level + 1) : null}
                           {hasDeeperLevels && isExpandedTask ? (
                             <Text
                               style={[
@@ -2938,7 +2957,7 @@ export default function TasksScreen() {
                               还有更深层级任务
                             </Text>
                           ) : null}
-                        </React.Fragment>
+                        </View>
                       );
                     });
                   };
@@ -3096,7 +3115,7 @@ export default function TasksScreen() {
                             <Text style={[styles.projectTaskEmpty, { color: outline }]}>暂无任务</Text>
                           ) : (
                             <>
-                              {renderTaskTree(taskTree, 1)}
+                              {renderTaskLevel(taskTree, 1)}
                             </>
                           )}
                         </View>
@@ -3301,7 +3320,8 @@ export default function TasksScreen() {
             </View>
           </View>
 
-          <View style={{ height: 28 }} />
+          {/* 底部留白用实体高度，避免 scrollEnabled 切换时与 paddingBottom 叠加触发布局回弹 */}
+          <View style={{ height: 46 + mainScrollKeyboardPad }} />
         </Animated.View>
       </ScrollView>
 

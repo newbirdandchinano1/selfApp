@@ -12,6 +12,7 @@ import { initDatabase } from '@/lib/database';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
+import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
 
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
@@ -102,7 +103,9 @@ export default function RootLayout() {
             ) : null}
           </View>
         ) : (
-          <Stack screenOptions={{ headerShown: false }}>
+          <>
+            <ScreenshotDeepLinkListener />
+            <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="add-frog" />
             <Stack.Screen name="add-task" />
@@ -141,7 +144,9 @@ export default function RootLayout() {
             <Stack.Screen name="zhipu-api-test" />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
+            <Stack.Screen name="screenshot" />
           </Stack>
+          </>
         )}
         <StatusBar style="auto" />
       </ThemeProvider>

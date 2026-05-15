@@ -165,7 +165,9 @@ export default function AddProjectScreen() {
     const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
     if (!picked || picked.source !== scheduleSource) return;
 
-    if (picked.mode === 'time' && picked.range) {
+    if (picked.repeatOption !== '不重复') {
+      setDeadlineText('');
+    } else if (picked.mode === 'time' && picked.range) {
       const rangeStart = formatDate(picked.range.start);
       const rangeEnd = formatDate(picked.range.end);
       const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;

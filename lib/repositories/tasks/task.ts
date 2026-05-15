@@ -10,6 +10,55 @@ import type {
 
 export type TaskTreeNode = TaskRow & { children: TaskTreeNode[] };
 
+async function getNextTaskSortOrderForSiblings(
+  db: Awaited<ReturnType<typeof getDatabase>>,
+  projectId: string | null,
+  parentTaskId: string | null
+): Promise<number> {
+  const row = await db.getFirstAsync<{ m: number | null }>(
+    `SELECT COALESCE(MAX(sort_order), 0) + 1 AS m
+       FROM tasks
+      WHERE deleted_at IS NULL
+        AND IFNULL(project_id, '') = IFNULL(?, '')
+        AND IFNULL(parent_task_id, '') = IFNULL(?, '')`,
+    [projectId ?? '', parentTaskId ?? '']
+  );
+  return Number(row?.m ?? 1);
+}
+
+/** 同一项目、同一父任务下的同级任务按给定 id 顺序写入 sort_order（从 1 递增） */
+export async function reorderProjectTaskSiblings(
+  projectId: string,
+  parentTaskId: string | null,
+  orderedTaskIds: string[]
+): Promise<void> {
+  const db = await getDatabase();
+  const pKey = parentTaskId ?? '';
+  for (let i = 0; i < orderedTaskIds.length; i += 1) {
+    const id = orderedTaskIds[i];
+    const found = await db.getFirstAsync<{ id: string }>(
+      `SELECT id FROM tasks
+        WHERE id = ?
+          AND deleted_at IS NULL
+          AND project_id = ?
+          AND IFNULL(parent_task_id, '') = ?`,
+      [id, projectId, pKey]
+    );
+    if (!found) {
+      throw new Error(`任务 ${id} 不属于该项目下的该层级，无法调整顺序`);
+    }
+    await db.runAsync(
+      `UPDATE tasks
+          SET sort_order = ?,
+              updated_at = datetime('now'),
+              sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+              version = version + 1
+        WHERE id = ?`,
+      [i + 1, id]
+    );
+  }
+}
+
 export async function countIncompleteDescendantTasks(rootTaskId: string): Promise<number> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ cnt: number }>(
@@ -87,11 +136,12 @@ export async function deleteTasksByProjectId(projectId: string) {
 
 export async function createTask(input: CreateTaskInput) {
   const db = await getDatabase();
+  const sortOrder = await getNextTaskSortOrderForSiblings(db, input.project_id ?? null, input.parent_task_id ?? null);
   await db.runAsync(
     `INSERT INTO tasks (
       id, project_id, category_id, parent_task_id, title, description, note, status, priority, due_date, completed_at,
-      created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
     [
       input.id,
       input.project_id ?? null,
@@ -103,6 +153,7 @@ export async function createTask(input: CreateTaskInput) {
       input.status ?? 'todo',
       input.priority ?? 0,
       input.due_date ?? null,
+      sortOrder,
       input.extra_data ?? null,
     ]
   );
@@ -164,7 +215,7 @@ export async function getTaskDueDayAggregatesForRange(startYmd: string, endYmd: 
 export async function getTasksByProjectId(projectId: string) {
   const db = await getDatabase();
   const rows = await db.getAllAsync<TaskRow>(
-    'SELECT * FROM tasks WHERE deleted_at IS NULL AND project_id = ? ORDER BY priority DESC, due_date ASC, updated_at DESC',
+    'SELECT * FROM tasks WHERE deleted_at IS NULL AND project_id = ? ORDER BY sort_order ASC, priority DESC, due_date ASC, updated_at DESC',
     [projectId]
   );
   return buildTaskTree(rows);
@@ -173,7 +224,7 @@ export async function getTasksByProjectId(projectId: string) {
 export async function getChildTasksByParentTaskId(parentTaskId: string): Promise<TaskTreeNode[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<TaskRow>(
-    'SELECT * FROM tasks WHERE deleted_at IS NULL AND parent_task_id = ? ORDER BY priority DESC, due_date ASC, updated_at DESC',
+    'SELECT * FROM tasks WHERE deleted_at IS NULL AND parent_task_id = ? ORDER BY sort_order ASC, priority DESC, due_date ASC, updated_at DESC',
     [parentTaskId]
   );
   const children = await Promise.all(
@@ -195,7 +246,7 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
   await db.runAsync(
     `UPDATE tasks
      SET project_id = ?, category_id = ?, parent_task_id = ?, title = ?, description = ?, note = ?, status = ?, priority = ?, due_date = ?,
-         completed_at = ?, extra_data = ?, updated_at = datetime('now'),
+         completed_at = ?, extra_data = ?, sort_order = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
          version = version + 1
      WHERE id = ?`,
@@ -211,6 +262,7 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
       input.due_date ?? current.due_date,
       input.completed_at ?? current.completed_at,
       input.extra_data ?? current.extra_data,
+      input.sort_order ?? current.sort_order ?? 1000,
       id,
     ]
   );

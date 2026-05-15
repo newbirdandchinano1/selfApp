@@ -1870,6 +1870,91 @@ export async function parseFinanceOneLinerFromText(
   };
 }
 
+function stripDataUriForVision(input: string): { base64: string; mime: string } {
+  const s = input.trim();
+  const m = s.match(/^data:([^;]+);base64,(.+)$/is);
+  if (m) {
+    const mime = (m[1] || 'image/png').trim() || 'image/png';
+    return { mime, base64: m[2].replace(/\s/g, '') };
+  }
+  return { mime: 'image/png', base64: s.replace(/\s/g, '') };
+}
+
+export type ParseFinanceOneLinerFromImageOptions = {
+  apiKey: string;
+  /** 剪贴板 `getImageAsync` 返回的 `data`（含 `data:image/...;base64,` 前缀） */
+  imageDataUri: string;
+};
+
+/**
+ * 从支付/账单/小票等截图中解析一笔主交易（视觉模型 + JSON，与一句话记账字段一致）。
+ */
+export async function parseFinanceOneLinerFromImage(
+  options: ParseFinanceOneLinerFromImageOptions,
+): Promise<ParseFinanceOneLinerFromTextResult> {
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const uri = options.imageDataUri.trim();
+  if (!uri) {
+    return { ok: false, error: '图片为空', attempts: 0 };
+  }
+
+  const { base64, mime } = stripDataUriForVision(uri);
+  if (!base64) {
+    return { ok: false, error: '无法解析图片数据', attempts: 0 };
+  }
+
+  const jsonTemplate = `{"transaction_type":"expense","amount":0,"name":"","category_label":null}`;
+  const question =
+    '请查看这张手机屏幕截图（可能是支付成功页、账单详情、小票、转账或收款记录等）。识别其中一笔主要交易；若有多笔，取金额最大或信息最完整的一笔。\n' +
+    '要求：transaction_type 仅 expense 或 income；amount 为人民币元且为正数，不得编造截图中不存在的数字；name 为不超过 20 字的中文事由；category_label 为简短中文分类名或 null。\n' +
+    '若无法识别任何可信金额，将 amount 设为 0。';
+
+  const r = await parseImageToJson({
+    apiKey: key,
+    imageBase64: base64,
+    imageMimeType: mime,
+    question,
+    jsonTemplate,
+  });
+
+  if (!r.ok) {
+    return {
+      ok: false,
+      error: r.error,
+      attempts: 1,
+      httpStatus: r.httpStatus,
+      details: r.details,
+    };
+  }
+
+  let payload = normalizeFinanceOneLinerPayload(r.data);
+  if (!payload && r.data && typeof r.data === 'object') {
+    const inner = (r.data as Record<string, unknown>).result;
+    payload = normalizeFinanceOneLinerPayload(inner);
+  }
+  if (!payload || !Number.isFinite(payload.amount) || payload.amount <= 0) {
+    return {
+      ok: false,
+      error: '未能从截图中识别出有效金额与标题',
+      attempts: 1,
+      details: r.data,
+    };
+  }
+
+  return {
+    ok: true,
+    transaction_type: payload.transaction_type,
+    amount: payload.amount,
+    name: payload.name,
+    category_label: payload.category_label,
+    rawContent: r.rawContent,
+    attempts: 1,
+  };
+}
+
 export type AiFinanceDashboardInsight = { title: string; body: string };
 
 /** AI 财务分析页：健康分、洞察、支出点评 + 三组 12 个月预测（前 6 历史 + 后 6 预测，单位：元） */

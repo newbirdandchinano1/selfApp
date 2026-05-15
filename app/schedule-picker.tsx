@@ -620,8 +620,30 @@ export default function SchedulePickerScreen() {
 
   const buildReturnPayload = React.useCallback((): SchedulePickerResult => {
     const currentRepeatSummary = formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate);
+    /** 设置了重复规则时，不把日历/时刻区间的选择带回来源页（仅提醒 + 重复规则生效） */
+    const repeatLocksSchedule = repeatOption !== '不重复';
+    const basePayload = {
+      source: params.source ?? '',
+      quickChip: selectedQuickChip,
+      allDay: repeatLocksSchedule ? true : allDay,
+      hasExactTime: repeatLocksSchedule ? false : hasExactTime,
+      reminderOption,
+      repeatOption,
+      repeatSummary: currentRepeatSummary,
+      weeklyDays: [...weeklyDays],
+      monthlyDays: [...monthlyDays],
+      yearlyDate: toLocalYMD(yearlyDate),
+      startTime: repeatLocksSchedule ? '' : startTime.toISOString(),
+      endTime: repeatLocksSchedule ? '' : endTime.toISOString(),
+    };
 
     if (tab === 'time') {
+      if (repeatLocksSchedule) {
+        return {
+          mode: 'time',
+          ...basePayload,
+        };
+      }
       const resolvedRange = timeRange
         ? timeRange
         : {
@@ -630,18 +652,7 @@ export default function SchedulePickerScreen() {
           };
       return {
         mode: 'time',
-        source: params.source ?? '',
-        quickChip: selectedQuickChip,
-        allDay,
-        hasExactTime,
-        reminderOption,
-        repeatOption,
-        repeatSummary: currentRepeatSummary,
-        weeklyDays: [...weeklyDays],
-        monthlyDays: [...monthlyDays],
-        yearlyDate: toLocalYMD(yearlyDate),
-        startTime: startTime.toISOString(),
-        endTime: endTime.toISOString(),
+        ...basePayload,
         range: {
           start: toLocalYMD(resolvedRange.start),
           end: toLocalYMD(resolvedRange.end),
@@ -649,21 +660,17 @@ export default function SchedulePickerScreen() {
       };
     }
 
+    if (repeatLocksSchedule) {
+      return {
+        mode: 'date',
+        ...basePayload,
+      };
+    }
+
     return {
       mode: 'date',
-      source: params.source ?? '',
-      quickChip: selectedQuickChip,
+      ...basePayload,
       date: toLocalYMD(selectedDate),
-      allDay,
-      hasExactTime,
-      reminderOption,
-      repeatOption,
-      repeatSummary: currentRepeatSummary,
-      weeklyDays: [...weeklyDays],
-      monthlyDays: [...monthlyDays],
-      yearlyDate: toLocalYMD(yearlyDate),
-      startTime: startTime.toISOString(),
-      endTime: endTime.toISOString(),
     };
   }, [allDay, endTime, hasExactTime, monthlyDays, params.source, reminderOption, repeatOption, selectedDate, selectedQuickChip, startTime, tab, timeRange, weeklyDays, yearlyDate]);
 

@@ -21,6 +21,8 @@ export type TaskRow = {
   sync_status: SyncStatus;
   version: number;
   extra_data: string | null;
+  /** 同一项目、同一父任务下的同级排序，数值越小越靠前 */
+  sort_order: number;
 };
 
 export type CreateTaskInput = {
@@ -37,7 +39,23 @@ export type CreateTaskInput = {
   extra_data?: string | null;
 };
 
-export type UpdateTaskInput = Partial<Pick<TaskRow, 'project_id' | 'category_id' | 'parent_task_id' | 'title' | 'description' | 'note' | 'status' | 'priority' | 'due_date' | 'completed_at' | 'extra_data'>>;
+export type UpdateTaskInput = Partial<
+  Pick<
+    TaskRow,
+    | 'project_id'
+    | 'category_id'
+    | 'parent_task_id'
+    | 'title'
+    | 'description'
+    | 'note'
+    | 'status'
+    | 'priority'
+    | 'due_date'
+    | 'completed_at'
+    | 'extra_data'
+    | 'sort_order'
+  >
+>;
 
 export type TaskCategoryRow = {
   id: string;
