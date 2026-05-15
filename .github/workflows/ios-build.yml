@@ -1,0 +1,68 @@
+name: iOS-Build-Final-V6
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest # 【关键修改】：回到最新的 macOS 系统，获取 Xcode 16.4
+    steps:
+      - name: 1. Checkout
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20 # 保持 Node 20 护体
+
+      - name: 3. Install Global Tools
+        run: |
+          npm install -g expo-cli eas-cli
+          sudo gem install cocoapods
+
+      - name: 4. Install Dependencies
+        run: npm install
+
+      - name: 5. Forced Prebuild
+        run: |
+          rm -rf ios
+          npx expo prebuild --platform ios --clean
+
+      - name: 6. Build Xcode Project
+        run: |
+          cd ios
+          ln -s $(command -v node) /usr/local/bin/node
+          
+          if [ ! -d *.xcworkspace ]; then
+            echo "手动执行 pod install..."
+            pod install
+          fi
+
+          WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
+          SCHEME=$(ls -d *.xcodeproj | sed 's/\.xcodeproj//' | head -n 1)
+          
+          echo "正在构建项目: $WORKSPACE"
+          echo "使用 Scheme: $SCHEME"
+          
+          xcodebuild -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            -destination 'generic/platform=iOS' \
+            clean build
+
+      - name: 7. Create IPA
+        run: |
+          mkdir -p Payload
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "*.app" -type d | grep "Release-iphoneos" | head -n 1)
+          cp -r "$APP_PATH" Payload/
+          zip -r MyApp.ipa Payload
+
+      - name: 8. Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyUnsignedIPA
+          path: MyApp.ipa
