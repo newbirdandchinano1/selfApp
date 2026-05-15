@@ -12,10 +12,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.myselfManage.appdemo",
       "entitlements": {
-        "com.apple.developer.siri": true,
-        "com.apple.security.application-groups": [
-          "group.com.myselfManage.appdemo.ledger"
-        ]
+        "com.apple.developer.siri": true
       },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -88,11 +85,11 @@
         "expo-build-properties",
         {
           "ios": {
-            "deploymentTarget": "18.0"
+            "deploymentTarget": "16.0"
           }
         }
       ],
-      "@bacons/apple-targets"
+      "./plugins/with-zheng-app-intents"
     ],
     "experiments": {
       "typedRoutes": true,

@@ -3,7 +3,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import * as Notifications from 'expo-notifications';
-import { ActivityIndicator, AppState, Platform, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, Text, View } from 'react-native';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
@@ -13,7 +13,6 @@ import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
-import { consumePendingLedgerFromAppGroup } from '@/lib/ledger-intent-bridge';
 
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
@@ -63,20 +62,6 @@ export default function RootLayout() {
       mounted = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (!isDbReady || Platform.OS !== 'ios') return;
-
-    const flush = () => {
-      void consumePendingLedgerFromAppGroup();
-    };
-
-    flush();
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') flush();
-    });
-    return () => sub.remove();
-  }, [isDbReady]);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

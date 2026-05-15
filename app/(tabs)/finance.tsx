@@ -20,7 +20,6 @@ import { isFinanceTransactionExcludedFromBudget } from '@/lib/repositories/finan
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { consumeFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
-import { syncLedgerDefaultAccountId } from '@/lib/ledger-intent-bridge';
 import {
   getActiveAiLlmApiKey,
   getActiveAiLlmProviderLabel,
@@ -416,7 +415,6 @@ export default function FinanceScreen() {
       const rows = await getFinanceAccountsWithBalance();
       financeAccountsRef.current = rows;
       setFinanceAccounts(rows);
-      syncLedgerDefaultAccountId(rows[0]?.id ?? null);
     } catch (error) {
       console.warn('Failed to load finance accounts:', error);
       financeAccountsRef.current = [];
