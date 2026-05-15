@@ -2,6 +2,11 @@ import Foundation
 import UIKit
 
 enum ZhipuVisionClient {
+    /// Swift 6 requires `Result` failure types to conform to `Error`.
+    struct ParseFailure: Error, Sendable {
+        let message: String
+    }
+
     private static let apiURL = URL(string: "https://open.bigmodel.cn/api/paas/v4/chat/completions")!
     private static let embeddedKey = "d0ab5a5e402040d291d9b77f58996d32.nL1sXtGfaUMXzW7W"
     private static let model = "glm-4.6v-flash"
@@ -19,9 +24,9 @@ enum ZhipuVisionClient {
         return (png.base64EncodedString(), "image/png")
     }
 
-    static func parseFinanceFromClipboardImage() async -> Result<ParsedLedger, String> {
+    static func parseFinanceFromClipboardImage() async -> Result<ParsedLedger, ParseFailure> {
         guard let clip = readClipboardImageBase64() else {
-            return .failure("剪贴板里没有图片，请先在快捷指令中复制截图。")
+            return .failure(ParseFailure(message: "剪贴板里没有图片，请先在快捷指令中复制截图。"))
         }
 
         let question =
@@ -75,7 +80,7 @@ enum ZhipuVisionClient {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200 ... 299).contains(http.statusCode) else {
                 let snippet = String(data: data, encoding: .utf8) ?? ""
-                return .failure("AI 请求失败（\( (response as? HTTPURLResponse)?.statusCode ?? 0)）：\(snippet.prefix(120))")
+                return .failure(ParseFailure(message: "AI 请求失败（\( (response as? HTTPURLResponse)?.statusCode ?? 0)）：\(snippet.prefix(120))"))
             }
 
             guard
@@ -85,14 +90,14 @@ enum ZhipuVisionClient {
                 let message = first["message"] as? [String: Any],
                 let content = message["content"] as? String
             else {
-                return .failure("AI 返回格式异常")
+                return .failure(ParseFailure(message: "AI 返回格式异常"))
             }
 
             let cleaned = stripMarkdownFence(content)
             guard let jsonData = cleaned.data(using: .utf8),
                   let parsed = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
             else {
-                return .failure("AI 返回的不是合法 JSON")
+                return .failure(ParseFailure(message: "AI 返回的不是合法 JSON"))
             }
 
             var payload = parsed
@@ -101,12 +106,12 @@ enum ZhipuVisionClient {
             }
 
             guard let norm = normalizePayload(payload) else {
-                return .failure("未能从截图中识别出有效金额与标题")
+                return .failure(ParseFailure(message: "未能从截图中识别出有效金额与标题"))
             }
 
             return .success(norm)
         } catch {
-            return .failure("网络异常：\(error.localizedDescription)")
+            return .failure(ParseFailure(message: "网络异常：\(error.localizedDescription)"))
         }
     }
 

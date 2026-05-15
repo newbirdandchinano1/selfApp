@@ -33,7 +33,7 @@ struct ZhengClipboardLedgerIntent: AppIntent {
             LedgerSharedStore.saveSession(draft)
             return .result(view: LedgerSnippetView(sessionId: sessionId, draft: draft))
 
-        case let .failure(message):
+        case let .failure(parseError):
             let draft = LedgerDraft(
                 sessionId: sessionId,
                 transactionType: "expense",
@@ -42,7 +42,7 @@ struct ZhengClipboardLedgerIntent: AppIntent {
                 categoryLabel: nil,
                 categoryKey: nil,
                 imageDataUri: imageUri,
-                statusMessage: message,
+                statusMessage: parseError.message,
                 isError: true
             )
             LedgerSharedStore.saveSession(draft)
