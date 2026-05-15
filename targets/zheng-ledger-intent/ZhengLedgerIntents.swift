@@ -85,6 +85,8 @@ struct LedgerSnippetIntent: SnippetIntent {
     }
 }
 
+// 👈 修复：这里原本漏掉了 @available 导致低版本编译时报错
+@available(iOS 18.0, *)
 extension LedgerSnippetIntent {
     init(sessionId: String) {
         self.sessionId = sessionId
@@ -131,6 +133,8 @@ struct ConfirmLedgerIntent: AppIntent {
     }
 }
 
+// 👈 修复：这里原本漏掉了 @available 导致低版本编译时报错
+@available(iOS 18.0, *)
 extension ConfirmLedgerIntent {
     init(sessionId: String) {
         if #available(iOS 18.0, *) {
@@ -156,6 +160,8 @@ struct CancelLedgerIntent: AppIntent {
     }
 }
 
+// 👈 修复：这里原本漏掉了 @available 导致低版本编译时报错
+@available(iOS 18.0, *)
 extension CancelLedgerIntent {
     init(sessionId: String) {
         if #available(iOS 18.0, *) {
