@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "小郑的自我修养",
-    "slug": "xiaozheng-app", 
+    "slug": "xiaozheng-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -11,6 +11,9 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.myselfManage.appdemo",
+      "entitlements": {
+        "com.apple.developer.siri": true
+      },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to recognize speech.",
@@ -77,7 +80,16 @@
           "sounds": [],
           "enableBackgroundRemoteNotifications": false
         }
-      ]
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "16.0"
+          }
+        }
+      ],
+      "./plugins/with-zheng-app-intents"
     ],
     "experiments": {
       "typedRoutes": true,
