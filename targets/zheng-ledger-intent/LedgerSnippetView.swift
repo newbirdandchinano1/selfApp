@@ -1,7 +1,7 @@
 import AppIntents
 import SwiftUI
 
-@available(iOS 18.0, *)
+@available(iOS 18.0, iOSApplicationExtension 18.0, *)
 struct LedgerSnippetView: View {
     let sessionId: String
     let draft: LedgerDraft?

@@ -1,7 +1,7 @@
 import AppIntents
 import SwiftUI
 
-@available(iOS 16.0, *)
+@available(iOS 18.0, iOSApplicationExtension 18.0, *)
 struct ZhengClipboardLedgerIntent: AppIntent {
     static var title: LocalizedStringResource = "剪贴板截图记账"
 
@@ -11,7 +11,6 @@ struct ZhengClipboardLedgerIntent: AppIntent {
 
     static var openAppWhenRun: Bool = false
 
-    // 👈 修复 1：将返回类型修正为官方正统的 ShowsSnippetView
     func perform() async throws -> some IntentResult & ShowsSnippetView {
         let sessionId = UUID().uuidString
 
@@ -32,8 +31,6 @@ struct ZhengClipboardLedgerIntent: AppIntent {
                 isError: false
             )
             LedgerSharedStore.saveSession(draft)
-            
-            // 👈 修复 2：直接把视图返回给 Siri/快捷指令，无需通过虚构的中间 Intent 转发
             return .result(view: LedgerSnippetView(sessionId: sessionId, draft: draft))
 
         case let .failure(message):
@@ -49,14 +46,12 @@ struct ZhengClipboardLedgerIntent: AppIntent {
                 isError: true
             )
             LedgerSharedStore.saveSession(draft)
-            
-            // 👈 修复 3：直接返回失败状态的视图
             return .result(view: LedgerSnippetView(sessionId: sessionId, draft: draft))
         }
     }
 }
 
-@available(iOS 16.0, *)
+@available(iOS 18.0, iOSApplicationExtension 18.0, *)
 private func mapCategoryKey(type: String, label: String?) -> String? {
     let expense: [String: String] = [
         "餐饮": "food", "零食": "snack", "水果": "fruit", "饮品": "drink",
@@ -77,18 +72,21 @@ private func mapCategoryKey(type: String, label: String?) -> String? {
     return type == "income" ? "other-income" : "other"
 }
 
-// 👈 修复 4：删除了整段完全虚构且引发报错的 LedgerSnippetIntent 结构体及其实现
-
-@available(iOS 16.0, *)
+@available(iOS 18.0, iOSApplicationExtension 18.0, *)
 struct ConfirmLedgerIntent: AppIntent {
     static var title: LocalizedStringResource = "确认记账"
 
-    @Parameter(title: "会话")
+    @Parameter(title: "会话", default: "")
     var sessionId: String
+
+    static var isDiscoverable: Bool = false
 
     static var openAppWhenRun: Bool = false
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard !sessionId.isEmpty else {
+            return .result(dialog: IntentDialog("缺少会话信息。"))
+        }
         guard let draft = LedgerSharedStore.loadSession(sessionId: sessionId), !draft.isError else {
             return .result(dialog: IntentDialog("无法确认：识别结果无效。"))
         }
@@ -119,34 +117,50 @@ struct ConfirmLedgerIntent: AppIntent {
     }
 }
 
-// 👈 修复 5：删除了冗余的 extension init(sessionId:)。Swift 会自动隐式生成它，写了反而报重复定义且卡死 iOS 18 限制。
+@available(iOS 18.0, iOSApplicationExtension 18.0, *)
+extension ConfirmLedgerIntent {
+    init(sessionId: String) {
+        self.init()
+        self.sessionId = sessionId
+    }
+}
 
-@available(iOS 16.0, *)
+@available(iOS 18.0, iOSApplicationExtension 18.0, *)
 struct CancelLedgerIntent: AppIntent {
     static var title: LocalizedStringResource = "取消记账"
 
-    @Parameter(title: "会话")
+    @Parameter(title: "会话", default: "")
     var sessionId: String
+
+    static var isDiscoverable: Bool = false
 
     static var openAppWhenRun: Bool = false
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        LedgerSharedStore.removeSession(sessionId: sessionId)
+        if !sessionId.isEmpty {
+            LedgerSharedStore.removeSession(sessionId: sessionId)
+        }
         return .result(dialog: IntentDialog("已取消"))
     }
 }
 
-// 👈 修复 6：同样删除了这里冗余的 extension init 块
+@available(iOS 18.0, iOSApplicationExtension 18.0, *)
+extension CancelLedgerIntent {
+    init(sessionId: String) {
+        self.init()
+        self.sessionId = sessionId
+    }
+}
 
-@available(iOS 16.0, *)
+@available(iOS 18.0, iOSApplicationExtension 18.0, *)
 struct ZhengAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: ZhengClipboardLedgerIntent(),
             phrases: [
-                "在\(\.applicationName)里截图记账",
-                "\(\.applicationName)截图记账",
-                "用\(\.applicationName)记账",
+                "在\(.applicationName)里截图记账",
+                "\(.applicationName)截图记账",
+                "用\(.applicationName)记账",
             ],
             shortTitle: "截图记账",
             systemImageName: "creditcard.and.scribble"
@@ -155,5 +169,5 @@ struct ZhengAppShortcuts: AppShortcutsProvider {
 }
 
 @main
-@available(iOS 16.0, *)
+@available(iOS 18.0, iOSApplicationExtension 18.0, *)
 struct ZhengLedgerIntentExtension: AppIntentsExtension {}

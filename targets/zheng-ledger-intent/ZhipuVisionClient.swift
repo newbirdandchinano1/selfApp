@@ -1,9 +1,6 @@
 import Foundation
 import UIKit
 
-// 👈 修复：让 String 遵守 Error 协议，解决 Result 报错问题
-extension String: Error {}
-
 enum ZhipuVisionClient {
     private static let apiURL = URL(string: "https://open.bigmodel.cn/api/paas/v4/chat/completions")!
     private static let embeddedKey = "d0ab5a5e402040d291d9b77f58996d32.nL1sXtGfaUMXzW7W"
