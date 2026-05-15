@@ -133,7 +133,11 @@ struct ConfirmLedgerIntent: AppIntent {
 
 extension ConfirmLedgerIntent {
     init(sessionId: String) {
-        self.sessionId = sessionId
+        if #available(iOS 18.0, *) {
+            self.sessionId = sessionId
+        } else {
+            // iOS 18 以下的设备不执行此行，防止崩溃（留空即可）
+        }
     }
 }
 
@@ -154,7 +158,11 @@ struct CancelLedgerIntent: AppIntent {
 
 extension CancelLedgerIntent {
     init(sessionId: String) {
-        self.sessionId = sessionId
+        if #available(iOS 18.0, *) {
+            self.sessionId = sessionId
+        } else {
+            // iOS 18 以下的设备不执行此行，防止崩溃（留空即可）
+        }
     }
 }
 
