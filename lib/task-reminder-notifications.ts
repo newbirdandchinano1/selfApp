@@ -1,4 +1,6 @@
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import { isTaskRepeatDueOnLogicalDay, parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
+import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { Platform } from 'react-native';
 
 const NOTIFICATION_PREFIX = 'selfapp-task-reminder:';
@@ -134,6 +136,8 @@ export async function syncScheduledTaskReminders(tasks: TaskRow[]): Promise<void
 
   await ensureAndroidChannel();
 
+  const boundary = await loadTasksDayBoundary();
+  const logicalTodayYmd = getLogicalLocalYmd(new Date(), boundary);
   const now = Date.now();
   const SchedulableTriggerInputTypes = Notifications.SchedulableTriggerInputTypes;
 
@@ -143,7 +147,13 @@ export async function syncScheduledTaskReminders(tasks: TaskRow[]): Promise<void
     const extra = parseTaskExtra(task.extra_data);
     const reminderOpt = resolveReminderOption(extra);
     const advance = parseAdvanceDays(reminderOpt);
-    const ymd = getAnchorYmd(task, extra.schedule);
+    let ymd = getAnchorYmd(task, extra.schedule);
+    if (!ymd) {
+      const repeat = parseTaskRepeatSchedule(task.extra_data);
+      if (repeat && isTaskRepeatDueOnLogicalDay(logicalTodayYmd, repeat)) {
+        ymd = logicalTodayYmd;
+      }
+    }
     if (!ymd) continue;
 
     let eventAt: Date;

@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { startProjectAiReviewInBackground } from '@/lib/project-ai-review-background';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
   countIncompleteDescendantTasks,
@@ -470,6 +471,7 @@ export default function EditTaskScreen() {
           repeat: payload.task.repeat || payload.task.repeatText || '',
         }),
       });
+      startProjectAiReviewInBackground(taskSnapshot.project_id);
       Alert.alert('已添加', '子任务已创建。');
       await loadSubtasks();
     } catch (error) {

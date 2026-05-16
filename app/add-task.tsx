@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
+import { startProjectAiReviewInBackground } from '@/lib/project-ai-review-background';
 import { createTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -323,6 +324,7 @@ export default function AddTaskScreen() {
             schedule: scheduleMeta,
           }),
         });
+        startProjectAiReviewInBackground(quickProjectId);
         router.back();
       } catch (error) {
         console.warn('创建任务失败', error);

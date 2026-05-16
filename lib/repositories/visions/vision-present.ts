@@ -7,7 +7,9 @@ import type {
 } from '@/lib/visions-registry';
 import { getTaskCompletionStatsByProjectIds } from '@/lib/repositories/tasks/task';
 import {
+  collectLinkedProjectsFromSubGoal,
   collectVisionLinkedProjectsFromExtra,
+  collectVisionSubGoalsFromExtra,
   type VisionExtraPayload,
   type VisionRow,
   type VisionTrackKind,
@@ -335,15 +337,20 @@ export async function visionRowToProfileCarouselItem(
       progressText = `总量 ${extra.goalTotal ?? '—'}${unitSuffix} · 待更新`;
       break;
     case 'target': {
-      const linkedCount = collectVisionLinkedProjectsFromExtra(extra).length;
-      if (linkedCount > 0 && linked && linked.total > 0) {
-        progressText =
-          linkedCount > 1
-            ? `已关联 ${linkedCount} 个项目 · 任务 ${linked.completed} / ${linked.total}`
-            : `项目任务 ${linked.completed} / ${linked.total}`;
-        progressPct = Math.round((linked.completed / linked.total) * 100);
-      } else if (linkedCount > 0) {
-        progressText = `已关联 ${linkedCount} 个项目，暂无统计任务`;
+      const subGoals = collectVisionSubGoalsFromExtra(extra);
+      const boundCount = subGoals.filter(sg => collectLinkedProjectsFromSubGoal(sg).length > 0).length;
+      if (subGoals.length > 0) {
+        if (linked && linked.total > 0) {
+          progressText =
+            boundCount > 0
+              ? `${subGoals.length} 个小目标 · 任务 ${linked.completed} / ${linked.total}`
+              : `${subGoals.length} 个小目标`;
+          progressPct = Math.round((linked.completed / linked.total) * 100);
+        } else if (boundCount > 0) {
+          progressText = `${subGoals.length} 个小目标 · ${boundCount} 个已绑定项目`;
+        } else {
+          progressText = `${subGoals.length} 个小目标`;
+        }
       } else {
         progressText = `目标 ${extra.goalTotal ?? '—'}${unitSuffix}`;
       }

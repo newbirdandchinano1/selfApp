@@ -27,6 +27,14 @@ import {
 } from '@/lib/repositories/tasks/task';
 import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import {
+  parseProjectAiReview,
+  type ProjectAiReview,
+} from '@/lib/repositories/projects/project-ai-review';
+import {
+  addProjectAiPendingAnalysisListener,
+  addProjectAiReviewSavedListener,
+} from '@/lib/project-ai-review-background';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import {
   decrementTodayHabitCheckIn,
@@ -36,6 +44,14 @@ import {
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import {
+  applyRepeatingTaskRollovers,
+  isTaskRepeatDueOnLogicalDay,
+  parseTaskRepeatSchedule,
+  patchExtraDataOnRepeatTaskComplete,
+  patchExtraDataOnRepeatTaskReopen,
+  taskHasRepeatingSchedule,
+} from '@/lib/task-repeat-rollover';
 import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -52,6 +68,7 @@ import {
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   Easing,
@@ -420,6 +437,13 @@ function standaloneTodoPassesDayBoundaryFilter(
   if (Number.isNaN(ms)) return true;
   const doneLogicalYmd = getLogicalLocalYmd(new Date(ms), boundary);
   return doneLogicalYmd >= logicalTodayYmd;
+}
+
+/** 设置了重复的独立待办：仅在今日属于重复周期时才出现在「待办」列表 */
+function standaloneTodoPassesRepeatDayFilter(task: TaskRow, logicalTodayYmd: string): boolean {
+  const schedule = parseTaskRepeatSchedule(task.extra_data);
+  if (!schedule) return true;
+  return isTaskRepeatDueOnLogicalDay(logicalTodayYmd, schedule);
 }
 
 function sortTaskTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
@@ -874,6 +898,34 @@ function areAllTasksInProjectTreeDone(nodes: TaskTreeNode[]): boolean {
   return true;
 }
 
+/** 与项目列表卡片「进度」一致：仅统计第一层子任务 */
+function isProjectListProgressComplete(nodes: TaskTreeNode[]): boolean {
+  if (nodes.length === 0) return false;
+  return nodes.every((n) => n.status === 'done' || n.status === 'cancelled');
+}
+
+/** 是否达到可询问归纳收集箱的完成度：有截止日期对齐列表进度，否则需整棵树完成 */
+function isProjectInboxProgressComplete(project: ProjectRow, nodes: TaskTreeNode[]): boolean {
+  if (nodes.length === 0) return false;
+  if (getProjectInboxAutoArchiveDueYmd(project)) return isProjectListProgressComplete(nodes);
+  return areAllTasksInProjectTreeDone(nodes);
+}
+
+function showMoveProjectToInboxPrompt(project: ProjectRow, onConfirm: () => void) {
+  const dueYmd = getProjectInboxAutoArchiveDueYmd(project);
+  const dueHint = dueYmd
+    ? `若选「否」，将在截止日期 ${formatYmdCN(dueYmd)} 到达后自动归纳到收集箱。`
+    : `若选「否」，请之后在项目卡片上左滑「收纳」手动归纳到收集箱。`;
+  Alert.alert(
+    `「${project.name}」进度已达 100%`,
+    `项目当前完成量已达 100%。是否现在将项目归纳到收集箱？\n\n${dueHint}`,
+    [
+      { text: '否', style: 'cancel' },
+      { text: '是', onPress: onConfirm },
+    ],
+  );
+}
+
 /** 到期自动归入收集箱所依据的日期（区间取结束日，否则取项目 due_date） */
 function getProjectInboxAutoArchiveDueYmd(project: ProjectRow): string | null {
   const schedule = parseProjectSchedule(project.extra_data);
@@ -903,7 +955,7 @@ async function autoArchiveProjectsPastDueIfNeeded(
     if (isProjectInInboxCategory(p.category_id)) continue;
     const tree = treeMap[p.id] ?? [];
     if (tree.length === 0) continue;
-    if (!areAllTasksInProjectTreeDone(tree)) continue;
+    if (!isProjectInboxProgressComplete(p, tree)) continue;
     const dueYmd = getProjectInboxAutoArchiveDueYmd(p);
     if (!dueYmd) continue;
     if (!isLocalYmdOnOrAfter(todayYmd, dueYmd)) continue;
@@ -1052,6 +1104,11 @@ export default function TasksScreen() {
   const [dayStartModalVisible, setDayStartModalVisible] = React.useState(false);
   const [draftBoundary, setDraftBoundary] = React.useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
   const [dayBoundaryClock, setDayBoundaryClock] = React.useState(0);
+  const [projectAiPendingIds, setProjectAiPendingIds] = React.useState<ReadonlySet<string>>(() => new Set());
+  const [projectAiModal, setProjectAiModal] = React.useState<{
+    projectName: string;
+    review: ProjectAiReview;
+  } | null>(null);
 
   const logicalTodayYmd = React.useMemo(
     () => getLogicalLocalYmd(new Date(), dayBoundary),
@@ -1067,6 +1124,17 @@ export default function TasksScreen() {
 
   React.useEffect(() => {
     void loadTasksDayBoundary().then((b) => setDayBoundary(b));
+  }, []);
+
+  React.useEffect(() => {
+    const unsubPending = addProjectAiPendingAnalysisListener(setProjectAiPendingIds);
+    const unsubSaved = addProjectAiReviewSavedListener((saved) => {
+      setProjects((prev) => prev.map((p) => (p.id === saved.id ? saved : p)));
+    });
+    return () => {
+      unsubPending();
+      unsubSaved();
+    };
   }, []);
 
   const projectsShownInList = React.useMemo(() => {
@@ -1137,13 +1205,22 @@ export default function TasksScreen() {
     }
   }, []);
 
-  const loadTasks = React.useCallback(async () => {
+  const loadTasks = React.useCallback(async (): Promise<number> => {
     try {
-      const rows = await getTasks();
+      let rows = await getTasks();
+      const boundary = await loadTasksDayBoundary();
+      const logicalToday = getLogicalLocalYmd(new Date(), boundary);
+      const rolled = await applyRepeatingTaskRollovers(rows, logicalToday, boundary);
+      if (rolled > 0) {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        rows = await getTasks();
+      }
       setTasks(rows);
+      return rolled;
     } catch (err) {
       console.warn('加载任务列表失败', err);
       setTasks([]);
+      return 0;
     }
   }, []);
 
@@ -1410,7 +1487,10 @@ export default function TasksScreen() {
           const afterPurge = await loadProjects();
           await loadProjectTasks(afterPurge);
         }
-        await loadTasks();
+        const taskRolled = await loadTasks();
+        if (taskRolled > 0 && !cancelled) {
+          await loadProjectTasks(workingRows);
+        }
         await loadHabits();
       })();
       return () => {
@@ -1442,7 +1522,8 @@ export default function TasksScreen() {
       (t) =>
         !t.project_id &&
         !t.parent_task_id &&
-        standaloneTodoPassesDayBoundaryFilter(t, dayBoundary, logicalTodayYmd)
+        standaloneTodoPassesDayBoundaryFilter(t, dayBoundary, logicalTodayYmd) &&
+        standaloneTodoPassesRepeatDayFilter(t, logicalTodayYmd)
     );
     const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
     const createdMs = (t: TaskRow) => {
@@ -1655,7 +1736,7 @@ export default function TasksScreen() {
   const handleProjectSwipeArchive = React.useCallback(
     (project: ProjectRow) => {
       const tree = projectTaskTreeMap[project.id] ?? [];
-      if (!areAllTasksInProjectTreeDone(tree)) {
+      if (!isProjectInboxProgressComplete(project, tree)) {
         Alert.alert(
           '暂时无法收纳',
           '请先完成项目内的全部任务（或将任务标记为取消）后，再将项目归纳到收集箱。',
@@ -1677,19 +1758,40 @@ export default function TasksScreen() {
       const wasDone = current.status === 'done' || current.status === 'cancelled';
       const nextStatus: TaskRow['status'] = wasDone ? 'todo' : 'done';
       const nextCompletedAt = wasDone ? null : new Date().toISOString();
+      let nextExtraData = current.extra_data;
+      if (taskHasRepeatingSchedule(current.extra_data)) {
+        if (nextStatus === 'done') {
+          nextExtraData = patchExtraDataOnRepeatTaskComplete(current.extra_data, logicalTodayYmd);
+        } else if (wasDone) {
+          nextExtraData = patchExtraDataOnRepeatTaskReopen(current.extra_data);
+        }
+      }
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
       // optimistic update: matrix/today frogs use `tasks`, project tree uses `projectTaskTreeMap`
       setTasks((prev) =>
-        prev.map((t) => (t.id === taskId ? { ...t, status: nextStatus, completed_at: nextCompletedAt } : t))
+        prev.map((t) =>
+          t.id === taskId
+            ? { ...t, status: nextStatus, completed_at: nextCompletedAt, extra_data: nextExtraData }
+            : t
+        )
       );
       setProjectTaskTreeMap((prev) =>
-        updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, status: nextStatus, completed_at: nextCompletedAt }))
+        updateTaskInProjectTree(prev, taskId, (node) => ({
+          ...node,
+          status: nextStatus,
+          completed_at: nextCompletedAt,
+          extra_data: nextExtraData,
+        }))
       );
 
       try {
-        await updateTask(taskId, { status: nextStatus, completed_at: nextCompletedAt });
+        await updateTask(taskId, {
+          status: nextStatus,
+          completed_at: nextCompletedAt,
+          extra_data: nextExtraData,
+        });
         try {
           await insertTaskExecutionEvent(taskId, wasDone ? 'reopened' : 'completed', current.title ?? null);
         } catch (logErr) {
@@ -1710,19 +1812,8 @@ export default function TasksScreen() {
               completed_at: nextCompletedAt,
             }));
             const tree = nextTreeMap[pid] ?? [];
-            if (tree.length > 0 && areAllTasksInProjectTreeDone(tree)) {
-              const dueYmd = getProjectInboxAutoArchiveDueYmd(proj);
-              const dueHint = dueYmd
-                ? `若选「否」，将在截止日期 ${formatYmdCN(dueYmd)} 到达后自动归纳到收集箱。`
-                : `若选「否」，请之后在项目卡片上左滑「收纳」手动归纳到收集箱。`;
-              Alert.alert(
-                `「${proj.name}」进度已达 100%`,
-                `项目内全部任务均已完成（或已取消）。是否现在将项目归纳到收集箱？\n\n${dueHint}`,
-                [
-                  { text: '否', style: 'cancel' },
-                  { text: '是', onPress: () => void moveProjectToInboxById(pid) },
-                ],
-              );
+            if (isProjectInboxProgressComplete(proj, tree)) {
+              showMoveProjectToInboxPrompt(proj, () => void moveProjectToInboxById(pid));
             }
           }
         }
@@ -1752,7 +1843,17 @@ export default function TasksScreen() {
         await loadProjectTasks(projects);
       }
     },
-    [loadProjectTasks, loadProjects, loadTasks, moveProjectToInboxById, projectTaskTreeMap, projects, tasks, updateTaskInProjectTree]
+    [
+      loadProjectTasks,
+      loadProjects,
+      loadTasks,
+      logicalTodayYmd,
+      moveProjectToInboxById,
+      projectTaskTreeMap,
+      projects,
+      tasks,
+      updateTaskInProjectTree,
+    ]
   );
 
   /** 从任务 Tab 底部快捷创建「无项目」待办，写入 tasks 表，与四象限列表共用 `tasks` 状态 */
@@ -2542,8 +2643,7 @@ export default function TasksScreen() {
                                     textDecorationLine: isDone ? 'line-through' : 'none',
                                     opacity: isDone ? 0.42 : 1,
                                   },
-                                ]}
-                                numberOfLines={2}>
+                                ]}>
                                 {noteText}
                               </Text>
                             ) : null}
@@ -2731,8 +2831,7 @@ export default function TasksScreen() {
                   color={primary}
                   muted={outline}
                 />
-                {projectsShownInList.map((project, index) => {
-                  const isFirst = index === 0;
+                {projectsShownInList.map((project) => {
                   const isCompleted = project.status === 'completed' || project.status === 'archived';
                   const schedule = parseProjectSchedule(project.extra_data);
                   const dueDateLabel = getProjectScheduleLabel(project, schedule);
@@ -2935,7 +3034,7 @@ export default function TasksScreen() {
                               })() : null}
                               {!!noteText && (
                                 <View style={[styles.projectTaskNoteWrap, { backgroundColor: `${primary}0E`, borderLeftColor: primary }]}>
-                                  <Text style={[styles.projectTaskNoteText, { color: theme.textSecondary }]} numberOfLines={2}>
+                                  <Text style={[styles.projectTaskNoteText, { color: theme.textSecondary }]}>
                                     {noteText}
                                   </Text>
                                 </View>
@@ -2996,8 +3095,8 @@ export default function TasksScreen() {
                           style={[
                             styles.projectCard,
                             {
-                              backgroundColor: isFirst ? card : soft,
-                              opacity: isFirst ? 1 : 0.86,
+                              backgroundColor: soft,
+                              opacity: 0.86,
                             },
                           ]}>
                       <ScalePressable
@@ -3011,7 +3110,7 @@ export default function TasksScreen() {
                           { borderLeftColor: primary },
                         ]}>
                         <View style={styles.projectHeadLeft}>
-                          <MaterialIcons name={isFirst ? 'inventory-2' : 'data-usage'} size={22} color={primary} />
+                          <MaterialIcons name="data-usage" size={22} color={primary} />
                           <View style={styles.projectHeadMainColumn}>
                             <Text style={[styles.projectTitle, { color: theme.text }]}>{project.name}</Text>
                             <View style={styles.projectSubRow}>
@@ -3035,7 +3134,7 @@ export default function TasksScreen() {
                             </View>
                             {noteText ? (
                               <View style={[styles.projectNoteWrap, { backgroundColor: `${primary}12`, borderLeftColor: primary }]}>
-                                <Text style={[styles.projectNote, { color: theme.textSecondary }]} numberOfLines={2}>
+                                <Text style={[styles.projectNote, { color: theme.textSecondary }]}>
                                   {noteText}
                                 </Text>
                               </View>
@@ -3080,6 +3179,44 @@ export default function TasksScreen() {
                                 </View>
                               </>
                             ) : null}
+                            {hasAnyTasks ? (() => {
+                              const aiReview = parseProjectAiReview(project.extra_data);
+                              const aiPending = projectAiPendingIds.has(project.id);
+                              if (!aiPending && !aiReview?.evaluation && !aiReview?.suggestions) return null;
+                              return (
+                                <View style={styles.projectAiWrap}>
+                                  {aiPending ? (
+                                    <View style={styles.projectAiPendingRow}>
+                                      <ActivityIndicator size="small" color={primary} />
+                                      <Text style={[styles.projectAiPreview, { color: outline }]}>AI 分析中…</Text>
+                                    </View>
+                                  ) : aiReview ? (
+                                    <Pressable
+                                      onPress={(e) => {
+                                        e.stopPropagation?.();
+                                        setProjectAiModal({ projectName: project.name, review: aiReview });
+                                      }}
+                                      hitSlop={6}
+                                      style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
+                                      <Text style={[styles.projectAiPreview, { color: theme.textSecondary }]} numberOfLines={2}>
+                                        <Text style={{ fontWeight: '800', color: primary }}>AI 点评：</Text>
+                                        {aiReview.evaluation || aiReview.suggestions}
+                                      </Text>
+                                      {aiReview.review_at ? (
+                                        <Text style={[styles.projectAiTime, { color: outline }]}>
+                                          {new Date(aiReview.review_at).toLocaleString('zh-CN', {
+                                            month: 'numeric',
+                                            day: 'numeric',
+                                            hour: '2-digit',
+                                            minute: '2-digit',
+                                          })}
+                                        </Text>
+                                      ) : null}
+                                    </Pressable>
+                                  ) : null}
+                                </View>
+                              );
+                            })() : null}
                           </View>
                         </View>
                         <View style={styles.projectHeadRight}>
@@ -3323,6 +3460,44 @@ export default function TasksScreen() {
           <View style={{ height: 46 + mainScrollKeyboardPad }} />
         </Animated.View>
       </ScrollView>
+
+      <Modal
+        visible={projectAiModal != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setProjectAiModal(null)}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setProjectAiModal(null)} />
+          <View pointerEvents="box-none" style={styles.modalCenter}>
+            <View style={[styles.modalCard, { backgroundColor: modalCardBg, maxHeight: '78%' }]}>
+              <View style={styles.modalHeader}>
+                <Text style={[styles.modalTitle, { color: theme.text }]} numberOfLines={1}>
+                  {projectAiModal?.projectName ?? '项目'} · AI 点评
+                </Text>
+                <Pressable onPress={() => setProjectAiModal(null)} hitSlop={10}>
+                  <MaterialIcons name="close" size={22} color={outline} />
+                </Pressable>
+              </View>
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
+                {!!projectAiModal?.review.evaluation && (
+                  <>
+                    <Text style={[styles.projectAiModalKicker, { color: outline }]}>整体点评</Text>
+                    <Text style={[styles.projectAiModalBody, { color: theme.text }]}>{projectAiModal.review.evaluation}</Text>
+                  </>
+                )}
+                {!!projectAiModal?.review.suggestions && (
+                  <>
+                    <Text style={[styles.projectAiModalKicker, { color: outline, marginTop: 14 }]}>行动建议</Text>
+                    <Text style={[styles.projectAiModalBody, { color: theme.textSecondary }]}>
+                      {projectAiModal.review.suggestions}
+                    </Text>
+                  </>
+                )}
+              </ScrollView>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={categoryModalVisible} transparent animationType="fade" onRequestClose={closeCategoryMenu}>
         <View style={styles.modalRoot}>
@@ -3813,6 +3988,12 @@ const styles = StyleSheet.create({
   projectProgressLabel: { fontSize: 10, fontWeight: '800' },
   projectProgressTrack: { height: 6, borderRadius: 999, overflow: 'hidden', alignSelf: 'stretch' },
   projectProgressFill: { height: '100%' },
+  projectAiWrap: { marginTop: 8 },
+  projectAiPendingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  projectAiPreview: { fontSize: 12, fontWeight: '600', lineHeight: 18 },
+  projectAiTime: { fontSize: 10, fontWeight: '600', marginTop: 4 },
+  projectAiModalKicker: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 6 },
+  projectAiModalBody: { fontSize: 14, fontWeight: '500', lineHeight: 22 },
   projectCount: { alignItems: 'flex-end' },
   projectCountMain: { fontSize: 12, fontWeight: '900' },
   projectCountSub: { fontSize: 10, fontWeight: '700' },

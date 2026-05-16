@@ -509,6 +509,9 @@ export default function AddHabitScreen() {
               onChangeText={setHabitName}
               placeholder="输入打卡项目名称..."
               placeholderTextColor={textSub}
+              {...(Platform.OS === 'android'
+                ? { textAlignVertical: 'center' as const, includeFontPadding: false }
+                : {})}
               style={[styles.nameInput, { backgroundColor: softCard, color: textMain, borderColor: border }]}
             />
           </View>

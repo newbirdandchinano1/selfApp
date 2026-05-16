@@ -20,7 +20,7 @@ type Item = {
   priority: number;
 };
 
-type Section = { key: string; title: string; badge: string; tone: Item['tone']; items: Item[]; dim?: boolean };
+type Section = { key: string; title: string; badge: string; tone: Item['tone']; items: Item[] };
 
 type FrogTaskMeta = {
   frogAssignedOn?: string;
@@ -268,7 +268,7 @@ function groupTasksToSections(rows: TaskRow[], now: Date, todayYmd: string): Sec
     { key: 'soon', title: '近三天', badge: '截止较近', tone: 'primary', items: secSoon },
     { key: 'week', title: '本周', badge: '本周末前', tone: 'tertiary', items: secWeek },
     { key: 'seven', title: '近七天', badge: '今起7日内', tone: 'outline', items: secSeven },
-    { key: 'nodate', title: '无截止日期', badge: '可选', tone: 'outline', dim: true, items: secNodate },
+    { key: 'nodate', title: '无截止日期', badge: '可选', tone: 'outline', items: secNodate },
   ];
 }
 
@@ -425,16 +425,15 @@ export default function AddFrogScreen() {
                   : `${secColor}1A`;
 
             return (
-              <View
-                key={sec.key}
-                style={[
-                  styles.section,
-                  sec.dim && { opacity: 0.65 },
-                ]}>
+              <View key={sec.key} style={styles.section}>
                 <View style={styles.sectionHeader}>
                   <View style={styles.sectionHeaderLeft}>
                     <View style={[styles.sectionBar, { backgroundColor: secColor }]} />
-                    <Text style={[styles.sectionTitle, { color: sec.tone === 'outline' ? theme.textSecondary : theme.text }]}>
+                    <Text
+                      style={[
+                        styles.sectionTitle,
+                        { color: sec.tone === 'outline' && sec.key !== 'nodate' ? theme.textSecondary : theme.text },
+                      ]}>
                       {sec.title}
                     </Text>
                   </View>
@@ -470,7 +469,8 @@ export default function AddFrogScreen() {
                     const toneColor = getTone(it.tone);
                     const boxBg = checked ? toneColor : 'transparent';
                     const boxBorder = checked ? toneColor : outlineVariant;
-                    const titleColor = sec.tone === 'outline' ? theme.textSecondary : theme.text;
+                    const titleColor =
+                      sec.tone === 'outline' && sec.key !== 'nodate' ? theme.textSecondary : theme.text;
                     const hoverColor = checked ? toneColor : titleColor;
 
                     return (

@@ -129,6 +129,7 @@ export default function RootLayout() {
             <Stack.Screen name="assets" />
             <Stack.Screen name="vision-wall" />
             <Stack.Screen name="vision-create" />
+            <Stack.Screen name="edit-goal-dimension/[id]" />
             <Stack.Screen name="vision-detail/[id]" />
             <Stack.Screen name="task/[id]" />
             <Stack.Screen name="health-calendar" />

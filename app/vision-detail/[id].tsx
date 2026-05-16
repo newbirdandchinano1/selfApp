@@ -1,8 +1,10 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { deleteVision, getVisionRowById, updateVision } from '@/lib/repositories/visions/vision';
+import { deleteVision, getVisionRowById, parseVisionExtra, updateVision } from '@/lib/repositories/visions/vision';
 import { visionRowToDetailRecord } from '@/lib/repositories/visions/vision-present';
 import type { VisionRow } from '@/lib/repositories/visions/vision.types';
+import { VisionSubGoalsDetailPanel } from '@/components/vision-sub-goals/VisionSubGoalsDetailPanel';
+import { collectVisionSubGoalsFromExtra } from '@/lib/repositories/visions/vision.types';
 import {
   getVisionById as getRegistryVisionById,
   type VisionKind,
@@ -348,6 +350,10 @@ export default function VisionDetailScreen() {
   }
 
   const placeholderColor = isDark ? 'rgba(148,163,184,0.55)' : 'rgba(114,119,133,0.55)';
+  const targetSubGoals =
+    record.kind === 'target' && dbRow
+      ? collectVisionSubGoalsFromExtra(parseVisionExtra(dbRow.extra_data) ?? {})
+      : [];
 
   return (
     <>
@@ -476,6 +482,17 @@ export default function VisionDetailScreen() {
                 <Text style={[styles.panelBody, { color: textColor }]}>{record.description}</Text>
               </View>
 
+              {targetSubGoals.length > 0 ? (
+                <VisionSubGoalsDetailPanel
+                  subGoals={targetSubGoals}
+                  textColor={textColor}
+                  outline={outline}
+                  isDark={isDark}
+                  panelBg={panelBg}
+                  panelBorder={panelBorder}
+                />
+              ) : null}
+
               {record.milestones?.length ? (
                 <View
                   style={[
@@ -515,20 +532,6 @@ export default function VisionDetailScreen() {
                   </View>
                 </View>
               ) : null}
-
-              <Pressable
-                onPress={() => router.push('/vision-wall')}
-                style={({ pressed }) => [
-                  styles.secondaryBtn,
-                  {
-                    borderColor: isDark ? 'rgba(148,163,184,0.35)' : 'rgba(194,198,214,0.65)',
-                    opacity: pressed ? 0.92 : 1,
-                  },
-                ]}
-              >
-                <MaterialIcons name="dashboard-customize" size={18} color={visionPrimary} />
-                <Text style={[styles.secondaryBtnText, { color: visionPrimary }]}>查看愿景墙</Text>
-              </Pressable>
             </>
           ) : (
             <View style={{ marginTop: 18, gap: 10 }}>
@@ -831,20 +834,6 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '900',
     letterSpacing: -0.2,
-  },
-  secondaryBtn: {
-    marginTop: 4,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-  },
-  secondaryBtnText: {
-    fontSize: 15,
-    fontWeight: '900',
   },
   emptyWrap: {
     flex: 1,

@@ -1,11 +1,11 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { VisionSubGoalsSection } from '@/components/vision-sub-goals/VisionSubGoalsSection';
 import { createGoalDimension, listGoalDimensions } from '@/lib/repositories/goal-dimensions/goal-dimension';
 import type { GoalDimensionRow } from '@/lib/repositories/goal-dimensions/goal-dimension.types';
-import { getProjects } from '@/lib/repositories/projects/project';
-import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { createVision } from '@/lib/repositories/visions/vision';
-import type { VisionExtraPayload, VisionLinkedProjectRef } from '@/lib/repositories/visions/vision.types';
+import type { VisionExtraPayload, VisionSubGoal } from '@/lib/repositories/visions/vision.types';
+import { serializeVisionSubGoalsForExtra } from '@/lib/repositories/visions/vision.types';
 import { visionTrackKindFromCreateTab } from '@/lib/repositories/visions/vision.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -138,11 +138,8 @@ export default function VisionCreateScreen() {
     return startOfLocalDay(fut);
   }, [countdownKind]);
 
-  /** 「目标」追踪：可选，可多选；为空表示暂不关联项目 */
-  const [linkedProjects, setLinkedProjects] = useState<VisionLinkedProjectRef[]>([]);
-  const [projectPickerVisible, setProjectPickerVisible] = useState(false);
-  const [projectRows, setProjectRows] = useState<ProjectRow[]>([]);
-  const [projectListLoading, setProjectListLoading] = useState(false);
+  /** 「目标」追踪：拆分为多个小目标 */
+  const [subGoals, setSubGoals] = useState<VisionSubGoal[]>([]);
 
   const [goalDimensions, setGoalDimensions] = useState<GoalDimensionRow[]>([]);
   const [selectedDimensionId, setSelectedDimensionId] = useState<string | null>(null);
@@ -214,22 +211,6 @@ export default function VisionCreateScreen() {
     }
   }, [loadGoalDimensions, newDimTitle]);
 
-  const openProjectPicker = useCallback(() => {
-    setProjectPickerVisible(true);
-    setProjectListLoading(true);
-    void (async () => {
-      try {
-        const rows = await getProjects();
-        setProjectRows(rows);
-      } catch {
-        setProjectRows([]);
-        Alert.alert('提示', '无法加载项目列表，请稍后重试。');
-      } finally {
-        setProjectListLoading(false);
-      }
-    })();
-  }, []);
-
   useEffect(() => {
     if (trackType !== 2) return;
     setEndDate(prev => clampEndDateToKind(prev, countdownKind));
@@ -298,6 +279,21 @@ export default function VisionCreateScreen() {
       return;
     }
 
+    if (trackType === 3) {
+      const named = subGoals.filter(sg => sg.name.trim());
+      if (named.length === 0) {
+        Alert.alert('提示', '请至少添加一个小目标并填写名称。');
+        return;
+      }
+      const emptyNames = subGoals.some(
+        sg => !sg.name.trim() && (sg.description?.trim() || (sg.linkedProjects?.length ?? 0) > 0)
+      );
+      if (emptyNames) {
+        Alert.alert('提示', '已填写简介或绑定项目的小目标须填写名称。');
+        return;
+      }
+    }
+
     const id = `vn_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
     const track_kind = visionTrackKindFromCreateTab(trackType);
     const directionForDb = trackType === 0 || trackType === 3 ? direction : null;
@@ -316,11 +312,11 @@ export default function VisionCreateScreen() {
       dateFormat,
       ...(trackType === 0 || trackType === 1 || trackType === 3 ? { currentAmount: '0' } : {}),
     };
-    if (trackType === 3 && linkedProjects.length > 0) {
-      extra.linkedProjects = linkedProjects.map(p => ({
-        id: p.id.trim(),
-        name: p.name.trim(),
-      }));
+    if (trackType === 3) {
+      const serialized = serializeVisionSubGoalsForExtra(subGoals);
+      if (serialized.length > 0) {
+        extra.subGoals = serialized;
+      }
     }
 
     if (selectedBgIdx === customBgSlotIndex) {
@@ -729,113 +725,22 @@ export default function VisionCreateScreen() {
                 }}
               >
                 <View style={{ gap: 4 }}>
-                  <Text style={[styles.panelTitle, { color: textColor }]}>目标设置</Text>
+                  <Text style={[styles.panelTitle, { color: textColor }]}>小目标</Text>
                   <Text style={[styles.panelSub, { color: outline }]}>
-                    可不关联；关联后按所选项目（可多选）的任务完成情况汇总进度
+                    将总目标拆分为多个小目标；绑定项目后按各项目任务完成情况汇总总进度
                   </Text>
                 </View>
                 <MaterialIcons name="track-changes" size={18} color={visionPrimary} />
               </View>
 
-              <Pressable
-                onPress={openProjectPicker}
-                style={({ pressed }) => [
-                  {
-                    width: '100%',
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: 14,
-                    borderRadius: 12,
-                    backgroundColor: 'rgba(234,237,255,0.72)',
-                    opacity: pressed ? 0.9 : 1,
-                  },
-                ]}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                  <View
-                    style={{
-                      width: 38,
-                      height: 38,
-                      borderRadius: 19,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      backgroundColor: 'rgba(0,88,190,0.12)',
-                    }}
-                  >
-                    <MaterialIcons name="add-link" size={18} color={visionPrimary} />
-                  </View>
-                  <View style={{ gap: 2 }}>
-                    <Text style={{ color: textColor, fontSize: 14, fontWeight: '700' }}>添加关联项目</Text>
-                    <Text style={{ color: outline, fontSize: 12, fontWeight: '600' }}>可多次打开，添加多个项目</Text>
-                  </View>
-                </View>
-                <MaterialIcons name="chevron-right" size={20} color={outline} />
-              </Pressable>
-
-              <View style={{ gap: 10 }}>
-                <Text style={[styles.label, { color: outline }]}>已关联项目</Text>
-                <View
-                  style={{
-                    borderWidth: 2,
-                    borderStyle: 'dashed',
-                    borderColor: 'rgba(194,198,214,0.45)',
-                    borderRadius: 12,
-                    paddingVertical: linkedProjects.length > 0 ? 12 : 26,
-                    paddingHorizontal: 14,
-                    alignItems: 'stretch',
-                    justifyContent: 'center',
-                    gap: 10,
-                  }}
-                >
-                  {linkedProjects.length > 0 ? (
-                    <>
-                      <Text style={{ color: outline, fontSize: 11, fontWeight: '600', marginBottom: 2 }}>
-                        各项目任务合并统计：已完成 / 全部非取消任务
-                      </Text>
-                      {linkedProjects.map(p => (
-                        <View
-                          key={p.id}
-                          style={{ width: '100%', flexDirection: 'row', alignItems: 'center', gap: 12 }}
-                        >
-                          <View
-                            style={{
-                              width: 40,
-                              height: 40,
-                              borderRadius: 20,
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              backgroundColor: 'rgba(0,88,190,0.1)',
-                            }}
-                          >
-                            <MaterialIcons name="folder-special" size={22} color={visionPrimary} />
-                          </View>
-                          <View style={{ flex: 1, gap: 2 }}>
-                            <Text style={{ color: textColor, fontSize: 15, fontWeight: '800' }} numberOfLines={2}>
-                              {p.name}
-                            </Text>
-                          </View>
-                          <Pressable
-                            onPress={() => setLinkedProjects(prev => prev.filter(x => x.id !== p.id))}
-                            hitSlop={8}
-                            style={({ pressed }) => [{ padding: 6, opacity: pressed ? 0.65 : 1 }]}
-                            accessibilityLabel={`移除关联 ${p.name}`}
-                          >
-                            <MaterialIcons name="close" size={22} color={outline} />
-                          </Pressable>
-                        </View>
-                      ))}
-                    </>
-                  ) : (
-                    <>
-                      <MaterialIcons name="folder-off" size={28} color={'rgba(114,119,133,0.35)'} style={{ alignSelf: 'center' }} />
-                      <Text style={{ color: 'rgba(114,119,133,0.55)', fontSize: 13, fontStyle: 'italic', textAlign: 'center' }}>
-                        暂不关联项目也可以保存；需要时点击「添加关联项目」
-                      </Text>
-                    </>
-                  )}
-                </View>
-              </View>
+              <VisionSubGoalsSection
+                subGoals={subGoals}
+                onChange={setSubGoals}
+                textColor={textColor}
+                outline={outline}
+                placeholderColor={placeholderColor}
+                isDark={isDark}
+              />
             </View>
           ) : (
             <View
@@ -991,64 +896,6 @@ export default function VisionCreateScreen() {
               )}
             </Pressable>
           </View>
-        </View>
-      </View>
-    </Modal>
-
-    <Modal
-      visible={projectPickerVisible}
-      animationType="slide"
-      transparent
-      onRequestClose={() => setProjectPickerVisible(false)}
-    >
-      <View style={styles.projectModalRoot}>
-        <Pressable style={styles.projectModalBackdrop} onPress={() => setProjectPickerVisible(false)} />
-        <View style={[styles.projectModalSheet, { backgroundColor: theme.background }]}>
-          <View style={styles.projectModalHeader}>
-            <Text style={[styles.projectModalTitle, { color: textColor }]}>添加关联项目</Text>
-            <Pressable onPress={() => setProjectPickerVisible(false)} hitSlop={12} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
-              <MaterialIcons name="close" size={22} color={outline} />
-            </Pressable>
-          </View>
-          {projectListLoading ? (
-            <View style={styles.projectModalLoading}>
-              <ActivityIndicator size="large" color={visionPrimary} />
-            </View>
-          ) : projectRows.length === 0 ? (
-            <Text style={[styles.projectModalEmpty, { color: outline }]}>暂无项目，请先在任务中创建项目后再关联。</Text>
-          ) : (
-            <ScrollView keyboardShouldPersistTaps="handled" style={styles.projectModalList} showsVerticalScrollIndicator={false}>
-              {projectRows.map(p => (
-                <Pressable
-                  key={p.id}
-                  onPress={() => {
-                    if (linkedProjects.some(x => x.id === p.id)) {
-                      Alert.alert('提示', '该项目已在关联列表中');
-                      return;
-                    }
-                    setLinkedProjects(prev => [...prev, { id: p.id, name: p.name }]);
-                  }}
-                  style={({ pressed }) => [
-                    styles.projectModalRow,
-                    {
-                      borderBottomColor: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(194,198,214,0.35)',
-                      opacity: pressed ? 0.88 : 1,
-                    },
-                  ]}
-                >
-                  <MaterialIcons name="folder" size={22} color={visionPrimary} />
-                  <Text style={[styles.projectModalRowTitle, { color: textColor }]} numberOfLines={2}>
-                    {p.name}
-                  </Text>
-                  {linkedProjects.some(x => x.id === p.id) ? (
-                    <MaterialIcons name="check-circle" size={22} color={visionPrimary} />
-                  ) : (
-                    <MaterialIcons name="add-circle-outline" size={22} color={outline} />
-                  )}
-                </Pressable>
-              ))}
-            </ScrollView>
-          )}
         </View>
       </View>
     </Modal>

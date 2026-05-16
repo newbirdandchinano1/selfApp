@@ -8,6 +8,16 @@ export type VisionDirection = 'positive' | 'negative';
 /** 「目标」愿景中关联的项目引用（可多选） */
 export type VisionLinkedProjectRef = { id: string; name: string };
 
+/** 「目标」追踪下的单个小目标；创建后可绑定多个项目 */
+export type VisionSubGoal = {
+  id: string;
+  name: string;
+  description?: string;
+  linkedProjects?: VisionLinkedProjectRef[];
+  /** @deprecated 读取时并入 linkedProjects */
+  linkedProject?: VisionLinkedProjectRef;
+};
+
 /** 存入 extra_data JSON，便于扩展且不频繁改表结构 */
 export type VisionExtraPayload = {
   goalTotal?: string;
@@ -19,7 +29,9 @@ export type VisionExtraPayload = {
   countdownKind?: 'countdown' | 'countup';
   endDate?: string;
   dateFormat?: 'ymd' | 'year' | 'month' | 'week' | 'day';
-  /** 「目标」：关联多个项目时写入；进度为各项目任务汇总 */
+  /** 「目标」：小目标列表（名称/简介自定义，每项可绑定多个项目） */
+  subGoals?: VisionSubGoal[];
+  /** @deprecated 由 subGoals 承载；读取时迁移到小目标 */
   linkedProjects?: VisionLinkedProjectRef[];
   /** 旧数据单项目关联（读取时由 collectVisionLinkedProjectsFromExtra 归一） */
   linkedProjectId?: string;
@@ -34,18 +46,87 @@ export type VisionExtraPayload = {
   dimensionName?: string;
 };
 
-/** 从 extra 解析关联项目列表（兼容仅 linkedProjectId 的旧数据） */
-export function collectVisionLinkedProjectsFromExtra(extra: VisionExtraPayload | null | undefined): VisionLinkedProjectRef[] {
+export function newVisionSubGoalId(): string {
+  return `vsg_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function normalizeLinkedProjectRef(raw: unknown): VisionLinkedProjectRef | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const id = typeof (raw as { id?: unknown }).id === 'string' ? (raw as { id: string }).id.trim() : '';
+  if (!id) return undefined;
+  const name = typeof (raw as { name?: unknown }).name === 'string' ? (raw as { name: string }).name.trim() : '';
+  return { id, name };
+}
+
+function normalizeLinkedProjectList(raw: unknown): VisionLinkedProjectRef[] {
+  if (!Array.isArray(raw)) return [];
+  const out: VisionLinkedProjectRef[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    const ref = normalizeLinkedProjectRef(item);
+    if (!ref || seen.has(ref.id)) continue;
+    seen.add(ref.id);
+    out.push(ref);
+  }
+  return out;
+}
+
+/** 小目标上已绑定的项目（兼容旧版单项目字段） */
+export function collectLinkedProjectsFromSubGoal(sg: VisionSubGoal): VisionLinkedProjectRef[] {
+  const multi = normalizeLinkedProjectList(sg.linkedProjects);
+  if (multi.length > 0) return multi;
+  const one = normalizeLinkedProjectRef(sg.linkedProject);
+  return one ? [one] : [];
+}
+
+/** 从 extra 解析小目标列表（兼容旧版顶层 linkedProjects） */
+export function collectVisionSubGoalsFromExtra(extra: VisionExtraPayload | null | undefined): VisionSubGoal[] {
   if (!extra) return [];
+  const raw = extra.subGoals;
+  if (Array.isArray(raw) && raw.length > 0) {
+    const out: VisionSubGoal[] = [];
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') continue;
+      const id = typeof (item as { id?: unknown }).id === 'string' ? (item as { id: string }).id.trim() : '';
+      const name = typeof (item as { name?: unknown }).name === 'string' ? (item as { name: string }).name.trim() : '';
+      if (!id || !name) continue;
+      const description =
+        typeof (item as { description?: unknown }).description === 'string'
+          ? (item as { description: string }).description.trim()
+          : '';
+      const linkedProjects = normalizeLinkedProjectList((item as { linkedProjects?: unknown }).linkedProjects);
+      const legacyOne = normalizeLinkedProjectRef((item as { linkedProject?: unknown }).linkedProject);
+      const merged =
+        linkedProjects.length > 0
+          ? linkedProjects
+          : legacyOne
+            ? [legacyOne]
+            : [];
+      out.push({
+        id,
+        name,
+        ...(description ? { description } : {}),
+        ...(merged.length > 0 ? { linkedProjects: merged } : {}),
+      });
+    }
+    if (out.length > 0) return out;
+  }
+  const legacyProjects = collectVisionLinkedProjectsFromExtraLegacy(extra);
+  if (legacyProjects.length === 0) return [];
+  return legacyProjects.map(p => ({
+    id: newVisionSubGoalId(),
+    name: p.name.trim() || '未命名小目标',
+    linkedProjects: [p],
+  }));
+}
+
+function collectVisionLinkedProjectsFromExtraLegacy(extra: VisionExtraPayload): VisionLinkedProjectRef[] {
   const multi = extra.linkedProjects;
   if (Array.isArray(multi) && multi.length > 0) {
     const out: VisionLinkedProjectRef[] = [];
     for (const item of multi) {
-      if (!item || typeof item !== 'object') continue;
-      const id = typeof (item as { id?: unknown }).id === 'string' ? (item as { id: string }).id.trim() : '';
-      if (!id) continue;
-      const name = typeof (item as { name?: unknown }).name === 'string' ? (item as { name: string }).name : '';
-      out.push({ id, name });
+      const ref = normalizeLinkedProjectRef(item);
+      if (ref) out.push(ref);
     }
     if (out.length > 0) return out;
   }
@@ -54,6 +135,46 @@ export function collectVisionLinkedProjectsFromExtra(extra: VisionExtraPayload |
     return [{ id: legacyId, name: extra.linkedProjectName?.trim() ?? '' }];
   }
   return [];
+}
+
+/** 从小目标与旧数据汇总去重后的关联项目（用于任务进度统计） */
+export function collectVisionLinkedProjectsFromExtra(extra: VisionExtraPayload | null | undefined): VisionLinkedProjectRef[] {
+  const subGoals = collectVisionSubGoalsFromExtra(extra);
+  if (subGoals.length > 0) {
+    const seen = new Set<string>();
+    const out: VisionLinkedProjectRef[] = [];
+    for (const sg of subGoals) {
+      for (const p of collectLinkedProjectsFromSubGoal(sg)) {
+        if (seen.has(p.id)) continue;
+        seen.add(p.id);
+        out.push(p);
+      }
+    }
+    return out;
+  }
+  if (!extra) return [];
+  return collectVisionLinkedProjectsFromExtraLegacy(extra);
+}
+
+export function serializeVisionSubGoalsForExtra(subGoals: VisionSubGoal[]): VisionSubGoal[] {
+  return subGoals
+    .map(sg => {
+      const name = sg.name.trim();
+      const id = sg.id.trim();
+      if (!id || !name) return null;
+      const description = sg.description?.trim() ?? '';
+      const linkedProjects = collectLinkedProjectsFromSubGoal(sg).map(p => ({
+        id: p.id.trim(),
+        name: (p.name ?? '').trim(),
+      }));
+      return {
+        id,
+        name,
+        ...(description ? { description } : {}),
+        ...(linkedProjects.length > 0 ? { linkedProjects } : {}),
+      };
+    })
+    .filter((x): x is VisionSubGoal => x != null);
 }
 
 export type VisionRow = {

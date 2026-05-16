@@ -1,3 +1,4 @@
+import { GoalDimensionFormFields } from '@/components/goal-dimension/GoalDimensionFormFields';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
@@ -5,6 +6,14 @@ import {
   deleteGoalDimension,
   listGoalDimensions,
 } from '@/lib/repositories/goal-dimensions/goal-dimension';
+import {
+  DEFAULT_DIMENSION_PRIORITY,
+  parseGoalDimensionExtra,
+  priorityValueToLabel,
+  priorityValueToSortOrder,
+  sortOrderToPriorityValue,
+  type DimensionPriorityValue,
+} from '@/lib/repositories/goal-dimensions/goal-dimension-extra';
 import type { GoalDimensionRow } from '@/lib/repositories/goal-dimensions/goal-dimension.types';
 import {
   deleteVision,
@@ -30,13 +39,19 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 type WallEntry = { id: string; card: VisionWallCardModel; dimensionId: string | null; dimensionName: string | null };
+
+type WallSection = {
+  key: string;
+  title: string;
+  entries: WallEntry[];
+  dimRow?: GoalDimensionRow;
+};
 
 function formatStoredAmount(n: number): string {
   if (!Number.isFinite(n)) return '0';
@@ -215,7 +230,15 @@ export default function VisionWallScreen() {
   const [goalDimensions, setGoalDimensions] = useState<GoalDimensionRow[]>([]);
   const [newDimModalVisible, setNewDimModalVisible] = useState(false);
   const [newDimTitle, setNewDimTitle] = useState('');
+  const [newDimPriority, setNewDimPriority] = useState<DimensionPriorityValue>(DEFAULT_DIMENSION_PRIORITY);
+  const [newDimNote, setNewDimNote] = useState('');
   const [newDimBusy, setNewDimBusy] = useState(false);
+
+  const resetNewDimForm = useCallback(() => {
+    setNewDimTitle('');
+    setNewDimPriority(DEFAULT_DIMENSION_PRIORITY);
+    setNewDimNote('');
+  }, []);
 
   const loadWallEntries = useCallback(async () => {
     try {
@@ -324,10 +347,10 @@ export default function VisionWallScreen() {
         unassigned.push(e);
       }
     }
-    const out: { key: string; title: string; entries: WallEntry[] }[] = [];
+    const out: WallSection[] = [];
     const consumed = new Set<string>();
     for (const d of goalDimensions) {
-      out.push({ key: d.id, title: d.title, entries: byDim.get(d.id) ?? [] });
+      out.push({ key: d.id, title: d.title, entries: byDim.get(d.id) ?? [], dimRow: d });
       consumed.add(d.id);
     }
     for (const [kid, entries] of byDim) {
@@ -347,19 +370,25 @@ export default function VisionWallScreen() {
       Alert.alert('提示', '请填写维度名称');
       return;
     }
+    const noteTrim = newDimNote.trim();
     setNewDimBusy(true);
     try {
       const id = `gd_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
-      await createGoalDimension({ id, title: t });
+      await createGoalDimension({
+        id,
+        title: t,
+        sort_order: priorityValueToSortOrder(newDimPriority),
+        extra: noteTrim ? { note: noteTrim } : null,
+      });
       await loadWallEntries();
       setNewDimModalVisible(false);
-      setNewDimTitle('');
+      resetNewDimForm();
     } catch {
       Alert.alert('保存失败', '无法创建维度，请稍后重试。');
     } finally {
       setNewDimBusy(false);
     }
-  }, [loadWallEntries, newDimTitle]);
+  }, [loadWallEntries, newDimNote, newDimPriority, newDimTitle, resetNewDimForm]);
 
   return (
     <>
@@ -404,7 +433,7 @@ export default function VisionWallScreen() {
 
           <Pressable
             onPress={() => {
-              setNewDimTitle('');
+              resetNewDimForm();
               setNewDimModalVisible(true);
             }}
             style={({ pressed }) => [styles.newDimRowBtn, pressed && { opacity: 0.88 }]}
@@ -433,6 +462,12 @@ export default function VisionWallScreen() {
               wallSections.map(section => {
                 const isLegacy = section.key === '_ungrouped';
                 const count = section.entries.length;
+                const dimNote = section.dimRow
+                  ? parseGoalDimensionExtra(section.dimRow.extra_data)?.note?.trim() ?? ''
+                  : '';
+                const priorityLabel = section.dimRow
+                  ? priorityValueToLabel(sortOrderToPriorityValue(section.dimRow.sort_order))
+                  : null;
                 const panelBorder = isLegacy
                   ? isDark
                     ? 'rgba(251,191,36,0.32)'
@@ -497,16 +532,49 @@ export default function VisionWallScreen() {
                               </View>
                             ) : null}
                           </View>
-                          <Text
-                            style={[
-                              styles.dimensionSubtitle,
-                              {
-                                color: isDark ? 'rgba(148,163,184,0.88)' : 'rgba(114,119,133,0.88)',
-                              },
-                            ]}
-                          >
-                            {count > 0 ? `共 ${count} 个总目标` : '该维度下还没有总目标'}
-                          </Text>
+                          <View style={styles.dimensionMetaRow}>
+                            {priorityLabel ? (
+                              <View
+                                style={[
+                                  styles.dimensionPriorityBadge,
+                                  {
+                                    borderColor: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.35)',
+                                    backgroundColor: isDark ? 'rgba(96,165,250,0.14)' : 'rgba(0,88,190,0.08)',
+                                  },
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.dimensionPriorityBadgeText,
+                                    { color: isDark ? '#93c5fd' : '#0058be' },
+                                  ]}
+                                >
+                                  {priorityLabel}
+                                </Text>
+                              </View>
+                            ) : null}
+                            <Text
+                              style={[
+                                styles.dimensionSubtitle,
+                                {
+                                  color: isDark ? 'rgba(148,163,184,0.88)' : 'rgba(114,119,133,0.88)',
+                                },
+                              ]}
+                            >
+                              {count > 0 ? `共 ${count} 个总目标` : '该维度下还没有总目标'}
+                            </Text>
+                          </View>
+                          {dimNote ? (
+                            <Text
+                              style={[
+                                styles.dimensionNote,
+                                { color: isDark ? 'rgba(148,163,184,0.78)' : 'rgba(114,119,133,0.82)' },
+                              ]}
+                              numberOfLines={2}
+                            >
+                              {dimNote}
+                            </Text>
+                          ) : null}
                         </View>
                         <Pressable
                           onPress={() => {
@@ -592,28 +660,46 @@ export default function VisionWallScreen() {
                 );
 
                 return isDeletableDimension ? (
-                  <Swipeable
-                    key={section.key}
-                    overshootRight={false}
-                    rightThreshold={48}
-                    renderRightActions={() => (
-                      <Pressable
-                        onPress={() => requestDeleteDimension(section.key, section.title)}
-                        style={({ pressed }) => [
-                          styles.swipeDeleteAction,
-                          styles.swipeDeleteDimensionBar,
-                          pressed && { opacity: 0.92 },
-                        ]}
-                        accessibilityRole="button"
-                        accessibilityLabel={`删除维度 ${section.title}`}
-                      >
-                        <MaterialIcons name="delete-outline" size={24} color="#fff" />
-                        <Text style={styles.swipeDeleteText}>删除</Text>
-                      </Pressable>
-                    )}
-                  >
-                    {dimensionPanelView}
-                  </Swipeable>
+                  <View key={section.key} style={styles.dimensionSwipeWrap}>
+                    <Swipeable
+                      overshootRight={false}
+                      friction={2}
+                      rightThreshold={40}
+                      containerStyle={styles.dimensionSwipeContainer}
+                      renderRightActions={() => (
+                        <View style={styles.swipeDimensionTrack}>
+                          <Pressable
+                            onPress={() =>
+                              router.push({ pathname: '/edit-goal-dimension/[id]', params: { id: section.key } })
+                            }
+                            style={({ pressed }) => [
+                              styles.swipeDimensionEdit,
+                              pressed && { opacity: 0.92 },
+                            ]}
+                            accessibilityRole="button"
+                            accessibilityLabel={`编辑维度 ${section.title}`}
+                          >
+                            <MaterialIcons name="edit" size={22} color="#fff" />
+                            <Text style={styles.swipeDeleteText}>编辑</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => requestDeleteDimension(section.key, section.title)}
+                            style={({ pressed }) => [
+                              styles.swipeDimensionDelete,
+                              pressed && { opacity: 0.92 },
+                            ]}
+                            accessibilityRole="button"
+                            accessibilityLabel={`删除维度 ${section.title}`}
+                          >
+                            <MaterialIcons name="delete-outline" size={22} color="#fff" />
+                            <Text style={styles.swipeDeleteText}>删除</Text>
+                          </Pressable>
+                        </View>
+                      )}
+                    >
+                      {dimensionPanelView}
+                    </Swipeable>
+                  </View>
                 ) : (
                   <View key={section.key}>{dimensionPanelView}</View>
                 );
@@ -645,24 +731,28 @@ export default function VisionWallScreen() {
             ]}
           >
             <Text style={[styles.dimModalTitle, { color: theme.text }]}>新建维度</Text>
-            <Text style={[styles.dimModalHint, { color: isDark ? 'rgba(148,163,184,0.9)' : 'rgba(114,119,133,0.88)' }]}>
-              例如：财富、健康、事业、技能
-            </Text>
-            <TextInput
-              value={newDimTitle}
-              onChangeText={setNewDimTitle}
-              placeholder="维度名称"
-              placeholderTextColor={isDark ? 'rgba(148,163,184,0.45)' : 'rgba(114,119,133,0.45)'}
-              editable={!newDimBusy}
-              style={[
-                styles.dimModalInput,
-                {
-                  color: theme.text,
-                  backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : 'rgba(234,237,255,0.9)',
-                  borderColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.45)',
-                },
-              ]}
-            />
+            <ScrollView
+              style={styles.dimModalScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <GoalDimensionFormFields
+                compact
+                title={newDimTitle}
+                onTitleChange={setNewDimTitle}
+                priority={newDimPriority}
+                onPriorityChange={setNewDimPriority}
+                note={newDimNote}
+                onNoteChange={setNewDimNote}
+                disabled={newDimBusy}
+                textColor={theme.text}
+                outlineColor={isDark ? 'rgba(148,163,184,0.9)' : 'rgba(114,119,133,0.88)'}
+                primaryColor="#0058be"
+                borderSoft={isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.45)'}
+                inputBg={isDark ? 'rgba(15,23,42,0.55)' : 'rgba(234,237,255,0.9)'}
+                isDark={isDark}
+              />
+            </ScrollView>
             <View style={styles.dimModalActions}>
               <Pressable
                 onPress={() => !newDimBusy && setNewDimModalVisible(false)}
@@ -791,10 +881,18 @@ const styles = StyleSheet.create({
     gap: 20,
     marginTop: 12,
   },
+  dimensionSwipeWrap: {
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
+  dimensionSwipeContainer: {
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
   dimensionPanel: {
     borderRadius: 22,
     borderWidth: 1,
-    overflow: 'visible',
+    overflow: 'hidden',
   },
   dimensionHeader: {
     paddingTop: 4,
@@ -843,10 +941,34 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.3,
   },
+  dimensionMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  dimensionPriorityBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  dimensionPriorityBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
   dimensionSubtitle: {
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 0.2,
+    flexShrink: 1,
+  },
+  dimensionNote: {
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 17,
+    marginTop: 4,
   },
   dimensionDivider: {
     height: StyleSheet.hairlineWidth * 2,
@@ -907,6 +1029,7 @@ const styles = StyleSheet.create({
   dimModalCard: {
     width: '100%',
     maxWidth: 360,
+    maxHeight: '88%',
     borderRadius: 18,
     borderWidth: 1,
     padding: 20,
@@ -914,26 +1037,17 @@ const styles = StyleSheet.create({
   dimModalTitle: {
     fontSize: 18,
     fontWeight: '900',
-    marginBottom: 6,
-  },
-  dimModalHint: {
-    fontSize: 12,
-    fontWeight: '600',
     marginBottom: 12,
   },
-  dimModalInput: {
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
-    fontWeight: '700',
+  dimModalScroll: {
+    maxHeight: 420,
   },
   dimModalActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 10,
-    marginTop: 18,
+    marginTop: 16,
+    paddingTop: 4,
   },
   dimModalBtnGhost: {
     paddingHorizontal: 16,
@@ -1095,12 +1209,26 @@ const styles = StyleSheet.create({
     marginVertical: 2,
     gap: 4,
   },
-  /** 维度整块左滑删除时，红色操作条与卡片等高 */
-  swipeDeleteDimensionBar: {
-    flex: 1,
+  /** 维度左滑：固定宽度操作条，贴右侧露出，避免把卡片顶出屏幕 */
+  swipeDimensionTrack: {
+    width: 148,
+    flexDirection: 'row',
+    alignItems: 'stretch',
     alignSelf: 'stretch',
-    marginVertical: 0,
-    minHeight: 120,
+  },
+  swipeDimensionEdit: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0058be',
+    gap: 4,
+  },
+  swipeDimensionDelete: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#dc2626',
+    gap: 4,
   },
   swipeDeleteText: {
     color: '#fff',

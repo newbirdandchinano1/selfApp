@@ -1,5 +1,4 @@
-import { getProjects } from '@/lib/repositories/projects/project';
-import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import { VisionSubGoalsSection } from '@/components/vision-sub-goals/VisionSubGoalsSection';
 import type { VisionRow } from '@/lib/repositories/visions/vision.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -49,9 +48,6 @@ type Props = {
 export function VisionDetailEditor(props: Props) {
   const { row, draft, setDraft, isDark, textColor, outline, panelBg, panelBorder, placeholderColor, insetsBottom } = props;
 
-  const [projectPickerVisible, setProjectPickerVisible] = useState(false);
-  const [projectRows, setProjectRows] = useState<ProjectRow[]>([]);
-  const [projectListLoading, setProjectListLoading] = useState(false);
   const [endDatePickerVisible, setEndDatePickerVisible] = useState(false);
   const [endDateDraft, setEndDateDraft] = useState(() => {
     const d = parseYmdLocal(draft.endDate) ?? parseYmdLocal(defaultEndDateForKind(draft.countdownKind))!;
@@ -118,22 +114,6 @@ export function VisionDetailEditor(props: Props) {
     patchDraft({ endDate: clampEndDateToKind(formatYmd(endDateDraft), draft.countdownKind) });
     setEndDatePickerVisible(false);
   }, [draft.countdownKind, endDateDraft, patchDraft]);
-
-  const openProjectPicker = useCallback(() => {
-    setProjectPickerVisible(true);
-    setProjectListLoading(true);
-    void (async () => {
-      try {
-        const rows = await getProjects();
-        setProjectRows(rows);
-      } catch {
-        setProjectRows([]);
-        Alert.alert('提示', '无法加载项目列表，请稍后重试。');
-      } finally {
-        setProjectListLoading(false);
-      }
-    })();
-  }, []);
 
   const kindLabel: Record<VisionRow['track_kind'], string> = {
     progress: '进度追踪',
@@ -449,152 +429,24 @@ export function VisionDetailEditor(props: Props) {
 
       {row.track_kind === 'target' ? (
         <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder, marginTop: 16, gap: 14 }]}>
-          <Text style={[styles.panelTitle, { color: textColor }]}>目标参数</Text>
-          <Text style={[styles.label, { color: outline }]}>方向</Text>
-          <View style={styles.directionTabs}>
-            <Pressable
-              onPress={() => patchDraft({ direction: 'positive' })}
-              style={({ pressed }) => [
-                styles.directionBtn,
-                { flex: 1, alignItems: 'center' },
-                draft.direction === 'positive' && { backgroundColor: visionPrimary },
-                pressed && { opacity: 0.9 },
-              ]}
-            >
-              <Text style={[styles.directionBtnText, draft.direction === 'positive' ? { color: '#fff' } : { color: outline }]}>
-                正向增长
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => patchDraft({ direction: 'negative' })}
-              style={({ pressed }) => [
-                styles.directionBtn,
-                { flex: 1, alignItems: 'center' },
-                draft.direction === 'negative' && { backgroundColor: visionPrimary },
-                pressed && { opacity: 0.9 },
-              ]}
-            >
-              <Text style={[styles.directionBtnText, draft.direction === 'negative' ? { color: '#fff' } : { color: outline }]}>
-                反向减少
-              </Text>
-            </Pressable>
+          <View style={{ gap: 4 }}>
+            <Text style={[styles.panelTitle, { color: textColor }]}>小目标</Text>
+            <Text style={{ color: outline, fontSize: 12, fontWeight: '600' }}>
+              将总目标拆分为多个小目标；绑定项目后按任务完成情况汇总进度
+            </Text>
           </View>
-          <View style={styles.grid2}>
-            <View style={styles.grid2LabelsRow}>
-              <Text style={[styles.grid2Label, { color: outline }]}>目标总量</Text>
-              <Text style={[styles.grid2Label, { color: outline }]}>步长</Text>
-            </View>
-            <View style={styles.grid2InputsRow}>
-              <TextInput
-                value={draft.goalTotal}
-                onChangeText={t => patchDraft({ goalTotal: t })}
-                keyboardType="numeric"
-                placeholderTextColor={placeholderColor}
-                style={[styles.grid2Input, { color: textColor }]}
-              />
-              <TextInput
-                value={draft.step}
-                onChangeText={t => patchDraft({ step: t })}
-                keyboardType="numeric"
-                placeholderTextColor={placeholderColor}
-                style={[styles.grid2Input, { color: textColor }]}
-              />
-            </View>
-          </View>
-          <View>
-            <Text style={[styles.label, { color: outline }]}>度量单位</Text>
-            <TextInput
-              value={draft.unit}
-              onChangeText={t => patchDraft({ unit: t })}
-              placeholderTextColor={placeholderColor}
-              style={[styles.input, { color: textColor, backgroundColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(234,237,255,0.9)' }]}
-            />
-          </View>
-          <Pressable
-            onPress={openProjectPicker}
-            style={({ pressed }) => [
-              styles.linkRow,
-              { backgroundColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(234,237,255,0.72)', opacity: pressed ? 0.9 : 1 },
-            ]}
-          >
-            <MaterialIcons name="add-link" size={20} color={visionPrimary} />
-            <Text style={{ flex: 1, color: textColor, fontSize: 14, fontWeight: '700' }}>添加关联项目</Text>
-            <MaterialIcons name="chevron-right" size={20} color={outline} />
-          </Pressable>
-          <View style={[styles.linkedBox, { borderColor: panelBorder }]}>
-            {draft.linkedProjects.length > 0 ? (
-              draft.linkedProjects.map(p => (
-                <View key={p.id} style={styles.linkedRow}>
-                  <MaterialIcons name="folder-special" size={22} color={visionPrimary} />
-                  <Text style={[styles.linkedName, { color: textColor }]} numberOfLines={2}>
-                    {p.name}
-                  </Text>
-                  <Pressable
-                    onPress={() =>
-                      setDraft(d =>
-                        d ? { ...d, linkedProjects: d.linkedProjects.filter(x => x.id !== p.id) } : d
-                      )
-                    }
-                    hitSlop={8}
-                    style={({ pressed }) => [{ padding: 6, opacity: pressed ? 0.65 : 1 }]}
-                  >
-                    <MaterialIcons name="close" size={22} color={outline} />
-                  </Pressable>
-                </View>
-              ))
-            ) : (
-              <Text style={[styles.linkedEmpty, { color: outline }]}>可不关联项目；关联后按任务完成情况汇总进度。</Text>
-            )}
-          </View>
+          <VisionSubGoalsSection
+            subGoals={draft.subGoals}
+            onChange={next => patchDraft({ subGoals: next })}
+            textColor={textColor}
+            outline={outline}
+            placeholderColor={placeholderColor}
+            isDark={isDark}
+            panelBg={isDark ? 'rgba(30,41,59,0.35)' : 'rgba(234,237,255,0.72)'}
+            sheetBg={isDark ? '#0f172a' : '#fff'}
+          />
         </View>
       ) : null}
-
-      <Modal visible={projectPickerVisible} animationType="slide" transparent onRequestClose={() => setProjectPickerVisible(false)}>
-        <View style={styles.projectModalRoot}>
-          <Pressable style={styles.projectModalBackdrop} onPress={() => setProjectPickerVisible(false)} />
-          <View style={[styles.projectModalSheet, { backgroundColor: isDark ? '#0f172a' : '#fff' }]}>
-            <View style={styles.projectModalHeader}>
-              <Text style={[styles.projectModalTitle, { color: textColor }]}>添加关联项目</Text>
-              <Pressable onPress={() => setProjectPickerVisible(false)} hitSlop={12}>
-                <MaterialIcons name="close" size={22} color={outline} />
-              </Pressable>
-            </View>
-            {projectListLoading ? (
-              <View style={styles.projectModalLoading}>
-                <ActivityIndicator size="large" color={visionPrimary} />
-              </View>
-            ) : projectRows.length === 0 ? (
-              <Text style={[styles.projectModalEmpty, { color: outline }]}>暂无项目，请先在任务中创建项目后再关联。</Text>
-            ) : (
-              <ScrollView keyboardShouldPersistTaps="handled" style={styles.projectModalList} showsVerticalScrollIndicator={false}>
-                {projectRows.map(p => (
-                  <Pressable
-                    key={p.id}
-                    onPress={() => {
-                      if (draft.linkedProjects.some(x => x.id === p.id)) {
-                        Alert.alert('提示', '该项目已在关联列表中');
-                        return;
-                      }
-                      patchDraft({ linkedProjects: [...draft.linkedProjects, { id: p.id, name: p.name }] });
-                    }}
-                    style={({ pressed }) => [styles.projectModalRow, { opacity: pressed ? 0.88 : 1 }]}
-                  >
-                    <MaterialIcons name="folder" size={22} color={visionPrimary} />
-                    <Text style={[styles.projectModalRowTitle, { color: textColor }]} numberOfLines={2}>
-                      {p.name}
-                    </Text>
-                    {draft.linkedProjects.some(x => x.id === p.id) ? (
-                      <MaterialIcons name="check-circle" size={22} color={visionPrimary} />
-                    ) : (
-                      <MaterialIcons name="add-circle-outline" size={22} color={outline} />
-                    )}
-                  </Pressable>
-                ))}
-              </ScrollView>
-            )}
-          </View>
-        </View>
-      </Modal>
 
       <Modal visible={endDatePickerVisible} transparent animationType="fade" onRequestClose={() => setEndDatePickerVisible(false)}>
         <View style={styles.dateModalRoot}>

@@ -1,6 +1,9 @@
 import { parseVisionExtra, serializeVisionExtra } from '@/lib/repositories/visions/vision';
-import type { UpdateVisionInput, VisionExtraPayload, VisionLinkedProjectRef, VisionRow } from '@/lib/repositories/visions/vision.types';
-import { collectVisionLinkedProjectsFromExtra } from '@/lib/repositories/visions/vision.types';
+import type { UpdateVisionInput, VisionExtraPayload, VisionRow, VisionSubGoal } from '@/lib/repositories/visions/vision.types';
+import {
+  collectVisionSubGoalsFromExtra,
+  serializeVisionSubGoalsForExtra,
+} from '@/lib/repositories/visions/vision.types';
 
 /** 内置背景图数量；`bg_option_idx === 该值` 表示自定义封面槽位 */
 export const VISION_BUILTIN_BG_COUNT = 3;
@@ -59,7 +62,7 @@ export type VisionEditDraft = {
   countdownKind: 'countdown' | 'countup';
   endDate: string;
   dateFormat: NonNullable<VisionExtraPayload['dateFormat']>;
-  linkedProjects: VisionLinkedProjectRef[];
+  subGoals: VisionSubGoal[];
 };
 
 function normalizeBgIdx(idx: number): number {
@@ -86,7 +89,7 @@ export function draftFromRow(row: VisionRow): VisionEditDraft {
     countdownKind: ck,
     endDate: clampEndDateToKind(endRaw, ck),
     dateFormat: (extra.dateFormat ?? 'ymd') as VisionEditDraft['dateFormat'],
-    linkedProjects: collectVisionLinkedProjectsFromExtra(extra),
+    subGoals: collectVisionSubGoalsFromExtra(extra),
   };
 }
 
@@ -136,24 +139,28 @@ export function validateAndBuildVisionUpdate(
       break;
     }
     case 'target': {
-      const g = Number(d.goalTotal);
-      if (!Number.isFinite(g) || g <= 0) return { ok: false, message: '目标总量需为大于 0 的数字。' };
-      extra.goalTotal = d.goalTotal.trim();
-      extra.step = d.step.trim();
-      extra.unit = d.unit.trim();
-      direction = d.direction;
-      if (d.linkedProjects.length > 0) {
-        extra.linkedProjects = d.linkedProjects.map(p => ({
-          id: p.id.trim(),
-          name: p.name.trim(),
-        }));
-        delete extra.linkedProjectId;
-        delete extra.linkedProjectName;
-      } else {
-        delete extra.linkedProjects;
-        delete extra.linkedProjectId;
-        delete extra.linkedProjectName;
+      const named = d.subGoals.filter(sg => sg.name.trim());
+      if (named.length === 0) {
+        return { ok: false, message: '请至少保留一个小目标并填写名称。' };
       }
+      const emptyNames = d.subGoals.some(
+        sg =>
+          !sg.name.trim() &&
+          (sg.description?.trim() || (sg.linkedProjects?.length ?? 0) > 0)
+      );
+      if (emptyNames) {
+        return { ok: false, message: '已填写简介或绑定项目的小目标须填写名称。' };
+      }
+      const serialized = serializeVisionSubGoalsForExtra(d.subGoals);
+      if (serialized.length > 0) {
+        extra.subGoals = serialized;
+      } else {
+        delete extra.subGoals;
+      }
+      delete extra.linkedProjects;
+      delete extra.linkedProjectId;
+      delete extra.linkedProjectName;
+      direction = null;
       break;
     }
     default:
