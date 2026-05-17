@@ -77,7 +77,7 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
             await MainActor.run {
                 UIApplication.shared.open(url, options: [:], completionHandler: nil)
             }
-            return .result()
+            return .result(dialog: IntentDialog("已打开应用，正在识别截图并记账…"))
         }
 
         guard let url = URL(string: "zheng://screenshot") else {
