@@ -156,6 +156,7 @@ export default function RootLayout() {
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
             <Stack.Screen name="screenshot" />
+            <Stack.Screen name="auto-ledger" />
           </Stack>
           </>
         )}

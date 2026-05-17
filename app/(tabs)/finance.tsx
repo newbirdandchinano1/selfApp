@@ -28,7 +28,9 @@ import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finan
 import { isFinanceTransactionExcludedFromBudget } from '@/lib/repositories/finance/finance-transaction-extra';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import { notifyAutoLedgerFailure } from '@/lib/auto-ledger-notify';
 import {
+  AUTO_LEDGER_HANDOFF_SPLASH_MS,
   AUTO_LEDGER_MAX_ATTEMPTS,
   AUTO_LEDGER_RETRY_DELAY_MS,
   sleepMs,
@@ -109,8 +111,6 @@ type PendingAutoLedgerRow = {
   retryAttempt?: number;
   maxAttempts?: number;
 };
-
-type AutoLedgerModalPhase = 'idle' | 'reading_clipboard' | 'analyzing' | 'success' | 'error';
 
 function buildPendingAutoLedgerTxn(item: PendingAutoLedgerRow, todayDayKey: string, subtle: string): Txn {
   const now = new Date();
@@ -419,9 +419,11 @@ export default function FinanceScreen() {
   const [generatingTxnAiId, setGeneratingTxnAiId] = React.useState<string | null>(null);
   const [txnAiFailEpoch, setTxnAiFailEpoch] = React.useState(0);
   const [pendingAutoLedgers, setPendingAutoLedgers] = React.useState<PendingAutoLedgerRow[]>([]);
-  const [autoLedgerModalPhase, setAutoLedgerModalPhase] = React.useState<AutoLedgerModalPhase>('idle');
-  const [autoLedgerModalError, setAutoLedgerModalError] = React.useState<string | null>(null);
+  const [autoLedgerToastVisible, setAutoLedgerToastVisible] = React.useState(false);
+  const [autoLedgerToastMessage, setAutoLedgerToastMessage] = React.useState('正在识别截图并记账…');
   const autoLedgerReturnToPreviousAppRef = React.useRef(false);
+  const autoLedgerDidBackgroundRef = React.useRef(false);
+  const autoLedgerHandoffTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoLedgerImageUriRef = React.useRef<string | null>(null);
   const autoLedgerSourceRef = React.useRef<'clipboard' | 'shortcut_intent'>('clipboard');
   const financeTransactionsRef = React.useRef<FinanceTransactionRow[]>([]);
@@ -1430,75 +1432,62 @@ export default function FinanceScreen() {
     [primary, secondary, subtle, tertiary]
   );
 
-  const autoLedgerModalVisible = autoLedgerModalPhase !== 'idle';
-
   const beginAutoLedgerShortcutSession = React.useCallback(() => {
     autoLedgerReturnToPreviousAppRef.current = true;
+    autoLedgerDidBackgroundRef.current = false;
   }, []);
 
-  const finishAutoLedgerAndReturn = React.useCallback(async (delayMs = 700) => {
-    if (!autoLedgerReturnToPreviousAppRef.current) {
-      return;
-    }
-    autoLedgerReturnToPreviousAppRef.current = false;
-    await sleepMs(delayMs);
-    setAutoLedgerModalPhase('idle');
-    setAutoLedgerModalError(null);
-    autoLedgerImageUriRef.current = null;
-    await moveAppToBackground();
-  }, []);
+  const isAutoLedgerHandoffSession = React.useCallback(
+    () => autoLedgerReturnToPreviousAppRef.current || autoLedgerDidBackgroundRef.current,
+    [],
+  );
 
-  const showAutoLedgerModalError = React.useCallback((message: string) => {
-    setAutoLedgerModalError(message);
-    setAutoLedgerModalPhase('error');
-  }, []);
-
-  const openAutoLedgerAnalyzingModal = React.useCallback(
-    (source: 'clipboard' | 'shortcut_intent') => {
+  const startAutoLedgerHandoff = React.useCallback(
+    (source: 'clipboard' | 'shortcut_intent', message?: string) => {
       beginAutoLedgerShortcutSession();
       autoLedgerSourceRef.current = source;
-      setAutoLedgerModalError(null);
-      setAutoLedgerModalPhase('analyzing');
+      setAutoLedgerToastMessage(message ?? '正在识别截图并记账…');
+      setAutoLedgerToastVisible(true);
+
+      if (autoLedgerHandoffTimerRef.current != null) {
+        clearTimeout(autoLedgerHandoffTimerRef.current);
+      }
+      autoLedgerHandoffTimerRef.current = setTimeout(() => {
+        autoLedgerHandoffTimerRef.current = null;
+        setAutoLedgerToastVisible(false);
+        autoLedgerReturnToPreviousAppRef.current = false;
+        autoLedgerDidBackgroundRef.current = true;
+        void moveAppToBackground();
+      }, AUTO_LEDGER_HANDOFF_SPLASH_MS);
     },
     [beginAutoLedgerShortcutSession],
   );
 
+  React.useEffect(() => {
+    return () => {
+      if (autoLedgerHandoffTimerRef.current != null) {
+        clearTimeout(autoLedgerHandoffTimerRef.current);
+      }
+    };
+  }, []);
+
   const readClipboardImageForAutoLedger = React.useCallback(async (): Promise<string | null> => {
     if (Platform.OS === 'web') {
-      showAutoLedgerModalError('网页版不支持从剪贴板读取图片');
       return null;
     }
-    beginAutoLedgerShortcutSession();
-    autoLedgerSourceRef.current = 'clipboard';
-    setAutoLedgerModalError(null);
-    setAutoLedgerModalPhase('reading_clipboard');
     try {
       const has = await Clipboard.hasImageAsync();
       if (!has) {
-        showAutoLedgerModalError('剪贴板里没有图片，请先在快捷指令里复制截图再打开链接。');
         return null;
       }
       const img = await Clipboard.getImageAsync({ format: 'png' });
       if (!img?.data) {
-        showAutoLedgerModalError('无法读取剪贴板中的图片。');
         return null;
       }
       autoLedgerImageUriRef.current = img.data;
       return img.data;
     } catch {
-      showAutoLedgerModalError('读取剪贴板失败，请检查系统是否允许本应用访问剪贴板。');
       return null;
-    }
-  }, [beginAutoLedgerShortcutSession, showAutoLedgerModalError]);
-
-  const dismissAutoLedgerModal = React.useCallback(() => {
-    const shouldReturn = autoLedgerReturnToPreviousAppRef.current;
-    autoLedgerReturnToPreviousAppRef.current = false;
-    setAutoLedgerModalPhase('idle');
-    setAutoLedgerModalError(null);
-    autoLedgerImageUriRef.current = null;
-    if (shouldReturn) {
-      void moveAppToBackground();
     }
   }, []);
 
@@ -1510,10 +1499,7 @@ export default function FinanceScreen() {
     ) => {
       autoLedgerImageUriRef.current = imageDataUri;
       autoLedgerSourceRef.current = ledgerSource;
-      if (autoLedgerReturnToPreviousAppRef.current) {
-        setAutoLedgerModalError(null);
-        setAutoLedgerModalPhase('analyzing');
-      }
+      const handoff = isAutoLedgerHandoffSession();
 
       const key = getActiveAiLlmApiKey().trim();
       if (!key) {
@@ -1523,8 +1509,8 @@ export default function FinanceScreen() {
             ? 'EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）'
             : 'EXPO_PUBLIC_ZHIPU_API_KEY';
         const msg = `未配置 ${prov} 密钥（${env}）。`;
-        if (autoLedgerReturnToPreviousAppRef.current) {
-          showAutoLedgerModalError(msg);
+        if (handoff) {
+          void notifyAutoLedgerFailure(msg);
         } else {
           Alert.alert('无法自动记账', msg);
         }
@@ -1533,8 +1519,8 @@ export default function FinanceScreen() {
 
       if (!accounts.length) {
         const msg = '请先添加至少一个账户。';
-        if (autoLedgerReturnToPreviousAppRef.current) {
-          showAutoLedgerModalError(msg);
+        if (handoff) {
+          void notifyAutoLedgerFailure(msg);
         } else {
           Alert.alert('无法自动记账', msg);
         }
@@ -1588,8 +1574,8 @@ export default function FinanceScreen() {
             );
             if (!account) {
               const msg = '请先添加至少一个账户。';
-              if (autoLedgerReturnToPreviousAppRef.current) {
-                showAutoLedgerModalError(msg);
+              if (handoff) {
+                void notifyAutoLedgerFailure(msg);
               } else {
                 Alert.alert('无法自动记账', msg);
               }
@@ -1620,8 +1606,8 @@ export default function FinanceScreen() {
               null,
             );
             if (boundsErr) {
-              if (autoLedgerReturnToPreviousAppRef.current) {
-                showAutoLedgerModalError(boundsErr);
+              if (handoff) {
+                void notifyAutoLedgerFailure(boundsErr);
               } else {
                 Alert.alert('无法记账', boundsErr);
               }
@@ -1658,10 +1644,6 @@ export default function FinanceScreen() {
             });
             await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
             scheduleGithubFinanceCloudSyncDebounced();
-            if (autoLedgerReturnToPreviousAppRef.current) {
-              setAutoLedgerModalPhase('success');
-              void finishAutoLedgerAndReturn(900);
-            }
             return;
           } catch (error) {
             lastError =
@@ -1671,8 +1653,8 @@ export default function FinanceScreen() {
         }
 
         const failMsg = `已自动重试 ${maxAttempts} 次仍未成功，请检查网络或截图是否清晰后重试。\n\n${lastError}`;
-        if (autoLedgerReturnToPreviousAppRef.current) {
-          showAutoLedgerModalError(failMsg);
+        if (handoff) {
+          void notifyAutoLedgerFailure(failMsg);
         } else {
           Alert.alert('自动记账失败', failMsg);
         }
@@ -1682,34 +1664,13 @@ export default function FinanceScreen() {
     },
     [
       expenseCategories,
-      finishAutoLedgerAndReturn,
       incomeCategories,
+      isAutoLedgerHandoffSession,
       loadFinanceAccounts,
       loadFinanceTransactions,
       pickAccountForAutoLedger,
-      showAutoLedgerModalError,
     ],
   );
-
-  const retryAutoLedgerFromModal = React.useCallback(() => {
-    const accounts = financeAccountsRef.current;
-    const imageUri = autoLedgerImageUriRef.current;
-    if (imageUri && accounts.length) {
-      openAutoLedgerAnalyzingModal(autoLedgerSourceRef.current);
-      void processAutoLedgerFromImage(imageUri, accounts, autoLedgerSourceRef.current);
-      return;
-    }
-    if (autoLedgerSourceRef.current !== 'clipboard' || !accounts.length) {
-      return;
-    }
-    void (async () => {
-      const uri = await readClipboardImageForAutoLedger();
-      if (uri) {
-        setAutoLedgerModalPhase('analyzing');
-        void processAutoLedgerFromImage(uri, accounts, 'clipboard');
-      }
-    })();
-  }, [openAutoLedgerAnalyzingModal, processAutoLedgerFromImage, readClipboardImageForAutoLedger]);
 
   const keypadRows = React.useMemo(
     () => [
@@ -1830,23 +1791,27 @@ export default function FinanceScreen() {
 
           if (intent) {
             if (intent.kind === 'auto_ledger_clipboard_pending') {
+              startAutoLedgerHandoff('clipboard', '正在读取并识别截图…');
               const imageUri = await readClipboardImageForAutoLedger();
               if (cancelled) return;
               if (imageUri) {
                 if (list.length > 0) {
-                  setAutoLedgerModalPhase('analyzing');
                   void processAutoLedgerFromImage(imageUri, list, 'clipboard');
                 } else {
-                  showAutoLedgerModalError('请先添加至少一个账户。');
+                  void notifyAutoLedgerFailure('请先添加至少一个账户。');
                 }
+              } else {
+                void notifyAutoLedgerFailure(
+                  '剪贴板里没有图片或读取失败，请先在快捷指令中复制截图并允许粘贴。',
+                );
               }
             } else if (intent.kind === 'auto_ledger_clipboard_image') {
               if (list.length > 0) {
-                openAutoLedgerAnalyzingModal('clipboard');
+                startAutoLedgerHandoff('clipboard');
                 void processAutoLedgerFromImage(intent.imageDataUri, list, 'clipboard');
               } else {
-                beginAutoLedgerShortcutSession();
-                showAutoLedgerModalError('请先添加至少一个账户。');
+                startAutoLedgerHandoff('clipboard');
+                void notifyAutoLedgerFailure('请先添加至少一个账户。');
               }
             } else if (list.length > 0) {
               if (intent.kind === 'manual') {
@@ -1880,11 +1845,11 @@ export default function FinanceScreen() {
             if (shortcutImageUri) {
               autoLedgerImageUriRef.current = shortcutImageUri;
               if (list.length > 0) {
-                openAutoLedgerAnalyzingModal('shortcut_intent');
+                startAutoLedgerHandoff('shortcut_intent');
                 void processAutoLedgerFromImage(shortcutImageUri, list, 'shortcut_intent');
               } else {
-                beginAutoLedgerShortcutSession();
-                showAutoLedgerModalError('请先添加至少一个账户。');
+                startAutoLedgerHandoff('shortcut_intent');
+                void notifyAutoLedgerFailure('请先添加至少一个账户。');
               }
             }
           }
@@ -1901,15 +1866,13 @@ export default function FinanceScreen() {
         cancelled = true;
       };
     }, [
-      beginAutoLedgerShortcutSession,
       getDefaultSheetAccountIdForTab,
       loadFinanceAccounts,
       loadFinanceTransactions,
-      openAutoLedgerAnalyzingModal,
       processAutoLedgerFromImage,
       readClipboardImageForAutoLedger,
       resetSheetForm,
-      showAutoLedgerModalError,
+      startAutoLedgerHandoff,
     ])
   );
 
@@ -4011,72 +3974,19 @@ export default function FinanceScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      <Modal
-        visible={autoLedgerModalVisible}
-        transparent
-        animationType="fade"
-        statusBarTranslucent
-        onRequestClose={() => {
-          if (autoLedgerModalPhase === 'analyzing' || autoLedgerModalPhase === 'reading_clipboard') {
-            return;
-          }
-          dismissAutoLedgerModal();
-        }}>
-        <View style={styles.autoLedgerModalRoot}>
-          <View style={[styles.autoLedgerModalCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
-            {autoLedgerModalPhase === 'success' ? (
-              <>
-                <MaterialIcons name="check-circle" size={40} color={tertiary} />
-                <Text style={[styles.autoLedgerModalTitle, { color: text }]}>记账成功</Text>
-                <Text style={[styles.autoLedgerModalHint, { color: subtle }]}>正在返回您之前的应用…</Text>
-              </>
-            ) : autoLedgerModalPhase === 'error' ? (
-              <>
-                <MaterialIcons name="error-outline" size={40} color="#dc2626" />
-                <Text style={[styles.autoLedgerModalTitle, { color: text }]}>自动记账失败</Text>
-                <Text style={[styles.autoLedgerModalHint, { color: subtle }]}>
-                  {autoLedgerModalError ?? '请稍后重试。'}
-                </Text>
-                <View style={styles.autoLedgerModalActions}>
-                  <Pressable
-                    onPress={dismissAutoLedgerModal}
-                    style={({ pressed }) => [
-                      styles.autoLedgerModalBtn,
-                      { borderColor: outlineVariant, opacity: pressed ? 0.85 : 1 },
-                    ]}>
-                    <Text style={[styles.autoLedgerModalBtnText, { color: text }]}>关闭</Text>
-                  </Pressable>
-                  {autoLedgerImageUriRef.current || autoLedgerSourceRef.current === 'clipboard' ? (
-                    <Pressable
-                      onPress={() => void retryAutoLedgerFromModal()}
-                      style={({ pressed }) => [
-                        styles.autoLedgerModalBtn,
-                        styles.autoLedgerModalBtnPrimary,
-                        { backgroundColor: tertiary, opacity: pressed ? 0.88 : 1 },
-                      ]}>
-                      <Text style={styles.autoLedgerModalBtnPrimaryText}>重试</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              </>
-            ) : (
-              <>
-                <ActivityIndicator size="large" color={tertiary} />
-                <Text style={[styles.autoLedgerModalTitle, { color: text }]}>
-                  {autoLedgerModalPhase === 'reading_clipboard' ? '正在读取剪贴板' : '截图自动记账'}
-                </Text>
-                <Text style={[styles.autoLedgerModalHint, { color: subtle }]}>
-                  {autoLedgerModalPhase === 'reading_clipboard'
-                    ? '请稍候，即将开始 AI 识别…'
-                    : autoLedgerSourceRef.current === 'shortcut_intent'
-                      ? 'AI 正在识别快捷指令截图并记账…'
-                      : 'AI 正在识别剪贴板截图并记账…'}
-                </Text>
-              </>
-            )}
+      {autoLedgerToastVisible ? (
+        <View
+          pointerEvents="none"
+          style={[styles.autoLedgerToastWrap, { top: insets.top + 8 }]}
+          accessibilityLiveRegion="polite">
+          <View style={[styles.autoLedgerToast, { backgroundColor: surface, borderColor: outlineVariant }]}>
+            <ActivityIndicator size="small" color={tertiary} />
+            <Text style={[styles.autoLedgerToastText, { color: text }]} numberOfLines={2}>
+              {autoLedgerToastMessage}
+            </Text>
           </View>
         </View>
-      </Modal>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -5394,59 +5304,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  autoLedgerModalRoot: {
-    flex: 1,
+  autoLedgerToastWrap: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    zIndex: 100,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 28,
-    backgroundColor: 'rgba(15, 23, 42, 0.45)',
   },
-  autoLedgerModalCard: {
-    width: '100%',
-    maxWidth: 340,
-    borderRadius: 18,
-    borderWidth: 1,
-    paddingHorizontal: 22,
-    paddingVertical: 26,
-    alignItems: 'center',
-    gap: 10,
-  },
-  autoLedgerModalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    marginTop: 4,
-    textAlign: 'center',
-  },
-  autoLedgerModalHint: {
-    fontSize: 14,
-    lineHeight: 21,
-    textAlign: 'center',
-  },
-  autoLedgerModalActions: {
+  autoLedgerToast: {
     flexDirection: 'row',
-    gap: 10,
-    marginTop: 14,
-    alignSelf: 'stretch',
-  },
-  autoLedgerModalBtn: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 12,
-    borderWidth: 1,
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 10,
+    maxWidth: 400,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 6,
   },
-  autoLedgerModalBtnText: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  autoLedgerModalBtnPrimary: {
-    borderWidth: 0,
-  },
-  autoLedgerModalBtnPrimaryText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '700',
+  autoLedgerToastText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    lineHeight: 20,
   },
   transferCheckBtn: {
     flex: 1,
