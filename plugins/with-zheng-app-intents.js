@@ -34,8 +34,9 @@ private enum ZhengShortcutAutoLedgerPending {
     }
 
     static func imageData(from file: IntentFile) -> Data? {
-        if let data = file.data, !data.isEmpty {
-            return data
+        let inline = file.data
+        if !inline.isEmpty {
+            return inline
         }
         if let url = file.fileURL, FileManager.default.fileExists(atPath: url.path) {
             return try? Data(contentsOf: url)
