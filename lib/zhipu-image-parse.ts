@@ -1950,6 +1950,8 @@ export type ParseFinanceOneLinerFromTextOptions = {
   text: string;
   maxAttempts?: number;
   retryDelayMs?: number;
+  /** 用户已有账户，供 AI 从话术中识别付款/收款账户 */
+  accounts?: ParseFinanceOneLinerFromImageAccountHint[];
 };
 
 export type ParseFinanceOneLinerFromTextResult =
@@ -1959,6 +1961,8 @@ export type ParseFinanceOneLinerFromTextResult =
       amount: number;
       name: string;
       category_label: string | null;
+      payment_account_label: string | null;
+      account_name: string | null;
       rawContent: string;
       attempts: number;
     }
@@ -1993,6 +1997,26 @@ function normalizeFinanceOneLinerPayload(parsed: unknown): {
   };
 }
 
+function normalizeFinanceOneLinerFromImagePayload(parsed: unknown): {
+  transaction_type: 'expense' | 'income';
+  amount: number;
+  name: string;
+  category_label: string | null;
+  payment_account_label: string | null;
+  account_name: string | null;
+} | null {
+  const base = normalizeFinanceOneLinerPayload(parsed);
+  if (!base) return null;
+  if (typeof parsed !== 'object' || parsed === null) return { ...base, payment_account_label: null, account_name: null };
+  const o = parsed as Record<string, unknown>;
+  const payRaw = o.payment_account_label ?? o.payment_account ?? o.pay_account;
+  const payment_account_label =
+    typeof payRaw === 'string' && payRaw.trim().length > 0 ? payRaw.trim().slice(0, 80) : null;
+  const accRaw = o.account_name ?? o.matched_account_name;
+  const account_name = typeof accRaw === 'string' && accRaw.trim().length > 0 ? accRaw.trim().slice(0, 80) : null;
+  return { ...base, payment_account_label, account_name };
+}
+
 /**
  * 将用户「一句话」记账解析为类型、金额、标题与可选分类提示（智谱 glm-4-flash，JSON）。
  */
@@ -2010,6 +2034,19 @@ export async function parseFinanceOneLinerFromText(
     return { ok: false, error: '输入为空', attempts: 0 };
   }
 
+  const hasAccounts = Array.isArray(options.accounts) && options.accounts.length > 0;
+  const accountLines = hasAccounts
+    ? options.accounts!
+        .map((a) => {
+          const no = a.account_no?.trim();
+          return no ? `- ${a.name}（尾号 ${no.replace(/\D/g, '').slice(-4) || no}）` : `- ${a.name}`;
+        })
+        .join('\n')
+    : '';
+  const jsonHint = hasAccounts
+    ? `{"transaction_type":"expense","amount":28,"name":"午饭","category_label":"餐饮","payment_account_label":"支付宝","account_name":"支付宝"}`
+    : FINANCE_ONE_LINER_JSON_HINT;
+
   const systemContent = `你是个人记账应用里的解析器。用户会输入一句中文口语化记账描述（可含金额、收支方向、事由）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段：
@@ -2017,10 +2054,16 @@ export async function parseFinanceOneLinerFromText(
 2) amount：正数（元），从用户话中提取主金额；不要编造用户未写的数字。
 3) name：简短中文标题（≤20字），概括事由，不要含「JSON」等词。
 4) category_label：可为 null 或简短中文分类名（如 餐饮、交通、购物、工资），尽力从语义推断；不确定则 null。
+5) payment_account_label：话术中提到的付款/收款方式原文（如「支付宝」「微信」「招行卡」）；未提及则 null。
+${
+  hasAccounts
+    ? `6) account_name：若话术中能对应到下列账户之一则填其名称，否则 null。不得编造列表外名称：\n${accountLines}`
+    : ''
+}
 
 若用户话里没有任何可解析的金额，不要猜测金额，此时仍输出 JSON 但 amount 填 0（调用方将判为失败）。
 
-输出形状示例（内容替换）：${FINANCE_ONE_LINER_JSON_HINT}`;
+输出形状示例（内容替换）：${jsonHint}`;
 
   const lr = await loopTextJsonLlmWithRetries<{
     transaction_type: 'expense' | 'income';
@@ -2036,7 +2079,7 @@ export async function parseFinanceOneLinerFromText(
     maxAttempts,
     retryDelayMs,
     finish: parsed => {
-      const norm = normalizeFinanceOneLinerPayload(parsed);
+      const norm = normalizeFinanceOneLinerFromImagePayload(parsed);
       if (!norm || !Number.isFinite(norm.amount) || norm.amount <= 0) {
         return { ok: false, error: '未能从话中解析出有效金额与标题', details: parsed };
       }
@@ -2047,12 +2090,23 @@ export async function parseFinanceOneLinerFromText(
   if (!lr.ok) {
     return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
   }
+
+  let account_name = lr.value.account_name;
+  if (hasAccounts && account_name) {
+    const allowed = new Set(options.accounts!.map((a) => a.name.trim()));
+    if (!allowed.has(account_name.trim())) {
+      account_name = null;
+    }
+  }
+
   return {
     ok: true,
     transaction_type: lr.value.transaction_type,
     amount: lr.value.amount,
     name: lr.value.name,
     category_label: lr.value.category_label,
+    payment_account_label: lr.value.payment_account_label,
+    account_name,
     rawContent: lr.rawContent,
     attempts: lr.attempts,
   };
@@ -2068,18 +2122,44 @@ function stripDataUriForVision(input: string): { base64: string; mime: string } 
   return { mime: 'image/png', base64: s.replace(/\s/g, '') };
 }
 
+export type ParseFinanceOneLinerFromImageAccountHint = {
+  name: string;
+  account_no?: string | null;
+};
+
 export type ParseFinanceOneLinerFromImageOptions = {
   apiKey: string;
   /** 剪贴板 `getImageAsync` 返回的 `data`（含 `data:image/...;base64,` 前缀） */
   imageDataUri: string;
+  /** 用户已有账户，供 AI 在截图付款方式与用户账户间做对应 */
+  accounts?: ParseFinanceOneLinerFromImageAccountHint[];
+  /** 识别失败时的重试次数（含首次），默认 1 */
+  maxAttempts?: number;
+  retryDelayMs?: number;
 };
+
+export type ParseFinanceOneLinerFromImageResult =
+  | {
+      ok: true;
+      transaction_type: 'expense' | 'income';
+      amount: number;
+      name: string;
+      category_label: string | null;
+      /** 截图上显示的付款/扣款方式原文（如「花呗」「招商银行信用卡(1234)」） */
+      payment_account_label: string | null;
+      /** 从 `accounts` 中选出的账户名称；无法判断时为 null */
+      account_name: string | null;
+      rawContent: string;
+      attempts: number;
+    }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
 
 /**
  * 从支付/账单/小票等截图中解析一笔主交易（视觉模型 + JSON，与一句话记账字段一致）。
  */
 export async function parseFinanceOneLinerFromImage(
   options: ParseFinanceOneLinerFromImageOptions,
-): Promise<ParseFinanceOneLinerFromTextResult> {
+): Promise<ParseFinanceOneLinerFromImageResult> {
   const key = options.apiKey.trim();
   if (!key) {
     return { ok: false, error: '未配置 API 密钥', attempts: 0 };
@@ -2094,52 +2174,109 @@ export async function parseFinanceOneLinerFromImage(
     return { ok: false, error: '无法解析图片数据', attempts: 0 };
   }
 
-  const jsonTemplate = `{"transaction_type":"expense","amount":0,"name":"","category_label":null}`;
+  const hasAccounts = Array.isArray(options.accounts) && options.accounts.length > 0;
+  const accountLines = hasAccounts
+    ? options.accounts!
+        .map((a) => {
+          const no = a.account_no?.trim();
+          return no ? `- ${a.name}（尾号 ${no.replace(/\D/g, '').slice(-4) || no}）` : `- ${a.name}`;
+        })
+        .join('\n')
+    : '';
+
+  const jsonTemplate = hasAccounts
+    ? `{"transaction_type":"expense","amount":0,"name":"","category_label":null,"payment_account_label":null,"account_name":null}`
+    : `{"transaction_type":"expense","amount":0,"name":"","category_label":null,"payment_account_label":null}`;
+
   const question =
     '请查看这张手机屏幕截图（可能是支付成功页、账单详情、小票、转账或收款记录等）。识别其中一笔主要交易；若有多笔，取金额最大或信息最完整的一笔。\n' +
     '要求：transaction_type 仅 expense 或 income；amount 为人民币元且为正数，不得编造截图中不存在的数字；name 为不超过 20 字的中文事由；category_label 为简短中文分类名或 null。\n' +
+    'payment_account_label：截图中实际扣款/付款方式的中文原文（如「花呗」「零钱」「招商银行信用卡(1234)」）；看不清则 null。\n' +
+    (hasAccounts
+      ? `account_name：必须从下列用户账户名称中选一，选与截图付款方式最匹配的一项；无法对应则 null。不得编造列表外的名称：\n${accountLines}\n`
+      : '') +
     '若无法识别任何可信金额，将 amount 设为 0。';
 
-  const r = await parseImageToJson({
-    apiKey: key,
-    imageBase64: base64,
-    imageMimeType: mime,
-    question,
-    jsonTemplate,
-  });
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 1);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 800);
+  let lastError = '未能从截图中识别出有效金额与标题';
+  let lastHttpStatus: number | undefined;
+  let lastDetails: unknown;
 
-  if (!r.ok) {
-    return {
-      ok: false,
-      error: r.error,
-      attempts: 1,
-      httpStatus: r.httpStatus,
-      details: r.details,
-    };
-  }
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const r = await parseImageToJson({
+      apiKey: key,
+      imageBase64: base64,
+      imageMimeType: mime,
+      question,
+      jsonTemplate,
+    });
 
-  let payload = normalizeFinanceOneLinerPayload(r.data);
-  if (!payload && r.data && typeof r.data === 'object') {
-    const inner = (r.data as Record<string, unknown>).result;
-    payload = normalizeFinanceOneLinerPayload(inner);
-  }
-  if (!payload || !Number.isFinite(payload.amount) || payload.amount <= 0) {
+    if (!r.ok) {
+      lastError = r.error;
+      lastHttpStatus = r.httpStatus;
+      lastDetails = r.details;
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return {
+        ok: false,
+        error: lastError,
+        attempts: attempt,
+        httpStatus: lastHttpStatus,
+        details: lastDetails,
+      };
+    }
+
+    let payload = normalizeFinanceOneLinerFromImagePayload(r.data);
+    if (!payload && r.data && typeof r.data === 'object') {
+      const inner = (r.data as Record<string, unknown>).result;
+      payload = normalizeFinanceOneLinerFromImagePayload(inner);
+    }
+    if (!payload || !Number.isFinite(payload.amount) || payload.amount <= 0) {
+      lastError = '未能从截图中识别出有效金额与标题';
+      lastHttpStatus = undefined;
+      lastDetails = r.data;
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return {
+        ok: false,
+        error: lastError,
+        attempts: attempt,
+        details: lastDetails,
+      };
+    }
+
+    let account_name = payload.account_name;
+    if (hasAccounts && account_name) {
+      const allowed = new Set(options.accounts!.map((a) => a.name.trim()));
+      if (!allowed.has(account_name.trim())) {
+        account_name = null;
+      }
+    }
+
     return {
-      ok: false,
-      error: '未能从截图中识别出有效金额与标题',
-      attempts: 1,
-      details: r.data,
+      ok: true,
+      transaction_type: payload.transaction_type,
+      amount: payload.amount,
+      name: payload.name,
+      category_label: payload.category_label,
+      payment_account_label: payload.payment_account_label,
+      account_name,
+      rawContent: r.rawContent,
+      attempts: attempt,
     };
   }
 
   return {
-    ok: true,
-    transaction_type: payload.transaction_type,
-    amount: payload.amount,
-    name: payload.name,
-    category_label: payload.category_label,
-    rawContent: r.rawContent,
-    attempts: 1,
+    ok: false,
+    error: lastError,
+    attempts: maxAttempts,
+    httpStatus: lastHttpStatus,
+    details: lastDetails,
   };
 }
 

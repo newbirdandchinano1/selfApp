@@ -260,6 +260,7 @@ type ProjectScheduleMeta = {
   mode?: 'date' | 'time';
   reminderOption?: string;
   repeatOption?: string;
+  date?: string;
   range?: { start: string; end: string };
 };
 
@@ -444,6 +445,42 @@ function standaloneTodoPassesRepeatDayFilter(task: TaskRow, logicalTodayYmd: str
   const schedule = parseTaskRepeatSchedule(task.extra_data);
   if (!schedule) return true;
   return isTaskRepeatDueOnLogicalDay(logicalTodayYmd, schedule);
+}
+
+function addDaysToYmd(ymd: string, days: number): string {
+  const d = ymdToLocalDate(ymd);
+  if (!d) return ymd;
+  d.setDate(d.getDate() + days);
+  return formatLocalYmd(d);
+}
+
+/**
+ * 判断逻辑日是否落在日程区间内。
+ * 单日「时刻」槽为 [start, end)（end 常为次日）；跨多日区间为 [start, end] 含首尾。
+ */
+function isLogicalDayInYmdRange(todayYmd: string, startYmd: string, endYmd: string): boolean {
+  if (!startYmd || !endYmd) return true;
+  if (todayYmd < startYmd) return false;
+  if (startYmd === endYmd) return todayYmd === startYmd;
+  if (endYmd === addDaysToYmd(startYmd, 1)) return todayYmd < endYmd;
+  return todayYmd <= endYmd;
+}
+
+/** 独立待办：仅当「今天」落在已设日期/时间段内时才出现在列表（重复规则由 repeat 过滤器处理） */
+function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalTodayYmd: string): boolean {
+  if (parseTaskRepeatSchedule(task.extra_data)) return true;
+
+  const schedule = parseProjectSchedule(task.extra_data);
+  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    const start = formatScheduleDateToYMD(schedule.range.start);
+    const end = formatScheduleDateToYMD(schedule.range.end);
+    return isLogicalDayInYmdRange(logicalTodayYmd, start, end);
+  }
+  if (schedule?.date) {
+    return logicalTodayYmd === formatScheduleDateToYMD(schedule.date);
+  }
+
+  return true;
 }
 
 function sortTaskTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
@@ -1523,7 +1560,8 @@ export default function TasksScreen() {
         !t.project_id &&
         !t.parent_task_id &&
         standaloneTodoPassesDayBoundaryFilter(t, dayBoundary, logicalTodayYmd) &&
-        standaloneTodoPassesRepeatDayFilter(t, logicalTodayYmd)
+        standaloneTodoPassesRepeatDayFilter(t, logicalTodayYmd) &&
+        standaloneTodoPassesScheduleWindowFilter(t, logicalTodayYmd)
     );
     const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
     const createdMs = (t: TaskRow) => {

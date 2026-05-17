@@ -169,6 +169,30 @@ export async function getTasks() {
   return db.getAllAsync<TaskRow>('SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC');
 }
 
+export type TaskOverviewListFilter = 'open' | 'doneOrCancelled' | 'totalActive';
+
+/** 待办总览概况卡片：按统计维度列出当前任务（与 getTaskGlobalInsightCounts 口径一致） */
+export async function getTasksForOverviewList(filter: TaskOverviewListFilter): Promise<TaskRow[]> {
+  const db = await getDatabase();
+  if (filter === 'open') {
+    return db.getAllAsync<TaskRow>(
+      `SELECT * FROM tasks
+       WHERE deleted_at IS NULL AND status NOT IN ('done', 'cancelled')
+       ORDER BY updated_at DESC, created_at DESC`
+    );
+  }
+  if (filter === 'doneOrCancelled') {
+    return db.getAllAsync<TaskRow>(
+      `SELECT * FROM tasks
+       WHERE deleted_at IS NULL AND status IN ('done', 'cancelled')
+       ORDER BY updated_at DESC, created_at DESC`
+    );
+  }
+  return db.getAllAsync<TaskRow>(
+    'SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC'
+  );
+}
+
 /** 截止日为指定本地日（YYYY-MM-DD）的任务，含子任务，按优先级与截止时间排序。 */
 export async function getTasksDueOnDate(ymd: string) {
   const db = await getDatabase();
@@ -259,9 +283,9 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
       input.note ?? current.note,
       input.status ?? current.status,
       input.priority ?? current.priority,
-      input.due_date ?? current.due_date,
-      input.completed_at ?? current.completed_at,
-      input.extra_data ?? current.extra_data,
+      input.due_date !== undefined ? input.due_date : current.due_date,
+      input.completed_at !== undefined ? input.completed_at : current.completed_at,
+      input.extra_data !== undefined ? input.extra_data : current.extra_data,
       input.sort_order ?? current.sort_order ?? 1000,
       id,
     ]

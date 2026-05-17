@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -126,7 +127,7 @@ export default function AddSubtaskScreen() {
   const [scheduleMeta, setScheduleMeta] = React.useState<TaskScheduleMeta | null>(null);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
-  const scheduleSource = params.source ?? 'add-subtask';
+  const scheduleSource = normalizeRouteParam(params.source as string | string[] | undefined) || 'add-subtask';
   const dateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const raw = typeof params.dateLimit === 'string' ? params.dateLimit : '';
     if (!raw) return null;
@@ -156,8 +157,8 @@ export default function AddSubtaskScreen() {
   const currentPriority = priorityOptions.find((p) => p.key === priority) ?? priorityOptions[0];
 
   const readScheduleResult = React.useCallback(() => {
-    const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
-    if (!picked || picked.source !== scheduleSource) return;
+    const picked = consumeSchedulePickerResult(scheduleSource);
+    if (!picked) return;
 
     if (picked.repeatOption !== '不重复') {
       setDeadlineText('');
@@ -190,7 +191,6 @@ export default function AddSubtaskScreen() {
       endTime: picked.endTime,
     });
 
-    globalThis.__schedulePickerResult = undefined;
   }, [scheduleSource]);
 
   const openSchedulePicker = React.useCallback(() => {

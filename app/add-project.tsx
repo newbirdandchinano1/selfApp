@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
 import { createProject, getProjectCategories, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
@@ -154,7 +155,7 @@ export default function AddProjectScreen() {
   }, [params.categoryId]);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
-  const scheduleSource = params.source ?? 'add-project';
+  const scheduleSource = normalizeRouteParam(params.source as string | string[] | undefined) || 'add-project';
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
   const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
@@ -162,8 +163,8 @@ export default function AddProjectScreen() {
   const surfaceLowest = theme.surface;
 
   const readScheduleResult = React.useCallback(() => {
-    const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
-    if (!picked || picked.source !== scheduleSource) return;
+    const picked = consumeSchedulePickerResult(scheduleSource);
+    if (!picked) return;
 
     if (picked.repeatOption !== '不重复') {
       setDeadlineText('');
@@ -196,7 +197,6 @@ export default function AddProjectScreen() {
       endTime: picked.endTime,
     });
 
-    globalThis.__schedulePickerResult = undefined;
   }, [scheduleSource]);
 
   const openSchedulePicker = React.useCallback(() => {

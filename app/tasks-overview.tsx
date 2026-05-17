@@ -1,9 +1,12 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getTasksForOverviewList } from '@/lib/repositories/tasks/task';
+import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
   getFirstCompletedEventDayYmd,
   getRecentTaskExecutionEvents,
   getTaskCompletionCountsByDayRange,
+  getTaskExecutionEventsByAction,
   getTaskExecutionEventsForLocalDay,
   getTaskGlobalInsightCounts,
 } from '@/lib/repositories/tasks/task-execution-events';
@@ -38,6 +41,31 @@ function actionLabel(action: string) {
   if (action === 'completed') return '标记完成';
   if (action === 'reopened') return '恢复为待办';
   return action;
+}
+
+type OverviewStatKey = 'open' | 'doneOrCancelled' | 'totalActive' | 'completedEvents' | 'reopenedEvents';
+
+const STAT_CARDS: Array<{
+  key: OverviewStatKey;
+  label: string;
+  countKey: keyof Awaited<ReturnType<typeof getTaskGlobalInsightCounts>>;
+  valueColor: 'text' | 'secondary' | 'primary';
+  listMode: 'tasks' | 'events';
+  eventAction?: 'completed' | 'reopened';
+}> = [
+  { key: 'open', label: '未完成', countKey: 'open', valueColor: 'text', listMode: 'tasks' },
+  { key: 'doneOrCancelled', label: '当前已完成/取消', countKey: 'doneOrCancelled', valueColor: 'secondary', listMode: 'tasks' },
+  { key: 'totalActive', label: '待办总数', countKey: 'totalActive', valueColor: 'primary', listMode: 'tasks' },
+  { key: 'completedEvents', label: '累计完成记录', countKey: 'completedEvents', valueColor: 'primary', listMode: 'events', eventAction: 'completed' },
+  { key: 'reopenedEvents', label: '累计恢复记录', countKey: 'reopenedEvents', valueColor: 'primary', listMode: 'events', eventAction: 'reopened' },
+];
+
+function formatTaskStatus(status: string) {
+  if (status === 'doing') return '进行中';
+  if (status === 'done') return '已完成';
+  if (status === 'blocked') return '受阻';
+  if (status === 'cancelled') return '已取消';
+  return '待办';
 }
 
 /** 根据容器宽度计算周数与格子边长，使热力图横向铺满且格子足够大 */
@@ -177,6 +205,11 @@ export default function TasksOverviewScreen() {
   const [dayEvents, setDayEvents] = React.useState<Awaited<ReturnType<typeof getTaskExecutionEventsForLocalDay>>>([]);
   const [dayEventsLoading, setDayEventsLoading] = React.useState(false);
 
+  const [selectedStatKey, setSelectedStatKey] = React.useState<OverviewStatKey | null>(null);
+  const [statTasks, setStatTasks] = React.useState<TaskRow[]>([]);
+  const [statEvents, setStatEvents] = React.useState<Awaited<ReturnType<typeof getTaskExecutionEventsByAction>>>([]);
+  const [statLoading, setStatLoading] = React.useState(false);
+
   const screenW = Dimensions.get('window').width;
   const approxCardInner = Math.max(200, screenW - 18 * 2 - 16 * 2);
 
@@ -253,6 +286,13 @@ export default function TasksOverviewScreen() {
     };
   }, [selectedHeatYmd]);
 
+  const clearStatSelection = React.useCallback(() => {
+    setSelectedStatKey(null);
+    setStatTasks([]);
+    setStatEvents([]);
+    setStatLoading(false);
+  }, []);
+
   const onHeatCellPress = React.useCallback((cellData: HeatmapCell) => {
     if (selectedHeatYmd === cellData.ymd) {
       setSelectedHeatYmd(null);
@@ -260,16 +300,80 @@ export default function TasksOverviewScreen() {
       setSelectedHeatInRange(true);
       return;
     }
+    clearStatSelection();
     setSelectedHeatYmd(cellData.ymd);
     setSelectedHeatCount(cellData.count);
     setSelectedHeatInRange(cellData.inRange);
-  }, [selectedHeatYmd]);
+  }, [clearStatSelection, selectedHeatYmd]);
 
   const clearHeatSelection = React.useCallback(() => {
     setSelectedHeatYmd(null);
     setSelectedHeatCount(0);
     setSelectedHeatInRange(true);
   }, []);
+
+  const onStatCardPress = React.useCallback(
+    (key: OverviewStatKey) => {
+      if (selectedStatKey === key) {
+        clearStatSelection();
+        return;
+      }
+      clearHeatSelection();
+      setSelectedStatKey(key);
+    },
+    [clearHeatSelection, clearStatSelection, selectedStatKey]
+  );
+
+  React.useEffect(() => {
+    if (!selectedStatKey) return;
+    const card = STAT_CARDS.find((c) => c.key === selectedStatKey);
+    if (!card) return;
+    let cancelled = false;
+    setStatLoading(true);
+    const run = async () => {
+      try {
+        if (card.listMode === 'tasks') {
+          const rows = await getTasksForOverviewList(
+            card.key === 'open' ? 'open' : card.key === 'doneOrCancelled' ? 'doneOrCancelled' : 'totalActive'
+          );
+          if (!cancelled) {
+            setStatTasks(rows);
+            setStatEvents([]);
+          }
+        } else if (card.eventAction) {
+          const rows = await getTaskExecutionEventsByAction(card.eventAction, 500);
+          if (!cancelled) {
+            setStatEvents(rows);
+            setStatTasks([]);
+          }
+        }
+      } catch (e) {
+        console.warn('加载概况明细失败', e);
+        if (!cancelled) {
+          setStatTasks([]);
+          setStatEvents([]);
+        }
+      } finally {
+        if (!cancelled) setStatLoading(false);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStatKey]);
+
+  const selectedStatCard = React.useMemo(
+    () => (selectedStatKey ? STAT_CARDS.find((c) => c.key === selectedStatKey) : null),
+    [selectedStatKey]
+  );
+
+  const clearListSelection = React.useCallback(() => {
+    clearHeatSelection();
+    clearStatSelection();
+  }, [clearHeatSelection, clearStatSelection]);
+
+  const showClearSelection = !!selectedHeatYmd || !!selectedStatKey;
 
   const bg = isDark ? theme.background : '#faf8ff';
   const surface = isDark ? 'rgba(30, 41, 59, 0.70)' : '#ffffff';
@@ -291,33 +395,43 @@ export default function TasksOverviewScreen() {
 
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 32 }]} showsVerticalScrollIndicator={false}>
         <Text style={[styles.hint, { color: outline }]}>
-          以下统计从本版本起，在清单中勾选完成或恢复待办时写入本地数据库；删除待办后仍会保留当时的标题快照。点击热力图中的格子，在下方「执行历史」中查看该日明细；再次点击同一格可取消选中。
+          以下统计从本版本起，在清单中勾选完成或恢复待办时写入本地数据库；删除待办后仍会保留当时的标题快照。点击概况卡片或热力图格子，在下方「执行历史」查看对应明细；再次点击可取消选中。
         </Text>
 
         <View style={[styles.card, { backgroundColor: surface, borderColor: border }]}>
           <Text style={[styles.sectionLabel, { color: outline }]}>概况</Text>
           {counts ? (
             <View style={styles.statsGrid}>
-              <View style={[styles.statBox, { backgroundColor: surfaceLow, borderColor: border }]}>
-                <Text style={[styles.statVal, { color: theme.text }]}>{counts.open}</Text>
-                <Text style={[styles.statLbl, { color: outline }]}>未完成</Text>
-              </View>
-              <View style={[styles.statBox, { backgroundColor: surfaceLow, borderColor: border }]}>
-                <Text style={[styles.statVal, { color: secondary }]}>{counts.doneOrCancelled}</Text>
-                <Text style={[styles.statLbl, { color: outline }]}>当前已完成/取消</Text>
-              </View>
-              <View style={[styles.statBox, { backgroundColor: surfaceLow, borderColor: border }]}>
-                <Text style={[styles.statVal, { color: primary }]}>{counts.totalActive}</Text>
-                <Text style={[styles.statLbl, { color: outline }]}>待办总数</Text>
-              </View>
-              <View style={[styles.statBox, { backgroundColor: surfaceLow, borderColor: border }]}>
-                <Text style={[styles.statVal, { color: primary }]}>{counts.completedEvents}</Text>
-                <Text style={[styles.statLbl, { color: outline }]}>累计完成记录</Text>
-              </View>
-              <View style={[styles.statBox, { backgroundColor: surfaceLow, borderColor: border }]}>
-                <Text style={[styles.statVal, { color: primary }]}>{counts.reopenedEvents}</Text>
-                <Text style={[styles.statLbl, { color: outline }]}>累计恢复记录</Text>
-              </View>
+              {STAT_CARDS.map((card) => {
+                const selected = selectedStatKey === card.key;
+                const valColor =
+                  card.valueColor === 'secondary' ? secondary : card.valueColor === 'primary' ? primary : theme.text;
+                return (
+                  <Pressable
+                    key={card.key}
+                    onPress={() => onStatCardPress(card.key)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    accessibilityLabel={`${card.label}，${counts[card.countKey]}，点击查看明细`}
+                    style={({ pressed }) => [
+                      styles.statBox,
+                      {
+                        backgroundColor: selected ? (isDark ? 'rgba(96,165,250,0.14)' : 'rgba(0,88,190,0.08)') : surfaceLow,
+                        borderColor: selected ? primary : border,
+                        borderWidth: selected ? 2 : 1,
+                        opacity: pressed ? 0.88 : 1,
+                      },
+                    ]}>
+                    <Text style={[styles.statVal, { color: valColor }]}>{counts[card.countKey]}</Text>
+                    <Text style={[styles.statLbl, { color: outline }]}>{card.label}</Text>
+                    {selected ? (
+                      <Text style={[styles.statTapHint, { color: primary }]}>已选中 · 见下方列表</Text>
+                    ) : (
+                      <Text style={[styles.statTapHint, { color: outline }]}>点击查看</Text>
+                    )}
+                  </Pressable>
+                );
+              })}
             </View>
           ) : (
             <Text style={{ color: outline, fontWeight: '600' }}>加载中…</Text>
@@ -368,7 +482,11 @@ export default function TasksOverviewScreen() {
           <View style={styles.historyHeaderRow}>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={[styles.sectionLabel, { color: outline }]}>执行历史</Text>
-              {selectedHeatYmd ? (
+              {selectedStatCard ? (
+                <Text style={[styles.subHint, { color: outline, marginTop: 6 }]}>
+                  {selectedStatCard.label} · 共 {counts?.[selectedStatCard.countKey] ?? 0} 条
+                </Text>
+              ) : selectedHeatYmd ? (
                 <Text style={[styles.subHint, { color: outline, marginTop: 6 }]}>
                   {formatYmdTitleCN(selectedHeatYmd)}
                   {selectedHeatInRange ? ` · 当日标记完成 ${selectedHeatCount} 次` : ' · 该日不在热力图统计范围内'}
@@ -379,9 +497,9 @@ export default function TasksOverviewScreen() {
                 </Text>
               )}
             </View>
-            {selectedHeatYmd ? (
+            {showClearSelection ? (
               <Pressable
-                onPress={clearHeatSelection}
+                onPress={clearListSelection}
                 style={({ pressed }) => [
                   styles.clearSelectionBtn,
                   { borderColor: `${primary}55`, opacity: pressed ? 0.75 : 1 },
@@ -392,7 +510,69 @@ export default function TasksOverviewScreen() {
             ) : null}
           </View>
 
-          {selectedHeatYmd ? (
+          {selectedStatKey ? (
+            statLoading ? (
+              <View style={styles.dayHistLoading}>
+                <ActivityIndicator color={primary} />
+                <Text style={[styles.dayHistLoadingText, { color: outline }]}>加载明细…</Text>
+              </View>
+            ) : selectedStatCard?.listMode === 'tasks' ? (
+              statTasks.length === 0 ? (
+                <Text style={[styles.emptyHist, { color: theme.textSecondary }]}>暂无符合条件的待办。</Text>
+              ) : (
+                statTasks.map((t, idx) => (
+                  <Pressable
+                    key={t.id}
+                    onPress={() => router.push({ pathname: '/task/[id]', params: { id: t.id } })}
+                    style={({ pressed }) => [
+                      styles.histRow,
+                      { borderBottomColor: border, opacity: pressed ? 0.86 : 1 },
+                      idx === statTasks.length - 1 ? { borderBottomWidth: 0 } : null,
+                    ]}>
+                    <View
+                      style={[
+                        styles.histDot,
+                        { backgroundColor: t.status === 'done' || t.status === 'cancelled' ? secondary : primary },
+                      ]}
+                    />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[styles.histTitle, { color: theme.text }]} numberOfLines={2}>
+                        {t.title?.trim() || '（无标题）'}
+                      </Text>
+                      <Text style={[styles.histMeta, { color: outline }]}>
+                        {formatTaskStatus(t.status)}
+                        {t.due_date?.trim() ? ` · 截止 ${t.due_date.slice(0, 10)}` : ''}
+                        {t.updated_at ? ` · 更新 ${formatDateTimeCN(t.updated_at)}` : ''}
+                      </Text>
+                    </View>
+                    <MaterialIcons name="chevron-right" size={20} color={outline} />
+                  </Pressable>
+                ))
+              )
+            ) : statEvents.length === 0 ? (
+              <Text style={[styles.emptyHist, { color: theme.textSecondary }]}>暂无执行记录。</Text>
+            ) : (
+              statEvents.map((e, idx) => (
+                <View
+                  key={e.id}
+                  style={[
+                    styles.histRow,
+                    { borderBottomColor: border },
+                    idx === statEvents.length - 1 ? { borderBottomWidth: 0 } : null,
+                  ]}>
+                  <View style={[styles.histDot, { backgroundColor: e.action === 'completed' ? secondary : primary }]} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={[styles.histTitle, { color: theme.text }]} numberOfLines={2}>
+                      {e.task_title?.trim() || '（待办已删除或不可用）'}
+                    </Text>
+                    <Text style={[styles.histMeta, { color: outline }]}>
+                      {actionLabel(e.action)} · {formatDateTimeCN(e.created_at)}
+                    </Text>
+                  </View>
+                </View>
+              ))
+            )
+          ) : selectedHeatYmd ? (
             dayEventsLoading ? (
               <View style={styles.dayHistLoading}>
                 <ActivityIndicator color={primary} />
@@ -480,6 +660,7 @@ const styles = StyleSheet.create({
   },
   statVal: { fontSize: 20, fontWeight: '900' },
   statLbl: { fontSize: 10, fontWeight: '800', marginTop: 4, textAlign: 'center' },
+  statTapHint: { fontSize: 9, fontWeight: '700', marginTop: 6, textAlign: 'center' },
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
   legendText: { fontSize: 10, fontWeight: '700' },
   legendDot: { width: 10, height: 10, borderRadius: 2, borderWidth: StyleSheet.hairlineWidth },

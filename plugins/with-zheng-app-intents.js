@@ -1,9 +1,12 @@
 /**
- * 在主 App 中注册 App Intent：快捷指令可「打开 zheng://screenshot」，
- * 由 App 内读剪贴板 + 跳转财务页 + AI 自动记账（与深链一致）。
+ * 在主 App 中注册 App Intent：快捷指令可将截图作为参数传入（不经剪贴板），
+ * 或回退到 zheng://screenshot 在财务页弹窗内走剪贴板（兼容旧快捷指令）。
  * 修改请编辑本文件；勿直接改 ios 下生成文件（prebuild 会覆盖）。
  */
 const { IOSConfig } = require('expo/config-plugins');
+
+/** 与 lib/shortcut-auto-ledger-pending.ts 中文件名一致 */
+const PENDING_FILENAME = 'shortcut-auto-ledger-pending.png';
 
 const SWIFT_SOURCE = `//
 // ZhengAppIntents.swift
@@ -13,25 +16,80 @@ const SWIFT_SOURCE = `//
 import AppIntents
 import UIKit
 
+private enum ZhengShortcutAutoLedgerPending {
+    static let fileName = "${PENDING_FILENAME}"
+
+    static func writeImageData(_ data: Data) throws -> URL {
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            throw NSError(domain: "ZhengShortcutAutoLedger", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "无法访问应用文档目录。",
+            ])
+        }
+        let dest = docs.appendingPathComponent(fileName)
+        if FileManager.default.fileExists(atPath: dest.path) {
+            try FileManager.default.removeItem(at: dest)
+        }
+        try data.write(to: dest, options: .atomic)
+        return dest
+    }
+
+    static func imageData(from file: IntentFile) -> Data? {
+        if let data = file.data, !data.isEmpty {
+            return data
+        }
+        if let url = file.fileURL, FileManager.default.fileExists(atPath: url.path) {
+            return try? Data(contentsOf: url)
+        }
+        return nil
+    }
+}
+
 @available(iOS 16.0, *)
 struct ZhengScreenshotAutoLedgerIntent: AppIntent {
-    static var title: LocalizedStringResource = "剪贴板截图记账"
+    static var title: LocalizedStringResource = "截图记账"
 
     static var description = IntentDescription(
-        "打开应用并从剪贴板读取截图，跳转财务页由 AI 自动记账（请先在快捷指令中复制截图）。"
+        "接收快捷指令传入的截图并自动 AI 记账。推荐：截屏 → 从输入获取图像 → 运行本操作；未传图时将尝试打开剪贴板记账（旧方式）。"
     )
 
     static var openAppWhenRun: Bool = true
 
+    @Parameter(
+        title: "截图",
+        description: "支付/账单截图，由上一步「截屏」或「获取图像」传入",
+        supportedTypeIdentifiers: ["public.image", "public.png", "public.jpeg"],
+        inputConnectionBehavior: .connectToPreviousIntentResult
+    )
+    var screenshot: IntentFile?
+
     @MainActor
     func perform() async throws -> some IntentResult {
+        if let screenshot, let data = ZhengShortcutAutoLedgerPending.imageData(from: screenshot) {
+            do {
+                _ = try ZhengShortcutAutoLedgerPending.writeImageData(data)
+            } catch {
+                return .result(dialog: IntentDialog("保存截图失败：\\(error.localizedDescription)"))
+            }
+            guard let url = URL(string: "zheng://auto-ledger") else {
+                return .result(dialog: IntentDialog("无效链接。"))
+            }
+            await MainActor.run {
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            }
+            return .result(dialog: IntentDialog("已打开应用，正在识别截图并记账…"))
+        }
+
         guard let url = URL(string: "zheng://screenshot") else {
             return .result(dialog: IntentDialog("无效链接。"))
         }
         await MainActor.run {
             UIApplication.shared.open(url, options: [:], completionHandler: nil)
         }
-        return .result(dialog: IntentDialog("已打开应用，正在处理截图记账…"))
+        return .result(
+            dialog: IntentDialog(
+                "未收到截图，已打开剪贴板记账。推荐快捷指令：截屏 → 获取图像 → 运行「截图记账」并传入图像。"
+            )
+        )
     }
 }
 

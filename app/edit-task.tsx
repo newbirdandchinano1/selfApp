@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { startProjectAiReviewInBackground } from '@/lib/project-ai-review-background';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
@@ -330,7 +331,8 @@ export default function EditTaskScreen() {
   /** 从任务详情进入编辑时，删除后需跳过已无效的详情页，直接回到任务 Tab */
   const openedFromTaskDetail =
     params.from === 'task-detail' || (Array.isArray(params.from) && params.from[0] === 'task-detail');
-  const scheduleSource = params.source ?? `edit-task-${taskId || 'unknown'}`;
+  const scheduleSource =
+    normalizeRouteParam(params.source as string | string[] | undefined) || `edit-task-${taskId || 'unknown'}`;
   const addSubtaskSource = `${scheduleSource}-add-subtask`;
 
   const [title, setTitle] = React.useState('');
@@ -379,8 +381,8 @@ export default function EditTaskScreen() {
   }, [taskId]);
 
   const readScheduleResult = React.useCallback(() => {
-    const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
-    if (!picked || picked.source !== scheduleSource) return;
+    const picked = consumeSchedulePickerResult(scheduleSource);
+    if (!picked) return;
 
     if (picked.repeatOption !== '不重复') {
       setDeadlineText('');
@@ -413,7 +415,6 @@ export default function EditTaskScreen() {
       endTime: picked.endTime,
     });
 
-    globalThis.__schedulePickerResult = undefined;
   }, [scheduleSource]);
 
   const openSchedulePicker = React.useCallback(() => {

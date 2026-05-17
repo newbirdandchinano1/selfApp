@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { consumeSchedulePickerResult } from '@/lib/schedule-picker-bridge';
 import { createTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -148,8 +149,8 @@ export default function AddStandaloneTodoScreen() {
   ];
 
   const readScheduleResult = React.useCallback(() => {
-    const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
-    if (!picked || picked.source !== SCHEDULE_SOURCE) return;
+    const picked = consumeSchedulePickerResult(SCHEDULE_SOURCE);
+    if (!picked) return;
 
     if (picked.repeatOption !== '不重复') {
       setDeadlineText('');
@@ -181,7 +182,6 @@ export default function AddStandaloneTodoScreen() {
       startTime: picked.startTime,
       endTime: picked.endTime,
     });
-    globalThis.__schedulePickerResult = undefined;
   }, []);
 
   const openSchedulePicker = React.useCallback(() => {

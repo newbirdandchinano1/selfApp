@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { normalizeRouteParam, setSchedulePickerResult } from '@/lib/schedule-picker-bridge';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -57,11 +58,6 @@ type SchedulePickerResult = {
 };
 
 type SchedulePickerInitialValue = Omit<SchedulePickerResult, 'source'>;
-
-declare global {
-  // eslint-disable-next-line no-var
-  var __schedulePickerResult: SchedulePickerResult | undefined;
-}
 
 const dateQuickChips = ['今天', '今晚', '明天', '本周六', '下周一'];
 const timeQuickChips = ['本周', '下周', '本月', '下月', '未来半年'];
@@ -273,6 +269,10 @@ function buildCalendarCells(current: MonthInfo, previous: MonthInfo, next: Month
 export default function SchedulePickerScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<SchedulePickerReturnParams>();
+  const sourceKey = React.useMemo(
+    () => normalizeRouteParam(params.source as string | string[] | undefined),
+    [params.source],
+  );
   const scheme = useColorScheme();
   const theme = Colors[scheme ?? 'light'];
   const isDark = scheme === 'dark';
@@ -623,7 +623,7 @@ export default function SchedulePickerScreen() {
     /** 设置了重复规则时，不把日历/时刻区间的选择带回来源页（仅提醒 + 重复规则生效） */
     const repeatLocksSchedule = repeatOption !== '不重复';
     const basePayload = {
-      source: params.source ?? '',
+      source: sourceKey,
       quickChip: selectedQuickChip,
       allDay: repeatLocksSchedule ? true : allDay,
       hasExactTime: repeatLocksSchedule ? false : hasExactTime,
@@ -672,7 +672,7 @@ export default function SchedulePickerScreen() {
       ...basePayload,
       date: toLocalYMD(selectedDate),
     };
-  }, [allDay, endTime, hasExactTime, monthlyDays, params.source, reminderOption, repeatOption, selectedDate, selectedQuickChip, startTime, tab, timeRange, weeklyDays, yearlyDate]);
+  }, [allDay, endTime, hasExactTime, monthlyDays, reminderOption, repeatOption, selectedDate, selectedQuickChip, sourceKey, startTime, tab, timeRange, weeklyDays, yearlyDate]);
 
   const applyTimeSelection = (target: 'start' | 'end', selected: Date) => {
     const normalized = new Date(selected);
@@ -943,7 +943,7 @@ export default function SchedulePickerScreen() {
 
         <Pressable
           onPress={() => {
-            globalThis.__schedulePickerResult = buildReturnPayload();
+            setSchedulePickerResult(buildReturnPayload());
             router.back();
           }}
           style={styles.iconBtn}>

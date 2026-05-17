@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { startProjectAiReviewInBackground } from '@/lib/project-ai-review-background';
+import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { createTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -172,7 +173,7 @@ export default function AddTaskScreen() {
   const quickCategoryRaw = firstRouteParam(params.categoryId);
   const quickTaskCategoryId =
     !quickCategoryRaw || quickCategoryRaw === INBOX_PROJECT_CATEGORY_ID ? null : quickCategoryRaw;
-  const scheduleSource = params.source ?? 'add-task';
+  const scheduleSource = normalizeRouteParam(params.source as string | string[] | undefined) || 'add-task';
   const dateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const raw = typeof params.dateLimit === 'string' ? params.dateLimit : '';
     if (!raw) return null;
@@ -222,8 +223,8 @@ export default function AddTaskScreen() {
   };
 
   const readScheduleResult = React.useCallback(() => {
-    const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
-    if (!picked || picked.source !== scheduleSource) return;
+    const picked = consumeSchedulePickerResult(scheduleSource);
+    if (!picked) return;
 
     if (picked.repeatOption !== '不重复') {
       setDeadlineText('');
@@ -256,7 +257,6 @@ export default function AddTaskScreen() {
       endTime: picked.endTime,
     });
 
-    globalThis.__schedulePickerResult = undefined;
   }, [scheduleSource]);
 
   const openSchedulePicker = React.useCallback(() => {

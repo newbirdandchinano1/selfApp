@@ -11,6 +11,7 @@ import {
   updateFinanceAccount,
 } from '@/lib/repositories/finance/finance';
 import { setFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
+import { clearFinanceDefaultAccountIfDeleted } from '@/lib/finance-default-accounts';
 import {
   isFinanceAccountExcludedFromAggregates,
   mergeFinanceAccountExcludeFromTotalAssets,
@@ -291,6 +292,7 @@ export default function AccountDetailScreen() {
           try {
             setDeleting(true);
             await deleteFinanceAccount(targetId);
+            await clearFinanceDefaultAccountIfDeleted(targetId);
             router.back();
           } catch (error) {
             console.warn('Failed to delete finance account:', error);

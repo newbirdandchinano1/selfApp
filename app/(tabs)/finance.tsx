@@ -28,7 +28,20 @@ import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finan
 import { isFinanceTransactionExcludedFromBudget } from '@/lib/repositories/finance/finance-transaction-extra';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import {
+  AUTO_LEDGER_MAX_ATTEMPTS,
+  AUTO_LEDGER_RETRY_DELAY_MS,
+  sleepMs,
+} from '@/lib/auto-ledger-retry';
+import {
+  loadFinanceDefaultAccounts,
+  sanitizeFinanceDefaultAccounts,
+  type FinanceDefaultAccounts,
+} from '@/lib/finance-default-accounts';
+import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import { consumeFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
+import { consumeShortcutAutoLedgerImageDataUri } from '@/lib/shortcut-auto-ledger-pending';
+import { moveAppToBackground } from 'zheng-background';
 import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
 import {
   getActiveAiLlmApiKey,
@@ -41,6 +54,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
+import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React from 'react';
@@ -85,7 +99,45 @@ type Txn = {
   insightIsAiBody: boolean;
   /** 已配置模型且 AI 评价尚未写入：生成中或队列等待 */
   insightPendingAi: boolean;
+  /** 截图自动记账 AI 分析中占位，尚未落库 */
+  isPendingPlaceholder?: boolean;
 };
+
+type PendingAutoLedgerRow = {
+  id: string;
+  source: 'clipboard' | 'shortcut_intent';
+  retryAttempt?: number;
+  maxAttempts?: number;
+};
+
+type AutoLedgerModalPhase = 'idle' | 'reading_clipboard' | 'analyzing' | 'success' | 'error';
+
+function buildPendingAutoLedgerTxn(item: PendingAutoLedgerRow, todayDayKey: string, subtle: string): Txn {
+  const now = new Date();
+  const hour = String(now.getHours()).padStart(2, '0');
+  const minute = String(now.getMinutes()).padStart(2, '0');
+  const retrying =
+    item.retryAttempt != null && item.maxAttempts != null && item.retryAttempt > 1;
+  const insight = retrying
+    ? `识别失败，正在重试（${item.retryAttempt}/${item.maxAttempts}）…`
+    : item.source === 'shortcut_intent'
+      ? 'AI 正在识别快捷指令截图…'
+      : 'AI 正在识别剪贴板截图…';
+  return {
+    id: item.id,
+    dayKey: todayDayKey,
+    icon: 'auto-awesome',
+    iconColor: subtle,
+    title: '截图记账',
+    meta: retrying ? `今天 ${hour}:${minute} · 重试中` : `今天 ${hour}:${minute} · AI 分析中`,
+    amount: '···',
+    amountColor: subtle,
+    insight,
+    insightIsAiBody: false,
+    insightPendingAi: true,
+    isPendingPlaceholder: true,
+  };
+}
 
 type SheetTab = 'sentence' | 'expense' | 'income' | 'transfer';
 
@@ -189,6 +241,8 @@ type ParsedOneLiner = {
   amount: number;
   name: string;
   category_label?: string | null;
+  account_name?: string | null;
+  payment_account_label?: string | null;
 };
 
 type SentenceResolveResult =
@@ -364,12 +418,22 @@ export default function FinanceScreen() {
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [generatingTxnAiId, setGeneratingTxnAiId] = React.useState<string | null>(null);
   const [txnAiFailEpoch, setTxnAiFailEpoch] = React.useState(0);
+  const [pendingAutoLedgers, setPendingAutoLedgers] = React.useState<PendingAutoLedgerRow[]>([]);
+  const [autoLedgerModalPhase, setAutoLedgerModalPhase] = React.useState<AutoLedgerModalPhase>('idle');
+  const [autoLedgerModalError, setAutoLedgerModalError] = React.useState<string | null>(null);
+  const autoLedgerReturnToPreviousAppRef = React.useRef(false);
+  const autoLedgerImageUriRef = React.useRef<string | null>(null);
+  const autoLedgerSourceRef = React.useRef<'clipboard' | 'shortcut_intent'>('clipboard');
   const financeTransactionsRef = React.useRef<FinanceTransactionRow[]>([]);
   const flowCategoryNamesRef = React.useRef<Record<string, string>>({});
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
   const txnAiBackfillRunning = React.useRef(false);
   const txnAiSkippedIdsRef = React.useRef<Set<string>>(new Set());
   const runTxnAiBackfillRef = React.useRef<() => Promise<void>>(async () => undefined);
+  const defaultAccountsRef = React.useRef<FinanceDefaultAccounts>({
+    defaultPaymentAccountId: null,
+    defaultIncomeAccountId: null,
+  });
 
   React.useLayoutEffect(() => {
     financeTransactionsRef.current = financeTransactions;
@@ -765,12 +829,51 @@ export default function FinanceScreen() {
   const zhipuTxnReady = isActiveAiLlmConfigured();
   const aiLlmProviderLabel = getActiveAiLlmProviderLabel();
 
+  const pickAccountForAutoLedger = React.useCallback(
+    (
+      accounts: FinanceAccountBalanceRow[],
+      parsed: Pick<ParsedOneLiner, 'transaction_type' | 'account_name' | 'payment_account_label'>,
+      defaults: FinanceDefaultAccounts,
+    ): FinanceAccountBalanceRow | null => {
+      if (!accounts.length) return null;
+      const candidates = accounts.map((a) => ({ id: a.id, name: a.name, account_no: a.account_no }));
+      const matched = resolveFinanceAccountForAutoLedgerWithDefaults(candidates, {
+        transactionType: parsed.transaction_type,
+        accountName: parsed.account_name ?? null,
+        paymentAccountLabel: parsed.payment_account_label ?? null,
+        defaultPaymentAccountId: defaults.defaultPaymentAccountId,
+        defaultIncomeAccountId: defaults.defaultIncomeAccountId,
+      });
+      if (!matched) return accounts[0] ?? null;
+      return accounts.find((a) => a.id === matched.id) ?? accounts[0] ?? null;
+    },
+    [],
+  );
+
+  /** 手动记账弹窗：按 Tab 选中默认支付/收入账户 */
+  const getDefaultSheetAccountIdForTab = React.useCallback(
+    (tab: SheetTab, accounts: FinanceAccountBalanceRow[]): string | null => {
+      if (!accounts.length) return null;
+      const defaults = defaultAccountsRef.current;
+      if (tab === 'income') {
+        const id = defaults.defaultIncomeAccountId;
+        if (id && accounts.some((a) => a.id === id)) return id;
+      } else if (tab === 'expense' || tab === 'sentence') {
+        const id = defaults.defaultPaymentAccountId;
+        if (id && accounts.some((a) => a.id === id)) return id;
+      }
+      return accounts[0]?.id ?? null;
+    },
+    [],
+  );
+
   /** 当前选择的文本模型优先，失败则本地规则（与 `parseFinanceOneLinerFromText` / 调试页同源密钥）。 */
   const resolveFinanceSentenceLine = React.useCallback(async (line: string): Promise<SentenceResolveResult> => {
     const trimmed = line.trim();
     if (!trimmed) {
       return { ok: false, error: '请输入用一句话描述这笔账。' };
     }
+    const accountHints = financeAccountsRef.current.map((a) => ({ name: a.name, account_no: a.account_no }));
     const key = getActiveAiLlmApiKey().trim();
     if (key) {
       const r = await parseFinanceOneLinerFromText({
@@ -778,6 +881,7 @@ export default function FinanceScreen() {
         text: trimmed,
         maxAttempts: 6,
         retryDelayMs: 800,
+        accounts: accountHints.length > 0 ? accountHints : undefined,
       });
       if (r.ok) {
         return {
@@ -788,6 +892,8 @@ export default function FinanceScreen() {
             amount: r.amount,
             name: r.name,
             category_label: r.category_label,
+            account_name: r.account_name,
+            payment_account_label: r.payment_account_label,
           },
         };
       }
@@ -813,7 +919,8 @@ export default function FinanceScreen() {
   }, [sheetSentence]);
 
   const todayDisplayTxns = React.useMemo<Txn[]>(() => {
-    return todayTxns
+    const pendingRows = pendingAutoLedgers.map((row) => buildPendingAutoLedgerTxn(row, todayDayKey, subtle));
+    const savedRows = todayTxns
       .slice()
       .sort((a, b) => new Date(b.happened_at).getTime() - new Date(a.happened_at).getTime())
       .map((txn) => {
@@ -851,11 +958,13 @@ export default function FinanceScreen() {
           insightPendingAi: aiLine.pendingAi,
         };
       });
+    return [...pendingRows, ...savedRows];
   }, [
     accountNameMap,
     formatCurrencyWithDecimals,
     generatingTxnAiId,
     getTxnDisplayAmount,
+    pendingAutoLedgers,
     secondary,
     subtle,
     tertiary,
@@ -1321,8 +1430,91 @@ export default function FinanceScreen() {
     [primary, secondary, subtle, tertiary]
   );
 
-  const processAutoLedgerFromClipboardImage = React.useCallback(
-    async (imageDataUri: string, account: FinanceAccountBalanceRow) => {
+  const autoLedgerModalVisible = autoLedgerModalPhase !== 'idle';
+
+  const beginAutoLedgerShortcutSession = React.useCallback(() => {
+    autoLedgerReturnToPreviousAppRef.current = true;
+  }, []);
+
+  const finishAutoLedgerAndReturn = React.useCallback(async (delayMs = 700) => {
+    if (!autoLedgerReturnToPreviousAppRef.current) {
+      return;
+    }
+    autoLedgerReturnToPreviousAppRef.current = false;
+    await sleepMs(delayMs);
+    setAutoLedgerModalPhase('idle');
+    setAutoLedgerModalError(null);
+    autoLedgerImageUriRef.current = null;
+    await moveAppToBackground();
+  }, []);
+
+  const showAutoLedgerModalError = React.useCallback((message: string) => {
+    setAutoLedgerModalError(message);
+    setAutoLedgerModalPhase('error');
+  }, []);
+
+  const openAutoLedgerAnalyzingModal = React.useCallback(
+    (source: 'clipboard' | 'shortcut_intent') => {
+      beginAutoLedgerShortcutSession();
+      autoLedgerSourceRef.current = source;
+      setAutoLedgerModalError(null);
+      setAutoLedgerModalPhase('analyzing');
+    },
+    [beginAutoLedgerShortcutSession],
+  );
+
+  const readClipboardImageForAutoLedger = React.useCallback(async (): Promise<string | null> => {
+    if (Platform.OS === 'web') {
+      showAutoLedgerModalError('网页版不支持从剪贴板读取图片');
+      return null;
+    }
+    beginAutoLedgerShortcutSession();
+    autoLedgerSourceRef.current = 'clipboard';
+    setAutoLedgerModalError(null);
+    setAutoLedgerModalPhase('reading_clipboard');
+    try {
+      const has = await Clipboard.hasImageAsync();
+      if (!has) {
+        showAutoLedgerModalError('剪贴板里没有图片，请先在快捷指令里复制截图再打开链接。');
+        return null;
+      }
+      const img = await Clipboard.getImageAsync({ format: 'png' });
+      if (!img?.data) {
+        showAutoLedgerModalError('无法读取剪贴板中的图片。');
+        return null;
+      }
+      autoLedgerImageUriRef.current = img.data;
+      return img.data;
+    } catch {
+      showAutoLedgerModalError('读取剪贴板失败，请检查系统是否允许本应用访问剪贴板。');
+      return null;
+    }
+  }, [beginAutoLedgerShortcutSession, showAutoLedgerModalError]);
+
+  const dismissAutoLedgerModal = React.useCallback(() => {
+    const shouldReturn = autoLedgerReturnToPreviousAppRef.current;
+    autoLedgerReturnToPreviousAppRef.current = false;
+    setAutoLedgerModalPhase('idle');
+    setAutoLedgerModalError(null);
+    autoLedgerImageUriRef.current = null;
+    if (shouldReturn) {
+      void moveAppToBackground();
+    }
+  }, []);
+
+  const processAutoLedgerFromImage = React.useCallback(
+    async (
+      imageDataUri: string,
+      accounts: FinanceAccountBalanceRow[],
+      ledgerSource: 'clipboard' | 'shortcut_intent' = 'clipboard',
+    ) => {
+      autoLedgerImageUriRef.current = imageDataUri;
+      autoLedgerSourceRef.current = ledgerSource;
+      if (autoLedgerReturnToPreviousAppRef.current) {
+        setAutoLedgerModalError(null);
+        setAutoLedgerModalPhase('analyzing');
+      }
+
       const key = getActiveAiLlmApiKey().trim();
       if (!key) {
         const prov = getActiveAiLlmProviderLabel();
@@ -1330,79 +1522,194 @@ export default function FinanceScreen() {
           prov === '豆包'
             ? 'EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）'
             : 'EXPO_PUBLIC_ZHIPU_API_KEY';
-        Alert.alert('无法自动记账', `未配置 ${prov} 密钥（${env}）。`);
+        const msg = `未配置 ${prov} 密钥（${env}）。`;
+        if (autoLedgerReturnToPreviousAppRef.current) {
+          showAutoLedgerModalError(msg);
+        } else {
+          Alert.alert('无法自动记账', msg);
+        }
         return;
       }
 
+      if (!accounts.length) {
+        const msg = '请先添加至少一个账户。';
+        if (autoLedgerReturnToPreviousAppRef.current) {
+          showAutoLedgerModalError(msg);
+        } else {
+          Alert.alert('无法自动记账', msg);
+        }
+        return;
+      }
+
+      const pendingId = `pending_auto_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const maxAttempts = AUTO_LEDGER_MAX_ATTEMPTS;
+      setPendingAutoLedgers((prev) => [
+        { id: pendingId, source: ledgerSource, retryAttempt: 1, maxAttempts },
+        ...prev,
+      ]);
+
+      const accountHints = accounts.map((a) => ({ name: a.name, account_no: a.account_no }));
+      let lastError = '请稍后重试。';
+
       try {
-        const resolved = await parseFinanceOneLinerFromImage({ apiKey: key, imageDataUri });
-        if (!resolved.ok) {
-          Alert.alert('截图识别失败', resolved.error);
-          return;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          if (attempt > 1) {
+            setPendingAutoLedgers((prev) =>
+              prev.map((row) =>
+                row.id === pendingId ? { ...row, retryAttempt: attempt, maxAttempts } : row,
+              ),
+            );
+            await sleepMs(AUTO_LEDGER_RETRY_DELAY_MS);
+          }
+
+          try {
+            const resolved = await parseFinanceOneLinerFromImage({
+              apiKey: key,
+              imageDataUri,
+              accounts: accountHints,
+              maxAttempts: 2,
+              retryDelayMs: 800,
+            });
+            if (!resolved.ok) {
+              lastError = resolved.error;
+              console.warn(`Auto ledger parse attempt ${attempt}/${maxAttempts} failed:`, resolved.error);
+              continue;
+            }
+
+            const defaults = sanitizeFinanceDefaultAccounts(defaultAccountsRef.current, accounts);
+            const account = pickAccountForAutoLedger(
+              accounts,
+              {
+                transaction_type: resolved.transaction_type,
+                account_name: resolved.account_name,
+                payment_account_label: resolved.payment_account_label,
+              },
+              defaults,
+            );
+            if (!account) {
+              const msg = '请先添加至少一个账户。';
+              if (autoLedgerReturnToPreviousAppRef.current) {
+                showAutoLedgerModalError(msg);
+              } else {
+                Alert.alert('无法自动记账', msg);
+              }
+              return;
+            }
+
+            const parsed = {
+              transaction_type: resolved.transaction_type,
+              amount: resolved.amount,
+              name: resolved.name,
+              category_label: resolved.category_label,
+            };
+
+            const cat = pickSheetCategoryForParsed(
+              parsed.transaction_type,
+              parsed.category_label,
+              expenseCategories,
+              incomeCategories,
+            );
+            const transactionType = parsed.transaction_type;
+            const amountAbs = parsed.amount;
+            const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
+            const boundsErr = validateFinanceLedgerBalanceAfterChange(
+              account.sign_rule,
+              account.balance ?? 0,
+              transactionType,
+              signedAmount,
+              null,
+            );
+            if (boundsErr) {
+              if (autoLedgerReturnToPreviousAppRef.current) {
+                showAutoLedgerModalError(boundsErr);
+              } else {
+                Alert.alert('无法记账', boundsErr);
+              }
+              return;
+            }
+
+            const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+            const happenedAtIso = new Date().toISOString();
+            const noteLine =
+              ledgerSource === 'shortcut_intent'
+                ? `快捷指令截图 · ${parsed.name}`
+                : `剪贴板截图 · ${parsed.name}`;
+
+            await createFinanceTransaction({
+              id: txnId,
+              name: parsed.name,
+              happened_at: happenedAtIso,
+              account_id: account.id,
+              transaction_type: transactionType,
+              amount: signedAmount,
+              note: noteLine,
+              extra_data: JSON.stringify({
+                manual: true,
+                sentence: true,
+                parse_source: 'ai',
+                from_clipboard_screenshot: ledgerSource === 'clipboard',
+                from_shortcut_intent: ledgerSource === 'shortcut_intent',
+                recognized_payment_account: resolved.payment_account_label,
+                matched_account_name: account.name,
+                category_key: cat.key,
+                category_label: cat.label,
+                attachments: [{ type: 'image', uri: imageDataUri }],
+              }),
+            });
+            await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+            scheduleGithubFinanceCloudSyncDebounced();
+            if (autoLedgerReturnToPreviousAppRef.current) {
+              setAutoLedgerModalPhase('success');
+              void finishAutoLedgerAndReturn(900);
+            }
+            return;
+          } catch (error) {
+            lastError =
+              error instanceof Error && error.message.trim() ? error.message : '请稍后重试。';
+            console.warn(`Auto ledger attempt ${attempt}/${maxAttempts} failed:`, error);
+          }
         }
 
-        const parsed = {
-          transaction_type: resolved.transaction_type,
-          amount: resolved.amount,
-          name: resolved.name,
-          category_label: resolved.category_label,
-        };
-
-        const cat = pickSheetCategoryForParsed(
-          parsed.transaction_type,
-          parsed.category_label,
-          expenseCategories,
-          incomeCategories,
-        );
-        const transactionType = parsed.transaction_type;
-        const amountAbs = parsed.amount;
-        const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
-        const boundsErr = validateFinanceLedgerBalanceAfterChange(
-          account.sign_rule,
-          account.balance ?? 0,
-          transactionType,
-          signedAmount,
-          null,
-        );
-        if (boundsErr) {
-          Alert.alert('无法记账', boundsErr);
-          return;
+        const failMsg = `已自动重试 ${maxAttempts} 次仍未成功，请检查网络或截图是否清晰后重试。\n\n${lastError}`;
+        if (autoLedgerReturnToPreviousAppRef.current) {
+          showAutoLedgerModalError(failMsg);
+        } else {
+          Alert.alert('自动记账失败', failMsg);
         }
-
-        const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-        const happenedAtIso = new Date().toISOString();
-        const noteLine = `剪贴板截图 · ${parsed.name}`;
-
-        await createFinanceTransaction({
-          id: txnId,
-          name: parsed.name,
-          happened_at: happenedAtIso,
-          account_id: account.id,
-          transaction_type: transactionType,
-          amount: signedAmount,
-          note: noteLine,
-          extra_data: JSON.stringify({
-            manual: true,
-            sentence: true,
-            parse_source: 'ai',
-            from_clipboard_screenshot: true,
-            category_key: cat.key,
-            category_label: cat.label,
-            attachments: [{ type: 'image', uri: imageDataUri }],
-          }),
-        });
-        await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-        scheduleGithubFinanceCloudSyncDebounced();
-      } catch (error) {
-        console.warn('Auto ledger from clipboard image failed:', error);
-        Alert.alert(
-          '自动记账失败',
-          error instanceof Error && error.message.trim() ? error.message : '请稍后重试。',
-        );
+      } finally {
+        setPendingAutoLedgers((prev) => prev.filter((row) => row.id !== pendingId));
       }
     },
-    [expenseCategories, incomeCategories, loadFinanceAccounts, loadFinanceTransactions],
+    [
+      expenseCategories,
+      finishAutoLedgerAndReturn,
+      incomeCategories,
+      loadFinanceAccounts,
+      loadFinanceTransactions,
+      pickAccountForAutoLedger,
+      showAutoLedgerModalError,
+    ],
   );
+
+  const retryAutoLedgerFromModal = React.useCallback(() => {
+    const accounts = financeAccountsRef.current;
+    const imageUri = autoLedgerImageUriRef.current;
+    if (imageUri && accounts.length) {
+      openAutoLedgerAnalyzingModal(autoLedgerSourceRef.current);
+      void processAutoLedgerFromImage(imageUri, accounts, autoLedgerSourceRef.current);
+      return;
+    }
+    if (autoLedgerSourceRef.current !== 'clipboard' || !accounts.length) {
+      return;
+    }
+    void (async () => {
+      const uri = await readClipboardImageForAutoLedger();
+      if (uri) {
+        setAutoLedgerModalPhase('analyzing');
+        void processAutoLedgerFromImage(uri, accounts, 'clipboard');
+      }
+    })();
+  }, [openAutoLedgerAnalyzingModal, processAutoLedgerFromImage, readClipboardImageForAutoLedger]);
 
   const keypadRows = React.useMemo(
     () => [
@@ -1454,10 +1761,10 @@ export default function FinanceScreen() {
   const amountDisplay = sheetAmount ? Number(sheetAmount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00';
 
   React.useEffect(() => {
-    if (!selectedAccountId && financeAccounts[0]) {
-      setSelectedAccountId(financeAccounts[0].id);
+    if (!selectedAccountId && financeAccounts.length > 0) {
+      setSelectedAccountId(getDefaultSheetAccountIdForTab(activeSheetTab, financeAccounts));
     }
-  }, [financeAccounts, selectedAccountId]);
+  }, [activeSheetTab, financeAccounts, getDefaultSheetAccountIdForTab, selectedAccountId]);
 
   React.useEffect(() => {
     if (!isSheetVisible || activeSheetTab !== 'transfer') return;
@@ -1499,7 +1806,11 @@ export default function FinanceScreen() {
     setSelectedCategoryKey(nextTab === 'income' ? 'salary' : 'food');
     setSentenceLedgerPreview(null);
     setIsSentencePreviewBusy(false);
-  }, []);
+    const list = financeAccountsRef.current;
+    if (list.length > 0) {
+      setSelectedAccountId(getDefaultSheetAccountIdForTab(nextTab, list));
+    }
+  }, [getDefaultSheetAccountIdForTab, speechApi]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -1509,21 +1820,41 @@ export default function FinanceScreen() {
           await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
           if (cancelled) return;
 
+          const rawDefaults = await loadFinanceDefaultAccounts();
+          if (!cancelled) {
+            defaultAccountsRef.current = sanitizeFinanceDefaultAccounts(rawDefaults, financeAccountsRef.current);
+          }
+
           const intent = consumeFinanceSheetLaunchIntent();
+          const list = financeAccountsRef.current;
+
           if (intent) {
-            const list = financeAccountsRef.current;
-            if (intent.kind === 'auto_ledger_clipboard_image') {
+            if (intent.kind === 'auto_ledger_clipboard_pending') {
+              const imageUri = await readClipboardImageForAutoLedger();
+              if (cancelled) return;
+              if (imageUri) {
+                if (list.length > 0) {
+                  setAutoLedgerModalPhase('analyzing');
+                  void processAutoLedgerFromImage(imageUri, list, 'clipboard');
+                } else {
+                  showAutoLedgerModalError('请先添加至少一个账户。');
+                }
+              }
+            } else if (intent.kind === 'auto_ledger_clipboard_image') {
               if (list.length > 0) {
-                const account = list[0];
-                void processAutoLedgerFromClipboardImage(intent.imageDataUri, account);
+                openAutoLedgerAnalyzingModal('clipboard');
+                void processAutoLedgerFromImage(intent.imageDataUri, list, 'clipboard');
               } else {
-                Alert.alert('无法自动记账', '请先添加至少一个账户。');
+                beginAutoLedgerShortcutSession();
+                showAutoLedgerModalError('请先添加至少一个账户。');
               }
             } else if (list.length > 0) {
               if (intent.kind === 'manual') {
                 resetSheetForm(intent.tab);
                 const accId =
-                  intent.accountId && list.some((a) => a.id === intent.accountId) ? intent.accountId : list[0].id;
+                  intent.accountId && list.some((a) => a.id === intent.accountId)
+                    ? intent.accountId
+                    : getDefaultSheetAccountIdForTab(intent.tab, list) ?? list[0].id;
                 setSelectedAccountId(accId);
                 setIsSheetVisible(true);
               } else {
@@ -1543,6 +1874,19 @@ export default function FinanceScreen() {
                 }
               }
             }
+          } else {
+            const shortcutImageUri = await consumeShortcutAutoLedgerImageDataUri();
+            if (cancelled) return;
+            if (shortcutImageUri) {
+              autoLedgerImageUriRef.current = shortcutImageUri;
+              if (list.length > 0) {
+                openAutoLedgerAnalyzingModal('shortcut_intent');
+                void processAutoLedgerFromImage(shortcutImageUri, list, 'shortcut_intent');
+              } else {
+                beginAutoLedgerShortcutSession();
+                showAutoLedgerModalError('请先添加至少一个账户。');
+              }
+            }
           }
 
           const settings = await loadMonthBudgetSettings();
@@ -1556,7 +1900,17 @@ export default function FinanceScreen() {
       return () => {
         cancelled = true;
       };
-    }, [loadFinanceAccounts, loadFinanceTransactions, processAutoLedgerFromClipboardImage, resetSheetForm])
+    }, [
+      beginAutoLedgerShortcutSession,
+      getDefaultSheetAccountIdForTab,
+      loadFinanceAccounts,
+      loadFinanceTransactions,
+      openAutoLedgerAnalyzingModal,
+      processAutoLedgerFromImage,
+      readClipboardImageForAutoLedger,
+      resetSheetForm,
+      showAutoLedgerModalError,
+    ])
   );
 
   const closeSheet = React.useCallback(() => {
@@ -1874,9 +2228,9 @@ export default function FinanceScreen() {
         return;
       }
 
-      const account = selectedAccount;
       const happenedAtIso = selectedHappenedAt.toISOString();
       const includeInBudget = sheetIncludeInBudget;
+      const manualAccount = selectedAccount;
 
       setIsSheetVisible(false);
       resetSheetForm('sentence');
@@ -1889,6 +2243,18 @@ export default function FinanceScreen() {
             return;
           }
           const parsed = resolved.parsed;
+          const defaults = sanitizeFinanceDefaultAccounts(
+            defaultAccountsRef.current,
+            financeAccountsRef.current,
+          );
+          const account =
+            resolved.source === 'ai'
+              ? pickAccountForAutoLedger(financeAccountsRef.current, parsed, defaults) ?? manualAccount
+              : manualAccount;
+          if (!account) {
+            Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
+            return;
+          }
 
           const cat = pickSheetCategoryForParsed(
             parsed.transaction_type,
@@ -2011,6 +2377,7 @@ export default function FinanceScreen() {
     incomeCategories,
     loadFinanceAccounts,
     loadFinanceTransactions,
+    pickAccountForAutoLedger,
     resetSheetForm,
     resolveFinanceSentenceLine,
     selectedAccount,
@@ -2033,11 +2400,14 @@ export default function FinanceScreen() {
     // 仅在弹窗未打开时重置表单；避免用户已输入金额/备注后点语音/图片又被清空
     if (!isSheetVisible) {
       resetSheetForm('sentence');
+    } else {
+      setSelectedAccountId(
+        (prev) => prev ?? getDefaultSheetAccountIdForTab(activeSheetTabRef.current, financeAccounts),
+      );
     }
-    setSelectedAccountId((prev) => prev ?? financeAccounts[0]?.id ?? null);
     setIsSheetVisible(true);
     return true;
-  }, [financeAccounts, hasAccounts, resetSheetForm, isSheetVisible]);
+  }, [financeAccounts, getDefaultSheetAccountIdForTab, hasAccounts, resetSheetForm, isSheetVisible]);
 
   const handlePickImage = React.useCallback(
     async (source: 'library' | 'camera') => {
@@ -2607,6 +2977,32 @@ export default function FinanceScreen() {
                 outputRange: [16 + idx * 5, 0],
               });
 
+              const rowBody = (
+                <Animated.View
+                  style={[
+                    styles.txnSwipeForeground,
+                    { backgroundColor: surface, borderColor: outlineVariant },
+                    t.isPendingPlaceholder ? styles.txnSwipeForegroundPending : null,
+                    { opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] },
+                  ]}>
+                  <TxnItem
+                    themeText={text}
+                    themeSubtle={subtle}
+                    outlineVariant={outlineVariant}
+                    item={t}
+                    onPress={
+                      t.isPendingPlaceholder
+                        ? undefined
+                        : () => router.push(`/edit-finance-transaction/${t.id}`)
+                    }
+                  />
+                </Animated.View>
+              );
+
+              if (t.isPendingPlaceholder) {
+                return <React.Fragment key={t.id}>{rowBody}</React.Fragment>;
+              }
+
               return (
                 <Swipeable
                   key={t.id}
@@ -2625,20 +3021,7 @@ export default function FinanceScreen() {
                       </Pressable>
                     </View>
                   )}>
-                  <Animated.View
-                    style={[
-                      styles.txnSwipeForeground,
-                      { backgroundColor: surface, borderColor: outlineVariant },
-                      { opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] },
-                    ]}>
-                    <TxnItem
-                      themeText={text}
-                      themeSubtle={subtle}
-                      outlineVariant={outlineVariant}
-                      item={t}
-                      onPress={() => router.push(`/edit-finance-transaction/${t.id}`)}
-                    />
-                  </Animated.View>
+                  {rowBody}
                 </Swipeable>
               );
             })}
@@ -3627,6 +4010,73 @@ export default function FinanceScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <Modal
+        visible={autoLedgerModalVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => {
+          if (autoLedgerModalPhase === 'analyzing' || autoLedgerModalPhase === 'reading_clipboard') {
+            return;
+          }
+          dismissAutoLedgerModal();
+        }}>
+        <View style={styles.autoLedgerModalRoot}>
+          <View style={[styles.autoLedgerModalCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
+            {autoLedgerModalPhase === 'success' ? (
+              <>
+                <MaterialIcons name="check-circle" size={40} color={tertiary} />
+                <Text style={[styles.autoLedgerModalTitle, { color: text }]}>记账成功</Text>
+                <Text style={[styles.autoLedgerModalHint, { color: subtle }]}>正在返回您之前的应用…</Text>
+              </>
+            ) : autoLedgerModalPhase === 'error' ? (
+              <>
+                <MaterialIcons name="error-outline" size={40} color="#dc2626" />
+                <Text style={[styles.autoLedgerModalTitle, { color: text }]}>自动记账失败</Text>
+                <Text style={[styles.autoLedgerModalHint, { color: subtle }]}>
+                  {autoLedgerModalError ?? '请稍后重试。'}
+                </Text>
+                <View style={styles.autoLedgerModalActions}>
+                  <Pressable
+                    onPress={dismissAutoLedgerModal}
+                    style={({ pressed }) => [
+                      styles.autoLedgerModalBtn,
+                      { borderColor: outlineVariant, opacity: pressed ? 0.85 : 1 },
+                    ]}>
+                    <Text style={[styles.autoLedgerModalBtnText, { color: text }]}>关闭</Text>
+                  </Pressable>
+                  {autoLedgerImageUriRef.current || autoLedgerSourceRef.current === 'clipboard' ? (
+                    <Pressable
+                      onPress={() => void retryAutoLedgerFromModal()}
+                      style={({ pressed }) => [
+                        styles.autoLedgerModalBtn,
+                        styles.autoLedgerModalBtnPrimary,
+                        { backgroundColor: tertiary, opacity: pressed ? 0.88 : 1 },
+                      ]}>
+                      <Text style={styles.autoLedgerModalBtnPrimaryText}>重试</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </>
+            ) : (
+              <>
+                <ActivityIndicator size="large" color={tertiary} />
+                <Text style={[styles.autoLedgerModalTitle, { color: text }]}>
+                  {autoLedgerModalPhase === 'reading_clipboard' ? '正在读取剪贴板' : '截图自动记账'}
+                </Text>
+                <Text style={[styles.autoLedgerModalHint, { color: subtle }]}>
+                  {autoLedgerModalPhase === 'reading_clipboard'
+                    ? '请稍候，即将开始 AI 识别…'
+                    : autoLedgerSourceRef.current === 'shortcut_intent'
+                      ? 'AI 正在识别快捷指令截图并记账…'
+                      : 'AI 正在识别剪贴板截图并记账…'}
+                </Text>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -3999,6 +4449,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 16,
     overflow: 'hidden',
+  },
+  txnSwipeForegroundPending: {
+    opacity: 0.92,
   },
   swipeDeleteTrack: {
     width: 100,
@@ -4940,6 +5393,60 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  autoLedgerModalRoot: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
+  autoLedgerModalCard: {
+    width: '100%',
+    maxWidth: 340,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 22,
+    paddingVertical: 26,
+    alignItems: 'center',
+    gap: 10,
+  },
+  autoLedgerModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  autoLedgerModalHint: {
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: 'center',
+  },
+  autoLedgerModalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+    alignSelf: 'stretch',
+  },
+  autoLedgerModalBtn: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  autoLedgerModalBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  autoLedgerModalBtnPrimary: {
+    borderWidth: 0,
+  },
+  autoLedgerModalBtnPrimaryText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
   },
   transferCheckBtn: {
     flex: 1,

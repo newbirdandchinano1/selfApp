@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getDatabase } from '@/lib/database.native';
 import { parseProjectExtraDataWithAi } from '@/lib/repositories/projects/project-ai-review';
@@ -371,7 +372,8 @@ export default function EditProjectScreen() {
   const projectAiReview = projectExtraData.ai_review ?? null;
 
   const primary = isDark ? '#60a5fa' : '#0058be';
-  const scheduleSource = params.source ?? `edit-project-${projectId || 'unknown'}`;
+  const scheduleSource =
+    normalizeRouteParam(params.source as string | string[] | undefined) || `edit-project-${projectId || 'unknown'}`;
   const addTaskSource = `${scheduleSource}-add-task`;
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
@@ -405,8 +407,8 @@ export default function EditProjectScreen() {
   }, []);
 
   const readScheduleResult = React.useCallback(() => {
-    const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
-    if (!picked || picked.source !== scheduleSource) return;
+    const picked = consumeSchedulePickerResult(scheduleSource);
+    if (!picked) return;
 
     if (picked.repeatOption !== '不重复') {
       setDeadlineText('');
@@ -439,7 +441,6 @@ export default function EditProjectScreen() {
       endTime: picked.endTime,
     });
 
-    globalThis.__schedulePickerResult = undefined;
   }, [scheduleSource]);
 
   const readAddTaskResult = React.useCallback(async () => {

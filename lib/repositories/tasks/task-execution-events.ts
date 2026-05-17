@@ -37,6 +37,23 @@ export async function getTaskExecutionEventsForLocalDay(ymd: string): Promise<Ta
   );
 }
 
+export async function getTaskExecutionEventsByAction(
+  action: TaskExecutionEventAction,
+  limit = 500
+): Promise<TaskExecutionEventWithTitle[]> {
+  const db = await getDatabase();
+  return db.getAllAsync<TaskExecutionEventWithTitle>(
+    `SELECT e.id, e.task_id, e.action, e.created_at,
+            COALESCE(NULLIF(trim(t.title), ''), NULLIF(trim(e.task_title), '')) AS task_title
+       FROM task_execution_events e
+       LEFT JOIN tasks t ON t.id = e.task_id
+      WHERE e.action = ?
+      ORDER BY datetime(e.created_at) DESC
+      LIMIT ?`,
+    [action, limit]
+  );
+}
+
 export async function getRecentTaskExecutionEvents(limit: number): Promise<TaskExecutionEventWithTitle[]> {
   const db = await getDatabase();
   return db.getAllAsync<TaskExecutionEventWithTitle>(

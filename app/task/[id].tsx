@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerResult } from '@/lib/schedule-picker-bridge';
 import { getTaskById, getTaskTreeByRootTaskId, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -12,25 +13,35 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 type ReminderOption = '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
 type RepeatOption = '不重复' | '每天' | '每周' | '每月' | '每年';
 type SettingPickerType = 'reminder' | 'repeat' | null;
-type SchedulePickerResult = {
-  mode: 'date' | 'time';
-  source: string;
-  quickChip: string;
-  allDay: boolean;
-  hasExactTime: boolean;
-  reminderOption: ReminderOption;
-  repeatOption: RepeatOption;
-  repeatSummary: string;
-  date?: string;
-  range?: { start: string; end: string };
-  startTime: string;
-  endTime: string;
-};
+type TaskScheduleMeta = Pick<
+  SchedulePickerResult,
+  | 'mode'
+  | 'allDay'
+  | 'hasExactTime'
+  | 'reminderOption'
+  | 'repeatOption'
+  | 'repeatSummary'
+  | 'weeklyDays'
+  | 'monthlyDays'
+  | 'yearlyDate'
+  | 'date'
+  | 'range'
+  | 'startTime'
+  | 'endTime'
+>;
 
 type TaskMetaExtra = Record<string, unknown> & {
   reminder?: string;
   repeat?: string;
+  schedule?: TaskScheduleMeta | null;
 };
+
+function dueDateFromSchedulePick(picked: SchedulePickerResult): string | null {
+  if (picked.repeatOption !== '不重复') return null;
+  if (picked.mode === 'time' && picked.range?.end) return picked.range.end;
+  if (picked.date) return picked.date;
+  return null;
+}
 
 function parseTaskMeta(extraData: string | null): TaskMetaExtra {
   if (!extraData) return {};
@@ -68,6 +79,11 @@ function getPriorityColor(priority: number, isDark: boolean) {
 
 function formatDateTimeCN(value: string | null) {
   if (!value) return '';
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const [y, m, d] = trimmed.split('-').map(Number);
+    return `${y}年${m}月${d}日`;
+  }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   const y = date.getFullYear();
@@ -75,16 +91,45 @@ function formatDateTimeCN(value: string | null) {
   const d = date.getDate();
   const hh = String(date.getHours()).padStart(2, '0');
   const mm = String(date.getMinutes()).padStart(2, '0');
+  if (hh === '00' && mm === '00') return `${y}年${m}月${d}日`;
   return `${y}年${m}月${d}日 · ${hh}:${mm}`;
 }
 
 function formatDate(value: string): string {
+  const v = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value.slice(0, 10);
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function formatTime(value: string): string {
+  if (!value?.trim()) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(11, 16);
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${hour}:${minute}`;
+}
+
+/** 与 edit-task 一致：优先用 schedule 元数据展示区间/时刻，否则回退 due_date */
+function buildScheduleDisplayLabel(schedule: TaskScheduleMeta | null | undefined, dueDate: string | null): string {
+  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    const rangeStart = formatDate(schedule.range.start);
+    const rangeEnd = formatDate(schedule.range.end);
+    const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
+    const timeLabel = schedule.allDay ? '全天' : `${formatTime(schedule.startTime)} - ${formatTime(schedule.endTime)}`;
+    return `${rangeLabel} ${timeLabel}`.trim();
+  }
+  if (schedule?.date) {
+    const dateLabel = formatDate(schedule.date);
+    const timeLabel = schedule.allDay ? '全天' : schedule.hasExactTime ? formatTime(schedule.startTime) : '';
+    return timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel;
+  }
+  return formatDateTimeCN(dueDate);
 }
 
 const REMINDER_OPTIONS: ReminderOption[] = ['不提前', '提前1天', '提前2天', '提前3天', '提前7天'];
@@ -99,11 +144,6 @@ const WEEKDAY_OPTIONS = [
   { label: '周日', value: 7 },
 ];
 const MONTH_DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => i + 1);
-
-declare global {
-  // eslint-disable-next-line no-var
-  var __schedulePickerResult: SchedulePickerResult | undefined;
-}
 
 function formatRepeatSummary(option: RepeatOption, weeklyDays: number[], monthlyDays: number[], yearlyDate: Date): string {
   if (option === '每周') {
@@ -224,7 +264,8 @@ function TaskTreeCard({
 }
 
 export default function TaskDetailScreen() {
-  const { id } = useLocalSearchParams<{ id?: string }>();
+  const { id: idParam } = useLocalSearchParams<{ id?: string | string[] }>();
+  const taskId = normalizeRouteParam(idParam);
   const router = useRouter();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -247,72 +288,92 @@ export default function TaskDetailScreen() {
   const [yearlyDatePickerVisible, setYearlyDatePickerVisible] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
 
-  const scheduleSource = React.useMemo(() => `task-detail-${id ?? 'unknown'}`, [id]);
+  const scheduleSource = React.useMemo(() => `task-detail-${taskId || 'unknown'}`, [taskId]);
+  const extraDataRef = React.useRef<string | null>(null);
+  extraDataRef.current = extraData;
 
-  useFocusEffect(
-    React.useCallback(() => {
-      if (!id) return;
-      const run = async () => {
-        const row = await getTaskById(id);
-        if (row) {
-          setTitle(row.title);
-          setNote(row.note ?? '');
-          setStatus(row.status);
-          setPriority(row.priority ?? 0);
-          setDueDate(row.due_date ?? null);
-          setExtraData(row.extra_data ?? null);
-          const parsed = parseTaskMeta(row.extra_data ?? null);
-          const reminder = (typeof parsed.reminder === 'string' ? parsed.reminder : '') as ReminderOption | '';
-          const repeat = (typeof parsed.repeat === 'string' ? parsed.repeat : '') as RepeatOption | '';
-          setReminderOption(reminder && REMINDER_OPTIONS.includes(reminder as ReminderOption) ? (reminder as ReminderOption) : '不提前');
-          setRepeatOption(repeat && REPEAT_OPTIONS.includes(repeat as RepeatOption) ? (repeat as RepeatOption) : '不重复');
-        } else {
-          setTitle('');
-          setNote('');
-          setStatus('todo');
-          setPriority(0);
-          setDueDate(null);
-          setExtraData(null);
-        }
-        const t = await getTaskTreeByRootTaskId(id);
-        setTree(t);
-      };
-      run().catch((e) => console.warn('加载任务详情失败', e));
-    }, [id])
-  );
-
-  const readScheduleResult = React.useCallback(() => {
-    const picked = globalThis.__schedulePickerResult as SchedulePickerResult | undefined;
-    if (!picked || picked.source !== scheduleSource) return;
-
-    let nextDueDate: string | null = null;
-    if (picked.repeatOption === '不重复') {
-      if (picked.mode === 'time' && picked.range?.end) {
-        nextDueDate = picked.range.end;
-      } else if (picked.date) {
-        nextDueDate = picked.date;
-      }
-    }
-
-    const currentMeta = parseTaskMeta(extraData);
+  const applySchedulePick = React.useCallback((picked: SchedulePickerResult, baseExtraRaw: string | null) => {
+    const currentMeta = parseTaskMeta(baseExtraRaw);
+    const scheduleMeta: TaskScheduleMeta = {
+      mode: picked.mode,
+      allDay: picked.allDay,
+      hasExactTime: picked.hasExactTime,
+      reminderOption: picked.reminderOption,
+      repeatOption: picked.repeatOption,
+      repeatSummary: picked.repeatSummary,
+      weeklyDays: picked.weeklyDays,
+      monthlyDays: picked.monthlyDays,
+      yearlyDate: picked.yearlyDate,
+      date: picked.date,
+      range: picked.range,
+      startTime: picked.startTime,
+      endTime: picked.endTime,
+    };
     const nextMeta: TaskMetaExtra = {
       ...currentMeta,
       reminder: picked.reminderOption === '不提前' ? '' : picked.reminderOption,
       repeat: picked.repeatOption === '不重复' ? '' : picked.repeatSummary,
+      schedule: scheduleMeta,
     };
 
-    setDueDate(nextDueDate);
+    setDueDate(dueDateFromSchedulePick(picked));
     setExtraData(JSON.stringify(nextMeta));
     setReminderOption(picked.reminderOption);
     setRepeatOption(picked.repeatOption);
-    globalThis.__schedulePickerResult = undefined;
-  }, [extraData, scheduleSource]);
+  }, []);
+
+  const readScheduleResult = React.useCallback(() => {
+    const picked = consumeSchedulePickerResult(scheduleSource);
+    if (!picked) return;
+    applySchedulePick(picked, extraDataRef.current);
+  }, [applySchedulePick, scheduleSource]);
+
+  const loadTaskDetail = React.useCallback(async () => {
+    if (!taskId) return;
+    const row = await getTaskById(taskId);
+    if (row) {
+      setTitle(row.title);
+      setNote(row.note ?? '');
+      setStatus(row.status);
+      setPriority(row.priority ?? 0);
+      setDueDate(row.due_date ?? null);
+      setExtraData(row.extra_data ?? null);
+      const parsed = parseTaskMeta(row.extra_data ?? null);
+      const reminder = (typeof parsed.reminder === 'string' ? parsed.reminder : '') as ReminderOption | '';
+      const repeat = (typeof parsed.repeat === 'string' ? parsed.repeat : '') as RepeatOption | '';
+      setReminderOption(reminder && REMINDER_OPTIONS.includes(reminder as ReminderOption) ? (reminder as ReminderOption) : '不提前');
+      setRepeatOption(repeat && REPEAT_OPTIONS.includes(repeat as RepeatOption) ? (repeat as RepeatOption) : '不重复');
+    } else {
+      setTitle('');
+      setNote('');
+      setStatus('todo');
+      setPriority(0);
+      setDueDate(null);
+      setExtraData(null);
+    }
+    const t = await getTaskTreeByRootTaskId(taskId);
+    setTree(t);
+  }, [taskId]);
+
+  React.useEffect(() => {
+    loadTaskDetail().catch((e) => console.warn('加载任务详情失败', e));
+  }, [loadTaskDetail]);
+
+  React.useEffect(() => {
+    readScheduleResult();
+  }, [readScheduleResult]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      readScheduleResult();
+    }, [readScheduleResult])
+  );
 
   const handleSave = React.useCallback(async () => {
-    if (!id || saving) return;
+    if (!taskId || saving) return;
     try {
       setSaving(true);
-      await updateTask(id, {
+      await updateTask(taskId, {
         due_date: dueDate,
         extra_data: extraData ?? null,
       });
@@ -323,7 +384,7 @@ export default function TaskDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [dueDate, extraData, id, router, saving]);
+  }, [dueDate, extraData, router, saving, taskId]);
 
   const bg = isDark ? theme.background : '#faf8ff';
   const surface = isDark ? 'rgba(30, 41, 59, 0.70)' : '#ffffff';
@@ -337,7 +398,10 @@ export default function TaskDetailScreen() {
   const meta = React.useMemo(() => parseTaskMeta(extraData), [extraData]);
   const statusLabel = formatTaskStatus(status);
   const priorityLabel = formatTaskPriority(priority);
-  const dueLabel = formatDateTimeCN(dueDate);
+  const dueLabel = React.useMemo(
+    () => buildScheduleDisplayLabel(meta.schedule, dueDate),
+    [dueDate, meta.schedule],
+  );
   const priorityColor = getPriorityColor(priority, isDark);
   const repeatSummary = React.useMemo(
     () => (repeatOption === '不重复' ? '不重复' : formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate)),
@@ -357,11 +421,35 @@ export default function TaskDetailScreen() {
   const yearlyPickerMinDate = React.useMemo(() => new Date(yearlyDate.getFullYear() - 100, 0, 1), [yearlyDate]);
   const yearlyPickerMaxDate = React.useMemo(() => new Date(yearlyDate.getFullYear() + 100, 11, 31), [yearlyDate]);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      void readScheduleResult();
-    }, [readScheduleResult])
-  );
+  const openSchedulePicker = React.useCallback(() => {
+    const parsed = parseTaskMeta(extraData);
+    const schedule = parsed.schedule ?? null;
+    const scheduleInit = schedule
+      ? {
+          mode: schedule.mode,
+          quickChip: '',
+          allDay: schedule.allDay,
+          hasExactTime: schedule.hasExactTime,
+          reminderOption: schedule.reminderOption,
+          repeatOption: schedule.repeatOption,
+          repeatSummary: schedule.repeatSummary,
+          weeklyDays: schedule.weeklyDays,
+          monthlyDays: schedule.monthlyDays,
+          yearlyDate: schedule.yearlyDate,
+          date: schedule.date,
+          range: schedule.range,
+          startTime: schedule.startTime,
+          endTime: schedule.endTime,
+        }
+      : undefined;
+    router.push({
+      pathname: '/schedule-picker',
+      params: {
+        source: scheduleSource,
+        initial: scheduleInit ? JSON.stringify(scheduleInit) : '',
+      },
+    });
+  }, [extraData, router, scheduleSource]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['top']}>
@@ -414,7 +502,7 @@ export default function TaskDetailScreen() {
             <View style={{ marginTop: 4 }}>
               <TaskTreeCard
                 node={tree}
-                rootTaskId={id ?? ''}
+                rootTaskId={taskId}
                 accent={primary}
                 border={border}
                 surface={surface}
@@ -435,7 +523,7 @@ export default function TaskDetailScreen() {
           <Text style={[styles.sectionLabel, { color: outline }]}>配置</Text>
 
           <Pressable
-            onPress={() => router.push({ pathname: '/schedule-picker', params: { source: scheduleSource } })}
+            onPress={openSchedulePicker}
             style={[styles.configCard, { backgroundColor: surface, borderColor: border }]}>
             <View style={[styles.configIcon, { backgroundColor: `${primary}18` }]}>
               <MaterialIcons name="calendar-today" size={18} color={primary} />
@@ -479,8 +567,8 @@ export default function TaskDetailScreen() {
         <View style={[styles.bottomFade, { backgroundColor: isDark ? 'rgba(15,23,42,0.92)' : 'rgba(250,248,255,0.95)' }]} />
         <Pressable
           onPress={() =>
-            id &&
-            router.push({ pathname: '/edit-task', params: { id, from: 'task-detail' } })
+            taskId &&
+            router.push({ pathname: '/edit-task', params: { id: taskId, from: 'task-detail' } })
           }
           style={({ pressed }) => [
             styles.editBtn,
