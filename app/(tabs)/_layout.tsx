@@ -6,7 +6,7 @@ import { Dimensions } from 'react-native';
 import { HapticTab } from '@/components/haptic-tab';
 import { DRAWER_WIDTH_FALLBACK, SettingsDrawerHost } from '@/components/settings-drawer/settings-drawer';
 import { SettingsDrawerProvider } from '@/components/settings-drawer/settings-drawer-context';
-import { Colors } from '@/constants/theme';
+import { getPalette } from '@/constants/design-tokens';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -14,7 +14,7 @@ const DRAWER_WIDTH = Math.min(340, Math.round(Dimensions.get('window').width * 0
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
+  const theme = getPalette(colorScheme === 'dark' ? 'dark' : 'light');
   const insets = useSafeAreaInsets();
 
   const baseHeight = 48;
@@ -24,16 +24,16 @@ export default function TabLayout() {
 
   return (
     <SettingsDrawerProvider>
-      <SettingsDrawerHost drawerWidth={DRAWER_WIDTH}>
+      <SettingsDrawerHost drawerWidth={DRAWER_WIDTH} tabBarHeight={tabBarHeight}>
         <Tabs
           screenOptions={{
-            tabBarActiveTintColor: theme.tint,
-            tabBarInactiveTintColor: theme.tabIconDefault,
+            tabBarActiveTintColor: theme.primary,
+            tabBarInactiveTintColor: theme.textSecondary,
             headerShown: false,
             tabBarButton: HapticTab,
             tabBarStyle: {
               backgroundColor: theme.surface,
-              borderTopColor: colorScheme === 'dark' ? '#1e293b' : '#f1f5f9',
+              borderTopColor: theme.tabBarBorder,
               elevation: 0,
               height: tabBarHeight,
               paddingBottom,

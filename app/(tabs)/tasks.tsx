@@ -1,6 +1,5 @@
-import { useSettingsDrawer } from '@/components/settings-drawer/settings-drawer-context';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import {
   INBOX_PROJECT_CATEGORY_ID,
   INBOX_PROJECT_CATEGORY_NAME,
@@ -61,7 +60,6 @@ import React from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   DEFAULT_TASKS_DAY_BOUNDARY,
-  formatTasksDayBoundaryLabel,
   getLogicalLocalYmd,
   loadTasksDayBoundary,
   type TasksDayBoundary,
@@ -85,7 +83,7 @@ import {
   View,
   type KeyboardEvent,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
 
 const PROJECT_EXPANDED_STORAGE_KEY = '@tasks_project_expanded_v1';
@@ -1041,7 +1039,6 @@ async function reactivateInboxCompletedProjectsWithOpenTasks(
 }
 
 export default function TasksScreen() {
-  const { open: openSettingsDrawer, registerOnClose } = useSettingsDrawer();
   /** Measured width of the habit grid row — avoids guessing padding (tabs / safe area / web max-width). */
   const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
   const habitGridItemWidth = React.useMemo(() => {
@@ -1050,7 +1047,7 @@ export default function TasksScreen() {
     const rowWidth =
       habitItemsRowWidth > 1
         ? habitItemsRowWidth
-        : Math.max(120, Dimensions.get('window').width - 18 * 2 - 14 * 2);
+        : Math.max(120, Dimensions.get('window').width - Spacing['5xl'] * 2 - Spacing['4xl'] * 2);
     return (rowWidth - gap * (cols - 1)) / cols;
   }, [habitItemsRowWidth]);
 
@@ -1060,10 +1057,8 @@ export default function TasksScreen() {
   }, []);
 
   const router = useRouter();
-  const colorScheme = useColorScheme();
-  const scheme = (colorScheme ?? 'light') as keyof typeof Colors;
-  const theme = Colors[scheme];
-  const isDark = colorScheme === 'dark';
+  const { colors, isDark, shadows } = useAppTheme();
+  const insets = useSafeAreaInsets();
   const TASK_INDENT = 18;
 
   const [taskTab, setTaskTab] = React.useState<string>('all');
@@ -1163,12 +1158,6 @@ export default function TasksScreen() {
   React.useEffect(() => {
     void loadTasksDayBoundary().then((b) => setDayBoundary(b));
   }, []);
-
-  React.useEffect(() => {
-    return registerOnClose(() => {
-      void loadTasksDayBoundary().then(b => setDayBoundary(b));
-    });
-  }, [registerOnClose]);
 
   React.useEffect(() => {
     const unsubPending = addProjectAiPendingAnalysisListener(setProjectAiPendingIds);
@@ -2081,16 +2070,26 @@ export default function TasksScreen() {
     setCategoryModalVisible(false);
   };
 
-  const bg = isDark ? theme.background : '#faf8ff';
-  const card = isDark ? 'rgba(30, 41, 59, 0.45)' : '#ffffff';
-  const modalCardBg = isDark ? 'rgba(15, 23, 42, 0.94)' : card;
-  const soft = isDark ? 'rgba(51,65,85,0.55)' : '#f2f3ff';
-  const outline = isDark ? 'rgba(148,163,184,0.6)' : '#727785';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.20)' : 'rgba(194,198,214,0.35)';
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const secondary = isDark ? '#34d399' : '#006c49';
-  const tertiary = isDark ? '#fbbf24' : '#825100';
-  const error = isDark ? '#f87171' : '#ba1a1a';
+  const bg = colors.background;
+  const card = colors.surface;
+  const modalCardBg = isDark ? colors.accentCard : card;
+  const soft = colors.input;
+  const outline = colors.textSecondary;
+  const outlineVariant = colors.outline;
+  const primary = colors.primary;
+  const secondary = colors.secondary;
+  const tertiary = colors.tertiary;
+  const error = colors.danger;
+
+  const sectionCardStyle = React.useMemo(
+    () => [styles.sectionCard, shadows.card, { backgroundColor: card, borderColor: colors.outline }],
+    [card, colors.outline, shadows.card],
+  );
+  const stackedSectionStyle = React.useMemo(
+    () => [styles.section, styles.stackedSection, { borderTopColor: colors.outline }],
+    [colors.outline],
+  );
+  const emptyCardBg = isDark ? colors.surfaceMuted : colors.surfaceSubtle;
 
   const buildCategoryId = React.useCallback((scope: 'task' | 'project') => {
     const prefix = scope === 'task' ? 'tc' : 'pc';
@@ -2195,10 +2194,6 @@ export default function TasksScreen() {
     taskTab,
   ]);
 
-  const openDayStartModal = React.useCallback(() => {
-    openSettingsDrawer('dayBoundary');
-  }, [openSettingsDrawer]);
-
   /** 四象限行：左侧勾选完成/取消，点击标题区域进入编辑 */
   const renderMatrixTaskRow = (t: TaskRow, accentColor: string, dueMuted: { bg: string; text: string }) => {
     const isDone = t.status === 'done' || t.status === 'cancelled';
@@ -2227,7 +2222,7 @@ export default function TasksScreen() {
             <Text
               style={[
                 styles.taskText,
-                { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.42 : 1 },
+                { color: colors.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.42 : 1 },
               ]}
               numberOfLines={1}>
               {t.title}
@@ -2276,7 +2271,7 @@ export default function TasksScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
       <View pointerEvents="none" style={StyleSheet.absoluteFill}>
         <Animated.View
           style={[
@@ -2306,7 +2301,7 @@ export default function TasksScreen() {
             styles.bgOrb,
             styles.bgOrbBottom,
             {
-              backgroundColor: `${secondary}16`,
+              backgroundColor: `${primary}16`,
               transform: [
                 {
                   translateY: bgFloatAnim.interpolate({
@@ -2329,7 +2324,10 @@ export default function TasksScreen() {
       <ScrollView
         ref={mainScrollRef}
         style={styles.scroll}
-        contentContainerStyle={[styles.content, { paddingBottom: 0 }]}
+        contentContainerStyle={[
+          styles.content,
+          { paddingTop: Math.max(insets.top, Spacing.xl), paddingBottom: 0 },
+        ]}
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
@@ -2345,25 +2343,19 @@ export default function TasksScreen() {
             transform: [{ translateY: pageTranslateAnim }],
           }}
         >
-          <View style={[styles.section, styles.stackedSection]}>
-            <View style={styles.sectionCard}>
+          <View style={styles.section}>
+              <View style={sectionCardStyle}>
               <View style={styles.headerRow}>
                 <View style={styles.titleRow}>
-                  <Text style={[styles.sectionTitle, { color: theme.text }]}>今日青蛙</Text>
-                  <MaterialIcons name="eco" size={20} color={secondary} />
+                  <Text style={[styles.sectionTitle, { color: colors.text }]}>今日青蛙</Text>
+                  <MaterialIcons name="eco" size={20} color={primary} />
                 </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                  <ScalePressable
-                    onPress={openDayStartModal}
-                    style={({ pressed }) => [styles.ghostBtn, { borderColor: `${outline}44` }, pressed && { opacity: 0.8 }]}>
-                    <MaterialIcons name="schedule" size={14} color={outline} />
-                    <Text style={[styles.ghostBtnText, { color: outline }]}>日界 {formatTasksDayBoundaryLabel(dayBoundary)}</Text>
-                  </ScalePressable>
-                  <ScalePressable onPress={() => router.push('/add-frog')} style={({ pressed }) => [styles.ghostBtn, { borderColor: `${secondary}44` }, pressed && { opacity: 0.8 }]}>
-                    <MaterialIcons name="add" size={14} color={secondary} />
-                    <Text style={[styles.ghostBtnText, { color: secondary }]}>添加青蛙</Text>
-                  </ScalePressable>
-                </View>
+                <ScalePressable
+                  onPress={() => router.push('/add-frog')}
+                  style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
+                  <MaterialIcons name="add" size={14} color={primary} />
+                  <Text style={[styles.ghostBtnText, { color: primary }]}>添加青蛙</Text>
+                </ScalePressable>
               </View>
 
               <Animated.View
@@ -2396,20 +2388,22 @@ export default function TasksScreen() {
                           scaleTo={0.985}
                           style={({ pressed }) => [
                             styles.frogCard,
+                            shadows.card,
                             styles.frogCardSlide,
                             { width: frogCarouselCardWidth },
                             {
-                              backgroundColor: isDone ? (isDark ? 'rgba(51, 65, 85, 0.6)' : '#eef1f6') : card,
-                              borderLeftColor: secondary,
+                              backgroundColor: isDone ? colors.surfaceMuted : card,
+                              borderColor: colors.outline,
+                              borderLeftColor: primary,
                               opacity: pressed ? 0.9 : 1,
                             },
                           ]}>
                           <View style={styles.frogIconBgCompact} pointerEvents="none">
-                            <MaterialIcons name="eco" size={34} color={`${secondary}22`} />
+                            <MaterialIcons name="eco" size={34} color={colors.primaryMuted} />
                           </View>
                           <View style={styles.frogTopRowCompact}>
-                            <View style={[styles.badge, styles.badgeCompact, { backgroundColor: `${secondary}16` }]}>
-                              <Text style={[styles.badgeText, styles.badgeTextCompact, { color: secondary }]}>今日已指派</Text>
+                            <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
+                              <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>今日已指派</Text>
                             </View>
                             <Pressable
                               onPress={(e) => {
@@ -2423,7 +2417,7 @@ export default function TasksScreen() {
                                 <MaterialIcons
                                   name={isDone ? 'check-circle' : 'radio-button-unchecked'}
                                   size={18}
-                                  color={secondary}
+                                  color={primary}
                                 />
                               </Animated.View>
                             </Pressable>
@@ -2441,7 +2435,7 @@ export default function TasksScreen() {
                           <Text
                             style={[
                               styles.frogTitleCompact,
-                              { color: theme.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.55 : 1 },
+                              { color: colors.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.55 : 1 },
                             ]}
                             numberOfLines={2}>
                             {frog.title}
@@ -2449,7 +2443,7 @@ export default function TasksScreen() {
                           <Text
                             style={[
                               styles.frogDescCompact,
-                              { color: theme.textSecondary, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.58 : 1 },
+                              { color: colors.textSecondary, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.58 : 1 },
                             ]}
                             numberOfLines={2}>
                             {(frog.note ?? '').trim() || '点击查看详情或继续执行。'}
@@ -2463,18 +2457,29 @@ export default function TasksScreen() {
                     })}
                   </ScrollView>
                 ) : (
-                  <View style={[styles.frogCard, styles.frogCardEmpty, { backgroundColor: card, borderLeftColor: secondary, opacity: 0.9 }]}>
+                  <View
+                    style={[
+                      styles.frogCard,
+                      shadows.card,
+                      styles.frogCardEmpty,
+                      {
+                        backgroundColor: card,
+                        borderColor: colors.outline,
+                        borderLeftColor: primary,
+                        opacity: 0.9,
+                      },
+                    ]}>
                     <View style={styles.frogIconBgCompact}>
-                      <MaterialIcons name="eco" size={34} color={`${secondary}22`} />
+                      <MaterialIcons name="eco" size={34} color={colors.primaryMuted} />
                     </View>
                     <View style={styles.frogTopRowCompact}>
-                      <View style={[styles.badge, styles.badgeCompact, { backgroundColor: `${secondary}16` }]}>
-                        <Text style={[styles.badgeText, styles.badgeTextCompact, { color: secondary }]}>今日未指派</Text>
+                      <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
+                        <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>今日未指派</Text>
                       </View>
-                      <MaterialIcons name="radio-button-unchecked" size={18} color={secondary} />
+                      <MaterialIcons name="radio-button-unchecked" size={18} color={primary} />
                     </View>
-                    <Text style={[styles.frogTitleCompact, { color: theme.text }]}>还没有今日青蛙</Text>
-                    <Text style={[styles.frogDescCompact, { color: theme.textSecondary }]}>
+                    <Text style={[styles.frogTitleCompact, { color: colors.text }]}>还没有今日青蛙</Text>
+                    <Text style={[styles.frogDescCompact, { color: colors.textSecondary }]}>
                       点击右上角“添加青蛙”，从今日可选任务中指派。
                     </Text>
                   </View>
@@ -2484,22 +2489,22 @@ export default function TasksScreen() {
               <FrogCompletedHeatmap
                 tasks={tasks}
                 logicalTodayYmd={logicalTodayYmd}
-                textMain={theme.text}
+                textMain={colors.text}
                 textMuted={outline}
-                accentColor={secondary}
-                innerCardBg={isDark ? 'rgba(15,23,42,0.55)' : '#ffffff'}
-                innerBorderColor={isDark ? 'rgba(148,163,184,0.18)' : 'rgba(203,213,225,0.65)'}
+                accentColor={primary}
+                innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
+                innerBorderColor={colors.outlineStrong}
                 isDark={isDark}
               />
             </View>
           </View>
 
 
-          <View style={[styles.section, styles.stackedSection]}>
-            <View style={styles.sectionCard}>
+          <View style={stackedSectionStyle}>
+            <View style={sectionCardStyle}>
               <View style={styles.habitHeaderRow}>
                 <View style={{ flex: 1, gap: 4 }}>
-                  <Text style={[styles.sectionTitle, { color: theme.text, fontSize: 18 }]}>待办</Text>
+                  <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 18 }]}>待办</Text>
                   <Text style={[styles.standaloneTodoSubtitle, { color: outline }]}>
                     暂不挂项目 · 进行中 {standaloneTodoOpenCount} 条
                   </Text>
@@ -2533,10 +2538,10 @@ export default function TasksScreen() {
                 <View
                   style={[
                     styles.quickTodoShell,
+                    shadows.composer,
                     {
-                      backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : '#ffffff',
-                      borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(203,213,225,0.85)',
-                      shadowColor: '#000',
+                      backgroundColor: card,
+                      borderColor: colors.outlineStrong,
                     },
                   ]}>
                   <View style={[styles.quickTodoIconBadge, { backgroundColor: isDark ? `${secondary}22` : `${secondary}14` }]}>
@@ -2564,7 +2569,7 @@ export default function TasksScreen() {
                     onBlur={() => {
                       quickTodoInputFocusedRef.current = false;
                     }}
-                    style={[styles.quickTodoInput, { color: theme.text }]}
+                    style={[styles.quickTodoInput, { color: colors.text }]}
                   />
                   <Pressable
                     onPress={() => void submitQuickStandaloneTodo()}
@@ -2581,7 +2586,7 @@ export default function TasksScreen() {
                     {quickTodoSaving ? (
                       <Text style={styles.quickTodoSendBtnDots}>…</Text>
                     ) : (
-                      <MaterialIcons name="arrow-upward" size={22} color="#fff" />
+                      <MaterialIcons name="arrow-upward" size={22} color={colors.onPrimary} />
                     )}
                   </Pressable>
                 </View>
@@ -2595,7 +2600,7 @@ export default function TasksScreen() {
                   subtitle="杂事、灵感先记在这里，需要时再关联到项目。"
                   color={primary}
                   muted={outline}
-                  cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
+                  cardBg={emptyCardBg}
                 />
               ) : (
                 <ScrollView
@@ -2621,7 +2626,10 @@ export default function TasksScreen() {
                             <View style={styles.standaloneSwipeActions}>
                               <Pressable
                                 onPress={() => confirmDeleteStandaloneTodo(t.id, t.title)}
-                                style={({ pressed }) => [styles.standaloneSwipeDelete, { opacity: pressed ? 0.9 : 1 }]}
+                                style={({ pressed }) => [
+                                  styles.standaloneSwipeDelete,
+                                  { backgroundColor: colors.danger, opacity: pressed ? 0.9 : 1 },
+                                ]}
                                 accessibilityRole="button"
                                 accessibilityLabel={`删除 ${t.title}`}>
                                 <MaterialIcons name="delete-outline" size={22} color="#fff" />
@@ -2656,7 +2664,7 @@ export default function TasksScreen() {
                               style={[
                                 styles.taskText,
                                 {
-                                  color: theme.text,
+                                  color: colors.text,
                                   textDecorationLine: isDone ? 'line-through' : 'none',
                                   opacity: isDone ? 0.45 : 1,
                                 },
@@ -2669,7 +2677,7 @@ export default function TasksScreen() {
                                 style={[
                                   styles.standaloneTodoNote,
                                   {
-                                    color: theme.textSecondary,
+                                    color: colors.textSecondary,
                                     textDecorationLine: isDone ? 'line-through' : 'none',
                                     opacity: isDone ? 0.42 : 1,
                                   },
@@ -2727,8 +2735,8 @@ export default function TasksScreen() {
             </View>
           </View>
 
-          <View style={[styles.section, styles.stackedSection]}>
-            <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 8 }]}>任务列表</Text>
+          <View style={stackedSectionStyle}>
+            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: Spacing.md }]}>任务列表</Text>
             <SegmentTabs
               tabs={taskTabs}
               active={taskTab}
@@ -2754,7 +2762,7 @@ export default function TasksScreen() {
                       subtitle="把重要紧急的事项放进来，优先处理。"
                       color={error}
                       muted={outline}
-                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
+                      cardBg={emptyCardBg}
                     />
                   ) : (
                     <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
@@ -2776,7 +2784,7 @@ export default function TasksScreen() {
                       subtitle="把重要但不紧急的任务安排进计划。"
                       color={primary}
                       muted={outline}
-                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
+                      cardBg={emptyCardBg}
                     />
                   ) : (
                     <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
@@ -2798,7 +2806,7 @@ export default function TasksScreen() {
                       subtitle="需要委派/协调的事项可以放这里。"
                       color={tertiary}
                       muted={outline}
-                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
+                      cardBg={emptyCardBg}
                     />
                   ) : (
                     <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
@@ -2820,7 +2828,7 @@ export default function TasksScreen() {
                       subtitle="不重要不紧急的事，能不做就不做。"
                       color={outline}
                       muted={outline}
-                      cardBg={isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(0,0,0,0.02)'}
+                      cardBg={emptyCardBg}
                     />
                   ) : (
                     <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
@@ -2833,11 +2841,11 @@ export default function TasksScreen() {
           </View>
 
           <Animated.View style={{ opacity: projectAnim, transform: [{ translateY: projectAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
-            <View style={[styles.section, styles.stackedSection]}>
-              <View style={styles.sectionCard}>
+            <View style={stackedSectionStyle}>
+              <View style={sectionCardStyle}>
                 <View style={styles.headerRow}>
                   <View style={styles.titleRow}>
-                    <Text style={[styles.sectionTitle, { color: theme.text }]}>项目列表</Text>
+                    <Text style={[styles.sectionTitle, { color: colors.text }]}>项目列表</Text>
                     <Text style={[styles.sectionMeta, { color: outline }]}>共 {projects.length} 个活跃项目</Text>
                   </View>
                   <ScalePressable
@@ -2933,7 +2941,7 @@ export default function TasksScreen() {
                                 paddingVertical: 10,
                                 marginTop: 6,
                                 borderRadius: 10,
-                                backgroundColor: isDark ? 'rgba(15, 23, 42, 0.72)' : '#fff',
+                                backgroundColor: isDark ? colors.surfaceMuted : colors.surface,
                                 borderBottomWidth: StyleSheet.hairlineWidth,
                                 borderBottomColor: isDark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(203,213,225,0.9)',
                               },
@@ -2958,7 +2966,7 @@ export default function TasksScreen() {
                                   styles.statusCircle,
                                   { borderColor: primary, backgroundColor: isDone ? primary : 'transparent' },
                                 ]}>
-                                {isDone ? <MaterialIcons name="check" size={12} color="#fff" /> : null}
+                                {isDone ? <MaterialIcons name="check" size={12} color={colors.onPrimary} /> : null}
                               </View>
                             </Pressable>
                             <Pressable
@@ -2971,7 +2979,7 @@ export default function TasksScreen() {
                                   style={[
                                     styles.projectTaskText,
                                     {
-                                      color: isDone ? '#6b7280' : theme.text,
+                                      color: isDone ? colors.textMuted : colors.text,
                                       textDecorationLine: isDone ? 'line-through' : 'none',
                                       opacity: isDone ? 0.85 : 1,
                                     },
@@ -3064,7 +3072,7 @@ export default function TasksScreen() {
                               })() : null}
                               {!!noteText && (
                                 <View style={[styles.projectTaskNoteWrap, { backgroundColor: `${primary}0E`, borderLeftColor: primary }]}>
-                                  <Text style={[styles.projectTaskNoteText, { color: theme.textSecondary }]}>
+                                  <Text style={[styles.projectTaskNoteText, { color: colors.textSecondary }]}>
                                     {noteText}
                                   </Text>
                                 </View>
@@ -3142,7 +3150,7 @@ export default function TasksScreen() {
                         <View style={styles.projectHeadLeft}>
                           <MaterialIcons name="data-usage" size={22} color={primary} />
                           <View style={styles.projectHeadMainColumn}>
-                            <Text style={[styles.projectTitle, { color: theme.text }]}>{project.name}</Text>
+                            <Text style={[styles.projectTitle, { color: colors.text }]}>{project.name}</Text>
                             <View style={styles.projectSubRow}>
                               {dueDateLabel ? (
                                 <Text style={[styles.projectSub, { color: outline }]}>
@@ -3164,7 +3172,7 @@ export default function TasksScreen() {
                             </View>
                             {noteText ? (
                               <View style={[styles.projectNoteWrap, { backgroundColor: `${primary}12`, borderLeftColor: primary }]}>
-                                <Text style={[styles.projectNote, { color: theme.textSecondary }]}>
+                                <Text style={[styles.projectNote, { color: colors.textSecondary }]}>
                                   {noteText}
                                 </Text>
                               </View>
@@ -3228,7 +3236,7 @@ export default function TasksScreen() {
                                       }}
                                       hitSlop={6}
                                       style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
-                                      <Text style={[styles.projectAiPreview, { color: theme.textSecondary }]} numberOfLines={2}>
+                                      <Text style={[styles.projectAiPreview, { color: colors.textSecondary }]} numberOfLines={2}>
                                         <Text style={{ fontWeight: '800', color: primary }}>AI 点评：</Text>
                                         {aiReview.evaluation || aiReview.suggestions}
                                       </Text>
@@ -3297,7 +3305,7 @@ export default function TasksScreen() {
                       <View style={styles.projectHeadLeft}>
                         <MaterialIcons name="folder-open" size={22} color={outline} />
                         <View style={styles.projectHeadMainColumn}>
-                          <Text style={[styles.projectTitle, { color: theme.textSecondary }]}>暂无项目</Text>
+                          <Text style={[styles.projectTitle, { color: colors.textSecondary }]}>暂无项目</Text>
                           <Text style={[styles.projectSub, { color: outline }]}>可点击右上角“新建项目”添加</Text>
                         </View>
                       </View>
@@ -3308,10 +3316,10 @@ export default function TasksScreen() {
             </View>
           </Animated.View>
 
-          <View style={[styles.section, styles.stackedSection]}>
-            <View style={styles.sectionCard}>
+          <View style={stackedSectionStyle}>
+            <View style={sectionCardStyle}>
               <View style={styles.habitHeaderRow}>
-                <Text style={[styles.sectionTitle, { color: theme.text }]}>小习惯</Text>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>小习惯</Text>
                 <ScalePressable
                   onPress={() => router.push('/habit-manage')}
                   style={({ pressed }) => [
@@ -3417,7 +3425,7 @@ export default function TasksScreen() {
                                     ) : null}
                                     {!scheduleAllowsToday ? (
                                       <View style={styles.habitIconLockOverlay} pointerEvents="none">
-                                        <MaterialIcons name="lock" size={26} color={isDark ? '#e2e8f0' : '#475569'} />
+                                        <MaterialIcons name="lock" size={26} color={colors.textSecondary} />
                                       </View>
                                     ) : null}
                                   </View>
@@ -3453,7 +3461,7 @@ export default function TasksScreen() {
                                 <Text
                                   style={[
                                     styles.habitItemText,
-                                    { color: theme.text, opacity: scheduleAllowsToday ? 1 : 0.5 },
+                                    { color: colors.text, opacity: scheduleAllowsToday ? 1 : 0.5 },
                                   ]}
                                   numberOfLines={2}>
                                   {item.name}
@@ -3474,9 +3482,9 @@ export default function TasksScreen() {
                               styles.habitAddCircle,
                               { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.12)' },
                             ]}>
-                            <MaterialIcons name="add" size={34} color={isDark ? '#94a3b8' : '#9ca3af'} />
+                            <MaterialIcons name="add" size={34} color={colors.textMuted} />
                           </View>
-                          <Text style={[styles.habitAddText, { color: isDark ? '#94a3b8' : '#9ca3af' }]}>添加打卡</Text>
+                          <Text style={[styles.habitAddText, { color: colors.textMuted }]}>添加打卡</Text>
                         </Pressable>
                       </View>
                     ) : null}
@@ -3497,11 +3505,11 @@ export default function TasksScreen() {
         animationType="fade"
         onRequestClose={() => setProjectAiModal(null)}>
         <View style={styles.modalRoot}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setProjectAiModal(null)} />
+          <Pressable style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]} onPress={() => setProjectAiModal(null)} />
           <View pointerEvents="box-none" style={styles.modalCenter}>
             <View style={[styles.modalCard, { backgroundColor: modalCardBg, maxHeight: '78%' }]}>
               <View style={styles.modalHeader}>
-                <Text style={[styles.modalTitle, { color: theme.text }]} numberOfLines={1}>
+                <Text style={[styles.modalTitle, { color: colors.text }]} numberOfLines={1}>
                   {projectAiModal?.projectName ?? '项目'} · AI 点评
                 </Text>
                 <Pressable onPress={() => setProjectAiModal(null)} hitSlop={10}>
@@ -3512,13 +3520,13 @@ export default function TasksScreen() {
                 {!!projectAiModal?.review.evaluation && (
                   <>
                     <Text style={[styles.projectAiModalKicker, { color: outline }]}>整体点评</Text>
-                    <Text style={[styles.projectAiModalBody, { color: theme.text }]}>{projectAiModal.review.evaluation}</Text>
+                    <Text style={[styles.projectAiModalBody, { color: colors.text }]}>{projectAiModal.review.evaluation}</Text>
                   </>
                 )}
                 {!!projectAiModal?.review.suggestions && (
                   <>
                     <Text style={[styles.projectAiModalKicker, { color: outline, marginTop: 14 }]}>行动建议</Text>
-                    <Text style={[styles.projectAiModalBody, { color: theme.textSecondary }]}>
+                    <Text style={[styles.projectAiModalBody, { color: colors.textSecondary }]}>
                       {projectAiModal.review.suggestions}
                     </Text>
                   </>
@@ -3531,14 +3539,14 @@ export default function TasksScreen() {
 
       <Modal visible={categoryModalVisible} transparent animationType="fade" onRequestClose={closeCategoryMenu}>
         <View style={styles.modalRoot}>
-          <Pressable style={styles.modalBackdrop} onPress={closeCategoryMenu} />
+          <Pressable style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]} onPress={closeCategoryMenu} />
           <View pointerEvents="box-none" style={styles.modalCenter}>
             <View style={[styles.modalCard, { backgroundColor: modalCardBg }]}>
               <View style={styles.modalHeader}>
                 <View style={[styles.modalTitleWrap, { backgroundColor: `${primary}12` }]}>
                   <MaterialIcons name="folder-open" size={18} color={primary} />
                   <View>
-                    <Text style={[styles.modalTitle, { color: theme.text }]}>{activeCategoryLabel}</Text>
+                    <Text style={[styles.modalTitle, { color: colors.text }]}>{activeCategoryLabel}</Text>
                     <Text style={[styles.modalSubtitle, { color: outline }]}>编辑分类</Text>
                   </View>
                 </View>
@@ -3576,7 +3584,7 @@ export default function TasksScreen() {
                     <View style={[styles.actionIcon, { backgroundColor: `${action.color}14` }]}>
                       <MaterialIcons name={action.icon as any} size={18} color={action.color} />
                     </View>
-                    <Text style={[styles.actionText, { color: theme.text }]}>{action.label}</Text>
+                    <Text style={[styles.actionText, { color: colors.text }]}>{action.label}</Text>
                     <MaterialIcons name="chevron-right" size={20} color={outline} />
                   </Pressable>
                 ))}
@@ -3589,14 +3597,14 @@ export default function TasksScreen() {
 
       <Modal visible={categoryEditorVisible} transparent animationType="fade" onRequestClose={closeCategoryEditor}>
         <View style={styles.modalRoot}>
-          <Pressable style={styles.modalBackdrop} onPress={closeCategoryEditor} />
+          <Pressable style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]} onPress={closeCategoryEditor} />
           <View pointerEvents="box-none" style={styles.modalCenter}>
             <View style={[styles.editorCard, { backgroundColor: modalCardBg }]}>
-              <Text style={[styles.editorTitle, { color: theme.text }]}>{categoryEditorTitle}</Text>
+              <Text style={[styles.editorTitle, { color: colors.text }]}>{categoryEditorTitle}</Text>
               <Text style={[styles.editorHint, { color: outline }]}>请输入分类名称后确认</Text>
-              <View style={[styles.editorInputWrap, { borderColor: outlineVariant, backgroundColor: isDark ? 'rgba(15,23,42,0.5)' : '#f8f9ff' }]}>
+              <View style={[styles.editorInputWrap, { borderColor: outlineVariant, backgroundColor: soft }]}>
                 <TextInput
-                  style={[styles.editorInput, { color: theme.text }]}
+                  style={[styles.editorInput, { color: colors.text }]}
                   placeholder="例如：工作任务"
                   placeholderTextColor={outline}
                   value={categoryInputValue}
@@ -3627,7 +3635,14 @@ export default function TasksScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scroll: { flex: 1 },
-  content: { paddingHorizontal: 18, paddingTop: 14, paddingBottom: 18, gap: 18 },
+  content: {
+    maxWidth: Layout.contentMaxWidth,
+    alignSelf: 'center',
+    width: '100%',
+    paddingHorizontal: Spacing['5xl'],
+    paddingBottom: Spacing['4xl'],
+    gap: Spacing['4xl'],
+  },
   bgOrb: {
     position: 'absolute',
     width: 170,
@@ -3642,38 +3657,31 @@ const styles = StyleSheet.create({
     top: 440,
     left: -74,
   },
-  section: { gap: 12 },
+  section: { gap: Spacing.xl },
   stackedSection: {
-    marginTop: 10,
-    paddingTop: 14,
+    marginTop: Spacing.lg,
+    paddingTop: Spacing['2xl'],
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: 'rgba(148,163,184,0.18)',
   },
   sectionCard: {
-    borderRadius: 20,
-    padding: 14,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.14)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    elevation: 2,
-    gap: 12,
+    borderRadius: Radius['2xl'],
+    padding: Spacing['4xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: Spacing.xl,
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 },
-  sectionTitle: { fontSize: 22, fontWeight: '800' },
-  sectionMeta: { fontSize: 12, fontWeight: '600' },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flexShrink: 1 },
+  sectionTitle: { ...Typography.h2 },
+  sectionMeta: { ...Typography.caption },
   ghostBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    gap: Spacing.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
   },
   ghostBtnText: { fontSize: 12, fontWeight: '800' },
 
@@ -3691,15 +3699,11 @@ const styles = StyleSheet.create({
   frogHeatmapLegendSwatches: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   frogHeatmapLegendCell: { width: 14, height: 14, borderRadius: 4 },
   frogHeatmapCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 1,
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing['2xl'],
+    ...Shadows.card,
   },
   frogHeatmapBodyRow: { flexDirection: 'row', alignItems: 'flex-start' },
   frogHeatmapYAxis: { width: 22, marginRight: 4 },
@@ -3745,17 +3749,11 @@ const styles = StyleSheet.create({
     paddingRight: 4,
   },
   frogCard: {
-    borderRadius: 14,
+    borderRadius: Radius.lg,
     borderLeftWidth: 4,
-    padding: 12,
+    padding: Spacing.xl,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.14)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.07,
-    shadowRadius: 8,
-    elevation: 2,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   frogCardSlide: {
     flexShrink: 0,
@@ -3808,16 +3806,12 @@ const styles = StyleSheet.create({
   },
 
   matrixWrap: {
-    borderWidth: 1,
-    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.xl,
     overflow: 'hidden',
     flexDirection: 'row',
     flexWrap: 'wrap',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
+    ...Shadows.card,
   },
   quadrant: {
     width: '50%',
@@ -4065,18 +4059,16 @@ const styles = StyleSheet.create({
   modalRoot: { flex: 1 },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15,23,42,0.38)',
   },
   modalCenter: {
     flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: 18,
+    paddingHorizontal: Spacing['5xl'],
   },
   modalCard: {
-    borderRadius: 22,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.16)',
+    borderRadius: Radius.sheet,
+    padding: Spacing['3xl'],
+    borderWidth: StyleSheet.hairlineWidth,
   },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, gap: 12 },
   modalTitleWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: 16, flex: 1 },
@@ -4096,19 +4088,18 @@ const styles = StyleSheet.create({
   actionText: { flex: 1, fontSize: 14, fontWeight: '700' },
 
   editorCard: {
-    borderRadius: 22,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.16)',
-    gap: 12,
+    borderRadius: Radius.sheet,
+    padding: Spacing['3xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: Spacing.xl,
   },
-  editorTitle: { fontSize: 18, fontWeight: '800' },
-  editorHint: { fontSize: 12, fontWeight: '600' },
+  editorTitle: { ...Typography.h3 },
+  editorHint: { ...Typography.caption },
   editorInputWrap: {
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.OS === 'android' ? 4 : 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Platform.OS === 'android' ? Spacing.xs : Spacing.lg,
   },
   editorInput: {
     width: '100%',
@@ -4218,18 +4209,14 @@ const styles = StyleSheet.create({
   quickTodoShell: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingLeft: 4,
-    paddingRight: 4,
+    gap: Spacing.md,
+    borderRadius: Radius.composer,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingLeft: Spacing.xs,
+    paddingRight: Spacing.xs,
     paddingVertical: 3,
     minHeight: 40,
     maxHeight: 40,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
   },
   quickTodoIconBadge: {
     width: 32,
@@ -4265,16 +4252,13 @@ const styles = StyleSheet.create({
   standaloneTodoCard: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 10,
-    borderRadius: 16,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    gap: Spacing.lg,
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing['2xl'],
+    paddingVertical: Spacing.xl,
     overflow: 'hidden',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.07,
-    shadowRadius: 10,
-    elevation: 2,
+    ...Shadows.card,
   },
   /**
    * 与卡片等高；负 margin 让删除条向左压住卡片右缘，避免中间露一条缝。
@@ -4294,11 +4278,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignSelf: 'stretch',
     minWidth: 118,
-    paddingHorizontal: 18,
-    backgroundColor: '#dc2626',
-    borderTopRightRadius: 16,
-    borderBottomRightRadius: 16,
-    gap: 8,
+    paddingHorizontal: Spacing['4xl'],
+    borderTopRightRadius: Radius.xl,
+    borderBottomRightRadius: Radius.xl,
+    gap: Spacing.md,
   },
   standaloneSwipeDeleteText: {
     color: '#fff',

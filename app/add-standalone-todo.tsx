@@ -1,5 +1,7 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AppButton } from '@/components/ui';
+import { ScreenHeader } from '@/components/ui/screen-header';
+import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { consumeSchedulePickerResult } from '@/lib/schedule-picker-bridge';
 import { createTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority } from '@/lib/repositories/tasks/task.types';
@@ -79,6 +81,11 @@ type TaskScheduleMeta = Pick<
   | 'endTime'
 >;
 
+function SectionCaption({ children }: { children: string }) {
+  const { colors } = useAppTheme();
+  return <Text style={[Typography.caption, styles.blockCaption, { color: colors.textSecondary }]}>{children}</Text>;
+}
+
 function formatDate(value: string): string {
   const v = value.trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
@@ -120,9 +127,7 @@ function labelToTaskPriority(label: string): TaskPriority {
 export default function AddStandaloneTodoScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const { colors, shadows } = useAppTheme();
 
   const [title, setTitle] = React.useState('');
   const [notes, setNotes] = React.useState('');
@@ -133,19 +138,11 @@ export default function AddStandaloneTodoScreen() {
   const [scheduleMeta, setScheduleMeta] = React.useState<TaskScheduleMeta | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
-  const outline = isDark ? 'rgba(148,163,184,0.72)' : 'rgba(114,119,133,0.85)';
-  const outlineSoft = isDark ? 'rgba(148,163,184,0.35)' : 'rgba(194,198,214,0.55)';
-  const surface = isDark ? 'rgba(30,41,59,0.55)' : '#f4f6fb';
-  const surfaceDeep = isDark ? 'rgba(15,23,42,0.92)' : '#ffffff';
-  /** 本页主色：青绿系，与「添加任务」的蓝主色区分 */
-  const accent = isDark ? '#2dd4bf' : '#0d9488';
-  const accentMuted = isDark ? 'rgba(45,212,191,0.18)' : 'rgba(13,148,136,0.12)';
-
   const priorityChips: Array<{ key: PriorityKey; label: string; hint: string; dot: string }> = [
-    { key: 'urgent-important', label: '紧急重要', hint: '先做', dot: isDark ? '#f87171' : '#b91c1c' },
-    { key: 'urgent-not-important', label: '紧急不重要', hint: '速办', dot: isDark ? '#fbbf24' : '#a16207' },
-    { key: 'not-urgent-important', label: '不紧急重要', hint: '规划', dot: isDark ? '#60a5fa' : '#1d4ed8' },
-    { key: 'not-urgent-not-important', label: '不紧急不重要', hint: '抽空', dot: isDark ? '#94a3b8' : '#64748b' },
+    { key: 'urgent-important', label: '紧急重要', hint: '先做', dot: colors.danger },
+    { key: 'urgent-not-important', label: '紧急不重要', hint: '速办', dot: colors.tertiary },
+    { key: 'not-urgent-important', label: '不紧急重要', hint: '规划', dot: colors.primary },
+    { key: 'not-urgent-not-important', label: '不紧急不重要', hint: '抽空', dot: colors.textMuted },
   ];
 
   const readScheduleResult = React.useCallback(() => {
@@ -220,7 +217,7 @@ export default function AddStandaloneTodoScreen() {
   useFocusEffect(
     React.useCallback(() => {
       readScheduleResult();
-    }, [readScheduleResult])
+    }, [readScheduleResult]),
   );
 
   const currentPriorityLabel = priorityChips.find((c) => c.key === priority)?.label ?? '紧急重要';
@@ -260,47 +257,39 @@ export default function AddStandaloneTodoScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.root, { backgroundColor: theme.background }]} edges={['top', 'bottom']}>
+    <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
+      <ScreenHeader title="新建待办" subtitle="不挂项目 · 仍可与日程、提醒同步" onBack={() => router.back()} />
+
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
-        {/* 顶栏：与「添加任务」的绝对大标题不同，采用紧凑行内布局 */}
-        <View style={[styles.topBar, { borderBottomColor: outlineSoft }]}>
-          <Pressable onPress={() => router.back()} hitSlop={12} style={({ pressed }) => [styles.topIcon, pressed && { opacity: 0.7 }]}>
-            <MaterialIcons name="arrow-back" size={22} color={accent} />
-          </Pressable>
-          <View style={styles.topTitleBlock}>
-            <Text style={[styles.topTitle, { color: theme.text }]}>新建待办</Text>
-            <Text style={[styles.topSubtitle, { color: outline }]}>不挂项目 · 仍可与日程、提醒同步</Text>
-          </View>
-          <View style={styles.topIcon} />
-        </View>
-
         <ScrollView
-          contentContainerStyle={[styles.scrollContent, { paddingBottom: 120 + Math.max(insets.bottom, 8) }]}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: Spacing['7xl'] + 72 + Math.max(insets.bottom, 0) },
+          ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          {/* 主卡片：左侧色条 + 分区，视觉上与 add-task 的「多段 uppercase 标签」区分 */}
-          <View style={[styles.heroCard, { backgroundColor: surfaceDeep, borderColor: outlineSoft }]}>
-            <View style={[styles.heroRail, { backgroundColor: accent }]} />
+          <View style={[styles.heroCard, shadows.card, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+            <View style={[styles.heroRail, { backgroundColor: colors.primary }]} />
 
             <View style={styles.heroBody}>
-              <Text style={[styles.blockCaption, { color: outline }]}>待办标题</Text>
+              <SectionCaption>待办标题</SectionCaption>
               <TextInput
                 value={title}
                 onChangeText={(t) => setTitle(t.slice(0, MAX_TITLE_LEN))}
                 placeholder="用一句话写清楚要做什么…"
-                placeholderTextColor={outline}
+                placeholderTextColor={colors.textMuted}
                 maxLength={MAX_TITLE_LEN}
                 multiline
-                style={[styles.titleField, { color: theme.text }]}
+                style={[styles.titleField, { color: colors.text }]}
               />
-              <Text style={[styles.counter, { color: outline }]}>
+              <Text style={[styles.counter, { color: colors.textSecondary }]}>
                 {title.length}/{MAX_TITLE_LEN}
               </Text>
 
-              <Text style={[styles.blockCaption, { color: outline, marginTop: 6 }]}>重要程度</Text>
+              <SectionCaption>重要程度</SectionCaption>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
                 {priorityChips.map((chip) => {
                   const active = chip.key === priority;
@@ -311,51 +300,54 @@ export default function AddStandaloneTodoScreen() {
                       style={({ pressed }) => [
                         styles.chip,
                         {
-                          borderColor: active ? chip.dot : outlineSoft,
-                          backgroundColor: active ? `${chip.dot}18` : surface,
+                          borderColor: active ? chip.dot : colors.outline,
+                          backgroundColor: active ? `${chip.dot}18` : colors.surfaceSubtle,
                         },
                         pressed && { opacity: 0.88 },
                       ]}>
                       <View style={[styles.chipDot, { backgroundColor: chip.dot }]} />
                       <View>
-                        <Text style={[styles.chipLabel, { color: theme.text }]}>{chip.label}</Text>
-                        <Text style={[styles.chipHint, { color: outline }]}>{chip.hint}</Text>
+                        <Text style={[styles.chipLabel, { color: colors.text }]}>{chip.label}</Text>
+                        <Text style={[styles.chipHint, { color: colors.textSecondary }]}>{chip.hint}</Text>
                       </View>
                     </Pressable>
                   );
                 })}
               </ScrollView>
 
-              <Text style={[styles.blockCaption, { color: outline, marginTop: 10 }]}>时间安排</Text>
+              <View style={styles.sectionSpacer} />
+              <SectionCaption>时间安排</SectionCaption>
               <Pressable
                 onPress={openSchedulePicker}
                 style={({ pressed }) => [
                   styles.scheduleCard,
                   {
-                    borderColor: outlineSoft,
-                    backgroundColor: surface,
+                    borderColor: colors.outline,
+                    backgroundColor: colors.surfaceSubtle,
                     opacity: pressed ? 0.92 : 1,
                   },
                 ]}>
-                <View style={[styles.scheduleIconWrap, { backgroundColor: accentMuted }]}>
-                  <MaterialIcons name="schedule" size={26} color={accent} />
+                <View style={[styles.scheduleIconWrap, { backgroundColor: colors.primaryMuted }]}>
+                  <MaterialIcons name="schedule" size={26} color={colors.primary} />
                 </View>
-                <View style={{ flex: 1, gap: 4 }}>
-                  <Text style={[styles.schedulePrimary, { color: theme.text }]}>{deadlineText || '点按设置日期、时间与重复'}</Text>
+                <View style={{ flex: 1, gap: Spacing.xs }}>
+                  <Text style={[styles.schedulePrimary, { color: colors.text }]}>
+                    {deadlineText || '点按设置日期、时间与重复'}
+                  </Text>
                   {(reminderText || repeatText) && (
                     <View style={styles.scheduleMetaRow}>
                       {!!reminderText && (
-                        <View style={[styles.miniTag, { borderColor: outlineSoft }]}>
-                          <MaterialIcons name="notifications-active" size={12} color={accent} />
-                          <Text style={[styles.miniTagText, { color: outline }]} numberOfLines={1}>
+                        <View style={[styles.miniTag, { borderColor: colors.outline }]}>
+                          <MaterialIcons name="notifications-active" size={12} color={colors.primary} />
+                          <Text style={[styles.miniTagText, { color: colors.textSecondary }]} numberOfLines={1}>
                             {reminderText}
                           </Text>
                         </View>
                       )}
                       {!!repeatText && (
-                        <View style={[styles.miniTag, { borderColor: outlineSoft }]}>
-                          <MaterialIcons name="repeat" size={12} color={accent} />
-                          <Text style={[styles.miniTagText, { color: outline }]} numberOfLines={1}>
+                        <View style={[styles.miniTag, { borderColor: colors.outline }]}>
+                          <MaterialIcons name="repeat" size={12} color={colors.primary} />
+                          <Text style={[styles.miniTagText, { color: colors.textSecondary }]} numberOfLines={1}>
                             {repeatText}
                           </Text>
                         </View>
@@ -363,35 +355,43 @@ export default function AddStandaloneTodoScreen() {
                     </View>
                   )}
                 </View>
-                <MaterialIcons name="chevron-right" size={22} color={outline} />
+                <MaterialIcons name="chevron-right" size={22} color={colors.textSecondary} />
               </Pressable>
 
-              <Text style={[styles.blockCaption, { color: outline, marginTop: 10 }]}>备忘 / 上下文</Text>
-              <View style={[styles.notesShell, { borderColor: outlineSoft, backgroundColor: surface }]}>
+              <View style={styles.sectionSpacer} />
+              <SectionCaption>备忘 / 上下文</SectionCaption>
+              <View style={[styles.notesShell, { borderColor: colors.outline, backgroundColor: colors.input }]}>
                 <TextInput
                   value={notes}
                   onChangeText={setNotes}
                   placeholder="可选：补充背景、链接、相关人…"
-                  placeholderTextColor={outline}
+                  placeholderTextColor={colors.textMuted}
                   multiline
-                  style={[styles.notesInput, { color: theme.text }]}
+                  style={[styles.notesInput, { color: colors.text }]}
                 />
               </View>
             </View>
           </View>
         </ScrollView>
 
-        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12), borderTopColor: outlineSoft }]}>
-          <Pressable
-            onPress={() => void handleSave()}
+        <View
+          style={[
+            styles.footer,
+            {
+              paddingBottom: Spacing['3xl'] + Math.max(insets.bottom, 0),
+              backgroundColor: colors.headerScrim,
+              borderTopColor: colors.outline,
+            },
+          ]}>
+          <AppButton
+            label={submitting ? '保存中…' : '保存到待办列表'}
+            variant="primary"
+            size="lg"
+            fullWidth
+            loading={submitting}
             disabled={submitting}
-            style={({ pressed }) => [
-              styles.saveBtn,
-              { backgroundColor: accent, opacity: submitting ? 0.65 : pressed ? 0.9 : 1 },
-            ]}>
-            <MaterialIcons name="bookmark-add" size={22} color="#fff" />
-            <Text style={styles.saveBtnText}>{submitting ? '保存中…' : '保存到待办列表'}</Text>
-          </Pressable>
+            onPress={() => void handleSave()}
+          />
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -401,49 +401,44 @@ export default function AddStandaloneTodoScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   flex: { flex: 1 },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+  scrollContent: {
+    maxWidth: Layout.contentMaxWidth,
+    alignSelf: 'center',
+    width: '100%',
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['3xl'],
   },
-  topIcon: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  topTitleBlock: { flex: 1, alignItems: 'center' },
-  topTitle: { fontSize: 17, fontWeight: '800' },
-  topSubtitle: { fontSize: 11, fontWeight: '600', marginTop: 2 },
-  scrollContent: { paddingHorizontal: 16, paddingTop: 16, gap: 14 },
   heroCard: {
     flexDirection: 'row',
-    borderRadius: 22,
-    borderWidth: 1,
+    borderRadius: Radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
-    elevation: 3,
   },
   heroRail: { width: 5 },
-  heroBody: { flex: 1, paddingVertical: 16, paddingRight: 16, paddingLeft: 12, gap: 8 },
-  blockCaption: { fontSize: 12, fontWeight: '700' },
+  heroBody: {
+    flex: 1,
+    paddingVertical: Spacing['3xl'],
+    paddingRight: Spacing['3xl'],
+    paddingLeft: Spacing.xl,
+    gap: Spacing.md,
+  },
+  blockCaption: { opacity: 0.9 },
+  sectionSpacer: { height: Spacing.sm },
   titleField: {
-    fontSize: 20,
-    fontWeight: '800',
-    lineHeight: 26,
+    ...Typography.h3,
     minHeight: 52,
-    paddingVertical: 4,
+    paddingVertical: Spacing.xs,
   },
   counter: { fontSize: 11, fontWeight: '600', alignSelf: 'flex-end' },
-  chipRow: { flexDirection: 'row', gap: 10, paddingVertical: 4 },
+  chipRow: { flexDirection: 'row', gap: Spacing.lg, paddingVertical: Spacing.xs },
   chip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    borderRadius: 14,
+    gap: Spacing.md,
+    borderRadius: Radius.lg,
     borderWidth: 1.5,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
   },
   chipDot: { width: 8, height: 8, borderRadius: 4 },
   chipLabel: { fontSize: 12, fontWeight: '800' },
@@ -451,57 +446,42 @@ const styles = StyleSheet.create({
   scheduleCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 12,
+    gap: Spacing.xl,
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing.xl,
   },
   scheduleIconWrap: {
     width: 48,
     height: 48,
-    borderRadius: 14,
+    borderRadius: Radius.lg,
     alignItems: 'center',
     justifyContent: 'center',
   },
   schedulePrimary: { fontSize: 15, fontWeight: '700', lineHeight: 20 },
-  scheduleMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  scheduleMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   miniTag: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 8,
+    gap: Spacing.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.md,
     paddingVertical: 3,
     maxWidth: '100%',
   },
   miniTagText: { fontSize: 11, fontWeight: '600', flexShrink: 1 },
   notesShell: {
-    borderRadius: 16,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
     minHeight: 100,
   },
   notesInput: { fontSize: 14, fontWeight: '500', lineHeight: 20, minHeight: 88, textAlignVertical: 'top' },
   footer: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
-    backgroundColor: 'transparent',
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['3xl'],
   },
-  saveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    borderRadius: 999,
-    paddingVertical: 15,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 6,
-  },
-  saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
 });

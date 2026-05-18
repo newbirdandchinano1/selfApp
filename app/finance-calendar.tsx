@@ -1,5 +1,6 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AppButton, AppIconButton } from '@/components/ui';
+import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { getFinanceDailySummariesByDateRange, getFinanceTransactionsByYmd } from '@/lib/repositories/finance/finance';
 import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -138,36 +139,42 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
   todayMonthStart: Date;
   calendarWidth: number;
   dayCellSize: number;
-  isDark: boolean;
   text: string;
   subtle: string;
   outline: string;
   incomeColor: string;
   expenseColor: string;
   netNegativeColor: string;
+  gridBg: string;
+  activeBorderColor: string;
+  activeCellBg: string;
+  dataCellBg: string;
+  emptyCellBg: string;
   selectedDate: Date | null;
   setSelectedDate: (d: Date) => void;
   setSheetSnap: (v: 'half' | 'full') => void;
   setSheetVisible: (v: boolean) => void;
-  getCellBg: (hasData: boolean, isActive: boolean) => string;
 }) {
   const {
     offset,
     todayMonthStart,
     calendarWidth,
     dayCellSize,
-    isDark,
     text,
     subtle,
     outline,
     incomeColor,
     expenseColor,
     netNegativeColor,
+    gridBg,
+    activeBorderColor,
+    activeCellBg,
+    dataCellBg,
+    emptyCellBg,
     selectedDate,
     setSelectedDate,
     setSheetSnap,
     setSheetVisible,
-    getCellBg,
   } = props;
 
   const monthDate = React.useMemo(() => addMonths(todayMonthStart, offset), [offset, todayMonthStart]);
@@ -211,7 +218,7 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
 
   return (
     <View style={[styles.calendarPage, { width: calendarWidth }]}>
-      <View style={[styles.gridWrap, { backgroundColor: isDark ? 'rgba(30,41,59,0.75)' : '#f2f3ff' }]}>
+      <View style={[styles.gridWrap, { backgroundColor: gridBg }]}>
         {Array.from({ length: 6 }).map((_, row) => (
           <View key={`row-${offset}-${row}`} style={styles.gridRow}>
             {cells.slice(row * 7, row * 7 + 7).map((item) => {
@@ -231,16 +238,24 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
                   onPress={(e) => {
                     e.stopPropagation();
                     setSelectedDate(item.date);
-                    setSheetSnap('half');
-                    setSheetVisible(true);
+                    if (hasData) {
+                      setSheetSnap('half');
+                      setSheetVisible(true);
+                    } else {
+                      setSheetVisible(false);
+                    }
                   }}
                   style={[
                     styles.dayCell,
                     {
                       width: dayCellSize,
                       height: dayCellSize,
-                      backgroundColor: getCellBg(hasData, isActive),
-                      borderColor: isActive ? (isDark ? '#f59e0b' : '#d97706') : outline,
+                      backgroundColor: isActive
+                        ? activeCellBg
+                        : hasData
+                          ? dataCellBg
+                          : emptyCellBg,
+                      borderColor: isActive ? activeBorderColor : outline,
                       borderWidth: 1,
                     },
                   ]}
@@ -296,18 +311,17 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
 
 export default function FinanceCalendarScreen() {
   const router = useRouter();
-  const scheme = useColorScheme();
+  const { colors, isDark, shadows } = useAppTheme();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const baseTheme = Colors[scheme ?? 'light'];
-  const isDark = scheme === 'dark';
 
   const today = React.useMemo(() => new Date(), []);
   const todayMonthStart = React.useMemo(() => monthStart(today), [today]);
   const [monthOffset, setMonthOffset] = React.useState(0);
   const [visibleMonthOffset, setVisibleMonthOffset] = React.useState(0);
   const [selectedDate, setSelectedDate] = React.useState<Date | null>(today);
-  const [sheetVisible, setSheetVisible] = React.useState(true);
+  const [sheetVisible, setSheetVisible] = React.useState(false);
+  const [sheetSnap, setSheetSnap] = React.useState<'half' | 'full'>('half');
 
   const [pickerVisible, setPickerVisible] = React.useState(false);
   const [pickYear, setPickYear] = React.useState(today.getFullYear());
@@ -347,10 +361,17 @@ export default function FinanceCalendarScreen() {
         const ui = rows.map((row) => txnToUi(row));
         setActiveTxns(ui);
         setDayTotal(ui.reduce((sum, t) => sum + t.displayAmount, 0));
+        if (ui.length > 0) {
+          setSheetSnap('half');
+          setSheetVisible(true);
+        } else {
+          setSheetVisible(false);
+        }
       } catch {
         if (cancelled) return;
         setActiveTxns([]);
         setDayTotal(0);
+        setSheetVisible(false);
       }
     })();
     return () => {
@@ -358,24 +379,21 @@ export default function FinanceCalendarScreen() {
     };
   }, [activeDate]);
 
-  const bg = isDark ? '#0f172a' : '#faf8ff';
-  const surface = isDark ? '#1e293b' : '#ffffff';
-  const text = isDark ? '#e2e8f0' : '#131b2e';
-  const subtle = isDark ? '#94a3b8' : '#64748b';
-  const outline = isDark ? 'rgba(148,163,184,0.20)' : 'rgba(194,198,214,0.45)';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(194,198,214,0.26)';
-  const titleColor = isDark ? '#fbbf24' : '#b45309';
-  const income = isDark ? '#34d399' : '#006c49';
-  const expense = isDark ? '#cbd5e1' : '#475569';
-  const expenseAmountColor = isDark ? '#f87171' : '#dc2626';
+  const text = colors.text;
+  const subtle = colors.textSecondary;
+  const outline = colors.outline;
+  const outlineVariant = isDark ? colors.surfaceMuted : colors.capsule;
+  const accentColor = colors.primary;
+  const income = colors.success;
+  const expense = colors.textSecondary;
+  const expenseAmountColor = colors.danger;
+  const gridBg = colors.input;
+  const activeBorderColor = colors.primarySoft;
+  const activeCellBg = isDark ? 'rgba(96,165,250,0.22)' : colors.primaryMuted;
+  const dataCellBg = isDark ? 'rgba(96,165,250,0.10)' : colors.capsule;
+  const emptyCellBg = colors.surface;
 
   const formatTopDate = (d: Date) => `${d.getMonth() + 1}月${d.getDate()}日 ${weekdayCn[d.getDay()]}`;
-
-  const getCellBg = (hasAmount: boolean, isActive: boolean) => {
-    if (isActive) return isDark ? '#f59e0b' : '#fbbf24';
-    if (hasAmount) return isDark ? 'rgba(251,191,36,0.16)' : 'rgba(255,251,235,0.92)';
-    return isDark ? 'rgba(30,41,59,0.65)' : '#ffffff';
-  };
 
   const openPicker = () => {
     const d = selectedDate ?? today;
@@ -392,8 +410,6 @@ export default function FinanceCalendarScreen() {
 
     setSelectedDate(nextDate);
     setMonthOffset(getMonthDiff(todayMonthStart, monthStart(nextDate)));
-    setSheetSnap('half');
-    setSheetVisible(true);
     setPickerVisible(false);
   };
 
@@ -404,9 +420,9 @@ export default function FinanceCalendarScreen() {
   };
 
   const sheetMaxHeight = Math.max(340, Math.floor(windowHeight * 0.6));
-  const halfOpenOffset = Math.min(220, Math.max(110, Math.floor(windowHeight * 0.2)));
+  /** 半开时向下偏移越小，露出越多 */
+  const halfOpenOffset = Math.min(140, Math.max(56, Math.floor(windowHeight * 0.1)));
   const sheetTranslateY = React.useRef(new Animated.Value(halfOpenOffset)).current;
-  const [sheetSnap, setSheetSnap] = React.useState<'half' | 'full'>('half');
   const sheetOpenAnim = React.useRef(new Animated.Value(0)).current;
 
   const animateSheetTo = React.useCallback(
@@ -438,31 +454,51 @@ export default function FinanceCalendarScreen() {
   const panResponder = React.useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dy) > 8 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          Math.abs(gesture.dy) > 6 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+        onPanResponderTerminationRequest: () => false,
         onPanResponderMove: (_, gesture) => {
           const base = sheetSnap === 'full' ? 0 : halfOpenOffset;
-          sheetTranslateY.setValue(Math.max(0, base + gesture.dy));
+          const next = base + gesture.dy;
+          sheetTranslateY.setValue(Math.max(0, Math.min(sheetMaxHeight + 40, next)));
         },
         onPanResponderRelease: (_, gesture) => {
-          if (gesture.dy > 180) {
-            setSheetVisible(false);
-            return;
-          }
-
-          if (gesture.dy < -70) {
+          if (gesture.dy < -50) {
             setSheetSnap('full');
+            animateSheetTo(0);
             return;
           }
 
-          if (gesture.dy > 70) {
+          const shouldDismiss =
+            gesture.dy > 90 ||
+            (sheetSnap === 'half' && gesture.dy > 48) ||
+            (gesture.vy ?? 0) > 1.1;
+
+          if (shouldDismiss) {
+            Animated.spring(sheetTranslateY, {
+              toValue: sheetMaxHeight + 24,
+              useNativeDriver: true,
+              bounciness: 0,
+            }).start(({ finished }) => {
+              if (finished) {
+                setSheetVisible(false);
+                setSheetSnap('half');
+              }
+            });
+            return;
+          }
+
+          if (gesture.dy > 50) {
             setSheetSnap('half');
+            animateSheetTo(halfOpenOffset);
             return;
           }
 
           animateSheetTo(sheetSnap === 'full' ? 0 : halfOpenOffset);
         },
       }),
-    [animateSheetTo, halfOpenOffset, sheetSnap, sheetTranslateY],
+    [animateSheetTo, halfOpenOffset, sheetMaxHeight, sheetSnap, sheetTranslateY],
   );
 
   React.useEffect(() => {
@@ -500,34 +536,38 @@ export default function FinanceCalendarScreen() {
       setPickYear(now.getFullYear());
       setPickMonth(now.getMonth() + 1);
       setPickDay(now.getDate());
-      setSheetSnap('half');
-      setSheetVisible(true);
     }, [todayMonthStart]),
   );
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: bg }]} edges={['top', 'left', 'right']}>
-      <View style={[styles.topBar, { backgroundColor: isDark ? 'rgba(15,23,42,0.90)' : 'rgba(255,255,255,0.88)' }]}>
-        <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
-          <MaterialIcons name="arrow-back-ios-new" size={20} color={text} />
-        </Pressable>
-
-        <Pressable onPress={openPicker} style={({ pressed }) => [styles.topDateBtn, pressed && { opacity: 0.75 }]}>
-          <Text style={[styles.topBarTitle, { color: titleColor }]}>{formatTopDate(selectedDate ?? today)}</Text>
-          <MaterialIcons name="arrow-drop-down" size={20} color={titleColor} />
-        </Pressable>
-
-        <View style={styles.topSpacer} />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['left', 'right']}>
+      <View
+        style={[
+          styles.topBarWrap,
+          {
+            paddingTop: insets.top,
+            backgroundColor: colors.headerScrim,
+            borderBottomColor: colors.outline,
+          },
+        ]}>
+        <View style={styles.topBar}>
+          <AppIconButton icon="arrow-back" onPress={() => router.back()} accessibilityLabel="返回" />
+          <Pressable onPress={openPicker} style={({ pressed }) => [styles.topDateBtn, pressed && { opacity: 0.75 }]}>
+            <Text style={[Typography.title, { color: accentColor }]}>{formatTopDate(selectedDate ?? today)}</Text>
+            <MaterialIcons name="arrow-drop-down" size={20} color={accentColor} />
+          </Pressable>
+          <View style={styles.topSpacer} />
+        </View>
       </View>
 
       <Pressable style={styles.mainArea} onPress={() => setSheetVisible(false)}>
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           <View style={styles.monthHeader}>
             <View>
-              <Text style={[styles.monthTag, { color: subtle }]}>
+              <Text style={[Typography.kicker, { color: subtle }]}>
                 {visibleMonth.toLocaleString('en-US', { month: 'long' }).toUpperCase()} {visibleMonth.getFullYear()}
               </Text>
-              <Text style={[styles.monthTitle, { color: text }]}>{visibleMonth.getMonth() + 1}月总览</Text>
+              <Text style={[Typography.h1, styles.monthTitle, { color: text }]}>{visibleMonth.getMonth() + 1}月总览</Text>
             </View>
             <View style={styles.monthActions}>
               <Pressable
@@ -535,7 +575,12 @@ export default function FinanceCalendarScreen() {
                   e.stopPropagation();
                   setMonthOffset((prev) => prev - 1);
                 }}
-                style={({ pressed }) => [styles.monthArrowBtn, { backgroundColor: surface }, pressed && { opacity: 0.72 }]}>
+                style={({ pressed }) => [
+                  styles.monthArrowBtn,
+                  { backgroundColor: colors.surface, borderColor: colors.outline },
+                  shadows.card,
+                  pressed && { opacity: 0.72 },
+                ]}>
                 <MaterialIcons name="chevron-left" size={22} color={subtle} />
               </Pressable>
               <Pressable
@@ -543,7 +588,12 @@ export default function FinanceCalendarScreen() {
                   e.stopPropagation();
                   setMonthOffset((prev) => prev + 1);
                 }}
-                style={({ pressed }) => [styles.monthArrowBtn, { backgroundColor: surface }, pressed && { opacity: 0.72 }]}>
+                style={({ pressed }) => [
+                  styles.monthArrowBtn,
+                  { backgroundColor: colors.surface, borderColor: colors.outline },
+                  shadows.card,
+                  pressed && { opacity: 0.72 },
+                ]}>
                 <MaterialIcons name="chevron-right" size={22} color={subtle} />
               </Pressable>
             </View>
@@ -603,18 +653,21 @@ export default function FinanceCalendarScreen() {
                   todayMonthStart={todayMonthStart}
                   calendarWidth={calendarWidth}
                   dayCellSize={dayCellSize}
-                  isDark={isDark}
                   text={text}
                   subtle={subtle}
                   outline={outline}
                   incomeColor={income}
                   expenseColor={expense}
-                  netNegativeColor={baseTheme.primary}
+                  netNegativeColor={colors.primary}
+                  gridBg={gridBg}
+                  activeBorderColor={activeBorderColor}
+                  activeCellBg={activeCellBg}
+                  dataCellBg={dataCellBg}
+                  emptyCellBg={emptyCellBg}
                   selectedDate={selectedDate}
                   setSelectedDate={setSelectedDate}
                   setSheetSnap={setSheetSnap}
                   setSheetVisible={setSheetVisible}
-                  getCellBg={getCellBg}
                 />
               );
             }}
@@ -635,40 +688,47 @@ export default function FinanceCalendarScreen() {
           <View
             style={[
               styles.sheet,
+              shadows.sheet,
               {
-                backgroundColor: surface,
+                backgroundColor: colors.surface,
                 borderColor: outline,
                 height: sheetMaxHeight,
-                paddingBottom: Math.max(18, insets.bottom + 10),
+                paddingBottom: Math.max(Spacing['4xl'], insets.bottom + Spacing.lg),
               },
-            ]}
-            {...panResponder.panHandlers}>
-            <Pressable
-              onPress={() => setSheetSnap((v) => (v === 'half' ? 'full' : 'half'))}
-              style={styles.sheetHandleTapArea}>
-              <View style={styles.sheetHandle} />
-            </Pressable>
+            ]}>
+            <View {...panResponder.panHandlers} style={styles.sheetDragZone}>
+              <Pressable
+                onPress={() => setSheetSnap((v) => (v === 'half' ? 'full' : 'half'))}
+                style={styles.sheetHandleTapArea}>
+                <View style={[styles.sheetHandle, { backgroundColor: colors.textMuted }]} />
+              </Pressable>
+            </View>
             <View style={styles.sheetHeaderRow}>
               <View>
-                <Text style={[styles.sheetTitle, { color: text }]}>今日流水</Text>
-                <Text style={[styles.sheetDate, { color: subtle }]}>{selectedDate.getMonth() + 1}月{selectedDate.getDate()}日</Text>
+                <Text style={[Typography.h2, { color: text }]}>今日流水</Text>
+                <Text style={[Typography.caption, styles.sheetDate, { color: subtle }]}>
+                  {selectedDate.getMonth() + 1}月{selectedDate.getDate()}日
+                </Text>
               </View>
-              <Text style={[styles.sheetTotal, { color: dayTotal >= 0 ? income : titleColor }]}>
+              <Text style={[styles.sheetTotal, { color: dayTotal >= 0 ? income : expenseAmountColor }]}>
                 {dayTotal >= 0 ? '+' : ''}{dayTotal.toFixed(2)}
               </Text>
             </View>
 
-            <ScrollView
-              style={[styles.sheetScroll, { maxHeight: Math.max(130, sheetMaxHeight - 110) }]}
-              contentContainerStyle={styles.sheetScrollContent}
-              showsVerticalScrollIndicator={false}
-              nestedScrollEnabled>
-              <View style={[styles.insightCard, { backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : '#fff7ed', borderColor: isDark ? 'rgba(251,191,36,0.35)' : 'rgba(251,191,36,0.28)' }]}>
+            <View style={styles.sheetInsightSection}>
+              <View
+                style={[
+                  styles.insightCard,
+                  {
+                    backgroundColor: colors.primaryMuted,
+                    borderColor: isDark ? 'rgba(96,165,250,0.35)' : colors.outline,
+                  },
+                ]}>
                 <View style={styles.insightHeader}>
-                  <MaterialIcons name="auto-awesome" size={14} color={titleColor} />
-                  <Text style={[styles.insightTagText, { color: titleColor }]}>AI 洞察</Text>
+                  <MaterialIcons name="auto-awesome" size={14} color={accentColor} />
+                  <Text style={[Typography.kicker, { color: accentColor }]}>AI 洞察</Text>
                 </View>
-                <Text style={[styles.insightBody, { color: isDark ? '#fde68a' : '#92400e' }]}>
+                <Text style={[Typography.body, styles.insightBody, { color: colors.textSecondary }]}>
                   {dayAiInsightSummary.kind === 'no_txns'
                     ? '选择有流水的日期即可查看记录。在「财务」首页使用智能/拍照记账并生成点评后，含点评的流水会同步显示在下方列表中。'
                     : dayAiInsightSummary.kind === 'no_ai'
@@ -676,9 +736,16 @@ export default function FinanceCalendarScreen() {
                       : `当日共 ${dayAiInsightSummary.withInsight}/${dayAiInsightSummary.total} 笔流水含 AI 点评（数据与财务首页一致），详见下方。`}
                 </Text>
               </View>
-
               <View style={[styles.sheetDivider, { backgroundColor: outline }]} />
+            </View>
 
+            <ScrollView
+              style={styles.sheetTxnScroll}
+              contentContainerStyle={styles.sheetTxnScrollContent}
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled
+              bounces
+              scrollEventThrottle={16}>
               {activeTxns.length === 0 ? (
                 <View style={[styles.emptyTxnWrap, { borderColor: outline }]}>
                   <MaterialIcons name="event-note" size={18} color={subtle} />
@@ -687,18 +754,23 @@ export default function FinanceCalendarScreen() {
               ) : (
                 activeTxns.map((txn) => (
                   <View key={txn.id} style={styles.txnRow}>
-                    <View style={[styles.txnIconWrap, { backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : '#eef2ff' }]}>
-                      <MaterialIcons name={txn.icon} size={20} color={titleColor} />
+                    <View style={[styles.txnIconWrap, { backgroundColor: colors.primaryMuted }]}>
+                      <MaterialIcons name={txn.icon} size={20} color={accentColor} />
                     </View>
-                    <View style={[styles.txnMain, styles.txnMainWithBorder, { borderLeftColor: dayTotal >= 0 ? income : titleColor }]}>
+                    <View
+                      style={[
+                        styles.txnMain,
+                        styles.txnMainWithBorder,
+                        { borderLeftColor: dayTotal >= 0 ? income : expenseAmountColor },
+                      ]}>
                       <View style={styles.txnTitleRow}>
                         <View style={styles.txnTextCol}>
                           <Text style={[styles.txnTitle, { color: text }]}>{txn.title}</Text>
                           <Text style={[styles.txnMeta, { color: subtle }]}>{txn.meta}</Text>
                           {txn.insight ? (
                             <View style={[styles.txnInsightTag, { backgroundColor: outlineVariant }]}>
-                              <MaterialIcons name="auto-awesome" size={14} color={titleColor} />
-                              <Text style={[styles.txnInsightText, { color: titleColor }]}>{txn.insight}</Text>
+                              <MaterialIcons name="auto-awesome" size={14} color={accentColor} />
+                              <Text style={[styles.txnInsightText, { color: accentColor }]}>{txn.insight}</Text>
                             </View>
                           ) : null}
                         </View>
@@ -721,17 +793,17 @@ export default function FinanceCalendarScreen() {
                   </View>
                 ))
               )}
-
-              <View style={styles.sheetBottomSpacer} />
             </ScrollView>
           </View>
         </Animated.View>
       ) : null}
 
       <Modal transparent visible={pickerVisible} animationType="fade" onRequestClose={() => setPickerVisible(false)}>
-        <Pressable style={styles.modalMask} onPress={() => setPickerVisible(false)}>
-          <Pressable style={[styles.pickerCard, { backgroundColor: surface, borderColor: outline }]} onPress={(e) => e.stopPropagation()}>
-            <Text style={[styles.pickerTitle, { color: text }]}>选择日期</Text>
+        <Pressable style={[styles.modalMask, { backgroundColor: colors.overlay }]} onPress={() => setPickerVisible(false)}>
+          <Pressable
+            style={[styles.pickerCard, shadows.card, { backgroundColor: colors.surface, borderColor: outline }]}
+            onPress={(e) => e.stopPropagation()}>
+            <Text style={[Typography.h3, { color: text }]}>选择日期</Text>
 
             {[
               { key: 'y', label: '年', value: pickYear },
@@ -740,23 +812,23 @@ export default function FinanceCalendarScreen() {
             ].map((row) => (
               <View key={row.key} style={styles.pickRow}>
                 <Text style={[styles.pickLabel, { color: subtle }]}>{row.label}</Text>
-                <Pressable style={styles.pickBtn} onPress={() => changePick(row.key as 'y' | 'm' | 'd', -1)}>
+                <Pressable
+                  style={[styles.pickBtn, { backgroundColor: colors.capsule }]}
+                  onPress={() => changePick(row.key as 'y' | 'm' | 'd', -1)}>
                   <MaterialIcons name="remove" size={18} color={text} />
                 </Pressable>
-                <Text style={[styles.pickValue, { color: text }]}>{row.value}</Text>
-                <Pressable style={styles.pickBtn} onPress={() => changePick(row.key as 'y' | 'm' | 'd', 1)}>
+                <Text style={[Typography.title, styles.pickValue, { color: text }]}>{row.value}</Text>
+                <Pressable
+                  style={[styles.pickBtn, { backgroundColor: colors.capsule }]}
+                  onPress={() => changePick(row.key as 'y' | 'm' | 'd', 1)}>
                   <MaterialIcons name="add" size={18} color={text} />
                 </Pressable>
               </View>
             ))}
 
             <View style={styles.pickFooter}>
-              <Pressable style={[styles.pickAction, { borderColor: outline }]} onPress={() => setPickerVisible(false)}>
-                <Text style={[styles.pickActionText, { color: subtle }]}>取消</Text>
-              </Pressable>
-              <Pressable style={[styles.pickAction, { backgroundColor: baseTheme.primary }]} onPress={confirmPickDate}>
-                <Text style={[styles.pickActionText, { color: '#fff' }]}>确定</Text>
-              </Pressable>
+              <AppButton label="取消" variant="outline" onPress={() => setPickerVisible(false)} style={styles.pickActionBtn} />
+              <AppButton label="确定" variant="primary" onPress={confirmPickDate} style={styles.pickActionBtn} />
             </View>
           </Pressable>
         </Pressable>
@@ -767,63 +839,53 @@ export default function FinanceCalendarScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
+  topBarWrap: {
+    zIndex: 100,
+    elevation: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   topBar: {
-    height: 56,
-    paddingHorizontal: 16,
+    minHeight: Layout.headerHeight,
+    paddingHorizontal: Spacing['5xl'],
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  iconBtn: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 18,
-  },
   topDateBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
+    gap: Spacing.xs,
   },
-  topBarTitle: {
-    fontSize: 18,
-    fontWeight: '900',
-    letterSpacing: -0.2,
-  },
-  topSpacer: { width: 36 },
+  topSpacer: { width: Layout.iconButtonSize },
   mainArea: { flex: 1 },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing.xl,
     paddingBottom: 260,
+    maxWidth: Layout.contentMaxWidth,
+    alignSelf: 'center',
+    width: '100%',
   },
   monthHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 14,
-  },
-  monthTag: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 2,
+    marginBottom: Spacing['2xl'],
   },
   monthTitle: {
-    marginTop: 4,
-    fontSize: 28,
-    fontWeight: '900',
+    marginTop: Spacing.xs,
   },
   monthActions: {
     flexDirection: 'row',
-    gap: 8,
+    gap: Spacing.md,
   },
   monthArrowBtn: {
     width: 34,
     height: 34,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 10,
+    borderRadius: Radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   weekRow: {
     flexDirection: 'row',
@@ -836,7 +898,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
   },
   gridWrap: {
-    borderRadius: 18,
+    borderRadius: Radius['2xl'],
     padding: GRID_PADDING,
     gap: GRID_GAP,
   },
@@ -848,9 +910,9 @@ const styles = StyleSheet.create({
     gap: GRID_GAP,
   },
   dayCell: {
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 5,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.sm,
     justifyContent: 'space-between',
     flexShrink: 0,
   },
@@ -886,20 +948,30 @@ const styles = StyleSheet.create({
     left: 12,
     right: 12,
     bottom: 0,
+    zIndex: 40,
+    elevation: 8,
+  },
+  sheetDragZone: {
+    alignSelf: 'stretch',
   },
   sheet: {
-    borderTopLeftRadius: 26,
-    borderTopRightRadius: 26,
-    borderWidth: 1,
+    borderTopLeftRadius: Radius.sheet,
+    borderTopRightRadius: Radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
     borderBottomWidth: 0,
-    paddingHorizontal: 16,
-    paddingTop: 10,
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing.lg,
+    flexDirection: 'column',
   },
-  sheetScroll: {
-    flexGrow: 0,
+  sheetInsightSection: {
+    flexShrink: 0,
   },
-  sheetScrollContent: {
-    paddingBottom: 8,
+  sheetTxnScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  sheetTxnScrollContent: {
+    paddingBottom: Spacing.md,
   },
   sheetHandleTapArea: {
     alignSelf: 'center',
@@ -912,7 +984,6 @@ const styles = StyleSheet.create({
     width: 48,
     height: 5,
     borderRadius: 999,
-    backgroundColor: 'rgba(148,163,184,0.35)',
     alignSelf: 'center',
   },
   sheetHeaderRow: {
@@ -921,14 +992,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
-  sheetTitle: {
-    fontSize: 22,
-    fontWeight: '900',
-  },
   sheetDate: {
-    marginTop: 2,
-    fontSize: 12,
-    fontWeight: '600',
+    marginTop: Spacing.xs,
   },
   sheetTotal: {
     fontSize: 20,
@@ -1002,16 +1067,15 @@ const styles = StyleSheet.create({
     paddingTop: 1,
   },
   insightCard: {
-    marginTop: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 14,
-    gap: 8,
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['2xl'],
+    gap: Spacing.md,
   },
   sheetDivider: {
     height: 1,
-    marginTop: 12,
-    marginBottom: 14,
+    marginTop: Spacing.xl,
+    marginBottom: Spacing['2xl'],
     opacity: 0.9,
   },
   insightHeader: {
@@ -1019,19 +1083,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
   },
-  insightTagText: {
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1.4,
-    textTransform: 'uppercase',
-  },
   insightBody: {
-    fontSize: 13,
     lineHeight: 19,
-    fontWeight: '600',
-  },
-  sheetBottomSpacer: {
-    height: 12,
   },
   emptyTxnWrap: {
     borderWidth: 1,
@@ -1050,22 +1103,16 @@ const styles = StyleSheet.create({
   },
   modalMask: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.3)',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 22,
+    paddingHorizontal: Spacing['5xl'],
   },
   pickerCard: {
     width: '100%',
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 16,
-    gap: 12,
-  },
-  pickerTitle: {
-    fontSize: 18,
-    fontWeight: '900',
-    marginBottom: 4,
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['3xl'],
+    gap: Spacing.xl,
   },
   pickRow: {
     flexDirection: 'row',
@@ -1080,32 +1127,20 @@ const styles = StyleSheet.create({
   pickBtn: {
     width: 30,
     height: 30,
-    borderRadius: 15,
+    borderRadius: Radius.icon,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(148,163,184,0.18)',
   },
   pickValue: {
     minWidth: 72,
     textAlign: 'center',
-    fontSize: 18,
-    fontWeight: '800',
   },
   pickFooter: {
-    marginTop: 8,
+    marginTop: Spacing.md,
     flexDirection: 'row',
-    gap: 10,
+    gap: Spacing.lg,
   },
-  pickAction: {
+  pickActionBtn: {
     flex: 1,
-    height: 40,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-  },
-  pickActionText: {
-    fontSize: 14,
-    fontWeight: '800',
   },
 });

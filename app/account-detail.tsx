@@ -1,6 +1,9 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AppButton, AppCard, AppIconButton, AppInput, ScreenHeader } from '@/components/ui';
+import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
+import { clearFinanceDefaultAccountIfDeleted } from '@/lib/finance-default-accounts';
+import { setFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import {
   applyFinanceAccountBalanceCorrection,
   deleteFinanceAccount,
@@ -10,8 +13,6 @@ import {
   getFinanceTransactionsByAccountId,
   updateFinanceAccount,
 } from '@/lib/repositories/finance/finance';
-import { setFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
-import { clearFinanceDefaultAccountIfDeleted } from '@/lib/finance-default-accounts';
 import {
   isFinanceAccountExcludedFromAggregates,
   mergeFinanceAccountExcludeFromTotalAssets,
@@ -31,7 +32,6 @@ import {
   StyleSheet,
   Switch,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -56,16 +56,23 @@ type MonthSection = {
     items: DetailItem[];
   }>;
 };
+
 const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
+
+function SectionHeading({ title }: { title: string }) {
+  const { colors } = useAppTheme();
+  return <Text style={[styles.sectionTitle, { color: colors.text }]}>{title}</Text>;
+}
 
 export default function AccountDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ accountId?: string; accountName?: string; accountNo?: string }>();
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const themeKey = colorScheme === 'dark' ? 'dark' : 'light';
-  const theme = Colors[themeKey];
-  const isDark = colorScheme === 'dark';
+  const { colors, isDark, shadows } = useAppTheme();
+  /** 与 `finance-stats`、财务首页收支语义一致 */
+  const expenseColor = colors.primary;
+  const incomeColor = colors.tertiary;
+
   const [account, setAccount] = React.useState<FinanceAccountBalanceRow | null>(null);
   const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const [deleting, setDeleting] = React.useState(false);
@@ -79,12 +86,6 @@ export default function AccountDetailScreen() {
   const accountSignRule = account?.sign_rule ?? 1;
   const isLiabilityAccount = accountSignRule < 0 || account?.account_type === 'liability';
 
-  const pageBg = isDark ? theme.background : '#f3f4f6';
-  const surface = isDark ? '#111827' : '#ffffff';
-  const cardBg = isDark ? '#1f2937' : '#FCF8F2';
-  const titleText = isDark ? '#f9fafb' : '#111827';
-  const subtleText = isDark ? '#9ca3af' : '#6b7280';
-  const borderColor = isDark ? 'rgba(148,163,184,0.22)' : '#f3f4f6';
   const detailName = account?.name ?? (routeAccountName || '账户');
   const detailDesc = account?.account_no?.trim() ? account.account_no : isLiabilityAccount ? '负债明细' : '账户余额';
 
@@ -131,7 +132,7 @@ export default function AccountDetailScreen() {
       if (tx.transaction_type === 'expense') return -absAmount;
       return tx.amount;
     },
-    [isLiabilityAccount]
+    [isLiabilityAccount],
   );
 
   const formatMoney = React.useCallback((amount: number) => {
@@ -369,296 +370,290 @@ export default function AccountDetailScreen() {
   }, [formatMoney, getDisplayAmount, transactions]);
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: pageBg }]} edges={['top', 'left', 'right']}>
-      <View style={[styles.mobileContainer, { backgroundColor: surface }]}>
-        <View
-          style={[
-            styles.header,
-            {
-              borderBottomColor: borderColor,
-              paddingTop: 6,
-              backgroundColor: surface,
-            },
-          ]}>
-          <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}>
-            <MaterialIcons name="arrow-back" size={24} color={titleText} />
-          </Pressable>
-          <Text style={[styles.headerTitle, { color: titleText }]}>账户详情</Text>
-          <Pressable
+    <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['left', 'right']}>
+      <ScreenHeader
+        title="账户详情"
+        onBack={() => router.back()}
+        right={
+          <AppIconButton
+            icon="delete-outline"
             onPress={onDeleteAccount}
             disabled={deleting}
-            style={({ pressed }) => [styles.headerIconBtn, deleting && { opacity: 0.5 }, pressed && { opacity: 0.7 }]}>
-            <MaterialIcons name="delete-outline" size={22} color="#ef4444" />
-          </Pressable>
-        </View>
+            color={colors.danger}
+            accessibilityLabel="删除账户"
+          />
+        }
+      />
 
-        <ScrollView
-          contentContainerStyle={[styles.content, { paddingBottom: 32 + Math.max(insets.bottom, 8) }]}
-          showsVerticalScrollIndicator={false}>
-          <View style={[styles.accountCard, { backgroundColor: cardBg }]}>
-            <View style={styles.accountTopRow}>
-              <Pressable
-                onPress={onPressEditAccountMeta}
-                disabled={!resolvedAccountId}
-                accessibilityRole="button"
-                accessibilityLabel="编辑账户名称、卡号与图标"
-                style={({ pressed }) => [
-                  styles.accountMetaPressable,
-                  !resolvedAccountId && { opacity: 0.5 },
-                  pressed && resolvedAccountId && { opacity: 0.82 },
-                ]}>
-                <View style={styles.avatarOuter}>
-                  <View style={styles.avatarInner}>
-                    <MaterialIcons name={accountIcon(account)} size={20} color="#111827" />
-                    <View style={styles.avatarBadge}>
-                      <Text style={styles.avatarBadgeDot}>.</Text>
-                    </View>
-                  </View>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md),
+            maxWidth: Layout.contentMaxWidth,
+            alignSelf: 'center',
+            width: '100%',
+          },
+        ]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled">
+        <AppCard padded style={shadows.card}>
+          <Pressable
+            onPress={onPressEditAccountMeta}
+            disabled={!resolvedAccountId}
+            accessibilityRole="button"
+            accessibilityLabel="编辑账户名称、卡号与图标"
+            style={({ pressed }) => [
+              styles.accountMetaPressable,
+              !resolvedAccountId && { opacity: 0.5 },
+              pressed && resolvedAccountId && { opacity: 0.82 },
+            ]}>
+            <View style={[styles.avatarOuter, { backgroundColor: colors.surface }]}>
+              <View style={[styles.avatarInner, { backgroundColor: colors.primaryMuted }]}>
+                <MaterialIcons name={accountIcon(account)} size={20} color={colors.primary} />
+                <View style={[styles.avatarBadge, { borderColor: colors.surface, backgroundColor: colors.accentIcon }]}>
+                  <Text style={[styles.avatarBadgeDot, { color: colors.text }]}>.</Text>
                 </View>
-                <View style={styles.accountTitleCol}>
-                  <Text style={[styles.accountName, { color: titleText }]}>{detailName}</Text>
-                  <Text style={[styles.accountDesc, { color: subtleText }]}>{detailDesc}</Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={22} color={subtleText} style={styles.accountMetaChevron} />
-              </Pressable>
-            </View>
-
-            <View style={[styles.dashedDivider, { borderColor }]} />
-
-            <View style={styles.balanceBlock}>
-              <Text style={[styles.balanceLabel, { color: subtleText }]}>{isLiabilityAccount ? '负债' : '余额'}</Text>
-              <View style={styles.balanceRow}>
-                {(() => {
-                  const rawBalance = account?.balance ?? 0;
-                  const displayBalance = isLiabilityAccount ? Math.min(0, rawBalance) : Math.max(0, rawBalance);
-                  const balancePrefix = displayBalance < 0 ? '-' : '';
-                  return (
-                <Text style={[styles.balanceText, { color: titleText }]}>
-                      {`${balancePrefix}${formatMoney(displayBalance)}`}
-                </Text>
-                  );
-                })()}
-                <Pressable
-                  onPress={openBalanceEditor}
-                  accessibilityRole="button"
-                  accessibilityLabel="编辑余额"
-                  style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
-                  <MaterialIcons name="edit" size={16} color={subtleText} />
-                </Pressable>
               </View>
             </View>
+            <View style={styles.accountTitleCol}>
+              <Text style={[Typography.title, { color: colors.text }]}>{detailName}</Text>
+              <Text style={[Typography.caption, styles.accountDesc, { color: colors.textSecondary }]}>
+                {detailDesc}
+              </Text>
+            </View>
+            <MaterialIcons name="chevron-right" size={22} color={colors.textMuted} style={styles.accountMetaChevron} />
+          </Pressable>
 
-            {/* 资产：不计入「总资产」汇总；负债：不计入「总负债」汇总；首页净资产均与资产页一致 */}
-            {account ? (
-              <View style={[styles.optionRow, { borderTopColor: borderColor }]}>
-                <View style={styles.optionTextCol}>
-                  <Text style={[styles.optionTitle, { color: titleText }]}>
-                    {isLiabilityAccount ? '不计入总负债' : '不计入总资产'}
+          <View style={[styles.dashedDivider, { borderColor: colors.outline }]} />
+
+          <View style={styles.balanceBlock}>
+            <Text style={[Typography.caption, { color: colors.textSecondary }]}>
+              {isLiabilityAccount ? '负债' : '余额'}
+            </Text>
+            <View style={styles.balanceRow}>
+              {(() => {
+                const rawBalance = account?.balance ?? 0;
+                const displayBalance = isLiabilityAccount ? Math.min(0, rawBalance) : Math.max(0, rawBalance);
+                const balancePrefix = displayBalance < 0 ? '-' : '';
+                return (
+                  <Text style={[Typography.display, styles.balanceAmount, { color: colors.text }]}>
+                    {`${balancePrefix}${formatMoney(displayBalance)}`}
                   </Text>
-                  <Text style={[styles.optionHint, { color: subtleText }]}>
-                    {isLiabilityAccount
-                      ? '开启后，该负债不参与首页净资产与资产页「总负债」汇总'
-                      : '开启后，该账户不参与首页净资产与资产页「总资产」汇总'}
-                  </Text>
+                );
+              })()}
+              <AppIconButton
+                icon="edit"
+                size={16}
+                color={colors.textSecondary}
+                onPress={openBalanceEditor}
+                accessibilityLabel="编辑余额"
+                style={styles.balanceEditBtn}
+              />
+            </View>
+          </View>
+
+          {/* 资产：不计入「总资产」汇总；负债：不计入「总负债」汇总；首页净资产均与资产页一致 */}
+          {account ? (
+            <View style={[styles.optionRow, { borderTopColor: colors.outline }]}>
+              <View style={styles.optionTextCol}>
+                <Text style={[Typography.bodyStrong, { color: colors.text }]}>
+                  {isLiabilityAccount ? '不计入总负债' : '不计入总资产'}
+                </Text>
+                <Text style={[Typography.caption, styles.optionHint, { color: colors.textSecondary }]}>
+                  {isLiabilityAccount
+                    ? '开启后，该负债不参与首页净资产与资产页「总负债」汇总'
+                    : '开启后，该账户不参与首页净资产与资产页「总资产」汇总'}
+                </Text>
+              </View>
+              <Switch
+                value={excludeFromTotalAssets}
+                disabled={savingExcludeFromTotal}
+                onValueChange={(v) => void onToggleExcludeFromTotalAssets(v)}
+                trackColor={{ false: isDark ? colors.surfaceMuted : colors.outlineStrong, true: colors.successSwitch }}
+                thumbColor={excludeFromTotalAssets ? colors.success : isDark ? colors.textMuted : colors.surface}
+              />
+            </View>
+          ) : null}
+
+          <View style={styles.actionRow}>
+            <AppButton label="记账" variant="outline" size="md" onPress={onPressBookkeeping} style={styles.actionBtn} />
+            <AppButton label="转账" variant="outline" size="md" onPress={onPressTransfer} style={styles.actionBtn} />
+          </View>
+        </AppCard>
+
+        <View style={styles.detailsSection}>
+          <SectionHeading title="账户明细" />
+
+          {monthSections.map((section) => (
+            <View key={section.id} style={styles.monthSection}>
+              <View
+                style={[
+                  styles.monthHeaderRow,
+                  {
+                    borderBottomColor: colors.outline,
+                    borderBottomWidth: section.expanded ? StyleSheet.hairlineWidth : 0,
+                    paddingBottom: section.expanded ? Spacing['2xl'] : Spacing.lg,
+                  },
+                ]}>
+                <View style={styles.monthHeaderTextCol}>
+                  <Text style={[Typography.title, { color: colors.text }]}>{section.monthLabel}</Text>
+                  {!isLiabilityAccount ? (
+                    <Text style={[Typography.caption, { color: colors.textSecondary }]}>
+                      流出 <Text style={{ color: expenseColor }}>{section.expense}</Text>
+                      <Text style={{ color: colors.textMuted }}> | </Text>
+                      流入 <Text style={{ color: incomeColor }}>{section.income}</Text>
+                    </Text>
+                  ) : null}
                 </View>
-                <Switch
-                  value={excludeFromTotalAssets}
-                  disabled={savingExcludeFromTotal}
-                  onValueChange={(v) => void onToggleExcludeFromTotalAssets(v)}
-                  trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#86efac' }}
-                  thumbColor={excludeFromTotalAssets ? '#16a34a' : isDark ? '#9ca3af' : '#f4f4f5'}
+                <MaterialIcons
+                  name={section.expanded ? 'keyboard-arrow-down' : 'keyboard-arrow-right'}
+                  size={22}
+                  color={colors.textMuted}
                 />
               </View>
-            ) : null}
 
-            <View style={styles.actionRow}>
-              <Pressable
-                onPress={onPressBookkeeping}
-                style={({ pressed }) => [
-                  styles.actionBtn,
-                  { backgroundColor: surface, borderColor },
-                  pressed && { opacity: 0.86 },
-                ]}>
-                <Text style={[styles.actionBtnText, { color: titleText }]}>记账</Text>
-              </Pressable>
-              <Pressable
-                onPress={onPressTransfer}
-                style={({ pressed }) => [
-                  styles.actionBtn,
-                  { backgroundColor: surface, borderColor },
-                  pressed && { opacity: 0.86 },
-                ]}>
-                <Text style={[styles.actionBtnText, { color: titleText }]}>转账</Text>
-              </Pressable>
-            </View>
-          </View>
-
-          <View style={styles.detailsSection}>
-            <View style={styles.detailsHeader}>
-              <View style={styles.detailsTitleWrap}>
-                <Text style={[styles.detailsTitle, { color: titleText }]}>账户明细</Text>
-                <View style={styles.detailsUnderline} />
-              </View>
-            </View>
-
-            {monthSections.map((section) => (
-              <View key={section.id} style={styles.monthSection}>
-                <View
-                  style={[
-                    styles.monthHeaderRow,
-                    {
-                      borderBottomColor: borderColor,
-                      borderBottomWidth: section.expanded ? StyleSheet.hairlineWidth : 0,
-                      paddingBottom: section.expanded ? 14 : 10,
-                    },
-                  ]}>
-                  <View style={styles.monthHeaderTextCol}>
-                    <Text style={[styles.monthTitle, { color: titleText }]}>{section.monthLabel}</Text>
-                    {!isLiabilityAccount ? (
-                      <Text style={[styles.monthMeta, { color: subtleText }]}>
-                        流出 <Text style={styles.expenseText}>{section.expense}</Text>
-                        <Text style={styles.monthDivider}> | </Text>
-                        流入 <Text style={styles.incomeText}>{section.income}</Text>
-                      </Text>
-                    ) : null}
-                  </View>
-                  <MaterialIcons
-                    name={section.expanded ? 'keyboard-arrow-down' : 'keyboard-arrow-right'}
-                    size={22}
-                    color={subtleText}
-                  />
-                </View>
-
-                {section.expanded && section.details && section.details.length > 0 ? (
-                  <View style={styles.dayDetailBlock}>
-                    {section.details.map((day) => (
-                      <View
-                        key={`${section.id}-${day.dateLabel}`}
-                        style={[
-                          styles.dayGroupCard,
-                          {
-                            backgroundColor: isDark ? 'rgba(31, 41, 55, 0.55)' : '#f9fafb',
-                            borderColor,
-                          },
-                        ]}>
-                        <View
-                          style={[
-                            styles.dayGroupHeader,
-                            { borderBottomColor: borderColor },
-                          ]}>
-                          <View style={[styles.dayGroupDot, { backgroundColor: isDark ? '#60a5fa' : '#3b82f6' }]} />
-                          <Text style={[styles.dayTitle, { color: titleText }]}>{day.dateLabel}</Text>
-                        </View>
-                        {day.items.map((item, itemIndex) => {
-                          const trimmed = item.amount.replace(/\s/g, '');
-                          const amountColor =
-                            trimmed.startsWith('+')
-                              ? isDark
-                                ? '#34d399'
-                                : '#059669'
-                              : trimmed.startsWith('-')
-                                ? isDark
-                                  ? '#f87171'
-                                  : '#dc2626'
-                                : titleText;
-                          const isLast = itemIndex === day.items.length - 1;
-                          return (
-                            <View
-                              key={item.id}
-                              style={[
-                                styles.detailEntry,
-                                !isLast && {
-                                  borderBottomWidth: StyleSheet.hairlineWidth,
-                                  borderBottomColor: borderColor,
-                                },
-                              ]}>
-                              <View style={styles.detailItemRow}>
-                                <View style={styles.detailLeft}>
-                                  <Text style={[styles.detailTime, { color: subtleText }]}>{item.time}</Text>
-                                  <View
-                                    style={[
-                                      styles.tagPill,
-                                      { backgroundColor: isDark ? 'rgba(250, 204, 21, 0.22)' : '#FEF08A' },
-                                    ]}>
-                                    <Text style={[styles.tagText, { color: titleText }]}>{item.tag}</Text>
-                                    <Text style={styles.tagEmoji}>{item.emoji}</Text>
-                                  </View>
-                                </View>
-                                <Text style={[styles.detailAmount, { color: amountColor }]}>{item.amount}</Text>
-                              </View>
-                              <View style={styles.sourceRow}>
+              {section.expanded && section.details && section.details.length > 0 ? (
+                <View style={styles.dayDetailBlock}>
+                  {section.details.map((day) => (
+                    <View
+                      key={`${section.id}-${day.dateLabel}`}
+                      style={[
+                        styles.dayGroupCard,
+                        {
+                          backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
+                          borderColor: colors.outline,
+                        },
+                      ]}>
+                      <View style={[styles.dayGroupHeader, { borderBottomColor: colors.outline }]}>
+                        <View style={[styles.dayGroupDot, { backgroundColor: colors.primary }]} />
+                        <Text style={[Typography.bodyStrong, { color: colors.text }]}>{day.dateLabel}</Text>
+                      </View>
+                      {day.items.map((item, itemIndex) => {
+                        const trimmed = item.amount.replace(/\s/g, '');
+                        const amountColor =
+                          trimmed.startsWith('+')
+                            ? colors.secondary
+                            : trimmed.startsWith('-')
+                              ? colors.danger
+                              : colors.text;
+                        const isLast = itemIndex === day.items.length - 1;
+                        return (
+                          <View
+                            key={item.id}
+                            style={[
+                              styles.detailEntry,
+                              !isLast && {
+                                borderBottomWidth: StyleSheet.hairlineWidth,
+                                borderBottomColor: colors.outline,
+                              },
+                            ]}>
+                            <View style={styles.detailItemRow}>
+                              <View style={styles.detailLeft}>
+                                <Text style={[Typography.body, styles.detailTime, { color: colors.textSecondary }]}>
+                                  {item.time}
+                                </Text>
                                 <View
                                   style={[
-                                    styles.sourceIcon,
+                                    styles.tagPill,
                                     {
-                                      borderColor,
-                                      backgroundColor: isDark ? 'rgba(55, 65, 81, 0.6)' : '#ffffff',
+                                      backgroundColor: isDark ? colors.primaryMuted : colors.capsule,
+                                      borderColor: colors.outline,
                                     },
                                   ]}>
-                                  <View style={styles.sourceIconLine} />
+                                  <Text style={[Typography.bodyStrong, styles.tagText, { color: colors.text }]}>
+                                    {item.tag}
+                                  </Text>
+                                  <Text style={styles.tagEmoji}>{item.emoji}</Text>
                                 </View>
-                                <Text style={[styles.sourceText, { color: subtleText }]}>{item.flowLabel}</Text>
                               </View>
+                              <Text style={[Typography.title, styles.detailAmount, { color: amountColor }]}>
+                                {item.amount}
+                              </Text>
                             </View>
-                          );
-                        })}
-                      </View>
-                    ))}
-                    <View style={[styles.sectionDivider, { backgroundColor: borderColor }]} />
-                  </View>
-                ) : (
-                  <View style={[styles.sectionDivider, { backgroundColor: borderColor }]} />
-                )}
-              </View>
-            ))}
-          </View>
-        </ScrollView>
-      </View>
+                            <View style={styles.sourceRow}>
+                              <View
+                                style={[
+                                  styles.sourceIcon,
+                                  {
+                                    borderColor: colors.outline,
+                                    backgroundColor: isDark ? colors.surfaceMuted : colors.surface,
+                                  },
+                                ]}>
+                                <View style={[styles.sourceIconLine, { backgroundColor: colors.textMuted }]} />
+                              </View>
+                              <Text style={[Typography.caption, { color: colors.textSecondary }]}>{item.flowLabel}</Text>
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  ))}
+                  <View style={[styles.sectionDivider, { backgroundColor: colors.outline }]} />
+                </View>
+              ) : (
+                <View style={[styles.sectionDivider, { backgroundColor: colors.outline }]} />
+              )}
+            </View>
+          ))}
+        </View>
+      </ScrollView>
 
-      <Modal transparent animationType="fade" visible={balanceModalOpen} onRequestClose={() => !savingBalance && setBalanceModalOpen(false)}>
+      <Modal
+        transparent
+        animationType="fade"
+        visible={balanceModalOpen}
+        onRequestClose={() => !savingBalance && setBalanceModalOpen(false)}>
         <View style={styles.balanceModalRoot}>
-          <Pressable style={styles.balanceModalBackdrop} onPress={() => !savingBalance && setBalanceModalOpen(false)} />
+          <Pressable
+            style={[styles.balanceModalBackdrop, { backgroundColor: colors.overlay }]}
+            onPress={() => !savingBalance && setBalanceModalOpen(false)}
+          />
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={styles.balanceModalCenter}
             pointerEvents="box-none">
-            <View style={[styles.balanceModalCard, { backgroundColor: cardBg, borderColor }]}>
-            <Text style={[styles.balanceModalTitle, { color: titleText }]}>调整{isLiabilityAccount ? '负债' : '余额'}</Text>
-            <Text style={[styles.balanceModalHint, { color: subtleText }]}>
-              {isLiabilityAccount
-                ? '请输入负债金额（正数表示欠款规模）。保存后将记一笔「余额校正」流水。'
-                : '保存后将记一笔「余额校正」流水，与当前流水汇总对齐。'}
-            </Text>
-            <View style={[styles.balanceModalInputRow, { borderColor }]}>
-              <Text style={[styles.balanceModalCurrency, { color: titleText }]}>¥</Text>
-              <TextInput
-                value={balanceDraft}
-                onChangeText={handleBalanceDraftChange}
-                placeholder="0.00"
-                placeholderTextColor={subtleText}
-                keyboardType="decimal-pad"
-                editable={!savingBalance}
-                style={[styles.balanceModalInput, { color: titleText }]}
-              />
-            </View>
-            <View style={styles.balanceModalActions}>
-              <Pressable
-                onPress={() => !savingBalance && setBalanceModalOpen(false)}
-                style={({ pressed }) => [styles.balanceModalBtn, { borderColor }, pressed && { opacity: 0.85 }]}>
-                <Text style={[styles.balanceModalBtnText, { color: titleText }]}>取消</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => void onConfirmBalanceEdit()}
-                disabled={savingBalance}
-                style={({ pressed }) => [
-                  styles.balanceModalBtn,
-                  styles.balanceModalBtnPrimary,
-                  { backgroundColor: isDark ? '#2563eb' : '#1d4ed8', opacity: savingBalance ? 0.55 : pressed ? 0.9 : 1 },
-                ]}>
-                <Text style={styles.balanceModalBtnPrimaryText}>{savingBalance ? '保存中…' : '保存'}</Text>
-              </Pressable>
-            </View>
-          </View>
+            <AppCard padded style={shadows.sheet}>
+              <Text style={[Typography.h3, { color: colors.text }]}>
+                调整{isLiabilityAccount ? '负债' : '余额'}
+              </Text>
+              <Text style={[Typography.caption, styles.balanceModalHint, { color: colors.textSecondary }]}>
+                {isLiabilityAccount
+                  ? '请输入负债金额（正数表示欠款规模）。保存后将记一笔「余额校正」流水。'
+                  : '保存后将记一笔「余额校正」流水，与当前流水汇总对齐。'}
+              </Text>
+              <View style={[styles.balanceModalInputRow, { borderColor: colors.outline, backgroundColor: colors.input }]}>
+                <Text style={[Typography.h2, { color: colors.text }]}>¥</Text>
+                <AppInput
+                  value={balanceDraft}
+                  onChangeText={handleBalanceDraftChange}
+                  placeholder="0.00"
+                  keyboardType="decimal-pad"
+                  editable={!savingBalance}
+                  inputStyle={[Typography.h2, styles.balanceModalInputText]}
+                  inputWrapStyle={[styles.balanceModalInputWrap, { flex: 1, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0 }]}
+                  containerStyle={styles.balanceModalInputContainerInline}
+                />
+              </View>
+              <View style={styles.balanceModalActions}>
+                <AppButton
+                  label="取消"
+                  variant="outline"
+                  size="md"
+                  onPress={() => !savingBalance && setBalanceModalOpen(false)}
+                  disabled={savingBalance}
+                  style={styles.balanceModalBtn}
+                />
+                <AppButton
+                  label={savingBalance ? '保存中…' : '保存'}
+                  variant="primary"
+                  size="md"
+                  loading={savingBalance}
+                  onPress={() => void onConfirmBalanceEdit()}
+                  style={styles.balanceModalBtn}
+                />
+              </View>
+            </AppCard>
           </KeyboardAvoidingView>
         </View>
       </Modal>
@@ -667,71 +662,29 @@ export default function AccountDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
   },
-  mobileContainer: {
-    flex: 1,
-    maxWidth: 430,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-  },
-  headerIconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerRightPlaceholder: {
-    width: 36,
-    height: 36,
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-  },
-  content: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-  },
-  accountCard: {
-    borderRadius: 18,
-    padding: 18,
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 1,
-  },
-  accountTopRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
+  scrollContent: {
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['3xl'],
+    gap: Spacing['4xl'],
   },
   accountMetaPressable: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: Spacing.xl,
     minWidth: 0,
-    borderRadius: 14,
-    paddingVertical: 4,
-    paddingRight: 2,
-    marginHorizontal: -4,
-    marginTop: -4,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.xs,
+    marginTop: -Spacing.xs,
   },
   accountTitleCol: {
     flex: 1,
     minWidth: 0,
+  },
+  accountDesc: {
+    marginTop: Spacing.xs,
   },
   accountMetaChevron: {
     flexShrink: 0,
@@ -740,21 +693,16 @@ const styles = StyleSheet.create({
   avatarOuter: {
     width: 40,
     height: 40,
-    borderRadius: 20,
-    backgroundColor: '#ffffff',
+    borderRadius: Radius.icon,
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarInner: {
     width: 32,
     height: 32,
-    borderRadius: 16,
-    backgroundColor: '#A8E6CF',
+    borderRadius: Radius.md,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  avatarEmoji: {
-    fontSize: 16,
   },
   avatarBadge: {
     position: 'absolute',
@@ -763,163 +711,102 @@ const styles = StyleSheet.create({
     width: 14,
     height: 14,
     borderRadius: 7,
-    backgroundColor: '#facc15',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,
-    borderColor: '#ffffff',
   },
   avatarBadgeDot: {
     fontSize: 8,
     lineHeight: 8,
-    color: '#111827',
     marginTop: -1,
-  },
-  accountName: {
-    fontSize: 17,
-    fontWeight: '800',
-  },
-  accountDesc: {
-    fontSize: 13,
-    marginTop: 2,
   },
   dashedDivider: {
     borderTopWidth: 1,
     borderStyle: 'dashed',
-    marginVertical: 16,
+    marginVertical: Spacing['3xl'],
   },
   optionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
-    paddingTop: 14,
-    marginTop: 4,
-    marginBottom: 12,
+    gap: Spacing.xl,
+    paddingTop: Spacing['2xl'],
+    marginTop: Spacing.xs,
+    marginBottom: Spacing.xl,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
   optionTextCol: {
     flex: 1,
     minWidth: 0,
   },
-  optionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
   optionHint: {
-    fontSize: 12,
-    marginTop: 4,
+    marginTop: Spacing.xs,
     lineHeight: 17,
   },
   balanceBlock: {
-    marginBottom: 16,
-  },
-  balanceLabel: {
-    fontSize: 13,
-    marginBottom: 4,
+    marginBottom: Spacing['3xl'],
+    gap: Spacing.xs,
   },
   balanceRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: Spacing.sm,
   },
-  balanceText: {
-    fontSize: 28,
-    fontWeight: '800',
+  balanceAmount: {
+    fontSize: 32,
+    lineHeight: 36,
+  },
+  balanceEditBtn: {
+    width: 32,
+    height: 32,
   },
   actionRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: Spacing.lg,
   },
   actionBtn: {
     flex: 1,
-    borderWidth: 1,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-  },
-  actionBtnText: {
-    fontSize: 15,
-    fontWeight: '600',
   },
   detailsSection: {
-    marginTop: 28,
+    gap: Spacing['2xl'],
   },
-  detailsHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 24,
-  },
-  detailsTitleWrap: {
-    position: 'relative',
-  },
-  detailsTitle: {
-    fontSize: 19,
-    fontWeight: '900',
-    zIndex: 2,
-  },
-  detailsUnderline: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 1,
-    height: 6,
-    borderRadius: 4,
-    backgroundColor: '#FDE047',
-    zIndex: 1,
-    opacity: 0.85,
+  sectionTitle: {
+    ...Typography.h2,
+    fontSize: 18,
+    marginBottom: Spacing['2xl'],
   },
   monthSection: {
-    marginBottom: 22,
+    marginBottom: Spacing['3xl'],
   },
   monthHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 12,
-    paddingBottom: 10,
+    paddingTop: Spacing.xl,
   },
   monthHeaderTextCol: {
     flex: 1,
     minWidth: 0,
-    marginRight: 8,
-  },
-  monthTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    marginBottom: 6,
-  },
-  monthMeta: {
-    fontSize: 12,
-  },
-  expenseText: {
-    color: '#3b82f6',
-  },
-  incomeText: {
-    color: '#f59e0b',
-  },
-  monthDivider: {
-    color: '#d1d5db',
+    marginRight: Spacing.md,
+    gap: Spacing.sm,
   },
   dayDetailBlock: {
-    marginTop: 4,
-    gap: 14,
+    marginTop: Spacing.xs,
+    gap: Spacing['2xl'],
   },
   dayGroupCard: {
-    borderRadius: 14,
+    borderRadius: Radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 4,
+    paddingHorizontal: Spacing['2xl'],
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.xs,
   },
   dayGroupHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
-    paddingBottom: 10,
+    gap: Spacing.md,
+    marginBottom: Spacing.xl,
+    paddingBottom: Spacing.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   dayGroupDot: {
@@ -927,153 +814,113 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 3,
   },
-  dayTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 0.2,
-    flex: 1,
-  },
   detailEntry: {
-    paddingVertical: 14,
+    paddingVertical: Spacing['2xl'],
   },
   detailItemRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: Spacing.xl,
   },
   detailLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: Spacing.lg,
+    flex: 1,
+    minWidth: 0,
   },
   detailTime: {
-    fontSize: 14,
     width: 40,
   },
   tagPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 999,
-    paddingLeft: 12,
-    paddingRight: 10,
-    paddingVertical: 6,
-    gap: 4,
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingLeft: Spacing.xl,
+    paddingRight: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    gap: Spacing.xs,
     maxWidth: '68%',
   },
   tagText: {
-    fontSize: 13,
-    fontWeight: '600',
     flexShrink: 1,
+    fontSize: 13,
   },
   tagEmoji: {
     fontSize: 16,
   },
   detailAmount: {
-    fontSize: 17,
-    fontWeight: '800',
     textAlign: 'right',
     flexShrink: 0,
-    marginLeft: 8,
+    marginLeft: Spacing.md,
+    fontSize: 17,
   },
   sourceRow: {
-    marginTop: 10,
+    marginTop: Spacing.lg,
     marginLeft: 50,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: Spacing.md,
   },
   sourceIcon: {
     width: 14,
     height: 14,
-    borderRadius: 4,
-    borderWidth: 1,
+    borderRadius: Radius.xs / 2,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f9fafb',
   },
   sourceIconLine: {
     width: 7,
     height: 1.5,
-    backgroundColor: '#9ca3af',
-  },
-  sourceText: {
-    fontSize: 12,
-    lineHeight: 16,
   },
   sectionDivider: {
-    height: 1,
-    marginTop: 20,
+    height: StyleSheet.hairlineWidth,
+    marginTop: Spacing['3xl'],
   },
   balanceModalRoot: {
     flex: 1,
   },
   balanceModalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.45)',
   },
   balanceModalCenter: {
     flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: 22,
-  },
-  balanceModalCard: {
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  balanceModalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    marginBottom: 8,
+    paddingHorizontal: Spacing['5xl'],
   },
   balanceModalHint: {
-    fontSize: 13,
+    marginTop: Spacing.md,
+    marginBottom: Spacing['3xl'],
     lineHeight: 19,
-    marginBottom: 16,
   },
   balanceModalInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    marginBottom: 18,
+    gap: Spacing.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.xl,
+    marginBottom: Spacing['3xl'],
   },
-  balanceModalCurrency: {
-    fontSize: 20,
-    fontWeight: '800',
-    marginRight: 4,
-  },
-  balanceModalInput: {
+  balanceModalInputContainerInline: {
     flex: 1,
+    marginBottom: 0,
+  },
+  balanceModalInputWrap: {
+    minHeight: 48,
+  },
+  balanceModalInputText: {
     fontSize: 22,
     fontWeight: '800',
-    paddingVertical: 10,
   },
   balanceModalActions: {
     flexDirection: 'row',
-    gap: 10,
+    gap: Spacing.lg,
   },
   balanceModalBtn: {
     flex: 1,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  balanceModalBtnText: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  balanceModalBtnPrimary: {
-    borderWidth: 0,
-  },
-  balanceModalBtnPrimaryText: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#ffffff',
   },
 });

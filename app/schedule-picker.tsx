@@ -1,5 +1,5 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { normalizeRouteParam, setSchedulePickerResult } from '@/lib/schedule-picker-bridge';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -278,9 +278,7 @@ export default function SchedulePickerScreen() {
     () => normalizeRouteParam(params.source as string | string[] | undefined),
     [params.source],
   );
-  const scheme = useColorScheme();
-  const theme = Colors[scheme ?? 'light'];
-  const isDark = scheme === 'dark';
+  const { colors } = useAppTheme();
 
   const today = React.useMemo(() => new Date(), []);
   const todayStart = React.useMemo(() => startOfDay(today), [today]);
@@ -343,7 +341,7 @@ export default function SchedulePickerScreen() {
   const hasAppliedInitialRef = React.useRef(false);
 
   const { width: windowWidth } = useWindowDimensions();
-  const [calendarWidth, setCalendarWidth] = React.useState(() => Math.max(1, windowWidth - 32));
+  const [calendarWidth, setCalendarWidth] = React.useState(() => Math.max(1, windowWidth - Spacing['3xl'] * 2));
   const pagerRef = React.useRef<FlatList<number>>(null);
   const pagerCurrentIndexRef = React.useRef(MONTH_PAGE_CENTER_INDEX);
   const pagerWidthReadyRef = React.useRef(false);
@@ -357,10 +355,6 @@ export default function SchedulePickerScreen() {
   );
   const visibleMonthInfo = React.useMemo(() => getMonthInfo(visibleMonthDate.getFullYear(), visibleMonthDate.getMonth()), [visibleMonthDate]);
   const visibleMonthTitle = `${visibleMonthInfo.year}年${visibleMonthInfo.month + 1}月`;
-
-  const outline = isDark ? 'rgba(148,163,184,0.7)' : '#727785';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.25)' : 'rgba(194,198,214,0.45)';
-  const surfaceLow = isDark ? 'rgba(30,41,59,0.5)' : '#f2f3ff';
 
   const handleQuickChipPress = (chip: string) => {
     setSelectedQuickChip(chip);
@@ -766,7 +760,7 @@ export default function SchedulePickerScreen() {
   }, [yearlyDate]);
 
   React.useEffect(() => {
-    const nextWidth = Math.max(1, windowWidth - 32);
+    const nextWidth = Math.max(1, windowWidth - Spacing['3xl'] * 2);
     setCalendarWidth((prev) => (Math.abs(prev - nextWidth) < 1 ? prev : nextWidth));
   }, [windowWidth]);
 
@@ -893,15 +887,15 @@ export default function SchedulePickerScreen() {
 
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
-      <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15,23,42,0.86)' : 'rgba(255,255,255,0.86)' }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { backgroundColor: colors.headerScrim }]}>
         <Pressable onPress={() => router.back()} style={styles.iconBtn}>
-          <MaterialIcons name="close" size={22} color={outline} />
+          <MaterialIcons name="close" size={22} color={colors.outline} />
         </Pressable>
 
-        <View style={[styles.tabSwitch, { backgroundColor: surfaceLow }]}>
-          <Pressable onPress={() => setTab('date')} style={[styles.tabBtn, tab === 'date' && { backgroundColor: theme.surface }]}>
-            <Text style={[styles.tabText, { color: tab === 'date' ? theme.primary : outline, fontWeight: tab === 'date' ? '700' : '500' }]}>日期</Text>
+        <View style={[styles.tabSwitch, { backgroundColor: colors.capsule }]}>
+          <Pressable onPress={() => setTab('date')} style={[styles.tabBtn, tab === 'date' && { backgroundColor: colors.surface }]}>
+            <Text style={[styles.tabText, { color: tab === 'date' ? colors.primary : colors.textSecondary, fontWeight: tab === 'date' ? '700' : '500' }]}>日期</Text>
           </Pressable>
           <Pressable
             disabled={isSingleDayLimit}
@@ -929,7 +923,7 @@ export default function SchedulePickerScreen() {
             }}
             style={[
               styles.tabBtn,
-              tab === 'time' && { backgroundColor: theme.surface },
+              tab === 'time' && { backgroundColor: colors.surface },
               isSingleDayLimit && { opacity: 0.45 },
             ]}
           >
@@ -937,7 +931,7 @@ export default function SchedulePickerScreen() {
               style={[
                 styles.tabText,
                 {
-                  color: tab === 'time' ? theme.primary : outline,
+                  color: tab === 'time' ? colors.primary : colors.textSecondary,
                   fontWeight: tab === 'time' ? '700' : '500',
                 },
               ]}>
@@ -952,7 +946,7 @@ export default function SchedulePickerScreen() {
             router.back();
           }}
           style={styles.iconBtn}>
-          <MaterialIcons name={tab === 'time' ? 'done' : 'check'} size={22} color={theme.primary} />
+          <MaterialIcons name={tab === 'time' ? 'done' : 'check'} size={22} color={colors.primary} />
         </Pressable>
       </View>
 
@@ -966,23 +960,26 @@ export default function SchedulePickerScreen() {
                 onPress={() => handleQuickChipPress(chip)}
                 style={[
                   styles.chip,
-                  { backgroundColor: isActive ? '#006c49' : theme.surface, borderColor: isActive ? '#006c49' : outlineVariant },
+                  {
+                    backgroundColor: isActive ? colors.primary : colors.surface,
+                    borderColor: isActive ? colors.primary : colors.outline,
+                  },
                 ]}
               >
-                <Text style={[styles.chipText, { color: isActive ? '#fff' : theme.text }]}>{chip}</Text>
+                <Text style={[styles.chipText, { color: isActive ? colors.onPrimary : colors.text }]}>{chip}</Text>
               </Pressable>
             );
           })}
         </ScrollView>
 
         <View style={styles.calendarHead}>
-          <Text style={[styles.monthTitle, { color: theme.text }]}>{visibleMonthTitle}</Text>
+          <Text style={[styles.monthTitle, { color: colors.text }]}>{visibleMonthTitle}</Text>
           <View style={styles.monthActions}>
             <Pressable style={styles.iconBtn} onPress={() => setMonthOffset((prev) => prev - 1)}>
-              <MaterialIcons name="chevron-left" size={22} color={outline} />
+              <MaterialIcons name="chevron-left" size={22} color={colors.outline} />
             </Pressable>
             <Pressable style={styles.iconBtn} onPress={() => setMonthOffset((prev) => prev + 1)}>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
+              <MaterialIcons name="chevron-right" size={22} color={colors.outline} />
             </Pressable>
           </View>
         </View>
@@ -1041,7 +1038,7 @@ export default function SchedulePickerScreen() {
               <View style={[styles.calendarPage, { width: calendarWidth || '100%' }]}>
                 <View style={styles.weekRow}>
                   {WEEK_LABELS.map((w) => (
-                    <Text key={w} style={[styles.weekText, { color: outline }]}>
+                    <Text key={w} style={[styles.weekText, { color: colors.textSecondary }]}>
                       {w}
                     </Text>
                   ))}
@@ -1092,24 +1089,24 @@ export default function SchedulePickerScreen() {
                       >
                         {cell.inCurrentMonth ? (
                           <View style={styles.rangeWrap}>
-                            {inRange && weekDayIndex !== 0 ? <View style={styles.rangeLeftFill} /> : null}
-                            {inRange && weekDayIndex !== 6 ? <View style={styles.rangeRightFill} /> : null}
+                            {inRange && weekDayIndex !== 0 ? <View style={[styles.rangeLeftFill, { backgroundColor: colors.primaryMuted }]} /> : null}
+                            {inRange && weekDayIndex !== 6 ? <View style={[styles.rangeRightFill, { backgroundColor: colors.primaryMuted }]} /> : null}
 
                             {showRangeLine ? (
-                              <View style={[styles.dayCircle, styles.rangeMiddleCircle, { backgroundColor: 'rgba(0,108,73,0.14)' }]}>
-                                <Text style={[styles.dayNum, { color: '#006c49' }]}>{day}</Text>
-                                <Text style={[styles.dayLunar, { color: '#006c49' }]}>{lunar}</Text>
+                              <View style={[styles.dayCircle, styles.rangeMiddleCircle, { backgroundColor: colors.primaryMuted }]}>
+                                <Text style={[styles.dayNum, { color: colors.primary }]}>{day}</Text>
+                                <Text style={[styles.dayLunar, { color: colors.primary }]}>{lunar}</Text>
                               </View>
                             ) : (
                               <View
                                 style={[
                                   styles.dayCircle,
-                                  isSelected && { backgroundColor: '#006c49' },
-                                  isToday && !isSelected && { backgroundColor: 'rgba(0,108,73,0.12)' },
-                                  isRangeStartOrEnd && { backgroundColor: '#006c49' },
-                                  inRange && !isRangeStartOrEnd && { backgroundColor: 'rgba(0,108,73,0.14)' },
+                                  isSelected && { backgroundColor: colors.primary },
+                                  isToday && !isSelected && { backgroundColor: colors.primaryMuted },
+                                  isRangeStartOrEnd && { backgroundColor: colors.primary },
+                                  inRange && !isRangeStartOrEnd && { backgroundColor: colors.primaryMuted },
                                   isRangeStartOrEnd && styles.rangeEndpoint,
-                                  isToday && !isSelected && !isRangeStartOrEnd && styles.todayCircle,
+                                  isToday && !isSelected && !isRangeStartOrEnd && [styles.todayCircle, { borderColor: colors.primaryRing }],
                                   isPastDate && styles.pastDayCircle,
                                   isOutOfLimit && styles.pastDayCircle,
                                 ]}
@@ -1117,7 +1114,10 @@ export default function SchedulePickerScreen() {
                                 <Text
                                   style={[
                                     styles.dayNum,
-                                    { color: isSelected || isRangeStartOrEnd ? '#fff' : isToday ? '#006c49' : theme.text },
+                                    {
+                                      color:
+                                        isSelected || isRangeStartOrEnd ? colors.onPrimary : isToday ? colors.primary : colors.text,
+                                    },
                                     isPastDate && styles.pastDayText,
                                     isOutOfLimit && styles.pastDayText,
                                   ]}
@@ -1127,7 +1127,10 @@ export default function SchedulePickerScreen() {
                                 <Text
                                   style={[
                                     styles.dayLunar,
-                                    { color: isSelected || isRangeStartOrEnd ? '#fff' : isToday ? '#006c49' : outline },
+                                    {
+                                      color:
+                                        isSelected || isRangeStartOrEnd ? colors.onPrimary : isToday ? colors.primary : colors.textSecondary,
+                                    },
                                     isPastDate && styles.pastDayText,
                                     isOutOfLimit && styles.pastDayText,
                                   ]}
@@ -1139,8 +1142,8 @@ export default function SchedulePickerScreen() {
                           </View>
                         ) : (
                           <View style={[styles.dayCircle, styles.outOfMonthCircle]}>
-                            <Text style={[styles.dayNum, { color: outline, opacity: 0.4 }]}>{day}</Text>
-                            <Text style={[styles.dayLunar, { color: outline, opacity: 0.35 }]}>{lunar}</Text>
+                            <Text style={[styles.dayNum, { color: colors.textSecondary, opacity: 0.4 }]}>{day}</Text>
+                            <Text style={[styles.dayLunar, { color: colors.textSecondary, opacity: 0.35 }]}>{lunar}</Text>
                           </View>
                         )}
                       </Pressable>
@@ -1154,16 +1157,16 @@ export default function SchedulePickerScreen() {
 
         {tab === 'date' ? (
           <>
-            <View style={[styles.settingList, { backgroundColor: surfaceLow }]}>
+            <View style={[styles.settingList, { backgroundColor: colors.input }]}>
               <Pressable style={[styles.settingRow, !hasExactTime && styles.disabledRow]} onPress={() => openTimePicker('start')}>
                 <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
-                    <MaterialIcons name="schedule" size={20} color={theme.primary} />
+                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
+                    <MaterialIcons name="schedule" size={20} color={colors.primary} />
                   </View>
-                  <Text style={[styles.settingLabel, { color: theme.text }]}>具体时间</Text>
+                  <Text style={[styles.settingLabel, { color: colors.text }]}>具体时间</Text>
                 </View>
                 <View style={styles.settingRight}>
-                  <Text style={[styles.settingValue, { color: hasExactTime ? theme.primary : outline }]}>{exactTimeLabel}</Text>
+                  <Text style={[styles.settingValue, { color: hasExactTime ? colors.primary : colors.textSecondary }]}>{exactTimeLabel}</Text>
                   <Switch
                     value={hasExactTime}
                     onValueChange={(next) => {
@@ -1176,50 +1179,50 @@ export default function SchedulePickerScreen() {
               </Pressable>
               <Pressable style={styles.settingRow} onPress={() => openSettingPicker('reminder')}>
                 <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
-                    <MaterialIcons name="notifications" size={20} color={theme.primary} />
+                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
+                    <MaterialIcons name="notifications" size={20} color={colors.primary} />
                   </View>
-                  <Text style={[styles.settingLabel, { color: theme.text }]}>提醒设置</Text>
+                  <Text style={[styles.settingLabel, { color: colors.text }]}>提醒设置</Text>
                 </View>
                 <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: outline }]} numberOfLines={1} ellipsizeMode="tail">
+                  <Text style={[styles.settingHint, { color: colors.textSecondary }]} numberOfLines={1} ellipsizeMode="tail">
                     {reminderOption}
                   </Text>
-                  <MaterialIcons name="chevron-right" size={20} color={outline} />
+                  <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
                 </View>
               </Pressable>
               <Pressable style={styles.settingRow} onPress={() => openSettingPicker('repeat')}>
                 <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
-                    <MaterialIcons name="repeat" size={20} color={theme.primary} />
+                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
+                    <MaterialIcons name="repeat" size={20} color={colors.primary} />
                   </View>
-                  <Text style={[styles.settingLabel, { color: theme.text }]}>重复设置</Text>
+                  <Text style={[styles.settingLabel, { color: colors.text }]}>重复设置</Text>
                 </View>
                 <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: outline }]} numberOfLines={1} ellipsizeMode="tail">
+                  <Text style={[styles.settingHint, { color: colors.textSecondary }]} numberOfLines={1} ellipsizeMode="tail">
                     {repeatSummary}
                   </Text>
-                  <MaterialIcons name="chevron-right" size={20} color={outline} />
+                  <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
                 </View>
               </Pressable>
             </View>
 
             <Pressable
-              style={[styles.clearBtn, { borderColor: 'rgba(186,26,26,0.2)', backgroundColor: theme.surface }]}
+              style={[styles.clearBtn, { borderColor: colors.outline, backgroundColor: colors.surface }]}
               onPress={resetToDefaultState}
             >
-              <Text style={styles.clearText}>清除</Text>
+              <Text style={[styles.clearText, { color: colors.danger }]}>清除</Text>
             </Pressable>
           </>
         ) : (
           <>
-            <View style={[styles.settingList, { backgroundColor: surfaceLow }]}>
+            <View style={[styles.settingList, { backgroundColor: colors.input }]}>
               <View style={styles.settingRow}>
                 <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
-                    <MaterialIcons name="brightness-7" size={20} color={theme.primary} />
+                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
+                    <MaterialIcons name="brightness-7" size={20} color={colors.primary} />
                   </View>
-                  <Text style={[styles.settingLabel, { color: theme.text }]}>全天</Text>
+                  <Text style={[styles.settingLabel, { color: colors.text }]}>全天</Text>
                 </View>
                 <View style={styles.settingRight}>
                   <Switch value={allDay} onValueChange={setAllDay} />
@@ -1229,63 +1232,63 @@ export default function SchedulePickerScreen() {
                 <>
                   <Pressable style={styles.settingRow} onPress={() => openTimePicker('start')}>
                     <View style={styles.settingLeft}>
-                      <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
-                        <MaterialIcons name="schedule" size={20} color={theme.primary} />
+                      <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
+                        <MaterialIcons name="schedule" size={20} color={colors.primary} />
                       </View>
-                      <Text style={[styles.settingLabel, { color: theme.text }]}>开始</Text>
+                      <Text style={[styles.settingLabel, { color: colors.text }]}>开始</Text>
                     </View>
                     <Pressable style={styles.settingRight} onPress={() => openTimePicker('start')}>
-                      <Text style={[styles.settingValueSmall, { color: theme.primary }]}>{startTimeLabel}</Text>
-                      <MaterialIcons name="chevron-right" size={20} color={outline} />
+                      <Text style={[styles.settingValueSmall, { color: colors.primary }]}>{startTimeLabel}</Text>
+                      <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
                     </Pressable>
                   </Pressable>
                   <Pressable style={styles.settingRow} onPress={() => openTimePicker('end')}>
                     <View style={styles.settingLeft}>
-                      <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
-                        <MaterialIcons name="timer-off" size={20} color={theme.primary} />
+                      <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
+                        <MaterialIcons name="timer-off" size={20} color={colors.primary} />
                       </View>
-                      <Text style={[styles.settingLabel, { color: theme.text }]}>结束</Text>
+                      <Text style={[styles.settingLabel, { color: colors.text }]}>结束</Text>
                     </View>
                     <Pressable style={styles.settingRight} onPress={() => openTimePicker('end')}>
-                      <Text style={[styles.settingValueSmall, { color: theme.primary }]}>{endTimeLabel}</Text>
-                      <MaterialIcons name="chevron-right" size={20} color={outline} />
+                      <Text style={[styles.settingValueSmall, { color: colors.primary }]}>{endTimeLabel}</Text>
+                      <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
                     </Pressable>
                   </Pressable>
                 </>
               )}
             </View>
 
-            <View style={[styles.settingList, { backgroundColor: surfaceLow }]}>
+            <View style={[styles.settingList, { backgroundColor: colors.input }]}>
               <Pressable style={styles.settingRow} onPress={() => openSettingPicker('reminder')}>
                 <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
-                    <MaterialIcons name="notifications" size={20} color={theme.primary} />
+                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
+                    <MaterialIcons name="notifications" size={20} color={colors.primary} />
                   </View>
-                  <Text style={[styles.settingLabel, { color: theme.text }]}>提醒设置</Text>
+                  <Text style={[styles.settingLabel, { color: colors.text }]}>提醒设置</Text>
                 </View>
                 <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: outline }]}>{reminderOption}</Text>
-                  <MaterialIcons name="chevron-right" size={20} color={outline} />
+                  <Text style={[styles.settingHint, { color: colors.textSecondary }]}>{reminderOption}</Text>
+                  <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
                 </View>
               </Pressable>
               <Pressable style={styles.settingRow} onPress={() => openSettingPicker('repeat')}>
                 <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: theme.surface }]}>
-                    <MaterialIcons name="repeat" size={20} color={theme.primary} />
+                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
+                    <MaterialIcons name="repeat" size={20} color={colors.primary} />
                   </View>
-                  <Text style={[styles.settingLabel, { color: theme.text }]}>重复设置</Text>
+                  <Text style={[styles.settingLabel, { color: colors.text }]}>重复设置</Text>
                 </View>
                 <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: outline }]} numberOfLines={1} ellipsizeMode="tail">
+                  <Text style={[styles.settingHint, { color: colors.textSecondary }]} numberOfLines={1} ellipsizeMode="tail">
                     {repeatSummary}
                   </Text>
-                  <MaterialIcons name="chevron-right" size={20} color={outline} />
+                  <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
                 </View>
               </Pressable>
             </View>
 
-            <Pressable style={[styles.clearBtn, { borderColor: 'rgba(186,26,26,0.2)', backgroundColor: theme.surface }]} onPress={resetToDefaultState}>
-              <Text style={styles.clearText}>清除</Text>
+            <Pressable style={[styles.clearBtn, { borderColor: colors.outline, backgroundColor: colors.surface }]} onPress={resetToDefaultState}>
+              <Text style={[styles.clearText, { color: colors.danger }]}>清除</Text>
             </Pressable>
           </>
         )}
@@ -1293,9 +1296,9 @@ export default function SchedulePickerScreen() {
 
       
       <Modal visible={timePickerVisible} transparent animationType="fade" onRequestClose={() => setTimePickerVisible(false)}>
-        <View style={styles.pickerBackdrop}>
-          <View style={[styles.pickerCard, { backgroundColor: theme.surface }]}>
-            <Text style={[styles.pickerTitle, { color: theme.text }]}>{timePickerTitle}</Text>
+        <View style={[styles.pickerBackdrop, { backgroundColor: colors.overlay }]}>
+          <View style={[styles.pickerCard, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.pickerTitle, { color: colors.text }]}>{timePickerTitle}</Text>
             <DateTimePicker
               value={timeDraft}
               mode="time"
@@ -1310,18 +1313,18 @@ export default function SchedulePickerScreen() {
                 onPress={() => {
                   setTimePickerVisible(false);
                 }}
-                style={[styles.pickerBtn, { backgroundColor: surfaceLow }]}
+                style={[styles.pickerBtn, { backgroundColor: colors.input }]}
               >
-                <Text style={[styles.pickerBtnText, { color: outline }]}>取消</Text>
+                <Text style={[styles.pickerBtnText, { color: colors.textSecondary }]}>取消</Text>
               </Pressable>
               <Pressable
                 onPress={() => {
                   applyTimeSelection(timePickerTarget, timeDraft);
                   setTimePickerVisible(false);
                 }}
-                style={[styles.pickerBtn, { backgroundColor: '#006c49' }]}
+                style={[styles.pickerBtn, { backgroundColor: colors.primary }]}
               >
-                <Text style={[styles.pickerBtnText, { color: '#fff' }]}>确定</Text>
+                <Text style={[styles.pickerBtnText, { color: colors.onPrimary }]}>确定</Text>
               </Pressable>
             </View>
           </View>
@@ -1330,8 +1333,8 @@ export default function SchedulePickerScreen() {
       <Modal visible={toastVisible} transparent animationType="fade" onRequestClose={() => setToastVisible(false)}>
         <View pointerEvents="box-none" style={styles.toastOverlay}>
           <View style={styles.toastHost}>
-            <View style={[styles.toastWrap, { backgroundColor: isDark ? 'rgba(15,23,42,0.96)' : 'rgba(17,24,39,0.96)' }]}>
-              <Text style={styles.toastText}>{toastMessage}</Text>
+            <View style={[styles.toastWrap, { backgroundColor: colors.accentCard }]}>
+              <Text style={[styles.toastText, { color: colors.onAccent }]}>{toastMessage}</Text>
             </View>
           </View>
         </View>
@@ -1344,9 +1347,9 @@ export default function SchedulePickerScreen() {
         onRequestClose={closeSettingPicker}
       >
         {yearlyDatePickerVisible ? (
-          <View style={styles.pickerBackdrop}>
-            <View style={[styles.pickerCard, { backgroundColor: theme.surface }]}>
-              <Text style={[styles.pickerTitle, { color: theme.text }]}>选择每年日期</Text>
+          <View style={[styles.pickerBackdrop, { backgroundColor: colors.overlay }]}>
+            <View style={[styles.pickerCard, { backgroundColor: colors.surface }]}>
+              <Text style={[styles.pickerTitle, { color: colors.text }]}>选择每年日期</Text>
               <DateTimePicker
                 value={yearlyDate}
                 mode="date"
@@ -1362,20 +1365,20 @@ export default function SchedulePickerScreen() {
                 }}
               />
               <View style={styles.pickerActions}>
-                <Pressable onPress={() => setYearlyDatePickerVisible(false)} style={[styles.pickerBtn, { backgroundColor: '#006c49' }]}>
-                  <Text style={[styles.pickerBtnText, { color: '#fff' }]}>确定</Text>
+                <Pressable onPress={() => setYearlyDatePickerVisible(false)} style={[styles.pickerBtn, { backgroundColor: colors.primary }]}>
+                  <Text style={[styles.pickerBtnText, { color: colors.onPrimary }]}>确定</Text>
                 </Pressable>
               </View>
             </View>
           </View>
         ) : (
-          <Pressable style={styles.pickerBackdrop} onPress={closeSettingPicker}>
+          <Pressable style={[styles.pickerBackdrop, { backgroundColor: colors.overlay }]} onPress={closeSettingPicker}>
             <View
               // Prevent backdrop onPress from firing when tapping inside card (iOS can otherwise "leak" the press).
               onStartShouldSetResponder={() => true}
-              style={[styles.pickerCard, { backgroundColor: theme.surface }]}
+              style={[styles.pickerCard, { backgroundColor: colors.surface }]}
             >
-              <Text style={[styles.pickerTitle, { color: theme.text }]}>{settingPickerTitle}</Text>
+              <Text style={[styles.pickerTitle, { color: colors.text }]}>{settingPickerTitle}</Text>
 
               {settingModalStage === 'options' ? (
                 <View style={styles.optionList}>
@@ -1384,7 +1387,13 @@ export default function SchedulePickerScreen() {
                     return (
                       <Pressable
                         key={option}
-                        style={[styles.optionRow, { borderColor: selected ? '#006c49' : outlineVariant, backgroundColor: selected ? 'rgba(0,108,73,0.1)' : 'transparent' }]}
+                        style={[
+                          styles.optionRow,
+                          {
+                            borderColor: selected ? colors.primary : colors.outline,
+                            backgroundColor: selected ? colors.primaryMuted : 'transparent',
+                          },
+                        ]}
                         onPress={() => {
                           if (displaySettingType === 'reminder') {
                             setReminderOption(option as ReminderOption);
@@ -1404,8 +1413,8 @@ export default function SchedulePickerScreen() {
                           }
                         }}
                       >
-                        <Text style={[styles.optionText, { color: selected ? '#006c49' : theme.text }]}>{option}</Text>
-                        {selected ? <MaterialIcons name="check" size={18} color="#006c49" /> : null}
+                        <Text style={[styles.optionText, { color: selected ? colors.primary : colors.text }]}>{option}</Text>
+                        {selected ? <MaterialIcons name="check" size={18} color={colors.primary} /> : null}
                       </Pressable>
                     );
                   })}
@@ -1419,10 +1428,16 @@ export default function SchedulePickerScreen() {
                         return (
                           <Pressable
                             key={item.value}
-                            style={[styles.tagItem, { borderColor: active ? '#006c49' : outlineVariant, backgroundColor: active ? 'rgba(0,108,73,0.1)' : 'transparent' }]}
+                            style={[
+                              styles.tagItem,
+                              {
+                                borderColor: active ? colors.primary : colors.outline,
+                                backgroundColor: active ? colors.primaryMuted : 'transparent',
+                              },
+                            ]}
                             onPress={() => toggleWeeklyDay(item.value)}
                           >
-                            <Text style={[styles.tagText, { color: active ? '#006c49' : theme.text }]}>{item.label}</Text>
+                            <Text style={[styles.tagText, { color: active ? colors.primary : colors.text }]}>{item.label}</Text>
                           </Pressable>
                         );
                       })}
@@ -1436,10 +1451,16 @@ export default function SchedulePickerScreen() {
                         return (
                           <Pressable
                             key={day}
-                            style={[styles.tagItem, { borderColor: active ? '#006c49' : outlineVariant, backgroundColor: active ? 'rgba(0,108,73,0.1)' : 'transparent' }]}
+                            style={[
+                              styles.tagItem,
+                              {
+                                borderColor: active ? colors.primary : colors.outline,
+                                backgroundColor: active ? colors.primaryMuted : 'transparent',
+                              },
+                            ]}
                             onPress={() => toggleMonthlyDay(day)}
                           >
-                            <Text style={[styles.tagText, { color: active ? '#006c49' : theme.text }]}>{day}日</Text>
+                            <Text style={[styles.tagText, { color: active ? colors.primary : colors.text }]}>{day}日</Text>
                           </Pressable>
                         );
                       })}
@@ -1448,11 +1469,11 @@ export default function SchedulePickerScreen() {
 
                   {repeatOption === '每年' ? (
                     <View style={styles.yearlyWrap}>
-                      <Pressable style={[styles.yearlyDateBtn, { borderColor: outlineVariant }]} onPress={openYearlyDatePicker}>
-                        <Text style={[styles.settingLabel, { color: theme.text }]}>
+                      <Pressable style={[styles.yearlyDateBtn, { borderColor: colors.outline }]} onPress={openYearlyDatePicker}>
+                        <Text style={[styles.settingLabel, { color: colors.text }]}>
                           {yearlyDate.getMonth() + 1}月{yearlyDate.getDate()}日
                         </Text>
-                        <MaterialIcons name="calendar-month" size={18} color={outline} />
+                        <MaterialIcons name="calendar-month" size={18} color={colors.outline} />
                       </Pressable>
                     </View>
                   ) : null}
@@ -1473,9 +1494,9 @@ export default function SchedulePickerScreen() {
                         setYearlyDatePickerVisible(false);
                         closeSettingPicker();
                       }}
-                      style={[styles.pickerBtn, { backgroundColor: '#006c49' }]}
+                      style={[styles.pickerBtn, { backgroundColor: colors.primary }]}
                     >
-                      <Text style={[styles.pickerBtnText, { color: '#fff' }]}>完成</Text>
+                      <Text style={[styles.pickerBtnText, { color: colors.onPrimary }]}>完成</Text>
                     </Pressable>
                   </View>
                 </>
@@ -1491,29 +1512,41 @@ export default function SchedulePickerScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10 },
-  iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  tabSwitch: { flexDirection: 'row', borderRadius: 12, padding: 4, gap: 2 },
-  tabBtn: { paddingHorizontal: 20, paddingVertical: 6, borderRadius: 10 },
-  tabText: { fontSize: 14 },
-  content: { padding: 16, gap: 20, paddingBottom: 40 },
-  chipsRow: { gap: 10 },
-  chip: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 10 },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing['3xl'],
+    paddingVertical: Spacing.lg,
+  },
+  iconBtn: {
+    width: Layout.iconButtonSize,
+    height: Layout.iconButtonSize,
+    borderRadius: Radius.icon,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabSwitch: { flexDirection: 'row', borderRadius: Radius.md, padding: Spacing.xs, gap: Spacing.xs },
+  tabBtn: { paddingHorizontal: Spacing['6xl'], paddingVertical: Spacing.sm, borderRadius: Radius.sm },
+  tabText: Typography.body,
+  content: { padding: Spacing['3xl'], gap: Spacing['5xl'], paddingBottom: Spacing['7xl'] },
+  chipsRow: { gap: Spacing.lg },
+  chip: { borderWidth: StyleSheet.hairlineWidth, borderRadius: Radius.md, paddingHorizontal: Spacing['3xl'], paddingVertical: Spacing.lg },
   chipText: { fontSize: 14, fontWeight: '500' },
   calendarHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   calendarPager: { alignItems: 'stretch' },
-  monthTitle: { fontSize: 28, fontWeight: '900' },
-  monthActions: { flexDirection: 'row', gap: 8 },
+  monthTitle: { ...Typography.h1, fontSize: 28 },
+  monthActions: { flexDirection: 'row', gap: Spacing.md },
   calendarPage: { width: '100%' },
-  weekRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 8 },
-  weekText: { width: '14.28%', textAlign: 'center', fontSize: 11, fontWeight: '800' },
+  weekRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: Spacing.md },
+  weekText: { width: '14.28%', textAlign: 'center', ...Typography.label },
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
-  dayCell: { width: '14.28%', alignItems: 'center', paddingVertical: 8 },
+  dayCell: { width: '14.28%', alignItems: 'center', paddingVertical: Spacing.md },
   rangeWrap: { width: '100%', alignItems: 'center', justifyContent: 'center' },
-  rangeLeftFill: { position: 'absolute', left: 0, right: '50%', top: 6, bottom: 6, backgroundColor: 'rgba(0,108,73,0.12)' },
-  rangeRightFill: { position: 'absolute', left: '50%', right: 0, top: 6, bottom: 6, backgroundColor: 'rgba(0,108,73,0.12)' },
+  rangeLeftFill: { position: 'absolute', left: 0, right: '50%', top: Spacing.sm, bottom: Spacing.sm },
+  rangeRightFill: { position: 'absolute', left: '50%', right: 0, top: Spacing.sm, bottom: Spacing.sm },
   dayCircle: { width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center', zIndex: 1 },
-  todayCircle: { borderWidth: 2, borderColor: 'rgba(0,108,73,0.2)' },
+  todayCircle: { borderWidth: 2 },
   rangeMiddleCircle: { opacity: 0.95 },
   rangeEndpoint: { zIndex: 2 },
   outOfMonthCircle: { opacity: 0.5 },
@@ -1521,34 +1554,55 @@ const styles = StyleSheet.create({
   pastDayText: { textDecorationLine: 'line-through' },
   dayNum: { fontSize: 18, fontWeight: '700', lineHeight: 20 },
   dayLunar: { fontSize: 9, fontWeight: '600' },
-  settingList: { borderRadius: 14, overflow: 'hidden' },
-  settingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 14 },
+  settingList: { borderRadius: Radius.lg, overflow: 'hidden' },
+  settingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: Spacing['2xl'] },
   disabledRow: { opacity: 0.6 },
-  settingLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  settingIcon: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  settingLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
+  settingIcon: { width: 40, height: 40, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
   settingLabel: { fontSize: 16, fontWeight: '500' },
-  settingRight: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1, minWidth: 0 },
+  settingRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flexShrink: 1, minWidth: 0 },
   settingValue: { fontSize: 22, fontWeight: '800' },
   settingValueSmall: { fontSize: 22, fontWeight: '700' },
   settingHint: { fontSize: 14, fontWeight: '500' },
-  clearBtn: { borderWidth: 1, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
-  clearText: { color: '#ba1a1a', fontSize: 16, fontWeight: '600' },
-  pickerBackdrop: { flex: 1, backgroundColor: 'rgba(2,6,23,0.4)', justifyContent: 'center', paddingHorizontal: 24 },
-  pickerCard: { borderRadius: 16, padding: 16, gap: 12 },
+  clearBtn: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing['2xl'],
+    alignItems: 'center',
+  },
+  clearText: { fontSize: 16, fontWeight: '600' },
+  pickerBackdrop: { flex: 1, justifyContent: 'center', paddingHorizontal: Spacing['6xl'] },
+  pickerCard: { borderRadius: Radius.xl, padding: Spacing['3xl'], gap: Spacing.xl, ...Shadows.sheet },
   toastOverlay: { flex: 1, justifyContent: 'flex-end', alignItems: 'center', paddingBottom: 120 },
   toastHost: { width: '100%', alignItems: 'center' },
-  toastWrap: { borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8, maxWidth: '92%' },
-  toastText: { color: '#fff', fontSize: 13, fontWeight: '600', textAlign: 'center' },
-  pickerTitle: { fontSize: 16, fontWeight: '700', textAlign: 'center' },
-  pickerActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
-  pickerBtn: { borderRadius: 10, paddingHorizontal: 16, paddingVertical: 10, minWidth: 72, alignItems: 'center' },
+  toastWrap: { borderRadius: Radius.pill, paddingHorizontal: Spacing['2xl'], paddingVertical: Spacing.md, maxWidth: '92%', ...Shadows.card },
+  toastText: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
+  pickerTitle: { ...Typography.title, textAlign: 'center' },
+  pickerActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.lg },
+  pickerBtn: { borderRadius: Radius.sm, paddingHorizontal: Spacing['3xl'], paddingVertical: Spacing.lg, minWidth: 72, alignItems: 'center' },
   pickerBtnText: { fontSize: 14, fontWeight: '600' },
-  optionList: { gap: 8 },
-  optionRow: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  optionList: { gap: Spacing.md },
+  optionRow: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   optionText: { fontSize: 15, fontWeight: '500' },
-  tagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  tagItem: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  tagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
+  tagItem: { borderWidth: StyleSheet.hairlineWidth, borderRadius: Radius.sm, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md },
   tagText: { fontSize: 14, fontWeight: '500' },
-  yearlyWrap: { gap: 10 },
-  yearlyDateBtn: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  yearlyWrap: { gap: Spacing.lg },
+  yearlyDateBtn: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.xl,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
 });

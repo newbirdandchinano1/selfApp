@@ -14,6 +14,8 @@ import {
   loadMonthBudgetSettings,
   persistBudgetRefreshDay,
   persistMonthBudgetSettings,
+  sumBudgetFixedExpenses,
+  type BudgetFixedExpense,
   type MonthBudgetSetting,
 } from '@/lib/finance-monthly-budget';
 import {
@@ -456,6 +458,7 @@ export default function FinanceScreen() {
   const [isBudgetAdjustVisible, setIsBudgetAdjustVisible] = React.useState(false);
   const [budgetBaseDraft, setBudgetBaseDraft] = React.useState('');
   const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
+  const [fixedExpensesDraft, setFixedExpensesDraft] = React.useState<BudgetFixedExpense[]>([]);
   /** 收支明细：除「今天」外，初次最多再展示的历史日数（2 → 今天+前两日共三天） */
   const INITIAL_HISTORY_DAY_SLICES = 2;
   /** 触底后继续加载的历史日数（按有记录的自然日聚合） */
@@ -1223,13 +1226,17 @@ export default function FinanceScreen() {
   const effectiveBaseBudget =
     currentMonthKey in monthBudgetSettings ? monthBudgetSettings[currentMonthKey]!.baseAmount : 0;
   const includeLastBalanceEffective = persistedBudgetSetting?.includeLastBalance ?? false;
-  const budgetTotalAmount = includeLastBalanceEffective
+  const persistedFixedExpensesTotal = sumBudgetFixedExpenses(persistedBudgetSetting?.fixedExpenses);
+  const grossBudgetAmount = includeLastBalanceEffective
     ? effectiveBaseBudget + lastMonthRemaining
     : effectiveBaseBudget;
+  const budgetTotalAmount = Math.max(0, grossBudgetAmount - persistedFixedExpensesTotal);
   const parsedBudgetDraft = parseFloat(budgetBaseDraft.trim().replace(/,/g, ''));
   const baseForBudgetPreview =
     Number.isFinite(parsedBudgetDraft) && parsedBudgetDraft >= 0 ? parsedBudgetDraft : effectiveBaseBudget;
-  const budgetPreviewTotal = modalIncludeLast ? baseForBudgetPreview + lastMonthRemaining : baseForBudgetPreview;
+  const previewFixedExpensesTotal = sumBudgetFixedExpenses(fixedExpensesDraft);
+  const budgetPreviewGross = modalIncludeLast ? baseForBudgetPreview + lastMonthRemaining : baseForBudgetPreview;
+  const budgetPreviewTotal = Math.max(0, budgetPreviewGross - previewFixedExpensesTotal);
   const budgetSurplusAmount = budgetTotalAmount - monthlyBudgetExpense;
   const budgetUsedPercentRaw = budgetTotalAmount > 0 ? (monthlyBudgetExpense / budgetTotalAmount) * 100 : 0;
   const budgetUsedPercent = Math.min(100, Math.max(0, budgetUsedPercentRaw));
@@ -1890,15 +1897,57 @@ export default function FinanceScreen() {
     setIsBudgetAdjustVisible(false);
   }, []);
 
+  const newBudgetFixedExpenseId = React.useCallback(
+    () => `mfe_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    [],
+  );
+
   const openBudgetAdjust = React.useCallback(() => {
     const row = monthBudgetSettings[currentMonthKey];
     const base = row ? row.baseAmount : 0;
     const inc = row?.includeLastBalance ?? false;
     setBudgetBaseDraft(base.toFixed(2));
     setModalIncludeLast(inc);
+    setFixedExpensesDraft(row?.fixedExpenses ? row.fixedExpenses.map((item) => ({ ...item })) : []);
     setBudgetRefreshDayDraft(budgetRefreshDay);
     setIsBudgetAdjustVisible(true);
   }, [monthBudgetSettings, currentMonthKey, budgetRefreshDay]);
+
+  const handleAddFixedExpense = React.useCallback(() => {
+    setFixedExpensesDraft((prev) => [...prev, { id: newBudgetFixedExpenseId(), name: '', amount: 0 }]);
+  }, [newBudgetFixedExpenseId]);
+
+  const handleUpdateFixedExpense = React.useCallback(
+    (id: string, patch: Partial<Pick<BudgetFixedExpense, 'name' | 'amount'>>) => {
+      setFixedExpensesDraft((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+      );
+    },
+    [],
+  );
+
+  const handleDeleteFixedExpense = React.useCallback((id: string, name: string) => {
+    Alert.alert('删除固定支出', `确定删除「${name || '未命名'}」？`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: () => setFixedExpensesDraft((prev) => prev.filter((item) => item.id !== id)),
+      },
+    ]);
+  }, []);
+
+  const sanitizeFixedExpensesDraft = React.useCallback((): BudgetFixedExpense[] => {
+    const out: BudgetFixedExpense[] = [];
+    for (const item of fixedExpensesDraft) {
+      const name = item.name.trim();
+      const amount = item.amount;
+      if (!name) continue;
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+      out.push({ id: item.id, name, amount });
+    }
+    return out;
+  }, [fixedExpensesDraft]);
 
   const handleSaveBudgetAdjust = React.useCallback(() => {
     const normalized = budgetBaseDraft.trim().replace(/,/g, '');
@@ -1907,19 +1956,40 @@ export default function FinanceScreen() {
       Alert.alert('金额无效', '请输入大于等于 0 的月预算基数。');
       return;
     }
+    const incompleteFixed = fixedExpensesDraft.some((item) => {
+      const hasName = item.name.trim().length > 0;
+      const hasAmount = Number.isFinite(item.amount) && item.amount > 0;
+      return (hasName && !hasAmount) || (!hasName && hasAmount);
+    });
+    if (incompleteFixed) {
+      Alert.alert('固定支出未填完整', '请为每条固定支出填写名称和大于 0 的金额，或删除空白行。');
+      return;
+    }
+    const fixedExpenses = sanitizeFixedExpensesDraft();
     const nextRefresh = clampBudgetRefreshDay(budgetRefreshDayDraft);
     void persistBudgetRefreshDay(nextRefresh);
     setBudgetRefreshDay(nextRefresh);
     setMonthBudgetSettings((prev) => {
       const next = {
         ...prev,
-        [currentMonthKey]: { baseAmount: n, includeLastBalance: modalIncludeLast },
+        [currentMonthKey]: {
+          baseAmount: n,
+          includeLastBalance: modalIncludeLast,
+          ...(fixedExpenses.length > 0 ? { fixedExpenses } : {}),
+        },
       };
       void persistMonthBudgetSettings(next);
       return next;
     });
     setIsBudgetAdjustVisible(false);
-  }, [budgetBaseDraft, budgetRefreshDayDraft, currentMonthKey, modalIncludeLast]);
+  }, [
+    budgetBaseDraft,
+    budgetRefreshDayDraft,
+    currentMonthKey,
+    fixedExpensesDraft,
+    modalIncludeLast,
+    sanitizeFixedExpensesDraft,
+  ]);
 
   const handleResetBudgetAdjust = React.useCallback(() => {
     setMonthBudgetSettings((prev) => {
@@ -3854,13 +3924,26 @@ export default function FinanceScreen() {
 
             <View style={styles.budgetDetailsTotalWrap}>
               <View style={[styles.budgetDetailsTotalCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb' }]}>
-                <Text style={[styles.budgetDetailsTotalLabel, { color: subtle }]}>{budgetUiScopeShort}预算</Text>
+                <View style={styles.budgetDetailsTotalTextCol}>
+                  <Text style={[styles.budgetDetailsTotalLabel, { color: subtle }]}>真实{budgetUiScopeShort}预算</Text>
+                  {previewFixedExpensesTotal > 0 ? (
+                    <Text style={[styles.budgetDetailsTotalHint, { color: subtle }]}>
+                      毛预算 {formatCurrencyWithDecimals(budgetPreviewGross)}，已扣固定支出{' '}
+                      {formatCurrencyWithDecimals(previewFixedExpensesTotal)}
+                    </Text>
+                  ) : null}
+                </View>
                 <Text style={[styles.budgetDetailsTotalValue, { color: text }]}>
                   {formatCurrencyWithDecimals(budgetPreviewTotal)}
                 </Text>
               </View>
             </View>
 
+            <ScrollView
+              style={styles.budgetDetailsScroll}
+              contentContainerStyle={styles.budgetDetailsScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}>
             <View style={styles.budgetDetailsComposition}>
               <View style={styles.budgetDetailsCompositionTop}>
                 <Text style={[styles.budgetDetailsCompositionTitle, { color: subtle }]}>{budgetUiScopeShort}预算构成</Text>
@@ -3957,7 +4040,90 @@ export default function FinanceScreen() {
                   </Text>
                 </View>
               </View>
+
+              <View style={styles.budgetFixedExpensesBlock}>
+                <View style={styles.budgetFixedExpensesHeader}>
+                  <View style={styles.budgetFixedExpensesTitleCol}>
+                    <Text style={[styles.budgetFixedExpensesTitle, { color: text }]}>每月固定支出</Text>
+                    <Text style={[styles.budgetFixedExpensesHint, { color: subtle }]}>
+                      房租、订阅等固定开销会从预算中预先扣除，剩余为真实可支配预算
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={handleAddFixedExpense}
+                    style={({ pressed }) => [
+                      styles.budgetFixedExpensesAddBtn,
+                      { borderColor: outlineVariant, opacity: pressed ? 0.84 : 1 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="添加固定支出">
+                    <MaterialIcons name="add" size={18} color={primary} />
+                    <Text style={[styles.budgetFixedExpensesAddText, { color: primary }]}>添加</Text>
+                  </Pressable>
+                </View>
+
+                {fixedExpensesDraft.length === 0 ? (
+                  <Text style={[styles.budgetFixedExpensesEmpty, { color: subtle }]}>暂无固定支出项</Text>
+                ) : (
+                  <View style={styles.budgetFixedExpensesList}>
+                    {fixedExpensesDraft.map((item) => (
+                      <View
+                        key={item.id}
+                        style={[
+                          styles.budgetFixedExpenseRow,
+                          { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb', borderColor: outlineVariant },
+                        ]}>
+                        <TextInput
+                          value={item.name}
+                          onChangeText={(v) => handleUpdateFixedExpense(item.id, { name: v })}
+                          placeholder="名称，如房租"
+                          placeholderTextColor={subtle}
+                          style={[styles.budgetFixedExpenseNameInput, { color: text }]}
+                        />
+                        <View style={[styles.budgetFixedExpenseAmountWrap, { borderColor: outlineVariant }]}>
+                          <Text style={[styles.budgetFixedExpenseYuan, { color: subtle }]}>¥</Text>
+                          <TextInput
+                            value={item.amount > 0 ? String(item.amount) : ''}
+                            onChangeText={(v) => {
+                              const normalized = v.trim().replace(/,/g, '');
+                              if (!normalized) {
+                                handleUpdateFixedExpense(item.id, { amount: 0 });
+                                return;
+                              }
+                              const n = parseFloat(normalized);
+                              handleUpdateFixedExpense(item.id, {
+                                amount: Number.isFinite(n) && n >= 0 ? n : 0,
+                              });
+                            }}
+                            keyboardType="decimal-pad"
+                            placeholder="0"
+                            placeholderTextColor={subtle}
+                            style={[styles.budgetFixedExpenseAmountInput, { color: text }]}
+                          />
+                        </View>
+                        <Pressable
+                          onPress={() => handleDeleteFixedExpense(item.id, item.name.trim())}
+                          style={({ pressed }) => [
+                            styles.budgetFixedExpenseDeleteBtn,
+                            { opacity: pressed ? 0.72 : 1 },
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityLabel={`删除${item.name || '固定支出'}`}>
+                          <MaterialIcons name="delete-outline" size={20} color="#ef4444" />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {previewFixedExpensesTotal > 0 ? (
+                  <Text style={[styles.budgetFixedExpensesSum, { color: subtle }]}>
+                    固定支出合计 {formatCurrencyWithDecimals(previewFixedExpensesTotal)}
+                  </Text>
+                ) : null}
+              </View>
             </View>
+            </ScrollView>
 
             <Pressable
               onPress={handleSaveBudgetAdjust}
@@ -5382,14 +5548,29 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 12,
+  },
+  budgetDetailsTotalTextCol: {
+    flex: 1,
+    gap: 4,
   },
   budgetDetailsTotalLabel: {
     fontSize: 16,
     fontWeight: '600',
   },
+  budgetDetailsTotalHint: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
   budgetDetailsTotalValue: {
     fontSize: 22,
     fontWeight: '600',
+  },
+  budgetDetailsScroll: {
+    maxHeight: 420,
+  },
+  budgetDetailsScrollContent: {
+    paddingBottom: 4,
   },
   budgetDetailsComposition: {
     paddingHorizontal: 24,
@@ -5501,6 +5682,92 @@ const styles = StyleSheet.create({
     fontWeight: '300',
     alignSelf: 'center',
     paddingHorizontal: 6,
+  },
+  budgetFixedExpensesBlock: {
+    gap: 12,
+    marginTop: 4,
+  },
+  budgetFixedExpensesHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  budgetFixedExpensesTitleCol: {
+    flex: 1,
+    gap: 4,
+  },
+  budgetFixedExpensesTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  budgetFixedExpensesHint: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  budgetFixedExpensesAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  budgetFixedExpensesAddText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  budgetFixedExpensesEmpty: {
+    fontSize: 13,
+    paddingVertical: 8,
+  },
+  budgetFixedExpensesList: {
+    gap: 10,
+  },
+  budgetFixedExpenseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  budgetFixedExpenseNameInput: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '500',
+    paddingVertical: 4,
+    minWidth: 0,
+  },
+  budgetFixedExpenseAmountWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    minWidth: 96,
+  },
+  budgetFixedExpenseYuan: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  budgetFixedExpenseAmountInput: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    paddingVertical: 6,
+    minWidth: 48,
+    textAlign: 'right',
+  },
+  budgetFixedExpenseDeleteBtn: {
+    padding: 4,
+  },
+  budgetFixedExpensesSum: {
+    fontSize: 13,
+    fontWeight: '500',
+    textAlign: 'right',
   },
   budgetDetailsSaveBtn: {
     marginHorizontal: 24,

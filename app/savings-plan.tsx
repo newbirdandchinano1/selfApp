@@ -1,3 +1,6 @@
+import { AppCard, ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
+import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import {
   createSavingsPlanDeposit,
   getDepositSumsByActivePlanId,
@@ -36,35 +39,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
 import Svg, { Circle, Path } from 'react-native-svg';
-
-/** Lumina Quantified 配色（与提供 HTML 一致） */
-const C = {
-  luminaDark: '#0F172A',
-  luminaGray: '#64748B',
-  luminaLight: '#F8FAFC',
-  white: '#FFFFFF',
-  warmAmber: '#B45309',
-  emeraldSuccess: '#059669',
-  roseDanger: '#E11D48',
-  slate100: '#F1F5F9',
-  slateBorder: '#F1F5F9',
-} as const;
-
-const DISPLAY_FONT = 'Manrope' as const;
-
-/** 创建计划弹窗 — 设计 token */
-const SheetC = {
-  rowBg: '#F5F5F5',
-  text: '#1a1a1a',
-  textMuted: '#8E8E8E',
-  iconBg: '#EDE6DC',
-  iconBrown: '#8B6914',
-  actionOrange: '#FF9F1C',
-  scrim: 'rgba(0,0,0,0.32)',
-} as const;
 
 function formatChineseDate(d: Date) {
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
@@ -161,18 +138,21 @@ function AmountColumn({
   amount,
   color,
   showLeftBorder,
+  borderColor,
 }: {
   label: string;
   amount: number;
   color: string;
   showLeftBorder?: boolean;
+  borderColor: string;
 }) {
+  const { colors } = useAppTheme();
   return (
-    <View style={[styles.overviewCol, showLeftBorder && styles.overviewColBorder]}>
-      <Text style={styles.overviewLabel}>{label}</Text>
+    <View style={[styles.overviewCol, showLeftBorder && { borderLeftWidth: 1, borderLeftColor: borderColor }]}>
+      <Text style={[Typography.caption, { color: colors.textSecondary }]}>{label}</Text>
       <View style={styles.amountBaseline}>
         <Text style={[styles.currencySymbol, { color }]}>¥</Text>
-        <Text style={[styles.amountDisplay, { color }]}>{formatIntAmount(amount)}</Text>
+        <Text style={[Typography.h3, { color }]}>{formatIntAmount(amount)}</Text>
       </View>
     </View>
   );
@@ -192,26 +172,36 @@ function PlanCard({
   /** 长按加号：一次性补足差额以达成目标 */
   onCompleteGoal: () => void;
 }) {
+  const { colors, isDark } = useAppTheme();
   const item = savingsPlanRowToPlanItem(row, savedTotal);
   /** 已达或超过目标时仍显示 100%（超额也算完成） */
   const pct = item.target > 0 ? Math.min(100, Math.round((item.saved / item.target) * 100)) : 0;
   const goalCompleted = item.target > 0 && item.saved >= item.target;
 
+  const doneMuted = colors.textMuted;
+  const goalDoneSurface = isDark ? colors.surfaceMuted : colors.capsule;
+
   return (
-    <View style={[styles.planCard, goalCompleted && styles.planCardGoalDone]}>
+    <AppCard
+      padded={false}
+      style={[
+        styles.planCard,
+        goalCompleted && { backgroundColor: goalDoneSurface, opacity: 0.88, borderColor: colors.outline },
+      ]}>
       <Pressable
         onPress={onPress}
         style={({ pressed }) => [styles.planCardTap, pressed && styles.planCardPressed]}
         accessibilityRole="button"
         accessibilityLabel={`编辑计划 ${item.title}`}>
-        <View style={[styles.planThumbWrap, goalCompleted && styles.planThumbGoalDone]}>
+        <View style={[styles.planThumbWrap, { backgroundColor: colors.capsule }, goalCompleted && { opacity: 0.65 }]}>
           <Image source={{ uri: item.imageUri }} style={styles.planThumb} resizeMode="cover" />
         </View>
         <View style={styles.planBody}>
           <View style={styles.planHeaderBlock}>
             <Text
               style={[
-                styles.planTitle,
+                Typography.title,
+                { color: goalCompleted ? doneMuted : colors.text },
                 goalCompleted && styles.planTitleGoalDone,
                 goalCompleted && Platform.OS === 'android' ? styles.planTitleGoalDoneAndroid : null,
               ]}
@@ -222,25 +212,34 @@ function PlanCard({
               style={[
                 styles.categoryPill,
                 styles.planDatePill,
-                goalCompleted && styles.categoryPillGoalDone,
+                { backgroundColor: goalCompleted ? goalDoneSurface : colors.capsule },
               ]}>
-              <Text style={[styles.categoryPillText, goalCompleted && styles.planMutedText]}>{item.category}</Text>
+              <Text style={[Typography.caption, { color: goalCompleted ? doneMuted : colors.textSecondary }]}>
+                {item.category}
+              </Text>
             </View>
           </View>
           <View style={styles.planAmountRow}>
-            <Text style={[styles.planSaved, goalCompleted && styles.planMutedText]}>
+            <Text style={[Typography.caption, { color: goalCompleted ? doneMuted : colors.primary }]}>
               ¥{formatIntAmount(item.saved)}
             </Text>
-            <Text style={[styles.planTargetHint, goalCompleted && styles.planMutedText]}>
+            <Text style={[styles.planTargetHint, { color: goalCompleted ? doneMuted : colors.textSecondary }]}>
               / ¥{formatIntAmount(item.target)}
             </Text>
           </View>
           <View style={styles.planProgressCol}>
-            <View style={[styles.planTrack, goalCompleted && styles.planTrackGoalDone]}>
-              <View style={[styles.planFill, { width: `${pct}%` as DimensionValue }]} />
+            <View style={[styles.planTrack, { backgroundColor: goalCompleted ? goalDoneSurface : colors.progressTrack }]}>
+              <View
+                style={[
+                  styles.planFill,
+                  { width: `${pct}%` as DimensionValue, backgroundColor: colors.primary },
+                ]}
+              />
             </View>
             <View style={styles.planPctRow}>
-              <Text style={[styles.planPctBelow, goalCompleted && styles.planMutedText]}>{pct}%</Text>
+              <Text style={[styles.planPctBelow, { color: goalCompleted ? doneMuted : colors.textSecondary }]}>
+                {pct}%
+              </Text>
             </View>
           </View>
         </View>
@@ -252,7 +251,7 @@ function PlanCard({
         delayLongPress={450}
         style={({ pressed }) => [
           styles.planAddDepositBtn,
-          goalCompleted && styles.planAddDepositBtnGoalDone,
+          { backgroundColor: goalCompleted ? goalDoneSurface : colors.capsule },
           !goalCompleted && pressed && { opacity: 0.85 },
         ]}
         accessibilityRole="button"
@@ -260,9 +259,9 @@ function PlanCard({
         accessibilityHint={goalCompleted ? '计划已完成，无法继续存入' : '长按可一次性补足差额达成目标'}
         accessibilityState={{ disabled: goalCompleted }}
       >
-        <MaterialIcons name="add" size={24} color={goalCompleted ? '#CBD5E1' : C.emeraldSuccess} />
+        <MaterialIcons name="add" size={24} color={goalCompleted ? doneMuted : colors.success} />
       </Pressable>
-    </View>
+    </AppCard>
   );
 }
 
@@ -279,6 +278,7 @@ function AddDepositSheet({
   insetsBottom: number;
   onSubmit: (planId: string, amount: number) => Promise<void>;
 }) {
+  const { colors } = useAppTheme();
   const [amountText, setAmountText] = React.useState('');
 
   React.useEffect(() => {
@@ -320,7 +320,7 @@ function AddDepositSheet({
   return (
     <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView style={sheetStyles.kav} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={sheetStyles.overlay}>
+        <View style={[sheetStyles.overlay, { backgroundColor: colors.overlay }]}>
           <Pressable
             style={sheetStyles.backdrop}
             onPress={() => {
@@ -330,30 +330,42 @@ function AddDepositSheet({
             accessibilityRole="button"
             accessibilityLabel="关闭"
           />
-          <View style={[sheetStyles.card, { paddingBottom: Math.max(28, insetsBottom + 88) }]}>
-            <Text style={addDepositStyles.title}>存入一笔</Text>
-            <Text style={addDepositStyles.subtitle} numberOfLines={2}>
+          <View
+            style={[
+              sheetStyles.card,
+              { backgroundColor: colors.surface, paddingBottom: Math.max(Spacing['7xl'], insetsBottom + 88) },
+            ]}>
+            <Text style={[Typography.h3, { color: colors.text }]}>存入一笔</Text>
+            <Text style={[Typography.body, { color: colors.textSecondary, marginTop: Spacing.sm }]} numberOfLines={2}>
               {plan?.name ?? ''}
             </Text>
-            <View style={[sheetStyles.inputRow, sheetStyles.amountRow, { marginTop: 16 }]}>
-              <Text style={sheetStyles.amountYuan}>¥</Text>
+            <View
+              style={[
+                sheetStyles.inputRow,
+                sheetStyles.amountRow,
+                { marginTop: Spacing['3xl'], backgroundColor: colors.input },
+              ]}>
+              <Text style={[sheetStyles.amountYuan, { color: colors.text }]}>¥</Text>
               <TextInput
-                style={sheetStyles.amountInput}
+                style={[sheetStyles.amountInput, { color: colors.text }]}
                 value={amountText}
                 onChangeText={(t) => setAmountText(t.replace(/\D/g, '').slice(0, 8))}
                 placeholder="金额"
-                placeholderTextColor={SheetC.textMuted}
+                placeholderTextColor={colors.textMuted}
                 keyboardType="default"
                 autoCorrect={false}
                 autoCapitalize="none"
               />
             </View>
             <Pressable
-              style={[sheetStyles.fab, { bottom: Math.max(20, insetsBottom + 8) }]}
+              style={[
+                sheetStyles.fab,
+                { backgroundColor: colors.primary, bottom: Math.max(Spacing['5xl'], insetsBottom + Spacing.md) },
+              ]}
               onPress={handleConfirm}
               accessibilityRole="button"
               accessibilityLabel="确认存入">
-              <MaterialIcons name="check" size={26} color="#fff" />
+              <MaterialIcons name="check" size={26} color={colors.onPrimary} />
             </Pressable>
           </View>
         </View>
@@ -362,31 +374,17 @@ function AddDepositSheet({
   );
 }
 
-const addDepositStyles = StyleSheet.create({
-  title: {
-    fontFamily: DISPLAY_FONT,
-    fontSize: 20,
-    fontWeight: '800',
-    color: SheetC.text,
-    marginBottom: 6,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: SheetC.textMuted,
-    marginBottom: 4,
-  },
-});
-
 function DefaultPlanIconSvg() {
+  const { colors } = useAppTheme();
   return (
     <Svg width={52} height={52} viewBox="0 0 56 56">
       <Path
         d="M14 22h28c2 0 4 2 4 4v18c0 3-2 5-5 5H15c-3 0-5-2-5-5V26c0-2 2-4 4-4z"
-        fill="#C4A574"
+        fill={colors.primary}
       />
-      <Path d="M22 22 V14 a6 6 0 0 1 12 0v8" fill="#D4B896" />
-      <Circle cx={42} cy={14} r={5.5} fill="#E8C547" />
-      <Circle cx={46} cy={20} r={4} fill="#F5D76E" />
+      <Path d="M22 22 V14 a6 6 0 0 1 12 0v8" fill={colors.primarySoft} />
+      <Circle cx={42} cy={14} r={5.5} fill={colors.primaryRing} />
+      <Circle cx={46} cy={20} r={4} fill={colors.primaryMuted} />
     </Svg>
   );
 }
@@ -398,10 +396,15 @@ function PlanIconButton({
   uri: string | null;
   onPickImage: () => void;
 }) {
+  const { colors } = useAppTheme();
   return (
     <Pressable
       onPress={onPickImage}
-      style={({ pressed }) => [sheetStyles.iconBlock, pressed && { opacity: 0.88 }]}
+      style={({ pressed }) => [
+        sheetStyles.iconBlock,
+        { backgroundColor: colors.surfaceMuted },
+        pressed && { opacity: 0.88 },
+      ]}
       accessibilityRole="button"
       accessibilityLabel="上传计划图标">
       {uri ? <Image source={{ uri }} style={sheetStyles.iconImage} resizeMode="cover" /> : <DefaultPlanIconSvg />}
@@ -428,6 +431,7 @@ function PlanFormSheet({
   onCreate: (input: CreateSavingsPlanInput) => Promise<void>;
   onUpdate: (id: string, input: UpdateSavingsPlanInput) => Promise<void>;
 }) {
+  const { colors, isDark } = useAppTheme();
   const [planName, setPlanName] = React.useState('');
   const [startDate, setStartDate] = React.useState(() => new Date());
   const [endDate, setEndDate] = React.useState(() => addCalendarDays(new Date(), 1));
@@ -572,7 +576,7 @@ function PlanFormSheet({
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView style={sheetStyles.kav} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={sheetStyles.overlay}>
+        <View style={[sheetStyles.overlay, { backgroundColor: colors.overlay }]}>
           <Pressable
             style={sheetStyles.backdrop}
             onPress={() => {
@@ -582,7 +586,11 @@ function PlanFormSheet({
             accessibilityRole="button"
             accessibilityLabel="关闭"
           />
-          <View style={[sheetStyles.card, { paddingBottom: Math.max(28, insetsBottom + 88) }]}>
+          <View
+            style={[
+              sheetStyles.card,
+              { backgroundColor: colors.surface, paddingBottom: Math.max(Spacing['7xl'], insetsBottom + 88) },
+            ]}>
             <ScrollView
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
@@ -591,69 +599,94 @@ function PlanFormSheet({
               <View style={sheetStyles.sheetHead}>
                 <PlanIconButton uri={planIconUri} onPickImage={pickPlanIcon} />
                 <View style={sheetStyles.sheetTitleWrap}>
-                  <Text style={sheetStyles.sheetTitle}>{isEdit ? '编辑存钱计划' : '自由存钱计划'}</Text>
+                  <Text style={[Typography.h3, { color: colors.text, textAlign: 'center' }]}>
+                    {isEdit ? '编辑存钱计划' : '自由存钱计划'}
+                  </Text>
                 </View>
                 <View style={sheetStyles.sheetHeadSpacer} />
               </View>
 
-              <View style={sheetStyles.inputRow}>
+              <View style={[sheetStyles.inputRow, { backgroundColor: colors.input }]}>
                 <TextInput
-                  style={sheetStyles.rowInput}
+                  style={[sheetStyles.rowInput, { color: colors.text }]}
                   placeholder="输入你的存钱计划"
-                  placeholderTextColor={SheetC.textMuted}
+                  placeholderTextColor={colors.textMuted}
                   value={planName}
                   onChangeText={setPlanName}
                 />
-                <Pressable style={({ pressed }) => [sheetStyles.vaultBtn, pressed && { opacity: 0.85 }]}>
-                  <Text style={sheetStyles.vaultBtnText}>存钱库</Text>
+                <Pressable
+                  style={({ pressed }) => [
+                    sheetStyles.vaultBtn,
+                    { backgroundColor: colors.surface, borderColor: colors.outline },
+                    pressed && { opacity: 0.85 },
+                  ]}>
+                  <Text style={[Typography.caption, { color: colors.text }]}>存钱库</Text>
                 </Pressable>
               </View>
 
               <Pressable
-                style={({ pressed }) => [sheetStyles.inputRow, sheetStyles.inputRowPress, pressed && { opacity: 0.92 }]}
+                style={({ pressed }) => [
+                  sheetStyles.inputRow,
+                  sheetStyles.inputRowPress,
+                  { backgroundColor: colors.input },
+                  pressed && { opacity: 0.92 },
+                ]}
                 onPress={() => {
                   Keyboard.dismiss();
                   setShowEndDatePicker(false);
                   setShowStartDatePicker((v) => !v);
                 }}>
-                <Text style={sheetStyles.rowLabel}>起始日期</Text>
-                <Text style={sheetStyles.rowValue}>{formatChineseDate(startDate)}</Text>
+                <Text style={[Typography.body, { color: colors.text }]}>起始日期</Text>
+                <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatChineseDate(startDate)}</Text>
               </Pressable>
 
               <Pressable
-                style={({ pressed }) => [sheetStyles.inputRow, sheetStyles.inputRowPress, pressed && { opacity: 0.92 }]}
+                style={({ pressed }) => [
+                  sheetStyles.inputRow,
+                  sheetStyles.inputRowPress,
+                  { backgroundColor: colors.input },
+                  pressed && { opacity: 0.92 },
+                ]}
                 onPress={() => {
                   Keyboard.dismiss();
                   setShowStartDatePicker(false);
                   setShowEndDatePicker((v) => !v);
                 }}>
-                <Text style={sheetStyles.rowLabel}>结束日期</Text>
-                <Text style={sheetStyles.rowValue}>{formatChineseDate(endDate)}</Text>
+                <Text style={[Typography.body, { color: colors.text }]}>结束日期</Text>
+                <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatChineseDate(endDate)}</Text>
               </Pressable>
 
-              <View style={[sheetStyles.inputRow, sheetStyles.amountRow]}>
-                <Text style={sheetStyles.amountYuan}>¥</Text>
+              <View style={[sheetStyles.inputRow, sheetStyles.amountRow, { backgroundColor: colors.input }]}>
+                <Text style={[sheetStyles.amountYuan, { color: colors.text }]}>¥</Text>
                 <TextInput
-                  style={sheetStyles.amountInput}
+                  style={[sheetStyles.amountInput, { color: colors.text }]}
                   value={targetAmount}
                   onChangeText={(t) => setTargetAmount(t.replace(/\D/g, '').slice(0, 8))}
                   placeholder="5000"
-                  placeholderTextColor={SheetC.textMuted}
+                  placeholderTextColor={colors.textMuted}
                   keyboardType="number-pad"
                   maxLength={8}
                 />
-                <Pressable style={({ pressed }) => [sheetStyles.tagBtn, pressed && { opacity: 0.88 }]}>
-                  <Text style={sheetStyles.tagBtnText}>目标金额</Text>
+                <Pressable
+                  style={({ pressed }) => [
+                    sheetStyles.tagBtn,
+                    { backgroundColor: colors.surface, borderColor: colors.outline },
+                    pressed && { opacity: 0.88 },
+                  ]}>
+                  <Text style={[Typography.caption, { color: colors.textMuted }]}>目标金额</Text>
                 </Pressable>
               </View>
             </ScrollView>
 
             <Pressable
-              style={[sheetStyles.fab, { bottom: Math.max(20, insetsBottom + 8) }]}
+              style={[
+                sheetStyles.fab,
+                { backgroundColor: colors.primary, bottom: Math.max(Spacing['5xl'], insetsBottom + Spacing.md) },
+              ]}
               onPress={handleConfirm}
               accessibilityRole="button"
               accessibilityLabel={isEdit ? '保存' : '确认创建'}>
-              <MaterialIcons name="check" size={26} color="#fff" />
+              <MaterialIcons name="check" size={26} color={colors.onPrimary} />
             </Pressable>
           </View>
         </View>
@@ -664,24 +697,28 @@ function PlanFormSheet({
           <View style={[StyleSheet.absoluteFill, { zIndex: 999, elevation: 99 }]} pointerEvents="box-none">
             <View style={sheetStyles.dateIosOverlay}>
               <Pressable
-                style={sheetStyles.dateIosScrim}
+                style={[sheetStyles.dateIosScrim, { backgroundColor: colors.overlay }]}
                 onPress={closeDatePickerOverlay}
                 accessibilityLabel="关闭日期选择"
               />
-              <View style={[sheetStyles.dateIosSheet, { paddingBottom: Math.max(16, insetsBottom + 8) }]}>
-                <View style={sheetStyles.dateIosHeader}>
-                  <Text style={sheetStyles.dateIosTitle}>
+              <View
+                style={[
+                  sheetStyles.dateIosSheet,
+                  { backgroundColor: colors.surface, paddingBottom: Math.max(Spacing['3xl'], insetsBottom + Spacing.md) },
+                ]}>
+                <View style={[sheetStyles.dateIosHeader, { borderBottomColor: colors.outline }]}>
+                  <Text style={[Typography.title, { color: colors.text }]}>
                     {showStartDatePicker ? '选择起始日期' : '选择结束日期'}
                   </Text>
                   <Pressable onPress={closeDatePickerOverlay} hitSlop={12}>
-                    <Text style={sheetStyles.dateDoneText}>完成</Text>
+                    <Text style={[Typography.title, { color: colors.primary }]}>完成</Text>
                   </Pressable>
                 </View>
                 <DateTimePicker
                   value={showStartDatePicker ? startDate : endDate}
                   mode="date"
                   display="spinner"
-                  themeVariant="light"
+                  themeVariant={isDark ? 'dark' : 'light'}
                   locale="zh_CN"
                   minimumDate={showEndDatePicker ? minEndDateForPicker : undefined}
                   onChange={showStartDatePicker ? handleStartDateChange : handleEndDateChange}
@@ -706,6 +743,7 @@ function PlanFormSheet({
 export default function SavingsPlanScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { colors, shadows } = useAppTheme();
 
   const [planRows, setPlanRows] = React.useState<SavingsPlanRow[]>([]);
   const [depositByPlanId, setDepositByPlanId] = React.useState<Record<string, number>>({});
@@ -840,65 +878,86 @@ export default function SavingsPlanScreen() {
   );
 
   return (
-    <View style={styles.safe}>
-      {/* 顶栏固定在屏幕顶部，不参与滚动 */}
-      <View style={[styles.header, { paddingTop: insets.top }]}>
-        <View style={styles.headerLeft}>
-          <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.7 }]}>
-            <MaterialIcons name="chevron-left" size={24} color={C.luminaDark} />
-          </Pressable>
-          <Text style={styles.headerTitle}>存钱计划</Text>
-        </View>
-      </View>
+    <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['left', 'right']}>
+      <ScreenHeader
+        title="存钱计划"
+        onBack={() => router.back()}
+        right={
+          <ScreenHeaderIconAction icon="add" onPress={onAddPlan} accessibilityLabel="添加存款计划" />
+        }
+      />
 
       <ScrollView
         style={styles.mainScroll}
-        contentContainerStyle={[styles.mainContent, { paddingBottom: 24 + insets.bottom }]}
+        contentContainerStyle={[
+          styles.mainContent,
+          {
+            paddingBottom: Spacing['6xl'] + insets.bottom,
+            maxWidth: Layout.contentMaxWidth,
+            alignSelf: 'center',
+            width: '100%',
+          },
+        ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled">
-        {/* Overview */}
         <View style={styles.sectionPad}>
-          <View style={styles.overviewCard}>
+          <AppCard style={[shadows.card, styles.overviewCard]}>
             <View style={StyleSheet.absoluteFill} pointerEvents="none">
               <Svg width="100%" height="100%" viewBox="0 0 400 200" preserveAspectRatio="none">
-                <Path d="M0,100 C100,200 200,0 400,100 L400,200 L0,200 Z" fill={C.warmAmber} fillOpacity={0.05} />
+                <Path d="M0,100 C100,200 200,0 400,100 L400,200 L0,200 Z" fill={colors.primary} fillOpacity={0.05} />
               </Svg>
             </View>
 
             <View style={styles.overviewRow}>
-              <AmountColumn label="总目标" amount={totalGoal} color={C.warmAmber} />
-              <AmountColumn label="已存款" amount={savedAmount} color={C.emeraldSuccess} showLeftBorder />
-              <AmountColumn label="剩余" amount={remaining} color={C.roseDanger} showLeftBorder />
+              <AmountColumn
+                label="总目标"
+                amount={totalGoal}
+                color={colors.primary}
+                borderColor={colors.outline}
+              />
+              <AmountColumn
+                label="已存款"
+                amount={savedAmount}
+                color={colors.success}
+                showLeftBorder
+                borderColor={colors.outline}
+              />
+              <AmountColumn
+                label="剩余"
+                amount={remaining}
+                color={colors.danger}
+                showLeftBorder
+                borderColor={colors.outline}
+              />
             </View>
 
             <View style={styles.overallProgress}>
               <View style={styles.overallProgressLabels}>
-                <Text style={styles.progressCaption}>总进度</Text>
-                <Text style={styles.progressCaption}>{progressPct}%</Text>
+                <Text style={[Typography.caption, { color: colors.textSecondary }]}>总进度</Text>
+                <Text style={[Typography.caption, { color: colors.textSecondary }]}>{progressPct}%</Text>
               </View>
-              <View style={styles.overallTrack}>
-                <View style={[styles.overallFill, { width: `${progressPct}%` as DimensionValue }]} />
+              <View style={[styles.overallTrack, { backgroundColor: colors.progressTrack }]}>
+                <View
+                  style={[
+                    styles.overallFill,
+                    { width: `${progressPct}%` as DimensionValue, backgroundColor: colors.primary },
+                  ]}
+                />
               </View>
             </View>
-          </View>
+          </AppCard>
         </View>
 
-        {/* My plans */}
         <View style={styles.plansSection}>
           <View style={styles.plansHeader}>
-            <Text style={styles.sectionTitle}>我的计划</Text>
-            <Pressable
-              onPress={onAddPlan}
-              style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.85 }]}
-              accessibilityRole="button"
-              accessibilityLabel="添加存款计划">
-              <MaterialIcons name="add" size={22} color={C.luminaDark} />
-            </Pressable>
+            <Text style={[Typography.h3, { color: colors.text }]}>我的计划</Text>
           </View>
 
           <View style={styles.planList}>
             {planRows.length === 0 ? (
-              <Text style={styles.emptyPlansHint}>暂无计划，点击右上角添加</Text>
+              <Text style={[Typography.body, styles.emptyPlansHint, { color: colors.textSecondary }]}>
+                暂无计划，点击右上角添加
+              </Text>
             ) : (
               sortedPlanRowsForList.map((row) => (
                 <Swipeable
@@ -908,11 +967,11 @@ export default function SavingsPlanScreen() {
                   renderRightActions={() => (
                     <Pressable
                       onPress={() => confirmDeletePlan(row)}
-                      style={styles.swipeDeleteAction}
+                      style={[styles.swipeDeleteAction, { backgroundColor: colors.danger }]}
                       accessibilityRole="button"
                       accessibilityLabel={`删除计划 ${row.name}`}>
-                      <MaterialIcons name="delete" size={22} color="#fff" />
-                      <Text style={styles.swipeDeleteText}>删除</Text>
+                      <MaterialIcons name="delete" size={22} color={colors.onPrimary} />
+                      <Text style={[styles.swipeDeleteText, { color: colors.onPrimary }]}>删除</Text>
                     </Pressable>
                   )}>
                   <PlanCard
@@ -961,7 +1020,7 @@ export default function SavingsPlanScreen() {
           await refreshPlansAndDeposits();
         }}
       />
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -972,23 +1031,17 @@ const sheetStyles = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: 'flex-end',
-    backgroundColor: SheetC.scrim,
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
   },
   card: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    borderTopLeftRadius: Radius.sheet,
+    borderTopRightRadius: Radius.sheet,
     maxHeight: '92%',
-    paddingHorizontal: 22,
-    paddingTop: 22,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 24,
-    elevation: 16,
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['5xl'],
+    ...Shadows.sheet,
     position: 'relative',
     overflow: 'visible',
   },
@@ -1012,16 +1065,11 @@ const sheetStyles = StyleSheet.create({
   iconBlock: {
     width: 76,
     height: 76,
-    borderRadius: 22,
-    backgroundColor: SheetC.iconBg,
+    borderRadius: Radius.sheet,
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
-    shadowColor: '#8b7355',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    elevation: 2,
+    ...Shadows.card,
   },
   iconImage: {
     width: '100%',
@@ -1038,24 +1086,14 @@ const sheetStyles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sheetTitle: {
-    fontSize: 19,
-    fontWeight: '800',
-    color: SheetC.text,
-    letterSpacing: -0.4,
-    fontFamily: DISPLAY_FONT,
-    textAlign: 'center',
-    lineHeight: 26,
-  },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: SheetC.rowBg,
-    borderRadius: 18,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    marginBottom: 12,
-    gap: 10,
+    borderRadius: Radius.xl,
+    paddingHorizontal: Spacing['3xl'],
+    paddingVertical: Spacing['2xl'],
+    marginBottom: Spacing.xl,
+    gap: Spacing.lg,
   },
   inputRowPress: {
     justifyContent: 'space-between',
@@ -1064,7 +1102,6 @@ const sheetStyles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     fontSize: 15,
-    color: SheetC.text,
     paddingVertical: Platform.OS === 'android' ? 8 : 6,
     minHeight: Platform.OS === 'android' ? 40 : 36,
     fontWeight: '500',
@@ -1075,33 +1112,14 @@ const sheetStyles = StyleSheet.create({
   },
   rowInputRight: {
     fontSize: 14,
-    color: SheetC.textMuted,
     paddingVertical: 0,
     minWidth: 96,
   },
   vaultBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#E8E8E8',
-  },
-  vaultBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: SheetC.text,
-  },
-  rowLabel: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: SheetC.text,
-  },
-  rowValue: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: SheetC.text,
-    marginLeft: 'auto',
+    paddingHorizontal: Spacing['2xl'],
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   dateIosOverlay: {
     flex: 1,
@@ -1109,32 +1127,19 @@ const sheetStyles = StyleSheet.create({
   },
   dateIosScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: SheetC.scrim,
   },
   dateIosSheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderTopLeftRadius: Radius.sheet,
+    borderTopRightRadius: Radius.sheet,
     overflow: 'hidden',
   },
   dateIosHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingHorizontal: Spacing['5xl'],
+    paddingVertical: Spacing.xl,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#E5E5E5',
-  },
-  dateIosTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: SheetC.text,
-  },
-  dateDoneText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: SheetC.actionOrange,
   },
   amountRow: {
     alignItems: 'center',
@@ -1142,7 +1147,6 @@ const sheetStyles = StyleSheet.create({
   amountYuan: {
     fontSize: 28,
     fontWeight: '800',
-    color: SheetC.text,
     marginRight: 2,
     letterSpacing: -0.5,
   },
@@ -1150,98 +1154,44 @@ const sheetStyles = StyleSheet.create({
     flex: 1,
     fontSize: 28,
     fontWeight: '800',
-    color: SheetC.text,
     letterSpacing: -0.8,
-    paddingVertical: 4,
+    paddingVertical: Spacing.xs,
     minWidth: 0,
   },
   tagBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#E8E8E8',
-  },
-  tagBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: SheetC.textMuted,
+    paddingHorizontal: Spacing['2xl'],
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   fab: {
     position: 'absolute',
-    right: 22,
+    right: Spacing['5xl'],
     width: 58,
     height: 58,
     borderRadius: 29,
-    backgroundColor: SheetC.actionOrange,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: SheetC.actionOrange,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.45,
-    shadowRadius: 12,
-    elevation: 10,
+    ...Shadows.composer,
   },
 });
 
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: C.luminaLight,
-  },
-  header: {
-    backgroundColor: C.white,
-    paddingHorizontal: 20,
-    paddingBottom: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: C.slateBorder,
-    zIndex: 100,
-    elevation: 6,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  backBtn: {
-    padding: 8,
-    marginLeft: -8,
-  },
-  headerTitle: {
-    fontFamily: DISPLAY_FONT,
-    fontSize: 18,
-    fontWeight: '700',
-    color: C.luminaDark,
-    letterSpacing: -0.3,
   },
   mainScroll: {
     flex: 1,
-    backgroundColor: C.luminaLight,
   },
   mainContent: {
     flexGrow: 1,
   },
   sectionPad: {
-    paddingHorizontal: 20,
-    paddingTop: 20,
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['5xl'],
   },
   overviewCard: {
-    backgroundColor: C.white,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: C.slateBorder,
-    padding: 24,
     overflow: 'hidden',
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
   },
   overviewRow: {
     flexDirection: 'row',
@@ -1254,16 +1204,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     alignItems: 'center',
   },
-  overviewColBorder: {
-    borderLeftWidth: 1,
-    borderLeftColor: C.slateBorder,
-  },
-  overviewLabel: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: C.luminaGray,
-    marginBottom: 4,
-  },
   amountBaseline: {
     flexDirection: 'row',
     alignItems: 'baseline',
@@ -1274,14 +1214,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  amountDisplay: {
-    fontFamily: DISPLAY_FONT,
-    fontSize: 20,
-    fontWeight: '700',
-    letterSpacing: -0.4,
-  },
   overallProgress: {
-    marginTop: 20,
+    marginTop: Spacing['5xl'],
     position: 'relative',
     zIndex: 10,
   },
@@ -1290,123 +1224,63 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 8,
   },
-  progressCaption: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: C.luminaGray,
-  },
   overallTrack: {
     height: 6,
-    borderRadius: 999,
-    backgroundColor: C.slate100,
+    borderRadius: Radius.pill,
     overflow: 'hidden',
   },
   overallFill: {
     height: '100%',
-    borderRadius: 999,
-    backgroundColor: C.warmAmber,
+    borderRadius: Radius.pill,
   },
   plansSection: {
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-    paddingTop: 4,
+    paddingHorizontal: Spacing['5xl'],
+    paddingBottom: Spacing['5xl'],
+    paddingTop: Spacing.xs,
   },
   plansHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    fontFamily: DISPLAY_FONT,
-    fontSize: 18,
-    fontWeight: '700',
-    color: C.luminaDark,
-    letterSpacing: -0.3,
-  },
-  addBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: C.slate100,
-    alignItems: 'center',
-    justifyContent: 'center',
+    marginBottom: Spacing['3xl'],
   },
   planList: {
-    gap: 16,
+    gap: Spacing['3xl'],
   },
   emptyPlansHint: {
-    fontFamily: DISPLAY_FONT,
-    fontSize: 14,
-    color: C.luminaGray,
     textAlign: 'center',
-    paddingVertical: 20,
+    paddingVertical: Spacing['5xl'],
   },
   swipeDeleteAction: {
     width: 86,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: C.roseDanger,
-    borderRadius: 16,
-    marginLeft: 12,
+    borderRadius: Radius.xl,
+    marginLeft: Spacing.xl,
     marginVertical: 2,
-    gap: 4,
+    gap: Spacing.xs,
   },
   swipeDeleteText: {
-    color: '#fff',
     fontSize: 12,
     fontWeight: '800',
   },
   planCard: {
-    backgroundColor: C.white,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: C.slateBorder,
-    paddingVertical: 12,
-    paddingLeft: 16,
-    paddingRight: 10,
+    paddingVertical: Spacing.xl,
+    paddingLeft: Spacing['3xl'],
+    paddingRight: Spacing.lg,
     flexDirection: 'row',
-    gap: 10,
+    gap: Spacing.lg,
     alignItems: 'center',
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  /** 已达成存入目标：整体置灰 */
-  planCardGoalDone: {
-    backgroundColor: '#EEF2F6',
-    opacity: 0.72,
-    borderColor: '#E2E8F0',
-  },
-  planThumbGoalDone: {
-    opacity: 0.65,
   },
   planTitleGoalDone: {
-    color: C.luminaGray,
     textDecorationLine: 'line-through',
     textDecorationStyle: 'solid',
-    textDecorationColor: '#94A3B8',
-    /** 与字号对齐，令删除线贴近字形垂直中线（避免偏底） */
     lineHeight: 20,
     paddingVertical: 0,
   },
   planTitleGoalDoneAndroid: {
     includeFontPadding: false,
     textAlignVertical: 'center',
-  },
-  planMutedText: {
-    color: '#94A3B8',
-  },
-  categoryPillGoalDone: {
-    backgroundColor: '#E2E8F0',
-  },
-  planTrackGoalDone: {
-    backgroundColor: '#E2E8F0',
-  },
-  planAddDepositBtnGoalDone: {
-    backgroundColor: '#E2E8F0',
   },
   planCardTap: {
     flex: 1,
@@ -1422,15 +1296,13 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: C.slate100,
     alignItems: 'center',
     justifyContent: 'center',
   },
   planThumbWrap: {
     width: 64,
     height: 64,
-    borderRadius: 12,
-    backgroundColor: C.slate100,
+    borderRadius: Radius.md,
     overflow: 'hidden',
   },
   planThumb: {
@@ -1444,17 +1316,10 @@ const styles = StyleSheet.create({
   planHeaderBlock: {
     marginBottom: 4,
   },
-  planTitle: {
-    fontFamily: DISPLAY_FONT,
-    fontSize: 16,
-    fontWeight: '700',
-    color: C.luminaDark,
-  },
   categoryPill: {
-    backgroundColor: C.slate100,
-    paddingHorizontal: 8,
+    paddingHorizontal: Spacing.md,
     paddingVertical: 3,
-    borderRadius: 999,
+    borderRadius: Radius.pill,
   },
   planDatePill: {
     marginTop: 6,
@@ -1463,25 +1328,14 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 4,
   },
-  categoryPillText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: C.luminaGray,
-  },
   planAmountRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
     gap: 4,
     marginBottom: 8,
   },
-  planSaved: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: C.warmAmber,
-  },
   planTargetHint: {
     fontSize: 10,
-    color: C.luminaGray,
   },
   planProgressCol: {
     width: '100%',
@@ -1489,14 +1343,12 @@ const styles = StyleSheet.create({
   planTrack: {
     width: '100%',
     height: 6,
-    borderRadius: 999,
-    backgroundColor: C.slate100,
+    borderRadius: Radius.pill,
     overflow: 'hidden',
   },
   planFill: {
     height: '100%',
-    borderRadius: 999,
-    backgroundColor: C.warmAmber,
+    borderRadius: Radius.pill,
   },
   planPctRow: {
     flexDirection: 'row',
@@ -1506,6 +1358,5 @@ const styles = StyleSheet.create({
   planPctBelow: {
     fontSize: 10,
     fontWeight: '600',
-    color: C.luminaGray,
   },
 });

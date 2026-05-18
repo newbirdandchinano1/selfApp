@@ -1,4 +1,4 @@
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
 import { analyzeAiFinanceDashboardFromText, getActiveAiLlmApiKey, type AiFinanceDashboardPayload } from '@/lib/zhipu-image-parse';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -12,6 +12,8 @@ import Svg, { Circle, Defs, Line, LinearGradient, Path, Stop } from 'react-nativ
 
 
 const AI_FINANCE_CACHE_KEY = 'ai_finance_dashboard_cache_v1';
+
+const EXPENSE_BREAKDOWN_COLORS = ['#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe'];
 
 const AI_PAGE_FALLBACK_INSIGHTS: AiFinanceDashboardPayload['insights'] = [
   {
@@ -27,19 +29,20 @@ const AI_PAGE_FALLBACK_INSIGHTS: AiFinanceDashboardPayload['insights'] = [
 export default function AiFinanceAnalysisScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { colors, isDark } = useAppTheme();
 
-  const bg = isDark ? '#0f172a' : '#faf8ff';
-  const surface = isDark ? '#1e293b' : '#ffffff';
-  const surfaceLow = isDark ? 'rgba(148,163,184,0.10)' : '#f2f3ff';
-  const text = isDark ? '#f8fafc' : '#131b2e';
-  const subtle = isDark ? '#94a3b8' : '#64748b';
-  const outline = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.5)';
+  const bg = colors.background;
+  const surface = colors.surface;
+  const surfaceLow = colors.input;
+  const text = colors.text;
+  const subtle = colors.textMuted;
+  const outline = colors.outline;
 
-  const tertiary = isDark ? '#fbbf24' : '#825100';
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const secondary = isDark ? '#34d399' : '#006c49';
+  const primary = colors.primary;
+  const secondary = colors.secondary;
+  const expenseAccent = colors.primary;
+  const forecastAccent = colors.primary;
+  const healthAccent = colors.primary;
 
   const healthSize = 160;
   const healthStroke = 8;
@@ -125,7 +128,6 @@ export default function AiFinanceAnalysisScreen() {
       setMonthlyIncome(thisIncome);
       setMonthlyExpense(thisExpense);
       setMonthlySavingsDelta(thisSavingsRate - prevSavingsRate);
-      const colors = [tertiary, '#94a3b8', '#cbd5e1', '#818cf8', '#22c55e'];
       const topExpenseRows = Array.from(expenseBucket.entries())
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5)
@@ -133,7 +135,7 @@ export default function AiFinanceAnalysisScreen() {
           name: categoryNameMap.get(categoryId) ?? '未分类',
           amount,
           pct: thisExpense > 0 ? amount / thisExpense : 0,
-          color: colors[index % colors.length],
+          color: EXPENSE_BREAKDOWN_COLORS[index % EXPENSE_BREAKDOWN_COLORS.length],
         }));
       setExpenseBreakdownRows(topExpenseRows);
 
@@ -205,7 +207,7 @@ export default function AiFinanceAnalysisScreen() {
     } finally {
       setBootReady(true);
     }
-  }, [tertiary]);
+  }, []);
 
   const savingsForecastChart = React.useMemo(() => {
     const points = savingsForecastSeries.length ? savingsForecastSeries : Array(12).fill(0);
@@ -424,7 +426,7 @@ export default function AiFinanceAnalysisScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
-      <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15,23,42,0.85)' : 'rgba(255,255,255,0.82)' }]}>
+      <View style={[styles.header, { backgroundColor: colors.headerScrim }]}>
         <View style={styles.headerLeft}>
           <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
             <MaterialIcons name="arrow-back" size={22} color={text} />
@@ -436,7 +438,7 @@ export default function AiFinanceAnalysisScreen() {
           disabled={aiDashboardLoading || !bootReady}
           style={({ pressed }) => [
             styles.headerAnalyzeBtn,
-            { borderColor: outline, backgroundColor: isDark ? 'rgba(96,165,250,0.12)' : 'rgba(0,88,190,0.08)' },
+            { borderColor: outline, backgroundColor: colors.primaryMuted },
             pressed && { opacity: 0.82 },
             (aiDashboardLoading || !bootReady) && { opacity: 0.45 },
           ]}>
@@ -446,8 +448,8 @@ export default function AiFinanceAnalysisScreen() {
       </View>
 
       {analysisStale ? (
-        <View style={[styles.staleBanner, { backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : '#fff7ed', borderColor: outline }]}>
-          <MaterialIcons name="info-outline" size={18} color={tertiary} />
+        <View style={[styles.staleBanner, { backgroundColor: colors.primaryMuted, borderColor: outline }]}>
+          <MaterialIcons name="info-outline" size={18} color={primary} />
           <Text style={[styles.staleBannerText, { color: text }]}>
             本地账单或分类已变化，以下为上次保存的分析。点击「更新分析」获取与当前数据一致的结论。
           </Text>
@@ -456,14 +458,14 @@ export default function AiFinanceAnalysisScreen() {
 
       {aiDashboardError && !aiDashboardLoading ? (
         <View style={[styles.errorBanner, { borderColor: 'rgba(220,38,38,0.35)' }]}>
-          <MaterialIcons name="error-outline" size={18} color="#dc2626" />
-          <Text style={styles.errorBannerText}>{aiDashboardError}</Text>
+          <MaterialIcons name="error-outline" size={18} color={colors.danger} />
+          <Text style={[styles.errorBannerText, { color: colors.danger }]}>{aiDashboardError}</Text>
         </View>
       ) : null}
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={[styles.summaryCard, { backgroundColor: surface }]}>
-          <View style={[styles.leftAccent, { backgroundColor: tertiary }]} />
+          <View style={[styles.leftAccent, { backgroundColor: expenseAccent }]} />
           <Text style={[styles.kicker, { color: subtle }]}>本月汇总</Text>
           <Text style={[styles.summaryTitle, { color: text }]}>本月收支概览</Text>
 
@@ -474,7 +476,7 @@ export default function AiFinanceAnalysisScreen() {
             </View>
             <View>
               <Text style={[styles.label, { color: subtle }]}>本月支出</Text>
-              <Text style={[styles.bigNum, { color: tertiary }]}>{formatCurrency(monthlyExpense)}</Text>
+              <Text style={[styles.bigNum, { color: expenseAccent }]}>{formatCurrency(monthlyExpense)}</Text>
             </View>
           </View>
 
@@ -492,12 +494,12 @@ export default function AiFinanceAnalysisScreen() {
           <Text style={[styles.kicker, { color: subtle }]}>健康评分</Text>
           <View style={styles.healthWrap}>
             <Svg width={healthSize} height={healthSize} style={{ transform: [{ rotate: '-90deg' }] }}>
-              <Circle cx={healthSize / 2} cy={healthSize / 2} r={healthR} stroke={isDark ? 'rgba(148,163,184,0.25)' : 'rgba(194,198,214,0.35)'} strokeWidth={2} fill="none" />
+              <Circle cx={healthSize / 2} cy={healthSize / 2} r={healthR} stroke={colors.progressTrack} strokeWidth={2} fill="none" />
               <Circle
                 cx={healthSize / 2}
                 cy={healthSize / 2}
                 r={healthR}
-                stroke={tertiary}
+                stroke={healthAccent}
                 strokeWidth={healthStroke}
                 strokeDasharray={`${healthC * healthPct} ${healthC * (1 - healthPct)}`}
                 strokeLinecap="butt"
@@ -506,7 +508,7 @@ export default function AiFinanceAnalysisScreen() {
             </Svg>
             <View style={styles.healthCenter}>
               {aiDashboardLoading ? (
-                <ActivityIndicator size="large" color={tertiary} />
+                <ActivityIndicator size="large" color={healthAccent} />
               ) : (
                 <>
                   <Text style={[styles.healthScore, { color: text }]}>{displayHealthScore}</Text>
@@ -528,7 +530,7 @@ export default function AiFinanceAnalysisScreen() {
 
         <View style={styles.insightSection}>
           <View style={styles.insightHead}>
-            <View style={[styles.insightLine, { backgroundColor: tertiary }]} />
+            <View style={[styles.insightLine, { backgroundColor: primary }]} />
             <Text style={[styles.insightTitle, { color: text }]}>AI 深度洞察</Text>
           </View>
 
@@ -577,14 +579,14 @@ export default function AiFinanceAnalysisScreen() {
                   <Text style={[styles.barName, { color: text }]}>{row.name}</Text>
                   <Text style={[styles.barVal, { color: text }]}>{row.val}</Text>
                 </View>
-                <View style={[styles.track, { backgroundColor: isDark ? 'rgba(148,163,184,0.2)' : '#f1f5f9' }]}>
+                <View style={[styles.track, { backgroundColor: colors.progressTrack }]}>
                   <View style={[styles.fill, { width: `${row.pct * 100}%`, backgroundColor: row.color }]} />
                 </View>
               </View>
             ))}
 
-            <View style={[styles.tipCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f8fafc', borderColor: outline }]}>
-              <MaterialIcons name="lightbulb" size={18} color={tertiary} />
+            <View style={[styles.tipCard, { backgroundColor: colors.surfaceMuted, borderColor: outline }]}>
+              <MaterialIcons name="lightbulb" size={18} color={primary} />
               <Text style={[styles.tipText, { color: subtle }]}>
                 {aiDashboardLoading
                   ? '正在生成支出结构点评…'
@@ -601,8 +603,8 @@ export default function AiFinanceAnalysisScreen() {
           <View style={[styles.panelCard, { backgroundColor: surface }]}>
             <View style={styles.panelTitleRow}>
               <Text style={[styles.panelTitle, { color: text }]}>储蓄增长预测</Text>
-              <View style={[styles.badge, { backgroundColor: isDark ? 'rgba(251,191,36,0.2)' : '#ffddb8' }]}>
-                <Text style={[styles.badgeText, { color: tertiary }]}>预测</Text>
+              <View style={[styles.badge, { backgroundColor: colors.primaryMuted }]}>
+                <Text style={[styles.badgeText, { color: forecastAccent }]}>预测</Text>
               </View>
             </View>
             <Text style={[styles.healthDesc, { color: subtle, marginBottom: 8 }]}>过去 6 个月与后 6 个月由 AI 根据账单生成（曲线与下方数值以模型输出为准）</Text>
@@ -610,7 +612,7 @@ export default function AiFinanceAnalysisScreen() {
             <View style={styles.chartBox}>
               <Svg width="100%" height="180" viewBox="0 0 400 200">
                 {[180, 130, 80, 30].map((y) => (
-                  <Line key={y} x1="0" y1={y} x2="400" y2={y} stroke={isDark ? 'rgba(148,163,184,0.16)' : '#f1f5f9'} strokeWidth="1" />
+                  <Line key={y} x1="0" y1={y} x2="400" y2={y} stroke={colors.progressTrack} strokeWidth="1" />
                 ))}
                 {savingsForecastChart.mapped[5] ? (
                   <Line
@@ -618,17 +620,18 @@ export default function AiFinanceAnalysisScreen() {
                     y1="18"
                     x2={savingsForecastChart.mapped[5].x}
                     y2="186"
-                    stroke={isDark ? 'rgba(251,191,36,0.30)' : 'rgba(130,81,0,0.35)'}
+                    stroke={colors.primaryRing}
+                    strokeOpacity={0.35}
                     strokeDasharray="4 4"
                     strokeWidth="1.5"
                   />
                 ) : null}
-                <Path d={savingsForecastChart.historyPath} fill="none" stroke={tertiary} strokeWidth="3" />
-                <Path d={savingsForecastChart.futurePath} fill="none" stroke={tertiary} strokeDasharray="6 6" strokeWidth="3" />
+                <Path d={savingsForecastChart.historyPath} fill="none" stroke={forecastAccent} strokeWidth="3" />
+                <Path d={savingsForecastChart.futurePath} fill="none" stroke={forecastAccent} strokeDasharray="6 6" strokeWidth="3" />
                 <Defs>
                   <LinearGradient id="forecastGrad" x1="0" y1="0" x2="0" y2="1">
-                    <Stop offset="0" stopColor={tertiary} stopOpacity="0.2" />
-                    <Stop offset="1" stopColor={tertiary} stopOpacity="0" />
+                    <Stop offset="0" stopColor={forecastAccent} stopOpacity="0.2" />
+                    <Stop offset="1" stopColor={forecastAccent} stopOpacity="0" />
                   </LinearGradient>
                 </Defs>
                 <Path d={savingsForecastChart.areaPath} fill="url(#forecastGrad)" />
@@ -638,8 +641,8 @@ export default function AiFinanceAnalysisScreen() {
                     cx={p.x}
                     cy={p.y}
                     r={i === selectedForecastIndex ? 5.5 : i === savingsForecastChart.mapped.length - 1 ? 5 : 3.5}
-                    fill={tertiary}
-                    stroke={i === selectedForecastIndex ? '#ffffff' : i >= 6 ? '#fff' : 'none'}
+                    fill={forecastAccent}
+                    stroke={i === selectedForecastIndex ? colors.onPrimary : i >= 6 ? colors.onPrimary : 'none'}
                     strokeWidth={i === selectedForecastIndex ? 2 : 1.5}
                     onPress={() => setSelectedForecastIndex(i)}
                   />
@@ -652,13 +655,13 @@ export default function AiFinanceAnalysisScreen() {
                       style={[
                         styles.monthLabel,
                         idx === selectedForecastIndex && styles.monthLabelSelected,
-                        { color: idx === selectedForecastIndex ? tertiary : item.isForecast ? tertiary : subtle },
+                        { color: idx === selectedForecastIndex ? forecastAccent : item.isForecast ? forecastAccent : subtle },
                       ]}>
                       {item.label}
                     </Text>
                     {idx === 5 ? (
-                      <View style={[styles.currentMonthBadge, { backgroundColor: idx === selectedForecastIndex ? tertiary : `${tertiary}30` }]}>
-                        <Text style={[styles.currentMonthBadgeText, { color: idx === selectedForecastIndex ? '#ffffff' : tertiary }]}>本月</Text>
+                      <View style={[styles.currentMonthBadge, { backgroundColor: idx === selectedForecastIndex ? forecastAccent : colors.primaryMuted }]}>
+                        <Text style={[styles.currentMonthBadgeText, { color: idx === selectedForecastIndex ? colors.onPrimary : forecastAccent }]}>本月</Text>
                       </View>
                     ) : null}
                   </Pressable>
@@ -669,7 +672,7 @@ export default function AiFinanceAnalysisScreen() {
             <View style={styles.forecastFooter}>
               <View style={styles.inlineRow}>
                 <Text style={[styles.forecastValue, { color: text }]}>{formatCurrency(selectedForecastValue)}</Text>
-                <Text style={[styles.forecastUp, { color: selectedForecastChangePct >= 0 ? secondary : '#dc2626' }]}>
+                <Text style={[styles.forecastUp, { color: selectedForecastChangePct >= 0 ? secondary : colors.danger }]}>
                   {selectedForecastChangePct >= 0 ? '+' : ''}
                   {selectedForecastChangePct.toFixed(1)}%
                 </Text>
@@ -685,7 +688,7 @@ export default function AiFinanceAnalysisScreen() {
           <View style={[styles.trendMiniCard, { backgroundColor: surface, borderColor: outline }]}>
             <View style={styles.panelTitleRow}>
               <Text style={[styles.panelTitle, { color: text }]}>收入增长趋势</Text>
-              <View style={[styles.badge, { backgroundColor: isDark ? 'rgba(96,165,250,0.18)' : '#dbeafe' }]}>
+              <View style={[styles.badge, { backgroundColor: colors.primaryMuted }]}>
                 <Text style={[styles.badgeText, { color: primary }]}>趋势</Text>
               </View>
             </View>
@@ -694,7 +697,7 @@ export default function AiFinanceAnalysisScreen() {
             <View style={styles.chartBox}>
               <Svg width="100%" height="180" viewBox="0 0 400 200">
                 {[180, 130, 80, 30].map((y) => (
-                  <Line key={`income-grid-${y}`} x1="0" y1={y} x2="400" y2={y} stroke={isDark ? 'rgba(148,163,184,0.16)' : '#f1f5f9'} strokeWidth="1" />
+                  <Line key={`income-grid-${y}`} x1="0" y1={y} x2="400" y2={y} stroke={colors.progressTrack} strokeWidth="1" />
                 ))}
                 {incomeForecastChart.mapped[5] ? (
                   <Line
@@ -702,7 +705,8 @@ export default function AiFinanceAnalysisScreen() {
                     y1="18"
                     x2={incomeForecastChart.mapped[5].x}
                     y2="186"
-                    stroke={isDark ? 'rgba(96,165,250,0.30)' : 'rgba(0,88,190,0.30)'}
+                    stroke={colors.primaryRing}
+                    strokeOpacity={0.35}
                     strokeDasharray="4 4"
                     strokeWidth="1.5"
                   />
@@ -739,7 +743,7 @@ export default function AiFinanceAnalysisScreen() {
                       cy={p.y}
                       r={isSelected ? 5.5 : 3.5}
                       fill={primary}
-                      stroke={isSelected ? '#ffffff' : 'none'}
+                      stroke={isSelected ? colors.onPrimary : 'none'}
                       strokeWidth={isSelected ? 2 : 1.5}
                       onPress={() => setSelectedIncomeForecastIndex(i)}
                     />
@@ -758,8 +762,8 @@ export default function AiFinanceAnalysisScreen() {
                       {item.label}
                     </Text>
                     {idx === 5 ? (
-                      <View style={[styles.currentMonthBadge, { backgroundColor: idx === selectedIncomeForecastIndex ? primary : `${primary}24` }]}>
-                        <Text style={[styles.currentMonthBadgeText, { color: idx === selectedIncomeForecastIndex ? '#ffffff' : primary }]}>本月</Text>
+                      <View style={[styles.currentMonthBadge, { backgroundColor: idx === selectedIncomeForecastIndex ? primary : colors.primaryMuted }]}>
+                        <Text style={[styles.currentMonthBadgeText, { color: idx === selectedIncomeForecastIndex ? colors.onPrimary : primary }]}>本月</Text>
                       </View>
                     ) : null}
                   </Pressable>
@@ -770,7 +774,7 @@ export default function AiFinanceAnalysisScreen() {
             <View style={styles.forecastFooter}>
               <View style={styles.inlineRow}>
                 <Text style={[styles.forecastValue, { color: text }]}>{formatCurrency(selectedIncomeValue)}</Text>
-                <Text style={[styles.forecastUp, { color: selectedIncomeChangePct >= 0 ? secondary : '#dc2626' }]}>
+                <Text style={[styles.forecastUp, { color: selectedIncomeChangePct >= 0 ? secondary : colors.danger }]}>
                   {selectedIncomeChangePct >= 0 ? '+' : ''}
                   {selectedIncomeChangePct.toFixed(1)}%
                 </Text>
@@ -792,7 +796,7 @@ export default function AiFinanceAnalysisScreen() {
             <View style={styles.trendLineChart}>
               <Svg width="100%" height="180" viewBox="0 0 400 200">
                 {[180, 130, 80, 30].map((y) => (
-                  <Line key={`surplus-grid-${y}`} x1="0" y1={y} x2="400" y2={y} stroke={isDark ? 'rgba(148,163,184,0.16)' : '#f1f5f9'} strokeWidth="1" />
+                  <Line key={`surplus-grid-${y}`} x1="0" y1={y} x2="400" y2={y} stroke={colors.progressTrack} strokeWidth="1" />
                 ))}
                 {surplusForecastChart.mapped[5] ? (
                   <Line
@@ -800,7 +804,8 @@ export default function AiFinanceAnalysisScreen() {
                     y1="18"
                     x2={surplusForecastChart.mapped[5].x}
                     y2="186"
-                    stroke={isDark ? 'rgba(52,211,153,0.28)' : 'rgba(0,108,73,0.28)'}
+                    stroke={secondary}
+                    strokeOpacity={0.28}
                     strokeDasharray="4 4"
                     strokeWidth="1.5"
                   />
@@ -837,7 +842,7 @@ export default function AiFinanceAnalysisScreen() {
                       cy={p.y}
                       r={isSelected ? 5.5 : 3.5}
                       fill={secondary}
-                      stroke={isSelected ? '#ffffff' : 'none'}
+                      stroke={isSelected ? colors.onPrimary : 'none'}
                       strokeWidth={isSelected ? 2 : 1.5}
                       onPress={() => setSelectedSurplusForecastIndex(i)}
                     />
@@ -857,14 +862,14 @@ export default function AiFinanceAnalysisScreen() {
                     {item.label}
                   </Text>
                   {idx === 5 ? (
-                    <View style={[styles.currentMonthBadge, { backgroundColor: idx === selectedSurplusForecastIndex ? secondary : `${secondary}24` }]}>
-                      <Text style={[styles.currentMonthBadgeText, { color: idx === selectedSurplusForecastIndex ? '#ffffff' : secondary }]}>本月</Text>
+                    <View style={[styles.currentMonthBadge, { backgroundColor: idx === selectedSurplusForecastIndex ? secondary : colors.surfaceMuted }]}>
+                      <Text style={[styles.currentMonthBadgeText, { color: idx === selectedSurplusForecastIndex ? colors.onPrimary : secondary }]}>本月</Text>
                     </View>
                   ) : null}
                 </Pressable>
               ))}
             </View>
-            <Text style={[styles.trendIncomeFootnote, { color: selectedSurplusChangePct >= 0 ? secondary : '#dc2626' }]}>
+            <Text style={[styles.trendIncomeFootnote, { color: selectedSurplusChangePct >= 0 ? secondary : colors.danger }]}>
               较上月 {selectedSurplusChangePct >= 0 ? '+' : ''}
               {selectedSurplusChangePct.toFixed(1)}%
             </Text>
@@ -877,7 +882,7 @@ export default function AiFinanceAnalysisScreen() {
         <View
           style={[
             styles.screenBlocker,
-            { backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(250,248,255,0.94)' },
+            { backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : `${colors.background}f0` },
           ]}
           pointerEvents="auto">
           <Pressable

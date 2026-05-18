@@ -21,10 +21,12 @@ const LEFT_OPEN_EDGE_WIDTH = Math.min(48, Math.max(32, Math.round(Dimensions.get
 type Props = {
   children: React.ReactNode;
   drawerWidth: number;
+  /** 底部 Tab 栏高度，左缘滑动手势区不覆盖该区域，避免与最左侧 Tab 点击冲突 */
+  tabBarHeight?: number;
 };
 
 /** 包裹主 Tab 内容：在屏幕左缘向右滑，从左侧拉出全局设置抽屉 */
-export function SettingsDrawerHost({ children, drawerWidth }: Props) {
+export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: Props) {
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -145,7 +147,10 @@ export function SettingsDrawerHost({ children, drawerWidth }: Props) {
       {!isOpen ? (
         <GestureDetector gesture={panToOpen}>
           <View
-            style={[styles.leftOpenEdge, { width: LEFT_OPEN_EDGE_WIDTH }]}
+            style={[
+              styles.leftOpenEdge,
+              { width: LEFT_OPEN_EDGE_WIDTH, bottom: Math.max(0, tabBarHeight) },
+            ]}
             pointerEvents="box-only"
             accessibilityLabel="打开全局设置"
           />

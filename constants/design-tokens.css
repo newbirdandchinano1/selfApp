@@ -1,0 +1,56 @@
+/**
+ * Web / react-native-web 用 CSS 变量（与 design-tokens.ts 对齐）
+ * 在根布局引入：import '@/constants/design-tokens.css'
+ */
+:root {
+  --app-bg: #faf8ff;
+  --app-surface: #ffffff;
+  --app-surface-muted: #f4f6fb;
+  --app-input: #f2f3ff;
+  --app-text: #131b2e;
+  --app-text-secondary: #424754;
+  --app-text-muted: #9ca3af;
+  --app-primary: #0058be;
+  --app-primary-soft: #3b82f6;
+  --app-primary-muted: #e3eefc;
+  --app-secondary: #006c49;
+  --app-tertiary: #825100;
+  --app-danger: #dc2626;
+  --app-outline: rgba(194, 198, 214, 0.26);
+  --app-overlay: rgba(0, 0, 0, 0.25);
+  --app-on-primary: #ffffff;
+
+  --app-radius-xs: 8px;
+  --app-radius-md: 12px;
+  --app-radius-lg: 14px;
+  --app-radius-card: 18px;
+  --app-radius-sheet: 22px;
+  --app-radius-pill: 999px;
+
+  --app-space-xs: 4px;
+  --app-space-md: 8px;
+  --app-space-xl: 12px;
+  --app-space-3xl: 16px;
+  --app-space-4xl: 18px;
+  --app-space-page: 20px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --app-bg: #0f172a;
+    --app-surface: #1e293b;
+    --app-surface-muted: rgba(148, 163, 184, 0.12);
+    --app-input: #161d2b;
+    --app-text: #f8fafc;
+    --app-text-secondary: #94a3b8;
+    --app-text-muted: #64748b;
+    --app-primary: #60a5fa;
+    --app-primary-soft: #60a5fa;
+    --app-primary-muted: rgba(96, 165, 250, 0.2);
+    --app-secondary: #34d399;
+    --app-tertiary: #fbbf24;
+    --app-danger: #dc2626;
+    --app-outline: rgba(148, 163, 184, 0.16);
+    --app-overlay: rgba(0, 0, 0, 0.45);
+  }
+}

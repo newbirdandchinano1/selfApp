@@ -1,5 +1,6 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AppButton, AppCard, AppIconButton, ScreenHeader } from '@/components/ui';
+import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
 import type { FinanceFlowCategoryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { analyzeFinanceBillSummaryFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
@@ -8,7 +9,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type RangeTab = '周' | '月' | '年' | '自定义';
 type CategoryMode = 'expense' | 'income';
@@ -62,6 +63,24 @@ function formatYmd(value: Date) {
 
 function formatMoney(value: number) {
   return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function SummaryMetric({ label, valueText, color }: { label: string; valueText: string; color: string }) {
+  const { colors } = useAppTheme();
+  return (
+    <View style={styles.summaryCol}>
+      <Text style={[Typography.caption, styles.summaryLabel, { color: colors.textSecondary }]} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text
+        style={[styles.summaryAmount, { color }]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.5}>
+        {valueText}
+      </Text>
+    </View>
+  );
 }
 
 function formatMonthDay(value: Date) {
@@ -127,10 +146,11 @@ function getCategoryIcon(category?: FinanceFlowCategoryRow) {
 
 export default function FinanceStatsScreen() {
   const router = useRouter();
-  const scheme = useColorScheme();
-  const themeKey: keyof typeof Colors = scheme === 'dark' ? 'dark' : 'light';
-  const baseTheme = Colors[themeKey];
-  const isDark = themeKey === 'dark';
+  const insets = useSafeAreaInsets();
+  const { colors, isDark, shadows } = useAppTheme();
+  const expenseColor = colors.primary;
+  const incomeColor = colors.tertiary;
+  const balanceColor = colors.secondary;
   const [activeTab, setActiveTab] = React.useState<RangeTab>('月');
   const [currentDate, setCurrentDate] = React.useState(() => new Date());
   const [customStartDate, setCustomStartDate] = React.useState(() => addDays(new Date(), -6));
@@ -146,15 +166,6 @@ export default function FinanceStatsScreen() {
   const [aiBillAnalysis, setAiBillAnalysis] = React.useState<string | null>(null);
   const [aiBillAnalysisError, setAiBillAnalysisError] = React.useState<string | null>(null);
   const [aiBillAnalysisBusy, setAiBillAnalysisBusy] = React.useState(false);
-
-  const bg = isDark ? baseTheme.background : '#e8f4fa';
-  const surface = isDark ? '#1e293b' : '#ffffff';
-  const text = isDark ? '#f8fafc' : '#1f2937';
-  const subtle = isDark ? '#94a3b8' : '#6b7280';
-  const accent = isDark ? '#60a5fa' : '#2563eb';
-  const orange = isDark ? '#fbbf24' : '#f59e0b';
-  const green = isDark ? '#34d399' : '#10b981';
-  const outline = isDark ? 'rgba(148,163,184,0.25)' : '#e5e7eb';
 
   const loadStatsData = React.useCallback(async () => {
     try {
@@ -220,7 +231,7 @@ export default function FinanceStatsScreen() {
   const balance = totalIncome - totalExpense;
 
   const categoryTotal = categoryMode === 'income' ? totalIncome : totalExpense;
-  const categoryAccent = categoryMode === 'income' ? orange : accent;
+  const categoryAccent = categoryMode === 'income' ? incomeColor : expenseColor;
   const categoryData = React.useMemo<CategoryItem[]>(() => {
     const bucket = new Map<string, { name: string; amount: number; count: number; icon: keyof typeof MaterialIcons.glyphMap }>();
     filteredTransactions.forEach((txn) => {
@@ -402,7 +413,7 @@ export default function FinanceStatsScreen() {
   const trendTotal = trendMode === 'income' ? totalIncome : trendMode === 'balance' ? balance : totalExpense;
   const trendTitle = trendMode === 'income' ? '每日收入趋势' : trendMode === 'balance' ? '每日结余趋势' : '每日支出趋势';
   const trendModeLabel = trendMode === 'income' ? '收入' : trendMode === 'balance' ? '结余' : '支出';
-  const trendAccent = trendMode === 'income' ? orange : trendMode === 'balance' ? green : accent;
+  const trendAccent = trendMode === 'income' ? incomeColor : trendMode === 'balance' ? balanceColor : expenseColor;
   const shouldShowCustomYear = range.start.getFullYear() !== range.end.getFullYear();
   const rangeLabel = activeTab === '年'
     ? `${range.start.getFullYear()}年`
@@ -505,18 +516,30 @@ export default function FinanceStatsScreen() {
     }
   }, [billSummaryForAi]);
 
-  return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['top', 'left', 'right']}>
-      <View style={[styles.header, { borderBottomColor: outline }]}>
-        <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
-          <MaterialIcons name="arrow-back" size={22} color={text} />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: accent }]}>统计</Text>
-        <View style={styles.iconBtn} />
-      </View>
+  const renderModePill = (label: string, active: boolean, activeColor: string, onPress: () => void) => (
+    <Pressable key={label} onPress={onPress}>
+      <Text
+        style={
+          active
+            ? [styles.pillTabActive, { backgroundColor: activeColor }]
+            : [styles.pillTab, { color: colors.textSecondary }]
+        }>
+        {label}
+      </Text>
+    </Pressable>
+  );
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <View style={[styles.tabWrap, { backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(255,255,255,0.65)' }]}>
+  return (
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
+      <ScreenHeader title="统计" onBack={() => router.back()} />
+
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md) },
+        ]}
+        showsVerticalScrollIndicator={false}>
+        <View style={[styles.tabWrap, { backgroundColor: isDark ? colors.surfaceMuted : colors.capsule }]}>
           {RANGE_TABS.map((tab) => {
             const active = tab === activeTab;
             return (
@@ -525,51 +548,69 @@ export default function FinanceStatsScreen() {
                 onPress={() => setActiveTab(tab)}
                 style={({ pressed }) => [
                   styles.tabBtn,
-                  active && [styles.tabBtnActive, { backgroundColor: surface }],
-                  pressed && { opacity: 0.8 },
+                  active && [styles.tabBtnActive, shadows.card, { backgroundColor: colors.surface }],
+                  pressed && { opacity: 0.88 },
                 ]}>
-                <Text style={[styles.tabText, { color: active ? text : subtle }]}>{tab}</Text>
+                <Text style={[Typography.caption, { color: active ? colors.text : colors.textSecondary }]}>{tab}</Text>
               </Pressable>
             );
           })}
         </View>
 
         <View style={styles.monthSwitcher}>
-          <Pressable onPress={() => shiftRange(-1)} style={({ pressed }) => [styles.switchBtn, pressed && { opacity: 0.65 }]}>
-            <MaterialIcons name="chevron-left" size={22} color={subtle} />
-          </Pressable>
-          <Text style={[styles.monthText, { color: text }]}>{rangeLabel}</Text>
-          <Pressable onPress={() => shiftRange(1)} style={({ pressed }) => [styles.switchBtn, pressed && { opacity: 0.65 }]}>
-            <MaterialIcons name="chevron-right" size={22} color={subtle} />
-          </Pressable>
+          <AppIconButton
+            icon="chevron-left"
+            onPress={() => shiftRange(-1)}
+            color={colors.textSecondary}
+            accessibilityLabel="上一段区间"
+          />
+          <Text style={[Typography.bodyStrong, styles.monthText, { color: colors.text }]}>{rangeLabel}</Text>
+          <AppIconButton
+            icon="chevron-right"
+            onPress={() => shiftRange(1)}
+            color={colors.textSecondary}
+            accessibilityLabel="下一段区间"
+          />
         </View>
 
         {activeTab === '自定义' ? (
-          <View style={[styles.customDateWrap, { backgroundColor: surface }]}> 
-            <Pressable onPress={() => openDatePicker('start')} style={({ pressed }) => [styles.datePickerBtn, { borderColor: outline }, pressed && { opacity: 0.75 }]}>
-              <Text style={[styles.datePickerLabel, { color: subtle }]}>开始日期</Text>
-              <Text style={[styles.datePickerValue, { color: text }]}>{formatCustomDate(customStartDate, shouldShowCustomYear)}</Text>
+          <AppCard style={styles.customDateWrap}>
+            <Pressable
+              onPress={() => openDatePicker('start')}
+              style={({ pressed }) => [styles.datePickerBtn, { borderColor: colors.outline }, pressed && { opacity: 0.88 }]}>
+              <Text style={[Typography.label, { color: colors.textSecondary }]}>开始日期</Text>
+              <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatCustomDate(customStartDate, shouldShowCustomYear)}</Text>
             </Pressable>
-            <MaterialIcons name="arrow-forward" size={18} color={subtle} />
-            <Pressable onPress={() => openDatePicker('end')} style={({ pressed }) => [styles.datePickerBtn, { borderColor: outline }, pressed && { opacity: 0.75 }]}>
-              <Text style={[styles.datePickerLabel, { color: subtle }]}>结束日期</Text>
-              <Text style={[styles.datePickerValue, { color: text }]}>{formatCustomDate(customEndDate, shouldShowCustomYear)}</Text>
+            <MaterialIcons name="arrow-forward" size={18} color={colors.textSecondary} />
+            <Pressable
+              onPress={() => openDatePicker('end')}
+              style={({ pressed }) => [styles.datePickerBtn, { borderColor: colors.outline }, pressed && { opacity: 0.88 }]}>
+              <Text style={[Typography.label, { color: colors.textSecondary }]}>结束日期</Text>
+              <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatCustomDate(customEndDate, shouldShowCustomYear)}</Text>
             </Pressable>
-          </View>
+          </AppCard>
         ) : null}
 
         <Modal visible={!!activeDatePicker} transparent animationType="fade" onRequestClose={() => setActiveDatePicker(null)}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setActiveDatePicker(null)}>
-            <Pressable style={[styles.modalCard, { backgroundColor: surface }]} onPress={(event) => event.stopPropagation()}>
+          <Pressable style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]} onPress={() => setActiveDatePicker(null)}>
+            <Pressable
+              style={[styles.modalCard, shadows.card, { backgroundColor: colors.surface, borderColor: colors.outline }]}
+              onPress={(event) => event.stopPropagation()}>
               <View style={styles.modalHeader}>
-                <Text style={[styles.modalTitle, { color: text }]}>{activeDatePicker === 'start' ? '选择开始日期' : '选择结束日期'}</Text>
-                <Text style={[styles.modalSubtitle, { color: subtle }]}>自定义日期跨度最多两年，确认后统计会按所选区间更新</Text>
+                <Text style={[Typography.h3, { color: colors.text }]}>
+                  {activeDatePicker === 'start' ? '选择开始日期' : '选择结束日期'}
+                </Text>
+                <Text style={[Typography.caption, styles.modalSubtitle, { color: colors.textSecondary }]}>
+                  自定义日期跨度最多两年，确认后统计会按所选区间更新
+                </Text>
               </View>
 
-              <View style={[styles.modalPreview, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f8fafc' }]}>
-                <Text style={[styles.modalPreviewLabel, { color: subtle }]}>当前选择</Text>
-                <Text style={[styles.modalPreviewValue, { color: text }]}>{formatChineseDate(draftPickerDate)}</Text>
-                {customDateError ? <Text style={styles.modalErrorText}>{customDateError}</Text> : null}
+              <View style={[styles.modalPreview, { backgroundColor: colors.surfaceSubtle }]}>
+                <Text style={[Typography.label, { color: colors.textSecondary }]}>当前选择</Text>
+                <Text style={[Typography.h2, { color: colors.text }]}>{formatChineseDate(draftPickerDate)}</Text>
+                {customDateError ? (
+                  <Text style={[Typography.caption, { color: colors.danger }]}>{customDateError}</Text>
+                ) : null}
               </View>
 
               <View style={styles.pickerColumns}>
@@ -578,59 +619,62 @@ export default function FinanceStatsScreen() {
                   { key: 'month', label: '月', value: `${draftPickerDate.getMonth() + 1}` },
                   { key: 'day', label: '日', value: `${draftPickerDate.getDate()}` },
                 ] as { key: PickerColumn; label: string; value: string }[]).map((item) => (
-                  <View key={item.key} style={[styles.pickerColumnCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.1)' : '#f8f9fc' }]}>
+                  <View
+                    key={item.key}
+                    style={[styles.pickerColumnCard, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle }]}>
                     <Pressable onPress={() => adjustDraftDate(item.key, 1)} style={({ pressed }) => [styles.pickerAdjustBtn, pressed && { opacity: 0.7 }]}>
-                      <MaterialIcons name="keyboard-arrow-up" size={22} color={accent} />
+                      <MaterialIcons name="keyboard-arrow-up" size={22} color={expenseColor} />
                     </Pressable>
-                    <Text style={[styles.pickerColumnLabel, { color: subtle }]}>{item.label}</Text>
-                    <Text style={[styles.pickerColumnValue, { color: text }]}>{item.value}</Text>
+                    <Text style={[Typography.label, { color: colors.textSecondary }]}>{item.label}</Text>
+                    <Text style={[Typography.h2, styles.pickerColumnValue, { color: colors.text }]}>{item.value}</Text>
                     <Pressable onPress={() => adjustDraftDate(item.key, -1)} style={({ pressed }) => [styles.pickerAdjustBtn, pressed && { opacity: 0.7 }]}>
-                      <MaterialIcons name="keyboard-arrow-down" size={22} color={accent} />
+                      <MaterialIcons name="keyboard-arrow-down" size={22} color={expenseColor} />
                     </Pressable>
                   </View>
                 ))}
               </View>
 
               <View style={styles.modalActions}>
-                <Pressable onPress={() => setActiveDatePicker(null)} style={({ pressed }) => [styles.modalActionBtn, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#eef2ff' }, pressed && { opacity: 0.8 }]}>
-                  <Text style={[styles.modalActionText, { color: subtle }]}>取消</Text>
-                </Pressable>
-                <Pressable onPress={confirmDraftDate} style={({ pressed }) => [styles.modalActionBtn, { backgroundColor: accent }, pressed && { opacity: 0.85 }]}>
-                  <Text style={styles.modalActionTextPrimary}>确定</Text>
-                </Pressable>
+                <AppButton
+                  label="取消"
+                  variant="outline"
+                  onPress={() => setActiveDatePicker(null)}
+                  style={styles.modalActionBtn}
+                />
+                <AppButton label="确定" variant="primary" onPress={confirmDraftDate} style={styles.modalActionBtn} />
               </View>
             </Pressable>
           </Pressable>
         </Modal>
 
-        <View style={[styles.card, { backgroundColor: surface }]}>
+        <AppCard style={[shadows.card, styles.cardGap]}>
           <View style={styles.summaryRow}>
-            <View style={styles.summaryCol}>
-              <Text style={[styles.summaryLabel, { color: subtle }]}>支出</Text>
-              <Text style={[styles.summaryValue, { color: accent }]}>{formatMoney(totalExpense)}</Text>
-            </View>
-            <View style={styles.summaryCol}>
-              <Text style={[styles.summaryLabel, { color: subtle }]}>收入</Text>
-              <Text style={[styles.summaryValue, { color: orange }]}>{formatMoney(totalIncome)}</Text>
-            </View>
-            <View style={styles.summaryCol}>
-              <Text style={[styles.summaryLabel, { color: subtle }]}>结余</Text>
-              <Text style={[styles.summaryValue, { color: green }]}>{balance < 0 ? '-' : ''}{formatMoney(Math.abs(balance))}</Text>
-            </View>
+            <SummaryMetric label="支出" valueText={formatMoney(totalExpense)} color={expenseColor} />
+            <SummaryMetric label="收入" valueText={formatMoney(totalIncome)} color={incomeColor} />
+            <SummaryMetric
+              label="结余"
+              valueText={`${balance < 0 ? '-' : ''}${formatMoney(Math.abs(balance))}`}
+              color={balanceColor}
+            />
           </View>
 
-          <View style={[styles.analysisCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f8fafc', borderColor: outline }]}>
+          <View style={[styles.analysisCard, { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline }]}>
             <View style={styles.analysisHeader}>
-              <MaterialIcons name="auto-awesome" size={18} color={accent} />
-              <Text style={[styles.analysisTitle, { color: text }]}>AI 账单分析</Text>
+              <MaterialIcons name="auto-awesome" size={18} color={expenseColor} />
+              <Text style={[Typography.bodyStrong, { color: colors.text }]}>AI 账单分析</Text>
             </View>
             {aiBillAnalysisBusy ? (
               <View style={styles.analysisLoadingRow}>
-                <ActivityIndicator size="small" color={accent} />
-                <Text style={[styles.analysisBody, { color: subtle, flex: 1 }]}>正在调用智谱模型，请稍候…</Text>
+                <ActivityIndicator size="small" color={expenseColor} />
+                <Text style={[Typography.caption, { color: colors.textSecondary, flex: 1 }]}>正在调用智谱模型，请稍候…</Text>
               </View>
             ) : (
-              <Text style={[styles.analysisBody, { color: aiBillAnalysisError ? (isDark ? '#f87171' : '#dc2626') : subtle }]}>
+              <Text
+                style={[
+                  Typography.caption,
+                  styles.analysisBody,
+                  { color: aiBillAnalysisError ? colors.danger : colors.textSecondary },
+                ]}>
                 {aiBillAnalysisError
                   ? `获取失败：${aiBillAnalysisError}`
                   : aiBillAnalysis ??
@@ -642,36 +686,36 @@ export default function FinanceStatsScreen() {
               disabled={aiBillAnalysisBusy}
               style={({ pressed }) => [
                 styles.analysisActionBtn,
-                { backgroundColor: isDark ? 'rgba(96,165,250,0.18)' : 'rgba(37,99,235,0.10)', borderColor: outline },
+                { backgroundColor: colors.primaryMuted, borderColor: colors.outline },
                 pressed && !aiBillAnalysisBusy && { opacity: 0.88 },
                 aiBillAnalysisBusy && { opacity: 0.55 },
               ]}>
-              <MaterialIcons name="psychology" size={18} color={accent} />
-              <Text style={[styles.analysisActionBtnText, { color: accent }]}>
+              <MaterialIcons name="psychology" size={18} color={expenseColor} />
+              <Text style={[Typography.bodyStrong, { color: expenseColor }]}>
                 {aiBillAnalysisBusy ? '分析中…' : aiBillAnalysis ? '重新生成' : '生成 AI 分析'}
               </Text>
             </Pressable>
           </View>
-        </View>
+        </AppCard>
 
-        <View style={[styles.card, { backgroundColor: surface }]}>
+        <AppCard style={[shadows.card, styles.cardGap]}>
           <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: text }]}>{categoryMode === 'income' ? '收入分类构成' : '支出分类构成'}</Text>
-            <View style={[styles.pillTabs, { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : '#f3f4f6' }]}>
-              <Pressable onPress={() => setCategoryMode('expense')}>
-                <Text style={categoryMode === 'expense' ? [styles.pillTabActive, { backgroundColor: accent }] : [styles.pillTab, { color: subtle }]}>支出</Text>
-              </Pressable>
-              <Pressable onPress={() => setCategoryMode('income')}>
-                <Text style={categoryMode === 'income' ? [styles.pillTabActive, { backgroundColor: orange }] : [styles.pillTab, { color: subtle }]}>收入</Text>
-              </Pressable>
+            <Text style={[Typography.title, { color: colors.text }]}>
+              {categoryMode === 'income' ? '收入分类构成' : '支出分类构成'}
+            </Text>
+            <View style={[styles.pillTabs, { backgroundColor: isDark ? colors.surfaceMuted : colors.capsule }]}>
+              {renderModePill('支出', categoryMode === 'expense', expenseColor, () => setCategoryMode('expense'))}
+              {renderModePill('收入', categoryMode === 'income', incomeColor, () => setCategoryMode('income'))}
             </View>
           </View>
 
           <View style={styles.donutArea}>
             <View style={[styles.donutOuter, { borderColor: categoryAccent }]}>
-              <View style={[styles.donutInner, { backgroundColor: surface }]}>
-                <Text style={[styles.donutLabel, { color: subtle }]}>{categoryMode === 'income' ? '本期收入' : '本期支出'}</Text>
-                <Text style={[styles.donutValue, { color: text }]}>{formatMoney(categoryTotal)}</Text>
+              <View style={[styles.donutInner, { backgroundColor: colors.surface }]}>
+                <Text style={[Typography.label, { color: colors.textSecondary }]}>
+                  {categoryMode === 'income' ? '本期收入' : '本期支出'}
+                </Text>
+                <Text style={[Typography.title, { color: colors.text }]}>{formatMoney(categoryTotal)}</Text>
               </View>
             </View>
           </View>
@@ -683,39 +727,37 @@ export default function FinanceStatsScreen() {
               </View>
               <View style={styles.categoryMain}>
                 <View style={styles.categoryTop}>
-                  <Text style={[styles.categoryName, { color: text }]}>{item.name}</Text>
-                  <Text style={[styles.categoryAmount, { color: text }]}>{formatMoney(item.amount)}</Text>
+                  <Text style={[Typography.bodyStrong, { color: colors.text }]}>{item.name}</Text>
+                  <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatMoney(item.amount)}</Text>
                 </View>
                 <View style={styles.categoryBottom}>
-                  <View style={[styles.progressTrack, { backgroundColor: isDark ? 'rgba(148,163,184,0.2)' : '#e5e7eb' }]}>
+                  <View style={[styles.progressTrack, { backgroundColor: colors.progressTrack }]}>
                     <View style={[styles.progressFill, { width: `${item.percent}%`, backgroundColor: item.color }]} />
                   </View>
-                  <Text style={[styles.categoryMeta, { color: subtle }]}>{item.percent.toFixed(2)}% · {item.count}笔</Text>
+                  <Text style={[styles.categoryMeta, { color: colors.textSecondary }]}>
+                    {item.percent.toFixed(2)}% · {item.count}笔
+                  </Text>
                 </View>
               </View>
             </View>
           ))}
-        </View>
+        </AppCard>
 
-        <View style={[styles.card, { backgroundColor: surface }]}>
+        <AppCard style={[shadows.card, styles.cardGap]}>
           <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: text }]}>{trendTitle}</Text>
-            <View style={[styles.pillTabs, { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : '#f3f4f6' }]}>
-              <Pressable onPress={() => setTrendMode('expense')}>
-                <Text style={trendMode === 'expense' ? [styles.pillTabActive, { backgroundColor: accent }] : [styles.pillTab, { color: subtle }]}>支出</Text>
-              </Pressable>
-              <Pressable onPress={() => setTrendMode('income')}>
-                <Text style={trendMode === 'income' ? [styles.pillTabActive, { backgroundColor: orange }] : [styles.pillTab, { color: subtle }]}>收入</Text>
-              </Pressable>
-              <Pressable onPress={() => setTrendMode('balance')}>
-                <Text style={trendMode === 'balance' ? [styles.pillTabActive, { backgroundColor: green }] : [styles.pillTab, { color: subtle }]}>结余</Text>
-              </Pressable>
+            <Text style={[Typography.title, { color: colors.text }]}>{trendTitle}</Text>
+            <View style={[styles.pillTabs, { backgroundColor: isDark ? colors.surfaceMuted : colors.capsule }]}>
+              {renderModePill('支出', trendMode === 'expense', expenseColor, () => setTrendMode('expense'))}
+              {renderModePill('收入', trendMode === 'income', incomeColor, () => setTrendMode('income'))}
+              {renderModePill('结余', trendMode === 'balance', balanceColor, () => setTrendMode('balance'))}
             </View>
           </View>
 
-          <View style={[styles.trendTip, { backgroundColor: isDark ? 'rgba(148,163,184,0.14)' : '#f8fafc' }]}>
-            <Text style={[styles.trendTipText, { color: subtle }]}>
-              {filteredTransactions.length ? `区间内共 ${filteredTransactions.length} 笔，${trendModeLabel} ${trendTotal < 0 ? '-' : ''}${formatMoney(Math.abs(trendTotal))}` : '当前区间暂无账单数据'}
+          <View style={[styles.trendTip, { backgroundColor: colors.surfaceSubtle }]}>
+            <Text style={[Typography.caption, { color: colors.textSecondary }]}>
+              {filteredTransactions.length
+                ? `区间内共 ${filteredTransactions.length} 笔，${trendModeLabel} ${trendTotal < 0 ? '-' : ''}${formatMoney(Math.abs(trendTotal))}`
+                : '当前区间暂无账单数据'}
             </Text>
           </View>
 
@@ -727,7 +769,7 @@ export default function FinanceStatsScreen() {
                   styles.trendBar,
                   {
                     height: `${h}%`,
-                    backgroundColor: h > 10 ? trendAccent : (isDark ? 'rgba(148,163,184,0.35)' : '#dbeafe'),
+                    backgroundColor: h > 10 ? trendAccent : colors.primaryMuted,
                   },
                 ]}
               />
@@ -735,57 +777,65 @@ export default function FinanceStatsScreen() {
           </View>
           <View style={styles.trendAxis}>
             {trendData.axis.map((label) => (
-              <Text key={label} style={[styles.trendAxisText, { color: subtle }]}>{label}</Text>
+              <Text key={label} style={[styles.trendAxisText, { color: colors.textSecondary }]}>
+                {label}
+              </Text>
             ))}
           </View>
-        </View>
+        </AppCard>
 
-        <View style={[styles.card, { backgroundColor: surface }]}>
-          <Text style={[styles.sectionTitle, { color: text }]}>账单汇总</Text>
-          <View style={[styles.tableWrap, { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : '#f8f9fc' }]}>
+        <AppCard style={[shadows.card, styles.cardGap]}>
+          <Text style={[Typography.title, { color: colors.text }]}>账单汇总</Text>
+          <View style={[styles.tableWrap, { backgroundColor: colors.surfaceSubtle }]}>
             <View style={styles.tableHeader}>
-              <Text style={[styles.tableHeadText, { color: subtle }]}>日期</Text>
-              <Text style={[styles.tableHeadText, { color: subtle }]}>支出</Text>
-              <Text style={[styles.tableHeadText, { color: subtle }]}>收入</Text>
-              <Text style={[styles.tableHeadText, { color: subtle }]}>结余</Text>
+              <Text style={[styles.tableHeadText, { color: colors.textSecondary }]}>日期</Text>
+              <Text style={[styles.tableHeadText, { color: colors.textSecondary }]}>支出</Text>
+              <Text style={[styles.tableHeadText, { color: colors.textSecondary }]}>收入</Text>
+              <Text style={[styles.tableHeadText, { color: colors.textSecondary }]}>结余</Text>
             </View>
             {dailyRows.map((row) => (
-              <View key={row.date} style={[styles.tableRow, { borderBottomColor: outline }]}>
-                <Text style={[styles.tableCell, { color: text }]}>{row.date}</Text>
-                <Text style={[styles.tableCell, { color: accent }]}>{formatMoney(row.expense)}</Text>
-                <Text style={[styles.tableCell, { color: orange }]}>{formatMoney(row.income)}</Text>
-                <Text style={[styles.tableCell, { color: green }]}>{row.balance < 0 ? '-' : ''}{formatMoney(Math.abs(row.balance))}</Text>
+              <View key={row.date} style={[styles.tableRow, { borderBottomColor: colors.outline }]}>
+                <Text style={[styles.tableCell, { color: colors.text }]}>{row.date}</Text>
+                <Text style={[styles.tableCell, { color: expenseColor }]}>{formatMoney(row.expense)}</Text>
+                <Text style={[styles.tableCell, { color: incomeColor }]}>{formatMoney(row.income)}</Text>
+                <Text style={[styles.tableCell, { color: balanceColor }]}>
+                  {row.balance < 0 ? '-' : ''}
+                  {formatMoney(Math.abs(row.balance))}
+                </Text>
               </View>
             ))}
           </View>
-        </View>
+        </AppCard>
 
-        <View style={[styles.card, { backgroundColor: surface, marginBottom: 14 }]}>
+        <AppCard style={[shadows.card, styles.cardGap]}>
           <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: text }]}>{rankMode === 'income' ? '单笔收入排行' : '单笔支出排行'}</Text>
-            <View style={[styles.pillTabs, { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : '#f3f4f6' }]}>
-              <Pressable onPress={() => setRankMode('expense')}>
-                <Text style={rankMode === 'expense' ? [styles.pillTabActive, { backgroundColor: accent }] : [styles.pillTab, { color: subtle }]}>支出</Text>
-              </Pressable>
-              <Pressable onPress={() => setRankMode('income')}>
-                <Text style={rankMode === 'income' ? [styles.pillTabActive, { backgroundColor: orange }] : [styles.pillTab, { color: subtle }]}>收入</Text>
-              </Pressable>
+            <Text style={[Typography.title, { color: colors.text }]}>
+              {rankMode === 'income' ? '单笔收入排行' : '单笔支出排行'}
+            </Text>
+            <View style={[styles.pillTabs, { backgroundColor: isDark ? colors.surfaceMuted : colors.capsule }]}>
+              {renderModePill('支出', rankMode === 'expense', expenseColor, () => setRankMode('expense'))}
+              {renderModePill('收入', rankMode === 'income', incomeColor, () => setRankMode('income'))}
             </View>
           </View>
-          {topRankItems.map((item) => (
-            <View key={item.id} style={[styles.rankRow, { backgroundColor: isDark ? 'rgba(148,163,184,0.1)' : '#f8f9fc' }]}>
-              <Text style={[styles.rankNum, { color: rankMode === 'income' ? orange : accent }]}>{item.rank}</Text>
-              <View style={[styles.rankIcon, { backgroundColor: `${rankMode === 'income' ? orange : accent}22` }]}>
-                <MaterialIcons name={item.icon} size={18} color={rankMode === 'income' ? orange : accent} />
+          {topRankItems.map((item) => {
+            const rankAccent = rankMode === 'income' ? incomeColor : expenseColor;
+            return (
+              <View key={item.id} style={[styles.rankRow, { backgroundColor: colors.surfaceSubtle }]}>
+                <Text style={[styles.rankNum, { color: rankAccent }]}>{item.rank}</Text>
+                <View style={[styles.rankIcon, { backgroundColor: `${rankAccent}22` }]}>
+                  <MaterialIcons name={item.icon} size={18} color={rankAccent} />
+                </View>
+                <View style={styles.rankMain}>
+                  <Text style={[Typography.bodyStrong, styles.rankTitle, { color: colors.text }]}>{item.name}</Text>
+                  {item.desc ? (
+                    <Text style={[Typography.caption, { color: colors.textSecondary }]}>{item.desc}</Text>
+                  ) : null}
+                </View>
+                <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatMoney(item.amount)}</Text>
               </View>
-              <View style={styles.rankMain}>
-                <Text style={[styles.rankTitle, { color: text }]}>{item.name}</Text>
-                {item.desc ? <Text style={[styles.rankDesc, { color: subtle }]}>{item.desc}</Text> : null}
-              </View>
-              <Text style={[styles.rankAmount, { color: text }]}>{formatMoney(item.amount)}</Text>
-            </View>
-          ))}
-        </View>
+            );
+          })}
+        </AppCard>
       </ScrollView>
     </SafeAreaView>
   );
@@ -793,278 +843,179 @@ export default function FinanceStatsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: {
-    height: 56,
-    paddingHorizontal: 14,
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  iconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerTitle: {
-    fontSize: 19,
-    fontWeight: '900',
-    letterSpacing: 0.6,
-  },
   scrollContent: {
-    padding: 14,
-    paddingBottom: 28,
-    gap: 12,
+    maxWidth: Layout.contentMaxWidth,
+    alignSelf: 'center',
+    width: '100%',
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['3xl'],
+    gap: Spacing['4xl'],
+  },
+  cardGap: {
+    gap: Spacing.xl,
   },
   tabWrap: {
-    borderRadius: 999,
-    padding: 4,
+    borderRadius: Radius.pill,
+    padding: Spacing.xs,
     flexDirection: 'row',
   },
   tabBtn: {
     flex: 1,
-    borderRadius: 999,
-    paddingVertical: 8,
+    borderRadius: Radius.pill,
+    paddingVertical: Spacing.md,
     alignItems: 'center',
   },
-  tabBtnActive: {
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  tabText: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
+  tabBtnActive: {},
   monthSwitcher: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 6,
-  },
-  switchBtn: {
-    width: 36,
-    height: 32,
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingHorizontal: Spacing.sm,
   },
   monthText: {
-    fontSize: 15,
-    fontWeight: '700',
+    textAlign: 'center',
+    flex: 1,
   },
   customDateWrap: {
-    borderRadius: 16,
-    padding: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: Spacing.lg,
   },
   datePickerBtn: {
     flex: 1,
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 4,
-  },
-  datePickerLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  datePickerValue: {
-    fontSize: 14,
-    fontWeight: '800',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
+    gap: Spacing.xs,
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(15,23,42,0.45)',
     justifyContent: 'center',
-    padding: 20,
+    padding: Spacing['5xl'],
   },
   modalCard: {
-    borderRadius: 24,
-    padding: 18,
-    gap: 16,
+    borderRadius: Radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['4xl'],
+    gap: Spacing['3xl'],
   },
   modalHeader: {
-    gap: 6,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '900',
+    gap: Spacing.sm,
   },
   modalSubtitle: {
-    fontSize: 12,
     lineHeight: 18,
   },
   modalPreview: {
-    borderRadius: 16,
-    padding: 12,
-    gap: 4,
-  },
-  modalPreviewLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  modalPreviewValue: {
-    fontSize: 20,
-    fontWeight: '900',
-  },
-  modalErrorText: {
-    color: '#ef4444',
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    borderRadius: Radius.xl,
+    padding: Spacing.xl,
+    gap: Spacing.xs,
   },
   pickerColumns: {
     flexDirection: 'row',
-    gap: 10,
+    gap: Spacing.lg,
   },
   pickerColumnCard: {
     flex: 1,
-    borderRadius: 18,
-    paddingVertical: 12,
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing.xl,
     alignItems: 'center',
-    gap: 8,
+    gap: Spacing.md,
   },
   pickerAdjustBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 999,
+    width: Layout.iconButtonSize,
+    height: Layout.iconButtonSize,
+    borderRadius: Radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  pickerColumnLabel: {
-    fontSize: 12,
-    fontWeight: '700',
   },
   pickerColumnValue: {
     fontSize: 22,
-    fontWeight: '900',
   },
   modalActions: {
     flexDirection: 'row',
-    gap: 10,
+    gap: Spacing.lg,
   },
   modalActionBtn: {
     flex: 1,
-    borderRadius: 14,
-    paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalActionText: {
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  modalActionTextPrimary: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  card: {
-    borderRadius: 22,
-    padding: 14,
-    gap: 12,
   },
   summaryRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
   },
   summaryCol: {
+    flex: 1,
+    minWidth: 0,
     alignItems: 'center',
-    width: '32%',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.xs,
   },
   summaryLabel: {
-    fontSize: 12,
-    marginBottom: 4,
+    textAlign: 'center',
+    width: '100%',
   },
-  summaryValue: {
-    fontSize: 20,
-    fontWeight: '800',
+  summaryAmount: {
+    ...Typography.h2,
+    textAlign: 'center',
+    width: '100%',
   },
   analysisCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    padding: 12,
-    gap: 8,
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing.xl,
+    gap: Spacing.md,
   },
   analysisHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-  },
-  analysisTitle: {
-    fontSize: 13,
-    fontWeight: '800',
+    gap: Spacing.md,
   },
   analysisBody: {
-    fontSize: 12,
     lineHeight: 18,
   },
   analysisLoadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: Spacing.lg,
   },
   analysisActionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    marginTop: 4,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-  },
-  analysisActionBtnText: {
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  analysisLink: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  analysisLinkText: {
-    fontSize: 11,
-    fontWeight: '700',
+    gap: Spacing.md,
+    marginTop: Spacing.xs,
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.xl,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '800',
+    gap: Spacing.md,
   },
   pillTabs: {
-    borderRadius: 999,
-    padding: 3,
+    borderRadius: Radius.pill,
+    padding: Spacing.xs,
     flexDirection: 'row',
-    gap: 4,
+    gap: Spacing.xs,
     alignItems: 'center',
   },
   pillTabActive: {
     color: '#fff',
     fontSize: 11,
-    fontWeight: '700',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
+    fontWeight: '800',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
     overflow: 'hidden',
   },
   pillTab: {
     fontSize: 11,
-    fontWeight: '700',
-    paddingHorizontal: 10,
+    fontWeight: '800',
+    paddingHorizontal: Spacing.lg,
   },
   donutArea: {
     alignItems: 'center',
@@ -1085,57 +1036,41 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  donutLabel: {
-    fontSize: 11,
-    marginBottom: 3,
-  },
-  donutValue: {
-    fontSize: 16,
-    fontWeight: '800',
-  },
   categoryRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: Spacing.lg,
     alignItems: 'center',
   },
   categoryIcon: {
     width: 30,
     height: 30,
-    borderRadius: 999,
+    borderRadius: Radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
   },
   categoryMain: {
     flex: 1,
-    gap: 4,
+    gap: Spacing.xs,
   },
   categoryTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  categoryName: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  categoryAmount: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
   categoryBottom: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: Spacing.md,
   },
   progressTrack: {
     flex: 1,
     height: 6,
-    borderRadius: 999,
+    borderRadius: Radius.pill,
     overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
-    borderRadius: 999,
+    borderRadius: Radius.pill,
   },
   categoryMeta: {
     fontSize: 10,
@@ -1144,29 +1079,25 @@ const styles = StyleSheet.create({
   },
   trendTip: {
     alignSelf: 'center',
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  trendTipText: {
-    fontSize: 11,
-    fontWeight: '600',
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
   },
   trendChart: {
     height: 128,
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: 1,
-    paddingHorizontal: 2,
+    paddingHorizontal: Spacing.xs,
   },
   trendBar: {
     flex: 1,
-    borderTopLeftRadius: 4,
-    borderTopRightRadius: 4,
+    borderTopLeftRadius: Radius.xs,
+    borderTopRightRadius: Radius.xs,
     minHeight: 2,
   },
   trendAxis: {
-    marginTop: 2,
+    marginTop: Spacing.xs,
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
@@ -1178,13 +1109,13 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   tableWrap: {
-    borderRadius: 14,
-    padding: 8,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
   },
   tableHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 6,
+    paddingVertical: Spacing.sm,
   },
   tableHeadText: {
     width: '25%',
@@ -1195,7 +1126,7 @@ const styles = StyleSheet.create({
   tableRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 10,
+    paddingVertical: Spacing.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   tableCell: {
@@ -1205,11 +1136,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   rankRow: {
-    borderRadius: 14,
-    padding: 10,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: Spacing.md,
   },
   rankNum: {
     width: 18,
@@ -1219,23 +1150,15 @@ const styles = StyleSheet.create({
   rankIcon: {
     width: 34,
     height: 34,
-    borderRadius: 10,
+    borderRadius: Radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
   },
   rankMain: {
     flex: 1,
-    gap: 2,
+    gap: Spacing.xs,
   },
   rankTitle: {
     fontSize: 12,
-    fontWeight: '700',
-  },
-  rankDesc: {
-    fontSize: 11,
-  },
-  rankAmount: {
-    fontSize: 13,
-    fontWeight: '800',
   },
 });

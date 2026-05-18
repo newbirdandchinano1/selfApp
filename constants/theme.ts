@@ -1,47 +1,58 @@
 /**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
+ * 应用主题色 — 与财务页设计规范对齐。
+ * 完整令牌见 `constants/design-tokens.ts`，运行时语义色见 `useAppTheme`。
  */
 
 import { Platform } from 'react-native';
 
-const tintColorLight = '#10b981';
-const tintColorDark = '#10b981';
+import { getPalette, PaletteDark, PaletteLight } from './design-tokens';
 
+const light = PaletteLight;
+const dark = PaletteDark;
+
+/** @deprecated 新代码请用 `useAppTheme().colors` */
 export const Colors = {
   light: {
-    text: '#1e293b', // text-primary-light
-    textSecondary: '#64748b', // text-secondary-light
-    background: '#f8fafc', // background-light
-    surface: '#ffffff', // surface-light
-    tint: tintColorLight,
-    icon: '#64748b',
-    tabIconDefault: '#64748b',
-    tabIconSelected: tintColorLight,
-    primary: '#10b981',
+    text: light.text,
+    textSecondary: light.textSecondary,
+    background: light.background,
+    surface: light.surface,
+    tint: light.primary,
+    icon: light.textSecondary,
+    tabIconDefault: light.textSecondary,
+    tabIconSelected: light.primary,
+    primary: light.primary,
+    secondary: light.secondary,
+    tertiary: light.tertiary,
+    danger: light.danger,
+    input: light.input,
+    outline: light.outline,
   },
   dark: {
-    text: '#f8fafc', // text-primary-dark
-    textSecondary: '#94a3b8', // text-secondary-dark
-    background: '#0f172a', // background-dark
-    surface: '#1e293b', // surface-dark
-    tint: tintColorDark,
-    icon: '#94a3b8',
-    tabIconDefault: '#94a3b8',
-    tabIconSelected: tintColorDark,
-    primary: '#10b981',
+    text: dark.text,
+    textSecondary: dark.textSecondary,
+    background: dark.background,
+    surface: dark.surface,
+    tint: dark.primary,
+    icon: dark.textSecondary,
+    tabIconDefault: dark.textSecondary,
+    tabIconSelected: dark.primary,
+    primary: dark.primary,
+    secondary: dark.secondary,
+    tertiary: dark.tertiary,
+    danger: dark.danger,
+    input: dark.input,
+    outline: dark.outline,
   },
 };
 
+export { getPalette, PaletteDark, PaletteLight };
+
 export const Fonts = Platform.select({
   ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
     sans: 'system-ui',
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
     serif: 'ui-serif',
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
     rounded: 'ui-rounded',
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
     mono: 'ui-monospace',
   },
   default: {

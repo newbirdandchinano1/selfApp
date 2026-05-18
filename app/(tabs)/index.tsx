@@ -1,6 +1,7 @@
 import { RecordIntakeSheet, type RecordIntakeConfirmPayload } from '@/components/record-intake-sheet';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AppIconButton } from '@/components/ui';
+import { HealthNutrientAccents, Layout, Radius, Spacing } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Directory, File, Paths } from 'expo-file-system';
@@ -69,7 +70,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
 import Svg, { Circle } from 'react-native-svg';
 
@@ -285,7 +286,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         icon: row.source_image_uri?.trim() ? 'photo-camera' : 'auto-awesome',
         iconBgLight: 'rgba(16,185,129,0.12)',
         iconBgDark: 'rgba(6,78,59,0.32)',
-        iconColor: '#10b981',
+        iconColor: HealthNutrientAccents.hydration,
       });
       continue;
     }
@@ -307,7 +308,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         icon: getMetricQuickAdd(qa, 'hydration')?.icon as keyof typeof MaterialIcons.glyphMap || 'water-drop',
         iconBgLight: 'rgba(16,185,129,0.12)',
         iconBgDark: 'rgba(6,78,59,0.32)',
-        iconColor: '#10b981',
+        iconColor: HealthNutrientAccents.hydration,
       });
     }
     if (p > 0) {
@@ -325,7 +326,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
         iconBgLight: 'rgba(245,158,11,0.14)',
         iconBgDark: 'rgba(120,53,15,0.32)',
-        iconColor: '#f59e0b',
+        iconColor: HealthNutrientAccents.protein,
       });
     }
     if (s > 0) {
@@ -343,7 +344,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
         iconBgLight: 'rgba(168,85,247,0.14)',
         iconBgDark: 'rgba(88,28,135,0.32)',
-        iconColor: '#a855f7',
+        iconColor: HealthNutrientAccents.sodium,
       });
     }
     if (c > 0) {
@@ -361,7 +362,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'rice-bowl',
         iconBgLight: 'rgba(234,179,8,0.14)',
         iconBgDark: 'rgba(113,63,18,0.32)',
-        iconColor: '#eab308',
+        iconColor: HealthNutrientAccents.carbohydrate,
       });
     }
   }
@@ -518,6 +519,7 @@ const CircularProgress = ({
   percentage,
   icon,
   color,
+  trackColor = 'rgba(148, 163, 184, 0.26)',
   size = 64,
   strokeWidth = 6,
   opacity = 1,
@@ -525,6 +527,7 @@ const CircularProgress = ({
   percentage: number;
   icon: keyof typeof MaterialIcons.glyphMap;
   color: string;
+  trackColor?: string;
   size?: number;
   strokeWidth?: number;
   opacity?: number;
@@ -550,7 +553,7 @@ const CircularProgress = ({
   return (
     <View style={[styles.progressContainer, { width: size, height: size }]}>
       <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: [{ rotate: '-90deg' }] }}>
-        <Circle cx={size / 2} cy={size / 2} r={radius} stroke="rgba(148, 163, 184, 0.26)" strokeWidth={strokeWidth} fill="none" />
+        <Circle cx={size / 2} cy={size / 2} r={radius} stroke={trackColor} strokeWidth={strokeWidth} fill="none" />
         <AnimatedCircle
           cx={size / 2}
           cy={size / 2}
@@ -573,9 +576,11 @@ const CircularProgress = ({
 
 export default function HealthScreen() {
   const router = useRouter();
-  const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const { colors, isDark } = useAppTheme();
+  const insets = useSafeAreaInsets();
+  const pageInset = Spacing['5xl'] * 2;
+  const weekPagerWidth = width - pageInset;
+  const cardWidth = (width - pageInset - Spacing.md * 3) / 4;
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [assistantOpen, setAssistantOpen] = React.useState(false);
   const [assistantTab, setAssistantTab] = React.useState<'水分' | '蛋白质' | '碳水' | '钠'>('水分');
@@ -1289,7 +1294,7 @@ export default function HealthScreen() {
           icon: 'hourglass-empty',
           iconBgLight: 'rgba(59,130,246,0.14)',
           iconBgDark: 'rgba(30,58,138,0.35)',
-          iconColor: '#3b82f6',
+          iconColor: colors.primarySoft,
           isPlaceholder: true,
         }
       : null;
@@ -1301,7 +1306,7 @@ export default function HealthScreen() {
       hasMore: merged.length > max,
       showEmpty: lines.length === 0 && !placeholderLine,
     };
-  }, [selectedDayRecords, quickAddCatalog, pendingIntake]);
+  }, [selectedDayRecords, quickAddCatalog, pendingIntake, colors.primarySoft]);
 
   React.useEffect(() => {
     const t = setTimeout(() => {
@@ -1466,12 +1471,9 @@ export default function HealthScreen() {
     };
   }, [statusShimmerAnim]);
 
-  const weekPagerWidth = width - 48;
-  const cardWidth = (width - 48 - 24) / 4;
-
   const assistantTheme = {
     水分: {
-      accent: '#10b981',
+      accent: HealthNutrientAccents.hydration,
       unit: 'ml',
       placeholder: '2500',
       best: '2,850',
@@ -1479,7 +1481,7 @@ export default function HealthScreen() {
       community: '2,200',
     },
     蛋白质: {
-      accent: '#f59e0b',
+      accent: HealthNutrientAccents.protein,
       unit: 'g',
       placeholder: '80',
       best: '75',
@@ -1487,7 +1489,7 @@ export default function HealthScreen() {
       community: '70',
     },
     碳水: {
-      accent: '#eab308',
+      accent: HealthNutrientAccents.carbohydrate,
       unit: 'g',
       placeholder: '260',
       best: '280',
@@ -1495,7 +1497,7 @@ export default function HealthScreen() {
       community: '260',
     },
     钠: {
-      accent: '#a855f7',
+      accent: HealthNutrientAccents.sodium,
       unit: 'mg',
       placeholder: '2000',
       best: '2,000',
@@ -1664,18 +1666,24 @@ export default function HealthScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
-      <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(248, 250, 252, 0.92)' }]}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['left', 'right']}>
+      <View
+        style={[
+          styles.header,
+          {
+            backgroundColor: colors.headerScrim,
+            borderBottomColor: colors.outline,
+            paddingTop: insets.top,
+          },
+        ]}>
         <View style={styles.headerTopRow}>
-          <View style={{ width: 32 }} />
-          <Text style={[styles.headerTitle, { color: theme.text }]}>{formatHeaderDate(selectedDate)}</Text>
-          <TouchableOpacity
-            style={styles.calendarBtn}
-            activeOpacity={0.75}
+          <View style={styles.headerSideSpacer} />
+          <Text style={[styles.headerTitle, { color: colors.text }]}>{formatHeaderDate(selectedDate)}</Text>
+          <AppIconButton
+            icon="calendar-today"
             onPress={() => router.push('/health-calendar')}
-          >
-            <MaterialIcons name="calendar-today" size={22} color={theme.text} />
-          </TouchableOpacity>
+            accessibilityLabel="健康日历"
+          />
         </View>
 
         <ScrollView
@@ -1731,8 +1739,8 @@ export default function HealthScreen() {
                       style={[
                         styles.weekDayItem,
                         {
-                          backgroundColor: isActive ? theme.primary : 'transparent',
-                          borderColor: isActive ? `${theme.primary}00` : isDark ? 'rgba(148,163,184,0.15)' : 'rgba(148,163,184,0.18)',
+                          backgroundColor: isActive ? colors.primary : 'transparent',
+                          borderColor: isActive ? `${colors.primary}00` : colors.outline,
                           opacity: disabled ? 0.45 : 1,
                         },
                       ]}
@@ -1743,8 +1751,8 @@ export default function HealthScreen() {
                           isActive ? { transform: [{ scale: selectedDayPopAnim }] } : undefined,
                         ]}
                       >
-                        <Text style={[styles.weekDayDate, { color: isActive ? '#fff' : theme.textSecondary }]}>{item.day}</Text>
-                        <Text style={[styles.weekDayLabel, { color: isActive ? '#fff' : `${theme.textSecondary}CC` }]}>{item.label}</Text>
+                        <Text style={[styles.weekDayDate, { color: isActive ? colors.onPrimary : colors.textSecondary }]}>{item.day}</Text>
+                        <Text style={[styles.weekDayLabel, { color: isActive ? colors.onPrimary : colors.textSecondary, opacity: isActive ? 1 : 0.8 }]}>{item.label}</Text>
                       </Animated.View>
                     </TouchableOpacity>
                   );
@@ -1755,14 +1763,14 @@ export default function HealthScreen() {
         </ScrollView>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Animated.View
           pointerEvents="none"
           style={[
             styles.bgOrb,
             styles.bgOrbTop,
             {
-              backgroundColor: `${theme.primary}18`,
+              backgroundColor: `${colors.primary}18`,
               transform: [
                 {
                   translateY: bgFloatAnim.interpolate({
@@ -1786,7 +1794,7 @@ export default function HealthScreen() {
             styles.bgOrb,
             styles.bgOrbMiddle,
             {
-              backgroundColor: `${theme.primary}10`,
+              backgroundColor: `${colors.primary}10`,
               transform: [
                 {
                   translateY: bgFloatAnim.interpolate({
@@ -1876,19 +1884,20 @@ export default function HealthScreen() {
                   transform: [{ translateY: cardTranslateY }, { translateY: impactLift }, { scale: cardScale }, { scale: impactScale }],
                 }}
               >
-                <View style={[styles.metricCard, { backgroundColor: theme.surface, width: cardWidth }]}>
-                  <View style={[styles.metricCardGlow, { backgroundColor: `${theme.primary}14` }]} />
+                <View style={[styles.metricCard, { backgroundColor: colors.surface, borderColor: colors.outline, width: cardWidth }]}>
+                  <View style={[styles.metricCardGlow, { backgroundColor: `${colors.primary}14` }]} />
                   <Animated.View style={{ transform: [{ rotate: wheelRotate }, { scale: wheelScale }] }}>
                     <CircularProgress
                       percentage={animatedPercent}
                       icon={item.icon}
-                      color={theme.primary}
+                      color={colors.primary}
+                      trackColor={colors.outline}
                       opacity={item.opacity}
                     />
                   </Animated.View>
-                  <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>{item.label}</Text>
-                  <Text style={[styles.metricValue, { color: theme.text }]}>{animatedPercent}%</Text>
-                  <Text style={[styles.metricSubValue, { color: theme.textSecondary }]}> 
+                  <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>{item.label}</Text>
+                  <Text style={[styles.metricValue, { color: colors.text }]}>{animatedPercent}%</Text>
+                  <Text style={[styles.metricSubValue, { color: colors.textSecondary }]}> 
                     {row.current.toLocaleString()} / {displayTarget.toLocaleString()}
                   </Text>
                 </View>
@@ -1922,32 +1931,32 @@ export default function HealthScreen() {
             ],
           }}
         >
-          <View style={[styles.statusCard, { backgroundColor: theme.surface }]}> 
+          <View style={[styles.statusCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
             <View style={styles.statusItem}>
-              <View style={[styles.statusItemAccent, { backgroundColor: '#10b981' }]} />
+              <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.hydration }]} />
               <View style={styles.statusItemBody}>
                 <View style={styles.statusLineRow}>
-                  <Text style={[styles.statusItemTitle, { color: theme.text }]}>水分摄入</Text>
-                  <Text style={[styles.statusBadge, { color: '#10b981', backgroundColor: '#10b9811A' }]}>
+                  <Text style={[styles.statusItemTitle, { color: colors.text }]}>水分摄入</Text>
+                  <Text style={[styles.statusBadge, { color: HealthNutrientAccents.hydration, backgroundColor: `${HealthNutrientAccents.hydration}1A` }]}>
                     {Math.round(animatedMetricPercents.hydration)}%
                   </Text>
                 </View>
-                <Text style={[styles.statusDesc, { color: theme.textSecondary }]}>
+                <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
                   {hydrationStatusDesc(dayIntakeDisplay.hydration.percent)}
                 </Text>
                 <View style={styles.statusValueRow}>
-                  <Text style={[styles.statusValueMain, { color: '#10b981' }]}>
+                  <Text style={[styles.statusValueMain, { color: HealthNutrientAccents.hydration }]}>
                     {dayIntakeDisplay.hydration.current.toLocaleString()}
                   </Text>
-                  <Text style={[styles.statusValueSub, { color: theme.textSecondary }]}>
+                  <Text style={[styles.statusValueSub, { color: colors.textSecondary }]}>
                     ML / {intakeTargetsSnapshot.hydrationMl.toLocaleString()}
                   </Text>
                 </View>
-                <View style={styles.statusTrack}>
+                <View style={[styles.statusTrack, { backgroundColor: colors.outline }]}>
                   <View
                     style={[
                       styles.statusTrackFill,
-                      { width: `${Math.round(animatedMetricPercents.hydration)}%`, backgroundColor: '#10b981' },
+                      { width: `${Math.round(animatedMetricPercents.hydration)}%`, backgroundColor: HealthNutrientAccents.hydration },
                     ]}
                   />
                 </View>
@@ -1955,30 +1964,30 @@ export default function HealthScreen() {
             </View>
 
             <View style={[styles.statusItem, styles.statusItemSpacing]}>
-              <View style={[styles.statusItemAccent, { backgroundColor: '#f59e0b' }]} />
+              <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.protein }]} />
               <View style={styles.statusItemBody}>
                 <View style={styles.statusLineRow}>
-                  <Text style={[styles.statusItemTitle, { color: theme.text }]}>蛋白质摄入</Text>
-                  <Text style={[styles.statusBadge, { color: '#f59e0b', backgroundColor: '#f59e0b1A' }]}>
+                  <Text style={[styles.statusItemTitle, { color: colors.text }]}>蛋白质摄入</Text>
+                  <Text style={[styles.statusBadge, { color: HealthNutrientAccents.protein, backgroundColor: `${HealthNutrientAccents.protein}1A` }]}>
                     {Math.round(animatedMetricPercents.protein)}%
                   </Text>
                 </View>
-                <Text style={[styles.statusDesc, { color: theme.textSecondary }]}>
+                <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
                   {proteinStatusDesc(dayIntakeDisplay.protein.percent)}
                 </Text>
                 <View style={styles.statusValueRow}>
-                  <Text style={[styles.statusValueMain, { color: '#f59e0b' }]}>
+                  <Text style={[styles.statusValueMain, { color: HealthNutrientAccents.protein }]}>
                     {dayIntakeDisplay.protein.current.toLocaleString()}
                   </Text>
-                  <Text style={[styles.statusValueSub, { color: theme.textSecondary }]}>
+                  <Text style={[styles.statusValueSub, { color: colors.textSecondary }]}>
                     G / {intakeTargetsSnapshot.proteinG.toLocaleString()}
                   </Text>
                 </View>
-                <View style={styles.statusTrack}>
+                <View style={[styles.statusTrack, { backgroundColor: colors.outline }]}>
                   <View
                     style={[
                       styles.statusTrackFill,
-                      { width: `${Math.round(animatedMetricPercents.protein)}%`, backgroundColor: '#f59e0b' },
+                      { width: `${Math.round(animatedMetricPercents.protein)}%`, backgroundColor: HealthNutrientAccents.protein },
                     ]}
                   />
                 </View>
@@ -1986,30 +1995,30 @@ export default function HealthScreen() {
             </View>
 
             <View style={[styles.statusItem, styles.statusItemSpacing]}>
-              <View style={[styles.statusItemAccent, { backgroundColor: '#eab308' }]} />
+              <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.carbohydrate }]} />
               <View style={styles.statusItemBody}>
                 <View style={styles.statusLineRow}>
-                  <Text style={[styles.statusItemTitle, { color: theme.text }]}>碳水摄入</Text>
-                  <Text style={[styles.statusBadge, { color: '#eab308', backgroundColor: '#eab3081A' }]}>
+                  <Text style={[styles.statusItemTitle, { color: colors.text }]}>碳水摄入</Text>
+                  <Text style={[styles.statusBadge, { color: HealthNutrientAccents.carbohydrate, backgroundColor: `${HealthNutrientAccents.carbohydrate}1A` }]}>
                     {Math.round(animatedMetricPercents.carbohydrate)}%
                   </Text>
                 </View>
-                <Text style={[styles.statusDesc, { color: theme.textSecondary }]}>
+                <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
                   {carbohydrateStatusDesc(dayIntakeDisplay.carbohydrate.percent)}
                 </Text>
                 <View style={styles.statusValueRow}>
-                  <Text style={[styles.statusValueMain, { color: '#eab308' }]}>
+                  <Text style={[styles.statusValueMain, { color: HealthNutrientAccents.carbohydrate }]}>
                     {dayIntakeDisplay.carbohydrate.current.toLocaleString()}
                   </Text>
-                  <Text style={[styles.statusValueSub, { color: theme.textSecondary }]}>
+                  <Text style={[styles.statusValueSub, { color: colors.textSecondary }]}>
                     G / {intakeTargetsSnapshot.carbohydrateG.toLocaleString()}
                   </Text>
                 </View>
-                <View style={styles.statusTrack}>
+                <View style={[styles.statusTrack, { backgroundColor: colors.outline }]}>
                   <View
                     style={[
                       styles.statusTrackFill,
-                      { width: `${Math.round(animatedMetricPercents.carbohydrate)}%`, backgroundColor: '#eab308' },
+                      { width: `${Math.round(animatedMetricPercents.carbohydrate)}%`, backgroundColor: HealthNutrientAccents.carbohydrate },
                     ]}
                   />
                 </View>
@@ -2017,30 +2026,30 @@ export default function HealthScreen() {
             </View>
 
             <View style={[styles.statusItem, styles.statusItemSpacing]}>
-              <View style={[styles.statusItemAccent, { backgroundColor: '#a855f7' }]} />
+              <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.sodium }]} />
               <View style={styles.statusItemBody}>
                 <View style={styles.statusLineRow}>
-                  <Text style={[styles.statusItemTitle, { color: theme.text }]}>钠含量监控</Text>
-                  <Text style={[styles.statusBadge, { color: '#a855f7', backgroundColor: '#a855f71A' }]}>
+                  <Text style={[styles.statusItemTitle, { color: colors.text }]}>钠含量监控</Text>
+                  <Text style={[styles.statusBadge, { color: HealthNutrientAccents.sodium, backgroundColor: `${HealthNutrientAccents.sodium}1A` }]}>
                     {Math.round(animatedMetricPercents.sodium)}%
                   </Text>
                 </View>
-                <Text style={[styles.statusDesc, { color: theme.textSecondary }]}>
+                <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
                   {sodiumStatusDesc(dayIntakeDisplay.sodium.percent)}
                 </Text>
                 <View style={styles.statusValueRow}>
-                  <Text style={[styles.statusValueMain, { color: '#a855f7' }]}>
+                  <Text style={[styles.statusValueMain, { color: HealthNutrientAccents.sodium }]}>
                     {dayIntakeDisplay.sodium.current.toLocaleString()}
                   </Text>
-                  <Text style={[styles.statusValueSub, { color: theme.textSecondary }]}>
+                  <Text style={[styles.statusValueSub, { color: colors.textSecondary }]}>
                     MG / {intakeTargetsSnapshot.sodiumMg.toLocaleString()}
                   </Text>
                 </View>
-                <View style={styles.statusTrack}>
+                <View style={[styles.statusTrack, { backgroundColor: colors.outline }]}>
                   <View
                     style={[
                       styles.statusTrackFill,
-                      { width: `${Math.round(animatedMetricPercents.sodium)}%`, backgroundColor: '#a855f7' },
+                      { width: `${Math.round(animatedMetricPercents.sodium)}%`, backgroundColor: HealthNutrientAccents.sodium },
                     ]}
                   />
                 </View>
@@ -2064,9 +2073,9 @@ export default function HealthScreen() {
         >
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>快速添加</Text>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>快速添加</Text>
             <TouchableOpacity activeOpacity={0.75} onPress={() => router.push('/quick-add-edit')}>
-              <Text style={[styles.editBtn, { color: theme.primary }]}>编辑</Text>
+              <Text style={[styles.editBtn, { color: colors.primary }]}>编辑</Text>
             </TouchableOpacity>
           </View>
 
@@ -2096,7 +2105,7 @@ export default function HealthScreen() {
                   }}
                 >
                   <TouchableOpacity
-                    style={[styles.quickAddCard, { backgroundColor: theme.surface, width: cardWidth, opacity: intakeParseLocked ? 0.45 : 1 }]}
+                    style={[styles.quickAddCard, { backgroundColor: colors.surface, borderColor: colors.outline, width: cardWidth, opacity: intakeParseLocked ? 0.45 : 1 }]}
                     activeOpacity={0.82}
                     onPress={() => {
                       if (intakeParseLocked) {
@@ -2106,9 +2115,9 @@ export default function HealthScreen() {
                       void persistQuickAddIntake(item);
                     }}
                   >
-                    <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={30} color={theme.textSecondary} style={styles.quickAddIcon} />
-                    <Text style={[styles.quickAddLabel, { color: theme.textSecondary }]}>{item.label}</Text>
-                    <Text style={[styles.quickAddValue, { color: theme.text }]}>{formatQuickAddAmount(item)}</Text>
+                    <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={30} color={colors.textSecondary} style={styles.quickAddIcon} />
+                    <Text style={[styles.quickAddLabel, { color: colors.textSecondary }]}>{item.label}</Text>
+                    <Text style={[styles.quickAddValue, { color: colors.text }]}>{formatQuickAddAmount(item)}</Text>
                   </TouchableOpacity>
                 </Animated.View>
               );
@@ -2133,7 +2142,7 @@ export default function HealthScreen() {
         >
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>摄入记录</Text>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>摄入记录</Text>
             <TouchableOpacity
               activeOpacity={0.75}
               onPress={() =>
@@ -2143,7 +2152,7 @@ export default function HealthScreen() {
                 })
               }
             >
-              <Text style={[styles.editBtn, { color: theme.primary }]}>查看全部</Text>
+              <Text style={[styles.editBtn, { color: colors.primary }]}>查看全部</Text>
             </TouchableOpacity>
           </View>
 
@@ -2151,10 +2160,10 @@ export default function HealthScreen() {
             <View
               style={[
                 styles.intakeEmptyBox,
-                { backgroundColor: theme.surface, borderColor: isDark ? 'rgba(148,163,184,0.14)' : '#e2e8f0' },
+                { backgroundColor: colors.surfaceMuted, borderColor: colors.outline },
               ]}
             >
-              <Text style={[styles.intakeEmptyText, { color: theme.textSecondary }]}>暂无摄入记录，点击上方添加或记录新摄入</Text>
+              <Text style={[styles.intakeEmptyText, { color: colors.textSecondary }]}>暂无摄入记录，点击上方添加或记录新摄入</Text>
             </View>
           ) : (
             <View style={styles.intakeList}>
@@ -2168,8 +2177,8 @@ export default function HealthScreen() {
                         styles.intakeRow,
                         isCombinedIntake && styles.intakeRowStacked,
                         {
-                          backgroundColor: theme.surface,
-                          borderColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(226,232,240,0.9)',
+                          backgroundColor: colors.surface,
+                          borderColor: colors.outline,
                           opacity: 0.92,
                         },
                       ]}
@@ -2185,20 +2194,20 @@ export default function HealthScreen() {
                         </View>
                         <View style={styles.intakeRowText}>
                           <View style={styles.intakeRowHeader}>
-                            <Text style={[styles.intakeRowTitle, { color: theme.text }]} numberOfLines={2}>
+                            <Text style={[styles.intakeRowTitle, { color: colors.text }]} numberOfLines={2}>
                               {line.title}
                             </Text>
-                            <Text style={[styles.intakeRowTime, { color: theme.textSecondary }]}>{line.timeLine}</Text>
+                            <Text style={[styles.intakeRowTime, { color: colors.textSecondary }]}>{line.timeLine}</Text>
                           </View>
-                          <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
+                          <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={1}>
                             {line.note}
                           </Text>
-                          <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
+                          <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={2}>
                             {line.aiComment}
                           </Text>
                         </View>
                       </View>
-                      <Text style={[styles.intakeRowAmountStacked, { color: theme.textSecondary }]}>{line.amountRight}</Text>
+                      <Text style={[styles.intakeRowAmountStacked, { color: colors.textSecondary }]}>{line.amountRight}</Text>
                     </View>
                   );
                 }
@@ -2212,10 +2221,10 @@ export default function HealthScreen() {
                       onPress={() => {
                         void deleteIntakeRecordNow(line.recordId);
                       }}
-                      style={styles.swipeDeleteAction}
+                      style={[styles.swipeDeleteAction, { backgroundColor: colors.danger }]}
                     >
-                      <MaterialIcons name="delete" size={22} color="#fff" />
-                      <Text style={styles.swipeDeleteText}>删除</Text>
+                      <MaterialIcons name="delete" size={22} color={colors.onPrimary} />
+                      <Text style={[styles.swipeDeleteText, { color: colors.onPrimary }]}>删除</Text>
                     </Pressable>
                   )}
                 >
@@ -2236,8 +2245,8 @@ export default function HealthScreen() {
                       styles.intakeRow,
                       isCombinedIntake && styles.intakeRowStacked,
                       {
-                        backgroundColor: theme.surface,
-                        borderColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(226,232,240,0.9)',
+                        backgroundColor: colors.surface,
+                        borderColor: colors.outline,
                       },
                     ]}
                   >
@@ -2255,21 +2264,21 @@ export default function HealthScreen() {
                             </View>
                             <View style={styles.intakeRowText}>
                               <View style={styles.intakeRowHeader}>
-                                <Text style={[styles.intakeRowTitle, { color: theme.text }]} numberOfLines={1}>
+                                <Text style={[styles.intakeRowTitle, { color: colors.text }]} numberOfLines={1}>
                                   {line.title}
                                 </Text>
-                                <Text style={[styles.intakeRowTime, { color: theme.textSecondary }]}>{line.timeLine}</Text>
+                                <Text style={[styles.intakeRowTime, { color: colors.textSecondary }]}>{line.timeLine}</Text>
                               </View>
-                              <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
+                              <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={1}>
                                 {line.note}
                               </Text>
-                              <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
+                              <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={2}>
                                 {line.aiComment}
                               </Text>
                             </View>
                           </View>
                         </View>
-                        <Text style={[styles.intakeRowAmountStacked, { color: theme.text }]}>{line.amountRight}</Text>
+                        <Text style={[styles.intakeRowAmountStacked, { color: colors.text }]}>{line.amountRight}</Text>
                       </>
                     ) : (
                       <>
@@ -2284,18 +2293,18 @@ export default function HealthScreen() {
                           </View>
                           <View style={styles.intakeRowText}>
                             <View style={styles.intakeRowHeader}>
-                              <Text style={[styles.intakeRowTitle, { color: theme.text }]}>{line.title}</Text>
-                              <Text style={[styles.intakeRowTime, { color: theme.textSecondary }]}>{line.timeLine}</Text>
+                              <Text style={[styles.intakeRowTitle, { color: colors.text }]}>{line.title}</Text>
+                              <Text style={[styles.intakeRowTime, { color: colors.textSecondary }]}>{line.timeLine}</Text>
                             </View>
-                            <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={1}>
+                            <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={1}>
                               {line.note}
                             </Text>
-                            <Text style={[styles.intakeRowMeta, { color: theme.textSecondary }]} numberOfLines={2}>
+                            <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={2}>
                               {line.aiComment}
                             </Text>
                           </View>
                         </View>
-                        <Text style={[styles.intakeRowAmount, { color: theme.text }]}>{line.amountRight}</Text>
+                        <Text style={[styles.intakeRowAmount, { color: colors.text }]}>{line.amountRight}</Text>
                       </>
                     )}
                   </Pressable>
@@ -2303,7 +2312,7 @@ export default function HealthScreen() {
               );
               })}
               {intakeListPreview.hasMore ? (
-                <Text style={[styles.intakeMoreHint, { color: theme.textSecondary }]}>
+                <Text style={[styles.intakeMoreHint, { color: colors.textSecondary }]}>
                   还有 {intakeListPreview.total - intakeListPreview.lines.length} 条，点「查看全部」浏览
                 </Text>
               ) : null}
@@ -2325,32 +2334,32 @@ export default function HealthScreen() {
             ],
           }}
         >
-        <View style={[styles.trendCard, { backgroundColor: isDark ? 'rgba(30, 41, 59, 0.54)' : '#f1f5f9' }]}>
+        <View style={[styles.trendCard, { backgroundColor: isDark ? colors.surfaceMuted : colors.capsule, borderColor: colors.outline }]}>
           <View style={styles.trendHeader}>
-            <Text style={[styles.trendTitle, { color: theme.text }]}>每周趋势</Text>
-            <Text style={[styles.trendSub, { color: theme.primary }]}>{weeklyTrendDeltaText}</Text>
+            <Text style={[styles.trendTitle, { color: colors.text }]}>每周趋势</Text>
+            <Text style={[styles.trendSub, { color: colors.primary }]}>{weeklyTrendDeltaText}</Text>
           </View>
 
           <View style={styles.legendRow}>
             <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
-              <Text style={[styles.legendText, { color: theme.textSecondary }]}>水分</Text>
-              <Text style={[styles.legendValue, { color: theme.text }]}>{activeTrend.hydration}</Text>
+              <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.hydration }]} />
+              <Text style={[styles.legendText, { color: colors.textSecondary }]}>水分</Text>
+              <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.hydration}</Text>
             </View>
             <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#f59e0b' }]} />
-              <Text style={[styles.legendText, { color: theme.textSecondary }]}>蛋白质</Text>
-              <Text style={[styles.legendValue, { color: theme.text }]}>{activeTrend.protein}</Text>
+              <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.protein }]} />
+              <Text style={[styles.legendText, { color: colors.textSecondary }]}>蛋白质</Text>
+              <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.protein}</Text>
             </View>
             <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#a855f7' }]} />
-              <Text style={[styles.legendText, { color: theme.textSecondary }]}>钠</Text>
-              <Text style={[styles.legendValue, { color: theme.text }]}>{activeTrend.sodium}</Text>
+              <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.sodium }]} />
+              <Text style={[styles.legendText, { color: colors.textSecondary }]}>钠</Text>
+              <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.sodium}</Text>
             </View>
             <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#eab308' }]} />
-              <Text style={[styles.legendText, { color: theme.textSecondary }]}>碳水</Text>
-              <Text style={[styles.legendValue, { color: theme.text }]}>{activeTrend.carbohydrate}</Text>
+              <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.carbohydrate }]} />
+              <Text style={[styles.legendText, { color: colors.textSecondary }]}>碳水</Text>
+              <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.carbohydrate}</Text>
             </View>
           </View>
 
@@ -2358,7 +2367,7 @@ export default function HealthScreen() {
             <View style={styles.chartInner}>
               <View style={styles.yAxis}>
                 {[100, 75, 50, 25, 0].map((tick) => (
-                  <Text key={tick} style={[styles.yTickText, { color: theme.textSecondary }]}>{tick}</Text>
+                  <Text key={tick} style={[styles.yTickText, { color: colors.textSecondary }]}>{tick}</Text>
                 ))}
               </View>
 
@@ -2370,7 +2379,7 @@ export default function HealthScreen() {
                       styles.gridLine,
                       {
                         top: `${index * 25}%`,
-                        borderColor: isDark ? 'rgba(148,163,184,0.24)' : 'rgba(148,163,184,0.32)',
+                        borderColor: colors.outline,
                       },
                     ]}
                   />
@@ -2464,7 +2473,7 @@ export default function HealthScreen() {
                             ]}
                           />
                         </View>
-                        <Text style={[styles.barLabel, { color: item.active ? theme.text : theme.textSecondary, fontWeight: item.active ? '700' : '500' }]}>
+                        <Text style={[styles.barLabel, { color: item.active ? colors.text : colors.textSecondary, fontWeight: item.active ? '700' : '500' }]}>
                           {item.day}
                         </Text>
                       </Pressable>
@@ -2495,7 +2504,10 @@ export default function HealthScreen() {
         {...floatingCtaPanResponder.panHandlers}
       >
         <TouchableOpacity
-          style={[styles.floatingCtaBtn, { backgroundColor: theme.primary, opacity: intakeParseLocked ? 0.42 : 1 }]}
+          style={[
+            styles.floatingCtaBtn,
+            { backgroundColor: colors.primary, shadowColor: colors.primary, opacity: intakeParseLocked ? 0.42 : 1 },
+          ]}
           onPress={() => {
             if (intakeParseLocked) {
               Alert.alert('请稍候', '当前有一条摄入正在解析，解析完成后再添加。');
@@ -2521,7 +2533,7 @@ export default function HealthScreen() {
           }}
           activeOpacity={0.9}
         >
-          <MaterialIcons name="add" size={30} color="#fff" />
+          <MaterialIcons name="add" size={30} color={colors.onPrimary} />
         </TouchableOpacity>
       </Animated.View>
 
@@ -2531,26 +2543,26 @@ export default function HealthScreen() {
         animationType="fade"
         onRequestClose={() => setAssistantOpen(false)}
       >
-        <Pressable style={styles.assistantOverlay} onPress={() => setAssistantOpen(false)}>
+        <Pressable style={[styles.assistantOverlay, { backgroundColor: colors.overlay }]} onPress={() => setAssistantOpen(false)}>
           <Pressable
-            style={[styles.assistantCard, { backgroundColor: theme.surface, borderColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.85)' }]}
+            style={[styles.assistantCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}
             onPress={() => {}}
           >
             <View style={[styles.assistantGlow, { backgroundColor: `${currentAssistant.accent}1A` }]} />
             <View style={styles.assistantHeader}>
               <View>
-                <Text style={[styles.assistantTitle, { color: theme.text }]}>智能建议</Text>
-                <Text style={[styles.assistantSubTitle, { color: theme.textSecondary }]}>SMART GOAL SETTING</Text>
+                <Text style={[styles.assistantTitle, { color: colors.text }]}>智能建议</Text>
+                <Text style={[styles.assistantSubTitle, { color: colors.textSecondary }]}>SMART GOAL SETTING</Text>
               </View>
               <TouchableOpacity
-                style={[styles.assistantCloseBtn, { backgroundColor: isDark ? 'rgba(51,65,85,0.8)' : '#f1f5f9' }]}
+                style={[styles.assistantCloseBtn, { backgroundColor: isDark ? colors.input : colors.capsule }]}
                 onPress={() => setAssistantOpen(false)}
               >
-                <MaterialIcons name="close" size={18} color={theme.textSecondary} />
+                <MaterialIcons name="close" size={18} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
 
-            <View style={[styles.assistantTabs, { backgroundColor: isDark ? 'rgba(51,65,85,0.48)' : '#f8fafc' }]}>
+            <View style={[styles.assistantTabs, { backgroundColor: isDark ? colors.input : colors.background }]}>
               {(['水分', '蛋白质', '碳水', '钠'] as const).map((tab) => {
                 const active = assistantTab === tab;
                 return (
@@ -2570,8 +2582,8 @@ export default function HealthScreen() {
                     style={[
                       styles.assistantTabBtn,
                       active && {
-                        backgroundColor: isDark ? 'rgba(51,65,85,0.9)' : '#fff',
-                        shadowColor: '#000',
+                        backgroundColor: colors.surface,
+                        shadowColor: colors.text,
                         shadowOpacity: isDark ? 0 : 0.05,
                         shadowOffset: { width: 0, height: 1 },
                         shadowRadius: 2,
@@ -2579,7 +2591,7 @@ export default function HealthScreen() {
                       },
                     ]}
                   >
-                    <Text style={[styles.assistantTabText, { color: active ? currentAssistant.accent : theme.textSecondary }]}>{tab}</Text>
+                    <Text style={[styles.assistantTabText, { color: active ? currentAssistant.accent : colors.textSecondary }]}>{tab}</Text>
                   </TouchableOpacity>
                 );
               })}
@@ -2587,16 +2599,16 @@ export default function HealthScreen() {
 
             <View style={styles.suggestIntroRow}>
               <MaterialIcons name="auto-awesome" size={18} color={currentAssistant.accent} />
-              <Text style={[styles.suggestIntroText, { color: theme.textSecondary }]}>基于您的历史记录和今日活动：</Text>
+              <Text style={[styles.suggestIntroText, { color: colors.textSecondary }]}>基于您的历史记录和今日活动：</Text>
             </View>
             {dailyAiLoading ? (
-              <Text style={[styles.suggestAiHint, { color: theme.textSecondary }]}>正在生成今日 AI 摄入建议…</Text>
+              <Text style={[styles.suggestAiHint, { color: colors.textSecondary }]}>正在生成今日 AI 摄入建议…</Text>
             ) : null}
             {!dailyAiLoading && dailyAiTargets?.rationale_zh ? (
-              <Text style={[styles.suggestAiRationale, { color: theme.text }]}>{dailyAiTargets.rationale_zh}</Text>
+              <Text style={[styles.suggestAiRationale, { color: colors.text }]}>{dailyAiTargets.rationale_zh}</Text>
             ) : null}
             {!dailyAiLoading && !dailyAiTargets && isActiveAiLlmConfigured() === false ? (
-              <Text style={[styles.suggestAiHint, { color: theme.textSecondary }]}>
+              <Text style={[styles.suggestAiHint, { color: colors.textSecondary }]}>
                 未配置 AI 密钥时「今日最佳」使用本地公式；可在「我的」中配置智谱或豆包后获得每日 AI 目标。
               </Text>
             ) : null}
@@ -2607,16 +2619,16 @@ export default function HealthScreen() {
                 const selected = assistantSuggestSelection === row.kind;
                 const itemSurface = selected
                   ? {
-                      backgroundColor: isDark ? `${currentAssistant.accent}1F` : '#f8fafc',
+                      backgroundColor: isDark ? `${currentAssistant.accent}1F` : colors.capsule,
                       borderColor: isDark ? `${currentAssistant.accent}40` : `${currentAssistant.accent}33`,
                     }
                   : {
-                      backgroundColor: isDark ? 'rgba(51,65,85,0.45)' : '#f8fafc',
-                      borderColor: isDark ? 'rgba(148,163,184,0.18)' : '#e2e8f0',
+                      backgroundColor: isDark ? colors.surfaceMuted : colors.background,
+                      borderColor: colors.outline,
                     };
-                const tagColor = selected ? currentAssistant.accent : theme.textSecondary;
+                const tagColor = selected ? currentAssistant.accent : colors.textSecondary;
                 const valueStyle = selected ? styles.suggestValue : styles.suggestValueAlt;
-                const valueColor = selected ? currentAssistant.accent : theme.text;
+                const valueColor = selected ? currentAssistant.accent : colors.text;
                 return (
                   <TouchableOpacity
                     key={row.kind}
@@ -2637,20 +2649,20 @@ export default function HealthScreen() {
                     </View>
                     {selected ? (
                       <View style={[styles.suggestDone, { backgroundColor: currentAssistant.accent }]}>
-                        <MaterialIcons name="check" size={14} color="#fff" />
+                        <MaterialIcons name="check" size={14} color={colors.onPrimary} />
                       </View>
                     ) : (
-                      <MaterialIcons name="chevron-right" size={18} color={theme.textSecondary} />
+                      <MaterialIcons name="chevron-right" size={18} color={colors.textSecondary} />
                     )}
                   </TouchableOpacity>
                 );
               })}
             </View>
 
-            <View style={[styles.manualWrap, { borderTopColor: isDark ? 'rgba(148,163,184,0.18)' : '#e2e8f0' }]}> 
-              <Text style={[styles.manualLabel, { color: theme.textSecondary }]}>手动调整精确值</Text>
+            <View style={[styles.manualWrap, { borderTopColor: colors.outline }]}> 
+              <Text style={[styles.manualLabel, { color: colors.textSecondary }]}>手动调整精确值</Text>
               <View style={styles.manualRow}>
-                <View style={[styles.manualInputWrap, { backgroundColor: isDark ? 'rgba(51,65,85,0.7)' : '#f1f5f9' }]}> 
+                <View style={[styles.manualInputWrap, { backgroundColor: colors.input }]}> 
                   <TextInput
                     value={manualGoal}
                     onChangeText={(text) => setManualGoal(sanitizeAssistantManualGoalInput(text))}
@@ -2658,13 +2670,13 @@ export default function HealthScreen() {
                     autoCorrect={false}
                     autoCapitalize="none"
                     placeholder={currentAssistant.placeholder}
-                    placeholderTextColor={theme.textSecondary}
-                    style={[styles.manualInput, { color: theme.text }]}
+                    placeholderTextColor={colors.textSecondary}
+                    style={[styles.manualInput, { color: colors.text }]}
                   />
-                  <Text style={[styles.manualUnit, { color: theme.textSecondary }]}>{currentAssistant.unit.toUpperCase()}</Text>
+                  <Text style={[styles.manualUnit, { color: colors.textSecondary }]}>{currentAssistant.unit.toUpperCase()}</Text>
                 </View>
                 <TouchableOpacity
-                  style={[styles.sendBtn, { backgroundColor: isDark ? '#fff' : '#0f172a' }]}
+                  style={[styles.sendBtn, { backgroundColor: colors.primary }]}
                   onPress={() => {
                     const n = Number(String(manualGoal).replace(/,/g, '').trim());
                     if (!Number.isFinite(n) || n < 0) return;
@@ -2677,7 +2689,7 @@ export default function HealthScreen() {
                     setAssistantOpen(false);
                   }}
                 >
-                  <MaterialIcons name="send" size={18} color={isDark ? '#0f172a' : '#fff'} />
+                  <MaterialIcons name="send" size={18} color={colors.onPrimary} />
                 </TouchableOpacity>
               </View>
             </View>
@@ -2696,24 +2708,29 @@ export default function HealthScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  header: { paddingHorizontal: 24, paddingTop: 10, paddingBottom: 12, zIndex: 10 },
+  header: {
+    paddingHorizontal: Spacing['5xl'],
+    paddingBottom: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    zIndex: 10,
+  },
   headerTopRow: {
+    height: Layout.headerHeight,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 14,
+    marginBottom: Spacing.lg,
   },
-  calendarBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
+  headerSideSpacer: {
+    width: Layout.iconButtonSize,
+    height: Layout.iconButtonSize,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    letterSpacing: -0.5,
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: -0.2,
+    textAlign: 'center',
   },
   weekPage: {
     paddingRight: 0,
@@ -2753,10 +2770,14 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 1,
   },
+  scroll: { flex: 1 },
   scrollContent: {
-    paddingHorizontal: 24,
-    paddingTop: 8,
-    paddingBottom: 40,
+    maxWidth: Layout.contentMaxWidth,
+    alignSelf: 'center',
+    width: '100%',
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: 0,
+    paddingBottom: Spacing['6xl'],
   },
   bgOrb: {
     position: 'absolute',
@@ -2780,18 +2801,17 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   metricCard: {
-    borderRadius: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 10,
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing['3xl'],
+    paddingHorizontal: Spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.12)',
-    elevation: 3,
-    shadowColor: '#000',
+    borderWidth: StyleSheet.hairlineWidth,
+    elevation: 2,
+    shadowColor: '#0f172a',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
-    shadowRadius: 5,
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
     overflow: 'hidden',
   },
   metricCardGlow: {
@@ -2821,23 +2841,23 @@ const styles = StyleSheet.create({
   },
   metricValue: {
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '900',
+    letterSpacing: -0.2,
   },
   metricSubValue: {
     fontSize: 10,
     marginTop: 4,
   },
   statusCard: {
-    borderRadius: 24,
-    padding: 18,
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.10)',
+    borderRadius: Radius['2xl'],
+    padding: Spacing['4xl'],
+    marginBottom: Spacing['4xl'],
+    borderWidth: StyleSheet.hairlineWidth,
     elevation: 2,
-    shadowColor: '#000',
+    shadowColor: '#0f172a',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
-    shadowRadius: 4,
+    shadowRadius: 8,
     overflow: 'hidden',
   },
   statusItem: {
@@ -2862,7 +2882,8 @@ const styles = StyleSheet.create({
   },
   statusItemTitle: {
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: '900',
+    letterSpacing: -0.2,
   },
   statusBadge: {
     fontSize: 11,
@@ -2893,10 +2914,9 @@ const styles = StyleSheet.create({
   },
   statusTrack: {
     height: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(148,163,184,0.16)',
+    borderRadius: Radius.pill,
     overflow: 'hidden',
-    marginTop: 10,
+    marginTop: Spacing.lg,
   },
   statusTrackFill: {
     height: '100%',
@@ -2913,11 +2933,13 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '900',
+    letterSpacing: -0.3,
   },
   editBtn: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.6,
   },
   quickAddRow: {
     flexDirection: 'row',
@@ -2929,18 +2951,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   quickAddCard: {
-    borderRadius: 18,
-    paddingVertical: 14,
-    paddingHorizontal: 8,
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing['2xl'],
+    paddingHorizontal: Spacing.md,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.10)',
+    borderWidth: StyleSheet.hairlineWidth,
     elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
-    shadowRadius: 3,
+    shadowRadius: 4,
   },
   quickAddIcon: {
     marginBottom: 8,
@@ -2962,18 +2983,17 @@ const styles = StyleSheet.create({
   floatingCtaBtn: {
     width: FLOATING_CTA_SIZE,
     height: FLOATING_CTA_SIZE,
-    borderRadius: 999,
+    borderRadius: Radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     elevation: 6,
-    shadowColor: '#10b981',
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.28,
     shadowRadius: 10,
   },
   intakeEmptyBox: {
-    borderRadius: 18,
-    borderWidth: 1,
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
     paddingVertical: 22,
     paddingHorizontal: 16,
     alignItems: 'center',
@@ -2993,12 +3013,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    borderRadius: 18,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderWidth: 1,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing['2xl'],
+    paddingHorizontal: Spacing['3xl'],
+    borderWidth: StyleSheet.hairlineWidth,
     elevation: 2,
-    shadowColor: '#000',
+    shadowColor: '#0f172a',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
     shadowRadius: 4,
@@ -3039,7 +3059,8 @@ const styles = StyleSheet.create({
   },
   intakeRowTitle: {
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '900',
+    letterSpacing: -0.2,
     flex: 1,
     minWidth: 0,
     marginRight: 8,
@@ -3081,22 +3102,19 @@ const styles = StyleSheet.create({
     width: 86,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#ef4444',
-    borderRadius: 18,
-    marginLeft: 12,
+    borderRadius: Radius.lg,
+    marginLeft: Spacing.xl,
     marginVertical: 2,
     gap: 4,
   },
   swipeDeleteText: {
-    color: '#fff',
     fontSize: 12,
     fontWeight: '800',
   },
   trendCard: {
-    borderRadius: 24,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.12)',
+    borderRadius: Radius['2xl'],
+    padding: Spacing['5xl'],
+    borderWidth: StyleSheet.hairlineWidth,
   },
   trendHeader: {
     flexDirection: 'row',
@@ -3106,7 +3124,8 @@ const styles = StyleSheet.create({
   },
   trendTitle: {
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '900',
+    letterSpacing: -0.2,
   },
   trendSub: {
     fontSize: 14,
@@ -3199,17 +3218,16 @@ const styles = StyleSheet.create({
   },
   assistantOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.6)',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: Spacing['4xl'],
   },
   assistantCard: {
     width: '100%',
     maxWidth: 380,
-    borderRadius: 34,
-    borderWidth: 1,
-    padding: 20,
+    borderRadius: Radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['5xl'],
     overflow: 'hidden',
   },
   assistantGlow: {
@@ -3226,9 +3244,9 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
   assistantTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    letterSpacing: -0.5,
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: -0.6,
   },
   assistantSubTitle: {
     marginTop: 4,
@@ -3340,8 +3358,8 @@ const styles = StyleSheet.create({
   },
   manualInputWrap: {
     flex: 1,
-    borderRadius: 16,
-    paddingHorizontal: 14,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing['2xl'],
     height: 54,
     flexDirection: 'row',
     alignItems: 'center',
@@ -3359,7 +3377,7 @@ const styles = StyleSheet.create({
   sendBtn: {
     width: 54,
     height: 54,
-    borderRadius: 16,
+    borderRadius: Radius.lg,
     alignItems: 'center',
     justifyContent: 'center',
   },

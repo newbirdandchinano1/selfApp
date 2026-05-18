@@ -1,5 +1,6 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui/screen-header';
+import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { getHabitCheckInListStats } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
@@ -17,10 +18,7 @@ type HabitItem = {
   name: string;
   tag: string | null;
   icon: string;
-  tone: string | null;
-  /** habit_check_ins：有打卡记录的天数 */
   achievedDays: number;
-  /** 今日该习惯打卡次数合计 */
   todayCount: number;
 };
 
@@ -34,10 +32,7 @@ type ContextTab = { id: string; name: string; count: number };
 export default function HabitManageScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const scheme = (colorScheme ?? 'light') as keyof typeof Colors;
-  const theme = Colors[scheme];
-  const isDark = colorScheme === 'dark';
+  const { colors, isDark, shadows } = useAppTheme();
 
   const [habitData, setHabitData] = React.useState<HabitGroup[]>([]);
   const [contextTabs, setContextTabs] = React.useState<ContextTab[]>([]);
@@ -45,24 +40,6 @@ export default function HabitManageScreen() {
 
   const [menuVisible, setMenuVisible] = React.useState(false);
   const [menuTarget, setMenuTarget] = React.useState<{ groupCategory: string; item: HabitItem } | null>(null);
-
-  const bg = isDark ? theme.background : '#f8fafc';
-  const card = isDark ? 'rgba(15,23,42,0.86)' : '#fff';
-  const border = isDark ? 'rgba(148,163,184,0.26)' : 'rgba(148,163,184,0.18)';
-  const textSub = theme.textSecondary;
-
-  const deriveToneByContext = React.useCallback((context: string): string => {
-    const map: Record<string, string> = {
-      起床: '#EFE5E9',
-      晨间: '#F4EBE3',
-      中午: '#F4EBE3',
-      午间: '#EFF5E1',
-      晚间: '#EFE1DF',
-      睡前: '#E1EFEB',
-      全天: '#EFE1DF',
-    };
-    return map[context] ?? '#EFE1DF';
-  }, []);
 
   const loadHabits = React.useCallback(async () => {
     try {
@@ -77,7 +54,6 @@ export default function HabitManageScreen() {
           name: r.name,
           tag: r.tag ?? '每天',
           icon: r.icon,
-          tone: r.tone ?? deriveToneByContext(r.context),
           achievedDays: st?.achievedDays ?? 0,
           todayCount: st?.todayCount ?? 0,
         });
@@ -112,12 +88,12 @@ export default function HabitManageScreen() {
       setHabitData([]);
       setContextTabs([]);
     }
-  }, [deriveToneByContext]);
+  }, []);
 
   useFocusEffect(
     React.useCallback(() => {
       void loadHabits();
-    }, [loadHabits])
+    }, [loadHabits]),
   );
 
   const openItemMenu = (groupCategory: string, item: HabitItem) => {
@@ -171,90 +147,79 @@ export default function HabitManageScreen() {
     return habitData.filter((g) => g.category === selectedContext);
   }, [habitData, selectedContext]);
 
+  const renderFilterPill = (key: string, label: string, active: boolean, onPress: () => void) => (
+    <Pressable
+      key={key}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.filterPill,
+        {
+          backgroundColor: active ? colors.primary : isDark ? colors.surfaceMuted : colors.capsule,
+          borderColor: active ? colors.primary : colors.outline,
+        },
+        pressed && { opacity: 0.88 },
+      ]}>
+      <Text
+        style={[
+          styles.filterPillText,
+          { color: active ? colors.onPrimary : colors.textSecondary },
+        ]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
+      <ScreenHeader
+        title="打卡管理"
+        subtitle="浏览与管理所有的打卡项"
+        onBack={() => router.back()}
+        right={
+          <ScreenHeaderIconAction
+            icon="add"
+            onPress={() => router.push('/add-habit')}
+            accessibilityLabel="新建习惯"
+          />
+        }
+      />
+
       <ScrollView
         contentContainerStyle={[
           styles.content,
-          { paddingBottom: 24 + Math.max(insets.bottom, 8) },
+          { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md) },
         ]}
         showsVerticalScrollIndicator={false}>
-        <View
-          style={[
-            styles.header,
-            {
-              backgroundColor: card,
-              borderBottomColor: border,
-            },
-          ]}>
-          <View style={styles.headerTop}>
-            <View style={styles.sideWrap}>
-              <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.roundBtn, pressed && { opacity: 0.75 }]}>
-                <MaterialIcons name="arrow-back" size={22} color={theme.text} />
-              </Pressable>
-            </View>
-
-            <View style={styles.headerTitleWrap}>
-              <Text style={[styles.headerTitle, { color: theme.text }]}>打卡管理</Text>
-              <Text style={[styles.headerSubtitle, { color: textSub }]}>浏览与管理所有的打卡项</Text>
-            </View>
-
-            <View style={[styles.sideWrap, { alignItems: 'flex-end' }]}>
-              <Pressable onPress={() => router.push('/add-habit')} style={({ pressed }) => [styles.roundBtn, pressed && { opacity: 0.75 }]}>
-                <MaterialIcons name="add" size={24} color={theme.text} />
-              </Pressable>
-            </View>
-          </View>
-
-          <View style={styles.filterBarRow}>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.tabsRow}>
-              <Pressable
-                onPress={() => setSelectedContext(null)}
-                style={({ pressed }) => [
-                  selectedContext === null ? styles.activeTab : [styles.passiveTab, { borderColor: border }],
-                  pressed && { opacity: 0.85 },
-                ]}>
-                <Text style={selectedContext === null ? styles.activeTabText : [styles.passiveTabText, { color: textSub }]}>全部</Text>
-              </Pressable>
-
-              {contextTabs.map((tab) => {
-                const isActive = selectedContext === tab.id;
-                return (
-                  <Pressable
-                    key={tab.id}
-                    onPress={() => setSelectedContext(tab.id)}
-                    style={({ pressed }) => [
-                      isActive ? styles.activeTab : [styles.passiveTab, { borderColor: border }],
-                      pressed && { opacity: 0.85 },
-                    ]}>
-                    <Text style={isActive ? styles.activeTabText : [styles.passiveTabText, { color: textSub }]}>
-                      {tab.name} ({tab.count})
-                    </Text>
-                  </Pressable>
-                );
-              })}
-              <Pressable
-                onPress={() => router.push('/habit-context')}
-                style={({ pressed }) => [
-                  styles.contextFilterBtn,
-                  pressed && { opacity: 0.85 },
-                  { borderColor: border },
-                ]}>
-                <MaterialIcons name="tune" size={16} color={textSub} />
-                <Text style={[styles.contextFilterText, { color: textSub }]}>情境</Text>
-              </Pressable>
-            </ScrollView>
-          </View>
-        </View>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabsRow}>
+          {renderFilterPill('all', '全部', selectedContext === null, () => setSelectedContext(null))}
+          {contextTabs.map((tab) =>
+            renderFilterPill(
+              tab.id,
+              `${tab.name} (${tab.count})`,
+              selectedContext === tab.id,
+              () => setSelectedContext(tab.id),
+            ),
+          )}
+          <Pressable
+            onPress={() => router.push('/habit-context')}
+            style={({ pressed }) => [
+              styles.contextFilterBtn,
+              { borderColor: colors.outline, backgroundColor: isDark ? colors.surfaceMuted : colors.capsule },
+              pressed && { opacity: 0.88 },
+            ]}>
+            <MaterialIcons name="tune" size={16} color={colors.textSecondary} />
+            <Text style={[styles.contextFilterText, { color: colors.textSecondary }]}>情境</Text>
+          </Pressable>
+        </ScrollView>
 
         <View style={styles.listWrap}>
           {visibleGroups.length === 0 ? (
-            <View style={[styles.emptyWrap, { borderColor: border }]}>
-              <Text style={[styles.emptyTitle, { color: theme.text }]}>暂无打卡项</Text>
-              <Text style={[styles.emptySub, { color: textSub }]}>
+            <View style={[styles.emptyWrap, shadows.card, { borderColor: colors.outline, backgroundColor: colors.surfaceSubtle }]}>
+              <Text style={[styles.emptyTitle, { color: colors.text }]}>暂无打卡项</Text>
+              <Text style={[styles.emptySub, { color: colors.textSecondary }]}>
                 {selectedContext ? `「${selectedContext}」情境下还没有打卡项` : '先去添加一个打卡项吧'}
               </Text>
             </View>
@@ -262,47 +227,47 @@ export default function HabitManageScreen() {
 
           {visibleGroups.map((group) => (
             <View key={group.category} style={styles.groupWrap}>
-              <Text style={[styles.groupTitle, { color: textSub }]}>{group.category}</Text>
+              <Text style={[Typography.kicker, styles.groupTitle, { color: colors.textSecondary }]}>{group.category}</Text>
               <View style={styles.groupItems}>
-                {group.items.map((item) => {
-                  return (
-                    <View
-                      key={item.id}
-                      style={[
-                        styles.itemCard,
-                        {
-                          backgroundColor: isDark ? card : item.tone ?? card,
-                          borderColor: 'transparent',
-                        },
-                      ]}>
-                      <Pressable
-                        onPress={() => goEditHabit(group.category, item)}
-                        style={({ pressed }) => [styles.itemMainPressable, pressed && { opacity: 0.92 }]}>
-                        <View style={styles.itemMain}>
-                          <Text style={styles.itemEmoji}>{item.icon}</Text>
-                          <View style={styles.itemTextWrap}>
-                            <Text style={[styles.itemTitle, { color: theme.text }]}>{item.name}</Text>
-                            <View style={styles.itemTag}>
-                              <Text style={[styles.itemTagText, { color: textSub }]}>{item.tag ?? ''}</Text>
-                            </View>
-                            {item.achievedDays > 0 || item.todayCount > 0 ? (
-                              <Text style={[styles.itemStats, { color: textSub }]}>
-                                {item.todayCount > 0 ? `今日 ${item.todayCount} 次` : null}
-                                {item.todayCount > 0 && item.achievedDays > 0 ? ' · ' : null}
-                                {item.achievedDays > 0 ? `累计 ${item.achievedDays} 天` : null}
-                              </Text>
-                            ) : null}
+                {group.items.map((item) => (
+                  <View
+                    key={item.id}
+                    style={[
+                      styles.itemCard,
+                      shadows.card,
+                      {
+                        backgroundColor: colors.surface,
+                        borderColor: colors.outline,
+                        borderLeftColor: colors.primary,
+                      },
+                    ]}>
+                    <Pressable
+                      onPress={() => goEditHabit(group.category, item)}
+                      style={({ pressed }) => [styles.itemMainPressable, pressed && { opacity: 0.92 }]}>
+                      <View style={styles.itemMain}>
+                        <Text style={styles.itemEmoji}>{item.icon}</Text>
+                        <View style={styles.itemTextWrap}>
+                          <Text style={[styles.itemTitle, { color: colors.text }]}>{item.name}</Text>
+                          <View style={[styles.itemTag, { backgroundColor: colors.surfaceMuted }]}>
+                            <Text style={[styles.itemTagText, { color: colors.textSecondary }]}>{item.tag ?? ''}</Text>
                           </View>
+                          {item.achievedDays > 0 || item.todayCount > 0 ? (
+                            <Text style={[styles.itemStats, { color: colors.textSecondary }]}>
+                              {item.todayCount > 0 ? `今日 ${item.todayCount} 次` : null}
+                              {item.todayCount > 0 && item.achievedDays > 0 ? ' · ' : null}
+                              {item.achievedDays > 0 ? `累计 ${item.achievedDays} 天` : null}
+                            </Text>
+                          ) : null}
                         </View>
-                      </Pressable>
-                      <Pressable
-                        onPress={() => openItemMenu(group.category, item)}
-                        style={({ pressed }) => [styles.moreBtn, pressed && { opacity: 0.75 }]}>
-                        <MaterialIcons name="more-vert" size={20} color={textSub} />
-                      </Pressable>
-                    </View>
-                  );
-                })}
+                      </View>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => openItemMenu(group.category, item)}
+                      style={({ pressed }) => [styles.moreBtn, pressed && { opacity: 0.75 }]}>
+                      <MaterialIcons name="more-vert" size={20} color={colors.textSecondary} />
+                    </Pressable>
+                  </View>
+                ))}
               </View>
             </View>
           ))}
@@ -310,9 +275,18 @@ export default function HabitManageScreen() {
       </ScrollView>
 
       <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={closeItemMenu}>
-        <Pressable style={styles.modalRoot} onPress={closeItemMenu} />
-        <View style={[styles.menuSheet, { paddingBottom: 12 + Math.max(insets.bottom, 6) }]}>
-          <Text style={[styles.menuTitle, { color: theme.text }]}>{menuTarget ? '操作' : ''}</Text>
+        <Pressable style={[styles.modalRoot, { backgroundColor: colors.overlay }]} onPress={closeItemMenu} />
+        <View
+          style={[
+            styles.menuSheet,
+            shadows.sheet,
+            {
+              paddingBottom: Spacing.xl + Math.max(insets.bottom, Spacing.sm),
+              backgroundColor: colors.surface,
+              borderColor: colors.outline,
+            },
+          ]}>
+          <Text style={[styles.menuTitle, { color: colors.text }]}>{menuTarget ? '操作' : ''}</Text>
 
           <Pressable
             disabled={!menuTarget}
@@ -320,9 +294,13 @@ export default function HabitManageScreen() {
               if (!menuTarget) return;
               goEditHabit(menuTarget.groupCategory, menuTarget.item);
             }}
-            style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.9 }]}>
-            <MaterialIcons name="edit" size={18} color={theme.text} />
-            <Text style={[styles.menuItemText, { color: theme.text }]}>编辑习惯</Text>
+            style={({ pressed }) => [
+              styles.menuItem,
+              { backgroundColor: colors.surfaceMuted },
+              pressed && { opacity: 0.9 },
+            ]}>
+            <MaterialIcons name="edit" size={18} color={colors.text} />
+            <Text style={[styles.menuItemText, { color: colors.text }]}>编辑习惯</Text>
           </Pressable>
 
           <Pressable
@@ -331,13 +309,17 @@ export default function HabitManageScreen() {
               if (!menuTarget) return;
               deleteHabit(menuTarget.groupCategory, menuTarget.item);
             }}
-            style={({ pressed }) => [styles.menuItem, styles.menuItemDanger, pressed && { opacity: 0.9 }]}>
-            <MaterialIcons name="delete" size={18} color={'#E86766'} />
-            <Text style={[styles.menuItemText, { color: '#E86766' }]}>删除习惯</Text>
+            style={({ pressed }) => [
+              styles.menuItem,
+              { backgroundColor: isDark ? 'rgba(220,38,38,0.2)' : 'rgba(220,38,38,0.1)' },
+              pressed && { opacity: 0.9 },
+            ]}>
+            <MaterialIcons name="delete" size={18} color={colors.danger} />
+            <Text style={[styles.menuItemText, { color: colors.danger }]}>删除习惯</Text>
           </Pressable>
 
           <Pressable onPress={closeItemMenu} style={({ pressed }) => [styles.menuCancel, pressed && { opacity: 0.85 }]}>
-            <Text style={[styles.menuCancelText, { color: theme.textSecondary }]}>取消</Text>
+            <Text style={[styles.menuCancelText, { color: colors.textSecondary }]}>取消</Text>
           </Pressable>
         </View>
       </Modal>
@@ -347,120 +329,103 @@ export default function HabitManageScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { gap: 10 },
-  header: {
-    paddingTop: 10,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
+  content: {
+    maxWidth: Layout.contentMaxWidth,
+    alignSelf: 'center',
+    width: '100%',
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['3xl'],
+    gap: Spacing['4xl'],
   },
-  headerTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14 },
-  sideWrap: { width: 56, justifyContent: 'center' },
-  sideText: { fontSize: 15, fontWeight: '600' },
-  roundBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  headerTitleWrap: { flex: 1, alignItems: 'center' },
-  headerTitle: { fontSize: 17, fontWeight: '800' },
-  headerSubtitle: { fontSize: 11, marginTop: 2 },
-  actionRow: { flexDirection: 'row', gap: 10, paddingHorizontal: 14, marginTop: 10 },
-  actionBtn: {
-    flex: 1,
-    borderRadius: 12,
-    paddingVertical: 11,
+  tabsRow: {
+    gap: Spacing.md,
     alignItems: 'center',
-    justifyContent: 'center',
     flexDirection: 'row',
-    gap: 6,
+    paddingBottom: Spacing.sm,
   },
-  actionBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
-  modeRow: { paddingHorizontal: 14, marginTop: 8 },
-  modeBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  filterBarRow: { paddingHorizontal: 14 },
-  tabsRow: { paddingTop: 12, paddingBottom: 8, gap: 8, alignItems: 'center', flexDirection: 'row' },
+  filterPill: {
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing['2xl'],
+    paddingVertical: Spacing.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  filterPillText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
   contextFilterBtn: {
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: Spacing.sm,
   },
   contextFilterText: { fontSize: 13, fontWeight: '600' },
-  activeTab: { backgroundColor: '#433B3E', borderRadius: 999, paddingHorizontal: 14, paddingVertical: 6 },
-  activeTabText: { color: '#fff', fontSize: 14, fontWeight: '600' },
-  passiveTab: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 },
-  passiveTabText: { fontSize: 13, fontWeight: '600' },
-  listWrap: { paddingHorizontal: 14, paddingTop: 6, gap: 16 },
+  listWrap: { gap: Spacing['3xl'] },
   emptyWrap: {
-    borderWidth: 1,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    backgroundColor: 'rgba(148,163,184,0.06)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius['2xl'],
+    paddingHorizontal: Spacing['4xl'],
+    paddingVertical: Spacing['4xl'],
   },
-  emptyTitle: { fontSize: 15, fontWeight: '800' },
-  emptySub: { marginTop: 4, fontSize: 12, fontWeight: '600' },
-  groupWrap: { gap: 10 },
-  groupTitle: { fontSize: 13, fontWeight: '600', paddingLeft: 4 },
-  groupItems: { gap: 10 },
+  emptyTitle: { ...Typography.title },
+  emptySub: { marginTop: Spacing.xs, ...Typography.caption },
+  groupWrap: { gap: Spacing.lg },
+  groupTitle: { paddingLeft: Spacing.xs },
+  groupItems: { gap: Spacing.lg },
   itemCard: {
-    borderRadius: 20,
-    borderWidth: 2,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: 3,
+    paddingHorizontal: Spacing['4xl'],
+    paddingVertical: Spacing['4xl'],
     flexDirection: 'row',
     alignItems: 'center',
   },
-  checkWrap: { marginRight: 10 },
-  checkedCircle: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#43373B',
+  itemMainPressable: { flex: 1, minWidth: 0 },
+  itemMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
+  itemEmoji: { fontSize: 30 },
+  itemTextWrap: { gap: Spacing.xs, flex: 1 },
+  itemTitle: { fontSize: 16, fontWeight: '800' },
+  itemTag: {
+    alignSelf: 'flex-start',
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 2,
+  },
+  itemTagText: { fontSize: 11, fontWeight: '600' },
+  itemStats: { fontSize: 11, fontWeight: '600', marginTop: 2 },
+  moreBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  uncheckedCircle: { width: 22, height: 22, borderRadius: 11, borderWidth: 1, backgroundColor: 'rgba(255,255,255,0.5)' },
-  itemMainPressable: { flex: 1, minWidth: 0 },
-  itemMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  itemEmoji: { fontSize: 30 },
-  itemTextWrap: { gap: 4, flex: 1 },
-  itemTitle: { fontSize: 16, fontWeight: '800' },
-  itemTag: { alignSelf: 'flex-start', backgroundColor: 'rgba(15,23,42,0.08)', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 },
-  itemTagText: { fontSize: 11, fontWeight: '600' },
-  itemStats: { fontSize: 11, fontWeight: '600', marginTop: 2 },
-  moreBtn: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
-
-  modalRoot: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15,23,42,0.35)',
-  },
+  modalRoot: { ...StyleSheet.absoluteFillObject },
   menuSheet: {
     position: 'absolute',
-    left: 14,
-    right: 14,
+    left: Spacing['5xl'],
+    right: Spacing['5xl'],
     bottom: 0,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.22)',
-    backgroundColor: 'rgba(255,255,255,0.97)',
-    gap: 10,
+    borderRadius: Radius.sheet,
+    paddingHorizontal: Spacing['4xl'],
+    paddingTop: Spacing.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: Spacing.lg,
   },
   menuTitle: { fontSize: 14, fontWeight: '800', marginBottom: 2, alignSelf: 'flex-start' },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: 'rgba(148,163,184,0.10)',
-  },
-  menuItemDanger: {
-    backgroundColor: 'rgba(232,103,102,0.12)',
+    gap: Spacing.lg,
+    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.xl,
+    borderRadius: Radius.lg,
   },
   menuItemText: { fontSize: 15, fontWeight: '800' },
-  menuCancel: { paddingVertical: 12, alignItems: 'center' },
+  menuCancel: { paddingVertical: Spacing.xl, alignItems: 'center' },
   menuCancelText: { fontSize: 15, fontWeight: '700' },
 });

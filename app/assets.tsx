@@ -1,5 +1,6 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AppCard, ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
+import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import {
   loadFinanceDefaultAccounts,
@@ -15,24 +16,23 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle } from 'react-native-svg';
 
 export default function AssetsScreen() {
   const router = useRouter();
-  const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const insets = useSafeAreaInsets();
+  const { colors, isDark, shadows } = useAppTheme();
 
-  const surface = isDark ? 'rgba(15,23,42,0.9)' : theme.background;
-  const card = theme.surface;
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.18)' : 'rgba(226,232,240,0.75)';
-  const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(100,116,139,0.8)';
-
-  const primaryBlue = isDark ? '#60a5fa' : '#0058be';
-  const secondaryGreen = isDark ? '#34d399' : '#006c49';
-  const tertiaryAmber = isDark ? '#fbbf24' : '#825100';
-  const errorRed = isDark ? '#f87171' : '#ba1a1a';
+  /** 资产配置环形图：蓝 / 深蓝 / 绿，与财务页主色一致（避免 tertiary 棕褐大面积） */
+  const assetSegmentColors = React.useMemo(
+    () => ({
+      cash: colors.primarySoft,
+      bank: colors.primary,
+      invest: colors.secondary,
+    }),
+    [colors.primary, colors.primarySoft, colors.secondary],
+  );
 
   const ringSize = 128;
   const ringStroke = 6;
@@ -334,113 +334,140 @@ export default function AssetsScreen() {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: surface }]}>
-      <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.82)' }]}>
-        <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}>
-          <MaterialIcons name="arrow-back" size={22} color={isDark ? 'rgba(248,250,252,0.92)' : 'rgba(15,23,42,0.92)'} />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: isDark ? 'rgba(248,250,252,0.95)' : 'rgba(15,23,42,0.95)' }]}>资产</Text>
-        <Pressable onPress={() => router.push('/finance-calendar')} style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.7 }]}>
-          <MaterialIcons name="calendar-today" size={22} color={isDark ? 'rgba(148,163,184,0.9)' : 'rgba(100,116,139,0.9)'} />
-        </Pressable>
-      </View>
-      <View style={[styles.headerDivider, { backgroundColor: outlineVariant }]} />
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['left', 'right']}>
+      <ScreenHeader
+        title="资产"
+        onBack={() => router.back()}
+        right={
+          <ScreenHeaderIconAction
+            icon="calendar-today"
+            onPress={() => router.push('/finance-calendar')}
+            accessibilityLabel="财务日历"
+          />
+        }
+      />
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.content,
+          {
+            paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md),
+            maxWidth: Layout.contentMaxWidth,
+            alignSelf: 'center',
+            width: '100%',
+          },
+        ]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled">
         <View style={styles.hero}>
-          <Text style={[styles.kicker, { color: outline }]}>当前净资产</Text>
+          <Text style={[Typography.kicker, styles.heroKicker, { color: colors.textSecondary }]}>当前净资产</Text>
           <View style={styles.heroRow}>
-            <Text style={[styles.netWorth, { color: netWorth < 0 ? errorRed : theme.text }]}>{formatSignedMoneyTrunc2(netWorth)}</Text>
+            <Text style={[Typography.display, styles.netWorth, { color: netWorth < 0 ? colors.danger : colors.text }]}>
+              {formatSignedMoneyTrunc2(netWorth)}
+            </Text>
             <Pressable
               onPress={() => router.push('/ai-finance-analysis')}
-              style={({ pressed }) => [styles.pill, { backgroundColor: `${secondaryGreen}1A` }, pressed && { opacity: 0.8 }]}>
-              <MaterialIcons name="trending-up" size={16} color={secondaryGreen} />
-              <Text style={[styles.pillText, { color: secondaryGreen }]}>2.4%</Text>
+              style={({ pressed }) => [
+                styles.trendPill,
+                { backgroundColor: isDark ? 'rgba(52,211,153,0.2)' : 'rgba(0,108,73,0.1)' },
+                pressed && { opacity: 0.8 },
+              ]}>
+              <MaterialIcons name="trending-up" size={16} color={colors.secondary} />
+              <Text style={[Typography.bodyStrong, { color: colors.secondary }]}>2.4%</Text>
             </Pressable>
           </View>
 
           <View style={styles.totalsRow}>
             <View style={styles.totalBlock}>
-              <Text style={[styles.totalLabel, { color: outline }]}>总资产</Text>
-              <Text style={[styles.totalValue, { color: theme.text }]}>{formatMoney2(totalAssets)}</Text>
+              <Text style={[Typography.kicker, styles.totalLabel, { color: colors.textSecondary }]}>总资产</Text>
+              <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatMoney2(totalAssets)}</Text>
             </View>
-            <View style={[styles.vDivider, { backgroundColor: `${outlineVariant}80` }]} />
+            <View style={[styles.vDivider, { backgroundColor: colors.outline }]} />
             <View style={styles.totalBlock}>
-              <Text style={[styles.totalLabel, { color: outline }]}>总负债</Text>
-              <Text style={[styles.totalValue, { color: errorRed }]}>{formatMoney2(totalLiabilitiesAbs)}</Text>
+              <Text style={[Typography.kicker, styles.totalLabel, { color: colors.textSecondary }]}>总负债</Text>
+              <Text style={[Typography.bodyStrong, { color: colors.danger }]}>{formatMoney2(totalLiabilitiesAbs)}</Text>
             </View>
           </View>
         </View>
 
         <View style={styles.bento}>
-          <View style={[styles.assetCard, { backgroundColor: card, borderColor: `${outlineVariant}40` }]}>
-            <Text style={[styles.cardTitle, { color: theme.text }]}>资产配置</Text>
+          <AppCard style={shadows.card}>
+            <Text style={[Typography.h3, styles.cardTitle, { color: colors.text }]}>资产配置</Text>
             <View style={styles.assetRow}>
               <View style={styles.ringWrap}>
                 <Svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`} style={{ transform: [{ rotate: '-90deg' }] }}>
-                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={isDark ? 'rgba(148,163,184,0.12)' : 'rgba(226,231,255,0.95)'} strokeWidth={2} fill="none" />
-                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={tertiaryAmber} strokeWidth={ringStroke} strokeDasharray={dash(cashPct)} strokeDashoffset={c * (1 - cashPct)} fill="none" />
-                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={primaryBlue} strokeWidth={ringStroke} strokeDasharray={dash(bankPct)} strokeDashoffset={c * (1 - bankPct)} fill="none" transform={`rotate(${cashPct * 360} ${ringSize / 2} ${ringSize / 2})`} />
-                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={secondaryGreen} strokeWidth={ringStroke} strokeDasharray={dash(investPct)} strokeDashoffset={c * (1 - investPct)} fill="none" transform={`rotate(${(cashPct + bankPct) * 360} ${ringSize / 2} ${ringSize / 2})`} />
+                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={colors.progressTrack} strokeWidth={2} fill="none" />
+                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={assetSegmentColors.cash} strokeWidth={ringStroke} strokeDasharray={dash(cashPct)} strokeDashoffset={c * (1 - cashPct)} fill="none" />
+                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={assetSegmentColors.bank} strokeWidth={ringStroke} strokeDasharray={dash(bankPct)} strokeDashoffset={c * (1 - bankPct)} fill="none" transform={`rotate(${cashPct * 360} ${ringSize / 2} ${ringSize / 2})`} />
+                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={assetSegmentColors.invest} strokeWidth={ringStroke} strokeDasharray={dash(investPct)} strokeDashoffset={c * (1 - investPct)} fill="none" transform={`rotate(${(cashPct + bankPct) * 360} ${ringSize / 2} ${ringSize / 2})`} />
                 </Svg>
-                <Text style={[styles.ringText, { color: theme.text }]}>{ringPct}%</Text>
+                <Text style={[Typography.title, styles.ringText, { color: colors.text }]}>{ringPct}%</Text>
               </View>
 
               <View style={styles.legend}>
                 <View style={styles.legendRow}>
-                  <View style={[styles.legendDot, { backgroundColor: tertiaryAmber }]} />
-                  <Text style={[styles.legendText, { color: theme.text }]}>
+                  <View style={[styles.legendDot, { backgroundColor: assetSegmentColors.cash }]} />
+                  <Text style={[Typography.body, { color: colors.text }]}>
                     现金 ({Math.round(cashPct * 100)}%)
                   </Text>
                 </View>
                 <View style={styles.legendRow}>
-                  <View style={[styles.legendDot, { backgroundColor: primaryBlue }]} />
-                  <Text style={[styles.legendText, { color: theme.text }]}>
+                  <View style={[styles.legendDot, { backgroundColor: assetSegmentColors.bank }]} />
+                  <Text style={[Typography.body, { color: colors.text }]}>
                     银行 ({Math.round(bankPct * 100)}%)
                   </Text>
                 </View>
                 <View style={styles.legendRow}>
-                  <View style={[styles.legendDot, { backgroundColor: secondaryGreen }]} />
-                  <Text style={[styles.legendText, { color: theme.text }]}>
+                  <View style={[styles.legendDot, { backgroundColor: assetSegmentColors.invest }]} />
+                  <Text style={[Typography.body, { color: colors.text }]}>
                     投资 ({Math.round(investPct * 100)}%)
                   </Text>
                 </View>
               </View>
             </View>
-          </View>
+          </AppCard>
 
-          <View style={[styles.growthCard, { backgroundColor: tertiaryAmber }]}>
+          <View style={[styles.growthCard, { backgroundColor: colors.accentCard }]}>
             <View style={styles.growthTop}>
-              <Text style={styles.growthKicker}>增长预测</Text>
-              <Text style={styles.growthTitle}>预计下月增长 +¥12k</Text>
+              <Text style={[Typography.kicker, styles.growthKicker, { color: colors.onAccent }]}>增长预测</Text>
+              <Text style={[Typography.h2, styles.growthTitle, { color: colors.onAccent }]}>预计下月增长 +¥12k</Text>
             </View>
             <Pressable
               onPress={() => router.push('/ai-finance-analysis')}
-              style={({ pressed }) => [styles.growthBtn, pressed && { opacity: 0.8 }]}>
-              <Text style={styles.growthBtnText}>查看分析</Text>
-              <MaterialIcons name="arrow-forward" size={16} color="#fff" />
+              style={({ pressed }) => [
+                styles.growthBtn,
+                { borderColor: 'rgba(255,255,255,0.16)', backgroundColor: 'rgba(255,255,255,0.12)' },
+                pressed && { opacity: 0.8 },
+              ]}>
+              <Text style={[Typography.bodyStrong, { color: colors.onAccent }]}>查看分析</Text>
+              <MaterialIcons name="arrow-forward" size={16} color={colors.onAccent} />
             </Pressable>
-            <View style={[styles.growthGlow, { backgroundColor: isDark ? 'rgba(217,119,6,0.45)' : 'rgba(163,103,0,0.35)' }]} />
+            <View
+              style={[
+                styles.growthGlow,
+                { backgroundColor: isDark ? 'rgba(96,165,250,0.4)' : 'rgba(59,130,246,0.32)' },
+              ]}
+            />
           </View>
         </View>
 
-        <View style={[styles.defaultAccountsCard, { backgroundColor: card, borderColor: `${outlineVariant}40` }]}>
-          <Text style={[styles.defaultAccountsTitle, { color: theme.text }]}>默认记账账户</Text>
-          <Text style={[styles.defaultAccountsHint, { color: outline }]}>
+        <AppCard style={[shadows.card, styles.defaultAccountsCard]}>
+          <Text style={[Typography.title, { color: colors.text }]}>默认记账账户</Text>
+          <Text style={[Typography.caption, styles.defaultAccountsHint, { color: colors.textSecondary }]}>
             截图/一句话自动记账未识别到账户时，支出用默认支付账户、收入用默认收入账户
           </Text>
           <Pressable
             onPress={() => setDefaultPickerTarget('payment')}
             style={({ pressed }) => [
               styles.defaultAccountRow,
-              { borderColor: outlineVariant },
+              { borderColor: colors.outline, backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle },
               pressed && { opacity: 0.85 },
             ]}>
             <View style={styles.defaultAccountRowLeft}>
-              <MaterialIcons name="shopping-bag" size={18} color={tertiaryAmber} />
-              <Text style={[styles.defaultAccountRowLabel, { color: theme.text }]}>默认支付账户</Text>
+              <MaterialIcons name="shopping-bag" size={18} color={colors.primary} />
+              <Text style={[Typography.bodyStrong, { color: colors.text }]}>默认支付账户</Text>
             </View>
-            <Text style={[styles.defaultAccountRowValue, { color: defaultPaymentAccount ? theme.text : outline }]}>
+            <Text style={[Typography.bodyStrong, styles.defaultAccountRowValue, { color: defaultPaymentAccount ? colors.text : colors.textSecondary }]}>
               {defaultPaymentAccount?.name ?? '未设置'}
             </Text>
           </Pressable>
@@ -448,36 +475,36 @@ export default function AssetsScreen() {
             onPress={() => setDefaultPickerTarget('income')}
             style={({ pressed }) => [
               styles.defaultAccountRow,
-              { borderColor: outlineVariant },
+              { borderColor: colors.outline, backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle },
               pressed && { opacity: 0.85 },
             ]}>
             <View style={styles.defaultAccountRowLeft}>
-              <MaterialIcons name="savings" size={18} color={secondaryGreen} />
-              <Text style={[styles.defaultAccountRowLabel, { color: theme.text }]}>默认收入账户</Text>
+              <MaterialIcons name="savings" size={18} color={colors.secondary} />
+              <Text style={[Typography.bodyStrong, { color: colors.text }]}>默认收入账户</Text>
             </View>
-            <Text style={[styles.defaultAccountRowValue, { color: defaultIncomeAccount ? theme.text : outline }]}>
+            <Text style={[Typography.bodyStrong, styles.defaultAccountRowValue, { color: defaultIncomeAccount ? colors.text : colors.textSecondary }]}>
               {defaultIncomeAccount?.name ?? '未设置'}
             </Text>
           </Pressable>
-        </View>
+        </AppCard>
 
         <View style={styles.accounts}>
           <View style={styles.addAccountRow}>
             <Pressable
               onPress={() => router.push('/add-account')}
-              style={({ pressed }) => [styles.addAccountBtn, { backgroundColor: `${primaryBlue}1A` }, pressed && { opacity: 0.85 }]}>
-              <MaterialIcons name="add" size={18} color={primaryBlue} />
-              <Text style={[styles.addAccountText, { color: primaryBlue }]}>添加新账户</Text>
+              style={({ pressed }) => [styles.addAccountBtn, { backgroundColor: colors.primaryMuted }, pressed && { opacity: 0.85 }]}>
+              <MaterialIcons name="add" size={18} color={colors.primary} />
+              <Text style={[Typography.bodyStrong, { color: colors.primary }]}>添加新账户</Text>
             </Pressable>
           </View>
 
           <View style={styles.group}>
             <View style={styles.groupHeader}>
               <View style={styles.groupHeaderLeft}>
-                <MaterialIcons name="wallet" size={20} color={tertiaryAmber} />
-                <Text style={[styles.groupTitle, { color: theme.text }]}>现金与钱包</Text>
+                <MaterialIcons name="wallet" size={20} color={assetSegmentColors.cash} />
+                <Text style={[Typography.title, { color: colors.text }]}>现金与钱包</Text>
               </View>
-              <Text style={[styles.groupSum, { color: tertiaryAmber }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.cash_wallet))}</Text>
+              <Text style={[styles.groupSum, { color: assetSegmentColors.cash }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.cash_wallet))}</Text>
             </View>
 
             {grouped.cash_wallet.length === 0 ? (
@@ -485,16 +512,16 @@ export default function AssetsScreen() {
                 onPress={() => router.push('/add-account')}
                 style={({ pressed }) => [
                   styles.accountRow,
-                  { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: tertiaryAmber },
+                  { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: assetSegmentColors.cash },
                   pressed && { opacity: 0.85 },
                 ]}>
                 <View style={styles.accountLeft}>
-                  <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                    <MaterialIcons name="add" size={20} color={tertiaryAmber} />
+                  <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                    <MaterialIcons name="add" size={20} color={assetSegmentColors.cash} />
                   </View>
                   <View>
-                    <Text style={[styles.accountName, { color: theme.text }]}>添加账户</Text>
-                    <Text style={[styles.accountMeta, { color: outline }]}>创建你的第一个账户</Text>
+                    <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>添加账户</Text>
+                    <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>创建你的第一个账户</Text>
                   </View>
                 </View>
               </Pressable>
@@ -505,19 +532,19 @@ export default function AssetsScreen() {
                   onPress={() => openAccountDetail(acc)}
                   style={({ pressed }) => [
                     styles.accountRow,
-                    { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: tertiaryAmber },
+                    { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: assetSegmentColors.cash },
                     pressed && { opacity: 0.85 },
                   ]}>
                   <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                      <MaterialIcons name={accountIcon(acc)} size={20} color={tertiaryAmber} />
+                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                      <MaterialIcons name={accountIcon(acc)} size={20} color={assetSegmentColors.cash} />
                     </View>
                     <View>
-                      <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
-                      <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '现金/钱包'}</Text>
+                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
+                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : '现金/钱包'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatAccountRowBalance(acc)}</Text>
+                  <Text style={[Typography.title, styles.accountAmount, { color: colors.text }]}>{formatAccountRowBalance(acc)}</Text>
                 </Pressable>
               ))
             )}
@@ -526,10 +553,10 @@ export default function AssetsScreen() {
           <View style={styles.group}>
             <View style={styles.groupHeader}>
               <View style={styles.groupHeaderLeft}>
-                <MaterialIcons name="account-balance" size={20} color={primaryBlue} />
-                <Text style={[styles.groupTitle, { color: theme.text }]}>银行账户</Text>
+                <MaterialIcons name="account-balance" size={20} color={colors.primary} />
+                <Text style={[Typography.title, { color: colors.text }]}>银行账户</Text>
               </View>
-              <Text style={[styles.groupSum, { color: primaryBlue }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.bank))}</Text>
+              <Text style={[styles.groupSum, { color: colors.primary }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.bank))}</Text>
             </View>
 
             {grouped.bank.length === 0 ? (
@@ -537,16 +564,16 @@ export default function AssetsScreen() {
                 onPress={() => router.push('/add-account')}
                 style={({ pressed }) => [
                   styles.accountRow,
-                  { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: primaryBlue },
+                  { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.primary },
                   pressed && { opacity: 0.85 },
                 ]}>
                 <View style={styles.accountLeft}>
-                  <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                    <MaterialIcons name="add" size={20} color={primaryBlue} />
+                  <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                    <MaterialIcons name="add" size={20} color={colors.primary} />
                   </View>
                   <View>
-                    <Text style={[styles.accountName, { color: theme.text }]}>添加账户</Text>
-                    <Text style={[styles.accountMeta, { color: outline }]}>添加银行卡/储蓄账户</Text>
+                    <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>添加账户</Text>
+                    <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>添加银行卡/储蓄账户</Text>
                   </View>
                 </View>
               </Pressable>
@@ -557,19 +584,19 @@ export default function AssetsScreen() {
                   onPress={() => openAccountDetail(acc)}
                   style={({ pressed }) => [
                     styles.accountRow,
-                    { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: primaryBlue },
+                    { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.primary },
                     pressed && { opacity: 0.85 },
                   ]}>
                   <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                      <MaterialIcons name={accountIcon(acc)} size={20} color={primaryBlue} />
+                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                      <MaterialIcons name={accountIcon(acc)} size={20} color={colors.primary} />
                     </View>
                     <View>
-                      <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
-                      <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '银行账户'}</Text>
+                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
+                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : '银行账户'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatAccountRowBalance(acc)}</Text>
+                  <Text style={[Typography.title, styles.accountAmount, { color: colors.text }]}>{formatAccountRowBalance(acc)}</Text>
                 </Pressable>
               ))
             )}
@@ -578,10 +605,10 @@ export default function AssetsScreen() {
           <View style={styles.group}>
             <View style={styles.groupHeader}>
               <View style={styles.groupHeaderLeft}>
-                <MaterialIcons name="show-chart" size={20} color={secondaryGreen} />
-                <Text style={[styles.groupTitle, { color: theme.text }]}>投资项目</Text>
+                <MaterialIcons name="show-chart" size={20} color={colors.secondary} />
+                <Text style={[Typography.title, { color: colors.text }]}>投资项目</Text>
               </View>
-              <Text style={[styles.groupSum, { color: secondaryGreen }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.investment))}</Text>
+              <Text style={[styles.groupSum, { color: colors.secondary }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.investment))}</Text>
             </View>
 
             {grouped.investment.length === 0 ? (
@@ -589,16 +616,16 @@ export default function AssetsScreen() {
                 onPress={() => router.push('/add-account')}
                 style={({ pressed }) => [
                   styles.accountRow,
-                  { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: secondaryGreen },
+                  { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.secondary },
                   pressed && { opacity: 0.85 },
                 ]}>
                 <View style={styles.accountLeft}>
-                  <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                    <MaterialIcons name="add" size={20} color={secondaryGreen} />
+                  <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                    <MaterialIcons name="add" size={20} color={colors.secondary} />
                   </View>
                   <View>
-                    <Text style={[styles.accountName, { color: theme.text }]}>添加账户</Text>
-                    <Text style={[styles.accountMeta, { color: outline }]}>添加基金/股票/理财</Text>
+                    <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>添加账户</Text>
+                    <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>添加基金/股票/理财</Text>
                   </View>
                 </View>
               </Pressable>
@@ -609,19 +636,19 @@ export default function AssetsScreen() {
                   onPress={() => openAccountDetail(acc)}
                   style={({ pressed }) => [
                     styles.accountRow,
-                    { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: secondaryGreen },
+                    { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.secondary },
                     pressed && { opacity: 0.85 },
                   ]}>
                   <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                      <MaterialIcons name={accountIcon(acc)} size={20} color={secondaryGreen} />
+                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                      <MaterialIcons name={accountIcon(acc)} size={20} color={colors.secondary} />
                     </View>
                     <View>
-                      <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
-                      <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '投资账户'}</Text>
+                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
+                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : '投资账户'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatAccountRowBalance(acc)}</Text>
+                  <Text style={[Typography.title, styles.accountAmount, { color: colors.text }]}>{formatAccountRowBalance(acc)}</Text>
                 </Pressable>
               ))
             )}
@@ -631,10 +658,10 @@ export default function AssetsScreen() {
             <View key={`custom-group-${g.name}`} style={styles.group}>
               <View style={styles.groupHeader}>
                 <View style={styles.groupHeaderLeft}>
-                  <MaterialIcons name="tune" size={20} color={outline} />
-                  <Text style={[styles.groupTitle, { color: theme.text }]}>{g.name}</Text>
+                  <MaterialIcons name="tune" size={20} color={colors.textSecondary} />
+                  <Text style={[Typography.title, { color: colors.text }]}>{g.name}</Text>
                 </View>
-                <Text style={[styles.groupSum, { color: outline }]}>{formatMoney0(groupMixedLedgerSum(g.rows))}</Text>
+                <Text style={[styles.groupSum, { color: colors.textSecondary }]}>{formatMoney0(groupMixedLedgerSum(g.rows))}</Text>
               </View>
 
               {g.rows.length === 0 ? (
@@ -642,16 +669,16 @@ export default function AssetsScreen() {
                   onPress={() => router.push('/add-account')}
                   style={({ pressed }) => [
                     styles.accountRow,
-                    { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: outlineVariant },
+                    { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.outline },
                     pressed && { opacity: 0.85 },
                   ]}>
                   <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                      <MaterialIcons name="add" size={20} color={outline} />
+                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                      <MaterialIcons name="add" size={20} color={colors.textSecondary} />
                     </View>
                     <View>
-                      <Text style={[styles.accountName, { color: theme.text }]}>添加账户</Text>
-                      <Text style={[styles.accountMeta, { color: outline }]}>类型：{g.name}</Text>
+                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>添加账户</Text>
+                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>类型：{g.name}</Text>
                     </View>
                   </View>
                 </Pressable>
@@ -662,19 +689,19 @@ export default function AssetsScreen() {
                     onPress={() => openAccountDetail(acc)}
                     style={({ pressed }) => [
                       styles.accountRow,
-                      { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: outlineVariant },
+                      { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.outline },
                       pressed && { opacity: 0.85 },
                     ]}>
                     <View style={styles.accountLeft}>
-                      <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                        <MaterialIcons name={accountIcon(acc)} size={20} color={outline} />
+                      <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                        <MaterialIcons name={accountIcon(acc)} size={20} color={colors.textSecondary} />
                       </View>
                       <View>
-                        <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
-                        <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : g.name}</Text>
+                        <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
+                        <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : g.name}</Text>
                       </View>
                     </View>
-                    <Text style={[styles.accountAmount, { color: theme.text }]}>{formatAccountRowBalance(acc)}</Text>
+                    <Text style={[Typography.title, styles.accountAmount, { color: colors.text }]}>{formatAccountRowBalance(acc)}</Text>
                   </Pressable>
                 ))
               )}
@@ -685,10 +712,10 @@ export default function AssetsScreen() {
             <View style={styles.group}>
               <View style={styles.groupHeader}>
                 <View style={styles.groupHeaderLeft}>
-                  <MaterialIcons name="tune" size={20} color={outline} />
-                  <Text style={[styles.groupTitle, { color: theme.text }]}>其他</Text>
+                  <MaterialIcons name="tune" size={20} color={colors.textSecondary} />
+                  <Text style={[Typography.title, { color: colors.text }]}>其他</Text>
                 </View>
-                <Text style={[styles.groupSum, { color: outline }]}>{formatMoney0(groupMixedLedgerSum(grouped.unknown))}</Text>
+                <Text style={[styles.groupSum, { color: colors.textSecondary }]}>{formatMoney0(groupMixedLedgerSum(grouped.unknown))}</Text>
               </View>
 
               {grouped.unknown.map((acc) => (
@@ -697,31 +724,31 @@ export default function AssetsScreen() {
                   onPress={() => openAccountDetail(acc)}
                   style={({ pressed }) => [
                     styles.accountRow,
-                    { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : 'rgba(242,243,255,0.9)', borderLeftColor: outlineVariant },
+                    { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.outline },
                     pressed && { opacity: 0.85 },
                   ]}>
                   <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                      <MaterialIcons name={accountIcon(acc)} size={20} color={outline} />
+                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                      <MaterialIcons name={accountIcon(acc)} size={20} color={colors.textSecondary} />
                     </View>
                     <View>
-                      <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
-                      <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '其他'}</Text>
+                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
+                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : '其他'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.accountAmount, { color: theme.text }]}>{formatAccountRowBalance(acc)}</Text>
+                  <Text style={[Typography.title, styles.accountAmount, { color: colors.text }]}>{formatAccountRowBalance(acc)}</Text>
                 </Pressable>
               ))}
             </View>
           ) : null}
 
-          <View style={[styles.group, { borderTopColor: `${outlineVariant}80`, borderTopWidth: 1, paddingTop: 18 }]}>
+          <View style={[styles.group, styles.liabilityGroup, { borderTopColor: colors.outline }]}>
             <View style={styles.groupHeader}>
               <View style={styles.groupHeaderLeft}>
-                <MaterialIcons name="credit-card-off" size={20} color={errorRed} />
-                <Text style={[styles.groupTitle, { color: errorRed }]}>负债</Text>
+                <MaterialIcons name="credit-card-off" size={20} color={colors.danger} />
+                <Text style={[Typography.title, { color: colors.danger }]}>负债</Text>
               </View>
-              <Text style={[styles.groupSum, { color: errorRed }]}>{formatDebtMoney2(sumLiabilityDebtMagnitudes(grouped.liability))}</Text>
+              <Text style={[styles.groupSum, { color: colors.danger }]}>{formatDebtMoney2(sumLiabilityDebtMagnitudes(grouped.liability))}</Text>
             </View>
 
             <View style={styles.debtList}>
@@ -730,16 +757,19 @@ export default function AssetsScreen() {
                   onPress={() => router.push('/add-account')}
                   style={({ pressed }) => [
                     styles.debtRow,
-                    { backgroundColor: `${errorRed}1A`, borderLeftColor: errorRed },
+                    {
+                      backgroundColor: isDark ? 'rgba(220,38,38,0.2)' : 'rgba(220,38,38,0.1)',
+                      borderLeftColor: colors.danger,
+                    },
                     pressed && { opacity: 0.9 },
                   ]}>
                   <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                      <MaterialIcons name="add" size={20} color={errorRed} />
+                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                      <MaterialIcons name="add" size={20} color={colors.danger} />
                     </View>
                     <View>
-                      <Text style={[styles.accountName, { color: theme.text }]}>添加负债</Text>
-                      <Text style={[styles.accountMeta, { color: outline }]}>信用卡/贷款等</Text>
+                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>添加负债</Text>
+                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>信用卡/贷款等</Text>
                     </View>
                   </View>
                 </Pressable>
@@ -750,19 +780,22 @@ export default function AssetsScreen() {
                     onPress={() => openAccountDetail(acc)}
                     style={({ pressed }) => [
                       styles.debtRow,
-                      { backgroundColor: `${errorRed}1A`, borderLeftColor: errorRed },
+                      {
+                      backgroundColor: isDark ? 'rgba(220,38,38,0.2)' : 'rgba(220,38,38,0.1)',
+                      borderLeftColor: colors.danger,
+                    },
                       pressed && { opacity: 0.9 },
                     ]}>
                     <View style={styles.accountLeft}>
-                      <View style={[styles.accountIconBox, { backgroundColor: card }]}>
-                        <MaterialIcons name={accountIcon(acc)} size={20} color={errorRed} />
+                      <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
+                        <MaterialIcons name={accountIcon(acc)} size={20} color={colors.danger} />
                       </View>
                       <View>
-                        <Text style={[styles.accountName, { color: theme.text }]}>{acc.name}</Text>
-                        <Text style={[styles.accountMeta, { color: outline }]}>{acc.account_no ? acc.account_no : '负债账户'}</Text>
+                        <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
+                        <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : '负债账户'}</Text>
                       </View>
                     </View>
-                    <Text style={[styles.accountAmount, { color: errorRed }]}>{formatAccountRowBalance(acc)}</Text>
+                    <Text style={[Typography.title, styles.accountAmount, { color: colors.danger }]}>{formatAccountRowBalance(acc)}</Text>
                   </Pressable>
                 ))
               )}
@@ -770,22 +803,21 @@ export default function AssetsScreen() {
           </View>
         </View>
 
-        <View style={{ height: 24 }} />
       </ScrollView>
 
       <Modal visible={defaultPickerTarget != null} transparent animationType="fade" onRequestClose={() => setDefaultPickerTarget(null)}>
-        <Pressable style={styles.defaultPickerBackdrop} onPress={() => setDefaultPickerTarget(null)}>
+        <Pressable style={[styles.defaultPickerBackdrop, { backgroundColor: colors.overlay }]} onPress={() => setDefaultPickerTarget(null)}>
           <Pressable
-            style={[styles.defaultPickerSheet, { backgroundColor: card }]}
+            style={[styles.defaultPickerSheet, { backgroundColor: colors.surface, borderColor: colors.outline }]}
             onPress={(e) => e.stopPropagation()}>
-            <Text style={[styles.defaultPickerTitle, { color: theme.text }]}>
+            <Text style={[Typography.title, styles.defaultPickerTitle, { color: colors.text }]}>
               {defaultPickerTarget === 'income' ? '选择默认收入账户' : '选择默认支付账户'}
             </Text>
             <ScrollView style={styles.defaultPickerList} showsVerticalScrollIndicator={false}>
               <Pressable
                 onPress={() => void saveDefaultAccount(defaultPickerTarget!, null)}
                 style={({ pressed }) => [styles.defaultPickerItem, pressed && { opacity: 0.85 }]}>
-                <Text style={[styles.defaultPickerItemText, { color: outline }]}>不设置</Text>
+                <Text style={[Typography.bodyStrong, { color: colors.textSecondary }]}>不设置</Text>
               </Pressable>
               {assetAccounts.map((acc) => {
                 const selected =
@@ -797,8 +829,8 @@ export default function AssetsScreen() {
                     key={acc.id}
                     onPress={() => void saveDefaultAccount(defaultPickerTarget!, acc.id)}
                     style={({ pressed }) => [styles.defaultPickerItem, pressed && { opacity: 0.85 }]}>
-                    <Text style={[styles.defaultPickerItemText, { color: theme.text }]}>{acc.name}</Text>
-                    {selected ? <MaterialIcons name="check" size={20} color={primaryBlue} /> : null}
+                    <Text style={[Typography.bodyStrong, { color: colors.text }]}>{acc.name}</Text>
+                    {selected ? <MaterialIcons name="check" size={20} color={colors.primary} /> : null}
                   </Pressable>
                 );
               })}
@@ -812,95 +844,129 @@ export default function AssetsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingVertical: 12 },
-  headerIconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontSize: 16, fontWeight: '800', letterSpacing: -0.3 },
-  headerDivider: { height: 1, width: '100%', opacity: 0.6 },
-  content: { paddingHorizontal: 18, paddingTop: 18, paddingBottom: 110, gap: 18 },
-  hero: { gap: 10, paddingTop: 6, paddingBottom: 10 },
-  kicker: { fontSize: 12, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase' },
-  heroRow: { flexDirection: 'row', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' },
-  netWorth: { fontSize: 44, fontWeight: '900', letterSpacing: -1.4, lineHeight: 52 },
-  pill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
-  pillText: { fontSize: 14, fontWeight: '900' },
-  totalsRow: { flexDirection: 'row', alignItems: 'center', gap: 16, marginTop: 4 },
-  totalBlock: { gap: 4 },
-  totalLabel: { fontSize: 12, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase' },
-  totalValue: { fontSize: 15, fontWeight: '800' },
-  vDivider: { width: 1, height: 28, borderRadius: 1 },
-  bento: { gap: 12 },
-  assetCard: { borderRadius: 16, padding: 16, borderWidth: 1 },
-  cardTitle: { fontSize: 18, fontWeight: '900', marginBottom: 14 },
-  assetRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 18 },
-  ringWrap: { width: 128, height: 128, alignItems: 'center', justifyContent: 'center' },
-  ringText: { position: 'absolute', fontSize: 16, fontWeight: '900' },
-  legend: { flex: 1, gap: 10 },
-  legendRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  legendDot: { width: 10, height: 10, borderRadius: 5 },
-  legendText: { fontSize: 14, fontWeight: '600' },
-  growthCard: { borderRadius: 16, padding: 16, overflow: 'hidden', minHeight: 160, justifyContent: 'space-between' },
-  growthTop: { gap: 6, zIndex: 2 },
-  growthKicker: { color: 'rgba(255,255,255,0.85)', fontSize: 10, fontWeight: '900', letterSpacing: 2, textTransform: 'uppercase' },
-  growthTitle: { color: '#fff', fontSize: 20, fontWeight: '900', letterSpacing: -0.4 },
-  growthBtn: { zIndex: 2, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.16)', backgroundColor: 'rgba(255,255,255,0.10)' },
-  growthBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  growthGlow: { position: 'absolute', right: -60, bottom: -60, width: 220, height: 220, borderRadius: 999, opacity: 0.55 },
-  defaultAccountsCard: {
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    gap: 10,
+  content: {
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['3xl'],
+    gap: Spacing['4xl'],
   },
-  defaultAccountsTitle: {
-    fontSize: 16,
-    fontWeight: '900',
+  hero: {
+    gap: Spacing.lg,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.lg,
   },
-  defaultAccountsHint: {
+  heroKicker: {
+    letterSpacing: 1.2,
     fontSize: 12,
-    fontWeight: '600',
-    lineHeight: 18,
+    textTransform: 'none',
   },
+  heroRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: Spacing.lg,
+    flexWrap: 'wrap',
+  },
+  netWorth: {
+    flexShrink: 1,
+  },
+  trendPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.pill,
+  },
+  totalsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing['3xl'],
+    marginTop: Spacing.xs,
+  },
+  totalBlock: { gap: Spacing.xs },
+  totalLabel: {
+    letterSpacing: 1.2,
+    fontSize: 12,
+    textTransform: 'none',
+  },
+  vDivider: { width: StyleSheet.hairlineWidth, height: 28, borderRadius: Radius.xs },
+  bento: { gap: Spacing.xl },
+  cardTitle: { marginBottom: Spacing['2xl'] },
+  assetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing['4xl'],
+  },
+  ringWrap: { width: 128, height: 128, alignItems: 'center', justifyContent: 'center' },
+  ringText: { position: 'absolute' },
+  legend: { flex: 1, gap: Spacing.lg },
+  legendRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
+  legendDot: { width: 10, height: 10, borderRadius: 5 },
+  growthCard: {
+    borderRadius: Radius['2xl'],
+    padding: Spacing['4xl'],
+    overflow: 'hidden',
+    minHeight: 160,
+    justifyContent: 'space-between',
+  },
+  growthTop: { gap: Spacing.sm, zIndex: 2 },
+  growthKicker: { opacity: 0.88 },
+  growthTitle: {},
+  growthBtn: {
+    zIndex: 2,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  growthGlow: {
+    position: 'absolute',
+    right: -60,
+    bottom: -60,
+    width: 220,
+    height: 220,
+    borderRadius: Radius.pill,
+    opacity: 0.55,
+  },
+  defaultAccountsCard: { gap: Spacing.lg },
+  defaultAccountsHint: { lineHeight: 18 },
   defaultAccountRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 12,
+    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.xl,
+    borderRadius: Radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    gap: 12,
+    gap: Spacing.xl,
   },
   defaultAccountRowLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: Spacing.md,
     flex: 1,
   },
-  defaultAccountRowLabel: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
   defaultAccountRowValue: {
-    fontSize: 14,
-    fontWeight: '800',
     maxWidth: '46%',
     textAlign: 'right',
   },
   defaultPickerBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
     justifyContent: 'flex-end',
-    padding: 16,
+    padding: Spacing['3xl'],
   },
   defaultPickerSheet: {
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: Radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['4xl'],
     maxHeight: '70%',
   },
   defaultPickerTitle: {
-    fontSize: 16,
-    fontWeight: '900',
-    marginBottom: 8,
+    marginBottom: Spacing.md,
   },
   defaultPickerList: {
     maxHeight: 360,
@@ -909,36 +975,63 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 14,
-    paddingHorizontal: 4,
+    paddingVertical: Spacing['2xl'],
+    paddingHorizontal: Spacing.xs,
   },
-  defaultPickerItemText: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  accounts: { gap: 18 },
+  accounts: { gap: Spacing['4xl'] },
   addAccountRow: { alignItems: 'flex-end' },
-  addAccountBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999 },
-  addAccountText: { fontSize: 14, fontWeight: '900' },
-  group: { gap: 12 },
+  addAccountBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing['3xl'],
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.pill,
+  },
+  group: { gap: Spacing.xl },
+  liabilityGroup: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: Spacing['4xl'],
+  },
   groupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  groupHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  groupTitle: { fontSize: 16, fontWeight: '900' },
-  groupSum: { fontSize: 12, fontWeight: '900', letterSpacing: 1.6, textTransform: 'uppercase' },
-  accountRow: { borderRadius: 16, padding: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderLeftWidth: 4 },
-  accountLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1, paddingRight: 12 },
-  accountIconBox: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  accountImage: { width: 40, height: 40, borderRadius: 12 },
-  accountName: { fontSize: 14, fontWeight: '800', marginBottom: 2 },
-  accountMeta: { fontSize: 12, fontWeight: '600' },
-  accountAmount: { fontSize: 16, fontWeight: '900' },
+  groupHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  groupSum: {
+    ...Typography.kicker,
+    letterSpacing: 1.6,
+    fontSize: 12,
+  },
+  accountRow: {
+    borderRadius: Radius.xl,
+    padding: Spacing['2xl'],
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderLeftWidth: 4,
+  },
+  accountLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xl,
+    flex: 1,
+    paddingRight: Spacing.xl,
+  },
+  accountIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountName: { marginBottom: 2 },
+  accountMeta: {},
+  accountAmount: {},
   debtList: {
-    gap: 10,
+    gap: Spacing.lg,
     opacity: 0.92,
   },
   debtRow: {
-    borderRadius: 16,
-    padding: 14,
+    borderRadius: Radius.xl,
+    padding: Spacing['2xl'],
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',

@@ -1,25 +1,50 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
+import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { addCustomQuickAddItem, type QuickAddMetricType, type QuickAddVolumeUnit } from '@/lib/quick-add-cards';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+const ICON_COLUMNS = 5;
+const ICON_GAP = Spacing.lg;
 
 const iconOptions: { key: string; icon: React.ComponentProps<typeof MaterialIcons>['name'] }[] = [
   { key: 'water', icon: 'local-drink' },
+  { key: 'water-drop', icon: 'water-drop' },
   { key: 'coffee', icon: 'local-cafe' },
+  { key: 'coffee-maker', icon: 'coffee-maker' },
   { key: 'tea', icon: 'emoji-food-beverage' },
-  { key: 'food', icon: 'restaurant' },
+  { key: 'green-tea', icon: 'spa' },
+  { key: 'milk', icon: 'blender' },
   { key: 'juice', icon: 'sports-bar' },
-  { key: 'plant', icon: 'spa' },
+  { key: 'soda', icon: 'local-bar' },
   { key: 'wine', icon: 'wine-bar' },
-  { key: 'icecream', icon: 'icecream' },
-  { key: 'soup', icon: 'soup-kitchen' },
-  { key: 'fruit', icon: 'local-pizza' },
+  { key: 'liquor', icon: 'liquor' },
+  { key: 'food', icon: 'restaurant' },
   { key: 'breakfast', icon: 'free-breakfast' },
+  { key: 'brunch', icon: 'brunch-dining' },
+  { key: 'lunch', icon: 'lunch-dining' },
+  { key: 'dinner', icon: 'dinner-dining' },
+  { key: 'ramen', icon: 'ramen-dining' },
+  { key: 'rice', icon: 'rice-bowl' },
+  { key: 'meal', icon: 'set-meal' },
+  { key: 'bbq', icon: 'outdoor-grill' },
+  { key: 'takeaway', icon: 'takeaway-box' },
+  { key: 'bakery', icon: 'bakery-dining' },
+  { key: 'pizza', icon: 'local-pizza' },
+  { key: 'soup', icon: 'soup-kitchen' },
+  { key: 'egg', icon: 'egg' },
+  { key: 'kebab', icon: 'kebab-dining' },
+  { key: 'icecream', icon: 'icecream' },
+  { key: 'cookie', icon: 'cookie' },
+  { key: 'cake', icon: 'cake' },
+  { key: 'fruit', icon: 'eco' },
+  { key: 'plant', icon: 'grass' },
   { key: 'fitness', icon: 'fitness-center' },
+  { key: 'protein-shake', icon: 'egg-alt' },
 ];
 
 const metricOptions: { key: QuickAddMetricType; label: string; unit: QuickAddVolumeUnit; placeholder: string }[] = [
@@ -29,14 +54,24 @@ const metricOptions: { key: QuickAddMetricType; label: string; unit: QuickAddVol
   { key: 'sodium', label: '钠', unit: 'mg', placeholder: '100' },
 ];
 
+function SectionLabel({ children }: { children: string }) {
+  const { colors } = useAppTheme();
+  return <Text style={[Typography.kicker, styles.sectionLabel, { color: colors.textSecondary }]}>{children}</Text>;
+}
+
 export default function AddItemScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const themeKey = colorScheme === 'dark' ? 'dark' : 'light';
-  const theme = Colors[themeKey];
-  const isDark = themeKey === 'dark';
+  const { colors, shadows } = useAppTheme();
+
+  const [iconGridWidth, setIconGridWidth] = React.useState(0);
+  const iconTileSize =
+    iconGridWidth > 0
+      ? Math.floor((iconGridWidth - ICON_GAP * (ICON_COLUMNS - 1)) / ICON_COLUMNS)
+      : 0;
+
   const [name, setName] = React.useState('');
+  const [nameFocused, setNameFocused] = React.useState(false);
   const [metricAmounts, setMetricAmounts] = React.useState<Record<QuickAddMetricType, string>>({
     hydration: '250',
     protein: '',
@@ -46,6 +81,7 @@ export default function AddItemScreen() {
   const [selectedIconKey, setSelectedIconKey] = React.useState(iconOptions[0].key);
   const [metricTypes, setMetricTypes] = React.useState<QuickAddMetricType[]>(['hydration']);
   const [saving, setSaving] = React.useState(false);
+
   const selectedIcon = React.useMemo(
     () => iconOptions.find((item) => item.key === selectedIconKey)?.icon ?? iconOptions[0].icon,
     [selectedIconKey]
@@ -105,213 +141,241 @@ export default function AddItemScreen() {
   }, [name, metricTypes, selectedMetricAmounts, selectedIcon, router]);
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['left', 'right', 'bottom']}>
-      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
+    <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
+      <ScreenHeader title="添加项目" onBack={() => router.back()} />
 
-      <View
-        style={[
-          styles.header,
-          {
-            paddingTop: insets.top,
-            height: 64 + insets.top,
-            backgroundColor: isDark ? 'rgba(15, 23, 42, 0.8)' : 'rgba(255, 255, 255, 0.8)',
-          },
-        ]}
-      >
-        <View style={styles.headerInner}>
-          <Pressable onPress={() => router.back()} hitSlop={12} style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}>
-            <MaterialIcons name="arrow-back" size={22} color={theme.text} />
-          </Pressable>
-          <Text style={[styles.headerTitle, { color: theme.text }]}>添加项目</Text>
-          <View style={styles.headerRightSpacer} />
-        </View>
-      </View>
-
-      <ScrollView contentContainerStyle={[styles.content, { paddingTop: 96 + insets.top, paddingBottom: 132 + Math.max(insets.bottom, 12) }]} showsVerticalScrollIndicator={false}>
-        <View style={styles.section}>
-          <Text style={styles.label}>项目名称</Text>
-          <TextInput
-            value={name}
-            onChangeText={setName}
-            placeholder="输入项目名称..."
-            placeholderTextColor={theme.textSecondary}
-            maxLength={18}
-            style={[styles.nameInput, { color: theme.text }]}
-          />
-          <View style={styles.underline}>
-            <View style={styles.underlineActive} />
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: Spacing['7xl'] + 72 + Math.max(insets.bottom, 0) }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="on-drag">
+        <View style={styles.content}>
+          <View style={styles.section}>
+            <SectionLabel>项目名称</SectionLabel>
+            <AppInput
+              value={name}
+              onChangeText={setName}
+              onFocus={() => setNameFocused(true)}
+              onBlur={() => setNameFocused(false)}
+              placeholder="例如：美式咖啡、蛋白粉"
+              maxLength={18}
+              returnKeyType="done"
+              editable={!saving}
+              autoCorrect={false}
+              hint={`${name.length}/18`}
+              inputStyle={[Typography.h2, styles.nameInputText]}
+              inputWrapStyle={[
+                styles.nameInputWrap,
+                nameFocused && {
+                  borderColor: colors.primary,
+                  borderWidth: 1.5,
+                  backgroundColor: colors.surface,
+                },
+              ]}
+            />
           </View>
-        </View>
 
-        <View style={styles.section}>
-          <Text style={styles.label}>选择图标</Text>
-          <View style={styles.iconGrid}>
-            {iconOptions.map((item) => {
-              const active = selectedIconKey === item.key;
-              return (
-                <Pressable
-                  key={item.key}
-                  onPress={() => setSelectedIconKey(item.key)}
-                  style={({ pressed }) => [styles.iconTile, active && styles.iconTileActive, pressed && styles.pressed]}
-                >
-                  <View style={styles.iconGlyphWrap}>
-                    <MaterialIcons name={item.icon} size={30} color={active ? '#006c49' : theme.textSecondary} />
-                  </View>
-                </Pressable>
-              );
-            })}
+          <View style={styles.section}>
+            <SectionLabel>选择图标</SectionLabel>
+            <View
+              style={[styles.iconGrid, { gap: ICON_GAP }]}
+              onLayout={(event) => {
+                const width = event.nativeEvent.layout.width;
+                if (width > 0 && width !== iconGridWidth) setIconGridWidth(width);
+              }}>
+              {iconTileSize > 0
+                ? iconOptions.map((item) => {
+                    const active = selectedIconKey === item.key;
+                    return (
+                      <Pressable
+                        key={item.key}
+                        onPress={() => setSelectedIconKey(item.key)}
+                        style={({ pressed }) => [
+                          styles.iconTile,
+                          {
+                            width: iconTileSize,
+                            height: iconTileSize,
+                            backgroundColor: active ? colors.primaryMuted : colors.input,
+                            borderColor: active ? colors.primary : colors.outline,
+                          },
+                          active && shadows.card,
+                          pressed && styles.pressed,
+                        ]}>
+                        <MaterialIcons
+                          name={item.icon}
+                          size={28}
+                          color={active ? colors.primary : colors.textSecondary}
+                        />
+                      </Pressable>
+                    );
+                  })
+                : null}
+            </View>
           </View>
-        </View>
 
-        <View style={styles.section}>
-          <Text style={styles.label}>指标类型</Text>
-          <View style={styles.unitWrap}>
-            {metricOptions.map((item) => {
-              const active = metricTypes.includes(item.key);
-              return (
-                <Pressable
-                  key={item.key}
-                  onPress={() =>
-                    setMetricTypes((prev) =>
-                      prev.includes(item.key) ? prev.filter((v) => v !== item.key) : [...prev, item.key]
-                    )
-                  }
-                  style={({ pressed }) => [styles.metricTypeItem, active && styles.unitActive, pressed && styles.pressed]}
-                >
-                  <Text style={active ? styles.unitTextActive : styles.unitText}>{item.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.label}>指标数值</Text>
-          <View style={styles.amountList}>
-            {metricOptions
-              .filter((item) => metricTypes.includes(item.key))
-              .map((item) => (
-                <View key={item.key} style={[styles.amountRow, { borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.35)' }]}>
-                  <View style={styles.amountMeta}>
-                    <Text style={[styles.amountLabel, { color: theme.text }]}>{item.label}</Text>
-                    <Text style={styles.amountUnit}>{item.unit}</Text>
-                  </View>
-                  <TextInput
-                    value={metricAmounts[item.key]}
-                    onChangeText={(text) =>
-                      setMetricAmounts((prev) => ({
-                        ...prev,
-                        [item.key]: text.replace(/[^\d]/g, '').slice(0, 5),
-                      }))
+          <View style={styles.section}>
+            <SectionLabel>指标类型</SectionLabel>
+            <View style={[styles.segmented, { backgroundColor: colors.capsule }]}>
+              {metricOptions.map((item) => {
+                const active = metricTypes.includes(item.key);
+                return (
+                  <Pressable
+                    key={item.key}
+                    onPress={() =>
+                      setMetricTypes((prev) =>
+                        prev.includes(item.key) ? prev.filter((v) => v !== item.key) : [...prev, item.key]
+                      )
                     }
-                    placeholder={item.placeholder}
-                    placeholderTextColor={theme.textSecondary}
-                    inputMode="numeric"
-                    keyboardType="number-pad"
-                    style={[styles.amountInput, { color: theme.text }]}
-                  />
-                </View>
-              ))}
+                    style={({ pressed }) => [
+                      styles.segmentItem,
+                      active && [styles.segmentItemActive, { backgroundColor: colors.surface }, shadows.card],
+                      pressed && styles.pressed,
+                    ]}>
+                    <Text
+                      style={[
+                        Typography.bodyStrong,
+                        { color: active ? colors.primary : colors.textSecondary, fontSize: 14 },
+                      ]}>
+                      {item.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={styles.section}>
+            <SectionLabel>指标数值</SectionLabel>
+            <View style={styles.amountList}>
+              {metricOptions
+                .filter((item) => metricTypes.includes(item.key))
+                .map((item) => (
+                  <AppCard key={item.key} variant="muted" style={styles.amountCard}>
+                    <View style={styles.amountRow}>
+                      <View style={styles.amountMeta}>
+                        <Text style={[Typography.bodyStrong, { color: colors.text }]}>{item.label}</Text>
+                        <Text style={[Typography.caption, { color: colors.textSecondary, textTransform: 'uppercase' }]}>
+                          {item.unit}
+                        </Text>
+                      </View>
+                      <TextInput
+                        value={metricAmounts[item.key]}
+                        onChangeText={(text) =>
+                          setMetricAmounts((prev) => ({
+                            ...prev,
+                            [item.key]: text.replace(/[^\d]/g, '').slice(0, 5),
+                          }))
+                        }
+                        placeholder={item.placeholder}
+                        placeholderTextColor={colors.textMuted}
+                        inputMode="numeric"
+                        keyboardType="number-pad"
+                        style={[styles.amountInput, Typography.h2, { color: colors.text }]}
+                      />
+                    </View>
+                  </AppCard>
+                ))}
+            </View>
           </View>
         </View>
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: 16 + Math.max(insets.bottom, 0), backgroundColor: isDark ? 'rgba(15, 23, 42, 0.8)' : 'rgba(255, 255, 255, 0.8)' }]}>
-        <Pressable onPress={() => void onSave()} disabled={!canSave} style={({ pressed }) => [styles.saveBtn, !canSave && styles.saveBtnDisabled, pressed && styles.saveBtnPressed]}>
-          <Text style={styles.saveText}>{saving ? '保存中...' : '完成并保存'}</Text>
-          <MaterialIcons name="check-circle" size={22} color="#fff" />
-        </Pressable>
+      <View
+        style={[
+          styles.footer,
+          {
+            paddingBottom: Spacing['3xl'] + Math.max(insets.bottom, 0),
+            backgroundColor: colors.headerScrim,
+            borderTopColor: colors.outline,
+          },
+        ]}>
+        <AppButton
+          label={saving ? '保存中...' : '完成并保存'}
+          variant="secondary"
+          size="lg"
+          fullWidth
+          loading={saving}
+          disabled={!canSave}
+          onPress={() => void onSave()}
+        />
       </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1 },
-  header: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 },
-  headerInner: { height: 64, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24 },
-  headerSafeSpacer: { width: 40 },
-  backBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontSize: 18, fontWeight: '800', letterSpacing: -0.2, fontFamily: 'Manrope' },
-  headerSpacer: { width: 40 },
-  headerRightSpacer: { width: 40 },
-  content: { paddingHorizontal: 24, gap: 20 },
-  section: { gap: 12 },
-  label: { fontSize: 11, fontWeight: '700', letterSpacing: 0.8, color: 'rgba(71, 85, 105, 0.62)', textTransform: 'uppercase' },
-  nameInput: {
-    padding: 0,
-    fontSize: 32,
-    lineHeight: 36,
-    fontWeight: '800',
-    fontFamily: 'Manrope',
-    includeFontPadding: false,
-    textAlignVertical: 'center',
+  root: { flex: 1 },
+  scroll: { flex: 1 },
+  scrollContent: {
+    flexGrow: 1,
   },
-  underline: { height: 2, borderRadius: 999, overflow: 'hidden', backgroundColor: '#e2e7ff' },
-  underlineActive: { width: '33%', height: '100%', backgroundColor: '#10b981' },
-  iconGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 10 },
-  iconTile: {
-    width: '22%',
-    aspectRatio: 1,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#f2f3ff',
-    borderWidth: 2,
-    borderColor: 'transparent',
-    padding: 0,
-  },
-  iconTileActive: { backgroundColor: '#6cf8bb', borderColor: '#006c49', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 6, elevation: 1 },
-  iconGlyphWrap: {
+  content: {
+    maxWidth: Layout.contentMaxWidth,
+    alignSelf: 'center',
     width: '100%',
-    height: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['3xl'],
+    gap: Spacing['6xl'],
   },
-  volumeInput: {
+  section: { gap: Spacing.xl },
+  sectionLabel: { opacity: 0.85 },
+  nameInputWrap: {
+    minHeight: 56,
+    paddingVertical: Spacing.xl,
+    borderRadius: Radius['2xl'],
+  },
+  nameInputText: {
     padding: 0,
-    fontSize: 40,
-    lineHeight: 42,
-    fontWeight: '800',
-    fontFamily: 'Manrope',
+    margin: 0,
     includeFontPadding: false,
     textAlignVertical: 'center',
   },
-  amountList: { gap: 10 },
+  iconGrid: {
+    width: '100%',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  iconTile: {
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmented: {
+    flexDirection: 'row',
+    padding: Spacing.xs,
+    borderRadius: Radius.md,
+    gap: Spacing.xs,
+  },
+  segmentItem: {
+    flex: 1,
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.sm,
+    alignItems: 'center',
+    minWidth: 0,
+  },
+  segmentItemActive: {},
+  amountList: { gap: Spacing.lg },
+  amountCard: { paddingVertical: Spacing['3xl'], paddingHorizontal: Spacing['3xl'] },
   amountRow: {
-    minHeight: 64,
-    borderWidth: 1,
-    borderRadius: 16,
-    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(242,243,255,0.62)',
+    gap: Spacing.xl,
   },
-  amountMeta: { gap: 3 },
-  amountLabel: { fontSize: 15, fontWeight: '800', fontFamily: 'Manrope' },
-  amountUnit: { fontSize: 12, fontWeight: '800', color: '#64748b', textTransform: 'uppercase' },
+  amountMeta: { gap: Spacing.xs, flexShrink: 1 },
   amountInput: {
     minWidth: 112,
     padding: 0,
-    fontSize: 30,
-    lineHeight: 34,
-    fontWeight: '800',
-    fontFamily: 'Manrope',
     includeFontPadding: false,
     textAlign: 'right',
     textAlignVertical: 'center',
   },
-  smallUnderline: { height: 1, backgroundColor: 'rgba(194, 198, 214, 0.35)' },
-  unitWrap: { flexDirection: 'row', padding: 4, borderRadius: 12, gap: 4, backgroundColor: '#f2f3ff' },
-  metricTypeItem: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center', minWidth: 0 },
-  unitActive: { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 4, elevation: 1 },
-  unitText: { fontSize: 14, fontWeight: '700', color: '#64748b' },
-  unitTextActive: { fontSize: 14, fontWeight: '700', color: '#0058be' },
-  footer: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(194, 198, 214, 0.2)', paddingHorizontal: 24, paddingTop: 16 },
-  saveBtn: { height: 64, borderRadius: 16, backgroundColor: '#006c49', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, shadowColor: '#006c49', shadowOpacity: 0.18, shadowRadius: 12, elevation: 3 },
-  saveBtnDisabled: { opacity: 0.45 },
-  saveBtnPressed: { opacity: 0.92, transform: [{ scale: 0.98 }] },
-  saveText: { color: '#fff', fontSize: 18, fontWeight: '800', fontFamily: 'Manrope' },
+  footer: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['3xl'],
+  },
   pressed: { opacity: 0.85 },
 });

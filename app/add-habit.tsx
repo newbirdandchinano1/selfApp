@@ -1,5 +1,6 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
+import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
 import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
@@ -19,6 +20,10 @@ const WEEKEND_DAYS = ['周六', '周日'];
 const MONTH_FILTERS = ['上旬', '中旬', '下旬', '单号', '双号', '全选'];
 const PRESET_MONTHLY_N_DAYS = [5, 10, 15, 20, 25];
 const DEFAULT_QUANTIFY_UNIT = '次';
+
+/** Habit kind accents — semantic (not global primary) */
+const HABIT_KIND_BUILD = '#14b8a6';
+const HABIT_KIND_BREAK_BORDER = '#ea580c';
 
 function defaultReminderTime(): Date {
   const d = new Date();
@@ -100,6 +105,7 @@ function NumberControl({
   textColor: string;
   mutedColor: string;
 }) {
+  const { colors } = useAppTheme();
   return (
     <View style={styles.numberRow}>
       <Text style={[styles.numberLabel, { color: textColor }]}>
@@ -107,11 +113,23 @@ function NumberControl({
         {showOptional ? <Text style={[styles.numberLabelHint, { color: mutedColor }]}>（可选）</Text> : null}
       </Text>
       <View style={styles.numberActions}>
-        <Pressable onPress={onMinus} style={({ pressed }) => [styles.numberBtn, pressed && { opacity: 0.75 }]}>
+        <Pressable
+          onPress={onMinus}
+          style={({ pressed }) => [
+            styles.numberBtn,
+            { backgroundColor: colors.surfaceMuted },
+            pressed && { opacity: 0.75 },
+          ]}>
           <MaterialIcons name="remove" size={16} color={mutedColor} />
         </Pressable>
         <Text style={[styles.numberValue, { color: textColor }]}>{displayValue ?? String(value ?? 0)}</Text>
-        <Pressable onPress={onPlus} style={({ pressed }) => [styles.numberBtn, pressed && { opacity: 0.75 }]}>
+        <Pressable
+          onPress={onPlus}
+          style={({ pressed }) => [
+            styles.numberBtn,
+            { backgroundColor: colors.surfaceMuted },
+            pressed && { opacity: 0.75 },
+          ]}>
           <MaterialIcons name="add" size={16} color={mutedColor} />
         </Pressable>
       </View>
@@ -129,10 +147,8 @@ export default function AddHabitScreen() {
     habitId?: string;
   }>();
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const themeKey = colorScheme === 'dark' ? 'dark' : 'light';
-  const theme = Colors[themeKey];
-  const isDark = themeKey === 'dark';
+  const { colors, isDark, scheme, shadows } = useAppTheme();
+
   const isEditMode = pickParam(params.mode) === 'edit';
   const initialName = pickParam(params.name) ?? '';
   const initialIcon = pickParam(params.icon) ?? '🥛';
@@ -166,14 +182,6 @@ export default function AddHabitScreen() {
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
-
-  const bg = isDark ? theme.background : '#f8fafc';
-  const card = isDark ? 'rgba(15,23,42,0.72)' : '#fff';
-  const softCard = isDark ? 'rgba(30,41,59,0.55)' : '#f8fafc';
-  const textMain = theme.text;
-  const textSub = theme.textSecondary;
-  const border = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(148,163,184,0.22)';
-  const yellow = '#FFD600';
 
   const loadContexts = React.useCallback(async () => {
     try {
@@ -458,37 +466,39 @@ export default function AddHabitScreen() {
   ) => (
     <Pressable onPress={onToggle} style={({ pressed }) => [styles.sectionHeader, pressed && { opacity: 0.82 }]}>
       <View style={styles.sectionHeaderLeft}>
-        <MaterialIcons name={icon} size={20} color={textMain} />
-        <Text style={[styles.sectionHeaderTitle, { color: textMain }]}>{title}</Text>
+        <MaterialIcons name={icon} size={20} color={colors.text} />
+        <Text style={[Typography.bodyStrong, styles.sectionHeaderTitle, { color: colors.text }]}>{title}</Text>
       </View>
       <View style={styles.sectionHeaderRight}>
-        <Text style={[styles.sectionHeaderHint, { color: textSub }]}>{isOpen ? '收起' : '展开'}</Text>
-        <MaterialIcons name={isOpen ? 'expand-less' : 'expand-more'} size={16} color={textSub} />
+        <Text style={[Typography.caption, styles.sectionHeaderHint, { color: colors.textSecondary }]}>
+          {isOpen ? '收起' : '展开'}
+        </Text>
+        <MaterialIcons name={isOpen ? 'expand-less' : 'expand-more'} size={16} color={colors.textSecondary} />
       </View>
     </Pressable>
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
-      <View style={[styles.headerFixed, { backgroundColor: card, borderBottomColor: border }]}>
-        <View style={styles.headerRow}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
+      <ScreenHeader
+        title={isEditMode ? '编辑习惯' : '新建习惯'}
+        onBack={() => router.back()}
+        right={
           <Pressable
-            onPress={() => router.back()}
-            hitSlop={12}
-            style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.8 }]}>
-            <MaterialIcons name="arrow-back" size={22} color={textSub} />
+            onPress={() => void handleSave()}
+            hitSlop={Layout.hitSlop}
+            style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
+            <Text style={[Typography.bodyStrong, styles.headerActionText, { color: colors.primary }]} numberOfLines={1}>
+              {isEditMode ? '保存' : '创建打卡'}
+            </Text>
           </Pressable>
-          <Text style={[styles.headerTitle, { color: textMain }]}>{isEditMode ? '编辑习惯' : '新建习惯'}</Text>
-          <Pressable onPress={handleSave} hitSlop={10} style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
-            <Text style={[styles.headerAction, { color: textMain, fontWeight: '700' }]}>{isEditMode ? '保存' : '创建打卡'}</Text>
-          </Pressable>
-        </View>
-      </View>
+        }
+      />
 
       <ScrollView
         contentContainerStyle={[
           styles.content,
-          { paddingBottom: 120 + Math.max(insets.bottom, 12) },
+          { paddingBottom: Spacing['7xl'] + 72 + Math.max(insets.bottom, Spacing.md) },
         ]}
         showsVerticalScrollIndicator={false}>
         <View style={styles.main}>
@@ -497,84 +507,101 @@ export default function AddHabitScreen() {
               onPress={() => setIconPickerOpen(true)}
               hitSlop={8}
               style={({ pressed }) => [pressed && { opacity: 0.88 }]}>
-              <View style={[styles.emojiWrap, { backgroundColor: isDark ? 'rgba(20,184,166,0.18)' : 'rgba(20,184,166,0.12)', borderColor: border }]}>
+              <View
+                style={[
+                  styles.emojiWrap,
+                  {
+                    backgroundColor: colors.primaryMuted,
+                    borderColor: colors.outline,
+                  },
+                ]}>
                 <Text style={styles.emoji}>{habitIcon}</Text>
-                <View style={styles.emojiEdit}>
-                  <MaterialIcons name="edit" size={10} color="#fff" />
+                <View style={[styles.emojiEdit, { backgroundColor: colors.accentCard }]}>
+                  <MaterialIcons name="edit" size={10} color={colors.onAccent} />
                 </View>
               </View>
             </Pressable>
-            <TextInput
+            <AppInput
               value={habitName}
               onChangeText={setHabitName}
               placeholder="输入打卡项目名称..."
-              placeholderTextColor={textSub}
-              {...(Platform.OS === 'android'
-                ? { textAlignVertical: 'center' as const, includeFontPadding: false }
-                : {})}
-              style={[styles.nameInput, { backgroundColor: softCard, color: textMain, borderColor: border }]}
+              containerStyle={styles.nameInputContainer}
+              inputWrapStyle={styles.nameInputWrap}
+              inputStyle={[
+                Typography.body,
+                styles.nameInputText,
+                Platform.OS === 'android' ? { textAlignVertical: 'center', includeFontPadding: false } : null,
+              ]}
             />
           </View>
 
-          <View style={styles.noteBlock}>
-            <Text style={[styles.noteLabel, { color: textSub }]}>备注</Text>
-            <TextInput
-              value={habitNote}
-              onChangeText={setHabitNote}
-              placeholder="补充说明、提醒事项…（可选）"
-              placeholderTextColor={textSub}
-              multiline
-              textAlignVertical="top"
-              style={[styles.noteInput, { backgroundColor: softCard, color: textMain, borderColor: border }]}
-            />
-          </View>
+          <AppInput
+            label="备注"
+            value={habitNote}
+            onChangeText={setHabitNote}
+            placeholder="补充说明、提醒事项…（可选）"
+            multiline
+            textAlignVertical="top"
+            inputWrapStyle={styles.noteInputWrap}
+            inputStyle={[Typography.body, styles.noteInputText]}
+          />
 
           <View style={styles.kindBlock}>
-            <Text style={[styles.kindBlockLabel, { color: textSub }]}>打卡类型</Text>
+            <Text style={[Typography.caption, styles.kindBlockLabel, { color: colors.textSecondary }]}>打卡类型</Text>
             <View style={styles.kindRow}>
               <Pressable
                 onPress={() => setHabitKind('build')}
                 style={({ pressed }) => [
                   styles.kindCard,
                   {
-                    backgroundColor: habitKind === 'build' ? (isDark ? 'rgba(20,184,166,0.22)' : 'rgba(20,184,166,0.12)') : softCard,
-                    borderColor: habitKind === 'build' ? '#14b8a6' : border,
-                    borderWidth: habitKind === 'build' ? 2 : 1,
+                    backgroundColor:
+                      habitKind === 'build'
+                        ? isDark
+                          ? 'rgba(20,184,166,0.22)'
+                          : 'rgba(20,184,166,0.12)'
+                        : colors.surfaceSubtle,
+                    borderColor: habitKind === 'build' ? HABIT_KIND_BUILD : colors.outline,
+                    borderWidth: habitKind === 'build' ? 2 : StyleSheet.hairlineWidth,
                   },
                   pressed && { opacity: 0.88 },
                 ]}>
                 <Text style={styles.kindCardEmoji}>✨</Text>
-                <Text style={[styles.kindCardTitle, { color: textMain }]}>养成习惯</Text>
-                <Text style={[styles.kindCardSub, { color: textSub }]}>主动完成一件事</Text>
+                <Text style={[Typography.bodyStrong, styles.kindCardTitle, { color: colors.text }]}>养成习惯</Text>
+                <Text style={[Typography.label, styles.kindCardSub, { color: colors.textSecondary }]}>主动完成一件事</Text>
               </Pressable>
               <Pressable
                 onPress={() => setHabitKind('break')}
                 style={({ pressed }) => [
                   styles.kindCard,
                   {
-                    backgroundColor: habitKind === 'break' ? (isDark ? 'rgba(251,146,60,0.2)' : 'rgba(251,146,60,0.12)') : softCard,
-                    borderColor: habitKind === 'break' ? '#ea580c' : border,
-                    borderWidth: habitKind === 'break' ? 2 : 1,
+                    backgroundColor:
+                      habitKind === 'break'
+                        ? isDark
+                          ? 'rgba(251,146,60,0.2)'
+                          : 'rgba(251,146,60,0.12)'
+                        : colors.surfaceSubtle,
+                    borderColor: habitKind === 'break' ? HABIT_KIND_BREAK_BORDER : colors.outline,
+                    borderWidth: habitKind === 'break' ? 2 : StyleSheet.hairlineWidth,
                   },
                   pressed && { opacity: 0.88 },
                 ]}>
                 <Text style={styles.kindCardEmoji}>🛡️</Text>
-                <Text style={[styles.kindCardTitle, { color: textMain }]}>戒坏习惯</Text>
-                <Text style={[styles.kindCardSub, { color: textSub }]}>坚持不去做某事</Text>
+                <Text style={[Typography.bodyStrong, styles.kindCardTitle, { color: colors.text }]}>戒坏习惯</Text>
+                <Text style={[Typography.label, styles.kindCardSub, { color: colors.textSecondary }]}>坚持不去做某事</Text>
               </Pressable>
             </View>
           </View>
 
           <View style={styles.dashedSplit}>
-            <View style={[styles.dashedLine, { borderColor: border }]} />
-            <Text style={[styles.splitText, { color: textSub }]}>下列为可选设置</Text>
-            <View style={[styles.dashedLine, { borderColor: border }]} />
+            <View style={[styles.dashedLine, { borderColor: colors.outline }]} />
+            <Text style={[Typography.caption, styles.splitText, { color: colors.textSecondary }]}>下列为可选设置</Text>
+            <View style={[styles.dashedLine, { borderColor: colors.outline }]} />
           </View>
 
           <View>
             {renderSectionHeader('schedule', '打卡情境', contextOpen, () => setContextOpen((v) => !v))}
             {contextOpen ? (
-              <View style={[styles.sectionCard, { backgroundColor: card, borderColor: border }]}>
+              <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
                 <View style={styles.contextGrid}>
                   {contextOptions.map((ctx) => {
                     const active = ctx === selectedContext;
@@ -585,47 +612,71 @@ export default function AddHabitScreen() {
                         style={[
                           styles.contextChip,
                           active
-                            ? { backgroundColor: '#3A3A3C', borderColor: '#3A3A3C' }
-                            : { backgroundColor: card, borderColor: border },
+                            ? {
+                                backgroundColor: colors.primary,
+                                borderColor: colors.primary,
+                              }
+                            : {
+                                backgroundColor: colors.surface,
+                                borderColor: colors.outline,
+                              },
                         ]}>
-                        <Text style={[styles.contextChipText, { color: active ? '#fff' : textSub }]}>{ctx}</Text>
+                        <Text
+                          style={[
+                            Typography.bodyStrong,
+                            { color: active ? colors.onPrimary : colors.textSecondary, fontSize: 14 },
+                          ]}>
+                          {ctx}
+                        </Text>
                       </Pressable>
                     );
                   })}
                 </View>
-              </View>
+              </AppCard>
             ) : null}
           </View>
 
           <View>
             {renderSectionHeader('bar-chart', '量化记录', quantifyOpen, () => setQuantifyOpen((v) => !v))}
             {quantifyOpen ? (
-              <View style={[styles.sectionCard, { backgroundColor: card, borderColor: border }]}>
+              <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
                 <View style={styles.quantifyTop}>
                   <View>
-                    <Text style={[styles.quantifyTitle, { color: textMain }]}>启用量化记录</Text>
-                    <Text style={[styles.quantifyHint, { color: textSub }]}>追踪喝水杯数、运动时长等数值</Text>
+                    <Text style={[Typography.bodyStrong, styles.quantifyTitle, { color: colors.text }]}>启用量化记录</Text>
+                    <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
+                      追踪喝水杯数、运动时长等数值
+                    </Text>
                   </View>
                   <Pressable
                     onPress={() => setQuantifyEnabled((v) => !v)}
                     style={[
                       styles.switchTrack,
-                      { backgroundColor: quantifyEnabled ? '#4CD964' : isDark ? '#334155' : '#e5e7eb' },
+                      {
+                        backgroundColor: quantifyEnabled ? colors.successSwitch : colors.capsule,
+                      },
                     ]}>
                     <View style={[styles.switchDot, quantifyEnabled && styles.switchDotOn]} />
                   </Pressable>
                 </View>
 
                 {quantifyEnabled ? (
-                  <View style={[styles.quantifyBody, { borderTopColor: border }]}>
-                    <View style={[styles.unitRow, { borderBottomColor: border }]}>
-                      <Text style={[styles.numberLabel, { color: textMain }]}>单位</Text>
+                  <View style={[styles.quantifyBody, { borderTopColor: colors.outline }]}>
+                    <View style={[styles.unitRow, { borderBottomColor: colors.outline }]}>
+                      <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>单位</Text>
                       <TextInput
                         value={unitInput}
                         onChangeText={setUnitInput}
                         placeholder="杯 / 分钟 / 页"
-                        placeholderTextColor={textSub}
-                        style={[styles.unitInput, { backgroundColor: softCard, color: textMain }]}
+                        placeholderTextColor={colors.textMuted}
+                        style={[
+                          styles.unitInput,
+                          Typography.body,
+                          {
+                            backgroundColor: colors.surfaceSubtle,
+                            color: colors.text,
+                            borderRadius: Radius.sm,
+                          },
+                        ]}
                       />
                     </View>
                     <NumberControl
@@ -633,8 +684,8 @@ export default function AddHabitScreen() {
                       value={eachPlus}
                       onMinus={() => setEachPlus((v) => Math.max(1, v - 1))}
                       onPlus={() => setEachPlus((v) => Math.min(99, v + 1))}
-                      textColor={textMain}
-                      mutedColor={textSub}
+                      textColor={colors.text}
+                      mutedColor={colors.textSecondary}
                     />
                     <NumberControl
                       label="每日目标"
@@ -649,23 +700,23 @@ export default function AddHabitScreen() {
                       }
                       onPlus={() => setDailyGoal((v) => (v === null ? 1 : Math.min(99, v + 1)))}
                       showOptional
-                      textColor={textMain}
-                      mutedColor={textSub}
+                      textColor={colors.text}
+                      mutedColor={colors.textSecondary}
                     />
                   </View>
                 ) : null}
-              </View>
+              </AppCard>
             ) : null}
           </View>
 
           <View>
             {renderSectionHeader('notifications-active', '打卡提醒', reminderOpen, () => setReminderOpen((v) => !v))}
             {reminderOpen ? (
-              <View style={[styles.sectionCard, { backgroundColor: card, borderColor: border }]}>
+              <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
                 <View style={styles.quantifyTop}>
-                  <View style={{ flex: 1, paddingRight: 8 }}>
-                    <Text style={[styles.quantifyTitle, { color: textMain }]}>每日提醒打卡</Text>
-                    <Text style={[styles.quantifyHint, { color: textSub }]}>
+                  <View style={styles.reminderIntro}>
+                    <Text style={[Typography.bodyStrong, styles.quantifyTitle, { color: colors.text }]}>每日提醒打卡</Text>
+                    <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
                       在设定时间推送本地通知（可选）
                       {Platform.OS === 'web' ? '；网页版不会登记系统提醒' : ''}
                     </Text>
@@ -674,14 +725,16 @@ export default function AddHabitScreen() {
                     onPress={() => setReminderEnabled((v) => !v)}
                     style={[
                       styles.switchTrack,
-                      { backgroundColor: reminderEnabled ? '#4CD964' : isDark ? '#334155' : '#e5e7eb' },
+                      {
+                        backgroundColor: reminderEnabled ? colors.successSwitch : colors.capsule,
+                      },
                     ]}>
                     <View style={[styles.switchDot, reminderEnabled && styles.switchDotOn]} />
                   </Pressable>
                 </View>
 
                 {reminderEnabled ? (
-                  <View style={[styles.quantifyBody, { borderTopColor: border }]}>
+                  <View style={[styles.quantifyBody, { borderTopColor: colors.outline }]}>
                     <Pressable
                       onPress={() => {
                         if (Platform.OS === 'web') return;
@@ -689,47 +742,58 @@ export default function AddHabitScreen() {
                       }}
                       style={[
                         styles.reminderTimeRow,
-                        { borderColor: border, backgroundColor: softCard },
+                        { borderColor: colors.outline, backgroundColor: colors.surfaceSubtle },
                         Platform.OS === 'web' && { opacity: 0.65 },
                       ]}>
-                      <Text style={[styles.numberLabel, { color: textMain }]}>提醒时间</Text>
+                      <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>提醒时间</Text>
                       <View style={styles.reminderTimeRight}>
-                        <Text style={[styles.reminderTimeValue, { color: textMain }]}>
+                        <Text style={[Typography.title, styles.reminderTimeValue, { color: colors.text }]}>
                           {pad2(reminderTime.getHours())}:{pad2(reminderTime.getMinutes())}
                         </Text>
                         {Platform.OS !== 'web' ? (
-                          <MaterialIcons name="schedule" size={20} color={textSub} />
+                          <MaterialIcons name="schedule" size={20} color={colors.textSecondary} />
                         ) : null}
                       </View>
                     </Pressable>
                   </View>
                 ) : null}
-              </View>
+              </AppCard>
             ) : null}
           </View>
 
           <View>
             {renderSectionHeader('calendar-month', '循环模式', cycleOpen, () => setCycleOpen((v) => !v))}
             {cycleOpen ? (
-              <View style={[styles.sectionCard, { backgroundColor: softCard, borderColor: border }]}>
-                <View style={[styles.tabWrap, { backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : '#e5e7eb' }]}>
+              <AppCard variant="muted" padded={false} style={styles.cycleSectionOuter}>
+                <View style={[styles.tabWrap, { backgroundColor: colors.capsule }]}>
                   {(['每周定期', '每周N天', '每月定期', '每月N天'] as CycleTab[]).map((tab) => {
                     const active = tab === activeTab;
                     return (
                       <Pressable
                         key={tab}
                         onPress={() => setActiveTab(tab)}
-                        style={[styles.tabItem, active && { backgroundColor: card }]}>
-                        <Text style={[styles.tabText, { color: active ? textMain : textSub }]}>{tab}</Text>
+                        style={({ pressed }) => [
+                          styles.tabItem,
+                          active && [{ backgroundColor: colors.surface }, shadows.card],
+                          pressed && { opacity: 0.9 },
+                        ]}>
+                        <Text
+                          style={[
+                            Typography.caption,
+                            styles.tabText,
+                            { color: active ? colors.text : colors.textSecondary },
+                          ]}>
+                          {tab}
+                        </Text>
                       </Pressable>
                     );
                   })}
                 </View>
 
-                <View style={[styles.cycleBody, { backgroundColor: card, borderColor: border }]}>
+                <View style={[styles.cycleBody, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
                   {activeTab === '每周定期' ? (
                     <>
-                      <Text style={[styles.cycleLabel, { color: textSub }]}>工作日</Text>
+                      <Text style={[Typography.caption, styles.cycleLabel, { color: colors.textSecondary }]}>工作日</Text>
                       <View style={styles.dayRow}>
                         {WORK_DAYS.map((day) => {
                           const selected = selectedDays.includes(day);
@@ -739,14 +803,30 @@ export default function AddHabitScreen() {
                               onPress={() => toggleWeekDay(day)}
                               style={[
                                 styles.dayBtn,
-                                selected ? styles.dayBtnOn : { backgroundColor: isDark ? '#1e293b' : '#f3f4f6' },
+                                selected
+                                  ? { backgroundColor: colors.primary, borderColor: colors.primary }
+                                  : { backgroundColor: colors.input, borderColor: colors.outline },
                               ]}>
-                              <Text style={[styles.dayBtnText, { color: selected ? '#fff' : textSub }]}>{day}</Text>
+                              <Text
+                                style={[
+                                  Typography.caption,
+                                  styles.dayBtnText,
+                                  { color: selected ? colors.onPrimary : colors.textSecondary },
+                                ]}>
+                                {day}
+                              </Text>
                             </Pressable>
                           );
                         })}
                       </View>
-                      <Text style={[styles.cycleLabel, { color: textSub, marginTop: 10 }]}>周末</Text>
+                      <Text
+                        style={[
+                          Typography.caption,
+                          styles.cycleLabel,
+                          { color: colors.textSecondary, marginTop: Spacing.lg },
+                        ]}>
+                        周末
+                      </Text>
                       <View style={styles.dayRow}>
                         {WEEKEND_DAYS.map((day) => {
                           const selected = selectedDays.includes(day);
@@ -756,9 +836,18 @@ export default function AddHabitScreen() {
                               onPress={() => toggleWeekDay(day)}
                               style={[
                                 styles.dayBtn,
-                                selected ? styles.dayBtnOn : { backgroundColor: isDark ? '#1e293b' : '#f3f4f6' },
+                                selected
+                                  ? { backgroundColor: colors.primary, borderColor: colors.primary }
+                                  : { backgroundColor: colors.input, borderColor: colors.outline },
                               ]}>
-                              <Text style={[styles.dayBtnText, { color: selected ? '#fff' : textSub }]}>{day}</Text>
+                              <Text
+                                style={[
+                                  Typography.caption,
+                                  styles.dayBtnText,
+                                  { color: selected ? colors.onPrimary : colors.textSecondary },
+                                ]}>
+                                {day}
+                              </Text>
                             </Pressable>
                           );
                         })}
@@ -768,16 +857,32 @@ export default function AddHabitScreen() {
 
                   {activeTab === '每周N天' ? (
                     <>
-                      <Text style={[styles.cycleHintText, { color: textSub }]}>
-                        每周完成任意 <Text style={[styles.cycleHintStrong, { color: textMain }]}>{weeklyNDays}</Text> 天即可
+                      <Text style={[Typography.body, styles.cycleHintText, { color: colors.textSecondary }]}>
+                        每周完成任意{' '}
+                        <Text style={[Typography.h3, styles.cycleHintStrong, { color: colors.text }]}>{weeklyNDays}</Text>{' '}
+                        天即可
                       </Text>
                       <View style={styles.dayRow}>
                         {Array.from({ length: 7 }, (_, i) => i + 1).map((num) => (
                           <Pressable
                             key={num}
                             onPress={() => setWeeklyNDays(num)}
-                            style={[styles.smallCountBtn, weeklyNDays === num && styles.smallCountBtnOn]}>
-                            <Text style={[styles.smallCountText, { color: weeklyNDays === num ? '#fff' : textMain }]}>{num}</Text>
+                            style={[
+                              styles.smallCountBtn,
+                              { borderColor: colors.outline },
+                              weeklyNDays === num && {
+                                backgroundColor: colors.primary,
+                                borderColor: colors.primary,
+                              },
+                            ]}>
+                            <Text
+                              style={[
+                                Typography.bodyStrong,
+                                styles.smallCountText,
+                                { color: weeklyNDays === num ? colors.onPrimary : colors.text },
+                              ]}>
+                              {num}
+                            </Text>
                           </Pressable>
                         ))}
                       </View>
@@ -795,9 +900,16 @@ export default function AddHabitScreen() {
                               onPress={() => handleMonthlyFilter(filter)}
                               style={[
                                 styles.monthFilterBtn,
-                                active ? styles.smallCountBtnOn : { backgroundColor: card, borderColor: border },
+                                active
+                                  ? { backgroundColor: colors.primary, borderColor: colors.primary }
+                                  : { backgroundColor: colors.surface, borderColor: colors.outline },
                               ]}>
-                              <Text style={[styles.monthFilterText, { color: active ? '#fff' : textSub }]}>
+                              <Text
+                                style={[
+                                  Typography.bodyStrong,
+                                  styles.monthFilterText,
+                                  { color: active ? colors.onPrimary : colors.textSecondary },
+                                ]}>
                                 {filter}
                               </Text>
                             </Pressable>
@@ -814,10 +926,17 @@ export default function AddHabitScreen() {
                               style={[
                                 styles.monthDayBtn,
                                 selected
-                                  ? styles.dayBtnOn
-                                  : { backgroundColor: card, borderColor: border },
+                                  ? { backgroundColor: colors.primary, borderColor: colors.primary }
+                                  : { backgroundColor: colors.surface, borderColor: colors.outline },
                               ]}>
-                              <Text style={[styles.monthDayText, { color: selected ? '#fff' : textSub }]}>{day}</Text>
+                              <Text
+                                style={[
+                                  Typography.bodyStrong,
+                                  styles.monthDayText,
+                                  { color: selected ? colors.onPrimary : colors.textSecondary },
+                                ]}>
+                                {day}
+                              </Text>
                             </Pressable>
                           );
                         })}
@@ -827,35 +946,65 @@ export default function AddHabitScreen() {
 
                   {activeTab === '每月N天' ? (
                     <>
-                      <Text style={[styles.cycleHintText, { color: textSub }]}>
-                        每月完成任意 <Text style={[styles.cycleHintStrong, { color: textMain }]}>{monthlyNDays}</Text> 天即可
+                      <Text style={[Typography.body, styles.cycleHintText, { color: colors.textSecondary }]}>
+                        每月完成任意{' '}
+                        <Text style={[Typography.h3, styles.cycleHintStrong, { color: colors.text }]}>{monthlyNDays}</Text>{' '}
+                        天即可
                       </Text>
                       <View style={styles.monthNWrap}>
                         {PRESET_MONTHLY_N_DAYS.map((n) => (
                           <Pressable
                             key={n}
                             onPress={() => setMonthlyNDays(n)}
-                            style={[styles.monthNPreset, monthlyNDays === n && styles.smallCountBtnOn]}>
-                            <Text style={[styles.monthNPresetText, { color: monthlyNDays === n ? '#fff' : textMain }]}>{n}d</Text>
+                            style={[
+                              styles.monthNPreset,
+                              { borderColor: colors.outline },
+                              monthlyNDays === n && {
+                                backgroundColor: colors.primary,
+                                borderColor: colors.primary,
+                              },
+                            ]}>
+                            <Text
+                              style={[
+                                Typography.bodyStrong,
+                                styles.monthNPresetText,
+                                { color: monthlyNDays === n ? colors.onPrimary : colors.text },
+                              ]}>
+                              {n}d
+                            </Text>
                           </Pressable>
                         ))}
                       </View>
                       <View style={styles.customMonthNRow}>
-                        <Text style={[styles.numberLabel, { color: textSub }]}>自定义天数</Text>
+                        <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.textSecondary }]}>
+                          自定义天数
+                        </Text>
                         <View style={styles.numberActions}>
-                          <Pressable onPress={() => setMonthlyNDays((v) => Math.max(1, v - 1))} style={({ pressed }) => [styles.numberBtn, pressed && { opacity: 0.75 }]}>
-                            <MaterialIcons name="remove" size={16} color={textSub} />
+                          <Pressable
+                            onPress={() => setMonthlyNDays((v) => Math.max(1, v - 1))}
+                            style={({ pressed }) => [
+                              styles.numberBtn,
+                              { backgroundColor: colors.surfaceMuted },
+                              pressed && { opacity: 0.75 },
+                            ]}>
+                            <MaterialIcons name="remove" size={16} color={colors.textSecondary} />
                           </Pressable>
-                          <Text style={[styles.numberValue, { color: textMain }]}>{monthlyNDays}</Text>
-                          <Pressable onPress={() => setMonthlyNDays((v) => Math.min(31, v + 1))} style={({ pressed }) => [styles.numberBtn, pressed && { opacity: 0.75 }]}>
-                            <MaterialIcons name="add" size={16} color={textSub} />
+                          <Text style={[Typography.bodyStrong, styles.numberValue, { color: colors.text }]}>{monthlyNDays}</Text>
+                          <Pressable
+                            onPress={() => setMonthlyNDays((v) => Math.min(31, v + 1))}
+                            style={({ pressed }) => [
+                              styles.numberBtn,
+                              { backgroundColor: colors.surfaceMuted },
+                              pressed && { opacity: 0.75 },
+                            ]}>
+                            <MaterialIcons name="add" size={16} color={colors.textSecondary} />
                           </Pressable>
                         </View>
                       </View>
                     </>
                   ) : null}
                 </View>
-              </View>
+              </AppCard>
             ) : null}
           </View>
         </View>
@@ -865,23 +1014,25 @@ export default function AddHabitScreen() {
         style={[
           styles.bottomBar,
           {
-            paddingBottom: Math.max(insets.bottom, 12),
-            backgroundColor: card,
-            borderTopColor: border,
+            paddingBottom: Spacing['3xl'] + Math.max(insets.bottom, Spacing.md),
+            backgroundColor: colors.headerScrim,
+            borderTopColor: colors.outline,
           },
         ]}>
-        <Pressable
-          onPress={handleSave}
-          style={({ pressed }) => [styles.createBtn, { backgroundColor: yellow }, pressed && { opacity: 0.9 }]} >
-          <Text style={styles.createBtnText}>{isEditMode ? '保存修改' : '创建打卡'}</Text>
-        </Pressable>
+        <AppButton
+          variant="primary"
+          size="lg"
+          fullWidth
+          label={isEditMode ? '保存修改' : '创建打卡'}
+          onPress={() => void handleSave()}
+        />
       </View>
 
       <Modal visible={iconPickerOpen} transparent animationType="fade" onRequestClose={() => setIconPickerOpen(false)}>
         <View style={styles.iconModalRoot}>
-          <Pressable style={styles.iconModalBackdrop} onPress={() => setIconPickerOpen(false)} />
-          <View style={[styles.iconModalCard, { backgroundColor: card, borderColor: border }]}>
-            <Text style={[styles.iconModalTitle, { color: textMain }]}>选择图标</Text>
+          <Pressable style={[styles.iconModalBackdrop, { backgroundColor: colors.overlay }]} onPress={() => setIconPickerOpen(false)} />
+          <View style={[styles.iconModalCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+            <Text style={[Typography.title, styles.iconModalTitle, { color: colors.text }]}>选择图标</Text>
             <ScrollView
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
@@ -900,14 +1051,8 @@ export default function AddHabitScreen() {
                       style={({ pressed }) => [
                         styles.iconPickerCell,
                         {
-                          backgroundColor: selected
-                            ? isDark
-                              ? 'rgba(20,184,166,0.28)'
-                              : 'rgba(20,184,166,0.2)'
-                            : isDark
-                              ? 'rgba(148,163,184,0.12)'
-                              : 'rgba(148,163,184,0.1)',
-                          borderColor: selected ? '#14b8a6' : 'transparent',
+                          backgroundColor: selected ? colors.primaryMuted : colors.surfaceMuted,
+                          borderColor: selected ? colors.primary : 'transparent',
                         },
                         pressed && { opacity: 0.85 },
                       ]}>
@@ -917,8 +1062,10 @@ export default function AddHabitScreen() {
                 })}
               </View>
             </ScrollView>
-            <Pressable onPress={() => setIconPickerOpen(false)} style={({ pressed }) => [styles.iconModalCloseBtn, pressed && { opacity: 0.8 }]}>
-              <Text style={[styles.iconModalCloseText, { color: textSub }]}>取消</Text>
+            <Pressable
+              onPress={() => setIconPickerOpen(false)}
+              style={({ pressed }) => [styles.iconModalCloseBtn, pressed && { opacity: 0.8 }]}>
+              <Text style={[Typography.bodyStrong, styles.iconModalCloseText, { color: colors.textSecondary }]}>取消</Text>
             </Pressable>
           </View>
         </View>
@@ -930,14 +1077,17 @@ export default function AddHabitScreen() {
         animationType="fade"
         onRequestClose={() => setReminderTimePickerOpen(false)}>
         <View style={styles.iconModalRoot}>
-          <Pressable style={styles.iconModalBackdrop} onPress={() => setReminderTimePickerOpen(false)} />
-          <View style={[styles.reminderPickerCard, { backgroundColor: card, borderColor: border }]}>
-            <Text style={[styles.iconModalTitle, { color: textMain }]}>选择提醒时间</Text>
+          <Pressable
+            style={[styles.iconModalBackdrop, { backgroundColor: colors.overlay }]}
+            onPress={() => setReminderTimePickerOpen(false)}
+          />
+          <View style={[styles.reminderPickerCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+            <Text style={[Typography.title, styles.iconModalTitle, { color: colors.text }]}>选择提醒时间</Text>
             <DateTimePicker
               value={reminderTime}
               mode="time"
               display={Platform.OS === 'ios' ? 'spinner' : 'spinner'}
-              themeVariant={isDark ? 'dark' : 'light'}
+              themeVariant={scheme === 'dark' ? 'dark' : 'light'}
               locale={Platform.OS === 'ios' ? 'zh_CN' : undefined}
               onChange={(_, date) => {
                 if (date) setReminderTime(date);
@@ -946,14 +1096,21 @@ export default function AddHabitScreen() {
             <View style={styles.reminderPickerActions}>
               <Pressable
                 onPress={() => setReminderTimePickerOpen(false)}
-                style={({ pressed }) => [styles.reminderPickerBtnGhost, { borderColor: border }, pressed && { opacity: 0.85 }]}>
-                <Text style={[styles.reminderPickerBtnGhostText, { color: textSub }]}>取消</Text>
+                style={({ pressed }) => [
+                  styles.reminderPickerBtnGhost,
+                  { borderColor: colors.outline },
+                  pressed && { opacity: 0.85 },
+                ]}>
+                <Text style={[Typography.bodyStrong, styles.reminderPickerBtnGhostText, { color: colors.textSecondary }]}>
+                  取消
+                </Text>
               </Pressable>
-              <Pressable
+              <AppButton
+                variant="primary"
+                size="md"
+                label="确定"
                 onPress={() => setReminderTimePickerOpen(false)}
-                style={({ pressed }) => [styles.reminderPickerBtnPrimary, { backgroundColor: yellow }, pressed && { opacity: 0.9 }]}>
-                <Text style={styles.reminderPickerBtnPrimaryText}>确定</Text>
-              </Pressable>
+              />
             </View>
           </View>
         </View>
@@ -964,24 +1121,26 @@ export default function AddHabitScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { paddingHorizontal: 16, paddingTop: 12, gap: 14 },
-  headerFixed: {
-    paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
+  content: {
+    paddingHorizontal: Layout.pagePaddingX,
+    paddingTop: Spacing.xl,
+    gap: Spacing['2xl'],
   },
-  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  headerIconBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-  headerAction: { fontSize: 15, fontWeight: '500' },
-  headerTitle: { fontSize: 17, fontWeight: '800' },
-  main: { gap: 16 },
-  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  headerActionText: { fontSize: 15 },
+  main: { gap: Spacing['3xl'], maxWidth: Layout.contentMaxWidth, alignSelf: 'center', width: '100%' },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
+  nameInputContainer: { flex: 1, marginBottom: 0 },
+  nameInputWrap: {
+    minHeight: 48,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.lg,
+  },
+  nameInputText: { fontSize: 15 },
   emojiWrap: {
     width: 48,
     height: 48,
-    borderRadius: 24,
-    borderWidth: 1,
+    borderRadius: Radius.icon,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
@@ -989,65 +1148,64 @@ const styles = StyleSheet.create({
   emoji: { fontSize: 24 },
   emojiEdit: {
     position: 'absolute',
-    right: -2,
-    bottom: -2,
+    right: -Spacing.xs,
+    bottom: -Spacing.xs,
     width: 16,
     height: 16,
-    borderRadius: 8,
-    backgroundColor: '#374151',
+    borderRadius: Radius.xs,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconModalRoot: { flex: 1, justifyContent: 'center', paddingHorizontal: 18 },
+  iconModalRoot: { flex: 1, justifyContent: 'center', paddingHorizontal: Spacing['4xl'] },
   iconModalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15,23,42,0.42)',
   },
   iconModalCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 10,
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing['2xl'],
+    paddingTop: Spacing['2xl'],
+    paddingBottom: Spacing.lg,
     maxHeight: '78%',
   },
-  iconModalTitle: { fontSize: 16, fontWeight: '800', marginBottom: 10, textAlign: 'center' },
+  iconModalTitle: { marginBottom: Spacing.lg, textAlign: 'center' },
   iconModalScroll: { maxHeight: 360 },
-  iconModalScrollContent: { paddingBottom: 6 },
+  iconModalScrollContent: { paddingBottom: Spacing.sm },
   iconPickerGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: Spacing.lg,
     justifyContent: 'center',
   },
   iconPickerCell: {
     width: 48,
     height: 48,
-    borderRadius: 14,
+    borderRadius: Radius.lg,
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
   iconPickerEmoji: { fontSize: 26 },
-  iconModalCloseBtn: { alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 16, marginTop: 4 },
-  iconModalCloseText: { fontSize: 14, fontWeight: '700' },
+  iconModalCloseBtn: { alignSelf: 'center', paddingVertical: Spacing.lg, paddingHorizontal: Spacing['3xl'], marginTop: Spacing.xs },
+  iconModalCloseText: { fontSize: 14 },
   reminderTimeRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing['2xl'],
+    paddingVertical: Spacing.xl,
   },
-  reminderTimeRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  reminderTimeValue: { fontSize: 17, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  reminderTimeRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  reminderTimeValue: { fontVariant: ['tabular-nums'] },
+  reminderIntro: { flex: 1, paddingRight: Spacing.md },
   reminderPickerCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 12,
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing['3xl'],
+    paddingTop: Spacing['2xl'],
+    paddingBottom: Spacing.xl,
     maxWidth: 400,
     alignSelf: 'center',
     width: '100%',
@@ -1055,83 +1213,69 @@ const styles = StyleSheet.create({
   reminderPickerActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    gap: 10,
-    marginTop: 12,
+    alignItems: 'center',
+    gap: Spacing.lg,
+    marginTop: Spacing.xl,
   },
   reminderPickerBtnGhost: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    borderWidth: 1,
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing['3xl'],
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  reminderPickerBtnGhostText: { fontSize: 15, fontWeight: '700' },
-  reminderPickerBtnPrimary: {
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-  },
-  reminderPickerBtnPrimaryText: { fontSize: 15, fontWeight: '800', color: '#111827' },
-  nameInput: {
-    flex: 1,
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    fontSize: 15,
-    fontWeight: '500',
-  },
-  noteBlock: { gap: 6 },
-  noteLabel: { fontSize: 13, fontWeight: '700', paddingLeft: 2 },
-  noteInput: {
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
-    fontWeight: '500',
+  reminderPickerBtnGhostText: { fontSize: 15 },
+  noteInputWrap: {
     minHeight: 96,
-    lineHeight: 22,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.xl,
+    alignItems: 'stretch',
   },
-  kindBlock: { gap: 8 },
-  kindBlockLabel: { fontSize: 13, fontWeight: '700', paddingLeft: 2 },
-  kindRow: { flexDirection: 'row', gap: 10 },
+  noteInputText: {
+    minHeight: 72,
+    lineHeight: 22,
+    fontSize: 15,
+  },
+  kindBlock: { gap: Spacing.md },
+  kindBlockLabel: { paddingLeft: Spacing.xs },
+  kindRow: { flexDirection: 'row', gap: Spacing.lg },
   kindCard: {
     flex: 1,
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 10,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
     alignItems: 'center',
-    gap: 4,
+    gap: Spacing.xs,
   },
   kindCardEmoji: { fontSize: 22 },
-  kindCardTitle: { fontSize: 14, fontWeight: '800' },
-  kindCardSub: { fontSize: 11, fontWeight: '600', textAlign: 'center', lineHeight: 15 },
-  dashedSplit: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  dashedLine: { flex: 1, borderTopWidth: 1, borderStyle: 'dashed' },
-  splitText: { fontSize: 12, fontWeight: '500' },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
-  sectionHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  sectionHeaderTitle: { fontSize: 15, fontWeight: '800' },
-  sectionHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  sectionHeaderHint: { fontSize: 13, fontWeight: '500' },
-  sectionCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 12,
-    gap: 10,
+  kindCardTitle: { fontSize: 14 },
+  kindCardSub: { textAlign: 'center', lineHeight: 15 },
+  dashedSplit: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  dashedLine: { flex: 1, borderTopWidth: StyleSheet.hairlineWidth, borderStyle: 'dashed' },
+  splitText: { fontSize: 12 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.md },
+  sectionHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  sectionHeaderTitle: { fontSize: 15 },
+  sectionHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  sectionHeaderHint: { fontSize: 13 },
+  sectionCardInner: {
+    padding: Spacing.xl,
+    gap: Spacing.lg,
   },
-  contextGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  cycleSectionOuter: {
+    padding: Spacing.md,
+    gap: Spacing.md,
+  },
+  contextGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
   contextChip: {
     width: '31%',
-    borderRadius: 10,
-    borderWidth: 1,
-    paddingVertical: 9,
+    borderRadius: Radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: Spacing.md + 1,
     alignItems: 'center',
   },
-  contextChipText: { fontSize: 14, fontWeight: '600' },
   quantifyTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  quantifyTitle: { fontSize: 15, fontWeight: '800' },
-  quantifyHint: { fontSize: 12, fontWeight: '500', marginTop: 2 },
+  quantifyTitle: { fontSize: 15 },
+  quantifyHint: { marginTop: 2 },
   switchTrack: {
     width: 48,
     height: 26,
@@ -1141,114 +1285,106 @@ const styles = StyleSheet.create({
   },
   switchDot: { width: 20, height: 20, borderRadius: 10, backgroundColor: '#fff' },
   switchDotOn: { alignSelf: 'flex-end' },
-  quantifyBody: { borderTopWidth: 1, marginTop: 6, paddingTop: 8, gap: 2 },
+  quantifyBody: { borderTopWidth: StyleSheet.hairlineWidth, marginTop: Spacing.sm, paddingTop: Spacing.md, gap: 2 },
   unitRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   unitInput: {
     minWidth: 120,
     textAlign: 'center',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
     fontSize: 14,
-    fontWeight: '500',
   },
   numberRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 10,
+    paddingVertical: Spacing.lg,
   },
-  numberLabel: { fontSize: 14, fontWeight: '600' },
+  numberLabel: { fontSize: 14 },
   numberLabelHint: { fontSize: 12, fontWeight: '400' },
-  numberActions: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  numberActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing['2xl'] },
   numberBtn: {
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: 'rgba(148,163,184,0.16)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  numberValue: { width: 38, textAlign: 'center', fontSize: 15, fontWeight: '700' },
+  numberValue: { width: 38, textAlign: 'center', fontSize: 15 },
   tabWrap: {
-    borderRadius: 12,
-    padding: 4,
+    borderRadius: Radius.md,
+    padding: Spacing.xs,
     flexDirection: 'row',
-    gap: 4,
+    gap: Spacing.xs,
   },
-  tabItem: { flex: 1, borderRadius: 8, paddingVertical: 8, alignItems: 'center' },
-  tabText: { fontSize: 12, fontWeight: '600' },
-  cycleBody: { borderRadius: 12, borderWidth: 1, padding: 12, gap: 10 },
-  cycleLabel: { fontSize: 13, fontWeight: '500' },
-  dayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  tabItem: { flex: 1, borderRadius: Radius.sm, paddingVertical: Spacing.md, alignItems: 'center' },
+  tabText: { fontSize: 12 },
+  cycleBody: { borderRadius: Radius.md, borderWidth: StyleSheet.hairlineWidth, padding: Spacing.xl, gap: Spacing.lg },
+  cycleLabel: { fontSize: 13 },
+  dayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
   dayBtn: {
     width: 48,
     height: 48,
-    borderRadius: 16,
+    borderRadius: Radius.xl,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  dayBtnOn: { backgroundColor: '#3A3A3C' },
-  dayBtnText: { fontSize: 13, fontWeight: '600' },
-  cycleHintText: { fontSize: 14, fontWeight: '500' },
-  cycleHintStrong: { fontSize: 16, fontWeight: '800' },
+  dayBtnText: { fontSize: 13 },
+  cycleHintText: { fontSize: 14 },
+  cycleHintStrong: { fontSize: 16 },
   smallCountBtn: {
     width: 42,
     height: 42,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.22)',
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  smallCountBtnOn: { backgroundColor: '#3A3A3C', borderColor: '#3A3A3C' },
-  smallCountText: { fontSize: 16, fontWeight: '700' },
-  monthFilterGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  smallCountText: { fontSize: 16 },
+  monthFilterGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
   monthFilterBtn: {
     width: '31%',
-    borderRadius: 10,
-    borderWidth: 1,
-    paddingVertical: 8,
+    borderRadius: Radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: Spacing.md,
     alignItems: 'center',
   },
-  monthFilterText: { fontSize: 14, fontWeight: '600' },
-  monthDaysGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  monthFilterText: { fontSize: 14 },
+  monthDaysGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
   monthDayBtn: {
     width: 38,
     height: 38,
-    borderRadius: 10,
-    borderWidth: 1,
+    borderRadius: Radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  monthDayText: { fontSize: 14, fontWeight: '600' },
-  monthNWrap: { flexDirection: 'row', gap: 8 },
+  monthDayText: { fontSize: 14 },
+  monthNWrap: { flexDirection: 'row', gap: Spacing.md },
   monthNPreset: {
     flex: 1,
     height: 42,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.22)',
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  monthNPresetText: { fontSize: 14, fontWeight: '700' },
+  monthNPresetText: { fontSize: 14 },
   customMonthNRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   bottomBar: {
     position: 'absolute',
     left: 0,
     right: 0,
     bottom: 0,
-    borderTopWidth: 1,
-    paddingHorizontal: 16,
-    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Layout.pagePaddingX,
+    paddingTop: Spacing.lg,
   },
-  createBtn: { borderRadius: 999, paddingVertical: 13, alignItems: 'center', justifyContent: 'center' },
-  createBtnText: { color: '#111827', fontSize: 16, fontWeight: '900' },
 });
