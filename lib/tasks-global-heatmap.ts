@@ -22,12 +22,11 @@ function ymdFromDate(d: Date): string {
 export function buildGlobalTaskHeatmapGrid(
   numWeeks: number,
   countByDay: Map<string, number>,
-  minDataYmd: string | null
+  minDataYmd: string | null,
+  logicalTodayYmd?: string,
 ): HeatmapCell[][] {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayYmd = ymdFromDate(today);
-  const endMonday = startOfWeekMonday(today);
+  const todayYmd = logicalTodayYmd ?? ymdFromDate(new Date());
+  const endMonday = startOfWeekMonday(logicalTodayYmd ? logicalYmdToLocalDate(logicalTodayYmd) : new Date());
   const gridStart = new Date(endMonday);
   gridStart.setDate(gridStart.getDate() - (numWeeks - 1) * 7);
 
@@ -51,11 +50,14 @@ export function buildGlobalTaskHeatmapGrid(
   return cells;
 }
 
-export function heatmapGridDayRange(numWeeks: number): { startYmd: string; endYmd: string } {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayYmd = ymdFromDate(today);
-  const endMonday = startOfWeekMonday(today);
+function logicalYmdToLocalDate(ymd: string): Date {
+  const [y, mo, d] = ymd.split('-').map((x) => parseInt(x, 10));
+  return new Date(y, mo - 1, d, 12, 0, 0, 0);
+}
+
+export function heatmapGridDayRange(numWeeks: number, logicalTodayYmd?: string): { startYmd: string; endYmd: string } {
+  const todayYmd = logicalTodayYmd ?? ymdFromDate(new Date());
+  const endMonday = startOfWeekMonday(logicalTodayYmd ? logicalYmdToLocalDate(logicalTodayYmd) : new Date());
   const gridStart = new Date(endMonday);
   gridStart.setDate(gridStart.getDate() - (numWeeks - 1) * 7);
   return { startYmd: ymdFromDate(gridStart), endYmd: todayYmd };

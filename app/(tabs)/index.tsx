@@ -28,6 +28,7 @@ import {
   setGlobalProteinTargetG,
   setGlobalSodiumTargetMg,
 } from '@/lib/global-intake-targets';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { ensureDailyAiIntakeTargetsForToday, type DailyAiIntakeTargetsRow } from '@/lib/daily-intake-ai-targets';
 import {
   calculateNutritionV2,
@@ -577,6 +578,7 @@ const CircularProgress = ({
 export default function HealthScreen() {
   const router = useRouter();
   const { colors, isDark } = useAppTheme();
+  const { logicalTodayYmd, logicalTodayDate } = useDayBoundary();
   const insets = useSafeAreaInsets();
   const pageInset = Spacing['5xl'] * 2;
   const weekPagerWidth = width - pageInset;
@@ -603,9 +605,9 @@ export default function HealthScreen() {
   /** 每日至多一次 AI 估算的四项目标（本地缓存），用于「今日最佳」行 */
   const [dailyAiTargets, setDailyAiTargets] = React.useState<DailyAiIntakeTargetsRow | null>(null);
   const [dailyAiLoading, setDailyAiLoading] = React.useState(false);
-  const today = React.useMemo(() => normalizeDate(new Date()), []);
-  const [selectedDate, setSelectedDate] = React.useState(() => normalizeDate(new Date()));
-  const [weekAnchorDate, setWeekAnchorDate] = React.useState(() => normalizeDate(new Date()));
+  const today = React.useMemo(() => normalizeDate(logicalTodayDate), [logicalTodayDate]);
+  const [selectedDate, setSelectedDate] = React.useState(() => normalizeDate(logicalTodayDate));
+  const [weekAnchorDate, setWeekAnchorDate] = React.useState(() => normalizeDate(logicalTodayDate));
   const [quickAddItems, setQuickAddItems] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems().slice(0, 4));
   const [quickAddCatalog, setQuickAddCatalog] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems());
 
@@ -768,10 +770,9 @@ export default function HealthScreen() {
           setDailyAiLoading(false);
           return;
         }
-        const ymd = formatLocalYmd(new Date());
         setDailyAiLoading(true);
         try {
-          const r = await ensureDailyAiIntakeTargetsForToday({ user, todayYmd: ymd });
+          const r = await ensureDailyAiIntakeTargetsForToday({ user, todayYmd: logicalTodayYmd });
           if (cancelled) return;
           if (r.status === 'cached' || r.status === 'fresh') {
             setDailyAiTargets(r.row);
@@ -786,7 +787,7 @@ export default function HealthScreen() {
       return () => {
         cancelled = true;
       };
-    }, [user])
+    }, [logicalTodayYmd, user])
   );
 
   useFocusEffect(

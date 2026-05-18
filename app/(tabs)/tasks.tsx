@@ -1,3 +1,4 @@
+import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import {
@@ -59,11 +60,10 @@ import { useRouter } from 'expo-router';
 import React from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  DEFAULT_TASKS_DAY_BOUNDARY,
   getLogicalLocalYmd,
-  loadTasksDayBoundary,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import {
   ActivityIndicator,
   Alert,
@@ -393,6 +393,13 @@ function formatLocalYmd(date: Date): string {
 }
 
 /** 将逻辑日 YMD 转为本地日历日正午，与 `getLogicalLocalYmd` 的「今天」对齐，用于习惯循环星期/几号判断 */
+const WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'] as const;
+
+function formatTasksHeaderDate(ymd: string) {
+  const d = logicalYmdToLocalDate(ymd);
+  return `${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAY_LABELS[d.getDay()]}`;
+}
+
 function logicalYmdToLocalDate(ymd: string): Date {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
   if (!m) return new Date();
@@ -913,6 +920,31 @@ function isTaskDueOverdue(dueYmd: string, isDone: boolean, todayYmd: string): bo
   return due.getTime() < today.getTime();
 }
 
+const URGENT_IMPORTANT_PRIORITY = 4;
+
+function isTaskRowOverdue(task: TaskRow, logicalTodayYmd: string): boolean {
+  const isDone = task.status === 'done' || task.status === 'cancelled';
+  const due = task.due_date?.slice(0, 10) ?? '';
+  return isTaskDueOverdue(due, isDone, logicalTodayYmd);
+}
+
+/** 过期未完成待办在列表/四象限中按「紧急重要」展示与分组。 */
+function getEffectiveTaskPriority(task: TaskRow, logicalTodayYmd: string): number {
+  if (isTaskRowOverdue(task, logicalTodayYmd)) return URGENT_IMPORTANT_PRIORITY;
+  return task.priority;
+}
+
+async function applyOverdueTaskPriorityBump(rows: TaskRow[], logicalTodayYmd: string): Promise<number> {
+  let count = 0;
+  for (const t of rows) {
+    if (t.priority >= URGENT_IMPORTANT_PRIORITY) continue;
+    if (!isTaskRowOverdue(t, logicalTodayYmd)) continue;
+    await updateTask(t.id, { priority: URGENT_IMPORTANT_PRIORITY });
+    count += 1;
+  }
+  return count;
+}
+
 function getProjectScheduleLabel(project: ProjectRow, schedule: ProjectScheduleMeta | null) {
   if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
     const start = formatScheduleDateToYMD(schedule.range.start);
@@ -1135,29 +1167,14 @@ export default function TasksScreen() {
       subHide.remove();
     };
   }, [scrollQuickTodoAboveKeyboard]);
-  const [dayBoundary, setDayBoundary] = React.useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
-  const [dayBoundaryClock, setDayBoundaryClock] = React.useState(0);
+  const { boundary: dayBoundary, logicalTodayYmd } = useDayBoundary();
   const [projectAiPendingIds, setProjectAiPendingIds] = React.useState<ReadonlySet<string>>(() => new Set());
   const [projectAiModal, setProjectAiModal] = React.useState<{
     projectName: string;
     review: ProjectAiReview;
   } | null>(null);
 
-  const logicalTodayYmd = React.useMemo(
-    () => getLogicalLocalYmd(new Date(), dayBoundary),
-    [dayBoundary, dayBoundaryClock],
-  );
-
   const habitScheduleAnchorDate = React.useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
-
-  React.useEffect(() => {
-    const id = setInterval(() => setDayBoundaryClock((c) => c + 1), 30000);
-    return () => clearInterval(id);
-  }, []);
-
-  React.useEffect(() => {
-    void loadTasksDayBoundary().then((b) => setDayBoundary(b));
-  }, []);
 
   React.useEffect(() => {
     const unsubPending = addProjectAiPendingAnalysisListener(setProjectAiPendingIds);
@@ -1241,21 +1258,21 @@ export default function TasksScreen() {
   const loadTasks = React.useCallback(async (): Promise<number> => {
     try {
       let rows = await getTasks();
-      const boundary = await loadTasksDayBoundary();
-      const logicalToday = getLogicalLocalYmd(new Date(), boundary);
-      const rolled = await applyRepeatingTaskRollovers(rows, logicalToday, boundary);
-      if (rolled > 0) {
+      const logicalToday = getLogicalLocalYmd(new Date(), dayBoundary);
+      const rolled = await applyRepeatingTaskRollovers(rows, logicalToday, dayBoundary);
+      const overdueBumped = await applyOverdueTaskPriorityBump(rows, logicalToday);
+      if (rolled > 0 || overdueBumped > 0) {
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         rows = await getTasks();
       }
       setTasks(rows);
-      return rolled;
+      return rolled + overdueBumped;
     } catch (err) {
       console.warn('加载任务列表失败', err);
       setTasks([]);
       return 0;
     }
-  }, []);
+  }, [dayBoundary]);
 
   const loadHabits = React.useCallback(async () => {
     try {
@@ -1479,10 +1496,7 @@ export default function TasksScreen() {
     React.useCallback(() => {
       let cancelled = false;
       (async () => {
-        const boundary = await loadTasksDayBoundary();
-        if (cancelled) return;
-        setDayBoundary(boundary);
-        const logicalToday = getLogicalLocalYmd(new Date(), boundary);
+        const logicalToday = logicalTodayYmd;
         const storedExpanded = await loadExpandedProjectState();
         const rows = await loadProjects();
         if (cancelled) return;
@@ -1529,7 +1543,16 @@ export default function TasksScreen() {
       return () => {
         cancelled = true;
       };
-    }, [loadExpandedProjectState, loadProjectCategories, loadProjects, loadProjectTasks, loadTasks, loadHabits, saveExpandedProjectState])
+    }, [
+      loadExpandedProjectState,
+      loadProjectCategories,
+      loadProjects,
+      loadProjectTasks,
+      loadTasks,
+      loadHabits,
+      logicalTodayYmd,
+      saveExpandedProjectState,
+    ])
   );
 
   const taskTitleById = React.useMemo(() => {
@@ -1613,9 +1636,10 @@ export default function TasksScreen() {
     );
 
     forMatrix.forEach((t) => {
-      if (t.priority >= 4) q11.push(t);
-      else if (t.priority === 2) q10.push(t);
-      else if (t.priority === 3) q01.push(t);
+      const p = getEffectiveTaskPriority(t, logicalTodayYmd);
+      if (p >= 4) q11.push(t);
+      else if (p === 2) q10.push(t);
+      else if (p === 3) q01.push(t);
       else q00.push(t);
     });
 
@@ -1635,7 +1659,7 @@ export default function TasksScreen() {
         });
 
     return { q11: sort(q11), q10: sort(q10), q01: sort(q01), q00: sort(q00) };
-  }, [filteredTasks]);
+  }, [filteredTasks, logicalTodayYmd]);
 
   const projectCategoryMap = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -2222,7 +2246,12 @@ export default function TasksScreen() {
             <Text
               style={[
                 styles.taskText,
-                { color: colors.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.42 : 1 },
+                {
+                  color: overdue ? error : colors.text,
+                  fontWeight: overdue ? '800' : '600',
+                  textDecorationLine: isDone ? 'line-through' : 'none',
+                  opacity: isDone ? 0.42 : 1,
+                },
               ]}
               numberOfLines={1}>
               {t.title}
@@ -2321,12 +2350,32 @@ export default function TasksScreen() {
         />
       </View>
 
+      <View
+        style={[
+          styles.pageHeader,
+          {
+            paddingTop: insets.top,
+            borderBottomColor: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(194,198,214,0.55)',
+            backgroundColor: isDark ? 'rgba(15,23,42,0.75)' : 'rgba(250,248,255,0.86)',
+          },
+        ]}>
+        <View style={styles.pageHeaderRow}>
+          <View style={styles.pageHeaderSideSpacer} />
+          <Text style={[styles.pageHeaderTitle, { color: colors.text }]}>{formatTasksHeaderDate(logicalTodayYmd)}</Text>
+          <AppIconButton
+            icon="calendar-today"
+            onPress={() => router.push('/tasks-overview')}
+            accessibilityLabel="待办总览"
+          />
+        </View>
+      </View>
+
       <ScrollView
         ref={mainScrollRef}
         style={styles.scroll}
         contentContainerStyle={[
           styles.content,
-          { paddingTop: Math.max(insets.top, Spacing.xl), paddingBottom: 0 },
+          { paddingTop: Spacing.xl, paddingBottom: 0 },
         ]}
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled
@@ -2616,7 +2665,8 @@ export default function TasksScreen() {
                     const repeat = (meta.repeat ?? '').trim();
                     const reminder = (meta.reminder ?? '').trim();
                     const overdue = isTaskDueOverdue(due, isDone, logicalTodayYmd);
-                    const checkColor = getTaskPriorityCheckColor(t.priority, isDark);
+                    const effectivePriority = getEffectiveTaskPriority(t, logicalTodayYmd);
+                    const checkColor = getTaskPriorityCheckColor(effectivePriority, isDark);
                     return (
                       <View key={t.id} style={styles.standaloneTodoSwipeWrap}>
                         <Swipeable
@@ -2664,7 +2714,8 @@ export default function TasksScreen() {
                               style={[
                                 styles.taskText,
                                 {
-                                  color: colors.text,
+                                  color: overdue ? error : colors.text,
+                                  fontWeight: overdue ? '800' : '600',
                                   textDecorationLine: isDone ? 'line-through' : 'none',
                                   opacity: isDone ? 0.45 : 1,
                                 },
@@ -2869,6 +2920,7 @@ export default function TasksScreen() {
                   color={primary}
                   muted={outline}
                 />
+                <View style={styles.projectList}>
                 {projectsShownInList.map((project) => {
                   const isCompleted = project.status === 'completed' || project.status === 'archived';
                   const schedule = parseProjectSchedule(project.extra_data);
@@ -2925,6 +2977,9 @@ export default function TasksScreen() {
                       const isCollapsed = canToggleCollapse ? !!collapsedTaskIds[node.id] : false;
                       const isExpandedTask = canToggleCollapse ? !isCollapsed : true;
                       const noteText = (node.note ?? '').trim();
+                      const dueDate = node.due_date?.slice(0, 10) ?? '';
+                      const dueOverdue = isTaskDueOverdue(dueDate, isDone, logicalTodayYmd);
+                      const effectivePriority = getEffectiveTaskPriority(node, logicalTodayYmd);
                       const hintPaddingLeft =
                         10 +
                         level * TASK_INDENT +
@@ -2979,7 +3034,8 @@ export default function TasksScreen() {
                                   style={[
                                     styles.projectTaskText,
                                     {
-                                      color: isDone ? colors.textMuted : colors.text,
+                                      color: isDone ? colors.textMuted : dueOverdue ? error : colors.text,
+                                      fontWeight: dueOverdue && !isDone ? '800' : '600',
                                       textDecorationLine: isDone ? 'line-through' : 'none',
                                       opacity: isDone ? 0.85 : 1,
                                     },
@@ -2991,12 +3047,10 @@ export default function TasksScreen() {
                               </View>
                               {(() => {
                                 const meta = parseTaskMeta(node.extra_data);
-                                const priorityLabel = formatTaskPriority(node.priority);
-                                const priorityColor = getTaskPriorityColor(node.priority, isDark);
-                                const dueDate = node.due_date?.slice(0, 10) ?? '';
+                                const priorityLabel = formatTaskPriority(effectivePriority);
+                                const priorityColor = getTaskPriorityColor(effectivePriority, isDark);
                                 const reminder = (meta.reminder ?? '').trim();
                                 const repeat = (meta.repeat ?? '').trim();
-                                const dueOverdue = isTaskDueOverdue(dueDate, isDone, logicalTodayYmd);
                                 return (
                                   <View style={styles.projectTaskMetaRow}>
                                     {!!priorityLabel && (
@@ -3300,6 +3354,7 @@ export default function TasksScreen() {
                   );
                 })}
                 {projectsShownInList.length === 0 && (
+                  <View style={styles.projectSwipeWrap}>
                   <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
                     <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
                       <View style={styles.projectHeadLeft}>
@@ -3311,7 +3366,9 @@ export default function TasksScreen() {
                       </View>
                     </View>
                   </View>
+                  </View>
                 )}
+                </View>
               </View>
             </View>
           </Animated.View>
@@ -3634,6 +3691,29 @@ export default function TasksScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  pageHeader: {
+    paddingHorizontal: Spacing['5xl'],
+    paddingBottom: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    zIndex: 10,
+  },
+  pageHeaderRow: {
+    height: Layout.headerHeight,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  pageHeaderSideSpacer: {
+    width: Layout.iconButtonSize,
+    height: Layout.iconButtonSize,
+  },
+  pageHeaderTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: -0.2,
+    textAlign: 'center',
+  },
   scroll: { flex: 1 },
   content: {
     maxWidth: Layout.contentMaxWidth,
@@ -3897,7 +3977,12 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 2,
   },
-  projectSwipeWrap: { marginBottom: 10 },
+  /** 项目卡片列表：右侧留白，避免卡片与区块右缘贴齐 */
+  projectList: {
+    paddingRight: Spacing.xl,
+  },
+  /** 外边距放在 Swipeable 外，保证侧滑层高度与卡片本体一致 */
+  projectSwipeWrap: { marginBottom: Spacing.lg },
   projectSwipeActions: {
     flexDirection: 'row',
     alignItems: 'stretch',

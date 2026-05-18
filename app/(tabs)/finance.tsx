@@ -1,4 +1,7 @@
+import { AppIconButton } from '@/components/ui';
+import { Layout, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import {
@@ -18,6 +21,11 @@ import {
   type BudgetFixedExpense,
   type MonthBudgetSetting,
 } from '@/lib/finance-monthly-budget';
+import {
+  addDaysToLogicalYmd,
+  getLogicalLocalYmd,
+  logicalYmdToLocalDate,
+} from '@/lib/tasks-logical-day';
 import {
   createFinanceTransaction,
   deleteFinanceTransaction,
@@ -43,7 +51,8 @@ import {
   type FinanceDefaultAccounts,
 } from '@/lib/finance-default-accounts';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
-import { consumeFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
+import { setFinanceSheetBridge } from '@/lib/finance-sheet-bridge';
+import { consumeFinanceSheetLaunchIntent, type FinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import { consumeShortcutAutoLedgerImageDataUri } from '@/lib/shortcut-auto-ledger-pending';
 import { moveAppToBackground } from 'zheng-background';
 import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
@@ -72,6 +81,7 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -82,6 +92,7 @@ import {
   TextInput,
   View,
   ViewStyle,
+  type GestureResponderEvent,
   type KeyboardEvent,
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
@@ -207,6 +218,18 @@ type NetWorthTrendPoint = {
 function formatNetWorthTrendDayLabel(date: Date, isToday: boolean): string {
   if (isToday) return '今天';
   return `${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+/** 将图表区域内的触摸 x 坐标映射为折线数据点索引。 */
+function netWorthTrendIndexFromLocationX(locationX: number, plotWidth: number, pointCount: number): number {
+  if (pointCount <= 1) return 0;
+  if (plotWidth <= 0) return pointCount - 1;
+  const inset = NET_WORTH_TREND_CHART_INSET;
+  const innerW = NET_WORTH_TREND_CHART_W - inset * 2;
+  const viewBoxX = (locationX / plotWidth) * NET_WORTH_TREND_CHART_W;
+  const t = (viewBoxX - inset) / innerW;
+  const clamped = Math.max(0, Math.min(1, t));
+  return Math.round(clamped * (pointCount - 1));
 }
 
 /** 在折线上均匀取约 5 个可见节点（含首尾）。 */
@@ -390,7 +413,11 @@ export default function FinanceScreen() {
   const secondary = isDark ? '#34d399' : '#006c49';
   const tertiary = isDark ? '#fbbf24' : '#825100';
   const weekdayCn = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
-  const today = new Date();
+  const { boundary: dayBoundary, logicalTodayYmd, logicalTodayDate: today } = useDayBoundary();
+  const logicalYesterdayYmd = React.useMemo(
+    () => addDaysToLogicalYmd(logicalTodayYmd, -1),
+    [logicalTodayYmd],
+  );
   const headerDateLabel = `${today.getMonth() + 1}月${today.getDate()}日 ${weekdayCn[today.getDay()]}`;
 
   const formatCurrencyWithDecimals = React.useCallback((value: number) => {
@@ -638,12 +665,10 @@ export default function FinanceScreen() {
     outputRange: [0, 1],
   });
 
-  const getDayKey = React.useCallback((value: Date) => {
-    const year = value.getFullYear();
-    const month = String(value.getMonth() + 1).padStart(2, '0');
-    const day = String(value.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }, []);
+  const getDayKey = React.useCallback(
+    (value: Date) => getLogicalLocalYmd(value, dayBoundary),
+    [dayBoundary],
+  );
 
   const accountNameMap = React.useMemo(() => {
     return new Map(financeAccounts.map((account) => [account.id, account.name]));
@@ -736,13 +761,10 @@ export default function FinanceScreen() {
     () =>
       financeTransactions.filter((txn) => {
         const happenedAt = new Date(txn.happened_at);
-        return (
-          happenedAt.getFullYear() === today.getFullYear() &&
-          happenedAt.getMonth() === today.getMonth() &&
-          happenedAt.getDate() === today.getDate()
-        );
+        if (Number.isNaN(happenedAt.getTime())) return false;
+        return getLogicalLocalYmd(happenedAt, dayBoundary) === logicalTodayYmd;
       }),
-    [financeTransactions, today]
+    [dayBoundary, financeTransactions, logicalTodayYmd],
   );
 
   const todayExpenseTotal = React.useMemo(
@@ -781,17 +803,19 @@ export default function FinanceScreen() {
       return bTime - aTime;
     });
   }, [financeTransactions]);
-  const todayDayKey = React.useMemo(() => getDayKey(today), [getDayKey, today]);
+  const todayDayKey = logicalTodayYmd;
   const sortedDayKeys = React.useMemo(() => {
     const keys = new Set<string>();
     sortedTransactions.forEach((txn) => {
       const happenedAt = new Date(txn.happened_at);
-      if (!Number.isNaN(happenedAt.getTime()) && happenedAt <= today) {
-        keys.add(getDayKey(happenedAt));
+      if (Number.isNaN(happenedAt.getTime())) return;
+      const dayKey = getDayKey(happenedAt);
+      if (dayKey <= logicalTodayYmd) {
+        keys.add(dayKey);
       }
     });
     return Array.from(keys);
-  }, [getDayKey, sortedTransactions, today]);
+  }, [getDayKey, logicalTodayYmd, sortedTransactions]);
   const historyDayKeys = React.useMemo(() => sortedDayKeys.filter((k) => k !== todayDayKey), [sortedDayKeys, todayDayKey]);
   const hasMoreHistoryDays = visibleDayCount < historyDayKeys.length;
   const visibleDayKeySet = React.useMemo(() => {
@@ -981,10 +1005,7 @@ export default function FinanceScreen() {
   ]);
 
   const historySections = React.useMemo(() => {
-    const now = new Date();
-    const yesterday = new Date(now);
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayDayKey = getDayKey(yesterday);
+    const yesterdayDayKey = logicalYesterdayYmd;
     const weekdayCnLocal = weekdayCn;
 
     const sectionMap = new Map<
@@ -1000,9 +1021,10 @@ export default function FinanceScreen() {
       }
     >();
 
-    const upsert = (dayKey: string, date: Date) => {
+    const upsert = (dayKey: string) => {
       const existing = sectionMap.get(dayKey);
       if (existing) return existing;
+      const date = logicalYmdToLocalDate(dayKey);
       const isYesterday = dayKey === yesterdayDayKey;
       const label = isYesterday ? '昨天' : `${date.getMonth() + 1}月${date.getDate()}日 ${weekdayCnLocal[date.getDay()]}`;
       const shortLabel = isYesterday ? '昨天' : `${date.getMonth() + 1}/${date.getDate()}`;
@@ -1018,7 +1040,7 @@ export default function FinanceScreen() {
       if (dayKey === todayDayKey) return;
       if (!visibleDayKeySet.has(dayKey)) return;
 
-      const section = upsert(dayKey, happenedAt);
+      const section = upsert(dayKey);
       const displayAmount = getTxnDisplayAmount(txn);
       if (displayAmount > 0) section.income += Math.abs(displayAmount);
       if (displayAmount < 0) section.expense += Math.abs(displayAmount);
@@ -1071,18 +1093,13 @@ export default function FinanceScreen() {
     text,
     todayDayKey,
     visibleDayKeySet,
+    logicalYesterdayYmd,
     weekdayCn,
     zhipuTxnReady,
     txnAiFailEpoch,
   ]);
 
   const displayTxns = React.useMemo<Txn[]>(() => {
-    const now = new Date();
-    const currentYmd = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
-    const yesterday = new Date(now);
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayYmd = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
-
     return sortedTransactions
       .filter((txn) => {
         const happenedAt = new Date(txn.happened_at);
@@ -1094,8 +1111,14 @@ export default function FinanceScreen() {
       const happenedAt = new Date(txn.happened_at);
       const hour = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getHours()).padStart(2, '0');
       const minute = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getMinutes()).padStart(2, '0');
-      const ymd = `${happenedAt.getFullYear()}-${happenedAt.getMonth()}-${happenedAt.getDate()}`;
-      const dayLabel = ymd === currentYmd ? '今天' : ymd === yesterdayYmd ? '昨天' : `${happenedAt.getMonth() + 1}月${happenedAt.getDate()}日`;
+      const dayKey = getDayKey(happenedAt);
+      const dayDate = logicalYmdToLocalDate(dayKey);
+      const dayLabel =
+        dayKey === logicalTodayYmd
+          ? '今天'
+          : dayKey === logicalYesterdayYmd
+            ? '昨天'
+            : `${dayDate.getMonth() + 1}月${dayDate.getDate()}日`;
       const accountLabel = accountNameMap.get(txn.account_id) ?? '未知账户';
 
       const displayAmount = getTxnDisplayAmount(txn);
@@ -1127,7 +1150,24 @@ export default function FinanceScreen() {
         insightPendingAi: aiLine.pendingAi,
       };
     });
-  }, [accountNameMap, formatCurrencyWithDecimals, generatingTxnAiId, getDayKey, getTxnDisplayAmount, secondary, sortedTransactions, subtle, tertiary, text, todayDayKey, visibleDayKeySet, zhipuTxnReady, txnAiFailEpoch]);
+  }, [
+    accountNameMap,
+    formatCurrencyWithDecimals,
+    generatingTxnAiId,
+    getDayKey,
+    getTxnDisplayAmount,
+    logicalTodayYmd,
+    logicalYesterdayYmd,
+    secondary,
+    sortedTransactions,
+    subtle,
+    tertiary,
+    text,
+    todayDayKey,
+    visibleDayKeySet,
+    zhipuTxnReady,
+    txnAiFailEpoch,
+  ]);
 
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
   const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
@@ -1366,6 +1406,29 @@ export default function FinanceScreen() {
     trendChartGeometry && selectedNetTrendIndex >= 0
       ? trendChartGeometry.points[selectedNetTrendIndex]
       : null;
+
+  const trendChartPlotWidthRef = React.useRef(0);
+  const netTrendPointCountRef = React.useRef(netTrendPoints.length);
+  netTrendPointCountRef.current = netTrendPoints.length;
+
+  const updateNetTrendIndexFromTouch = React.useCallback((evt: GestureResponderEvent) => {
+    const n = netTrendPointCountRef.current;
+    if (n < 2) return;
+    const idx = netWorthTrendIndexFromLocationX(evt.nativeEvent.locationX, trendChartPlotWidthRef.current, n);
+    setSelectedNetTrendIndex(idx);
+  }, []);
+
+  const netWorthTrendChartPanResponder = React.useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => netTrendPointCountRef.current >= 2,
+        onMoveShouldSetPanResponder: () => netTrendPointCountRef.current >= 2,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: updateNetTrendIndexFromTouch,
+        onPanResponderMove: updateNetTrendIndexFromTouch,
+      }),
+    [updateNetTrendIndexFromTouch],
+  );
 
   const formatCurrencyBalance = React.useCallback(
     (value: number) => {
@@ -1780,6 +1843,56 @@ export default function FinanceScreen() {
     }
   }, [getDefaultSheetAccountIdForTab, speechApi]);
 
+  const applyManualOrTransferSheetIntent = React.useCallback(
+    (intent: FinanceSheetLaunchIntent) => {
+      const list = financeAccountsRef.current;
+      if (intent.kind === 'auto_ledger_clipboard_pending' || intent.kind === 'auto_ledger_clipboard_image') {
+        return;
+      }
+      if (!list.length) {
+        Alert.alert('请先添加账户', '当前还没有可用账户，请先前往资产页添加账户后再记账。');
+        return;
+      }
+      if (intent.kind === 'manual') {
+        resetSheetForm(intent.tab);
+        const accId =
+          intent.accountId && list.some((a) => a.id === intent.accountId)
+            ? intent.accountId
+            : getDefaultSheetAccountIdForTab(intent.tab, list) ?? list[0].id;
+        setSelectedAccountId(accId);
+        setIsSheetVisible(true);
+        return;
+      }
+      const assetOnly = list.filter((a) => a.sign_rule === 1);
+      if (assetOnly.length < 2) {
+        Alert.alert('无法转账', '至少需要两个资产账户才能进行转账。');
+        return;
+      }
+      resetSheetForm('transfer');
+      const fromId =
+        intent.fromAccountId && assetOnly.some((a) => a.id === intent.fromAccountId)
+          ? intent.fromAccountId
+          : assetOnly[0].id;
+      const toId = assetOnly.find((a) => a.id !== fromId)?.id ?? assetOnly[1]?.id ?? fromId;
+      setTransferFromAccountId(fromId);
+      setTransferToAccountId(toId);
+      setIsSheetVisible(true);
+    },
+    [getDefaultSheetAccountIdForTab, resetSheetForm],
+  );
+
+  /** 仅在财务 Tab 聚焦时接管弹窗；账户详情等栈页由根级 FinanceSheetHost 渲染 */
+  useFocusEffect(
+    React.useCallback(() => {
+      setFinanceSheetBridge({
+        open: (intent) => {
+          void loadFinanceAccounts().then(() => applyManualOrTransferSheetIntent(intent));
+        },
+      });
+      return () => setFinanceSheetBridge(null);
+    }, [applyManualOrTransferSheetIntent, loadFinanceAccounts]),
+  );
+
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
@@ -1821,30 +1934,7 @@ export default function FinanceScreen() {
                 void notifyAutoLedgerFailure('请先添加至少一个账户。');
               }
             } else if (list.length > 0) {
-              if (intent.kind === 'manual') {
-                resetSheetForm(intent.tab);
-                const accId =
-                  intent.accountId && list.some((a) => a.id === intent.accountId)
-                    ? intent.accountId
-                    : getDefaultSheetAccountIdForTab(intent.tab, list) ?? list[0].id;
-                setSelectedAccountId(accId);
-                setIsSheetVisible(true);
-              } else {
-                const assetOnly = list.filter((a) => a.sign_rule === 1);
-                if (assetOnly.length < 2) {
-                  Alert.alert('无法转账', '至少需要两个资产账户才能进行转账。');
-                } else {
-                  resetSheetForm('transfer');
-                  const fromId =
-                    intent.fromAccountId && assetOnly.some((a) => a.id === intent.fromAccountId)
-                      ? intent.fromAccountId
-                      : assetOnly[0].id;
-                  const toId = assetOnly.find((a) => a.id !== fromId)?.id ?? assetOnly[1]?.id ?? fromId;
-                  setTransferFromAccountId(fromId);
-                  setTransferToAccountId(toId);
-                  setIsSheetVisible(true);
-                }
-              }
+              applyManualOrTransferSheetIntent(intent);
             }
           } else {
             const shortcutImageUri = await consumeShortcutAutoLedgerImageDataUri();
@@ -1878,6 +1968,7 @@ export default function FinanceScreen() {
       loadFinanceTransactions,
       processAutoLedgerFromImage,
       readClipboardImageForAutoLedger,
+      applyManualOrTransferSheetIntent,
       resetSheetForm,
       startAutoLedgerHandoff,
     ])
@@ -2629,22 +2720,31 @@ export default function FinanceScreen() {
               borderBottomColor: outlineVariant,
               paddingTop: insets.top,
             },
-          ]}>
+          ]}
+          collapsable={false}>
           <View style={styles.headerInner}>
-            <Pressable
-              onPress={() => router.push('/savings-plan')}
-              style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.75 }]}
-              accessibilityRole="button"
-              accessibilityLabel="存钱计划">
-              <MaterialIcons name="savings" size={22} color={text} />
-            </Pressable>
-            <Text style={[styles.headerTitle, { color: text }]}>{headerDateLabel}</Text>
-            <View style={styles.headerRight}>
-              <Pressable
+            <View style={styles.headerSide}>
+              <AppIconButton
+                icon="savings"
+                color={text}
+                hitSlop={Layout.hitSlop}
+                onPress={() => router.push('/savings-plan')}
+                accessibilityLabel="存钱计划"
+              />
+            </View>
+            <View style={styles.headerCenter} pointerEvents="box-none">
+              <Text style={[styles.headerTitle, { color: text }]} numberOfLines={1} pointerEvents="none">
+                {headerDateLabel}
+              </Text>
+            </View>
+            <View style={[styles.headerSide, styles.headerSideRight]}>
+              <AppIconButton
+                icon="calendar-today"
+                color={text}
+                hitSlop={Layout.hitSlop}
                 onPress={() => router.push('/finance-calendar')}
-                style={({ pressed }) => [styles.headerIconBtn, pressed && { opacity: 0.75 }]}> 
-                <MaterialIcons name="calendar-today" size={22} color={text} />
-              </Pressable>
+                accessibilityLabel="财务日历"
+              />
             </View>
           </View>
         </View>
@@ -2783,7 +2883,11 @@ export default function FinanceScreen() {
                   </Text>
 
                   <View style={styles.trendChartWrap}>
-                    <View style={styles.trendChartPlot}>
+                    <View
+                      style={styles.trendChartPlot}
+                      onLayout={(e) => {
+                        trendChartPlotWidthRef.current = e.nativeEvent.layout.width;
+                      }}>
                       <Svg
                         width="100%"
                         height={NET_WORTH_TREND_CHART_H}
@@ -2818,17 +2922,16 @@ export default function FinanceScreen() {
                           </>
                         ) : null}
                       </Svg>
-                      {trendChartGeometry
-                        ? trendChartGeometry.points.map((p, i) => {
+                      {trendChartGeometry ? (
+                        <View style={styles.trendChartNodes} pointerEvents="none">
+                          {trendChartGeometry.points.map((p, i) => {
                             const isVisible = netTrendVisibleNodeIndices.includes(i);
                             const isSelected = i === selectedNetTrendIndex;
                             const isLast = i === netTrendLastIndex;
                             const dotSize = isSelected ? 10 : isLast ? 8 : 6;
                             return (
-                              <Pressable
+                              <View
                                 key={`net-trend-node-${i}`}
-                                onPress={() => setSelectedNetTrendIndex(i)}
-                                hitSlop={4}
                                 style={[
                                   styles.trendChartNodeHit,
                                   {
@@ -2851,12 +2954,22 @@ export default function FinanceScreen() {
                                     ]}
                                   />
                                 ) : null}
-                              </Pressable>
+                              </View>
                             );
-                          })
-                        : null}
+                          })}
+                        </View>
+                      ) : null}
+                      {trendChartGeometry ? (
+                        <View
+                          {...netWorthTrendChartPanResponder.panHandlers}
+                          style={styles.trendChartScrubOverlay}
+                          accessibilityRole="adjustable"
+                          accessibilityLabel="净资产趋势图，滑动查看不同日期"
+                          accessibilityHint="在图表上左右滑动或按住拖动以查看各日净资产"
+                        />
+                      ) : null}
                     </View>
-                    <Text style={[styles.trendChartHint, { color: subtle }]}>点击折线节点查看当日净资产</Text>
+                    <Text style={[styles.trendChartHint, { color: subtle }]}>滑动折线图查看各日净资产</Text>
                   </View>
 
                   {budgetCardNetExpanded ? (
@@ -4165,37 +4278,34 @@ const styles = StyleSheet.create({
     paddingBottom: 0,
   },
   header: {
+    width: '100%',
     borderBottomWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     zIndex: 60,
+    elevation: 24,
   },
   headerInner: {
-    height: 48,
-    paddingHorizontal: 20,
+    width: '100%',
+    height: Layout.headerHeight,
+    paddingHorizontal: Spacing['5xl'],
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
   },
-  headerSpacer: {
-    width: 40,
-    height: 40,
-  },
-  headerRight: {
-    width: 40,
-    alignItems: 'flex-end',
+  headerSide: {
+    minWidth: Layout.iconButtonSize,
+    alignItems: 'flex-start',
     justifyContent: 'center',
+    zIndex: 2,
   },
-  headerIconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  headerSideRight: {
+    alignItems: 'flex-end',
+  },
+  headerCenter: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: Spacing.md,
   },
   headerTitle: {
-    flex: 1,
     textAlign: 'center',
     fontSize: 16,
     fontWeight: '900',
@@ -4367,6 +4477,14 @@ const styles = StyleSheet.create({
     height: NET_WORTH_TREND_CHART_H,
     width: '100%',
     overflow: 'visible',
+  },
+  trendChartNodes: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+  },
+  trendChartScrubOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 2,
   },
   trendChartNodeHit: {
     position: 'absolute',

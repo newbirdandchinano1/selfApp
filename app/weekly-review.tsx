@@ -1,4 +1,5 @@
 import { Colors } from '@/constants/theme';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { generateWeeklyReviewCoaching } from '@/lib/weekly-review-coaching';
 import { fetchWeeklyReviewMetrics, getRollingSevenDayRange, getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
@@ -176,6 +177,7 @@ const PLACEHOLDERS = {
 } as const;
 
 export default function WeeklyReviewScreen() {
+  const { logicalTodayYmd: todayYmd } = useDayBoundary();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
@@ -437,14 +439,13 @@ export default function WeeklyReviewScreen() {
   }, [canEdit, periodStartYmd, adjustTasks, adjustSavings, adjustPlans]);
 
   const setDailyFieldForYmd = useCallback((ymd: string, key: DailyFieldKey, value: string) => {
-    if (ymd !== toYmdLocal(new Date())) return;
+    if (ymd !== todayYmd) return;
     setDailyEntries(prev =>
       prev.map(e => (e.ymd === ymd ? { ...e, fields: { ...e.fields, [key]: value } } : e)),
     );
   }, []);
 
   const onSaveDaily = useCallback(async (ymd: string, fields: DailyStructured) => {
-    const todayYmd = toYmdLocal(new Date());
     if (ymd !== todayYmd) {
       Alert.alert('暂不可保存', '每日复盘仅支持填写与保存「今天」的内容。');
       return;
@@ -459,7 +460,7 @@ export default function WeeklyReviewScreen() {
     } finally {
       setDailySavingYmd(null);
     }
-  }, []);
+  }, [todayYmd]);
 
   const onPickWeekday = useCallback(async (d: number) => {
     try {
@@ -475,7 +476,6 @@ export default function WeeklyReviewScreen() {
 
   const inputSurface = isDark ? 'rgba(15,23,42,0.55)' : '#f4f6ff';
   const inputBorder = outlineVariant;
-  const todayYmd = toYmdLocal(new Date());
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right', 'bottom']}>

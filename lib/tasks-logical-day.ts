@@ -1,11 +1,30 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-/** 本地「日界」：新一天的统计从该时刻起算（默认 0:00 即自然日） */
+/** 全应用「日界」：新一天的统计从该时刻起算（默认 0:00 即自然日） */
 export type TasksDayBoundary = { hour: number; minute: number };
+
+/** @deprecated 使用 `TasksDayBoundary` */
+export type AppDayBoundary = TasksDayBoundary;
 
 export const DEFAULT_TASKS_DAY_BOUNDARY: TasksDayBoundary = { hour: 0, minute: 0 };
 
 const STORAGE_KEY = '@tasks_completion_day_start_v1';
+
+let cachedBoundary: TasksDayBoundary | null = null;
+const listeners = new Set<() => void>();
+
+export function getDayBoundarySync(): TasksDayBoundary {
+  return cachedBoundary ? { ...cachedBoundary } : { ...DEFAULT_TASKS_DAY_BOUNDARY };
+}
+
+export function subscribeDayBoundary(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function notifyDayBoundaryListeners() {
+  listeners.forEach((l) => l());
+}
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
@@ -52,18 +71,51 @@ export function formatTasksDayBoundaryLabel(b: TasksDayBoundary): string {
   return `${pad2(x.hour)}:${pad2(x.minute)}`;
 }
 
+/** 逻辑日 YMD → 本地日历日中午，便于展示星期与月日标签 */
+export function logicalYmdToLocalDate(ymd: string): Date {
+  const [y, mo, d] = ymd.split('-').map((x) => parseInt(x, 10));
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) {
+    return new Date();
+  }
+  return new Date(y, mo - 1, d, 12, 0, 0, 0);
+}
+
+export function addDaysToLogicalYmd(ymd: string, deltaDays: number): string {
+  const d = logicalYmdToLocalDate(ymd);
+  d.setDate(d.getDate() + deltaDays);
+  return formatLocalYmdFromDate(d);
+}
+
+export function getLogicalDayKeyFromDate(at: Date, boundary?: TasksDayBoundary): string {
+  return getLogicalLocalYmd(at, boundary ?? getDayBoundarySync());
+}
+
 export async function loadTasksDayBoundary(): Promise<TasksDayBoundary> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_TASKS_DAY_BOUNDARY };
+    if (!raw) {
+      cachedBoundary = { ...DEFAULT_TASKS_DAY_BOUNDARY };
+      return { ...DEFAULT_TASKS_DAY_BOUNDARY };
+    }
     const parsed: unknown = JSON.parse(raw);
-    return normalizeTasksDayBoundary(parsed);
+    const b = normalizeTasksDayBoundary(parsed);
+    cachedBoundary = b;
+    return b;
   } catch {
+    cachedBoundary = { ...DEFAULT_TASKS_DAY_BOUNDARY };
     return { ...DEFAULT_TASKS_DAY_BOUNDARY };
   }
 }
 
+/** 与 `loadTasksDayBoundary` 相同，语义为全应用日界 */
+export const loadAppDayBoundary = loadTasksDayBoundary;
+
 export async function saveTasksDayBoundary(boundary: TasksDayBoundary): Promise<void> {
   const x = normalizeTasksDayBoundary(boundary);
+  cachedBoundary = x;
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(x));
+  notifyDayBoundaryListeners();
 }
+
+/** 与 `saveTasksDayBoundary` 相同，语义为全应用日界 */
+export const saveAppDayBoundary = saveTasksDayBoundary;

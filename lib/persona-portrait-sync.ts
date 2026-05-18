@@ -10,6 +10,7 @@ import {
 } from '@/lib/repositories/insights/persona-portrait-cache';
 import { getDefaultUser } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { generatePersonaPortraitFromContext, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 
 export function localCalendarYmd(d = new Date()): string {
@@ -17,6 +18,11 @@ export function localCalendarYmd(d = new Date()): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+/** 应用日界下的逻辑「今天」YMD */
+export function localLogicalTodayYmd(d = new Date()): string {
+  return getLogicalLocalYmd(d, getDayBoundarySync());
 }
 
 export function buildPersonaContextText(
@@ -77,7 +83,7 @@ export async function ensurePersonaPortraitsForTodayInBackground(): Promise<void
   const db = await getDatabase();
   if (!db) return;
 
-  const today = localCalendarYmd();
+  const today = localLogicalTodayYmd();
 
   try {
     const u = await getDefaultUser();

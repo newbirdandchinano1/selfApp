@@ -7,7 +7,9 @@ import { ActivityIndicator, Platform, Pressable, Text, View } from 'react-native
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
 import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
+import { loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { initDatabase } from '@/lib/database';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
@@ -16,6 +18,7 @@ import { loadThemePreference } from '@/lib/theme-preference';
 import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
 import { hydrateGithubCloudDirtyFromStorage } from '@/lib/github-sqlite-dirty-track';
 import { runSilentGithubCloudSyncIfRemoteNewer } from '@/lib/github-cloud-launch';
+import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
 
 if (Platform.OS !== 'web') {
@@ -49,6 +52,7 @@ function RootLayoutInner() {
         }
         await loadPersistedIntakeTargets();
         await loadThemePreference();
+        await loadTasksDayBoundary();
         await loadAiLlmProviderPreference();
         if (Platform.OS !== 'web') {
           void ensurePersonaPortraitsForTodayInBackground();
@@ -91,6 +95,7 @@ function RootLayoutInner() {
                       }
                       await loadPersistedIntakeTargets();
                       await loadThemePreference();
+                      await loadTasksDayBoundary();
                       await loadAiLlmProviderPreference();
                       if (Platform.OS !== 'web') {
                         void ensurePersonaPortraitsForTodayInBackground();
@@ -118,6 +123,7 @@ function RootLayoutInner() {
         ) : (
           <>
             <ScreenshotDeepLinkListener />
+            <FinanceSheetHost />
             <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="add-frog" />
@@ -172,7 +178,9 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemePreferenceProvider>
-        <RootLayoutInner />
+        <DayBoundaryProvider>
+          <RootLayoutInner />
+        </DayBoundaryProvider>
       </ThemePreferenceProvider>
     </GestureHandlerRootView>
   );

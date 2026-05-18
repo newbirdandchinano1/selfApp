@@ -67,13 +67,6 @@ export default function TabLayout() {
             }}
           />
           <Tabs.Screen
-            name="calendar"
-            options={{
-              title: '日历',
-              tabBarIcon: ({ color }) => <MaterialIcons size={24} name="calendar-today" color={color} />,
-            }}
-          />
-          <Tabs.Screen
             name="profile"
             options={{
               title: '我的',

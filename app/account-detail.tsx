@@ -3,7 +3,7 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { clearFinanceDefaultAccountIfDeleted } from '@/lib/finance-default-accounts';
-import { setFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
+import { openFinanceSheet, subscribeFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import {
   applyFinanceAccountBalanceCorrection,
   deleteFinanceAccount,
@@ -256,9 +256,8 @@ export default function AccountDetailScreen() {
       Alert.alert('无法记账', '未找到账户信息。');
       return;
     }
-    setFinanceSheetLaunchIntent({ kind: 'manual', tab: 'sentence', accountId: resolvedAccountId });
-    router.push('/(tabs)/finance');
-  }, [resolvedAccountId, router]);
+    openFinanceSheet({ kind: 'manual', tab: 'sentence', accountId: resolvedAccountId });
+  }, [resolvedAccountId]);
 
   const onPressTransfer = React.useCallback(() => {
     if (!resolvedAccountId) {
@@ -272,9 +271,16 @@ export default function AccountDetailScreen() {
       );
       return;
     }
-    setFinanceSheetLaunchIntent({ kind: 'transfer', fromAccountId: resolvedAccountId });
-    router.push('/(tabs)/finance');
-  }, [accountSignRule, isLiabilityAccount, resolvedAccountId, router]);
+    openFinanceSheet({ kind: 'transfer', fromAccountId: resolvedAccountId });
+  }, [accountSignRule, isLiabilityAccount, resolvedAccountId]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      return subscribeFinanceSheetSaved(() => {
+        void loadAccountDetail();
+      });
+    }, [loadAccountDetail]),
+  );
 
   const onDeleteAccount = React.useCallback(() => {
     if (deleting) return;
@@ -477,8 +483,8 @@ export default function AccountDetailScreen() {
           ) : null}
 
           <View style={styles.actionRow}>
-            <AppButton label="记账" variant="outline" size="md" onPress={onPressBookkeeping} style={styles.actionBtn} />
-            <AppButton label="转账" variant="outline" size="md" onPress={onPressTransfer} style={styles.actionBtn} />
+            <AppButton label="记账" variant="secondary" size="md" onPress={onPressBookkeeping} style={styles.actionBtn} />
+            <AppButton label="转账" variant="secondary" size="md" onPress={onPressTransfer} style={styles.actionBtn} />
           </View>
         </AppCard>
 

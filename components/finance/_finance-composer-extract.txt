@@ -1,0 +1,1316 @@
+// AUTO-EXTRACTED from finance.tsx — finance composer sheet
+/* lines 236-313 */
+type SheetCategory = {
+  key: string;
+  icon: keyof typeof MaterialIcons.glyphMap;
+  label: string;
+  color: string;
+};
+
+type ParsedOneLiner = {
+  transaction_type: 'expense' | 'income';
+  amount: number;
+  name: string;
+  category_label?: string | null;
+  account_name?: string | null;
+  payment_account_label?: string | null;
+};
+
+type SentenceResolveResult =
+  | { ok: true; parsed: ParsedOneLiner; source: 'ai' | 'local' }
+  | { ok: false; error: string };
+
+type SentenceLedgerPreviewState =
+  | null
+  | {
+      kind: 'ok';
+      source: 'ai' | 'local';
+      transaction_type: 'expense' | 'income';
+      amount: number;
+      name: string;
+      categoryLabel: string;
+    }
+  | { kind: 'error'; message: string };
+
+/** 无智谱密钥时的极简规则解析（需含阿拉伯数字金额）。 */
+function parseFinanceSentenceLocal(raw: string): ({ ok: true } & ParsedOneLiner) | { ok: false } {
+  const s = raw.trim().replace(/\s+/g, ' ');
+  if (!s) return { ok: false };
+  const incomeHints = /(?:^|[\s,，])(收入|到账|进账|工资|奖金|补贴|退款|回款|(?:收到)?转账)/;
+  const transaction_type: 'income' | 'expense' = incomeHints.test(s) ? 'income' : 'expense';
+  const numRe = /(\d+(?:\.\d+)?)\s*(?:元|块|￥|¥)?/;
+  const m = s.match(numRe);
+  if (!m) return { ok: false };
+  const amount = Number(m[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return { ok: false };
+  const capped = Math.min(amount, 99999999.99);
+  let name = s
+    .replace(m[0], ' ')
+    .replace(/[,，。、;；]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  name = name
+    .replace(/^(支出|花了|消费|买了|买|付|支付)/, '')
+    .replace(/^(收入|到账|进账|收到)/, '')
+    .trim();
+  if (!name) name = transaction_type === 'income' ? '收入' : '支出';
+  if (name.length > 80) name = `${name.slice(0, 77)}…`;
+  return { ok: true, transaction_type, amount: capped, name, category_label: null };
+}
+
+function pickSheetCategoryForParsed(
+  transactionType: 'expense' | 'income',
+  categoryLabelHint: string | null | undefined,
+  expenseCats: SheetCategory[],
+  incomeCats: SheetCategory[],
+): SheetCategory {
+  const pool = transactionType === 'income' ? incomeCats : expenseCats;
+  if (!pool.length) {
+    return { key: 'other', icon: 'label', label: '其他', color: '#94a3b8' };
+  }
+  const h = categoryLabelHint?.trim();
+  if (h) {
+    const exact = pool.find((c) => c.label === h);
+    if (exact) return exact;
+    const fuzzy = pool.find((c) => h.includes(c.label) || c.label.includes(h));
+    if (fuzzy) return fuzzy;
+  }
+  return pool[0];
+}
+
+/* lines 4863-5386 */
+  sheetOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.25)',
+  },
+  /** 预算 Modal：KAV 只负责 flex:1；底对齐与遮罩在内层，避免 padding 与 flex 居中叠算产生大块空白 */
+  budgetKeyboardAvoidingRoot: {
+    flex: 1,
+  },
+  budgetModalOverlayInner: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.25)',
+  },
+  sheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 0,
+  },
+  sheetContainer: {
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    backgroundColor: '#ffffff',
+    overflow: 'hidden',
+    zIndex: 1,
+    elevation: 24,
+    flexDirection: 'column',
+  },
+  sheetBodyScroll: {
+    flexGrow: 0,
+  },
+  sheetBodyScrollContent: {
+    paddingBottom: 6,
+  },
+  sheetBodyScrollContentKeyboardOpen: {
+    paddingBottom: 0,
+  },
+  sheetHeader: {
+    paddingHorizontal: 18,
+    minHeight: 58,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sheetCloseBtn: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  sheetTabs: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    paddingHorizontal: 6,
+    gap: 2,
+  },
+  sheetTabBtn: {
+    flex: 1,
+    minWidth: 0,
+    paddingTop: 12,
+    paddingBottom: 10,
+    alignItems: 'center',
+  },
+  sheetTabText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  sheetTabLine: {
+    height: 2,
+    marginTop: 8,
+    borderRadius: 1,
+    alignSelf: 'stretch',
+  },
+  sentenceHintBox: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+  },
+  sentenceHintText: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '500',
+  },
+  sheetSentenceBlock: {
+    gap: 12,
+    paddingBottom: 8,
+  },
+  sentenceAiMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: 10,
+  },
+  sentenceAiMetaText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
+  },
+  sentenceZhipuDevLink: {
+    marginTop: 8,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  sentencePreviewCard: {
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 6,
+  },
+  sentencePreviewBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  sentencePreviewBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  sentencePreviewLine: {
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  sentencePreviewErr: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
+  },
+  sentenceActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  sheetSentencePreviewBtn: {
+    flex: 1,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  sheetSentencePreviewBtnText: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  sheetSentenceSubmit: {
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetSentenceSubmitFlex: {
+    flex: 1,
+  },
+  sheetSentenceSubmitText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  categoryGrid: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    rowGap: 16,
+  },
+  categoryItem: {
+    width: '20%',
+    alignItems: 'center',
+    gap: 6,
+  },
+  categoryIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  sheetInputWrap: {
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 12,
+    paddingTop: 14,
+    paddingBottom: 4,
+  },
+  sheetConfigRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  sheetBudgetCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingLeft: 12,
+    paddingRight: 10,
+    paddingVertical: 11,
+    marginBottom: 12,
+    gap: 4,
+  },
+  sheetBudgetMainHit: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 44,
+  },
+  sheetBudgetIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetBudgetTextCol: {
+    flex: 1,
+    marginLeft: 12,
+    paddingRight: 6,
+  },
+  sheetBudgetTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  sheetBudgetSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 3,
+    lineHeight: 16,
+    opacity: 0.92,
+  },
+  configChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+  },
+  configChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  noteInput: {
+    flex: 1,
+    fontSize: 13,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+  },
+  amountPreview: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
+    gap: 2,
+    marginBottom: 14,
+  },
+  amountYuan: {
+    fontSize: 28,
+    fontWeight: '800',
+  },
+  amountValue: {
+    fontSize: 44,
+    fontWeight: '900',
+    letterSpacing: -0.8,
+  },
+  keypad: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingBottom: 4,
+  },
+  keypadBtn: {
+    height: 52,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '23%',
+  },
+  keypadNormalBtn: {
+    borderWidth: 1,
+  },
+  keypadWideBtn: {
+    width: '48.5%',
+  },
+  keypadDoneBtn: {
+    borderWidth: 0,
+  },
+  keypadText: {
+    fontSize: 21,
+    fontWeight: '800',
+  },
+  keypadDoneText: {
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  transferContent: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 10,
+    gap: 20,
+  },
+  transferAccountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  transferAccountCard: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    gap: 6,
+  },
+  transferAccountLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+  },
+  transferAccountValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  transferAccountValue: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  transferArrowWrap: {
+    width: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transferHintText: {
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+    paddingHorizontal: 12,
+    marginTop: -8,
+  },
+  transferAmountWrap: {
+    minHeight: 112,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 2,
+  },
+  transferAmountValue: {
+    fontSize: 56,
+    fontWeight: '900',
+    letterSpacing: -1,
+  },
+  transferDateWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    paddingBottom: 2,
+  },
+  transferDateBtn: {
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  transferDateText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  nativePickerCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 10,
+    marginBottom: 12,
+    gap: 10,
+    overflow: 'hidden',
+  },
+  inlinePickerTitle: {
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+  },
+  nativePicker: {
+    width: '100%',
+    alignSelf: 'center',
+  },
+  pickerModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 18,
+  },
+  pickerModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  pickerModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 22,
+    borderWidth: 1,
+    overflow: 'hidden',
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 14,
+  },
+  pickerModalHeader: {
+    minHeight: 52,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+  },
+  pickerModalTitle: {
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: -0.2,
+  },
+  pickerModalCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerModalBody: {
+    padding: 12,
+    gap: 12,
+  },
+  pickerModalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  pickerModalAction: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerModalActionText: {
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  pickerModalPrimaryText: {
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+    color: '#ffffff',
+  },
+  inlinePickerActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  inlinePickerBtn: {
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  inlinePickerBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  accountPickerScroll: {
+    maxHeight: 320,
+  },
+  accountPickerList: {
+    gap: 8,
+    paddingBottom: 2,
+  },
+  accountPickerItem: {
+    minHeight: 50,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  accountPickerTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  accountPickerName: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  accountPickerBalance: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  sheetNoteRow: {
+    marginTop: 0,
+    marginBottom: 12,
+  },
+  noteRowInput: {
+    width: '100%',
+/* lines 3205-3914 */
+      <Modal visible={isSheetVisible} animationType="slide" transparent onRequestClose={closeSheet}>
+        <View style={styles.sheetOverlay}>
+          <Pressable style={styles.sheetBackdrop} onPress={closeSheet} />
+          <View
+            style={[
+              styles.sheetContainer,
+              {
+                /** 键盘打开时不再塞一条「安全区」底内边距，避免白底卡片里键盘与内容之间多出一条空带 */
+                paddingBottom: sheetKeyboardInset > 0 ? 0 : Math.max(16, insets.bottom),
+                maxHeight: sheetModalMaxHeight,
+                marginBottom: sheetKeyboardInset,
+                backgroundColor: surface,
+              },
+            ]}>
+            <View style={[styles.sheetHeader, { borderBottomColor: outlineVariant }]}>
+              <Pressable onPress={closeSheet} style={({ pressed }) => [styles.sheetCloseBtn, pressed && { opacity: 0.75 }]}>
+                <MaterialIcons name="close" size={24} color={subtle} />
+              </Pressable>
+              <Text style={[styles.sheetTitle, { color: text }]}>
+                {activeSheetTab === 'transfer' ? '财务转账' : activeSheetTab === 'sentence' ? '一句话记账' : '手动记账'}
+              </Text>
+              <View style={styles.sheetCloseBtn} />
+            </View>
+
+            <View style={[styles.sheetTabs, { borderBottomColor: outlineVariant }]}>
+              <Pressable onPress={() => resetSheetForm('sentence')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'sentence' ? { color: tertiary } : { color: subtle }]}>一句话</Text>
+                {activeSheetTab === 'sentence' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+              <Pressable onPress={() => resetSheetForm('expense')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'expense' ? { color: tertiary } : { color: subtle }]}>支出</Text>
+                {activeSheetTab === 'expense' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+              <Pressable onPress={() => resetSheetForm('income')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'income' ? { color: tertiary } : { color: subtle }]}>收入</Text>
+                {activeSheetTab === 'income' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+              <Pressable onPress={() => resetSheetForm('transfer')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'transfer' ? { color: tertiary } : { color: subtle }]}>转账</Text>
+                {activeSheetTab === 'transfer' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+            </View>
+
+            <ScrollView
+              style={[styles.sheetBodyScroll, { maxHeight: sheetModalBodyMaxHeight }]}
+              contentContainerStyle={
+                sheetKeyboardInset > 0
+                  ? [styles.sheetBodyScrollContent, styles.sheetBodyScrollContentKeyboardOpen]
+                  : styles.sheetBodyScrollContent
+              }
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+              nestedScrollEnabled
+              bounces>
+            {activeSheetTab === 'transfer' ? (
+              <>
+                <View style={styles.transferContent}>
+                  <View style={styles.transferAccountRow}>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsTimePickerVisible(false);
+                        setAccountPickerTarget('transferFrom');
+                        setIsAccountPickerVisible(true);
+                      }}
+                      style={({ pressed }) => [
+                        styles.transferAccountCard,
+                        { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
+                        pressed && { opacity: 0.88 },
+                      ]}>
+                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>扣款账户</Text>
+                      <View style={styles.transferAccountValueRow}>
+                        <MaterialIcons
+                          name={transferFromAccount ? accountIcon(transferFromAccount) : 'account-balance-wallet'}
+                          size={20}
+                          color={tertiary}
+                        />
+                        <Text style={[styles.transferAccountValue, { color: text }]} numberOfLines={1}>
+                          {transferFromAccount?.name ?? '选择账户'}
+                        </Text>
+                      </View>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="交换扣款与入账账户"
+                      onPress={() => {
+                        setTransferFromAccountId(transferToAccountId);
+                        setTransferToAccountId(transferFromAccountId);
+                      }}
+                      style={({ pressed }) => [styles.transferArrowWrap, pressed && { opacity: 0.75 }]}>
+                      <MaterialIcons name="swap-horiz" size={28} color={subtle} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsTimePickerVisible(false);
+                        setAccountPickerTarget('transferTo');
+                        setIsAccountPickerVisible(true);
+                      }}
+                      style={({ pressed }) => [
+                        styles.transferAccountCard,
+                        { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
+                        pressed && { opacity: 0.88 },
+                      ]}>
+                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>入账账户</Text>
+                      <View style={styles.transferAccountValueRow}>
+                        <MaterialIcons
+                          name={transferToAccount ? accountIcon(transferToAccount) : 'savings'}
+                          size={20}
+                          color={primary}
+                        />
+                        <Text style={[styles.transferAccountValue, { color: text }]} numberOfLines={1}>
+                          {transferToAccount?.name ?? '选择账户'}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  </View>
+
+                  {transferFromAccount && transferToAccount ? (
+                    transferFromAccount.id === transferToAccount.id ? (
+                      <Text style={[styles.transferHintText, { color: subtle }]}>请选择两个不同的账户。</Text>
+                    ) : transferFromAccount.sign_rule !== 1 || transferToAccount.sign_rule !== 1 ? (
+                      <Text style={[styles.transferHintText, { color: subtle }]}>
+                        转账目前仅在资产类账户之间可用。
+                      </Text>
+                    ) : null
+                  ) : null}
+
+                  <View style={styles.transferAmountWrap}>
+                    <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
+                    <Text style={[styles.transferAmountValue, { color: tertiary }]}>{amountDisplay}</Text>
+                  </View>
+
+                  <View style={styles.transferDateWrap}>
+                    <Pressable
+                      onPress={() => {
+                        setIsTimePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsDatePickerVisible((prev) => !prev);
+                      }}
+                      style={({ pressed }) => [styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }, pressed && { opacity: 0.85 }]}>
+                      <MaterialIcons name="calendar-today" size={14} color={subtle} />
+                      <Text style={[styles.transferDateText, { color: text }]}>{sheetDateLabel}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsTimePickerVisible((prev) => !prev);
+                      }}
+                      style={({ pressed }) => [styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }, pressed && { opacity: 0.85 }]}>
+                      <MaterialIcons name="schedule" size={14} color={subtle} />
+                      <Text style={[styles.transferDateText, { color: text }]}>{sheetTimeLabel}</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={[styles.sheetNoteRow, { marginTop: 4 }]}>
+                    <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                      <TextInput
+                        value={sheetNote}
+                        onChangeText={setSheetNote}
+                        multiline
+                        scrollEnabled
+                        textAlignVertical="top"
+                        style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent', minHeight: 56 }]}
+                        placeholder="备注（可选）"
+                        placeholderTextColor={subtle}
+                      />
+                    </View>
+                  </View>
+
+                  {isDatePickerVisible ? (
+                    <View style={[styles.nativePickerCard, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff', borderColor: outlineVariant }]}>
+                      <Text style={[styles.inlinePickerTitle, { color: text }]}>选择日期</Text>
+                      <View style={styles.inlinePickerActions}>
+                        <Pressable onPress={() => handleChangeSheetDate(-1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>前一天</Text>
+                        </Pressable>
+                        <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>今天</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetDate(1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>后一天</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : null}
+
+                  {isTimePickerVisible ? (
+                    <View style={[styles.nativePickerCard, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff', borderColor: outlineVariant }]}>
+                      <Text style={[styles.inlinePickerTitle, { color: text }]}>选择时间</Text>
+                      <View style={styles.inlinePickerActions}>
+                        <Pressable onPress={() => handleChangeSheetTime(-1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>-1 小时</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetTime(0, -10)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>-10 分钟</Text>
+                        </Pressable>
+                        <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>现在</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetTime(0, 10)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>+10 分钟</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetTime(1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>+1 小时</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={[styles.transferKeypadWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                  <View style={styles.transferKeypadInner}>
+                    <View style={styles.transferNumberGrid}>
+                      {['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '00'].map((key) => (
+                        <Pressable
+                          key={key}
+                          onPress={() => handleAmountKeyPress(key)}
+                          style={({ pressed }) => [
+                            styles.transferNumberBtn,
+                            { backgroundColor: surface, borderColor: outlineVariant },
+                            pressed && { opacity: 0.86 },
+                          ]}>
+                          <Text style={[styles.transferNumberText, { color: text }]}>{key}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    <View style={styles.transferActionCol}>
+                      <Pressable
+                        onPress={() => handleAmountKeyPress('backspace')}
+                        style={({ pressed }) => [
+                          styles.transferBackBtn,
+                          { backgroundColor: surface, borderColor: outlineVariant },
+                          pressed && { opacity: 0.86 },
+                        ]}>
+                        <MaterialIcons name="backspace" size={20} color={subtle} />
+                      </Pressable>
+                      <Pressable
+                        onPress={handleSaveTransaction}
+                        style={({ pressed }) => [styles.transferCheckBtn, { backgroundColor: canSaveTransaction ? tertiary : subtle }, pressed && { opacity: 0.9 }]}>
+                        <MaterialIcons name="check" size={30} color="#ffffff" />
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </>
+            ) : (
+              <>
+                {activeSheetTab !== 'sentence' ? (
+                <View style={styles.categoryGrid}>
+                  {activeCategories.map((item) => {
+                    const isSelected = selectedCategoryKey === item.key;
+                    return (
+                    <Pressable key={item.key} style={styles.categoryItem} onPress={() => setSelectedCategoryKey(item.key)}>
+                      <View style={[styles.categoryIconWrap, { backgroundColor: isSelected ? `${item.color}20` : outlineVariant, borderColor: isSelected ? item.color : 'transparent' }]}>
+                        <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={22} color={item.color} />
+                      </View>
+                      <Text style={[styles.categoryLabel, { color: isSelected ? item.color : subtle }]}>{item.label}</Text>
+                    </Pressable>
+                    );
+                  })}
+                </View>
+                ) : (
+                  <View style={styles.sentenceHintBox}>
+                    <Text style={[styles.sentenceHintText, { color: subtle }]}>
+                      写清事由与金额。例如：午饭 28、打车 15.5 元、工资到账 8000
+                    </Text>
+                    <View style={styles.sentenceAiMetaRow}>
+                      <MaterialIcons name="auto-awesome" size={16} color={zhipuTxnReady ? secondary : subtle} />
+                      <Text
+                        style={[
+                          styles.sentenceAiMetaText,
+                          { color: zhipuTxnReady ? secondary : subtle },
+                        ]}
+                        numberOfLines={2}>
+                        {zhipuTxnReady
+                          ? aiLlmProviderLabel === '豆包'
+                            ? '已配置豆包密钥：一句话将优先由 AI 解析，失败时回退本地规则。'
+                            : '已配置智谱密钥：一句话将优先由 AI（glm-4-flash）解析，失败时回退本地规则。'
+                          : aiLlmProviderLabel === '豆包'
+                            ? '未检测到豆包密钥：仅能用本地规则（需句中含阿拉伯数字金额）。在「我的」配置 EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）后启用 AI。'
+                            : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => router.push('/zhipu-api-test')}
+                      style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
+                      <Text style={[styles.sentenceZhipuDevLink, { color: tertiary }]}>
+                        智谱 API 调试页（验证密钥与请求）
+                      </Text>
+                    </Pressable>
+                  </View>
+                )}
+
+                <View style={[styles.sheetInputWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                  <View style={styles.sheetConfigRow}>
+                    <Pressable
+                      onPress={() => {
+                        setIsTimePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsDatePickerVisible((prev) => !prev);
+                      }}
+                      style={[styles.configChip, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                      <MaterialIcons name="calendar-today" size={16} color={subtle} />
+                      <Text style={[styles.configChipText, { color: text }]}>{sheetDateLabel}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsTimePickerVisible((prev) => !prev);
+                      }}
+                      style={({ pressed }) => [
+                        styles.configChip,
+                        { backgroundColor: surface, borderColor: outlineVariant },
+                        pressed ? { opacity: 0.8 } : null,
+                      ]}>
+                      <MaterialIcons name="schedule" size={16} color={subtle} />
+                      <Text style={[styles.configChipText, { color: text }]}>{sheetTimeLabel}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsTimePickerVisible(false);
+                        setIsAccountPickerVisible((prev) => {
+                          if (!prev) setAccountPickerTarget('sheet');
+                          return !prev;
+                        });
+                      }}
+                      style={({ pressed }) => [
+                        styles.configChip,
+                        { backgroundColor: surface, borderColor: outlineVariant },
+                        pressed ? { opacity: 0.8 } : null,
+                      ]}>
+                      <MaterialIcons name="account-balance-wallet" size={16} color={tertiary} />
+                      <Text style={[styles.configChipText, { color: text }]}>
+                        {selectedAccount?.name ?? '支付账户'}
+                      </Text>
+                      <MaterialIcons name="expand-more" size={16} color={subtle} />
+                    </Pressable>
+                  </View>
+
+                  {activeSheetTab === 'expense' || activeSheetTab === 'sentence' ? (
+                    <View
+                      style={[
+                        styles.sheetBudgetCard,
+                        { backgroundColor: surface, borderColor: outlineVariant },
+                      ]}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="计入本月预算"
+                        accessibilityState={{ checked: sheetIncludeInBudget }}
+                        onPress={() => setSheetIncludeInBudget((v) => !v)}
+                        style={({ pressed }) => [
+                          styles.sheetBudgetMainHit,
+                          pressed ? { opacity: 0.82 } : null,
+                        ]}>
+                        <View
+                          style={[
+                            styles.sheetBudgetIconWrap,
+                            {
+                              backgroundColor: isDark ? 'rgba(251, 191, 36, 0.14)' : 'rgba(130, 81, 0, 0.09)',
+                            },
+                          ]}>
+                          <MaterialIcons name="pie-chart" size={22} color={tertiary} />
+                        </View>
+                        <View style={styles.sheetBudgetTextCol}>
+                          <Text style={[styles.sheetBudgetTitle, { color: text }]}>计入本月预算</Text>
+                          <Text style={[styles.sheetBudgetSubtitle, { color: subtle }]} numberOfLines={2}>
+                            {sheetIncludeInBudget
+                              ? '占用本月预算与「今日可用」计算'
+                              : '仍记为支出，不参与预算与今日可用'}
+                          </Text>
+                        </View>
+                      </Pressable>
+                      <Switch
+                        value={sheetIncludeInBudget}
+                        onValueChange={setSheetIncludeInBudget}
+                        trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
+                        thumbColor="#ffffff"
+                        ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
+                      />
+                    </View>
+                  ) : null}
+
+                  {activeSheetTab === 'sentence' ? (
+                    <View style={styles.sheetSentenceBlock}>
+                      <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant, minHeight: 130 }]}>
+                        <TextInput
+                          value={sheetSentence}
+                          onChangeText={setSheetSentence}
+                          multiline
+                          scrollEnabled
+                          textAlignVertical="top"
+                          style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent', minHeight: 96 }]}
+                          placeholder="例如：咖啡 18、地铁 6、工资 12000"
+                          placeholderTextColor={subtle}
+                        />
+                      </View>
+                      {sentenceLedgerPreview?.kind === 'ok' ? (
+                        <View
+                          style={[
+                            styles.sentencePreviewCard,
+                            { backgroundColor: surface, borderColor: outlineVariant },
+                          ]}>
+                          <View
+                            style={[
+                              styles.sentencePreviewBadge,
+                              {
+                                backgroundColor:
+                                  sentenceLedgerPreview.source === 'ai'
+                                    ? isDark
+                                      ? 'rgba(52,211,153,0.18)'
+                                      : 'rgba(0,108,73,0.12)'
+                                    : isDark
+                                      ? 'rgba(148,163,184,0.2)'
+                                      : 'rgba(66,71,84,0.1)',
+                              },
+                            ]}>
+                            <Text
+                              style={[
+                                styles.sentencePreviewBadgeText,
+                                {
+                                  color: sentenceLedgerPreview.source === 'ai' ? secondary : subtle,
+                                },
+                              ]}>
+                              {sentenceLedgerPreview.source === 'ai' ? '智谱 AI 识别' : '本地规则'}
+                            </Text>
+                          </View>
+                          <Text style={[styles.sentencePreviewLine, { color: text }]}>
+                            {sentenceLedgerPreview.transaction_type === 'income' ? '收入' : '支出'} ·{' '}
+                            {formatCurrencyWithDecimals(sentenceLedgerPreview.amount)} · {sentenceLedgerPreview.name}
+                          </Text>
+                          <Text style={[styles.sentencePreviewLine, { color: subtle, fontWeight: '600' }]}>
+                            分类：{sentenceLedgerPreview.categoryLabel}
+                          </Text>
+                        </View>
+                      ) : sentenceLedgerPreview?.kind === 'error' ? (
+                        <View
+                          style={[
+                            styles.sentencePreviewCard,
+                            {
+                              backgroundColor: isDark ? 'rgba(220,38,38,0.12)' : 'rgba(254,226,226,0.9)',
+                              borderColor: isDark ? 'rgba(248,113,113,0.35)' : 'rgba(252,165,165,0.8)',
+                            },
+                          ]}>
+                          <Text style={[styles.sentencePreviewErr, { color: isDark ? '#fecaca' : '#991b1b' }]}>
+                            {sentenceLedgerPreview.message}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <View style={styles.sentenceActionsRow}>
+                        <Pressable
+                          onPress={() => void handleSentenceLedgerPreview()}
+                          disabled={!canSaveSentence}
+                          style={({ pressed }) => [
+                            styles.sheetSentencePreviewBtn,
+                            {
+                              borderColor: outlineVariant,
+                              backgroundColor: isDark ? '#161d2b' : '#f2f3ff',
+                              opacity: !canSaveSentence ? 0.55 : pressed ? 0.88 : 1,
+                            },
+                          ]}>
+                          {isSentencePreviewBusy ? (
+                            <ActivityIndicator color={tertiary} />
+                          ) : (
+                            <Text style={[styles.sheetSentencePreviewBtnText, { color: tertiary }]}>AI 识别预览</Text>
+                          )}
+                        </Pressable>
+                        <Pressable
+                          onPress={() => void handleSaveTransaction()}
+                          disabled={!canSaveSentence}
+                          style={({ pressed }) => [
+                            styles.sheetSentenceSubmit,
+                            styles.sheetSentenceSubmitFlex,
+                            { backgroundColor: canSaveSentence ? tertiary : subtle },
+                            pressed && canSaveSentence && { opacity: 0.9 },
+                          ]}>
+                          {isParsingSentence ? (
+                            <ActivityIndicator color="#fff" />
+                          ) : (
+                            <Text style={styles.sheetSentenceSubmitText}>记账</Text>
+                          )}
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : (
+                    <>
+                  <View style={styles.sheetNoteRow}>
+                    <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                      <TextInput
+                        value={sheetNote}
+                        onChangeText={setSheetNote}
+                        multiline
+                        scrollEnabled
+                        textAlignVertical="top"
+                        style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent' }]}
+                        placeholder="添加备注..."
+                        placeholderTextColor={subtle}
+                      />
+                    </View>
+                  </View>
+
+                  {sheetImageUris.length ? (
+                    <View style={styles.attachmentPreview}>
+                      <Text style={[styles.attachmentPreviewText, { color: subtle }]}>已添加图片</Text>
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.attachmentThumbRow}>
+                        {sheetImageUris.map((uri, idx) => (
+                          <View key={`${uri}-${idx}`} style={styles.attachmentThumbWrap}>
+                            <Image source={{ uri }} style={styles.attachmentThumb} />
+                            <Pressable
+                              onPress={() => setSheetImageUris((prev) => prev.filter((_, i) => i !== idx))}
+                              style={({ pressed }) => [styles.attachmentRemoveBtn, pressed && { opacity: 0.85 }]}>
+                              <MaterialIcons name="close" size={14} color="#fff" />
+                            </Pressable>
+                          </View>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  ) : null}
+                    </>
+                  )}
+
+                  <Modal visible={isDatePickerVisible} transparent animationType="fade" onRequestClose={() => setIsDatePickerVisible(false)}>
+                    <View style={styles.pickerModalOverlay}>
+                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsDatePickerVisible(false)} />
+                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
+                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择日期</Text>
+                          <Pressable onPress={() => setIsDatePickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                            <MaterialIcons name="close" size={22} color={subtle} />
+                          </Pressable>
+                        </View>
+                        <View style={styles.pickerModalBody}>
+                          <DateTimePicker
+                            value={selectedHappenedAt}
+                            mode="date"
+                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                            locale="zh-CN"
+                            themeVariant={isDark ? 'dark' : 'light'}
+                            onChange={handleDatePickerChange}
+                            style={styles.nativePicker}
+                          />
+                          <View style={styles.pickerModalFooter}>
+                            <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                              <Text style={[styles.pickerModalActionText, { color: text }]}>今天</Text>
+                            </Pressable>
+                            <Pressable onPress={() => setIsDatePickerVisible(false)} style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
+                              <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+                  </Modal>
+
+                  <Modal visible={isTimePickerVisible} transparent animationType="fade" onRequestClose={() => setIsTimePickerVisible(false)}>
+                    <View style={styles.pickerModalOverlay}>
+                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsTimePickerVisible(false)} />
+                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
+                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择时间</Text>
+                          <Pressable onPress={() => setIsTimePickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                            <MaterialIcons name="close" size={22} color={subtle} />
+                          </Pressable>
+                        </View>
+                        <View style={styles.pickerModalBody}>
+                          <DateTimePicker
+                            value={selectedHappenedAt}
+                            mode="time"
+                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                            locale="zh-CN"
+                            themeVariant={isDark ? 'dark' : 'light'}
+                            onChange={handleTimePickerChange}
+                            style={styles.nativePicker}
+                          />
+                          <View style={styles.pickerModalFooter}>
+                            <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                              <Text style={[styles.pickerModalActionText, { color: text }]}>现在</Text>
+                            </Pressable>
+                            <Pressable onPress={() => setIsTimePickerVisible(false)} style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
+                              <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+                  </Modal>
+
+                  {activeSheetTab !== 'sentence' ? (
+                    <>
+                  <View style={styles.amountPreview}>
+                    <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
+                    <Text style={[styles.amountValue, { color: tertiary }]}>{amountDisplay}</Text>
+                  </View>
+
+                  <View style={styles.keypad}>
+                    {keypadRows.flat().map((key, idx) => {
+                      const isDone = key === 'done';
+                      const isBackspace = key === 'backspace';
+                      const showLabel = isBackspace ? 'backspace' : isDone ? '完成' : key;
+                      return (
+                        <Pressable
+                          key={`${key}-${idx}`}
+                          onPress={() => (isDone ? handleSaveTransaction() : handleAmountKeyPress(key))}
+                          style={({ pressed }) => [
+                            styles.keypadBtn,
+                            isDone
+                              ? [styles.keypadDoneBtn, { backgroundColor: canSaveTransaction ? tertiary : subtle }]
+                              : [styles.keypadNormalBtn, { backgroundColor: surface, borderColor: outlineVariant }],
+                            key === '0' && idx === 12 ? styles.keypadWideBtn : null,
+                            pressed && { opacity: 0.86 },
+                          ]}>
+                          {isBackspace ? (
+                            <MaterialIcons name="backspace" size={20} color={subtle} />
+                          ) : (
+                            <Text style={isDone ? styles.keypadDoneText : [styles.keypadText, { color: text }]}>{showLabel}</Text>
+                          )}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                    </>
+                  ) : null}
+                </View>
+              </>
+            )}
+            </ScrollView>
+
+            <Modal
+              visible={isAccountPickerVisible}
+              transparent
+              animationType="fade"
+              onRequestClose={() => {
+                setIsAccountPickerVisible(false);
+                setAccountPickerTarget('sheet');
+              }}>
+              <View style={styles.pickerModalOverlay}>
+                <Pressable
+                  style={styles.pickerModalBackdrop}
+                  onPress={() => {
+                    setIsAccountPickerVisible(false);
+                    setAccountPickerTarget('sheet');
+                  }}
+                />
+                <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
+                  <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                    <Text style={[styles.pickerModalTitle, { color: text }]}>
+                      {accountPickerTarget === 'transferFrom'
+                        ? '选择扣款账户'
+                        : accountPickerTarget === 'transferTo'
+                          ? '选择入账账户'
+                          : '选择账户'}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        setIsAccountPickerVisible(false);
+                        setAccountPickerTarget('sheet');
+                      }}
+                      style={styles.pickerModalCloseBtn}>
+                      <MaterialIcons name="close" size={22} color={subtle} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.pickerModalBody}>
+                    <ScrollView style={styles.accountPickerScroll} contentContainerStyle={styles.accountPickerList} showsVerticalScrollIndicator={false}>
+                      {financeAccounts.map((account) => {
+                        const selected =
+                          accountPickerTarget === 'transferFrom'
+                            ? account.id === transferFromAccountId
+                            : accountPickerTarget === 'transferTo'
+                              ? account.id === transferToAccountId
+                              : account.id === selectedAccount?.id;
+                        const transferPickBlocked =
+                          (accountPickerTarget === 'transferFrom' && account.id === transferToAccountId) ||
+                          (accountPickerTarget === 'transferTo' && account.id === transferFromAccountId);
+                        return (
+                          <Pressable
+                            key={account.id}
+                            disabled={transferPickBlocked}
+                            onPress={() => handleSelectAccount(account.id)}
+                            style={({ pressed }) => [
+                              styles.accountPickerItem,
+                              {
+                                backgroundColor: selected ? `${tertiary}18` : isDark ? '#161d2b' : '#f2f3ff',
+                                borderColor: selected ? tertiary : outlineVariant,
+                              },
+                              transferPickBlocked ? { opacity: 0.45 } : null,
+                              pressed && !transferPickBlocked ? { opacity: 0.84 } : null,
+                            ]}>
+                            <MaterialIcons name={accountIcon(account)} size={18} color={selected ? tertiary : subtle} />
+                            <View style={styles.accountPickerTextCol}>
+                              <Text style={[styles.accountPickerName, { color: text }]}>{account.name}</Text>
+                              <Text style={[styles.accountPickerBalance, { color: subtle }]}>{formatCurrencyBalanceForAccount(account)}</Text>
+                            </View>
+                            {selected ? <MaterialIcons name="check" size={18} color={tertiary} /> : null}
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+          </View>
+        </View>
+      </Modal>

@@ -13,11 +13,10 @@ import {
 import { getLastFullGithubBackupAtIso } from '@/lib/github-full-backup-local-meta';
 import { triggerGithubCloudRestoreFromFullBackup } from '@/lib/github-cloud-restore';
 import { triggerGithubCloudSync } from '@/lib/github-cloud-sync';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import {
   DEFAULT_TASKS_DAY_BOUNDARY,
   formatTasksDayBoundaryLabel,
-  loadTasksDayBoundary,
-  saveTasksDayBoundary,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import type { ThemePreference } from '@/lib/theme-preference';
@@ -70,7 +69,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const sectionOffsets = useRef<Partial<Record<SettingsSection, number>>>({});
   const pendingScroll = useRef(initialSection);
 
-  const [dayBoundary, setDayBoundary] = useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
+  const { boundary: dayBoundary, setBoundary: persistDayBoundary } = useDayBoundary();
   const [draftBoundary, setDraftBoundary] = useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
   const [dayBoundaryPickerVisible, setDayBoundaryPickerVisible] = useState(false);
 
@@ -100,10 +99,10 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   }, []);
 
   useEffect(() => {
-    void loadTasksDayBoundary().then(b => {
-      setDayBoundary(b);
-      setDraftBoundary(b);
-    });
+    setDraftBoundary(dayBoundary);
+  }, [dayBoundary]);
+
+  useEffect(() => {
     void loadLastFullGithubBackupMeta();
     void loadAiLlmProviderPreference().then(() => setAiLlmProvider(getPreferredAiLlmProviderSync()));
   }, [loadLastFullGithubBackupMeta]);
@@ -248,13 +247,12 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
   const saveDayBoundary = useCallback(async () => {
     try {
-      await saveTasksDayBoundary(draftBoundary);
-      setDayBoundary(draftBoundary);
+      await persistDayBoundary(draftBoundary);
       setDayBoundaryPickerVisible(false);
     } catch {
       Alert.alert('保存失败', '未能保存日界设置，请稍后重试。');
     }
-  }, [draftBoundary]);
+  }, [draftBoundary, persistDayBoundary]);
 
   const onNightModeSwitch = useCallback(
     (enabled: boolean) => {
@@ -340,10 +338,11 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         <View
           onLayout={ev => onSectionLayout('dayBoundary', ev.nativeEvent.layout.y)}
           style={styles.section}>
-          {renderSectionHead('DAY BOUNDARY', '每日完成日界')}
+          {renderSectionHead('DAY BOUNDARY', '应用日界')}
           <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 10 }]}>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 19 }]}>
-              习惯打卡、今日青蛙与热力图等统计以此时间为新一天的起点（默认 00:00）。
+              全应用以此时间为新一天的起点：任务与习惯、记账「今日」、首页摄入统计、热力图与 AI 日更等（默认
+              00:00）。每月预算周期仍可在记账页单独设置「预算刷新日」。
             </Text>
             <Pressable
               onPress={() => {
@@ -523,7 +522,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         <View style={styles.modalRoot}>
           <Pressable style={styles.modalBackdrop} onPress={() => setDayBoundaryPickerVisible(false)} />
           <View style={[styles.modalCard, { backgroundColor: cardBg }]}>
-            <Text style={[styles.sectionTitle, { color: text }]}>每日完成日界</Text>
+            <Text style={[styles.sectionTitle, { color: text }]}>应用日界</Text>
             <DateTimePicker
               value={new Date(2000, 0, 1, draftBoundary.hour, draftBoundary.minute)}
               mode="time"

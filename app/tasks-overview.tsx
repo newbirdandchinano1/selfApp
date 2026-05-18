@@ -1,4 +1,5 @@
 import { Colors } from '@/constants/theme';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { getTasksForOverviewList } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
@@ -187,6 +188,7 @@ export default function TasksOverviewScreen() {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme === 'dark' ? 'dark' : 'light'];
   const isDark = colorScheme === 'dark';
+  const { logicalTodayYmd } = useDayBoundary();
 
   const [counts, setCounts] = React.useState<Awaited<ReturnType<typeof getTaskGlobalInsightCounts>> | null>(null);
   const [events, setEvents] = React.useState<Awaited<ReturnType<typeof getRecentTaskExecutionEvents>>>([]);
@@ -219,7 +221,7 @@ export default function TasksOverviewScreen() {
   }, [heatmapLayoutW, approxCardInner]);
 
   const loadOverview = React.useCallback(async (weeks: number) => {
-    const { startYmd, endYmd } = heatmapGridDayRange(weeks);
+    const { startYmd, endYmd } = heatmapGridDayRange(weeks, logicalTodayYmd);
     const [c, ev, dayMap, firstDay] = await Promise.all([
       getTaskGlobalInsightCounts(),
       getRecentTaskExecutionEvents(120),
@@ -230,14 +232,14 @@ export default function TasksOverviewScreen() {
     for (const v of dayMap.values()) {
       if (v > maxC) maxC = v;
     }
-    const grid = buildGlobalTaskHeatmapGrid(weeks, dayMap, firstDay);
+    const grid = buildGlobalTaskHeatmapGrid(weeks, dayMap, firstDay, logicalTodayYmd);
     setHeatWeeks(weeks);
     setCounts(c);
     setEvents(ev);
     setHeatmapGrid(grid);
     setHeatMax(maxC);
     setMinDataYmd(firstDay);
-  }, []);
+  }, [logicalTodayYmd]);
 
   useFocusEffect(
     React.useCallback(() => {

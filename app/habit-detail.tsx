@@ -475,7 +475,7 @@ export default function HabitDetailScreen() {
             {dailyGoal != null ? ` / 日上限 ${dailyGoal}` : ''}
           </Text>
           {focusYmd >= logicalTodayYmd ? (
-            <Text style={styles.makeUpSub}>补卡、取消补卡仅针对「逻辑日」之前的日期（与任务页日界一致）。</Text>
+            <Text style={styles.makeUpSub}>补卡、取消补卡仅针对「逻辑日」之前的日期（与应用日界设置一致）。</Text>
           ) : null}
           <View style={styles.makeUpBtnRow}>
             <Pressable

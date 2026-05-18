@@ -1,0 +1,801 @@
+import type { FinanceTransactionSheetController } from '@/hooks/use-finance-transaction-sheet-controller';
+import { MaterialIcons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import React from 'react';
+import {
+  ActivityIndicator,
+  Image,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+
+export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetController }) {
+
+  const {
+    styles,
+    insets,
+    isDark,
+    surface,
+    text,
+    subtle,
+    outlineVariant,
+    tertiary,
+    primary,
+    secondary,
+    router,
+    closeSheet,
+    sheetKeyboardInset,
+    sheetModalMaxHeight,
+    sheetModalBodyMaxHeight,
+    activeSheetTab,
+    resetSheetForm,
+    transferFromAccount,
+    transferToAccount,
+    transferFromAccountId,
+    transferToAccountId,
+    setTransferFromAccountId,
+    setTransferToAccountId,
+    setIsDatePickerVisible,
+    setIsTimePickerVisible,
+    setIsAccountPickerVisible,
+    setAccountPickerTarget,
+    accountIcon,
+    amountDisplay,
+    sheetDateLabel,
+    sheetTimeLabel,
+    sheetNote,
+    setSheetNote,
+    isDatePickerVisible,
+    isTimePickerVisible,
+    selectedHappenedAt,
+    handleChangeSheetDate,
+    handleChangeSheetTime,
+    handleAmountKeyPress,
+    handleSaveTransaction,
+    canSaveTransaction,
+    activeCategories,
+    selectedCategoryKey,
+    setSelectedCategoryKey,
+    zhipuTxnReady,
+    aiLlmProviderLabel,
+    sheetSentence,
+    setSheetSentence,
+    sentenceLedgerPreview,
+    isSentencePreviewBusy,
+    handleSentenceLedgerPreview,
+    canSaveSentence,
+    isParsingSentence,
+    sheetIncludeInBudget,
+    setSheetIncludeInBudget,
+    selectedAccount,
+    sheetImageUris,
+    setSheetImageUris,
+    formatCurrencyWithDecimals,
+    handleDatePickerChange,
+    handleTimePickerChange,
+    isAccountPickerVisible,
+    accountPickerTarget,
+    financeAccounts,
+    handleSelectAccount,
+    formatCurrencyBalanceForAccount,
+    keypadRows,
+    setSelectedHappenedAt,
+  } = c;
+
+  return (
+        <View style={styles.sheetOverlay}>
+          <Pressable style={styles.sheetBackdrop} onPress={closeSheet} />
+          <View
+            style={[
+              styles.sheetContainer,
+              {
+                /** 键盘打开时不再塞一条「安全区」底内边距，避免白底卡片里键盘与内容之间多出一条空带 */
+                paddingBottom: sheetKeyboardInset > 0 ? 0 : Math.max(16, insets.bottom),
+                maxHeight: sheetModalMaxHeight,
+                marginBottom: sheetKeyboardInset,
+                backgroundColor: surface,
+              },
+            ]}>
+            <View style={[styles.sheetHeader, { borderBottomColor: outlineVariant }]}>
+              <Pressable onPress={closeSheet} style={({ pressed }) => [styles.sheetCloseBtn, pressed && { opacity: 0.75 }]}>
+                <MaterialIcons name="close" size={24} color={subtle} />
+              </Pressable>
+              <Text style={[styles.sheetTitle, { color: text }]}>
+                {activeSheetTab === 'transfer' ? '财务转账' : activeSheetTab === 'sentence' ? '一句话记账' : '手动记账'}
+              </Text>
+              <View style={styles.sheetCloseBtn} />
+            </View>
+
+            <View style={[styles.sheetTabs, { borderBottomColor: outlineVariant }]}>
+              <Pressable onPress={() => resetSheetForm('sentence')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'sentence' ? { color: tertiary } : { color: subtle }]}>一句话</Text>
+                {activeSheetTab === 'sentence' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+              <Pressable onPress={() => resetSheetForm('expense')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'expense' ? { color: tertiary } : { color: subtle }]}>支出</Text>
+                {activeSheetTab === 'expense' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+              <Pressable onPress={() => resetSheetForm('income')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'income' ? { color: tertiary } : { color: subtle }]}>收入</Text>
+                {activeSheetTab === 'income' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+              <Pressable onPress={() => resetSheetForm('transfer')} style={styles.sheetTabBtn}>
+                <Text style={[styles.sheetTabText, activeSheetTab === 'transfer' ? { color: tertiary } : { color: subtle }]}>转账</Text>
+                {activeSheetTab === 'transfer' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+              </Pressable>
+            </View>
+
+            <ScrollView
+              style={[styles.sheetBodyScroll, { maxHeight: sheetModalBodyMaxHeight }]}
+              contentContainerStyle={
+                sheetKeyboardInset > 0
+                  ? [styles.sheetBodyScrollContent, styles.sheetBodyScrollContentKeyboardOpen]
+                  : styles.sheetBodyScrollContent
+              }
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+              nestedScrollEnabled
+              bounces>
+            {activeSheetTab === 'transfer' ? (
+              <>
+                <View style={styles.transferContent}>
+                  <View style={styles.transferAccountRow}>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsTimePickerVisible(false);
+                        setAccountPickerTarget('transferFrom');
+                        setIsAccountPickerVisible(true);
+                      }}
+                      style={({ pressed }) => [
+                        styles.transferAccountCard,
+                        { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
+                        pressed && { opacity: 0.88 },
+                      ]}>
+                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>扣款账户</Text>
+                      <View style={styles.transferAccountValueRow}>
+                        <MaterialIcons
+                          name={transferFromAccount ? accountIcon(transferFromAccount) : 'account-balance-wallet'}
+                          size={20}
+                          color={tertiary}
+                        />
+                        <Text style={[styles.transferAccountValue, { color: text }]} numberOfLines={1}>
+                          {transferFromAccount?.name ?? '选择账户'}
+                        </Text>
+                      </View>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="交换扣款与入账账户"
+                      onPress={() => {
+                        setTransferFromAccountId(transferToAccountId);
+                        setTransferToAccountId(transferFromAccountId);
+                      }}
+                      style={({ pressed }) => [styles.transferArrowWrap, pressed && { opacity: 0.75 }]}>
+                      <MaterialIcons name="swap-horiz" size={28} color={subtle} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsTimePickerVisible(false);
+                        setAccountPickerTarget('transferTo');
+                        setIsAccountPickerVisible(true);
+                      }}
+                      style={({ pressed }) => [
+                        styles.transferAccountCard,
+                        { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
+                        pressed && { opacity: 0.88 },
+                      ]}>
+                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>入账账户</Text>
+                      <View style={styles.transferAccountValueRow}>
+                        <MaterialIcons
+                          name={transferToAccount ? accountIcon(transferToAccount) : 'savings'}
+                          size={20}
+                          color={primary}
+                        />
+                        <Text style={[styles.transferAccountValue, { color: text }]} numberOfLines={1}>
+                          {transferToAccount?.name ?? '选择账户'}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  </View>
+
+                  {transferFromAccount && transferToAccount ? (
+                    transferFromAccount.id === transferToAccount.id ? (
+                      <Text style={[styles.transferHintText, { color: subtle }]}>请选择两个不同的账户。</Text>
+                    ) : transferFromAccount.sign_rule !== 1 || transferToAccount.sign_rule !== 1 ? (
+                      <Text style={[styles.transferHintText, { color: subtle }]}>
+                        转账目前仅在资产类账户之间可用。
+                      </Text>
+                    ) : null
+                  ) : null}
+
+                  <View style={styles.transferAmountWrap}>
+                    <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
+                    <Text style={[styles.transferAmountValue, { color: tertiary }]}>{amountDisplay}</Text>
+                  </View>
+
+                  <View style={styles.transferDateWrap}>
+                    <Pressable
+                      onPress={() => {
+                        setIsTimePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsDatePickerVisible((prev) => !prev);
+                      }}
+                      style={({ pressed }) => [styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }, pressed && { opacity: 0.85 }]}>
+                      <MaterialIcons name="calendar-today" size={14} color={subtle} />
+                      <Text style={[styles.transferDateText, { color: text }]}>{sheetDateLabel}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsTimePickerVisible((prev) => !prev);
+                      }}
+                      style={({ pressed }) => [styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }, pressed && { opacity: 0.85 }]}>
+                      <MaterialIcons name="schedule" size={14} color={subtle} />
+                      <Text style={[styles.transferDateText, { color: text }]}>{sheetTimeLabel}</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={[styles.sheetNoteRow, { marginTop: 4 }]}>
+                    <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                      <TextInput
+                        value={sheetNote}
+                        onChangeText={setSheetNote}
+                        multiline
+                        scrollEnabled
+                        textAlignVertical="top"
+                        style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent', minHeight: 56 }]}
+                        placeholder="备注（可选）"
+                        placeholderTextColor={subtle}
+                      />
+                    </View>
+                  </View>
+
+                  {isDatePickerVisible ? (
+                    <View style={[styles.nativePickerCard, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff', borderColor: outlineVariant }]}>
+                      <Text style={[styles.inlinePickerTitle, { color: text }]}>选择日期</Text>
+                      <View style={styles.inlinePickerActions}>
+                        <Pressable onPress={() => handleChangeSheetDate(-1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>前一天</Text>
+                        </Pressable>
+                        <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>今天</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetDate(1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>后一天</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : null}
+
+                  {isTimePickerVisible ? (
+                    <View style={[styles.nativePickerCard, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff', borderColor: outlineVariant }]}>
+                      <Text style={[styles.inlinePickerTitle, { color: text }]}>选择时间</Text>
+                      <View style={styles.inlinePickerActions}>
+                        <Pressable onPress={() => handleChangeSheetTime(-1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>-1 小时</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetTime(0, -10)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>-10 分钟</Text>
+                        </Pressable>
+                        <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>现在</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetTime(0, 10)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>+10 分钟</Text>
+                        </Pressable>
+                        <Pressable onPress={() => handleChangeSheetTime(1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>+1 小时</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={[styles.transferKeypadWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                  <View style={styles.transferKeypadInner}>
+                    <View style={styles.transferNumberGrid}>
+                      {['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '00'].map((key) => (
+                        <Pressable
+                          key={key}
+                          onPress={() => handleAmountKeyPress(key)}
+                          style={({ pressed }) => [
+                            styles.transferNumberBtn,
+                            { backgroundColor: surface, borderColor: outlineVariant },
+                            pressed && { opacity: 0.86 },
+                          ]}>
+                          <Text style={[styles.transferNumberText, { color: text }]}>{key}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    <View style={styles.transferActionCol}>
+                      <Pressable
+                        onPress={() => handleAmountKeyPress('backspace')}
+                        style={({ pressed }) => [
+                          styles.transferBackBtn,
+                          { backgroundColor: surface, borderColor: outlineVariant },
+                          pressed && { opacity: 0.86 },
+                        ]}>
+                        <MaterialIcons name="backspace" size={20} color={subtle} />
+                      </Pressable>
+                      <Pressable
+                        onPress={handleSaveTransaction}
+                        style={({ pressed }) => [styles.transferCheckBtn, { backgroundColor: canSaveTransaction ? tertiary : subtle }, pressed && { opacity: 0.9 }]}>
+                        <MaterialIcons name="check" size={30} color="#ffffff" />
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </>
+            ) : (
+              <>
+                {activeSheetTab !== 'sentence' ? (
+                <View style={styles.categoryGrid}>
+                  {activeCategories.map((item) => {
+                    const isSelected = selectedCategoryKey === item.key;
+                    return (
+                    <Pressable key={item.key} style={styles.categoryItem} onPress={() => setSelectedCategoryKey(item.key)}>
+                      <View style={[styles.categoryIconWrap, { backgroundColor: isSelected ? `${item.color}20` : outlineVariant, borderColor: isSelected ? item.color : 'transparent' }]}>
+                        <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={22} color={item.color} />
+                      </View>
+                      <Text style={[styles.categoryLabel, { color: isSelected ? item.color : subtle }]}>{item.label}</Text>
+                    </Pressable>
+                    );
+                  })}
+                </View>
+                ) : (
+                  <View style={styles.sentenceHintBox}>
+                    <Text style={[styles.sentenceHintText, { color: subtle }]}>
+                      写清事由与金额。例如：午饭 28、打车 15.5 元、工资到账 8000
+                    </Text>
+                    <View style={styles.sentenceAiMetaRow}>
+                      <MaterialIcons name="auto-awesome" size={16} color={zhipuTxnReady ? secondary : subtle} />
+                      <Text
+                        style={[
+                          styles.sentenceAiMetaText,
+                          { color: zhipuTxnReady ? secondary : subtle },
+                        ]}
+                        numberOfLines={2}>
+                        {zhipuTxnReady
+                          ? aiLlmProviderLabel === '豆包'
+                            ? '已配置豆包密钥：一句话将优先由 AI 解析，失败时回退本地规则。'
+                            : '已配置智谱密钥：一句话将优先由 AI（glm-4-flash）解析，失败时回退本地规则。'
+                          : aiLlmProviderLabel === '豆包'
+                            ? '未检测到豆包密钥：仅能用本地规则（需句中含阿拉伯数字金额）。在「我的」配置 EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）后启用 AI。'
+                            : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => router.push('/zhipu-api-test')}
+                      style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
+                      <Text style={[styles.sentenceZhipuDevLink, { color: tertiary }]}>
+                        智谱 API 调试页（验证密钥与请求）
+                      </Text>
+                    </Pressable>
+                  </View>
+                )}
+
+                <View style={[styles.sheetInputWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                  <View style={styles.sheetConfigRow}>
+                    <Pressable
+                      onPress={() => {
+                        setIsTimePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsDatePickerVisible((prev) => !prev);
+                      }}
+                      style={[styles.configChip, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                      <MaterialIcons name="calendar-today" size={16} color={subtle} />
+                      <Text style={[styles.configChipText, { color: text }]}>{sheetDateLabel}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsAccountPickerVisible(false);
+                        setIsTimePickerVisible((prev) => !prev);
+                      }}
+                      style={({ pressed }) => [
+                        styles.configChip,
+                        { backgroundColor: surface, borderColor: outlineVariant },
+                        pressed ? { opacity: 0.8 } : null,
+                      ]}>
+                      <MaterialIcons name="schedule" size={16} color={subtle} />
+                      <Text style={[styles.configChipText, { color: text }]}>{sheetTimeLabel}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsDatePickerVisible(false);
+                        setIsTimePickerVisible(false);
+                        setIsAccountPickerVisible((prev) => {
+                          if (!prev) setAccountPickerTarget('sheet');
+                          return !prev;
+                        });
+                      }}
+                      style={({ pressed }) => [
+                        styles.configChip,
+                        { backgroundColor: surface, borderColor: outlineVariant },
+                        pressed ? { opacity: 0.8 } : null,
+                      ]}>
+                      <MaterialIcons name="account-balance-wallet" size={16} color={tertiary} />
+                      <Text style={[styles.configChipText, { color: text }]}>
+                        {selectedAccount?.name ?? '支付账户'}
+                      </Text>
+                      <MaterialIcons name="expand-more" size={16} color={subtle} />
+                    </Pressable>
+                  </View>
+
+                  {activeSheetTab === 'expense' || activeSheetTab === 'sentence' ? (
+                    <View
+                      style={[
+                        styles.sheetBudgetCard,
+                        { backgroundColor: surface, borderColor: outlineVariant },
+                      ]}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="计入本月预算"
+                        accessibilityState={{ checked: sheetIncludeInBudget }}
+                        onPress={() => setSheetIncludeInBudget((v) => !v)}
+                        style={({ pressed }) => [
+                          styles.sheetBudgetMainHit,
+                          pressed ? { opacity: 0.82 } : null,
+                        ]}>
+                        <View
+                          style={[
+                            styles.sheetBudgetIconWrap,
+                            {
+                              backgroundColor: isDark ? 'rgba(251, 191, 36, 0.14)' : 'rgba(130, 81, 0, 0.09)',
+                            },
+                          ]}>
+                          <MaterialIcons name="pie-chart" size={22} color={tertiary} />
+                        </View>
+                        <View style={styles.sheetBudgetTextCol}>
+                          <Text style={[styles.sheetBudgetTitle, { color: text }]}>计入本月预算</Text>
+                          <Text style={[styles.sheetBudgetSubtitle, { color: subtle }]} numberOfLines={2}>
+                            {sheetIncludeInBudget
+                              ? '占用本月预算与「今日可用」计算'
+                              : '仍记为支出，不参与预算与今日可用'}
+                          </Text>
+                        </View>
+                      </Pressable>
+                      <Switch
+                        value={sheetIncludeInBudget}
+                        onValueChange={setSheetIncludeInBudget}
+                        trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
+                        thumbColor="#ffffff"
+                        ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
+                      />
+                    </View>
+                  ) : null}
+
+                  {activeSheetTab === 'sentence' ? (
+                    <View style={styles.sheetSentenceBlock}>
+                      <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant, minHeight: 130 }]}>
+                        <TextInput
+                          value={sheetSentence}
+                          onChangeText={setSheetSentence}
+                          multiline
+                          scrollEnabled
+                          textAlignVertical="top"
+                          style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent', minHeight: 96 }]}
+                          placeholder="例如：咖啡 18、地铁 6、工资 12000"
+                          placeholderTextColor={subtle}
+                        />
+                      </View>
+                      {sentenceLedgerPreview?.kind === 'ok' ? (
+                        <View
+                          style={[
+                            styles.sentencePreviewCard,
+                            { backgroundColor: surface, borderColor: outlineVariant },
+                          ]}>
+                          <View
+                            style={[
+                              styles.sentencePreviewBadge,
+                              {
+                                backgroundColor:
+                                  sentenceLedgerPreview.source === 'ai'
+                                    ? isDark
+                                      ? 'rgba(52,211,153,0.18)'
+                                      : 'rgba(0,108,73,0.12)'
+                                    : isDark
+                                      ? 'rgba(148,163,184,0.2)'
+                                      : 'rgba(66,71,84,0.1)',
+                              },
+                            ]}>
+                            <Text
+                              style={[
+                                styles.sentencePreviewBadgeText,
+                                {
+                                  color: sentenceLedgerPreview.source === 'ai' ? secondary : subtle,
+                                },
+                              ]}>
+                              {sentenceLedgerPreview.source === 'ai' ? '智谱 AI 识别' : '本地规则'}
+                            </Text>
+                          </View>
+                          <Text style={[styles.sentencePreviewLine, { color: text }]}>
+                            {sentenceLedgerPreview.transaction_type === 'income' ? '收入' : '支出'} ·{' '}
+                            {formatCurrencyWithDecimals(sentenceLedgerPreview.amount)} · {sentenceLedgerPreview.name}
+                          </Text>
+                          <Text style={[styles.sentencePreviewLine, { color: subtle, fontWeight: '600' }]}>
+                            分类：{sentenceLedgerPreview.categoryLabel}
+                          </Text>
+                        </View>
+                      ) : sentenceLedgerPreview?.kind === 'error' ? (
+                        <View
+                          style={[
+                            styles.sentencePreviewCard,
+                            {
+                              backgroundColor: isDark ? 'rgba(220,38,38,0.12)' : 'rgba(254,226,226,0.9)',
+                              borderColor: isDark ? 'rgba(248,113,113,0.35)' : 'rgba(252,165,165,0.8)',
+                            },
+                          ]}>
+                          <Text style={[styles.sentencePreviewErr, { color: isDark ? '#fecaca' : '#991b1b' }]}>
+                            {sentenceLedgerPreview.message}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <View style={styles.sentenceActionsRow}>
+                        <Pressable
+                          onPress={() => void handleSentenceLedgerPreview()}
+                          disabled={!canSaveSentence}
+                          style={({ pressed }) => [
+                            styles.sheetSentencePreviewBtn,
+                            {
+                              borderColor: outlineVariant,
+                              backgroundColor: isDark ? '#161d2b' : '#f2f3ff',
+                              opacity: !canSaveSentence ? 0.55 : pressed ? 0.88 : 1,
+                            },
+                          ]}>
+                          {isSentencePreviewBusy ? (
+                            <ActivityIndicator color={tertiary} />
+                          ) : (
+                            <Text style={[styles.sheetSentencePreviewBtnText, { color: tertiary }]}>AI 识别预览</Text>
+                          )}
+                        </Pressable>
+                        <Pressable
+                          onPress={() => void handleSaveTransaction()}
+                          disabled={!canSaveSentence}
+                          style={({ pressed }) => [
+                            styles.sheetSentenceSubmit,
+                            styles.sheetSentenceSubmitFlex,
+                            { backgroundColor: canSaveSentence ? tertiary : subtle },
+                            pressed && canSaveSentence && { opacity: 0.9 },
+                          ]}>
+                          {isParsingSentence ? (
+                            <ActivityIndicator color="#fff" />
+                          ) : (
+                            <Text style={styles.sheetSentenceSubmitText}>记账</Text>
+                          )}
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : (
+                    <>
+                  <View style={styles.sheetNoteRow}>
+                    <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                      <TextInput
+                        value={sheetNote}
+                        onChangeText={setSheetNote}
+                        multiline
+                        scrollEnabled
+                        textAlignVertical="top"
+                        style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent' }]}
+                        placeholder="添加备注..."
+                        placeholderTextColor={subtle}
+                      />
+                    </View>
+                  </View>
+
+                  {sheetImageUris.length ? (
+                    <View style={styles.attachmentPreview}>
+                      <Text style={[styles.attachmentPreviewText, { color: subtle }]}>已添加图片</Text>
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.attachmentThumbRow}>
+                        {sheetImageUris.map((uri, idx) => (
+                          <View key={`${uri}-${idx}`} style={styles.attachmentThumbWrap}>
+                            <Image source={{ uri }} style={styles.attachmentThumb} />
+                            <Pressable
+                              onPress={() => setSheetImageUris((prev) => prev.filter((_, i) => i !== idx))}
+                              style={({ pressed }) => [styles.attachmentRemoveBtn, pressed && { opacity: 0.85 }]}>
+                              <MaterialIcons name="close" size={14} color="#fff" />
+                            </Pressable>
+                          </View>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  ) : null}
+                    </>
+                  )}
+
+                  <Modal visible={isDatePickerVisible} transparent animationType="fade" onRequestClose={() => setIsDatePickerVisible(false)}>
+                    <View style={styles.pickerModalOverlay}>
+                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsDatePickerVisible(false)} />
+                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
+                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择日期</Text>
+                          <Pressable onPress={() => setIsDatePickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                            <MaterialIcons name="close" size={22} color={subtle} />
+                          </Pressable>
+                        </View>
+                        <View style={styles.pickerModalBody}>
+                          <DateTimePicker
+                            value={selectedHappenedAt}
+                            mode="date"
+                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                            locale="zh-CN"
+                            themeVariant={isDark ? 'dark' : 'light'}
+                            onChange={handleDatePickerChange}
+                            style={styles.nativePicker}
+                          />
+                          <View style={styles.pickerModalFooter}>
+                            <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                              <Text style={[styles.pickerModalActionText, { color: text }]}>今天</Text>
+                            </Pressable>
+                            <Pressable onPress={() => setIsDatePickerVisible(false)} style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
+                              <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+                  </Modal>
+
+                  <Modal visible={isTimePickerVisible} transparent animationType="fade" onRequestClose={() => setIsTimePickerVisible(false)}>
+                    <View style={styles.pickerModalOverlay}>
+                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsTimePickerVisible(false)} />
+                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
+                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择时间</Text>
+                          <Pressable onPress={() => setIsTimePickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                            <MaterialIcons name="close" size={22} color={subtle} />
+                          </Pressable>
+                        </View>
+                        <View style={styles.pickerModalBody}>
+                          <DateTimePicker
+                            value={selectedHappenedAt}
+                            mode="time"
+                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                            locale="zh-CN"
+                            themeVariant={isDark ? 'dark' : 'light'}
+                            onChange={handleTimePickerChange}
+                            style={styles.nativePicker}
+                          />
+                          <View style={styles.pickerModalFooter}>
+                            <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
+                              <Text style={[styles.pickerModalActionText, { color: text }]}>现在</Text>
+                            </Pressable>
+                            <Pressable onPress={() => setIsTimePickerVisible(false)} style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
+                              <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+                  </Modal>
+
+                  {activeSheetTab !== 'sentence' ? (
+                    <>
+                  <View style={styles.amountPreview}>
+                    <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
+                    <Text style={[styles.amountValue, { color: tertiary }]}>{amountDisplay}</Text>
+                  </View>
+
+                  <View style={styles.keypad}>
+                    {keypadRows.flat().map((key, idx) => {
+                      const isDone = key === 'done';
+                      const isBackspace = key === 'backspace';
+                      const showLabel = isBackspace ? 'backspace' : isDone ? '完成' : key;
+                      return (
+                        <Pressable
+                          key={`${key}-${idx}`}
+                          onPress={() => (isDone ? handleSaveTransaction() : handleAmountKeyPress(key))}
+                          style={({ pressed }) => [
+                            styles.keypadBtn,
+                            isDone
+                              ? [styles.keypadDoneBtn, { backgroundColor: canSaveTransaction ? tertiary : subtle }]
+                              : [styles.keypadNormalBtn, { backgroundColor: surface, borderColor: outlineVariant }],
+                            key === '0' && idx === 12 ? styles.keypadWideBtn : null,
+                            pressed && { opacity: 0.86 },
+                          ]}>
+                          {isBackspace ? (
+                            <MaterialIcons name="backspace" size={20} color={subtle} />
+                          ) : (
+                            <Text style={isDone ? styles.keypadDoneText : [styles.keypadText, { color: text }]}>{showLabel}</Text>
+                          )}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                    </>
+                  ) : null}
+                </View>
+              </>
+            )}
+            </ScrollView>
+
+            <Modal
+              visible={isAccountPickerVisible}
+              transparent
+              animationType="fade"
+              onRequestClose={() => {
+                setIsAccountPickerVisible(false);
+                setAccountPickerTarget('sheet');
+              }}>
+              <View style={styles.pickerModalOverlay}>
+                <Pressable
+                  style={styles.pickerModalBackdrop}
+                  onPress={() => {
+                    setIsAccountPickerVisible(false);
+                    setAccountPickerTarget('sheet');
+                  }}
+                />
+                <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
+                  <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                    <Text style={[styles.pickerModalTitle, { color: text }]}>
+                      {accountPickerTarget === 'transferFrom'
+                        ? '选择扣款账户'
+                        : accountPickerTarget === 'transferTo'
+                          ? '选择入账账户'
+                          : '选择账户'}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        setIsAccountPickerVisible(false);
+                        setAccountPickerTarget('sheet');
+                      }}
+                      style={styles.pickerModalCloseBtn}>
+                      <MaterialIcons name="close" size={22} color={subtle} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.pickerModalBody}>
+                    <ScrollView style={styles.accountPickerScroll} contentContainerStyle={styles.accountPickerList} showsVerticalScrollIndicator={false}>
+                      {financeAccounts.map((account) => {
+                        const selected =
+                          accountPickerTarget === 'transferFrom'
+                            ? account.id === transferFromAccountId
+                            : accountPickerTarget === 'transferTo'
+                              ? account.id === transferToAccountId
+                              : account.id === selectedAccount?.id;
+                        const transferPickBlocked =
+                          (accountPickerTarget === 'transferFrom' && account.id === transferToAccountId) ||
+                          (accountPickerTarget === 'transferTo' && account.id === transferFromAccountId);
+                        return (
+                          <Pressable
+                            key={account.id}
+                            disabled={transferPickBlocked}
+                            onPress={() => handleSelectAccount(account.id)}
+                            style={({ pressed }) => [
+                              styles.accountPickerItem,
+                              {
+                                backgroundColor: selected ? `${tertiary}18` : isDark ? '#161d2b' : '#f2f3ff',
+                                borderColor: selected ? tertiary : outlineVariant,
+                              },
+                              transferPickBlocked ? { opacity: 0.45 } : null,
+                              pressed && !transferPickBlocked ? { opacity: 0.84 } : null,
+                            ]}>
+                            <MaterialIcons name={accountIcon(account)} size={18} color={selected ? tertiary : subtle} />
+                            <View style={styles.accountPickerTextCol}>
+                              <Text style={[styles.accountPickerName, { color: text }]}>{account.name}</Text>
+                              <Text style={[styles.accountPickerBalance, { color: subtle }]}>{formatCurrencyBalanceForAccount(account)}</Text>
+                            </View>
+                            {selected ? <MaterialIcons name="check" size={18} color={tertiary} /> : null}
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+          </View>
+        </View>
+  );
+}
