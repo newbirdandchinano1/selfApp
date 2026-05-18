@@ -2,6 +2,14 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { startProjectAiReviewInBackground } from '@/lib/project-ai-review-background';
+import { getProjectById } from '@/lib/repositories/projects/project';
+import {
+  applyScheduleMetaToLabels,
+  extractScheduleLimitFromExtra,
+  parseDateLimitParam,
+  parseDefaultScheduleParam,
+  resolveInheritedDefaultSchedule,
+} from '@/lib/schedule-inherit';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { createTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority } from '@/lib/repositories/tasks/task.types';
@@ -36,6 +44,7 @@ type Subtask = {
   repeat?: string;
   repeatText?: string;
   note?: string;
+  schedule?: TaskScheduleMeta | null;
 };
 type PriorityKey = 'urgent-important' | 'urgent-not-important' | 'not-urgent-important' | 'not-urgent-not-important';
 type MainTask = { id: string; title: string; due: string };
@@ -148,7 +157,13 @@ function labelToTaskPriority(value?: string): TaskPriority {
 
 export default function AddTaskScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ source?: string; dateLimit?: string; projectId?: string; categoryId?: string }>();
+  const params = useLocalSearchParams<{
+    source?: string;
+    dateLimit?: string;
+    defaultSchedule?: string;
+    projectId?: string;
+    categoryId?: string;
+  }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -174,20 +189,56 @@ export default function AddTaskScreen() {
   const quickTaskCategoryId =
     !quickCategoryRaw || quickCategoryRaw === INBOX_PROJECT_CATEGORY_ID ? null : quickCategoryRaw;
   const scheduleSource = normalizeRouteParam(params.source as string | string[] | undefined) || 'add-task';
-  const dateLimit = React.useMemo<DateLimitYmd | null>(() => {
-    const raw = typeof params.dateLimit === 'string' ? params.dateLimit : '';
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw) as DateLimitYmd;
-      if (!parsed || typeof parsed !== 'object') return null;
-      const next: DateLimitYmd = {};
-      if (typeof parsed.start === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.start)) next.start = parsed.start;
-      if (typeof parsed.end === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.end)) next.end = parsed.end;
-      return next.start || next.end ? next : null;
-    } catch {
-      return null;
-    }
-  }, [params.dateLimit]);
+  const dateLimit = React.useMemo(
+    () => parseDateLimitParam(typeof params.dateLimit === 'string' ? params.dateLimit : undefined),
+    [params.dateLimit],
+  );
+  const defaultScheduleApplied = React.useRef(false);
+
+  React.useEffect(() => {
+    if (defaultScheduleApplied.current || scheduleMeta) return;
+    const inherited = resolveInheritedDefaultSchedule(
+      parseDefaultScheduleParam(typeof params.defaultSchedule === 'string' ? params.defaultSchedule : undefined),
+      dateLimit,
+    );
+    if (!inherited) return;
+    defaultScheduleApplied.current = true;
+    const applied = applyScheduleMetaToLabels(inherited);
+    setDeadlineText(applied.deadlineText);
+    setReminderText(applied.reminderText);
+    setRepeatText(applied.repeatText);
+    setScheduleMeta(applied.scheduleMeta as TaskScheduleMeta);
+  }, [dateLimit, params.defaultSchedule, scheduleMeta]);
+
+  React.useEffect(() => {
+    if (!quickProjectId || defaultScheduleApplied.current || scheduleMeta) return;
+    if (params.defaultSchedule || params.dateLimit) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const project = await getProjectById(quickProjectId);
+        if (!project || cancelled) return;
+        const extra = project.extra_data ? (JSON.parse(project.extra_data) as { schedule?: TaskScheduleMeta }) : {};
+        const projectSchedule = extra.schedule ?? null;
+        const limit = extractScheduleLimitFromExtra(project.extra_data, project.due_date);
+        const inherited = resolveInheritedDefaultSchedule(projectSchedule, limit.start || limit.end ? limit : null);
+        if (!inherited || cancelled || defaultScheduleApplied.current) return;
+        defaultScheduleApplied.current = true;
+        const applied = applyScheduleMetaToLabels(inherited);
+        setDeadlineText(applied.deadlineText);
+        setReminderText(applied.reminderText);
+        setRepeatText(applied.repeatText);
+        setScheduleMeta(applied.scheduleMeta as TaskScheduleMeta);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [params.dateLimit, params.defaultSchedule, quickProjectId, scheduleMeta]);
+
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const priorityOptions: Array<{ key: PriorityKey; label: string; color: string }> = [
     { key: 'urgent-important', label: '紧急重要', color: isDark ? '#f87171' : '#ba1a1a' },
@@ -349,6 +400,7 @@ export default function AddTaskScreen() {
         repeat: repeatText,
         repeatText: repeatText,
         note: notes.trim(),
+        schedule: scheduleMeta,
       },
     };
     router.back();

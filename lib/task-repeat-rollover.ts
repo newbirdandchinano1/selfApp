@@ -64,37 +64,68 @@ function parseWeeklyDaysFromRepeatText(repeat: string): number[] {
   for (const [label, value] of Object.entries(CN_WEEKDAY_TO_MON1)) {
     if (repeat.includes(label)) days.push(value);
   }
-  return days.length ? days : [1];
+  return days;
 }
 
 function parseMonthlyDaysFromRepeatText(repeat: string): number[] {
   const m = repeat.match(/每月\s*([\d、,，\s]+)/);
-  if (!m) return [1];
+  if (!m) return [];
   const nums = m[1]
     .split(/[、,，\s]+/)
     .map((s) => parseInt(s.replace(/日/g, ''), 10))
     .filter((n) => n >= 1 && n <= 31);
-  return nums.length ? nums : [1];
+  return nums;
+}
+
+/** 从 schedule 字段或 repeat 文案补全周/月重复日（兼容未写入 weeklyDays 的旧数据） */
+function resolveRepeatDayFields(
+  repeatOption: TaskRepeatOption,
+  schedule: Record<string, unknown>,
+  repeatFromRoot: string,
+): Pick<TaskRepeatSchedule, 'weeklyDays' | 'monthlyDays' | 'yearlyDate'> {
+  const repeatSummary = typeof schedule.repeatSummary === 'string' ? schedule.repeatSummary.trim() : '';
+  const textFallback = repeatSummary || repeatFromRoot;
+
+  let weeklyDays = normalizeWeeklyDays(schedule.weeklyDays);
+  let monthlyDays = normalizeMonthlyDays(schedule.monthlyDays);
+  let yearlyDate = typeof schedule.yearlyDate === 'string' ? schedule.yearlyDate.trim() : '';
+
+  if (repeatOption === '每周' && weeklyDays.length === 0 && textFallback) {
+    weeklyDays = parseWeeklyDaysFromRepeatText(textFallback);
+  }
+  if (repeatOption === '每月' && monthlyDays.length === 0 && textFallback) {
+    monthlyDays = parseMonthlyDaysFromRepeatText(textFallback);
+  }
+  if (repeatOption === '每年' && !yearlyDate && textFallback) {
+    const m = textFallback.match(/(\d{1,2})月(\d{1,2})日/);
+    if (m) {
+      const mo = String(Number(m[1])).padStart(2, '0');
+      const day = String(Number(m[2])).padStart(2, '0');
+      yearlyDate = `2000-${mo}-${day}`;
+    }
+  }
+
+  return { weeklyDays, monthlyDays, yearlyDate };
 }
 
 /** 从 extra_data 解析重复规则（优先 schedule，兼容仅 repeat 文案的旧数据） */
 export function parseTaskRepeatSchedule(extraData: string | null): TaskRepeatSchedule | null {
   const root = parseExtraObject(extraData);
+  const repeatFromRoot = typeof root.repeat === 'string' ? root.repeat.trim() : '';
   const schedule = root.schedule;
   if (schedule && typeof schedule === 'object' && !Array.isArray(schedule)) {
     const s = schedule as Record<string, unknown>;
     const opt = s.repeatOption;
     if (typeof opt === 'string' && REPEAT_OPTIONS.includes(opt as TaskRepeatOption) && opt !== '不重复') {
+      const resolved = resolveRepeatDayFields(opt as TaskRepeatOption, s, repeatFromRoot);
       return {
         repeatOption: opt as TaskRepeatOption,
-        weeklyDays: normalizeWeeklyDays(s.weeklyDays),
-        monthlyDays: normalizeMonthlyDays(s.monthlyDays),
-        yearlyDate: typeof s.yearlyDate === 'string' ? s.yearlyDate.trim() : '',
+        ...resolved,
       };
     }
   }
 
-  const repeat = typeof root.repeat === 'string' ? root.repeat.trim() : '';
+  const repeat = repeatFromRoot;
   if (!repeat || repeat === '不重复') return null;
   if (repeat === '每天' || repeat.startsWith('每天')) {
     return { repeatOption: '每天', weeklyDays: [], monthlyDays: [], yearlyDate: '' };
@@ -147,14 +178,14 @@ export function isTaskRepeatDueOnLogicalDay(logicalYmd: string, schedule: TaskRe
   switch (schedule.repeatOption) {
     case '每天':
       return true;
-    case '每周': {
-      const days = schedule.weeklyDays.length > 0 ? schedule.weeklyDays : [1];
-      return days.includes(getWeekdayMonAs1(logicalYmd));
-    }
-    case '每月': {
-      const days = schedule.monthlyDays.length > 0 ? schedule.monthlyDays : [1];
-      return days.includes(getDayOfMonth(logicalYmd));
-    }
+    case '每周':
+      return (
+        schedule.weeklyDays.length > 0 && schedule.weeklyDays.includes(getWeekdayMonAs1(logicalYmd))
+      );
+    case '每月':
+      return (
+        schedule.monthlyDays.length > 0 && schedule.monthlyDays.includes(getDayOfMonth(logicalYmd))
+      );
     case '每年': {
       const anchor = schedule.yearlyDate;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(anchor)) return false;

@@ -79,6 +79,11 @@ const WEEKDAY_OPTIONS = [
 ];
 const MONTH_DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => i + 1);
 
+/** 周一=1 … 周日=7，与重复规则存储一致 */
+function getLocalWeekdayMon1(date = new Date()): number {
+  return ((date.getDay() + 6) % 7) + 1;
+}
+
 function getMonthInfo(year: number, month: number): MonthInfo {
   const first = new Date(year, month, 1);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -1389,6 +1394,8 @@ export default function SchedulePickerScreen() {
 
                           const selectedRepeat = option as RepeatOption;
                           setRepeatOption(selectedRepeat);
+                          if (selectedRepeat === '每周') setWeeklyDays([]);
+                          if (selectedRepeat === '每月') setMonthlyDays([]);
                           const needsDetail = selectedRepeat === '每周' || selectedRepeat === '每月' || selectedRepeat === '每年';
                           if (needsDetail) {
                             setSettingModalStage('repeatDetail');
@@ -1453,8 +1460,12 @@ export default function SchedulePickerScreen() {
                   <View style={styles.pickerActions}>
                     <Pressable
                       onPress={() => {
-                        if (repeatOption === '每周' && weeklyDays.length === 0) setWeeklyDays([1]);
-                        if (repeatOption === '每月' && monthlyDays.length === 0) setMonthlyDays([1]);
+                        if (repeatOption === '每周' && weeklyDays.length === 0) {
+                          setWeeklyDays([getLocalWeekdayMon1()]);
+                        }
+                        if (repeatOption === '每月' && monthlyDays.length === 0) {
+                          setMonthlyDays([new Date().getDate()]);
+                        }
                         if (yearlyPickerOpenTimerRef.current) {
                           clearTimeout(yearlyPickerOpenTimerRef.current);
                           yearlyPickerOpenTimerRef.current = null;

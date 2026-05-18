@@ -1,5 +1,11 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import {
+  mergeDateLimit,
+  resolveInheritedDefaultSchedule,
+  scheduleMetaToDateLimit,
+} from '@/lib/schedule-inherit';
+import { tightenAllProjectTasks } from '@/lib/tighten-task-schedules';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getDatabase } from '@/lib/database.native';
@@ -52,6 +58,7 @@ type Subtask = {
   repeat?: string;
   repeatText?: string;
   note?: string;
+  schedule?: ProjectScheduleMeta | null;
 };
 
 type SubtaskNode = Subtask & { children: SubtaskNode[] };
@@ -456,6 +463,11 @@ export default function EditProjectScreen() {
       !selectedCategoryId || selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
 
     try {
+      const taskSchedule = task.schedule ?? null;
+      const dueDate =
+        taskSchedule?.mode === 'time' && taskSchedule.range?.end
+          ? formatDate(taskSchedule.range.end)
+          : extractDueDate(task.deadline || task.deadlineText || '');
       await createTask({
         id: task.id,
         project_id: projectId,
@@ -465,10 +477,11 @@ export default function EditProjectScreen() {
         note: task.note?.trim() || null,
         status: (task.done ? 'done' : 'todo') as TaskRow['status'],
         priority: toTaskPriority(task.priority || task.priorityLabel),
-        due_date: extractDueDate(task.deadline || task.deadlineText || ''),
+        due_date: dueDate,
         extra_data: JSON.stringify({
           reminder: task.reminder || task.reminderText || '',
           repeat: task.repeat || task.repeatText || '',
+          schedule: taskSchedule,
         }),
       });
       globalThis.__addTaskResult = undefined;
@@ -617,6 +630,11 @@ export default function EditProjectScreen() {
     return null;
   }, [deadlineText, scheduleMeta]);
 
+  const inheritedTaskSchedule = React.useMemo(
+    () => resolveInheritedDefaultSchedule(scheduleMeta, taskDateLimit),
+    [scheduleMeta, taskDateLimit],
+  );
+
   const openEditTask = React.useCallback(
     (taskId: string) => {
       if (!taskId) return;
@@ -708,6 +726,9 @@ export default function EditProjectScreen() {
           schedule: scheduleMeta,
         }),
       });
+      const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
+        end: extractDueDate(deadlineText) ?? undefined,
+      });
       const existingTasks = await getTasksByProjectId(projectId);
       const existingTaskIds = new Set(existingTasks.map((item) => item.id));
 
@@ -738,6 +759,7 @@ export default function EditProjectScreen() {
           hadNewTask = true;
         }
       }
+      await tightenAllProjectTasks(projectId, projectFrame);
       await db.execAsync('COMMIT');
       committed = true;
     } catch (error) {
@@ -1046,6 +1068,7 @@ export default function EditProjectScreen() {
                       params: {
                         source: addTaskSource,
                         dateLimit: taskDateLimit ? JSON.stringify(taskDateLimit) : '',
+                        defaultSchedule: inheritedTaskSchedule ? JSON.stringify(inheritedTaskSchedule) : '',
                       },
                     })
                   }

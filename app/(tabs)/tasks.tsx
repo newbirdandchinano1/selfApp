@@ -1,3 +1,4 @@
+import { useSettingsDrawer } from '@/components/settings-drawer/settings-drawer-context';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
@@ -58,13 +59,11 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import {
   DEFAULT_TASKS_DAY_BOUNDARY,
   formatTasksDayBoundaryLabel,
   getLogicalLocalYmd,
   loadTasksDayBoundary,
-  saveTasksDayBoundary,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import {
@@ -1042,6 +1041,7 @@ async function reactivateInboxCompletedProjectsWithOpenTasks(
 }
 
 export default function TasksScreen() {
+  const { open: openSettingsDrawer, registerOnClose } = useSettingsDrawer();
   /** Measured width of the habit grid row — avoids guessing padding (tabs / safe area / web max-width). */
   const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
   const habitGridItemWidth = React.useMemo(() => {
@@ -1089,6 +1089,7 @@ export default function TasksScreen() {
   const [mainScrollKeyboardPad, setMainScrollKeyboardPad] = React.useState(0);
   const mainScrollRef = React.useRef<ScrollView>(null);
   const quickTodoAnchorRef = React.useRef<View>(null);
+  const mainScrollOffsetYRef = React.useRef(0);
   const keyboardHeightRef = React.useRef(0);
   const quickTodoInputFocusedRef = React.useRef(false);
 
@@ -1101,7 +1102,9 @@ export default function TasksScreen() {
       const visibleBottom = winH - kb - margin;
       const inputBottom = y + h;
       if (inputBottom <= visibleBottom) return;
-      mainScrollRef.current?.scrollToEnd({ animated: true });
+      const delta = inputBottom - visibleBottom;
+      const nextY = mainScrollOffsetYRef.current + delta;
+      mainScrollRef.current?.scrollTo({ y: Math.max(0, nextY), animated: true });
     });
   }, []);
 
@@ -1138,8 +1141,6 @@ export default function TasksScreen() {
     };
   }, [scrollQuickTodoAboveKeyboard]);
   const [dayBoundary, setDayBoundary] = React.useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
-  const [dayStartModalVisible, setDayStartModalVisible] = React.useState(false);
-  const [draftBoundary, setDraftBoundary] = React.useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
   const [dayBoundaryClock, setDayBoundaryClock] = React.useState(0);
   const [projectAiPendingIds, setProjectAiPendingIds] = React.useState<ReadonlySet<string>>(() => new Set());
   const [projectAiModal, setProjectAiModal] = React.useState<{
@@ -1162,6 +1163,12 @@ export default function TasksScreen() {
   React.useEffect(() => {
     void loadTasksDayBoundary().then((b) => setDayBoundary(b));
   }, []);
+
+  React.useEffect(() => {
+    return registerOnClose(() => {
+      void loadTasksDayBoundary().then(b => setDayBoundary(b));
+    });
+  }, [registerOnClose]);
 
   React.useEffect(() => {
     const unsubPending = addProjectAiPendingAnalysisListener(setProjectAiPendingIds);
@@ -2189,27 +2196,8 @@ export default function TasksScreen() {
   ]);
 
   const openDayStartModal = React.useCallback(() => {
-    setDraftBoundary(dayBoundary);
-    setDayStartModalVisible(true);
-  }, [dayBoundary]);
-
-  const closeDayStartModal = React.useCallback(() => setDayStartModalVisible(false), []);
-
-  const saveDayBoundaryFromModal = React.useCallback(async () => {
-    try {
-      await saveTasksDayBoundary(draftBoundary);
-      setDayBoundary(draftBoundary);
-      setDayStartModalVisible(false);
-      await loadHabits();
-    } catch (e) {
-      console.warn('保存日界失败', e);
-      Alert.alert('保存失败', '未能保存日界设置，请稍后重试。');
-    }
-  }, [draftBoundary, loadHabits]);
-
-  const applyDefaultDayBoundary = React.useCallback(() => {
-    setDraftBoundary({ ...DEFAULT_TASKS_DAY_BOUNDARY });
-  }, []);
+    openSettingsDrawer('dayBoundary');
+  }, [openSettingsDrawer]);
 
   /** 四象限行：左侧勾选完成/取消，点击标题区域进入编辑 */
   const renderMatrixTaskRow = (t: TaskRow, accentColor: string, dueMuted: { bg: string; text: string }) => {
@@ -2346,6 +2334,10 @@ export default function TasksScreen() {
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        onScroll={(e) => {
+          mainScrollOffsetYRef.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
       >
         <Animated.View
           style={{
@@ -3628,46 +3620,6 @@ export default function TasksScreen() {
         </View>
       </Modal>
 
-      <Modal visible={dayStartModalVisible} transparent animationType="fade" onRequestClose={closeDayStartModal}>
-        <View style={styles.modalRoot}>
-          <Pressable style={styles.modalBackdrop} onPress={closeDayStartModal} />
-          <View pointerEvents="box-none" style={styles.modalCenter}>
-            <View style={[styles.editorCard, { backgroundColor: modalCardBg }]}>
-              <Text style={[styles.editorTitle, { color: theme.text }]}>每日完成日界</Text>
-              <Text style={[styles.editorHint, { color: outline }]}>
-                习惯打卡、今日青蛙与热力图等统计以此时间为新一天的起点（默认 00:00）。
-              </Text>
-              <DateTimePicker
-                value={new Date(2000, 0, 1, draftBoundary.hour, draftBoundary.minute)}
-                mode="time"
-                is24Hour
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                themeVariant={isDark ? 'dark' : 'light'}
-                onChange={(_, date) => {
-                  if (date) setDraftBoundary({ hour: date.getHours(), minute: date.getMinutes() });
-                }}
-              />
-              <View style={[styles.editorActions, { justifyContent: 'space-between', width: '100%' }]}>
-                <Pressable
-                  onPress={applyDefaultDayBoundary}
-                  style={({ pressed }) => [styles.editorGhostBtn, pressed && { opacity: 0.8 }]}>
-                  <Text style={[styles.editorGhostText, { color: outline }]}>恢复默认</Text>
-                </Pressable>
-                <View style={{ flexDirection: 'row', gap: 10 }}>
-                  <Pressable onPress={closeDayStartModal} style={({ pressed }) => [styles.editorGhostBtn, pressed && { opacity: 0.8 }]}>
-                    <Text style={[styles.editorGhostText, { color: outline }]}>取消</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void saveDayBoundaryFromModal()}
-                    style={({ pressed }) => [styles.editorPrimaryBtn, { backgroundColor: primary }, pressed && { opacity: 0.9 }]}>
-                    <Text style={styles.editorPrimaryText}>保存</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }

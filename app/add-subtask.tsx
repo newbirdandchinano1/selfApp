@@ -1,5 +1,12 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import {
+  applyScheduleMetaToLabels,
+  parseDateLimitParam,
+  parseDefaultScheduleParam,
+  type DateLimitYmd,
+  type ScheduleMetaLike,
+} from '@/lib/schedule-inherit';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -22,6 +29,7 @@ type Subtask = {
   repeat?: string;
   repeatText?: string;
   note?: string;
+  schedule?: ScheduleMetaLike | null;
 };
 type SchedulePickerResult = {
   mode: 'date' | 'time';
@@ -56,11 +64,6 @@ type SchedulePickerInitPayload = {
   range?: { start: string; end: string };
   startTime?: string;
   endTime?: string;
-};
-
-type DateLimitYmd = {
-  start?: string;
-  end?: string;
 };
 
 type TaskScheduleMeta = Pick<
@@ -111,7 +114,7 @@ function formatTime(value: string): string {
 
 export default function AddSubtaskScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ source?: string; dateLimit?: string }>();
+  const params = useLocalSearchParams<{ source?: string; dateLimit?: string; defaultSchedule?: string }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -128,20 +131,25 @@ export default function AddSubtaskScreen() {
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const scheduleSource = normalizeRouteParam(params.source as string | string[] | undefined) || 'add-subtask';
-  const dateLimit = React.useMemo<DateLimitYmd | null>(() => {
-    const raw = typeof params.dateLimit === 'string' ? params.dateLimit : '';
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw) as DateLimitYmd;
-      if (!parsed || typeof parsed !== 'object') return null;
-      const next: DateLimitYmd = {};
-      if (typeof parsed.start === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.start)) next.start = parsed.start;
-      if (typeof parsed.end === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.end)) next.end = parsed.end;
-      return next.start || next.end ? next : null;
-    } catch {
-      return null;
-    }
-  }, [params.dateLimit]);
+  const dateLimit = React.useMemo(
+    () => parseDateLimitParam(typeof params.dateLimit === 'string' ? params.dateLimit : undefined),
+    [params.dateLimit],
+  );
+  const defaultScheduleApplied = React.useRef(false);
+
+  React.useEffect(() => {
+    if (defaultScheduleApplied.current || scheduleMeta) return;
+    const inherited = parseDefaultScheduleParam(
+      typeof params.defaultSchedule === 'string' ? params.defaultSchedule : undefined,
+    );
+    if (!inherited) return;
+    defaultScheduleApplied.current = true;
+    const applied = applyScheduleMetaToLabels(inherited);
+    setDeadlineText(applied.deadlineText);
+    setReminderText(applied.reminderText);
+    setRepeatText(applied.repeatText);
+    setScheduleMeta(applied.scheduleMeta as TaskScheduleMeta);
+  }, [params.defaultSchedule, scheduleMeta]);
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
   const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
@@ -250,6 +258,7 @@ export default function AddSubtaskScreen() {
         repeat: repeatText,
         repeatText,
         note: notes.trim(),
+        schedule: scheduleMeta,
       },
     };
     router.back();

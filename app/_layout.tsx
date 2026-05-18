@@ -7,10 +7,12 @@ import { ActivityIndicator, Platform, Pressable, Text, View } from 'react-native
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { initDatabase } from '@/lib/database';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
+import { loadThemePreference } from '@/lib/theme-preference';
 import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
 import { hydrateGithubCloudDirtyFromStorage } from '@/lib/github-sqlite-dirty-track';
 import { runSilentGithubCloudSyncIfRemoteNewer } from '@/lib/github-cloud-launch';
@@ -31,7 +33,7 @@ export const unstable_settings = {
   anchor: '(tabs)',
 };
 
-export default function RootLayout() {
+function RootLayoutInner() {
   const colorScheme = useColorScheme();
   const [isDbReady, setIsDbReady] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
@@ -46,6 +48,7 @@ export default function RootLayout() {
           void runSilentGithubCloudSyncIfRemoteNewer();
         }
         await loadPersistedIntakeTargets();
+        await loadThemePreference();
         await loadAiLlmProviderPreference();
         if (Platform.OS !== 'web') {
           void ensurePersonaPortraitsForTodayInBackground();
@@ -70,7 +73,6 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
         {!isDbReady ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -88,6 +90,7 @@ export default function RootLayout() {
                         void runSilentGithubCloudSyncIfRemoteNewer();
                       }
                       await loadPersistedIntakeTargets();
+                      await loadThemePreference();
                       await loadAiLlmProviderPreference();
                       if (Platform.OS !== 'web') {
                         void ensurePersonaPortraitsForTodayInBackground();
@@ -160,8 +163,17 @@ export default function RootLayout() {
           </Stack>
           </>
         )}
-        <StatusBar style="auto" />
+        <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
       </ThemeProvider>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemePreferenceProvider>
+        <RootLayoutInner />
+      </ThemePreferenceProvider>
     </GestureHandlerRootView>
   );
 }

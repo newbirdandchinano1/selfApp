@@ -1,5 +1,17 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import {
+  buildDeadlineTextFromSchedule,
+  extractScheduleLimitFromExtra,
+  formatDate,
+  formatTime,
+  mergeDateLimit,
+  resolveInheritedDefaultSchedule,
+  scheduleMetaToDateLimit,
+  toYmd,
+  type DateLimitYmd,
+} from '@/lib/schedule-inherit';
+import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { startProjectAiReviewInBackground } from '@/lib/project-ai-review-background';
 import { getProjectById } from '@/lib/repositories/projects/project';
@@ -101,36 +113,8 @@ type SubtaskDraft = {
   repeat?: string;
   repeatText?: string;
   note?: string;
+  schedule?: TaskScheduleMeta | null;
 };
-
-declare global {
-  // eslint-disable-next-line no-var
-  var __addSubtaskResult:
-    | {
-        source: string;
-        task: SubtaskDraft;
-      }
-    | undefined;
-}
-
-function formatDate(value: string): string {
-  const v = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function formatTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.slice(11, 16);
-  const hour = String(date.getHours()).padStart(2, '0');
-  const minute = String(date.getMinutes()).padStart(2, '0');
-  return `${hour}:${minute}`;
-}
 
 function extractDueDate(deadlineText: string) {
   const all = deadlineText.match(/\d{4}-\d{2}-\d{2}/g);
@@ -147,55 +131,6 @@ function parseTaskExtraData(raw: string | null): Record<string, unknown> {
   } catch {
     return {};
   }
-}
-
-function toYmd(value: string): string | null {
-  const t = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return null;
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-type DateLimitYmd = { start?: string; end?: string };
-
-function mergeDateLimit(base: DateLimitYmd, incoming: DateLimitYmd): DateLimitYmd {
-  const next: DateLimitYmd = { ...base };
-  if (incoming.start) {
-    next.start = next.start ? (incoming.start > next.start ? incoming.start : next.start) : incoming.start;
-  }
-  if (incoming.end) {
-    next.end = next.end ? (incoming.end < next.end ? incoming.end : next.end) : incoming.end;
-  }
-  if (next.start && next.end && next.start > next.end) {
-    return { start: next.start, end: next.start };
-  }
-  return next;
-}
-
-function extractScheduleLimit(extraDataRaw: string | null): DateLimitYmd {
-  const extra = parseTaskExtraData(extraDataRaw);
-  const schedule = (extra.schedule ?? null) as TaskScheduleMeta | null;
-  if (!schedule) return {};
-  if (schedule.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = toYmd(schedule.range.start);
-    const end = toYmd(schedule.range.end);
-    return {
-      start: start ?? undefined,
-      end: end ?? undefined,
-    };
-  }
-  if (schedule.date) {
-    const date = toYmd(schedule.date);
-    return {
-      start: date ?? undefined,
-      end: date ?? undefined,
-    };
-  }
-  return {};
 }
 
 function toTaskPriority(value?: string): TaskPriority {
@@ -302,23 +237,6 @@ function priorityKeyToLabel(key: PriorityKey): string {
 
 const TITLE_MAX_LENGTH = 30;
 
-function buildDeadlineTextFromSchedule(schedule: TaskScheduleMeta | null) {
-  if (!schedule) return '';
-  if (schedule.mode === 'time' && schedule.range) {
-    const rangeStart = formatDate(schedule.range.start);
-    const rangeEnd = formatDate(schedule.range.end);
-    const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
-    const timeLabel = schedule.allDay ? '全天' : `${formatTime(schedule.startTime)} - ${formatTime(schedule.endTime)}`;
-    return `${rangeLabel} ${timeLabel}`;
-  }
-  if (schedule.date) {
-    const dateLabel = formatDate(schedule.date);
-    const timeLabel = schedule.allDay ? '全天' : schedule.hasExactTime ? formatTime(schedule.startTime) : '';
-    return timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel;
-  }
-  return '';
-}
-
 export default function EditTaskScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string; source?: string; from?: string | string[] }>();
@@ -347,8 +265,26 @@ export default function EditTaskScreen() {
   const [loading, setLoading] = React.useState(true);
   const [taskSnapshot, setTaskSnapshot] = React.useState<TaskRow | null>(null);
   const [subtasks, setSubtasks] = React.useState<SubtaskDraft[]>([]);
-  const [subtaskDateLimit, setSubtaskDateLimit] = React.useState<DateLimitYmd | null>(null);
-  const [taskDateLimit, setTaskDateLimit] = React.useState<DateLimitYmd | null>(null);
+  const [parentDateLimit, setParentDateLimit] = React.useState<DateLimitYmd>({});
+  const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
+
+  const subtaskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
+    const selfLimit = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
+      end: extractDueDate(deadlineText) || undefined,
+    });
+    const merged = mergeDateLimit(selfLimit, projectDateLimit);
+    return merged.start || merged.end ? merged : null;
+  }, [deadlineText, projectDateLimit, scheduleMeta]);
+
+  const taskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
+    const merged = mergeDateLimit(parentDateLimit, projectDateLimit);
+    return merged.start || merged.end ? merged : null;
+  }, [parentDateLimit, projectDateLimit]);
+
+  const inheritedSubtaskSchedule = React.useMemo(
+    () => resolveInheritedDefaultSchedule(scheduleMeta, subtaskDateLimit),
+    [scheduleMeta, subtaskDateLimit],
+  );
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
@@ -457,6 +393,11 @@ export default function EditTaskScreen() {
     }
 
     try {
+      const subtaskSchedule = payload.task.schedule ?? null;
+      const dueDate =
+        subtaskSchedule?.mode === 'time' && subtaskSchedule.range?.end
+          ? formatDate(subtaskSchedule.range.end)
+          : extractDueDate(payload.task.deadline || payload.task.deadlineText || '');
       await createTask({
         id: payload.task.id,
         project_id: taskSnapshot.project_id,
@@ -466,10 +407,11 @@ export default function EditTaskScreen() {
         note: payload.task.note?.trim() || null,
         status: 'todo',
         priority: toTaskPriority(payload.task.priority || payload.task.priorityLabel),
-        due_date: extractDueDate(payload.task.deadline || payload.task.deadlineText || ''),
+        due_date: dueDate,
         extra_data: JSON.stringify({
           reminder: payload.task.reminder || payload.task.reminderText || '',
           repeat: payload.task.repeat || payload.task.repeatText || '',
+          schedule: subtaskSchedule,
         }),
       });
       startProjectAiReviewInBackground(taskSnapshot.project_id);
@@ -518,34 +460,22 @@ export default function EditTaskScreen() {
         setRepeatText(repeat);
       }
 
-      const baseLimit: DateLimitYmd = mergeDateLimit(
-        extractScheduleLimit(task.extra_data),
-        { end: task.due_date ? formatDate(task.due_date) : undefined },
-      );
       let parentLimit: DateLimitYmd = {};
       if (task.parent_task_id) {
         const parentTask = await getTaskById(task.parent_task_id);
         if (parentTask) {
-          parentLimit = mergeDateLimit(
-            extractScheduleLimit(parentTask.extra_data),
-            { end: parentTask.due_date ? formatDate(parentTask.due_date) : undefined },
-          );
+          parentLimit = extractScheduleLimitFromExtra(parentTask.extra_data, parentTask.due_date);
         }
       }
       let projectLimit: DateLimitYmd = {};
       if (task.project_id) {
         const project = await getProjectById(task.project_id);
         if (project) {
-          projectLimit = mergeDateLimit(
-            extractScheduleLimit(project.extra_data),
-            { end: project.due_date ? formatDate(project.due_date) : undefined },
-          );
+          projectLimit = extractScheduleLimitFromExtra(project.extra_data, project.due_date);
         }
       }
-      const selfLimit = mergeDateLimit(parentLimit, projectLimit);
-      setTaskDateLimit(selfLimit.start || selfLimit.end ? selfLimit : null);
-      const merged = mergeDateLimit(baseLimit, projectLimit);
-      setSubtaskDateLimit(merged.start || merged.end ? merged : null);
+      setParentDateLimit(parentLimit);
+      setProjectDateLimit(projectLimit);
 
       await loadSubtasks();
     } catch (error) {
@@ -596,7 +526,10 @@ export default function EditTaskScreen() {
 
     setSaving(true);
     try {
-      const dueDate = scheduleMeta?.mode === 'time' && scheduleMeta.range ? scheduleMeta.range.end : extractDueDate(deadlineText);
+      const dueDate =
+        scheduleMeta?.mode === 'time' && scheduleMeta.range?.end
+          ? formatDate(scheduleMeta.range.end)
+          : extractDueDate(deadlineText);
       await updateTask(taskId, {
         title: trimmedTitle,
         note: notes.trim() || null,
@@ -609,6 +542,11 @@ export default function EditTaskScreen() {
           schedule: scheduleMeta,
         }),
       });
+      const parentFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
+        end: toYmd(dueDate ?? undefined) ?? undefined,
+      });
+      const tightenFrame = mergeDateLimit(parentFrame, projectDateLimit);
+      await tightenDescendantTasksOf(taskId, tightenFrame);
       router.back();
     } catch (error) {
       console.warn('更新任务失败', error);
@@ -616,7 +554,21 @@ export default function EditTaskScreen() {
     } finally {
       setSaving(false);
     }
-  }, [deadlineText, loading, notes, priority, reminderText, repeatText, router, saving, scheduleMeta, taskId, taskSnapshot, title]);
+  }, [
+    deadlineText,
+    loading,
+    notes,
+    priority,
+    projectDateLimit,
+    reminderText,
+    repeatText,
+    router,
+    saving,
+    scheduleMeta,
+    taskId,
+    taskSnapshot,
+    title,
+  ]);
 
   /** 删除成功后：从详情→编辑来的栈上有已删除的详情页，需 dismiss 到任务 Tab */
   const navigateAfterDeleteTask = React.useCallback(() => {
@@ -798,6 +750,7 @@ export default function EditTaskScreen() {
                     params: {
                       source: addSubtaskSource,
                       dateLimit: subtaskDateLimit ? JSON.stringify(subtaskDateLimit) : '',
+                      defaultSchedule: inheritedSubtaskSchedule ? JSON.stringify(inheritedSubtaskSchedule) : '',
                     },
                   })
                 }
