@@ -1,10 +1,13 @@
 import {
   GitHubBackupManager,
-  getGitHubBackupConfigFromEnv,
   getGitHubFullBackupRootFromEnv,
   type GitHubBackupConfig,
   type GitHubBackupUploadResult,
 } from '@/lib/github-backup-manager';
+import {
+  GITHUB_BACKUP_NOT_CONFIGURED_MSG,
+  getGitHubBackupConfig,
+} from '@/lib/github-backup-user-config';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { DB_VERSION, getDatabase, getSchemaVersion } from '@/lib/database';
 import { listMemos } from '@/lib/memos';
@@ -421,15 +424,13 @@ function buildMultiFileFullBackupSpecs(
 export async function triggerGithubFinanceCloudSync(
   opts?: { signal?: AbortSignal },
 ): Promise<GithubCloudSyncResult> {
-  const cfg = getGitHubBackupConfigFromEnv();
+  const cfg = await getGitHubBackupConfig();
   if (!cfg) {
-    const message =
-      '未配置 GitHub：请在项目根目录 .env.local 中设置 EXPO_PUBLIC_GITHUB_TOKEN / OWNER / REPO。';
     return {
       ok: false,
       reason: 'no_config',
-      message,
-      diagnosticText: message,
+      message: GITHUB_BACKUP_NOT_CONFIGURED_MSG,
+      diagnosticText: GITHUB_BACKUP_NOT_CONFIGURED_MSG,
     };
   }
 
@@ -459,20 +460,18 @@ export async function triggerGithubFinanceCloudSync(
 
 /**
  * 全量备份：每张 SQLite 表 → `/{root}/sqlite/{表名}.json`，AsyncStorage 类数据 → `/{root}/kv/*.json`，
- * 最后写入 `manifest.json`。账单自动同步仍使用 `EXPO_PUBLIC_GITHUB_BACKUP_PATH` 单文件。
+ * 最后写入 `manifest.json`。账单自动同步仍使用内置单文件路径（见 `DEFAULT_GITHUB_BACKUP_PATH`）。
  */
 export async function triggerGithubCloudSync(opts?: {
   signal?: AbortSignal;
 }): Promise<GithubCloudSyncResult> {
-  const cfg = getGitHubBackupConfigFromEnv();
+  const cfg = await getGitHubBackupConfig();
   if (!cfg) {
-    const message =
-      '未配置 GitHub：请在项目根目录 .env.local 中设置 EXPO_PUBLIC_GITHUB_TOKEN / OWNER / REPO。';
     return {
       ok: false,
       reason: 'no_config',
-      message,
-      diagnosticText: message,
+      message: GITHUB_BACKUP_NOT_CONFIGURED_MSG,
+      diagnosticText: GITHUB_BACKUP_NOT_CONFIGURED_MSG,
     };
   }
 
@@ -578,7 +577,7 @@ export async function pushGithubIncrementalCloudDirtyToCloudIfNeeded(): Promise<
   const dirtyKvList = peekGithubKvDirtySlices();
   if (dirtyList.length === 0 && dirtyKvList.length === 0) return;
 
-  const cfg = getGitHubBackupConfigFromEnv();
+  const cfg = await getGitHubBackupConfig();
   if (!cfg) return;
 
   const db = await getDatabase();

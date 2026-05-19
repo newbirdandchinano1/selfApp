@@ -10,9 +10,19 @@ import {
   probeGeminiTextAndVisionConnectivity,
   type GeminiConnectivityProbeRow,
 } from '@/lib/gemini-generative';
+import { AppInput } from '@/components/ui/app-input';
 import { getLastFullGithubBackupAtIso } from '@/lib/github-full-backup-local-meta';
 import { triggerGithubCloudRestoreFromFullBackup } from '@/lib/github-cloud-restore';
 import { triggerGithubCloudSync } from '@/lib/github-cloud-sync';
+import {
+  DEFAULT_GITHUB_FULL_BACKUP_ROOT,
+  DEFAULT_GITHUB_OWNER,
+  DEFAULT_GITHUB_REPO,
+  clearGithubUserToken,
+  hasGithubUserTokenSync,
+  loadGithubBackupTokenCache,
+  setGithubUserToken,
+} from '@/lib/github-backup-user-config';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import {
   DEFAULT_TASKS_DAY_BOUNDARY,
@@ -78,6 +88,10 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [geminiProbeRows, setGeminiProbeRows] = useState<GeminiConnectivityProbeRow[] | null>(null);
   const [geminiProbeError, setGeminiProbeError] = useState<string | null>(null);
 
+  const [githubTokenDraft, setGithubTokenDraft] = useState('');
+  const [githubTokenConfigured, setGithubTokenConfigured] = useState(() => hasGithubUserTokenSync());
+  const [githubTokenSaving, setGithubTokenSaving] = useState(false);
+
   const [cloudBackupBusy, setCloudBackupBusy] = useState(false);
   const [cloudRestoreBusy, setCloudRestoreBusy] = useState(false);
   const githubCloudOpAbortRef = useRef<AbortController | null>(null);
@@ -105,7 +119,44 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   useEffect(() => {
     void loadLastFullGithubBackupMeta();
     void loadAiLlmProviderPreference().then(() => setAiLlmProvider(getPreferredAiLlmProviderSync()));
+    void loadGithubBackupTokenCache().then(ok => setGithubTokenConfigured(ok));
   }, [loadLastFullGithubBackupMeta]);
+
+  const saveGithubToken = useCallback(async () => {
+    const t = githubTokenDraft.trim();
+    if (!t) {
+      Alert.alert('GitHub Token', '请粘贴 Personal Access Token，或点「清除」移除已保存的 Token。');
+      return;
+    }
+    setGithubTokenSaving(true);
+    try {
+      await setGithubUserToken(t);
+      setGithubTokenConfigured(true);
+      setGithubTokenDraft('');
+      Alert.alert('已保存', 'GitHub Token 已写入本机安全存储，可进行云备份与同步。');
+    } catch (e) {
+      Alert.alert('保存失败', e instanceof Error ? e.message : String(e));
+    } finally {
+      setGithubTokenSaving(false);
+    }
+  }, [githubTokenDraft]);
+
+  const clearGithubToken = useCallback(() => {
+    Alert.alert('清除 GitHub Token', '清除后云备份与从云同步将不可用，直到重新填写 Token。', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '清除',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            await clearGithubUserToken();
+            setGithubTokenConfigured(false);
+            setGithubTokenDraft('');
+          })();
+        },
+      },
+    ]);
+  }, []);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', next => {
@@ -366,6 +417,53 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           onLayout={ev => onSectionLayout('backup', ev.nativeEvent.layout.y)}
           style={styles.section}>
           {renderSectionHead('BACKUP', '云备份与同步')}
+          <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 12 }]}>
+            <Text style={[styles.rowTitle, { color: text }]}>GitHub Personal Access Token</Text>
+            <Text style={[styles.rowHint, { color: outline, lineHeight: 18 }]}>
+              仓库已内置：{DEFAULT_GITHUB_OWNER}/{DEFAULT_GITHUB_REPO}，备份目录 {DEFAULT_GITHUB_FULL_BACKUP_ROOT}
+              /。请在 GitHub 生成具备 repo 权限的 Token 后粘贴保存（仅存本机，不打进安装包）。
+            </Text>
+            <Text style={[styles.rowHint, { color: githubTokenConfigured ? primary : outline, fontWeight: '700' }]}>
+              {githubTokenConfigured ? '已配置 Token，可使用下方备份与同步' : '尚未配置 Token'}
+            </Text>
+            <AppInput
+              value={githubTokenDraft}
+              onChangeText={setGithubTokenDraft}
+              placeholder={githubTokenConfigured ? '输入新 Token 可覆盖已保存' : 'ghp_… 或 github_pat_…'}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+              textContentType="password"
+            />
+            <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'flex-end' }}>
+              {githubTokenConfigured ? (
+                <Pressable
+                  onPress={clearGithubToken}
+                  disabled={githubTokenSaving}
+                  style={({ pressed }) => [{ opacity: pressed || githubTokenSaving ? 0.7 : 1, paddingVertical: 8, paddingHorizontal: 4 }]}>
+                  <Text style={{ color: isDark ? '#f87171' : '#b91c1c', fontWeight: '700' }}>清除</Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                onPress={() => void saveGithubToken()}
+                disabled={githubTokenSaving}
+                style={({ pressed }) => [
+                  styles.probeBtn,
+                  {
+                    borderColor: cardBorder,
+                    opacity: pressed || githubTokenSaving ? 0.75 : 1,
+                    paddingHorizontal: 16,
+                    flex: 0,
+                  },
+                ]}>
+                {githubTokenSaving ? (
+                  <ActivityIndicator size="small" color={primary} />
+                ) : (
+                  <Text style={[styles.rowTitle, { color: primary, fontSize: 14 }]}>保存 Token</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
           <Pressable
             onPress={() => void runCloudBackup()}
             disabled={cloudBackupBusy || cloudRestoreBusy}

@@ -6,6 +6,7 @@
  */
 
 import { fetchWithTimeoutAndRetry, isAbortError } from '@/lib/github-fetch-retry';
+import { getGitHubFullBackupRoot } from '@/lib/github-backup-user-config';
 
 const GITHUB_API = 'https://api.github.com';
 const DEFAULT_API_VERSION = '2022-11-28';
@@ -64,31 +65,12 @@ function decodeBase64Utf8GithubField(b64: string): string {
 
 const DEFAULT_BACKUP_PATH = 'backups/user_data.json';
 
-/** 全量备份时每个 SQLite 表、kv 快照、manifest 写入的目录前缀（下含 `sqlite/`、`kv/`）。 */
-const DEFAULT_FULL_BACKUP_ROOT = 'backups/selfapp';
-
 /**
- * 多文件全量备份根路径。可通过 `EXPO_PUBLIC_GITHUB_BACKUP_ROOT` 覆盖，默认 `backups/selfapp`。
- * 与 `EXPO_PUBLIC_GITHUB_BACKUP_PATH`（单文件账单自动同步）相互独立。
+ * 全量备份根路径（内置默认值，与 `DEFAULT_GITHUB_BACKUP_PATH` 单文件路径相互独立）。
+ * @deprecated 请使用 `getGitHubFullBackupRoot` from `@/lib/github-backup-user-config`
  */
 export function getGitHubFullBackupRootFromEnv(): string {
-  const raw = process.env.EXPO_PUBLIC_GITHUB_BACKUP_ROOT?.trim();
-  const s = (raw || DEFAULT_FULL_BACKUP_ROOT).replace(/^\/+/, '').replace(/\/+$/, '');
-  return s;
-}
-
-/**
- * 从 Expo 环境变量组装配置（需在项目根目录 `.env` / `.env.local` 中设置 `EXPO_PUBLIC_*`，且重启 Metro）。
- * 未配置完整时返回 `null`。勿将含 Token 的文件提交到 Git。
- */
-export function getGitHubBackupConfigFromEnv(): GitHubBackupConfig | null {
-  const token = process.env.EXPO_PUBLIC_GITHUB_TOKEN?.trim();
-  const owner = process.env.EXPO_PUBLIC_GITHUB_OWNER?.trim();
-  const repo = process.env.EXPO_PUBLIC_GITHUB_REPO?.trim();
-  if (!token || !owner || !repo) return null;
-  const pathRaw = process.env.EXPO_PUBLIC_GITHUB_BACKUP_PATH?.trim();
-  const path = pathRaw || DEFAULT_BACKUP_PATH;
-  return { token, owner, repo, path };
+  return getGitHubFullBackupRoot();
 }
 
 function encodeRepoContentsPath(path: string): string {

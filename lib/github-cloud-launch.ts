@@ -1,9 +1,6 @@
 import { DB_VERSION } from '@/lib/database';
-import {
-  GitHubBackupManager,
-  getGitHubBackupConfigFromEnv,
-  getGitHubFullBackupRootFromEnv,
-} from '@/lib/github-backup-manager';
+import { GitHubBackupManager, getGitHubFullBackupRootFromEnv } from '@/lib/github-backup-manager';
+import { getGitHubBackupConfig } from '@/lib/github-backup-user-config';
 import { getLastFullGithubBackupAtIso } from '@/lib/github-full-backup-local-meta';
 import { parseGithubAppBackupManifestV1 } from '@/lib/github-app-backup-manifest';
 import { triggerGithubCloudRestoreFromFullBackup } from '@/lib/github-cloud-restore';
@@ -20,7 +17,7 @@ function parseIsoMs(iso: string): number {
  * 本机从未完成过备份/恢复（无 `getLastFullGithubBackupAtIso`）时不自动拉取，以免新安装被空配置覆盖。
  */
 export async function runSilentGithubCloudSyncIfRemoteNewer(): Promise<void> {
-  const cfg = getGitHubBackupConfigFromEnv();
+  const cfg = await getGitHubBackupConfig();
   if (!cfg) return;
 
   const root = getGitHubFullBackupRootFromEnv();

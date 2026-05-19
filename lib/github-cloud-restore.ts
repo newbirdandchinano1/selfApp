@@ -1,9 +1,12 @@
 import {
   GitHubBackupManager,
-  getGitHubBackupConfigFromEnv,
   getGitHubFullBackupRootFromEnv,
   type GitHubBackupConfig,
 } from '@/lib/github-backup-manager';
+import {
+  GITHUB_BACKUP_NOT_CONFIGURED_MSG,
+  getGitHubBackupConfig,
+} from '@/lib/github-backup-user-config';
 import { DB_VERSION, getDatabase } from '@/lib/database';
 import { serializeErrorForDiagnostic } from '@/lib/github-cloud-sync';
 import { parseSqliteBackupRepoPath } from '@/lib/github-sqlite-backup-chunk';
@@ -273,16 +276,15 @@ async function applyKvFromDumpWithRetry(
 
 /**
  * 从 GitHub 全量备份目录拉取 `manifest.json`、各 `sqlite/*.json` 与 `kv/*.json`，覆盖写入本机 SQLite 与 AsyncStorage。
- * 与 `triggerGithubCloudSync` 使用同一 `EXPO_PUBLIC_GITHUB_*` 与 `EXPO_PUBLIC_GITHUB_BACKUP_ROOT`。
+ * 与 `triggerGithubCloudSync` 使用同一内置仓库配置与用户保存的 GitHub Token。
  */
 export async function triggerGithubCloudRestoreFromFullBackup(opts?: {
   signal?: AbortSignal;
 }): Promise<GithubCloudRestoreResult> {
   const signal = opts?.signal;
-  const cfg = getGitHubBackupConfigFromEnv();
+  const cfg = await getGitHubBackupConfig();
   if (!cfg) {
-    const message =
-      '未配置 GitHub：请在项目根目录 .env.local 中设置 EXPO_PUBLIC_GITHUB_TOKEN / OWNER / REPO。';
+    const message = GITHUB_BACKUP_NOT_CONFIGURED_MSG;
     return { ok: false, reason: 'no_config', message, diagnosticText: message };
   }
 

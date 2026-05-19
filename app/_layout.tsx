@@ -14,6 +14,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { initDatabase } from '@/lib/database';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
+import { loadGithubBackupTokenCache } from '@/lib/github-backup-user-config';
 import { loadThemePreference } from '@/lib/theme-preference';
 import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
 import { hydrateGithubCloudDirtyFromStorage } from '@/lib/github-sqlite-dirty-track';
@@ -55,6 +56,7 @@ function RootLayoutInner() {
         await loadThemePreference();
         await loadTasksDayBoundary();
         await loadAiLlmProviderPreference();
+        await loadGithubBackupTokenCache();
         if (Platform.OS !== 'web') {
           void ensurePersonaPortraitsForTodayInBackground();
         }
@@ -98,6 +100,7 @@ function RootLayoutInner() {
                       await loadThemePreference();
                       await loadTasksDayBoundary();
                       await loadAiLlmProviderPreference();
+                      await loadGithubBackupTokenCache();
                       if (Platform.OS !== 'web') {
                         void ensurePersonaPortraitsForTodayInBackground();
                       }
