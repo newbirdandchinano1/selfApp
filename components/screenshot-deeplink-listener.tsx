@@ -2,13 +2,14 @@ import { setFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import {
   abandonStaleShortcutHandoff,
   getShortcutHandoffKey,
+  peekShortcutHandoffKind,
   prepareShortcutHandoffLaunchIntent,
 } from '@/lib/shortcut-auto-ledger-handoff';
 import { notifyShortcutHandoffConsume } from '@/lib/shortcut-auto-ledger-route-bridge';
 import * as Linking from 'expo-linking';
 import { usePathname, useRootNavigationState, useRouter } from 'expo-router';
 import { useEffect, useRef } from 'react';
-import { InteractionManager, Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 function matchesScreenshotDeepLink(url: string): boolean {
   const { hostname, path } = Linking.parse(url);
@@ -40,12 +41,23 @@ function isOnFinanceTab(pathname: string): boolean {
  * 在数据库就绪后挂载：处理深链与 App Intent 写入的 pending 文件。
  * 导航必须等 Root Navigation 就绪后再 replace，否则易出现全黑卡死屏。
  */
+function scheduleHandoffConsumeNotify(): void {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      notifyShortcutHandoffConsume();
+    });
+  });
+}
+
 export function ScreenshotDeepLinkListener() {
   const router = useRouter();
   const pathname = usePathname();
+  const pathnameRef = useRef(pathname);
   const rootNavigationState = useRootNavigationState();
   const navReady = rootNavigationState?.key != null;
   const lastHandoffKeyRef = useRef<string | null>(null);
+
+  pathnameRef.current = pathname;
 
   useEffect(() => {
     if (Platform.OS === 'web' || !navReady) {
@@ -55,9 +67,9 @@ export function ScreenshotDeepLinkListener() {
     abandonStaleShortcutHandoff();
 
     const routeForHandoff = (handoffKey: string) => {
-      if (lastHandoffKeyRef.current === handoffKey && isOnFinanceTab(pathname)) {
-        prepareShortcutHandoffLaunchIntent();
-        notifyShortcutHandoffConsume();
+      const currentPath = pathnameRef.current;
+      if (lastHandoffKeyRef.current === handoffKey && isOnFinanceTab(currentPath)) {
+        scheduleHandoffConsumeNotify();
         return;
       }
       lastHandoffKeyRef.current = handoffKey;
@@ -66,21 +78,22 @@ export function ScreenshotDeepLinkListener() {
         if (!prepareShortcutHandoffLaunchIntent()) {
           return;
         }
-        if (isOnFinanceTab(pathname)) {
-          notifyShortcutHandoffConsume();
+        const pathAfterPrepare = pathnameRef.current;
+        if (isOnFinanceTab(pathAfterPrepare)) {
+          scheduleHandoffConsumeNotify();
           return;
         }
         router.replace('/(tabs)/finance');
+        scheduleHandoffConsumeNotify();
       };
 
-      InteractionManager.runAfterInteractions(() => {
-        requestAnimationFrame(run);
-      });
+      requestAnimationFrame(run);
     };
 
     const handoffFromPendingFiles = () => {
       const handoffKey = getShortcutHandoffKey();
       if (!handoffKey) {
+        lastHandoffKeyRef.current = null;
         return;
       }
       routeForHandoff(handoffKey);
@@ -106,8 +119,30 @@ export function ScreenshotDeepLinkListener() {
     });
 
     const linkingSub = Linking.addEventListener('url', ({ url }) => go(url));
+
+    let appStateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') {
+        return;
+      }
+      handoffFromPendingFiles();
+      // Intent 写入 pending 图可能略晚于 active，截图参数流程再扫一次
+      if (appStateRetryTimer != null) {
+        clearTimeout(appStateRetryTimer);
+        appStateRetryTimer = null;
+      }
+      if (peekShortcutHandoffKind() === 'image') {
+        appStateRetryTimer = setTimeout(handoffFromPendingFiles, 180);
+      }
+    });
+
     return () => {
       linkingSub.remove();
+      appStateSub.remove();
+      if (appStateRetryTimer != null) {
+        clearTimeout(appStateRetryTimer);
+      }
     };
   }, [navReady, pathname, router]);
 

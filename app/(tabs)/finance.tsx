@@ -56,7 +56,10 @@ import {
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import { setFinanceSheetBridge } from '@/lib/finance-sheet-bridge';
 import { consumeFinanceSheetLaunchIntent, type FinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
-import { consumeShortcutAutoLedgerImageDataUri } from '@/lib/shortcut-auto-ledger-pending';
+import {
+  consumeShortcutAutoLedgerImageDataUri,
+  hasShortcutAutoLedgerPending,
+} from '@/lib/shortcut-auto-ledger-pending';
 import {
   consumeShortcutImageHandoffExpected,
   subscribeShortcutHandoffConsume,
@@ -72,7 +75,7 @@ import {
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
@@ -463,6 +466,7 @@ export default function FinanceScreen() {
   const autoLedgerSourceRef = React.useRef<'clipboard' | 'shortcut_intent' | 'picker'>('clipboard');
   /** 已在财务 Tab 时再次触发快捷指令 handoff（由根级 listener 通知） */
   const [shortcutHandoffNonce, setShortcutHandoffNonce] = React.useState(0);
+  const isFinanceTabFocused = useIsFocused();
   const financeTransactionsRef = React.useRef<FinanceTransactionRow[]>([]);
   const flowCategoryNamesRef = React.useRef<Record<string, string>>({});
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
@@ -1779,6 +1783,45 @@ export default function FinanceScreen() {
       pickAccountForAutoLedger,
     ],
   );
+
+  /** 截图参数 handoff：已在财务 Tab 聚焦时由 listener notify 触发，避免仅依赖 useFocusEffect 重跑时机 */
+  const tryConsumeShortcutImageHandoff = React.useCallback(async () => {
+    const expectingShortcutImage = consumeShortcutImageHandoffExpected();
+    if (!hasShortcutAutoLedgerPending() && !expectingShortcutImage) {
+      return;
+    }
+    if (financeAccountsRef.current.length === 0) {
+      await loadFinanceAccounts();
+    }
+    const list = financeAccountsRef.current;
+    let shortcutImageUri = await consumeShortcutAutoLedgerImageDataUri();
+    if (!shortcutImageUri && expectingShortcutImage) {
+      shortcutImageUri = await readClipboardImageForAutoLedger();
+    }
+    if (!shortcutImageUri) {
+      return;
+    }
+    autoLedgerImageUriRef.current = shortcutImageUri;
+    if (list.length > 0) {
+      startAutoLedgerHandoff('shortcut_intent');
+      void processAutoLedgerFromImage(shortcutImageUri, list, 'shortcut_intent');
+    } else {
+      startAutoLedgerHandoff('shortcut_intent');
+      void notifyAutoLedgerFailure('请先添加至少一个账户。');
+    }
+  }, [
+    loadFinanceAccounts,
+    processAutoLedgerFromImage,
+    readClipboardImageForAutoLedger,
+    startAutoLedgerHandoff,
+  ]);
+
+  React.useEffect(() => {
+    if (!isFinanceTabFocused || shortcutHandoffNonce === 0) {
+      return;
+    }
+    void tryConsumeShortcutImageHandoff();
+  }, [isFinanceTabFocused, shortcutHandoffNonce, tryConsumeShortcutImageHandoff]);
 
   const keypadRows = React.useMemo(
     () => [

@@ -1,3 +1,5 @@
+import { prepareShortcutHandoffLaunchIntent } from '@/lib/shortcut-auto-ledger-handoff';
+import { notifyShortcutHandoffConsume } from '@/lib/shortcut-auto-ledger-route-bridge';
 import { Stack, useRouter } from 'expo-router';
 import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
@@ -10,15 +12,18 @@ export default function AutoLedgerRedirectScreen() {
 
   useEffect(() => {
     const goFinance = () => {
+      prepareShortcutHandoffLaunchIntent();
       router.replace('/(tabs)/finance');
+      notifyShortcutHandoffConsume();
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          notifyShortcutHandoffConsume();
+        });
+      });
     };
     const t = requestAnimationFrame(goFinance);
-    const failSafe = setTimeout(() => {
-      router.replace('/(tabs)');
-    }, 2500);
     return () => {
       cancelAnimationFrame(t);
-      clearTimeout(failSafe);
     };
   }, [router]);
 
