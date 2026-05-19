@@ -31,9 +31,48 @@ type TabKey = 'ai' | 'photo' | 'manual';
 type ManualType = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
 type ConfirmUnit = 'ml' | 'g' | 'mg';
 
+type AiIntakeFieldTexts = {
+  food_summary: string;
+  hydration_ml: string;
+  protein_g: string;
+  carbohydrate_g: string;
+  sodium_mg: string;
+  ai_evaluation: string;
+};
+
+function foodTextIntakeFromFieldTexts(fields: AiIntakeFieldTexts): FoodTextIntakeJson {
+  return {
+    food_summary: fields.food_summary.trim(),
+    hydration_ml: parseNonNegMetricInput(fields.hydration_ml),
+    protein_g: parseNonNegMetricInput(fields.protein_g),
+    carbohydrate_g: parseNonNegMetricInput(fields.carbohydrate_g),
+    sodium_mg: parseNonNegMetricInput(fields.sodium_mg),
+    ai_evaluation: fields.ai_evaluation.trim(),
+  };
+}
+
+function aiIntakeFieldTextsFromData(data: FoodTextIntakeJson): AiIntakeFieldTexts {
+  return {
+    food_summary: data.food_summary ?? '',
+    hydration_ml: String(data.hydration_ml ?? 0),
+    protein_g: String(data.protein_g ?? 0),
+    carbohydrate_g: String(data.carbohydrate_g ?? 0),
+    sodium_mg: String(data.sodium_mg ?? 0),
+    ai_evaluation: data.ai_evaluation ?? '',
+  };
+}
+
+function parseNonNegMetricInput(raw: string): number {
+  const t = raw.replace(/,/g, '').trim();
+  if (!t) return 0;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+}
+
 export type RecordIntakeConfirmPayload =
-  /** 确认后由首页在后台请求智谱解析并落库 */
-  | { mode: 'ai'; text: string }
+  /** 无 parsed 时由首页后台请求 AI 解析；有 parsed 时直接落库 */
+  | { mode: 'ai'; text: string; parsed?: FoodTextIntakeJson }
   | { mode: 'manual'; amount: number; unit: ConfirmUnit; type: ManualType }
   | {
       mode: 'photo';
@@ -90,6 +129,7 @@ export function RecordIntakeSheet({
   const [aiBusy, setAiBusy] = React.useState(false);
   const [aiError, setAiError] = React.useState<string | null>(null);
   const [aiResolved, setAiResolved] = React.useState<{ text: string; data: FoodTextIntakeJson } | null>(null);
+  const [aiFieldTexts, setAiFieldTexts] = React.useState<AiIntakeFieldTexts | null>(null);
 
   const translateY = React.useRef(new Animated.Value(screenHeight)).current;
   const backdropOpacity = React.useRef(new Animated.Value(0)).current;
@@ -161,12 +201,14 @@ export function RecordIntakeSheet({
     setAiBusy(false);
     setAiError(null);
     setAiResolved(null);
+    setAiFieldTexts(null);
   }, [visible]);
 
   React.useEffect(() => {
     if (!visible) return;
     if (aiResolved && text.trim() !== aiResolved.text) {
       setAiResolved(null);
+      setAiFieldTexts(null);
       setAiError(null);
     }
   }, [text, visible, aiResolved]);
@@ -192,12 +234,15 @@ export function RecordIntakeSheet({
       if (!r.ok) {
         setAiError(r.error);
         setAiResolved(null);
+        setAiFieldTexts(null);
         return;
       }
       setAiResolved({ text: t, data: r.data });
+      setAiFieldTexts(aiIntakeFieldTextsFromData(r.data));
     } catch (e) {
       setAiError(e instanceof Error ? e.message : String(e));
       setAiResolved(null);
+      setAiFieldTexts(null);
     } finally {
       setAiBusy(false);
     }
@@ -282,7 +327,14 @@ export function RecordIntakeSheet({
     if (tab === 'ai') {
       const t = text.trim();
       if (!t) return;
-      await Promise.resolve(onConfirm?.({ mode: 'ai', text: t }));
+      const hasParsedPreview = aiResolved?.text === t && aiFieldTexts != null;
+      await Promise.resolve(
+        onConfirm?.({
+          mode: 'ai',
+          text: t,
+          ...(hasParsedPreview ? { parsed: foodTextIntakeFromFieldTexts(aiFieldTexts) } : {}),
+        })
+      );
       onClose();
       return;
     }
@@ -418,30 +470,57 @@ export function RecordIntakeSheet({
                     ) : null}
                   </View>
                   {aiError ? <Text style={[styles.photoErrorText, { color: '#ef4444' }]}>{aiError}</Text> : null}
-                  {aiResolved && aiResolved.text === text.trim() && !aiBusy ? (
+                  {aiResolved && aiResolved.text === text.trim() && aiFieldTexts && !aiBusy ? (
                     <View style={[styles.photoResultCard, { backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#f8fafc', borderColor: border }]}>
                       <View style={styles.photoResultRow}>
                         <MaterialIcons name="auto-awesome" size={18} color="#10b981" />
-                        <Text style={[styles.photoResultTitle, { color: theme.text }]}>估算结果</Text>
+                        <Text style={[styles.photoResultTitle, { color: theme.text }]}>估算结果（可编辑）</Text>
                       </View>
-                      {aiResolved.data.food_summary ? (
-                        <Text style={[styles.photoResultLine, { color: theme.textSecondary }]} numberOfLines={3}>
-                          {aiResolved.data.food_summary}
-                        </Text>
-                      ) : null}
-                      <Text style={[styles.photoResultLine, { color: theme.textSecondary }]}>
-                        水分 {aiResolved.data.hydration_ml} ml（正餐不显性计水；汤/粥/饮料/水果可计入）· 蛋白质 {aiResolved.data.protein_g} g · 碳水{' '}
-                        {aiResolved.data.carbohydrate_g} g · 钠 {aiResolved.data.sodium_mg} mg
+                      <Text style={[styles.aiEditLabel, { color: mutedText }]}>食物摘要</Text>
+                      <TextInput
+                        value={aiFieldTexts.food_summary}
+                        onChangeText={(v) => setAiFieldTexts((prev) => (prev ? { ...prev, food_summary: v } : prev))}
+                        multiline
+                        placeholder="模型生成的食物摘要"
+                        placeholderTextColor={isDark ? 'rgba(148,163,184,0.7)' : 'rgba(100,116,139,0.7)'}
+                        style={[styles.aiEditInput, styles.aiEditInputMultiline, { color: theme.text, borderColor: border, backgroundColor: inputBg }]}
+                      />
+                      <Text style={[styles.aiEditHint, { color: mutedText }]}>
+                        水分仅计汤/粥/饮料/水果等显性饮水，正餐不显性计水
                       </Text>
-                      {aiResolved.data.ai_evaluation?.trim() ? (
-                        <Text style={[styles.photoResultLine, { color: theme.text, marginTop: 6 }]} numberOfLines={6}>
-                          AI 评价：{aiResolved.data.ai_evaluation.trim()}
-                        </Text>
-                      ) : null}
+                      {(
+                        [
+                          { key: 'hydration_ml' as const, label: '水分 (ml)' },
+                          { key: 'protein_g' as const, label: '蛋白质 (g)' },
+                          { key: 'carbohydrate_g' as const, label: '碳水 (g)' },
+                          { key: 'sodium_mg' as const, label: '钠 (mg)' },
+                        ] as const
+                      ).map((row) => (
+                        <View key={row.key} style={styles.aiMetricRow}>
+                          <Text style={[styles.aiEditLabel, { color: mutedText }]}>{row.label}</Text>
+                          <TextInput
+                            value={aiFieldTexts[row.key]}
+                            onChangeText={(v) => setAiFieldTexts((prev) => (prev ? { ...prev, [row.key]: v } : prev))}
+                            keyboardType="decimal-pad"
+                            placeholder="0"
+                            placeholderTextColor={isDark ? 'rgba(148,163,184,0.7)' : 'rgba(100,116,139,0.7)'}
+                            style={[styles.aiEditInput, styles.aiMetricInput, { color: theme.text, borderColor: border, backgroundColor: inputBg }]}
+                          />
+                        </View>
+                      ))}
+                      <Text style={[styles.aiEditLabel, { color: mutedText, marginTop: 4 }]}>AI 评价</Text>
+                      <TextInput
+                        value={aiFieldTexts.ai_evaluation}
+                        onChangeText={(v) => setAiFieldTexts((prev) => (prev ? { ...prev, ai_evaluation: v } : prev))}
+                        multiline
+                        placeholder="可选，将写入摄入记录的点评"
+                        placeholderTextColor={isDark ? 'rgba(148,163,184,0.7)' : 'rgba(100,116,139,0.7)'}
+                        style={[styles.aiEditInput, styles.aiEditInputMultiline, { color: theme.text, borderColor: border, backgroundColor: inputBg }]}
+                      />
                     </View>
                   ) : null}
                   <Text style={[styles.hint, { color: mutedText }]}>
-                    可点右下角魔法棒仅作预览；点「确认添加」后将在后台解析并自动写入摄入记录（无需在此等待）。
+                    点右下角魔法棒预解析后可修改数值；已预解析时点「确认添加」将直接写入，不再请求 AI。未预解析时确认后将在后台解析并写入。
                   </Text>
                 </View>
               ) : tab === 'photo' ? (
@@ -675,6 +754,12 @@ const styles = StyleSheet.create({
   photoResultRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   photoResultTitle: { fontSize: 15, fontWeight: '800' },
   photoResultLine: { fontSize: 13, fontWeight: '600', lineHeight: 20 },
+  aiEditLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
+  aiEditHint: { fontSize: 10, fontWeight: '600', lineHeight: 15, marginTop: -2 },
+  aiEditInput: { borderRadius: 12, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, fontWeight: '600' },
+  aiEditInputMultiline: { minHeight: 56, textAlignVertical: 'top' },
+  aiMetricRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  aiMetricInput: { flex: 1, paddingVertical: 8 },
   textareaWrap: { borderRadius: 18, padding: 16, minHeight: 160, position: 'relative' },
   textarea: { fontSize: 16, lineHeight: 22, paddingRight: 34, minHeight: 128 },
   aiTextareaOverlay: {

@@ -10,6 +10,9 @@ export type SchedulePickerResult = {
   allDay: boolean;
   hasExactTime: boolean;
   reminderOption: SchedulePickerReminderOption;
+  /** 提醒触发的本地时刻；仅当 reminderOption !== '不提前' 时有效 */
+  reminderHour?: number;
+  reminderMinute?: number;
   repeatOption: SchedulePickerRepeatOption;
   repeatSummary: string;
   weeklyDays: number[];

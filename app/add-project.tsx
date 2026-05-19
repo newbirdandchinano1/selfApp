@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
+import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
 import { createProject, getProjectCategories, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
@@ -179,13 +180,21 @@ export default function AddProjectScreen() {
       const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
       setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
     }
-    setReminderText(picked.reminderOption === '不提前' ? '' : picked.reminderOption);
+    setReminderText(
+      formatTaskReminderLabel({
+        reminderOption: picked.reminderOption,
+        reminderHour: picked.reminderHour,
+        reminderMinute: picked.reminderMinute,
+      }),
+    );
     setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
     setScheduleMeta({
       mode: picked.mode,
       allDay: picked.allDay,
       hasExactTime: picked.hasExactTime,
       reminderOption: picked.reminderOption,
+      reminderHour: picked.reminderHour,
+      reminderMinute: picked.reminderMinute,
       repeatOption: picked.repeatOption,
       repeatSummary: picked.repeatSummary,
       weeklyDays: picked.weeklyDays,
@@ -207,6 +216,8 @@ export default function AddProjectScreen() {
           allDay: scheduleMeta.allDay,
           hasExactTime: scheduleMeta.hasExactTime,
           reminderOption: scheduleMeta.reminderOption,
+          reminderHour: scheduleMeta.reminderHour,
+          reminderMinute: scheduleMeta.reminderMinute,
           repeatOption: scheduleMeta.repeatOption,
           repeatSummary: scheduleMeta.repeatSummary,
           weeklyDays: scheduleMeta.weeklyDays,

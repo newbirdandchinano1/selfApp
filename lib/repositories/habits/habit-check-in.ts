@@ -205,3 +205,31 @@ export async function getHabitCheckInListStats(): Promise<Map<string, HabitCheck
   }
   return map;
 }
+
+/** 日期区间内各习惯每日打卡次数（record_date → habitId → count） */
+export async function getHabitCheckInCountsByDateRange(
+  startYmd: string,
+  endYmd: string
+): Promise<Map<string, Map<string, number>>> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ record_date: string; habit_id: string; count: number }>(
+    `SELECT hci.record_date AS record_date, hci.habit_id AS habit_id, hci.count AS count
+       FROM habit_check_ins hci
+       INNER JOIN habits h ON h.id = hci.habit_id AND h.deleted_at IS NULL
+      WHERE hci.deleted_at IS NULL
+        AND hci.count >= 1
+        AND hci.record_date >= ?
+        AND hci.record_date <= ?`,
+    [startYmd, endYmd]
+  );
+  const out = new Map<string, Map<string, number>>();
+  for (const r of rows) {
+    let day = out.get(r.record_date);
+    if (!day) {
+      day = new Map();
+      out.set(r.record_date, day);
+    }
+    day.set(r.habit_id, r.count);
+  }
+  return out;
+}

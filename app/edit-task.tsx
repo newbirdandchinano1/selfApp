@@ -13,6 +13,7 @@ import {
 } from '@/lib/schedule-inherit';
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
+import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
 import { startProjectAiReviewInBackground } from '@/lib/project-ai-review-background';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
@@ -89,6 +90,8 @@ type TaskScheduleMeta = Pick<
   | 'allDay'
   | 'hasExactTime'
   | 'reminderOption'
+  | 'reminderHour'
+  | 'reminderMinute'
   | 'repeatOption'
   | 'repeatSummary'
   | 'weeklyDays'
@@ -333,13 +336,21 @@ export default function EditTaskScreen() {
       const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
       setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
     }
-    setReminderText(picked.reminderOption === '不提前' ? '' : picked.reminderOption);
+    setReminderText(
+      formatTaskReminderLabel({
+        reminderOption: picked.reminderOption,
+        reminderHour: picked.reminderHour,
+        reminderMinute: picked.reminderMinute,
+      }),
+    );
     setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
     setScheduleMeta({
       mode: picked.mode,
       allDay: picked.allDay,
       hasExactTime: picked.hasExactTime,
       reminderOption: picked.reminderOption,
+      reminderHour: picked.reminderHour,
+      reminderMinute: picked.reminderMinute,
       repeatOption: picked.repeatOption,
       repeatSummary: picked.repeatSummary,
       weeklyDays: picked.weeklyDays,
@@ -361,6 +372,8 @@ export default function EditTaskScreen() {
           allDay: scheduleMeta.allDay,
           hasExactTime: scheduleMeta.hasExactTime,
           reminderOption: scheduleMeta.reminderOption,
+          reminderHour: scheduleMeta.reminderHour,
+          reminderMinute: scheduleMeta.reminderMinute,
           repeatOption: scheduleMeta.repeatOption,
           repeatSummary: scheduleMeta.repeatSummary,
           weeklyDays: scheduleMeta.weeklyDays,
@@ -452,7 +465,7 @@ export default function EditTaskScreen() {
       const loadedSchedule = (extraData.schedule ?? null) as TaskScheduleMeta | null;
       if (loadedSchedule) {
         setScheduleMeta(loadedSchedule);
-        setReminderText(loadedSchedule.reminderOption === '不提前' ? '' : loadedSchedule.reminderOption);
+        setReminderText(formatTaskReminderLabel(loadedSchedule));
         setRepeatText(loadedSchedule.repeatOption === '不重复' ? '' : loadedSchedule.repeatSummary);
         setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (task.due_date ? formatDate(task.due_date) : ''));
       } else {

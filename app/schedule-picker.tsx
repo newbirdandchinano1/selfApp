@@ -1,6 +1,10 @@
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { normalizeRouteParam, setSchedulePickerResult } from '@/lib/schedule-picker-bridge';
+import {
+  normalizeRouteParam,
+  setSchedulePickerResult,
+  type SchedulePickerResult,
+} from '@/lib/schedule-picker-bridge';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -37,24 +41,6 @@ type SchedulePickerReturnParams = {
   source?: string;
   initial?: string;
   dateLimit?: string;
-};
-
-type SchedulePickerResult = {
-  mode: TabMode;
-  source: string;
-  quickChip: string;
-  allDay: boolean;
-  hasExactTime: boolean;
-  reminderOption: ReminderOption;
-  repeatOption: RepeatOption;
-  repeatSummary: string;
-  weeklyDays: number[];
-  monthlyDays: number[];
-  yearlyDate: string;
-  date?: string;
-  range?: { start: string; end: string };
-  startTime: string;
-  endTime: string;
 };
 
 type SchedulePickerInitialValue = Omit<SchedulePickerResult, 'source'>;
@@ -330,6 +316,14 @@ export default function SchedulePickerScreen() {
   }
   const displaySettingType = settingPickerType || lastSettingPickerType.current;
   const [reminderOption, setReminderOption] = React.useState<ReminderOption>('不提前');
+  const defaultReminderTime = React.useMemo(() => {
+    const t = new Date(todayStart);
+    t.setHours(9, 0, 0, 0);
+    return t;
+  }, [todayStart]);
+  const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime);
+  const [reminderTimePickerVisible, setReminderTimePickerVisible] = React.useState(false);
+  const [reminderTimeDraft, setReminderTimeDraft] = React.useState<Date>(() => defaultReminderTime);
   const [repeatOption, setRepeatOption] = React.useState<RepeatOption>('不重复');
   const [settingModalStage, setSettingModalStage] = React.useState<SettingModalStage>('options');
   const [weeklyDays, setWeeklyDays] = React.useState<number[]>([1]);
@@ -593,6 +587,9 @@ export default function SchedulePickerScreen() {
     setTimePickerVisible(false);
     setSettingPickerType(null);
     setReminderOption('不提前');
+    setReminderTime(new Date(defaultReminderTime));
+    setReminderTimeDraft(new Date(defaultReminderTime));
+    setReminderTimePickerVisible(false);
     setRepeatOption('不重复');
     setWeeklyDays([1]);
     setMonthlyDays([1]);
@@ -627,6 +624,9 @@ export default function SchedulePickerScreen() {
       allDay: repeatLocksSchedule ? true : allDay,
       hasExactTime: repeatLocksSchedule ? false : hasExactTime,
       reminderOption,
+      ...(reminderOption !== '不提前'
+        ? { reminderHour: reminderTime.getHours(), reminderMinute: reminderTime.getMinutes() }
+        : {}),
       repeatOption,
       repeatSummary: currentRepeatSummary,
       weeklyDays: [...weeklyDays],
@@ -671,7 +671,23 @@ export default function SchedulePickerScreen() {
       ...basePayload,
       date: toLocalYMD(selectedDate),
     };
-  }, [allDay, endTime, hasExactTime, monthlyDays, reminderOption, repeatOption, selectedDate, selectedQuickChip, sourceKey, startTime, tab, timeRange, weeklyDays, yearlyDate]);
+  }, [
+    allDay,
+    endTime,
+    hasExactTime,
+    monthlyDays,
+    reminderOption,
+    reminderTime,
+    repeatOption,
+    selectedDate,
+    selectedQuickChip,
+    sourceKey,
+    startTime,
+    tab,
+    timeRange,
+    weeklyDays,
+    yearlyDate,
+  ]);
 
   const applyTimeSelection = (target: 'start' | 'end', selected: Date) => {
     const normalized = new Date(selected);
@@ -748,6 +764,14 @@ export default function SchedulePickerScreen() {
   const endTimeLabel = formatTime(endTime);
   const timePickerTitle = timePickerTarget === 'start' ? '选择开始时间' : '选择结束时间';
   const repeatSummary = formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate);
+  const reminderTimeLabel = formatTime(reminderTime);
+  const reminderSettingHint =
+    reminderOption === '不提前' ? reminderOption : `${reminderOption} · ${reminderTimeLabel}`;
+
+  const openReminderTimePicker = () => {
+    setReminderTimeDraft(reminderTime);
+    setReminderTimePickerVisible(true);
+  };
   const yearlyPickerMinDate = React.useMemo(() => {
     const base = new Date(yearlyDate);
     base.setHours(0, 0, 0, 0);
@@ -815,6 +839,12 @@ export default function SchedulePickerScreen() {
       const selectedReminder = parsed.reminderOption;
       if (selectedReminder && REMINDER_OPTIONS.includes(selectedReminder)) {
         setReminderOption(selectedReminder);
+      }
+      if (typeof parsed.reminderHour === 'number' && typeof parsed.reminderMinute === 'number') {
+        const t = new Date(todayStart);
+        t.setHours(parsed.reminderHour, parsed.reminderMinute, 0, 0);
+        setReminderTime(t);
+        setReminderTimeDraft(t);
       }
       const selectedRepeat = parsed.repeatOption;
       if (selectedRepeat && REPEAT_OPTIONS.includes(selectedRepeat)) {
@@ -1186,11 +1216,25 @@ export default function SchedulePickerScreen() {
                 </View>
                 <View style={styles.settingRight}>
                   <Text style={[styles.settingHint, { color: colors.textSecondary }]} numberOfLines={1} ellipsizeMode="tail">
-                    {reminderOption}
+                    {reminderSettingHint}
                   </Text>
                   <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
                 </View>
               </Pressable>
+              {reminderOption !== '不提前' ? (
+                <Pressable style={styles.settingRow} onPress={openReminderTimePicker}>
+                  <View style={styles.settingLeft}>
+                    <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
+                      <MaterialIcons name="access-time" size={20} color={colors.primary} />
+                    </View>
+                    <Text style={[styles.settingLabel, { color: colors.text }]}>提醒时间</Text>
+                  </View>
+                  <View style={styles.settingRight}>
+                    <Text style={[styles.settingValueSmall, { color: colors.primary }]}>{reminderTimeLabel}</Text>
+                    <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
+                  </View>
+                </Pressable>
+              ) : null}
               <Pressable style={styles.settingRow} onPress={() => openSettingPicker('repeat')}>
                 <View style={styles.settingLeft}>
                   <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
@@ -1267,10 +1311,24 @@ export default function SchedulePickerScreen() {
                   <Text style={[styles.settingLabel, { color: colors.text }]}>提醒设置</Text>
                 </View>
                 <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: colors.textSecondary }]}>{reminderOption}</Text>
+                  <Text style={[styles.settingHint, { color: colors.textSecondary }]}>{reminderSettingHint}</Text>
                   <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
                 </View>
               </Pressable>
+              {reminderOption !== '不提前' ? (
+                <Pressable style={styles.settingRow} onPress={openReminderTimePicker}>
+                  <View style={styles.settingLeft}>
+                    <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
+                      <MaterialIcons name="access-time" size={20} color={colors.primary} />
+                    </View>
+                    <Text style={[styles.settingLabel, { color: colors.text }]}>提醒时间</Text>
+                  </View>
+                  <View style={styles.settingRight}>
+                    <Text style={[styles.settingValueSmall, { color: colors.primary }]}>{reminderTimeLabel}</Text>
+                    <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
+                  </View>
+                </Pressable>
+              ) : null}
               <Pressable style={styles.settingRow} onPress={() => openSettingPicker('repeat')}>
                 <View style={styles.settingLeft}>
                   <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
@@ -1321,6 +1379,46 @@ export default function SchedulePickerScreen() {
                 onPress={() => {
                   applyTimeSelection(timePickerTarget, timeDraft);
                   setTimePickerVisible(false);
+                }}
+                style={[styles.pickerBtn, { backgroundColor: colors.primary }]}
+              >
+                <Text style={[styles.pickerBtnText, { color: colors.onPrimary }]}>确定</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        visible={reminderTimePickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setReminderTimePickerVisible(false)}
+      >
+        <View style={[styles.pickerBackdrop, { backgroundColor: colors.overlay }]}>
+          <View style={[styles.pickerCard, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.pickerTitle, { color: colors.text }]}>选择提醒时间</Text>
+            <DateTimePicker
+              value={reminderTimeDraft}
+              mode="time"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              is24Hour
+              onChange={(_, date) => {
+                if (date) setReminderTimeDraft(date);
+              }}
+            />
+            <View style={styles.pickerActions}>
+              <Pressable
+                onPress={() => setReminderTimePickerVisible(false)}
+                style={[styles.pickerBtn, { backgroundColor: colors.input }]}
+              >
+                <Text style={[styles.pickerBtnText, { color: colors.textSecondary }]}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  const normalized = new Date(reminderTimeDraft);
+                  normalized.setSeconds(0, 0);
+                  setReminderTime(normalized);
+                  setReminderTimePickerVisible(false);
                 }}
                 style={[styles.pickerBtn, { backgroundColor: colors.primary }]}
               >

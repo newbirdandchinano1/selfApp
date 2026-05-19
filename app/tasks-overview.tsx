@@ -397,7 +397,7 @@ export default function TasksOverviewScreen() {
 
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 32 }]} showsVerticalScrollIndicator={false}>
         <Text style={[styles.hint, { color: outline }]}>
-          以下统计从本版本起，在清单中勾选完成或恢复待办时写入本地数据库；删除待办后仍会保留当时的标题快照。点击概况卡片或热力图格子，在下方「执行历史」查看对应明细；再次点击可取消选中。
+          仅统计任务页顶部「待办」中的独立项，不含「任务列表」四象限内的项目/子任务。完成与恢复记录在勾选时写入本地库；删除后仍保留标题快照。点击概况卡片或热力图格子，在下方「执行历史」查看明细；再次点击可取消选中。
         </Text>
 
         <View style={[styles.card, { backgroundColor: surface, borderColor: border }]}>

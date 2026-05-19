@@ -1997,6 +1997,7 @@ export default function TasksScreen() {
   );
 
   const toggleTaskCollapse = React.useCallback((taskId: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setCollapsedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
   }, []);
 
@@ -2364,8 +2365,8 @@ export default function TasksScreen() {
           <Text style={[styles.pageHeaderTitle, { color: colors.text }]}>{formatTasksHeaderDate(logicalTodayYmd)}</Text>
           <AppIconButton
             icon="calendar-today"
-            onPress={() => router.push('/tasks-overview')}
-            accessibilityLabel="待办总览"
+            onPress={() => router.push('/tasks-calendar')}
+            accessibilityLabel="任务日历"
           />
         </View>
       </View>
@@ -2966,6 +2967,8 @@ export default function TasksScreen() {
 
                   const renderTaskLevel = (nodes: TaskTreeNode[], level: number): React.ReactNode => {
                     if (nodes.length === 0 || level > 3) return null;
+                    const childAccent = isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.28)';
+                    const hairlineColor = isDark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(203,213,225,0.9)';
                     return nodes.map((node) => {
                       const isDone = node.status === 'done' || node.status === 'cancelled';
                       const childrenAll = Array.isArray(node.children) ? node.children : [];
@@ -2973,41 +2976,57 @@ export default function TasksScreen() {
                       const hasAnyChildren = childrenAll.length > 0;
                       const hasChildrenToRender = children.length > 0;
                       const hasDeeperLevels = level === 3 && hasAnyChildren;
-                      const canToggleCollapse = level === 1 && hasAnyChildren;
+                      const canToggleCollapse = hasAnyChildren;
                       const isCollapsed = canToggleCollapse ? !!collapsedTaskIds[node.id] : false;
                       const isExpandedTask = canToggleCollapse ? !isCollapsed : true;
+                      const isChildRow = level > 1;
                       const noteText = (node.note ?? '').trim();
                       const dueDate = node.due_date?.slice(0, 10) ?? '';
                       const dueOverdue = isTaskDueOverdue(dueDate, isDone, logicalTodayYmd);
                       const effectivePriority = getEffectiveTaskPriority(node, logicalTodayYmd);
-                      const hintPaddingLeft =
-                        10 +
-                        level * TASK_INDENT +
-                        (canToggleCollapse ? 22 + 8 : 0) +
-                        14 +
-                        8;
+                      const hintPaddingLeft = 10 + 22 + 8 + (isChildRow ? 28 : 0) + 14 + 8;
                       return (
                         <View key={node.id}>
                           <View
                             style={[
                               styles.projectTaskRow,
+                              styles.projectTaskRowFlat,
                               {
                                 paddingLeft: 10,
-                                paddingVertical: 10,
-                                marginTop: 6,
-                                borderRadius: 10,
-                                backgroundColor: isDark ? colors.surfaceMuted : colors.surface,
+                                paddingVertical: isChildRow ? 6 : 8,
                                 borderBottomWidth: StyleSheet.hairlineWidth,
-                                borderBottomColor: isDark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(203,213,225,0.9)',
+                                borderBottomColor: hairlineColor,
                               },
                             ]}>
-                            <View style={styles.treeColumns}>
-                              {Array.from({ length: level }).map((_, idx) => (
-                                <View key={`${node.id}_col_${idx}`} style={[styles.treeColumn, { width: TASK_INDENT }]}>
-                                  {/* keep column width for indentation; no connector line */}
-                                </View>
-                              ))}
-                            </View>
+                            {canToggleCollapse ? (
+                              <Pressable
+                                onPress={(e) => {
+                                  e.stopPropagation?.();
+                                  toggleTaskCollapse(node.id);
+                                }}
+                                hitSlop={8}
+                                accessibilityRole="button"
+                                accessibilityLabel={isExpandedTask ? '收起子任务' : '展开子任务'}
+                                accessibilityState={{ expanded: isExpandedTask }}
+                                style={({ pressed }) => [
+                                  styles.taskExpandBtn,
+                                  { backgroundColor: isDark ? 'rgba(96,165,250,0.12)' : 'rgba(0,88,190,0.08)' },
+                                  pressed && { opacity: 0.75 },
+                                ]}>
+                                <MaterialIcons
+                                  name={isExpandedTask ? 'expand-less' : 'expand-more'}
+                                  size={20}
+                                  color={primary}
+                                />
+                              </Pressable>
+                            ) : (
+                              <View style={styles.taskExpandBtnPlaceholder} />
+                            )}
+                            {isChildRow ? (
+                              <View style={styles.taskChildMark} accessible accessibilityLabel={`第 ${level} 层子任务`}>
+                                <MaterialIcons name="subdirectory-arrow-right" size={16} color={childAccent} />
+                              </View>
+                            ) : null}
                             <Pressable
                               onPress={(e) => {
                                 e.stopPropagation?.();
@@ -3029,13 +3048,30 @@ export default function TasksScreen() {
                               hitSlop={8}
                               style={({ pressed }) => [{ flex: 1, minWidth: 0 }, pressed && { opacity: 0.85 }]}>
                               <View style={styles.projectTaskMain}>
+                              {hasAnyChildren ? (
+                                <View
+                                  style={[
+                                    styles.projectTaskParentTag,
+                                    {
+                                      alignSelf: 'flex-start',
+                                      backgroundColor: isDark ? 'rgba(96,165,250,0.14)' : 'rgba(0,88,190,0.1)',
+                                      borderColor: isDark ? 'rgba(96,165,250,0.35)' : 'rgba(0,88,190,0.22)',
+                                    },
+                                  ]}>
+                                  <MaterialIcons name="account-tree" size={12} color={primary} />
+                                  <Text style={[styles.projectTaskParentTagText, { color: primary }]}>
+                                    {childrenAll.length} 项子任务
+                                  </Text>
+                                </View>
+                              ) : null}
                               <View style={styles.taskTitleRow}>
                                 <Text
                                   style={[
                                     styles.projectTaskText,
+                                    level > 1 && styles.projectTaskTextChild,
                                     {
                                       color: isDone ? colors.textMuted : dueOverdue ? error : colors.text,
-                                      fontWeight: dueOverdue && !isDone ? '800' : '600',
+                                      fontWeight: dueOverdue && !isDone ? '800' : level > 1 ? '600' : '700',
                                       textDecorationLine: isDone ? 'line-through' : 'none',
                                       opacity: isDone ? 0.85 : 1,
                                     },
@@ -3125,12 +3161,20 @@ export default function TasksScreen() {
                                 );
                               })() : null}
                               {!!noteText && (
-                                <View style={[styles.projectTaskNoteWrap, { backgroundColor: `${primary}0E`, borderLeftColor: primary }]}>
-                                  <Text style={[styles.projectTaskNoteText, { color: colors.textSecondary }]}>
+                                <View style={[styles.projectTaskNoteRow, { borderTopColor: hairlineColor }]}>
+                                  <MaterialIcons name="sticky-note-2" size={13} color={outline} style={styles.projectTaskNoteIcon} />
+                                  <Text
+                                    style={[styles.projectTaskNoteText, { color: colors.textSecondary }]}
+                                    numberOfLines={3}>
                                     {noteText}
                                   </Text>
                                 </View>
                               )}
+                              {canToggleCollapse && isCollapsed ? (
+                                <Text style={[styles.projectTaskCollapsedHint, { color: outline }]}>
+                                  已收起 {childrenAll.length} 项子任务，点击左侧箭头展开
+                                </Text>
+                              ) : null}
                             </View>
                             </Pressable>
                           </View>
@@ -3225,8 +3269,19 @@ export default function TasksScreen() {
                               <Text style={[styles.projectSub, { color: outline }]}>分类 {categoryLabel}</Text>
                             </View>
                             {noteText ? (
-                              <View style={[styles.projectNoteWrap, { backgroundColor: `${primary}12`, borderLeftColor: primary }]}>
-                                <Text style={[styles.projectNote, { color: colors.textSecondary }]}>
+                              <View
+                                style={[
+                                  styles.projectNoteRow,
+                                  {
+                                    borderTopColor: isDark
+                                      ? 'rgba(148, 163, 184, 0.22)'
+                                      : 'rgba(203,213,225,0.9)',
+                                  },
+                                ]}>
+                                <MaterialIcons name="notes" size={14} color={outline} style={styles.projectNoteIcon} />
+                                <Text
+                                  style={[styles.projectNoteText, { color: colors.textSecondary }]}
+                                  numberOfLines={2}>
                                   {noteText}
                                 </Text>
                               </View>
@@ -4040,14 +4095,16 @@ const styles = StyleSheet.create({
   },
   projectTitle: { fontSize: 16, fontWeight: '800', marginBottom: 2 },
   projectSubRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  projectNoteWrap: {
+  projectNoteRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
     marginTop: 6,
-    borderLeftWidth: 3,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    paddingTop: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
-  projectNote: { fontSize: 12, fontWeight: '500', lineHeight: 16 },
+  projectNoteIcon: { marginTop: 1 },
+  projectNoteText: { flex: 1, fontSize: 12, fontWeight: '500', lineHeight: 18, fontStyle: 'italic' },
   projectMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 },
   projectSub: { fontSize: 10, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
   projectSubStrong: { fontSize: 10, fontWeight: '900', letterSpacing: 0.6 },
@@ -4069,6 +4126,21 @@ const styles = StyleSheet.create({
 
   projectTaskBody: { borderTopWidth: 1, paddingHorizontal: 10, paddingVertical: 10, gap: 6 },
   projectTaskRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, minHeight: 24 },
+  projectTaskRowFlat: { gap: 6 },
+  taskChildMark: { width: 20, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
+  projectTaskParentTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    flexShrink: 0,
+  },
+  projectTaskParentTagText: { fontSize: 10, fontWeight: '800' },
+  projectTaskTextChild: { fontSize: 12 },
+  projectTaskCollapsedHint: { fontSize: 11, fontWeight: '600', marginTop: 4 },
   taskExpandBtn: {
     width: 22,
     height: 22,
@@ -4118,14 +4190,16 @@ const styles = StyleSheet.create({
   projectTaskProgressLabel: { fontSize: 10, fontWeight: '800' },
   projectTaskProgressTrack: { height: 5, borderRadius: 999, overflow: 'hidden' },
   projectTaskProgressFill: { height: '100%' },
-  projectTaskNoteWrap: {
-    marginTop: 2,
-    borderLeftWidth: 3,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+  projectTaskNoteRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    marginTop: 4,
+    paddingTop: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
-  projectTaskNoteText: { fontSize: 12, fontWeight: '500', lineHeight: 16 },
+  projectTaskNoteIcon: { marginTop: 1 },
+  projectTaskNoteText: { flex: 1, fontSize: 12, fontWeight: '500', lineHeight: 18, fontStyle: 'italic' },
   projectTaskEmpty: { fontSize: 12, fontWeight: '700' },
   projectTaskEllipsis: { marginTop: 2, fontSize: 11, fontWeight: '700' },
   projectTaskEllipsisInline: { marginTop: 2, fontSize: 11, fontWeight: '700' },

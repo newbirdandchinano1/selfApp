@@ -1,4 +1,5 @@
 import { getDatabase } from '../../database.native';
+import { TASK_OVERVIEW_EVENT_SCOPE_WHERE, TASK_OVERVIEW_SCOPE_WHERE } from './task-overview-scope';
 
 export type TaskExecutionEventAction = 'completed' | 'reopened';
 
@@ -30,8 +31,9 @@ export async function getTaskExecutionEventsForLocalDay(ymd: string): Promise<Ta
     `SELECT e.id, e.task_id, e.action, e.created_at,
             COALESCE(NULLIF(trim(t.title), ''), NULLIF(trim(e.task_title), '')) AS task_title
        FROM task_execution_events e
-       LEFT JOIN tasks t ON t.id = e.task_id
+       INNER JOIN tasks t ON t.id = e.task_id
       WHERE date(e.created_at) = date(?)
+        AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}
       ORDER BY datetime(e.created_at) ASC`,
     [ymd]
   );
@@ -46,8 +48,9 @@ export async function getTaskExecutionEventsByAction(
     `SELECT e.id, e.task_id, e.action, e.created_at,
             COALESCE(NULLIF(trim(t.title), ''), NULLIF(trim(e.task_title), '')) AS task_title
        FROM task_execution_events e
-       LEFT JOIN tasks t ON t.id = e.task_id
+       INNER JOIN tasks t ON t.id = e.task_id
       WHERE e.action = ?
+        AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}
       ORDER BY datetime(e.created_at) DESC
       LIMIT ?`,
     [action, limit]
@@ -60,7 +63,8 @@ export async function getRecentTaskExecutionEvents(limit: number): Promise<TaskE
     `SELECT e.id, e.task_id, e.action, e.created_at,
             COALESCE(NULLIF(trim(t.title), ''), NULLIF(trim(e.task_title), '')) AS task_title
        FROM task_execution_events e
-       LEFT JOIN tasks t ON t.id = e.task_id
+       INNER JOIN tasks t ON t.id = e.task_id
+      WHERE ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}
       ORDER BY datetime(e.created_at) DESC
       LIMIT ?`,
     [limit]
@@ -71,12 +75,14 @@ export async function getRecentTaskExecutionEvents(limit: number): Promise<TaskE
 export async function getTaskCompletionCountsByDayRange(startYmd: string, endYmd: string): Promise<Map<string, number>> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<{ day: string; cnt: number }>(
-    `SELECT date(created_at) AS day, COUNT(*) AS cnt
-       FROM task_execution_events
-      WHERE action = 'completed'
-        AND date(created_at) >= date(?)
-        AND date(created_at) <= date(?)
-      GROUP BY date(created_at)`,
+    `SELECT date(e.created_at) AS day, COUNT(*) AS cnt
+       FROM task_execution_events e
+       INNER JOIN tasks t ON t.id = e.task_id
+      WHERE e.action = 'completed'
+        AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}
+        AND date(e.created_at) >= date(?)
+        AND date(e.created_at) <= date(?)
+      GROUP BY date(e.created_at)`,
     [startYmd, endYmd]
   );
   const m = new Map<string, number>();
@@ -89,7 +95,11 @@ export async function getTaskCompletionCountsByDayRange(startYmd: string, endYmd
 export async function getFirstCompletedEventDayYmd(): Promise<string | null> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ d: string | null }>(
-    `SELECT date(MIN(created_at)) AS d FROM task_execution_events WHERE action = 'completed'`
+    `SELECT date(MIN(e.created_at)) AS d
+       FROM task_execution_events e
+       INNER JOIN tasks t ON t.id = e.task_id
+      WHERE e.action = 'completed'
+        AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}`
   );
   const d = row?.d?.trim();
   return d || null;
@@ -111,11 +121,11 @@ export async function getTaskGlobalInsightCounts(): Promise<{
     reop: number | null;
   }>(
     `SELECT
-       (SELECT COUNT(1) FROM tasks WHERE deleted_at IS NULL) AS totalActive,
-       (SELECT COUNT(1) FROM tasks WHERE deleted_at IS NULL AND status NOT IN ('done','cancelled')) AS open,
-       (SELECT COUNT(1) FROM tasks WHERE deleted_at IS NULL AND status IN ('done','cancelled')) AS donecc,
-       (SELECT COUNT(1) FROM task_execution_events WHERE action = 'completed') AS comp,
-       (SELECT COUNT(1) FROM task_execution_events WHERE action = 'reopened') AS reop`
+       (SELECT COUNT(1) FROM tasks WHERE deleted_at IS NULL AND ${TASK_OVERVIEW_SCOPE_WHERE}) AS totalActive,
+       (SELECT COUNT(1) FROM tasks WHERE deleted_at IS NULL AND status NOT IN ('done','cancelled') AND ${TASK_OVERVIEW_SCOPE_WHERE}) AS open,
+       (SELECT COUNT(1) FROM tasks WHERE deleted_at IS NULL AND status IN ('done','cancelled') AND ${TASK_OVERVIEW_SCOPE_WHERE}) AS donecc,
+       (SELECT COUNT(1) FROM task_execution_events e INNER JOIN tasks t ON t.id = e.task_id WHERE e.action = 'completed' AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}) AS comp,
+       (SELECT COUNT(1) FROM task_execution_events e INNER JOIN tasks t ON t.id = e.task_id WHERE e.action = 'reopened' AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}) AS reop`
   );
   return {
     totalActive: Number(row?.totalActive ?? 0),

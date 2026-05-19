@@ -1201,6 +1201,23 @@ export default function HealthScreen() {
       if (payload.mode === 'ai') {
         const text = payload.text.trim();
         if (!text) return;
+        if (payload.parsed) {
+          const d = payload.parsed;
+          const sum = d.hydration_ml + d.protein_g + d.carbohydrate_g + d.sodium_mg;
+          if (!Number.isFinite(sum) || sum <= 0) {
+            Alert.alert(
+              '无法记录',
+              '摄入量需大于 0，请修改预解析数值或写得更具体后重新预解析。'
+            );
+            return;
+          }
+          const ok = await persistAiTextIntake(d.hydration_ml, d.protein_g, d.carbohydrate_g, d.sodium_mg, {
+            displayTitle: text,
+            aiComment: d.ai_evaluation?.trim(),
+          });
+          if (!ok) Alert.alert('保存失败', '请稍后重试。');
+          return;
+        }
         setPendingIntake({ id: pendingId, kind: 'ai', label: text });
         void (async () => {
           try {

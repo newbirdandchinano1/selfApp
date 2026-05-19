@@ -35,7 +35,10 @@ import {
   validateFinanceLedgerBalanceAfterChange,
 } from '@/lib/repositories/finance/finance';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
-import { isFinanceTransactionExcludedFromBudget } from '@/lib/repositories/finance/finance-transaction-extra';
+import {
+  getBudgetFixedExpenseIdFromTxnExtra,
+  isFinanceTransactionExcludedFromBudget,
+} from '@/lib/repositories/finance/finance-transaction-extra';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { notifyAutoLedgerFailure } from '@/lib/auto-ledger-notify';
@@ -486,6 +489,7 @@ export default function FinanceScreen() {
   const [budgetBaseDraft, setBudgetBaseDraft] = React.useState('');
   const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
   const [fixedExpensesDraft, setFixedExpensesDraft] = React.useState<BudgetFixedExpense[]>([]);
+  const [payingFixedExpenseId, setPayingFixedExpenseId] = React.useState<string | null>(null);
   /** 收支明细：除「今天」外，初次最多再展示的历史日数（2 → 今天+前两日共三天） */
   const INITIAL_HISTORY_DAY_SLICES = 2;
   /** 触底后继续加载的历史日数（按有记录的自然日聚合） */
@@ -1213,6 +1217,27 @@ export default function FinanceScreen() {
       }, 0),
     [getTxnDisplayAmount, budgetPeriodTransactions]
   );
+
+  /** 本预算周期内，各固定支出最近一次快速支付对应的流水 ID。 */
+  const budgetFixedExpenseQuickPayTxnIdByFixedId = React.useMemo(() => {
+    const candidates: { fixedId: string; txnId: string; at: number }[] = [];
+    for (const txn of budgetPeriodTransactions) {
+      if (txn.transaction_type !== 'expense') continue;
+      const fixedId = getBudgetFixedExpenseIdFromTxnExtra(txn.extra_data);
+      if (!fixedId) continue;
+      candidates.push({
+        fixedId,
+        txnId: txn.id,
+        at: new Date(txn.happened_at).getTime(),
+      });
+    }
+    candidates.sort((a, b) => b.at - a.at);
+    const map = new Map<string, string>();
+    for (const c of candidates) {
+      if (!map.has(c.fixedId)) map.set(c.fixedId, c.txnId);
+    }
+    return map;
+  }, [budgetPeriodTransactions]);
   const monthlySurplus = monthlyIncome - monthlyExpense;
   const savingsRate = monthlyIncome > 0 ? (monthlySurplus / monthlyIncome) * 100 : 0;
 
@@ -2028,6 +2053,157 @@ export default function FinanceScreen() {
     ]);
   }, []);
 
+  const isFixedExpensePayable = React.useCallback((item: BudgetFixedExpense) => {
+    return item.name.trim().length > 0 && Number.isFinite(item.amount) && item.amount > 0;
+  }, []);
+
+  const handleQuickPayFixedExpense = React.useCallback(
+    (item: BudgetFixedExpense) => {
+      const title = item.name.trim();
+      if (!title || !(item.amount > 0)) return;
+
+      const accountId = getDefaultSheetAccountIdForTab('expense', financeAccounts);
+      const account =
+        (accountId ? financeAccounts.find((a) => a.id === accountId) : null) ?? financeAccounts[0] ?? null;
+      if (!account) {
+        Alert.alert('暂无账户', '请先添加可用于支付的账户。');
+        return;
+      }
+
+      const existingTxnId = budgetFixedExpenseQuickPayTxnIdByFixedId.get(item.id);
+      if (existingTxnId) {
+        void (async () => {
+          try {
+            setPayingFixedExpenseId(item.id);
+            await deleteFinanceTransaction(existingTxnId);
+            await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+            scheduleGithubFinanceCloudSyncDebounced();
+          } catch (error) {
+            console.warn('Failed to undo fixed expense quick pay:', error);
+            Alert.alert(
+              '撤销失败',
+              error instanceof Error && error.message.trim() ? error.message : '无法撤销支付记录，请稍后重试。',
+            );
+          } finally {
+            setPayingFixedExpenseId(null);
+          }
+        })();
+        return;
+      }
+
+      const amountAbs = item.amount;
+      const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
+      const boundsErr = validateFinanceLedgerBalanceAfterChange(
+        account.sign_rule,
+        account.balance ?? 0,
+        'expense',
+        signedAmount,
+        null,
+      );
+      if (boundsErr) {
+        Alert.alert('无法记账', boundsErr);
+        return;
+      }
+
+      const cat = expenseCategories[0];
+      void (async () => {
+        try {
+          setPayingFixedExpenseId(item.id);
+          const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+          await createFinanceTransaction({
+            id: txnId,
+            name: title,
+            happened_at: new Date().toISOString(),
+            account_id: account.id,
+            transaction_type: 'expense',
+            amount: signedAmount,
+            note: '固定支出快速支付',
+            extra_data: JSON.stringify({
+              manual: true,
+              budget_fixed_expense_pay: true,
+              budget_fixed_expense_id: item.id,
+              budget_month_key: currentMonthKey,
+              category_key: cat?.key ?? null,
+              category_label: cat?.label ?? null,
+            }),
+          });
+          await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+          scheduleGithubFinanceCloudSyncDebounced();
+        } catch (error) {
+          console.warn('Failed to quick-pay fixed expense:', error);
+          Alert.alert(
+            '支付失败',
+            error instanceof Error && error.message.trim() ? error.message : '记录保存失败，请稍后重试。',
+          );
+        } finally {
+          setPayingFixedExpenseId(null);
+        }
+      })();
+    },
+    [
+      budgetFixedExpenseQuickPayTxnIdByFixedId,
+      currentMonthKey,
+      expenseCategories,
+      financeAccounts,
+      getDefaultSheetAccountIdForTab,
+      loadFinanceAccounts,
+      loadFinanceTransactions,
+    ],
+  );
+
+  const renderFixedExpensePayButton = React.useCallback(
+    (item: BudgetFixedExpense) => {
+      if (!isFixedExpensePayable(item)) return null;
+      const isPaid = budgetFixedExpenseQuickPayTxnIdByFixedId.has(item.id);
+      const isBusy = payingFixedExpenseId === item.id;
+      return (
+        <Pressable
+          onPress={() => handleQuickPayFixedExpense(item)}
+          disabled={isBusy}
+          style={({ pressed }) => [
+            styles.budgetFixedExpensePayBtn,
+            {
+              borderColor: isPaid ? (isDark ? 'rgba(34,197,94,0.45)' : '#bbf7d0') : outlineVariant,
+              backgroundColor: isPaid
+                ? isDark
+                  ? 'rgba(34,197,94,0.14)'
+                  : '#f0fdf4'
+                : isDark
+                  ? 'rgba(96,165,250,0.12)'
+                  : '#eff6ff',
+              opacity: pressed || isBusy ? 0.78 : 1,
+            },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={isPaid ? `撤销${item.name}的快速支付` : `快速支付${item.name}`}>
+          {isBusy ? (
+            <ActivityIndicator size="small" color={primary} />
+          ) : (
+            <>
+              <MaterialIcons
+                name={isPaid ? 'check-circle' : 'payments'}
+                size={16}
+                color={isPaid ? '#16a34a' : primary}
+              />
+              <Text style={[styles.budgetFixedExpensePayText, { color: isPaid ? '#16a34a' : primary }]}>
+                {isPaid ? '已付' : '支付'}
+              </Text>
+            </>
+          )}
+        </Pressable>
+      );
+    },
+    [
+      handleQuickPayFixedExpense,
+      isDark,
+      isFixedExpensePayable,
+      outlineVariant,
+      budgetFixedExpenseQuickPayTxnIdByFixedId,
+      payingFixedExpenseId,
+      primary,
+    ],
+  );
+
   const sanitizeFixedExpensesDraft = React.useCallback((): BudgetFixedExpense[] => {
     const out: BudgetFixedExpense[] = [];
     for (const item of fixedExpensesDraft) {
@@ -2805,6 +2981,37 @@ export default function FinanceScreen() {
                           />
                         </View>
                       </View>
+
+                      {(persistedBudgetSetting?.fixedExpenses?.length ?? 0) > 0 ? (
+                        <View style={styles.budgetFixedPaySection}>
+                          <Text style={[styles.budgetFixedPaySectionTitle, { color: subtle }]}>固定支出</Text>
+                          <View style={styles.budgetFixedPayList}>
+                            {persistedBudgetSetting!.fixedExpenses!.map((item) => (
+                              <View
+                                key={item.id}
+                                style={[
+                                  styles.budgetFixedPayChip,
+                                  {
+                                    backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb',
+                                    borderColor: outlineVariant,
+                                  },
+                                ]}>
+                                <View style={styles.budgetFixedPayChipMain}>
+                                  <Text style={[styles.budgetFixedPayChipName, { color: text }]} numberOfLines={1}>
+                                    {item.name}
+                                  </Text>
+                                  <Text style={[styles.budgetFixedPayChipAmount, { color: subtle }]}>
+                                    {showNetAmounts
+                                      ? formatCurrencyWithDecimals(item.amount)
+                                      : hiddenAmountText}
+                                  </Text>
+                                </View>
+                                {renderFixedExpensePayButton(item)}
+                              </View>
+                            ))}
+                          </View>
+                        </View>
+                      ) : null}
                     </View>
 
                     <View style={styles.budgetTodayRing}>
@@ -4214,6 +4421,7 @@ export default function FinanceScreen() {
                             style={[styles.budgetFixedExpenseAmountInput, { color: text }]}
                           />
                         </View>
+                        {renderFixedExpensePayButton(item)}
                         <Pressable
                           onPress={() => handleDeleteFixedExpense(item.id, item.name.trim())}
                           style={({ pressed }) => [
@@ -5881,6 +6089,59 @@ const styles = StyleSheet.create({
   },
   budgetFixedExpenseDeleteBtn: {
     padding: 4,
+  },
+  budgetFixedExpensePayBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minWidth: 62,
+    justifyContent: 'center',
+  },
+  budgetFixedExpensePayText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  budgetFixedPaySection: {
+    marginTop: 12,
+    gap: 8,
+  },
+  budgetFixedPaySectionTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  budgetFixedPayList: {
+    gap: 8,
+  },
+  budgetFixedPayChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  budgetFixedPayChipMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    minWidth: 0,
+  },
+  budgetFixedPayChipName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '500',
+    minWidth: 0,
+  },
+  budgetFixedPayChipAmount: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   budgetFixedExpensesSum: {
     fontSize: 13,

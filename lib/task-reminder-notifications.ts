@@ -1,19 +1,20 @@
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
-import { isTaskRepeatDueOnLogicalDay, parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
-import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
+import {
+  buildTaskReminderFireAt,
+  isTaskReminderConfigured,
+} from '@/lib/task-reminder-schedule';
 import { Platform } from 'react-native';
 
 const NOTIFICATION_PREFIX = 'selfapp-task-reminder:';
 const ANDROID_CHANNEL_ID = 'task-reminders';
-/** 仅日期、全天或未勾选具体时刻时的默认提醒时刻（本地） */
-const DEFAULT_EVENT_HOUR = 9;
-const DEFAULT_EVENT_MINUTE = 0;
 
 type TaskExtraSchedule = {
   mode?: 'date' | 'time';
   allDay?: boolean;
   hasExactTime?: boolean;
   reminderOption?: string;
+  reminderHour?: number;
+  reminderMinute?: number;
   date?: string;
   range?: { start?: string; end?: string };
   startTime?: string;
@@ -52,7 +53,7 @@ function getAnchorYmd(task: TaskRow, schedule: TaskExtraSchedule | null | undefi
 function parseAdvanceDays(reminderOption: string): number {
   const t = reminderOption.trim();
   if (!t || t === '不提前') return 0;
-  const m = /^提前(\d+)天$/.exec(t);
+  const m = /^提前(\d+)天/.exec(t);
   if (m) return Math.min(30, Math.max(0, parseInt(m[1], 10) || 0));
   return 0;
 }
@@ -61,30 +62,11 @@ function resolveReminderOption(extra: ReturnType<typeof parseTaskExtra>): string
   const fromSchedule = extra.schedule?.reminderOption?.trim();
   if (fromSchedule) return fromSchedule;
   const fromReminder = extra.reminder?.trim();
-  if (fromReminder) return fromReminder;
-  return '不提前';
-}
-
-function buildEventLocalDate(ymd: string, schedule: TaskExtraSchedule | null | undefined): Date {
-  const [y, mo, d] = ymd.split('-').map((x) => parseInt(x, 10));
-  const base = new Date(y, mo - 1, d);
-  const allDay = schedule?.allDay === true;
-  const hasExact = schedule?.hasExactTime === true && typeof schedule?.startTime === 'string' && schedule.startTime.length > 0;
-  if (!allDay && hasExact) {
-    const t = new Date(schedule!.startTime as string);
-    if (!Number.isNaN(t.getTime())) {
-      base.setHours(t.getHours(), t.getMinutes(), t.getSeconds(), t.getMilliseconds());
-      return base;
-    }
+  if (fromReminder) {
+    const m = /^(提前\d+天)/.exec(fromReminder);
+    if (m) return m[1];
   }
-  base.setHours(DEFAULT_EVENT_HOUR, DEFAULT_EVENT_MINUTE, 0, 0);
-  return base;
-}
-
-function subtractLocalDays(date: Date, days: number): Date {
-  const next = new Date(date.getTime());
-  next.setDate(next.getDate() - days);
-  return next;
+  return '不提前';
 }
 
 async function ensureAndroidChannel() {
@@ -109,7 +91,7 @@ async function cancelAllTaskReminderNotifications() {
 }
 
 /**
- * 根据当前任务列表重新登记本地通知：未完成且有截止信息的任务在「提前 N 天 / 不提前」规则下各最多一条。
+ * 根据当前任务列表重新登记本地通知：未完成、有截止日且用户配置了提前提醒的任务各最多一条。
  */
 export async function syncScheduledTaskReminders(tasks: TaskRow[]): Promise<void> {
   if (Platform.OS === 'web') return;
@@ -136,8 +118,6 @@ export async function syncScheduledTaskReminders(tasks: TaskRow[]): Promise<void
 
   await ensureAndroidChannel();
 
-  const boundary = await loadTasksDayBoundary();
-  const logicalTodayYmd = getLogicalLocalYmd(new Date(), boundary);
   const now = Date.now();
   const SchedulableTriggerInputTypes = Notifications.SchedulableTriggerInputTypes;
 
@@ -146,25 +126,16 @@ export async function syncScheduledTaskReminders(tasks: TaskRow[]): Promise<void
 
     const extra = parseTaskExtra(task.extra_data);
     const reminderOpt = resolveReminderOption(extra);
-    const advance = parseAdvanceDays(reminderOpt);
-    let ymd = getAnchorYmd(task, extra.schedule);
-    if (!ymd) {
-      const repeat = parseTaskRepeatSchedule(task.extra_data);
-      if (repeat && isTaskRepeatDueOnLogicalDay(logicalTodayYmd, repeat)) {
-        ymd = logicalTodayYmd;
-      }
-    }
-    if (!ymd) continue;
-
-    let eventAt: Date;
-    try {
-      eventAt = buildEventLocalDate(ymd, extra.schedule);
-    } catch {
+    if (!isTaskReminderConfigured(reminderOpt, extra.reminder)) {
       continue;
     }
-    if (Number.isNaN(eventAt.getTime())) continue;
 
-    const fireAt = subtractLocalDays(eventAt, advance);
+    const advance = parseAdvanceDays(reminderOpt);
+    const ymd = getAnchorYmd(task, extra.schedule);
+    if (!ymd) continue;
+
+    const fireAt = buildTaskReminderFireAt(ymd, advance, extra.schedule);
+    if (!fireAt || Number.isNaN(fireAt.getTime())) continue;
     if (fireAt.getTime() <= now + 2000) continue;
 
     const id = `${NOTIFICATION_PREFIX}${task.id}`;

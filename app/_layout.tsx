@@ -20,6 +20,7 @@ import { hydrateGithubCloudDirtyFromStorage } from '@/lib/github-sqlite-dirty-tr
 import { runSilentGithubCloudSyncIfRemoteNewer } from '@/lib/github-cloud-launch';
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
+import { TaskReminderNotificationListener } from '@/components/task-reminder-notification-listener';
 
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
@@ -123,6 +124,7 @@ function RootLayoutInner() {
         ) : (
           <>
             <ScreenshotDeepLinkListener />
+            <TaskReminderNotificationListener />
             <FinanceSheetHost />
             <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
@@ -144,6 +146,8 @@ function RootLayoutInner() {
             <Stack.Screen name="health-calendar" />
             <Stack.Screen name="intake-history" />
             <Stack.Screen name="finance-calendar" />
+            <Stack.Screen name="tasks-calendar" />
+            <Stack.Screen name="tasks-overview" />
             <Stack.Screen name="edit-finance-transaction/[id]" />
             <Stack.Screen name="savings-plan" />
             <Stack.Screen name="cash-flow" />

@@ -11,6 +11,7 @@ import {
   resolveInheritedDefaultSchedule,
 } from '@/lib/schedule-inherit';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
+import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
 import { createTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -94,6 +95,8 @@ type TaskScheduleMeta = Pick<
   | 'allDay'
   | 'hasExactTime'
   | 'reminderOption'
+  | 'reminderHour'
+  | 'reminderMinute'
   | 'repeatOption'
   | 'repeatSummary'
   | 'weeklyDays'
@@ -290,13 +293,21 @@ export default function AddTaskScreen() {
       const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
       setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
     }
-    setReminderText(picked.reminderOption === '不提前' ? '' : picked.reminderOption);
+    setReminderText(
+      formatTaskReminderLabel({
+        reminderOption: picked.reminderOption,
+        reminderHour: picked.reminderHour,
+        reminderMinute: picked.reminderMinute,
+      }),
+    );
     setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
     setScheduleMeta({
       mode: picked.mode,
       allDay: picked.allDay,
       hasExactTime: picked.hasExactTime,
       reminderOption: picked.reminderOption,
+      reminderHour: picked.reminderHour,
+      reminderMinute: picked.reminderMinute,
       repeatOption: picked.repeatOption,
       repeatSummary: picked.repeatSummary,
       weeklyDays: picked.weeklyDays,
@@ -318,6 +329,8 @@ export default function AddTaskScreen() {
           allDay: scheduleMeta.allDay,
           hasExactTime: scheduleMeta.hasExactTime,
           reminderOption: scheduleMeta.reminderOption,
+          reminderHour: scheduleMeta.reminderHour,
+          reminderMinute: scheduleMeta.reminderMinute,
           repeatOption: scheduleMeta.repeatOption,
           repeatSummary: scheduleMeta.repeatSummary,
           weeklyDays: scheduleMeta.weeklyDays,

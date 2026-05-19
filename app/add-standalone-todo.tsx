@@ -3,8 +3,10 @@ import { ScreenHeader } from '@/components/ui/screen-header';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { consumeSchedulePickerResult } from '@/lib/schedule-picker-bridge';
+import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
 import { createTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority } from '@/lib/repositories/tasks/task.types';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -36,6 +38,8 @@ type SchedulePickerResult = {
   allDay: boolean;
   hasExactTime: boolean;
   reminderOption: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  reminderHour?: number;
+  reminderMinute?: number;
   repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary: string;
   weeklyDays: number[];
@@ -70,6 +74,8 @@ type TaskScheduleMeta = Pick<
   | 'allDay'
   | 'hasExactTime'
   | 'reminderOption'
+  | 'reminderHour'
+  | 'reminderMinute'
   | 'repeatOption'
   | 'repeatSummary'
   | 'weeklyDays'
@@ -111,6 +117,22 @@ function extractDueDateFromDeadlineText(deadlineText: string) {
   return all[all.length - 1] ?? null;
 }
 
+function extractDueYmdFromSchedulePick(picked: SchedulePickerResult): string | null {
+  if (picked.repeatOption !== '不重复') return null;
+  if (picked.mode === 'time' && picked.range) {
+    return formatDate(picked.range.end);
+  }
+  if (picked.date) {
+    return formatDate(picked.date);
+  }
+  return null;
+}
+
+function isDueYmdToday(dueYmd: string | null): boolean {
+  if (!dueYmd) return false;
+  return dueYmd === getLogicalLocalYmd(new Date(), getDayBoundarySync());
+}
+
 /** 与任务库 priority 字段及 add-task 中文标签规则保持一致 */
 function labelToTaskPriority(label: string): TaskPriority {
   const text = label.toLowerCase();
@@ -131,7 +153,7 @@ export default function AddStandaloneTodoScreen() {
 
   const [title, setTitle] = React.useState('');
   const [notes, setNotes] = React.useState('');
-  const [priority, setPriority] = React.useState<PriorityKey>('urgent-important');
+  const [priority, setPriority] = React.useState<PriorityKey>('not-urgent-not-important');
   const [deadlineText, setDeadlineText] = React.useState('');
   const [reminderText, setReminderText] = React.useState('');
   const [repeatText, setRepeatText] = React.useState('');
@@ -162,13 +184,21 @@ export default function AddStandaloneTodoScreen() {
       const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
       setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
     }
-    setReminderText(picked.reminderOption === '不提前' ? '' : picked.reminderOption);
+    setReminderText(
+      formatTaskReminderLabel({
+        reminderOption: picked.reminderOption,
+        reminderHour: picked.reminderHour,
+        reminderMinute: picked.reminderMinute,
+      }),
+    );
     setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
     setScheduleMeta({
       mode: picked.mode,
       allDay: picked.allDay,
       hasExactTime: picked.hasExactTime,
       reminderOption: picked.reminderOption,
+      reminderHour: picked.reminderHour,
+      reminderMinute: picked.reminderMinute,
       repeatOption: picked.repeatOption,
       repeatSummary: picked.repeatSummary,
       weeklyDays: picked.weeklyDays,
@@ -179,6 +209,9 @@ export default function AddStandaloneTodoScreen() {
       startTime: picked.startTime,
       endTime: picked.endTime,
     });
+    if (isDueYmdToday(extractDueYmdFromSchedulePick(picked))) {
+      setPriority('urgent-important');
+    }
   }, []);
 
   const openSchedulePicker = React.useCallback(() => {
@@ -189,6 +222,8 @@ export default function AddStandaloneTodoScreen() {
           allDay: scheduleMeta.allDay,
           hasExactTime: scheduleMeta.hasExactTime,
           reminderOption: scheduleMeta.reminderOption,
+          reminderHour: scheduleMeta.reminderHour,
+          reminderMinute: scheduleMeta.reminderMinute,
           repeatOption: scheduleMeta.repeatOption,
           repeatSummary: scheduleMeta.repeatSummary,
           weeklyDays: scheduleMeta.weeklyDays,
@@ -220,7 +255,7 @@ export default function AddStandaloneTodoScreen() {
     }, [readScheduleResult]),
   );
 
-  const currentPriorityLabel = priorityChips.find((c) => c.key === priority)?.label ?? '紧急重要';
+  const currentPriorityLabel = priorityChips.find((c) => c.key === priority)?.label ?? '不紧急不重要';
 
   const handleSave = async () => {
     const trimmed = title.trim();

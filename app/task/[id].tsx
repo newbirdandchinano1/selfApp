@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerResult } from '@/lib/schedule-picker-bridge';
+import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
 import { getTaskById, getTaskTreeByRootTaskId, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -19,6 +20,8 @@ type TaskScheduleMeta = Pick<
   | 'allDay'
   | 'hasExactTime'
   | 'reminderOption'
+  | 'reminderHour'
+  | 'reminderMinute'
   | 'repeatOption'
   | 'repeatSummary'
   | 'weeklyDays'
@@ -299,6 +302,8 @@ export default function TaskDetailScreen() {
       allDay: picked.allDay,
       hasExactTime: picked.hasExactTime,
       reminderOption: picked.reminderOption,
+      reminderHour: picked.reminderHour,
+      reminderMinute: picked.reminderMinute,
       repeatOption: picked.repeatOption,
       repeatSummary: picked.repeatSummary,
       weeklyDays: picked.weeklyDays,
@@ -311,7 +316,7 @@ export default function TaskDetailScreen() {
     };
     const nextMeta: TaskMetaExtra = {
       ...currentMeta,
-      reminder: picked.reminderOption === '不提前' ? '' : picked.reminderOption,
+      reminder: formatTaskReminderLabel(scheduleMeta),
       repeat: picked.repeatOption === '不重复' ? '' : picked.repeatSummary,
       schedule: scheduleMeta,
     };
@@ -431,6 +436,8 @@ export default function TaskDetailScreen() {
           allDay: schedule.allDay,
           hasExactTime: schedule.hasExactTime,
           reminderOption: schedule.reminderOption,
+          reminderHour: schedule.reminderHour,
+          reminderMinute: schedule.reminderMinute,
           repeatOption: schedule.repeatOption,
           repeatSummary: schedule.repeatSummary,
           weeklyDays: schedule.weeklyDays,

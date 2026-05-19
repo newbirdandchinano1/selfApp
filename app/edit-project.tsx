@@ -7,6 +7,7 @@ import {
 } from '@/lib/schedule-inherit';
 import { tightenAllProjectTasks } from '@/lib/tighten-task-schedules';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
+import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getDatabase } from '@/lib/database.native';
 import { parseProjectExtraDataWithAi } from '@/lib/repositories/projects/project-ai-review';
@@ -430,13 +431,21 @@ export default function EditProjectScreen() {
       const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
       setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
     }
-    setReminderText(picked.reminderOption === '不提前' ? '' : picked.reminderOption);
+    setReminderText(
+      formatTaskReminderLabel({
+        reminderOption: picked.reminderOption,
+        reminderHour: picked.reminderHour,
+        reminderMinute: picked.reminderMinute,
+      }),
+    );
     setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
     setScheduleMeta({
       mode: picked.mode,
       allDay: picked.allDay,
       hasExactTime: picked.hasExactTime,
       reminderOption: picked.reminderOption,
+      reminderHour: picked.reminderHour,
+      reminderMinute: picked.reminderMinute,
       repeatOption: picked.repeatOption,
       repeatSummary: picked.repeatSummary,
       weeklyDays: picked.weeklyDays,
@@ -520,7 +529,7 @@ export default function EditProjectScreen() {
       setProjectExtraData(extraData);
       const loadedSchedule = (extraData.schedule ?? null) as ProjectScheduleMeta | null;
       setScheduleMeta(loadedSchedule);
-      setReminderText(loadedSchedule?.reminderOption === '不提前' ? '' : loadedSchedule?.reminderOption ?? '');
+      setReminderText(loadedSchedule ? formatTaskReminderLabel(loadedSchedule) : '');
       setRepeatText(loadedSchedule?.repeatOption === '不重复' ? '' : loadedSchedule?.repeatSummary ?? '');
       setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
       const projectTasks = await getTasksByProjectId(projectId);
@@ -679,6 +688,8 @@ export default function EditProjectScreen() {
           allDay: scheduleMeta.allDay,
           hasExactTime: scheduleMeta.hasExactTime,
           reminderOption: scheduleMeta.reminderOption,
+          reminderHour: scheduleMeta.reminderHour,
+          reminderMinute: scheduleMeta.reminderMinute,
           repeatOption: scheduleMeta.repeatOption,
           repeatSummary: scheduleMeta.repeatSummary,
           weeklyDays: scheduleMeta.weeklyDays,
