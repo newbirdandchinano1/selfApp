@@ -53,7 +53,7 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
         "接收快捷指令传入的截图并自动 AI 记账。推荐：截屏 → 从输入获取图像 → 运行本操作；未传图时将尝试打开剪贴板记账（旧方式）。"
     )
 
-    /// 由下方 `UIApplication.shared.open` 打开深链，勿与 `openAppWhenRun = true` 叠加，
+    /// 由下方 UIApplication.shared.open 打开深链，勿与 openAppWhenRun = true 叠加，
     /// 否则快捷指令会报「无法与帮助程序通信」但记账流程仍可执行。
     static var openAppWhenRun: Bool = false
 
