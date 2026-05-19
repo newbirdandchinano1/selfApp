@@ -19,6 +19,7 @@ import {
   DEFAULT_GITHUB_OWNER,
   DEFAULT_GITHUB_REPO,
   clearGithubUserToken,
+  getGithubUserToken,
   hasGithubUserTokenSync,
   loadGithubBackupTokenCache,
   setGithubUserToken,
@@ -116,24 +117,30 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     setDraftBoundary(dayBoundary);
   }, [dayBoundary]);
 
+  const refreshGithubTokenFromStorage = useCallback(async () => {
+    await loadGithubBackupTokenCache();
+    const token = await getGithubUserToken();
+    const configured = typeof token === 'string' && token.length > 0;
+    setGithubTokenConfigured(configured);
+    setGithubTokenDraft(token ?? '');
+  }, []);
+
   useEffect(() => {
     void loadLastFullGithubBackupMeta();
     void loadAiLlmProviderPreference().then(() => setAiLlmProvider(getPreferredAiLlmProviderSync()));
-    void loadGithubBackupTokenCache().then(ok => setGithubTokenConfigured(ok));
-  }, [loadLastFullGithubBackupMeta]);
+    void refreshGithubTokenFromStorage();
+  }, [loadLastFullGithubBackupMeta, refreshGithubTokenFromStorage]);
 
   const saveGithubToken = useCallback(async () => {
-    const t = githubTokenDraft.trim();
-    if (!t) {
-      Alert.alert('GitHub Token', '请粘贴 Personal Access Token，或点「清除」移除已保存的 Token。');
+    if (githubTokenDraft.length === 0) {
+      Alert.alert('GitHub Token', '请输入内容后再保存，或点「清除」移除已保存的 Token。');
       return;
     }
     setGithubTokenSaving(true);
     try {
-      await setGithubUserToken(t);
+      await setGithubUserToken(githubTokenDraft);
       setGithubTokenConfigured(true);
-      setGithubTokenDraft('');
-      Alert.alert('已保存', 'GitHub Token 已写入本机安全存储，可进行云备份与同步。');
+      Alert.alert('已保存', 'Token 已写入本机并持久保存，重启应用后仍有效。');
     } catch (e) {
       Alert.alert('保存失败', e instanceof Error ? e.message : String(e));
     } finally {
@@ -421,7 +428,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
             <Text style={[styles.rowTitle, { color: text }]}>GitHub Personal Access Token</Text>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 18 }]}>
               仓库已内置：{DEFAULT_GITHUB_OWNER}/{DEFAULT_GITHUB_REPO}，备份目录 {DEFAULT_GITHUB_FULL_BACKUP_ROOT}
-              /。请在 GitHub 生成具备 repo 权限的 Token 后粘贴保存（仅存本机，不打进安装包）。
+              /。粘贴 Token 后点保存（仅存本机 AsyncStorage，不打进安装包）。
             </Text>
             <Text style={[styles.rowHint, { color: githubTokenConfigured ? primary : outline, fontWeight: '700' }]}>
               {githubTokenConfigured ? '已配置 Token，可使用下方备份与同步' : '尚未配置 Token'}
@@ -429,11 +436,10 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
             <AppInput
               value={githubTokenDraft}
               onChangeText={setGithubTokenDraft}
-              placeholder={githubTokenConfigured ? '输入新 Token 可覆盖已保存' : 'ghp_… 或 github_pat_…'}
+              placeholder="粘贴或输入 GitHub Token"
               autoCapitalize="none"
               autoCorrect={false}
-              secureTextEntry
-              textContentType="password"
+              spellCheck={false}
             />
             <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'flex-end' }}>
               {githubTokenConfigured ? (
