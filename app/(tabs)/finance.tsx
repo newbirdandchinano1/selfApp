@@ -69,7 +69,6 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import Constants from 'expo-constants';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
@@ -102,8 +101,6 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, LinearGradient, Path, Stop } from 'react-native-svg';
 
-type SpeechRecognitionApi = typeof import('@jamsch/expo-speech-recognition');
-
 type Txn = {
   id: string;
   dayKey: string;
@@ -123,7 +120,7 @@ type Txn = {
 
 type PendingAutoLedgerRow = {
   id: string;
-  source: 'clipboard' | 'shortcut_intent';
+  source: 'clipboard' | 'shortcut_intent' | 'picker';
   retryAttempt?: number;
   maxAttempts?: number;
 };
@@ -138,7 +135,9 @@ function buildPendingAutoLedgerTxn(item: PendingAutoLedgerRow, todayDayKey: stri
     ? `识别失败，正在重试（${item.retryAttempt}/${item.maxAttempts}）…`
     : item.source === 'shortcut_intent'
       ? 'AI 正在识别快捷指令截图…'
-      : 'AI 正在识别剪贴板截图…';
+      : item.source === 'picker'
+        ? 'AI 正在识别图片并记账…'
+        : 'AI 正在识别剪贴板截图…';
   return {
     id: item.id,
     dayKey: todayDayKey,
@@ -457,7 +456,7 @@ export default function FinanceScreen() {
   const autoLedgerDidBackgroundRef = React.useRef(false);
   const autoLedgerHandoffTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoLedgerImageUriRef = React.useRef<string | null>(null);
-  const autoLedgerSourceRef = React.useRef<'clipboard' | 'shortcut_intent'>('clipboard');
+  const autoLedgerSourceRef = React.useRef<'clipboard' | 'shortcut_intent' | 'picker'>('clipboard');
   const financeTransactionsRef = React.useRef<FinanceTransactionRow[]>([]);
   const flowCategoryNamesRef = React.useRef<Record<string, string>>({});
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
@@ -500,10 +499,6 @@ export default function FinanceScreen() {
   /** 支出是否计入本月预算（收入页不展示该项，保存时也不会写入排除标记） */
   const [sheetIncludeInBudget, setSheetIncludeInBudget] = React.useState(true);
   const [isPickingImage, setIsPickingImage] = React.useState(false);
-  const [isSpeechRecognizing, setIsSpeechRecognizing] = React.useState(false);
-  const [speechApi, setSpeechApi] = React.useState<SpeechRecognitionApi | null>(null);
-  const [speechApiStatus, setSpeechApiStatus] = React.useState<'loading' | 'ready' | 'unavailable'>('unavailable');
-  const [speechTriedOnce, setSpeechTriedOnce] = React.useState(false);
   const [sentenceLedgerPreview, setSentenceLedgerPreview] = React.useState<SentenceLedgerPreviewState>(null);
   const [isSentencePreviewBusy, setIsSentencePreviewBusy] = React.useState(false);
   /** 手动记账弹窗内键盘高度，用于整体上移弹层并收缩可滚动区域，避免一句话输入框被 IME 遮挡 */
@@ -596,12 +591,6 @@ export default function FinanceScreen() {
   React.useEffect(() => {
     void loadMonthBudgetSettings().then(setMonthBudgetSettings);
     void loadBudgetRefreshDay().then(setBudgetRefreshDay);
-  }, []);
-
-  const speechSubsRef = React.useRef<Array<{ remove?: () => void }>>([]);
-  const clearSpeechSubs = React.useCallback(() => {
-    speechSubsRef.current.forEach((s) => s.remove?.());
-    speechSubsRef.current = [];
   }, []);
 
   const screenWidth = Dimensions.get('window').width;
@@ -1305,12 +1294,21 @@ export default function FinanceScreen() {
   const budgetSurplusAmount = budgetTotalAmount - monthlyBudgetExpense;
   const budgetUsedPercentRaw = budgetTotalAmount > 0 ? (monthlyBudgetExpense / budgetTotalAmount) * 100 : 0;
   const budgetUsedPercent = Math.min(100, Math.max(0, budgetUsedPercentRaw));
-  const dailyBudgetAmount =
-    budgetPeriodIncome > 0
-      ? budgetPeriodIncome / budgetPeriodTotalDays
-      : budgetSurplusAmount > 0
-        ? budgetSurplusAmount / daysLeftIncludingToday
-        : budgetTotalAmount / daysLeftIncludingToday;
+  /** 调整预算弹层打开时用草稿预览，使「今日可用」与固定支出/基数编辑同步。 */
+  const todayBudgetTotalAmount = isBudgetAdjustVisible ? budgetPreviewTotal : budgetTotalAmount;
+  const todayBudgetSurplusAmount = todayBudgetTotalAmount - monthlyBudgetExpense;
+  const dailyBudgetFromRemaining =
+    todayBudgetSurplusAmount > 0
+      ? todayBudgetSurplusAmount / daysLeftIncludingToday
+      : todayBudgetTotalAmount / daysLeftIncludingToday;
+  const dailyBudgetFromIncome =
+    budgetPeriodIncome > 0 ? budgetPeriodIncome / budgetPeriodTotalDays : 0;
+  const hasConfiguredMonthBudget = isBudgetAdjustVisible || currentMonthKey in monthBudgetSettings;
+  const dailyBudgetAmount = hasConfiguredMonthBudget
+    ? dailyBudgetFromRemaining
+    : dailyBudgetFromIncome > 0
+      ? dailyBudgetFromIncome
+      : dailyBudgetFromRemaining;
   const todayAvailableAmount = Math.max(0, dailyBudgetAmount - todayBudgetExpenseTotal);
   const todayBudgetUsagePct = dailyBudgetAmount > 0 ? Math.min(1, todayBudgetExpenseTotal / dailyBudgetAmount) : 0;
 
@@ -1590,7 +1588,7 @@ export default function FinanceScreen() {
     async (
       imageDataUri: string,
       accounts: FinanceAccountBalanceRow[],
-      ledgerSource: 'clipboard' | 'shortcut_intent' = 'clipboard',
+      ledgerSource: 'clipboard' | 'shortcut_intent' | 'picker' = 'clipboard',
     ) => {
       autoLedgerImageUriRef.current = imageDataUri;
       autoLedgerSourceRef.current = ledgerSource;
@@ -1714,7 +1712,9 @@ export default function FinanceScreen() {
             const noteLine =
               ledgerSource === 'shortcut_intent'
                 ? `快捷指令截图 · ${parsed.name}`
-                : `剪贴板截图 · ${parsed.name}`;
+                : ledgerSource === 'picker'
+                  ? `图片记账 · ${parsed.name}`
+                  : `剪贴板截图 · ${parsed.name}`;
 
             await createFinanceTransaction({
               id: txnId,
@@ -1730,6 +1730,7 @@ export default function FinanceScreen() {
                 parse_source: 'ai',
                 from_clipboard_screenshot: ledgerSource === 'clipboard',
                 from_shortcut_intent: ledgerSource === 'shortcut_intent',
+                from_picker_image: ledgerSource === 'picker',
                 recognized_payment_account: resolved.payment_account_label,
                 matched_account_name: account.name,
                 category_key: cat.key,
@@ -1847,7 +1848,6 @@ export default function FinanceScreen() {
   }, [activeSheetTab, expenseCategories, incomeCategories, selectedCategoryKey]);
 
   const resetSheetForm = React.useCallback((nextTab: SheetTab = 'sentence') => {
-    speechApi?.ExpoSpeechRecognitionModule.stop();
     setActiveSheetTab(nextTab);
     setSheetAmount('');
     setSheetSentence('');
@@ -1866,7 +1866,7 @@ export default function FinanceScreen() {
     if (list.length > 0) {
       setSelectedAccountId(getDefaultSheetAccountIdForTab(nextTab, list));
     }
-  }, [getDefaultSheetAccountIdForTab, speechApi]);
+  }, [getDefaultSheetAccountIdForTab]);
 
   const applyManualOrTransferSheetIntent = React.useCallback(
     (intent: FinanceSheetLaunchIntent) => {
@@ -2001,13 +2001,12 @@ export default function FinanceScreen() {
 
   const closeSheet = React.useCallback(() => {
     if (isSavingTransaction || isParsingSentence || isSentencePreviewBusy) return;
-    speechApi?.ExpoSpeechRecognitionModule.stop();
     setIsDatePickerVisible(false);
     setIsTimePickerVisible(false);
     setIsAccountPickerVisible(false);
     setAccountPickerTarget('sheet');
     setIsSheetVisible(false);
-  }, [isParsingSentence, isSavingTransaction, isSentencePreviewBusy, speechApi]);
+  }, [isParsingSentence, isSavingTransaction, isSentencePreviewBusy]);
 
   const closeBudgetAdjust = React.useCallback(() => {
     setIsBudgetAdjustVisible(false);
@@ -2120,6 +2119,7 @@ export default function FinanceScreen() {
             note: '固定支出快速支付',
             extra_data: JSON.stringify({
               manual: true,
+              exclude_from_budget: true,
               budget_fixed_expense_pay: true,
               budget_fixed_expense_id: item.id,
               budget_month_key: currentMonthKey,
@@ -2410,8 +2410,6 @@ export default function FinanceScreen() {
   }, [selectedAccount, sheetSentence, resolveFinanceSentenceLine, expenseCategories, incomeCategories]);
 
   const handleSaveTransaction = React.useCallback(async () => {
-    speechApi?.ExpoSpeechRecognitionModule.stop();
-
     if (activeSheetTab === 'transfer') {
       if (!transferFromAccount || !transferToAccount) {
         Alert.alert('请选择账户', '需要选择扣款账户与入账账户。');
@@ -2687,7 +2685,6 @@ export default function FinanceScreen() {
     sheetIncludeInBudget,
     sheetNote,
     sheetSentence,
-    speechApi,
     transferFromAccount,
     transferToAccount,
   ]);
@@ -2697,7 +2694,7 @@ export default function FinanceScreen() {
       Alert.alert('请先添加账户', '当前还没有可用账户，请先前往资产页添加账户后再记账。');
       return false;
     }
-    // 仅在弹窗未打开时重置表单；避免用户已输入金额/备注后点语音/图片又被清空
+    // 仅在弹窗未打开时重置表单；避免用户已输入金额/备注后点图片又被清空
     if (!isSheetVisible) {
       resetSheetForm('sentence');
     } else {
@@ -2713,168 +2710,65 @@ export default function FinanceScreen() {
     async (source: 'library' | 'camera') => {
       if (isPickingImage) return;
 
-      const opened = handleOpenComposer();
-      if (!opened) return;
+      const accounts = financeAccountsRef.current;
+      if (!accounts.length) {
+        Alert.alert('请先添加账户', '当前还没有可用账户，请先前往资产页添加账户后再记账。');
+        return;
+      }
 
       setIsPickingImage(true);
       try {
+        const pickerOptions = {
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          allowsEditing: false,
+          quality: 0.85,
+          base64: true,
+        } as const;
+
+        let result: ImagePicker.ImagePickerResult;
         if (source === 'library') {
           const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
           if (!permission.granted) {
             Alert.alert('权限不足', '需要相册权限才能选择图片。');
             return;
           }
-
-          const result = await ImagePicker.launchImageLibraryAsync({
-            mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            allowsEditing: false,
-            quality: 1,
-          });
-
-          if (result.canceled) return;
-          const uri = result.assets[0]?.uri;
-          if (uri) setSheetImageUris([uri]);
-          return;
+          result = await ImagePicker.launchImageLibraryAsync(pickerOptions);
+        } else {
+          const permission = await ImagePicker.requestCameraPermissionsAsync();
+          if (!permission.granted) {
+            Alert.alert('权限不足', '需要相机权限才能拍摄图片。');
+            return;
+          }
+          result = await ImagePicker.launchCameraAsync(pickerOptions);
         }
-
-        const permission = await ImagePicker.requestCameraPermissionsAsync();
-        if (!permission.granted) {
-          Alert.alert('权限不足', '需要相机权限才能拍摄图片。');
-          return;
-        }
-
-        const result = await ImagePicker.launchCameraAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          allowsEditing: false,
-          quality: 1,
-        });
 
         if (result.canceled) return;
-        const uri = result.assets[0]?.uri;
-        if (uri) setSheetImageUris([uri]);
+
+        const asset = result.assets[0];
+        const b64 = asset?.base64;
+        if (!b64) {
+          Alert.alert('无法读取图片', '未能获取图片数据，请换一张图片重试。');
+          return;
+        }
+
+        const mime = asset.mimeType?.trim() || 'image/jpeg';
+        const imageDataUri = `data:${mime};base64,${b64}`;
+
+        setAutoLedgerToastMessage(
+          source === 'camera' ? '正在识别拍摄图片并记账…' : '正在识别相册图片并记账…',
+        );
+        setAutoLedgerToastVisible(true);
+        await processAutoLedgerFromImage(imageDataUri, accounts, 'picker');
       } catch (error) {
-        console.warn('Failed to pick image:', error);
+        console.warn('Failed to pick image for auto ledger:', error);
         Alert.alert('选择图片失败', '请稍后重试。');
       } finally {
         setIsPickingImage(false);
+        setAutoLedgerToastVisible(false);
       }
     },
-    [handleOpenComposer, isPickingImage]
+    [isPickingImage, processAutoLedgerFromImage],
   );
-
-  const handleToggleVoiceInput = React.useCallback(() => {
-    if (speechApiStatus === 'loading') {
-      Alert.alert('正在加载语音...', '稍等片刻再试。');
-      return;
-    }
-
-    // Expo Go（store client）下原生模块不可用，避免触发动态 import 报错
-    if (Constants.executionEnvironment === 'storeClient') {
-      setSpeechApiStatus('unavailable');
-      setSpeechTriedOnce(true);
-      Alert.alert('语音不可用', '当前是 Expo Go 环境，语音识别需要 Dev Build/Dev Client。');
-      return;
-    }
-
-    if (isSpeechRecognizing) {
-      speechApi?.ExpoSpeechRecognitionModule.stop();
-      clearSpeechSubs();
-      setIsSpeechRecognizing(false);
-      return;
-    }
-
-    void (async () => {
-      try {
-        const opened = handleOpenComposer();
-        if (!opened) return;
-
-        if (speechApiStatus === 'unavailable' && speechTriedOnce) {
-          Alert.alert('语音不可用', '当前是 Expo Go 环境，语音识别需要 Dev Build/Dev Client。');
-          return;
-        }
-
-        let api = speechApi;
-        if (!api) {
-          setSpeechApiStatus('loading');
-          api = (await import('@jamsch/expo-speech-recognition')) as SpeechRecognitionApi;
-          setSpeechApi(api);
-        }
-
-        const recognitionModule = api?.ExpoSpeechRecognitionModule as
-          | undefined
-          | {
-              requestPermissionsAsync?: () => Promise<{ granted: boolean }>;
-              start?: (options: any) => void;
-              stop?: () => void;
-            };
-        const emitter = api?.ExpoSpeechRecognitionModuleEmitter as
-          | undefined
-          | { addListener?: (eventName: string, listener: (...args: any[]) => void) => { remove?: () => void } };
-
-        // Expo Go 下 native module 通常不可用；此时直接兜底退出，避免 TypeError
-        if (!recognitionModule?.requestPermissionsAsync || !recognitionModule.start || !emitter?.addListener) {
-          setSpeechApi(null);
-          setSpeechApiStatus('unavailable');
-          setSpeechTriedOnce(true);
-          clearSpeechSubs();
-          Alert.alert('语音不可用', '当前环境未包含语音识别原生模块，请使用开发构建(Dev Build)或稍后重试。');
-          return;
-        }
-
-        setSpeechApiStatus('ready');
-        const permission = await recognitionModule.requestPermissionsAsync();
-        if (!permission.granted) {
-          Alert.alert('权限不足', '需要麦克风权限才能进行语音识别。');
-          return;
-        }
-
-        clearSpeechSubs();
-
-        const subs: Array<{ remove?: () => void }> = [];
-        const add = (eventName: string, listener: (...args: any[]) => void) => {
-          const sub = emitter.addListener?.(eventName, listener);
-          if (sub) subs.push(sub);
-        };
-
-        add('start', () => setIsSpeechRecognizing(true));
-        add('end', () => setIsSpeechRecognizing(false));
-        add('result', (event: any) => {
-          const transcript = event?.results?.[0]?.transcript;
-          if (typeof transcript === 'string' && transcript.trim().length > 0) {
-            if (activeSheetTabRef.current === 'sentence') setSheetSentence(transcript);
-            else setSheetNote(transcript);
-          }
-          if (event?.isFinal) {
-            recognitionModule.stop?.();
-            clearSpeechSubs();
-          }
-        });
-        add('error', (event: any) => {
-          setIsSpeechRecognizing(false);
-          const msg = event?.message || '语音识别失败';
-          Alert.alert('语音识别失败', msg);
-          clearSpeechSubs();
-        });
-        speechSubsRef.current = subs;
-
-        recognitionModule.start({
-          lang: 'zh-CN',
-          interimResults: true,
-          maxAlternatives: 1,
-          continuous: false,
-          addsPunctuation: false,
-        });
-      } catch (e) {
-        console.warn('Voice input failed:', e);
-        setSpeechApi(null);
-        setSpeechApiStatus('unavailable');
-        setSpeechTriedOnce(true);
-        clearSpeechSubs();
-        setIsSpeechRecognizing(false);
-        Alert.alert('语音不可用', '当前环境未包含语音识别原生模块，请使用开发构建(Dev Build)或稍后重试。');
-      }
-    })();
-  }, [clearSpeechSubs, handleOpenComposer, isSpeechRecognizing, speechApi, speechApiStatus, speechTriedOnce]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
@@ -3026,6 +2920,7 @@ export default function FinanceScreen() {
                         return (
                           <View style={{ width: ringSize, height: ringSize, alignItems: 'center', justifyContent: 'center' }}>
                             <Svg
+                              key={`today-budget-ring-${todayBudgetUsagePct.toFixed(4)}-${todayAvailableAmount.toFixed(2)}`}
                               width={ringSize}
                               height={ringSize}
                               viewBox={`0 0 ${ringSize} ${ringSize}`}
@@ -3471,41 +3366,67 @@ export default function FinanceScreen() {
 
       <Animated.View style={[styles.composerWrap, { bottom: baseBottomAnim }]}>
         <View style={{ width: expandedWidth, opacity: !hasAccounts ? 0.78 : 1 }}>
-          <View style={styles.composerShell}>
+          <View
+            style={[
+              styles.composerShell,
+              {
+                backgroundColor: surface,
+                borderColor: outlineVariant,
+              },
+            ]}>
             <View style={styles.composerRow}>
-              <Pressable
-                disabled={isPickingImage}
-                onPress={() => void handlePickImage('library')}
-                style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.85 }]}>
-                <MaterialIcons name="photo-library" size={20} color="#111827" />
-              </Pressable>
-
-              <Pressable
-                disabled={isPickingImage}
-                onPress={() => void handlePickImage('camera')}
-                style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.85 }]}>
-                <MaterialIcons name="photo-camera" size={20} color="#111827" />
-              </Pressable>
-
               <Pressable
                 onPress={() => {
                   void handleOpenComposer();
                 }}
-                style={({ pressed }) => [styles.composerInput, pressed && { opacity: 0.92 }]} >
-                <Text style={styles.composerPlaceholder}>记录支出...</Text>
+                style={({ pressed }) => [
+                  styles.composerInput,
+                  {
+                    backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f3f4f6',
+                  },
+                  pressed && { opacity: 0.92 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="打开记账">
+                <MaterialIcons name="edit" size={18} color={subtle} />
+                <Text style={[styles.composerPlaceholder, { color: subtle }]} numberOfLines={1}>
+                  记一笔…
+                </Text>
               </Pressable>
 
-              <Pressable
-                onPress={handleToggleVoiceInput}
-                style={({ pressed }) => [
-                  styles.actionBtn,
-                  styles.voiceBtn,
-                  isSpeechRecognizing && { opacity: 0.72 },
-                  speechApiStatus === 'loading' && { opacity: 0.6 },
-                  pressed && { opacity: 0.92 },
-                ]}>
-                <MaterialIcons name="keyboard-voice" size={18} color="#fff" />
-              </Pressable>
+              <View style={[styles.composerDivider, { backgroundColor: outlineVariant }]} />
+
+              <View style={styles.composerActions}>
+                <Pressable
+                  disabled={isPickingImage}
+                  onPress={() => void handlePickImage('library')}
+                  style={({ pressed }) => [
+                    styles.composerActionBtn,
+                    pressed && { opacity: 0.85 },
+                    isPickingImage && { opacity: 0.5 },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="从相册识图记账">
+                  <MaterialIcons name="photo-library" size={22} color={primary} />
+                </Pressable>
+
+                <Pressable
+                  disabled={isPickingImage}
+                  onPress={() => void handlePickImage('camera')}
+                  style={({ pressed }) => [
+                    styles.composerActionBtn,
+                    pressed && { opacity: 0.85 },
+                    isPickingImage && { opacity: 0.5 },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="拍照识图记账">
+                  {isPickingImage ? (
+                    <ActivityIndicator size="small" color={primary} />
+                  ) : (
+                    <MaterialIcons name="photo-camera" size={22} color={primary} />
+                  )}
+                </Pressable>
+              </View>
             </View>
           </View>
         </View>
@@ -5130,9 +5051,7 @@ const styles = StyleSheet.create({
   },
   composerShell: {
     maxWidth: 420,
-    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#e5e7eb',
     shadowColor: '#000',
     shadowOpacity: 0.08,
     shadowRadius: 16,
@@ -5145,38 +5064,45 @@ const styles = StyleSheet.create({
   },
   composerRow: {
     flex: 1,
-    paddingHorizontal: 8,
+    paddingLeft: 6,
+    paddingRight: 4,
+    paddingVertical: 6,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-  },
-  iconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
+    gap: 4,
   },
   composerInput: {
     flex: 1,
-    minHeight: 40,
-    justifyContent: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 44,
+    borderRadius: 22,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
   },
   composerPlaceholder: {
-    color: '#9ca3af',
-    fontSize: 14,
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '500',
   },
-  actionBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  composerDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: 'stretch',
+    marginVertical: 10,
+    marginHorizontal: 2,
+  },
+  composerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingRight: 2,
+  },
+  composerActionBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  voiceBtn: {
-    backgroundColor: '#111827',
   },
   sheetOverlay: {
     flex: 1,

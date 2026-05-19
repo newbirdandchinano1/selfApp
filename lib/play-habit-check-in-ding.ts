@@ -15,7 +15,10 @@ export async function playHabitCheckInDing(): Promise<void> {
       audioModeReady = true;
     }
     if (!dingSound) {
-      const { sound } = await Audio.Sound.createAsync(require('../assets/sounds/ding.mp3'));
+      const { sound } = await Audio.Sound.createAsync(
+        require('../assets/sounds/ding.wav'),
+        { volume: 0.9, shouldPlay: false }
+      );
       dingSound = sound;
     }
     await dingSound.setPositionAsync(0);

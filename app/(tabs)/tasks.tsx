@@ -1190,10 +1190,16 @@ export default function TasksScreen() {
   const projectsShownInList = React.useMemo(() => {
     const base =
       projectTab === 'all'
-        ? projects
-        : projects.filter((p) => (p.category_id ?? INBOX_PROJECT_CATEGORY_ID) === projectTab);
+        ? projects.filter((p) => !isProjectInInboxCategory(p.category_id))
+        : projectTab === INBOX_PROJECT_CATEGORY_ID
+          ? projects.filter((p) => isProjectInInboxCategory(p.category_id))
+          : projects.filter((p) => p.category_id === projectTab);
     return sortProjectsForList(base);
   }, [projects, projectTab]);
+
+  React.useEffect(() => {
+    if (taskTab === INBOX_PROJECT_CATEGORY_ID) setTaskTab('all');
+  }, [taskTab]);
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
@@ -1562,9 +1568,8 @@ export default function TasksScreen() {
   }, [tasks]);
 
   const filteredTasks = React.useMemo(() => {
-    if (taskTab === 'all') return tasks;
-    if (taskTab === INBOX_PROJECT_CATEGORY_ID) {
-      return tasks.filter((t) => !t.category_id || t.category_id === INBOX_PROJECT_CATEGORY_ID);
+    if (taskTab === 'all') {
+      return tasks.filter((t) => !!t.category_id && t.category_id !== INBOX_PROJECT_CATEGORY_ID);
     }
     return tasks.filter((t) => t.category_id === taskTab);
   }, [taskTab, tasks]);
@@ -1674,19 +1679,14 @@ export default function TasksScreen() {
       { key: 'all', label: '全部' },
       { key: INBOX_PROJECT_CATEGORY_ID, label: INBOX_PROJECT_CATEGORY_NAME },
     ];
-
     const extra = projectCategories
       .filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID)
       .map((c) => ({ key: c.id, label: c.name }));
-
     return [...base, ...extra];
   }, [projectCategories]);
 
   const taskTabs = React.useMemo(() => {
-    const base: Array<{ key: string; label: string }> = [
-      { key: 'all', label: '全部' },
-      { key: INBOX_PROJECT_CATEGORY_ID, label: INBOX_PROJECT_CATEGORY_NAME },
-    ];
+    const base: Array<{ key: string; label: string }> = [{ key: 'all', label: '全部' }];
     const extra = projectCategories
       .filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID)
       .map((c) => ({ key: c.id, label: c.name }));
@@ -2900,7 +2900,7 @@ export default function TasksScreen() {
                 <View style={styles.headerRow}>
                   <View style={styles.titleRow}>
                     <Text style={[styles.sectionTitle, { color: colors.text }]}>项目列表</Text>
-                    <Text style={[styles.sectionMeta, { color: outline }]}>共 {projects.length} 个活跃项目</Text>
+                    <Text style={[styles.sectionMeta, { color: outline }]}>共 {projectsShownInList.length} 个活跃项目</Text>
                   </View>
                   <ScalePressable
                     onPress={() =>
