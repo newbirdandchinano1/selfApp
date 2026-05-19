@@ -17,6 +17,7 @@ const SWIFT_SOURCE = `//
 
 import AppIntents
 import Foundation
+import UIKit
 
 private enum ZhengShortcutAutoLedgerPending {
     static let fileName = "${PENDING_FILENAME}"
@@ -58,6 +59,12 @@ private enum ZhengShortcutAutoLedgerPending {
         }
         return nil
     }
+
+    /// 备用通道：与 RN 剪贴板读取一致，避免 Intent 与主进程文档目录不一致时丢图
+    static func copyImageToPasteboard(_ data: Data) {
+        guard let image = UIImage(data: data) else { return }
+        UIPasteboard.general.image = image
+    }
 }
 
 @available(iOS 16.0, *)
@@ -80,27 +87,23 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
     )
     var screenshot: IntentFile?
 
-    @MainActor
     func perform() async throws -> some IntentResult {
         if let screenshot, let data = ZhengShortcutAutoLedgerPending.imageData(from: screenshot) {
             do {
                 _ = try ZhengShortcutAutoLedgerPending.writeImageData(data)
+                ZhengShortcutAutoLedgerPending.copyImageToPasteboard(data)
             } catch {
-                return .result(dialog: IntentDialog("保存截图失败：\\(error.localizedDescription)"))
+                return .result()
             }
-            return .result(dialog: IntentDialog("已打开应用，正在识别截图并记账…"))
+            return .result()
         }
 
         do {
             try ZhengShortcutAutoLedgerPending.writeClipboardMarker()
         } catch {
-            return .result(dialog: IntentDialog("准备剪贴板记账失败：\\(error.localizedDescription)"))
+            return .result()
         }
-        return .result(
-            dialog: IntentDialog(
-                "未收到截图，已打开剪贴板记账。推荐快捷指令：截屏 → 获取图像 → 运行「截图记账」并传入图像。"
-            )
-        )
+        return .result()
     }
 }
 

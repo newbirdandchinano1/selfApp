@@ -1,12 +1,14 @@
 import { setFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import {
-  consumeShortcutClipboardMarker,
-  hasShortcutAutoLedgerPending,
-} from '@/lib/shortcut-auto-ledger-pending';
+  abandonStaleShortcutHandoff,
+  getShortcutHandoffKey,
+  prepareShortcutHandoffLaunchIntent,
+} from '@/lib/shortcut-auto-ledger-handoff';
+import { notifyShortcutHandoffConsume } from '@/lib/shortcut-auto-ledger-route-bridge';
 import * as Linking from 'expo-linking';
-import { useRouter } from 'expo-router';
-import { useEffect } from 'react';
-import { AppState, Platform } from 'react-native';
+import { usePathname, useRootNavigationState, useRouter } from 'expo-router';
+import { useEffect, useRef } from 'react';
+import { InteractionManager, Platform } from 'react-native';
 
 function matchesScreenshotDeepLink(url: string): boolean {
   const { hostname, path } = Linking.parse(url);
@@ -28,55 +30,86 @@ function matchesAutoLedgerDeepLink(url: string): boolean {
   );
 }
 
+const FINANCE_TAB_PATH = '/finance';
+
+function isOnFinanceTab(pathname: string): boolean {
+  return pathname === FINANCE_TAB_PATH || pathname.endsWith('/finance');
+}
+
 /**
- * 在数据库就绪后挂载：处理冷启动 `getInitialURL` 与后台唤起 `url` 事件。
- * - `zheng://auto-ledger`：App Intent 已写入待处理截图 → 财务 Tab 自动记账
- * - `zheng://screenshot`：兼容旧剪贴板流程，在财务页弹窗内读取剪贴板
+ * 在数据库就绪后挂载：处理深链与 App Intent 写入的 pending 文件。
+ * 导航必须等 Root Navigation 就绪后再 replace，否则易出现全黑卡死屏。
  */
 export function ScreenshotDeepLinkListener() {
   const router = useRouter();
+  const pathname = usePathname();
+  const rootNavigationState = useRootNavigationState();
+  const navReady = rootNavigationState?.key != null;
+  const lastHandoffKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const goToFinanceForShortcutHandoff = () => {
-      if (Platform.OS === 'web') return;
-      if (hasShortcutAutoLedgerPending()) {
-        router.replace('/(tabs)/finance');
+    if (Platform.OS === 'web' || !navReady) {
+      return;
+    }
+
+    abandonStaleShortcutHandoff();
+
+    const routeForHandoff = (handoffKey: string) => {
+      if (lastHandoffKeyRef.current === handoffKey && isOnFinanceTab(pathname)) {
+        prepareShortcutHandoffLaunchIntent();
+        notifyShortcutHandoffConsume();
         return;
       }
-      if (consumeShortcutClipboardMarker()) {
-        setFinanceSheetLaunchIntent({ kind: 'auto_ledger_clipboard_pending' });
+      lastHandoffKeyRef.current = handoffKey;
+
+      const run = () => {
+        if (!prepareShortcutHandoffLaunchIntent()) {
+          return;
+        }
+        if (isOnFinanceTab(pathname)) {
+          notifyShortcutHandoffConsume();
+          return;
+        }
         router.replace('/(tabs)/finance');
+      };
+
+      InteractionManager.runAfterInteractions(() => {
+        requestAnimationFrame(run);
+      });
+    };
+
+    const handoffFromPendingFiles = () => {
+      const handoffKey = getShortcutHandoffKey();
+      if (!handoffKey) {
+        return;
       }
+      routeForHandoff(handoffKey);
     };
 
     const go = (url: string) => {
       if (matchesAutoLedgerDeepLink(url)) {
-        router.replace('/(tabs)/finance');
+        routeForHandoff(`url:auto-ledger`);
         return;
       }
       if (matchesScreenshotDeepLink(url)) {
         setFinanceSheetLaunchIntent({ kind: 'auto_ledger_clipboard_pending' });
-        router.replace('/(tabs)/finance');
+        routeForHandoff('url:screenshot');
       }
     };
 
-    goToFinanceForShortcutHandoff();
+    handoffFromPendingFiles();
 
     void Linking.getInitialURL().then((initial) => {
-      if (initial) go(initial);
+      if (initial) {
+        go(initial);
+      }
     });
 
     const linkingSub = Linking.addEventListener('url', ({ url }) => go(url));
-    const appStateSub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        goToFinanceForShortcutHandoff();
-      }
-    });
     return () => {
       linkingSub.remove();
-      appStateSub.remove();
     };
-  }, [router]);
+  }, [navReady, pathname, router]);
 
   return null;
 }

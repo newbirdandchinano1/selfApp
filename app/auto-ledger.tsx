@@ -9,7 +9,17 @@ export default function AutoLedgerRedirectScreen() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace('/(tabs)/finance');
+    const goFinance = () => {
+      router.replace('/(tabs)/finance');
+    };
+    const t = requestAnimationFrame(goFinance);
+    const failSafe = setTimeout(() => {
+      router.replace('/(tabs)');
+    }, 2500);
+    return () => {
+      cancelAnimationFrame(t);
+      clearTimeout(failSafe);
+    };
   }, [router]);
 
   return (

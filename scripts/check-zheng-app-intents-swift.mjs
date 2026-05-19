@@ -44,7 +44,11 @@ for (const s of requiredSnippets) {
   checks.push([`contains ${s.slice(0, 40)}…`, swift.includes(s), '']);
 }
 
-const forbidden = ['import UIKit', 'UIApplication.shared.open', 'openAppURL', 'withCheckedContinuation'];
+const forbidden = ['UIApplication.shared.open', 'openAppURL', 'withCheckedContinuation'];
+const requiredImports = ['import UIKit', 'import Foundation'];
+for (const s of requiredImports) {
+  checks.push([`imports ${s.replace('import ', '')}`, swift.includes(s), '']);
+}
 for (const s of forbidden) {
   checks.push([`removed ${s}`, !swift.includes(s), swift.includes(s) ? 'still present' : '']);
 }
@@ -60,13 +64,8 @@ checks.push([
   '',
 ]);
 
-checks.push([
-  'error dialog Swift interpolation',
-  swift.includes('保存截图失败：\\(error.localizedDescription)'),
-  '',
-]);
-
-checks.push(['imports Foundation', swift.includes('import Foundation'), '']);
+checks.push(['returns lightweight .result()', swift.includes('return .result()'), '']);
+checks.push(['pasteboard fallback', swift.includes('copyImageToPasteboard'), '']);
 
 const phraseInterp = swift.includes('在\\(.applicationName)里截图记账');
 checks.push(['AppShortcut phrase interpolation', phraseInterp, '']);

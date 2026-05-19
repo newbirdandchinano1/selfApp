@@ -57,6 +57,10 @@ import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-ac
 import { setFinanceSheetBridge } from '@/lib/finance-sheet-bridge';
 import { consumeFinanceSheetLaunchIntent, type FinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import { consumeShortcutAutoLedgerImageDataUri } from '@/lib/shortcut-auto-ledger-pending';
+import {
+  consumeShortcutImageHandoffExpected,
+  subscribeShortcutHandoffConsume,
+} from '@/lib/shortcut-auto-ledger-route-bridge';
 import { moveAppToBackground } from 'zheng-background';
 import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
 import {
@@ -77,7 +81,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  AppState,
   Dimensions,
   Easing,
   Image,
@@ -458,8 +461,8 @@ export default function FinanceScreen() {
   const autoLedgerHandoffTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoLedgerImageUriRef = React.useRef<string | null>(null);
   const autoLedgerSourceRef = React.useRef<'clipboard' | 'shortcut_intent' | 'picker'>('clipboard');
-  /** App Intent 将应用从后台唤起且财务 Tab 已聚焦时，用于再次消费待处理截图 */
-  const [shortcutHandoffEpoch, setShortcutHandoffEpoch] = React.useState(0);
+  /** 已在财务 Tab 时再次触发快捷指令 handoff（由根级 listener 通知） */
+  const [shortcutHandoffNonce, setShortcutHandoffNonce] = React.useState(0);
   const financeTransactionsRef = React.useRef<FinanceTransactionRow[]>([]);
   const flowCategoryNamesRef = React.useRef<Record<string, string>>({});
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
@@ -472,12 +475,9 @@ export default function FinanceScreen() {
   });
 
   React.useEffect(() => {
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        setShortcutHandoffEpoch((n) => n + 1);
-      }
+    return subscribeShortcutHandoffConsume(() => {
+      setShortcutHandoffNonce((n) => n + 1);
     });
-    return () => sub.remove();
   }, []);
 
   React.useLayoutEffect(() => {
@@ -1974,7 +1974,11 @@ export default function FinanceScreen() {
               applyManualOrTransferSheetIntent(intent);
             }
           } else {
-            const shortcutImageUri = await consumeShortcutAutoLedgerImageDataUri();
+            const expectingShortcutImage = consumeShortcutImageHandoffExpected();
+            let shortcutImageUri = await consumeShortcutAutoLedgerImageDataUri();
+            if (!shortcutImageUri && expectingShortcutImage) {
+              shortcutImageUri = await readClipboardImageForAutoLedger();
+            }
             if (cancelled) return;
             if (shortcutImageUri) {
               autoLedgerImageUriRef.current = shortcutImageUri;
@@ -2008,7 +2012,7 @@ export default function FinanceScreen() {
       applyManualOrTransferSheetIntent,
       resetSheetForm,
       startAutoLedgerHandoff,
-      shortcutHandoffEpoch,
+      shortcutHandoffNonce,
     ])
   );
 

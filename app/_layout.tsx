@@ -82,7 +82,14 @@ function RootLayoutInner() {
   return (
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
         {!isDbReady ? (
-          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <View
+            style={{
+              flex: 1,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: colorScheme === 'dark' ? '#000000' : '#ffffff',
+            }}
+          >
             <ActivityIndicator size="large" />
             {dbError ? (
               <View style={{ marginTop: 14, alignItems: 'center', paddingHorizontal: 24 }}>

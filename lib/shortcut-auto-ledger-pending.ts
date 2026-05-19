@@ -12,7 +12,7 @@ export function getShortcutAutoLedgerPendingFile(): File {
   return new File(Paths.document, SHORTCUT_AUTO_LEDGER_PENDING_FILENAME);
 }
 
-function getShortcutClipboardMarkerFile(): File {
+export function getShortcutClipboardMarkerFile(): File {
   return new File(Paths.document, SHORTCUT_AUTO_LEDGER_CLIPBOARD_MARKER_FILENAME);
 }
 
@@ -22,6 +22,48 @@ export function hasShortcutAutoLedgerPending(): boolean {
     return false;
   }
   return getShortcutAutoLedgerPendingFile().exists;
+}
+
+/** 是否有剪贴板记账标记（不删除） */
+export function hasShortcutClipboardMarker(): boolean {
+  if (Platform.OS === 'web') {
+    return false;
+  }
+  return getShortcutClipboardMarkerFile().exists;
+}
+
+function isFileOlderThan(file: File, maxAgeMs: number): boolean {
+  if (!file.exists) {
+    return false;
+  }
+  const mtime = file.modificationTime;
+  if (mtime == null || !Number.isFinite(mtime)) {
+    return false;
+  }
+  return Date.now() - mtime > maxAgeMs;
+}
+
+/** 删除超时未处理的 handoff 文件，避免每次启动都误触发跳转 */
+export function clearShortcutHandoffArtifacts(maxAgeMs: number): void {
+  if (Platform.OS === 'web') {
+    return;
+  }
+  const pending = getShortcutAutoLedgerPendingFile();
+  const marker = getShortcutClipboardMarkerFile();
+  try {
+    if (isFileOlderThan(pending, maxAgeMs)) {
+      pending.delete();
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (isFileOlderThan(marker, maxAgeMs)) {
+      marker.delete();
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 /**

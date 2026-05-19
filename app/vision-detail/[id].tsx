@@ -1,10 +1,19 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { deleteVision, getVisionRowById, parseVisionExtra, updateVision } from '@/lib/repositories/visions/vision';
+import {
+  deleteVision,
+  getVisionRowById,
+  parseVisionExtra,
+  serializeVisionExtra,
+  updateVision,
+} from '@/lib/repositories/visions/vision';
 import { visionRowToDetailRecord } from '@/lib/repositories/visions/vision-present';
-import type { VisionRow } from '@/lib/repositories/visions/vision.types';
+import type { VisionRow, VisionSubGoal } from '@/lib/repositories/visions/vision.types';
 import { VisionSubGoalsDetailPanel } from '@/components/vision-sub-goals/VisionSubGoalsDetailPanel';
-import { collectVisionSubGoalsFromExtra } from '@/lib/repositories/visions/vision.types';
+import {
+  collectVisionSubGoalsFromExtra,
+  serializeVisionSubGoalsForExtra,
+} from '@/lib/repositories/visions/vision.types';
 import {
   getVisionById as getRegistryVisionById,
   type VisionKind,
@@ -279,6 +288,27 @@ export default function VisionDetailScreen() {
     }
   };
 
+  const persistSubGoals = useCallback(
+    async (next: VisionSubGoal[]) => {
+      if (!id || !dbRow) return;
+      const extra = parseVisionExtra(dbRow.extra_data) ?? {};
+      const serialized = serializeVisionSubGoalsForExtra(next);
+      const nextExtra = { ...extra };
+      if (serialized.length > 0) {
+        nextExtra.subGoals = serialized;
+      } else {
+        delete nextExtra.subGoals;
+      }
+      await updateVision(id, { extra_data: serializeVisionExtra(nextExtra) });
+      const row = await getVisionRowById(id);
+      if (row) {
+        setDbRow(row);
+        setRecord(await visionRowToDetailRecord(row));
+      }
+    },
+    [dbRow, id]
+  );
+
   const requestDeleteVision = () => {
     if (!id || saveBusy || deleteBusy) return;
     Alert.alert('删除愿景', '确定删除这条愿景吗？删除后将从愿景墙与我的页移除；在同步或恢复功能前可能无法找回。', [
@@ -490,6 +520,7 @@ export default function VisionDetailScreen() {
                   isDark={isDark}
                   panelBg={panelBg}
                   panelBorder={panelBorder}
+                  onPersistSubGoals={canEditDb ? persistSubGoals : undefined}
                 />
               ) : null}
 
