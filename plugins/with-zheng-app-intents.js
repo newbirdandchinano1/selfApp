@@ -53,7 +53,9 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
         "接收快捷指令传入的截图并自动 AI 记账。推荐：截屏 → 从输入获取图像 → 运行本操作；未传图时将尝试打开剪贴板记账（旧方式）。"
     )
 
-    static var openAppWhenRun: Bool = true
+    /// 由下方 `UIApplication.shared.open` 打开深链，勿与 `openAppWhenRun = true` 叠加，
+    /// 否则快捷指令会报「无法与帮助程序通信」但记账流程仍可执行。
+    static var openAppWhenRun: Bool = false
 
     @Parameter(
         title: "截图",
@@ -74,23 +76,28 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
             guard let url = URL(string: "zheng://auto-ledger") else {
                 return .result(dialog: IntentDialog("无效链接。"))
             }
-            await MainActor.run {
-                UIApplication.shared.open(url, options: [:], completionHandler: nil)
-            }
+            await Self.openAppURL(url)
             return .result(dialog: IntentDialog("已打开应用，正在识别截图并记账…"))
         }
 
         guard let url = URL(string: "zheng://screenshot") else {
             return .result(dialog: IntentDialog("无效链接。"))
         }
-        await MainActor.run {
-            UIApplication.shared.open(url, options: [:], completionHandler: nil)
-        }
+        await Self.openAppURL(url)
         return .result(
             dialog: IntentDialog(
                 "未收到截图，已打开剪贴板记账。推荐快捷指令：截屏 → 获取图像 → 运行「截图记账」并传入图像。"
             )
         )
+    }
+
+    @MainActor
+    private static func openAppURL(_ url: URL) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            UIApplication.shared.open(url, options: [:]) { _ in
+                continuation.resume()
+            }
+        }
     }
 }
 

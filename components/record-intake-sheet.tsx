@@ -513,7 +513,7 @@ export function RecordIntakeSheet({
                         value={aiFieldTexts.ai_evaluation}
                         onChangeText={(v) => setAiFieldTexts((prev) => (prev ? { ...prev, ai_evaluation: v } : prev))}
                         multiline
-                        placeholder="可选，将写入摄入记录的点评"
+                        placeholder="预解析后可编辑；保存后写入摄入详情的 AI 评价"
                         placeholderTextColor={isDark ? 'rgba(148,163,184,0.7)' : 'rgba(100,116,139,0.7)'}
                         style={[styles.aiEditInput, styles.aiEditInputMultiline, { color: theme.text, borderColor: border, backgroundColor: inputBg }]}
                       />

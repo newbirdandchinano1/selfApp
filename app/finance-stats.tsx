@@ -678,7 +678,7 @@ export default function FinanceStatsScreen() {
                 {aiBillAnalysisError
                   ? `获取失败：${aiBillAnalysisError}`
                   : aiBillAnalysis ??
-                    '根据当前区间的收支、分类与高额流水摘要生成 2～5 句建议。点击下方按钮调用智谱 GLM-4-Flash（与项目内智谱接口一致），需要网络；密钥优先读取 EXPO_PUBLIC_ZHIPU_API_KEY。'}
+                    '根据当前区间的收支、分类与高额流水摘要生成约 300～400 字的结构化分析（总览、习惯、风险亮点与可行建议）。点击下方按钮调用智谱 GLM-4-Flash（与项目内智谱接口一致），需要网络；密钥优先读取 EXPO_PUBLIC_ZHIPU_API_KEY。'}
               </Text>
             )}
             <Pressable

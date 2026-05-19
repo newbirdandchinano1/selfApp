@@ -2105,6 +2105,8 @@ export default function TasksScreen() {
   const secondary = colors.secondary;
   const tertiary = colors.tertiary;
   const error = colors.danger;
+  const success = colors.success;
+  const projectDoneSurface = isDark ? colors.surfaceMuted : colors.capsule;
 
   const sectionCardStyle = React.useMemo(
     () => [styles.sectionCard, shadows.card, { backgroundColor: card, borderColor: colors.outline }],
@@ -2924,6 +2926,10 @@ export default function TasksScreen() {
                 <View style={styles.projectList}>
                 {projectsShownInList.map((project) => {
                   const isCompleted = project.status === 'completed' || project.status === 'archived';
+                  const isArchived = project.status === 'archived';
+                  const projectAccent = isCompleted ? success : primary;
+                  const projectCardBg = isCompleted ? projectDoneSurface : soft;
+                  const doneMuted = colors.textMuted;
                   const schedule = parseProjectSchedule(project.extra_data);
                   const dueDateLabel = getProjectScheduleLabel(project, schedule);
                   const isRangeSchedule = !!(schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end);
@@ -3231,8 +3237,13 @@ export default function TasksScreen() {
                           style={[
                             styles.projectCard,
                             {
-                              backgroundColor: soft,
-                              opacity: 0.86,
+                              backgroundColor: projectCardBg,
+                              opacity: isCompleted ? 0.92 : 0.86,
+                              borderColor: isCompleted
+                                ? isDark
+                                  ? 'rgba(52, 211, 153, 0.28)'
+                                  : 'rgba(0, 108, 73, 0.22)'
+                                : 'rgba(148,163,184,0.12)',
                             },
                           ]}>
                       <ScalePressable
@@ -3243,15 +3254,48 @@ export default function TasksScreen() {
                       <View
                         style={[
                           styles.projectHead,
-                          { borderLeftColor: primary },
+                          { borderLeftColor: projectAccent },
                         ]}>
                         <View style={styles.projectHeadLeft}>
-                          <MaterialIcons name="data-usage" size={22} color={primary} />
+                          <MaterialIcons
+                            name={isCompleted ? 'check-circle' : 'data-usage'}
+                            size={22}
+                            color={projectAccent}
+                          />
                           <View style={styles.projectHeadMainColumn}>
-                            <Text style={[styles.projectTitle, { color: colors.text }]}>{project.name}</Text>
+                            <View style={styles.projectTitleRow}>
+                              <Text
+                                style={[
+                                  styles.projectTitle,
+                                  {
+                                    color: isCompleted ? doneMuted : colors.text,
+                                    flex: 1,
+                                  },
+                                  isCompleted && styles.projectTitleDone,
+                                  isCompleted && Platform.OS === 'android' ? styles.projectTitleDoneAndroid : null,
+                                ]}
+                                numberOfLines={2}>
+                                {project.name}
+                              </Text>
+                              {isCompleted ? (
+                                <View
+                                  style={[
+                                    styles.projectDoneBadge,
+                                    {
+                                      backgroundColor: isDark ? 'rgba(52, 211, 153, 0.16)' : 'rgba(0, 108, 73, 0.1)',
+                                      borderColor: isDark ? 'rgba(52, 211, 153, 0.38)' : 'rgba(0, 108, 73, 0.28)',
+                                    },
+                                  ]}>
+                                  <MaterialIcons name="verified" size={12} color={success} />
+                                  <Text style={[styles.projectDoneBadgeText, { color: success }]}>
+                                    {isArchived ? '已归档' : '已完成'}
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
                             <View style={styles.projectSubRow}>
                               {dueDateLabel ? (
-                                <Text style={[styles.projectSub, { color: outline }]}>
+                                <Text style={[styles.projectSub, { color: isCompleted ? doneMuted : outline }]}>
                                   {isRangeSchedule
                                     ? isExpiredRange && rangeEndYmd
                                       ? `已于：${formatYmdCN(rangeEndYmd)} 过期`
@@ -3263,10 +3307,12 @@ export default function TasksScreen() {
                                         : `截止 ${dueDateLabel}`}
                                 </Text>
                               ) : (
-                                <Text style={[styles.projectSub, { color: outline }]}>无截止日期</Text>
+                                <Text style={[styles.projectSub, { color: isCompleted ? doneMuted : outline }]}>无截止日期</Text>
                               )}
-                              <Text style={[styles.projectSub, { color: outline }]}>•</Text>
-                              <Text style={[styles.projectSub, { color: outline }]}>分类 {categoryLabel}</Text>
+                              <Text style={[styles.projectSub, { color: isCompleted ? doneMuted : outline }]}>•</Text>
+                              <Text style={[styles.projectSub, { color: isCompleted ? doneMuted : outline }]}>
+                                分类 {categoryLabel}
+                              </Text>
                             </View>
                             {noteText ? (
                               <View
@@ -3287,40 +3333,73 @@ export default function TasksScreen() {
                               </View>
                             ) : null}
                             <View style={styles.projectMetaRow}>
-                              <Text style={[styles.projectSubStrong, { color: primary }]}>{project.status === 'active' ? '进行中' : project.status === 'paused' ? '已暂停' : isCompleted ? '已完成' : '未知状态'}</Text>
-                              {(hasReminder || hasRepeat) && <Text style={[styles.projectSub, { color: outline }]}>•</Text>}
+                              {!isCompleted ? (
+                                <Text style={[styles.projectSubStrong, { color: primary }]}>
+                                  {project.status === 'active' ? '进行中' : project.status === 'paused' ? '已暂停' : '未知状态'}
+                                </Text>
+                              ) : null}
+                              {!isCompleted && (hasReminder || hasRepeat) ? (
+                                <Text style={[styles.projectSub, { color: outline }]}>•</Text>
+                              ) : null}
                               {hasReminder && (
                                 <View style={styles.projectFlag}>
-                                  <MaterialIcons name="notifications-active" size={11} color={primary} />
-                                  <Text style={[styles.projectFlagText, { color: primary }]}>提醒</Text>
+                                  <MaterialIcons
+                                    name="notifications-active"
+                                    size={11}
+                                    color={isCompleted ? doneMuted : primary}
+                                  />
+                                  <Text style={[styles.projectFlagText, { color: isCompleted ? doneMuted : primary }]}>
+                                    提醒
+                                  </Text>
                                 </View>
                               )}
                               {hasRepeat && (
                                 <View style={styles.projectFlag}>
-                                  <MaterialIcons name="repeat" size={11} color={primary} />
-                                  <Text style={[styles.projectFlagText, { color: primary }]}>重复</Text>
+                                  <MaterialIcons name="repeat" size={11} color={isCompleted ? doneMuted : primary} />
+                                  <Text style={[styles.projectFlagText, { color: isCompleted ? doneMuted : primary }]}>
+                                    重复
+                                  </Text>
                                 </View>
                               )}
                             </View>
                             {progress.total > 0 ? (
                               <>
                                 <View style={styles.projectProgressRow}>
-                                  <Text style={[styles.projectProgressLabel, { color: outline }]}>
+                                  <Text
+                                    style={[
+                                      styles.projectProgressLabel,
+                                      { color: isCompleted ? doneMuted : outline },
+                                    ]}>
                                     进度 {progress.done}/{progress.total}
                                   </Text>
-                                  <Text style={[styles.projectProgressLabel, { color: outline }]}>
+                                  <Text
+                                    style={[
+                                      styles.projectProgressLabel,
+                                      { color: isCompleted ? success : outline },
+                                    ]}>
                                     {Math.round(progress.ratio * 100)}%
                                   </Text>
                                 </View>
                                 <View
                                   style={[
                                     styles.projectProgressTrack,
-                                    { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : '#e2e7ff' },
+                                    {
+                                      backgroundColor: isCompleted
+                                        ? isDark
+                                          ? 'rgba(52, 211, 153, 0.12)'
+                                          : 'rgba(0, 108, 73, 0.1)'
+                                        : isDark
+                                          ? 'rgba(148,163,184,0.16)'
+                                          : '#e2e7ff',
+                                    },
                                   ]}>
                                   <View
                                     style={[
                                       styles.projectProgressFill,
-                                      { backgroundColor: primary, width: `${Math.round(progress.ratio * 100)}%` },
+                                      {
+                                        backgroundColor: isCompleted ? success : primary,
+                                        width: `${Math.round(progress.ratio * 100)}%`,
+                                      },
                                     ]}
                                   />
                                 </View>
@@ -3375,8 +3454,12 @@ export default function TasksScreen() {
                             hitSlop={8}
                             accessibilityRole="button"
                             accessibilityLabel={`为「${project.name}」快捷添加任务`}
-                            style={({ pressed }) => [styles.projectQuickAddBtn, pressed && { opacity: 0.75 }]}>
-                            <MaterialIcons name="add-task" size={20} color={primary} />
+                            style={({ pressed }) => [
+                              styles.projectQuickAddBtn,
+                              isCompleted && { opacity: 0.55 },
+                              pressed && { opacity: 0.75 },
+                            ]}>
+                            <MaterialIcons name="add-task" size={20} color={isCompleted ? doneMuted : primary} />
                           </Pressable>
                           {hasAnyTasks ? (
                             <Pressable
@@ -4093,7 +4176,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  projectTitle: { fontSize: 16, fontWeight: '800', marginBottom: 2 },
+  projectTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 2 },
+  projectTitle: { fontSize: 16, fontWeight: '800' },
+  projectTitleDone: {
+    textDecorationLine: 'line-through',
+    textDecorationStyle: 'solid',
+  },
+  projectTitleDoneAndroid: {
+    includeFontPadding: false,
+    textAlignVertical: 'center',
+  },
+  projectDoneBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    flexShrink: 0,
+    marginTop: 1,
+  },
+  projectDoneBadgeText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.4 },
   projectSubRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   projectNoteRow: {
     flexDirection: 'row',

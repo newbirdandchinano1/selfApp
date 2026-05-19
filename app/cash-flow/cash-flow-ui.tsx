@@ -186,7 +186,7 @@ function formatMoney(value: number) {
   return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 }
 
-const CASH_FLOW_AI_CACHE_KEY = 'cash_flow_dashboard_ai_v1';
+const CASH_FLOW_AI_CACHE_KEY = 'cash_flow_dashboard_ai_v2';
 
 function computeCashFlowAiFingerprint(state: CashFlowState, metrics: Metrics): string {
   return JSON.stringify({
@@ -1064,13 +1064,17 @@ function MobileDashboard({
         {aiLoading && !aiAnalysis ? (
           <View style={styles.aiAdviceLoadingRow}>
             <ActivityIndicator color={subtle} />
-            <Text style={[styles.aiAdviceLoadingText, { color: subtle }]}>正在根据本页数据生成建议…</Text>
+            <Text style={[styles.aiAdviceLoadingText, { color: subtle }]}>
+              正在根据本页数据生成约 300～400 字综合分析…
+            </Text>
           </View>
         ) : null}
         {aiError ? <Text style={[styles.aiAdviceError, { color: '#f43f5e' }]}>{aiError}</Text> : null}
         {aiAnalysis ? <Text style={[styles.aiAdviceBody, { color: text }]}>{aiAnalysis}</Text> : null}
         {!aiLoading && !aiAnalysis && !aiError ? (
-          <Text style={[styles.aiAdviceLoadingText, { color: subtle }]}>暂无建议</Text>
+          <Text style={[styles.aiAdviceLoadingText, { color: subtle }]}>
+            将生成约 300～400 字的结构、风险与可行建议分析；补全数据后点击右上角刷新。
+          </Text>
         ) : null}
       </View>
     </View>

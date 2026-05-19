@@ -9,10 +9,11 @@ import {
   setMemoAiReview,
   type MemoItem,
 } from '@/lib/memos';
+import { createStandaloneTodoFromMemo } from '@/lib/memo-to-task';
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -52,6 +53,9 @@ export default function MemoListScreen() {
 
   const [aiModalId, setAiModalId] = useState<string | null>(null);
   const [aiModalLoading, setAiModalLoading] = useState(false);
+  const [convertingMemoId, setConvertingMemoId] = useState<string | null>(null);
+
+  const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
 
   const reload = useCallback(async () => {
     setError(null);
@@ -130,6 +134,38 @@ export default function MemoListScreen() {
     }
   }, [aiModalItem, runAiForMemo]);
 
+  const performConvertToTodo = useCallback(
+    async (row: MemoItem) => {
+      setConvertingMemoId(row.id);
+      try {
+        const { taskId, title } = await createStandaloneTodoFromMemo(row);
+        setItems(prev => prev.filter(m => m.id !== row.id));
+        delete swipeableRefs.current[row.id];
+        setAiModalId(prevId => (prevId === row.id ? null : prevId));
+        Alert.alert('已转为待办', `「${title}」已加入待办列表，原备忘已删除。`, [
+          { text: '知道了', style: 'cancel' },
+          {
+            text: '查看待办',
+            onPress: () => router.push({ pathname: '/task/[id]', params: { id: taskId } }),
+          },
+        ]);
+      } catch {
+        Alert.alert('转换失败', '请稍后重试');
+      } finally {
+        setConvertingMemoId(prev => (prev === row.id ? null : prev));
+      }
+    },
+    [router],
+  );
+
+  const onConvertToTodo = useCallback(
+    (row: MemoItem) => {
+      if (convertingMemoId === row.id) return;
+      void performConvertToTodo(row);
+    },
+    [convertingMemoId, performConvertToTodo],
+  );
+
   const onDelete = useCallback((row: MemoItem) => {
     const title = memoListPreviewTitle(row);
     Alert.alert('删除备忘', `确定删除「${title}」？`, [
@@ -156,26 +192,50 @@ export default function MemoListScreen() {
     if (items.length === 0) return null;
     return (
       <View style={styles.listHintRow}>
-        <Text style={[styles.swipeListHint, { color: outline }]}>左滑条目可删除</Text>
+        <Text style={[styles.swipeListHint, { color: outline }]}>左滑可转待办或删除</Text>
       </View>
     );
   }, [items.length, outline]);
 
   const renderItem = useCallback(
-    ({ item }: { item: MemoItem }) => (
+    ({ item }: { item: MemoItem }) => {
+      const isConverting = convertingMemoId === item.id;
+      return (
       <Swipeable
+        ref={r => {
+          swipeableRefs.current[item.id] = r;
+        }}
         overshootRight={false}
         rightThreshold={48}
         renderRightActions={() => (
-          <Pressable
-            onPress={() => onDelete(item)}
-            style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}
-            accessibilityRole="button"
-            accessibilityLabel={`删除 ${memoListPreviewTitle(item)}`}
-          >
-            <MaterialIcons name="delete-outline" size={24} color="#fff" />
-            <Text style={styles.swipeDeleteText}>删除</Text>
-          </Pressable>
+          <View style={styles.swipeActionsRow}>
+            <Pressable
+              onPress={() => onConvertToTodo(item)}
+              disabled={isConverting}
+              style={({ pressed }) => [
+                styles.swipeTodoAction,
+                { backgroundColor: primary, opacity: isConverting ? 0.55 : pressed ? 0.92 : 1 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={`将 ${memoListPreviewTitle(item)} 转为待办`}
+            >
+              {isConverting ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <MaterialIcons name="playlist-add-check" size={22} color="#fff" />
+              )}
+              <Text style={styles.swipeTodoText}>转待办</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => onDelete(item)}
+              style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}
+              accessibilityRole="button"
+              accessibilityLabel={`删除 ${memoListPreviewTitle(item)}`}
+            >
+              <MaterialIcons name="delete-outline" size={24} color="#fff" />
+              <Text style={styles.swipeDeleteText}>删除</Text>
+            </Pressable>
+          </View>
         )}
       >
         <View style={[styles.rowCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
@@ -213,8 +273,22 @@ export default function MemoListScreen() {
           </View>
         </View>
       </Swipeable>
-    ),
-    [borderSoft, cardBg, onDelete, openAiModal, outline, primary, router, secondary, tertiary, text],
+      );
+    },
+    [
+      borderSoft,
+      cardBg,
+      convertingMemoId,
+      onConvertToTodo,
+      onDelete,
+      openAiModal,
+      outline,
+      primary,
+      router,
+      secondary,
+      tertiary,
+      text,
+    ],
   );
 
   const headerBg = isDark ? 'rgba(17,24,39,0.98)' : 'rgba(255,255,255,0.98)';
@@ -399,13 +473,32 @@ const styles = StyleSheet.create({
   listContentEmpty: { flexGrow: 1, justifyContent: 'center' },
   listHintRow: { marginBottom: 10, paddingHorizontal: 2 },
   swipeListHint: { fontSize: 11, fontWeight: '600', opacity: 0.9 },
+  swipeActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginLeft: -8,
+    gap: 8,
+    paddingLeft: 8,
+  },
+  swipeTodoAction: {
+    width: 92,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 18,
+    marginVertical: 2,
+    gap: 4,
+  },
+  swipeTodoText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
   swipeDeleteAction: {
     width: 88,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#dc2626',
     borderRadius: 18,
-    marginLeft: 10,
     marginVertical: 2,
     gap: 4,
   },

@@ -708,7 +708,7 @@ export default function ProfileScreen() {
                     {memoCount === 0 ? '暂无备忘，点此添加' : `共 ${memoCount} 条备忘`}
                   </Text>
                   <Text style={[styles.weeklyEntryHint, { color: outline }]}>
-                    支持多条备忘、标题与正文；数据保存在本机，可在列表页添加或删除。
+                    支持多条备忘、标题与正文；左滑可转待办（转后移除备忘）或删除。
                   </Text>
                 </View>
                 <MaterialIcons name="chevron-right" size={26} color={outline} />

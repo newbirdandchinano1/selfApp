@@ -41,15 +41,54 @@ function subtitleForRow(row: WishItemRow): string {
 }
 
 function buildWishListAiContextText(rows: WishItemRow[], quarterGoal: number, totalPrice: number): string {
+  const progressPct = quarterGoal > 0 ? Math.round((totalPrice / quarterGoal) * 100) : 0;
+  const avgDesire = rows.length ? rows.reduce((s, r) => s + r.desire_level, 0) / rows.length : 0;
+  const highDesireRows = rows.filter(r => r.desire_level >= 4);
+  const highDesireTotal = highDesireRows.reduce(
+    (s, r) => s + (Number.isFinite(r.price) ? r.price : 0),
+    0,
+  );
+  const desireBuckets = [1, 2, 3, 4, 5].map(lv => ({
+    lv,
+    count: rows.filter(r => r.desire_level === lv).length,
+  }));
+  const desireDist = desireBuckets
+    .filter(b => b.count > 0)
+    .map(b => `等级${b.lv}:${b.count}条`)
+    .join('、');
+
+  const byCategory = new Map<string, { count: number; total: number }>();
+  for (const row of rows) {
+    const cat = row.category_label?.trim() || '未分类';
+    const prev = byCategory.get(cat) ?? { count: 0, total: 0 };
+    const price = Number.isFinite(row.price) ? row.price : 0;
+    byCategory.set(cat, { count: prev.count + 1, total: prev.total + price });
+  }
+  const categorySummary = [...byCategory.entries()]
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([cat, v]) => `${cat}（${v.count}条/¥${v.total.toLocaleString('zh-CN')}）`)
+    .join('；');
+
+  const topFocus = [...rows]
+    .sort((a, b) => b.desire_level - a.desire_level || b.price - a.price)
+    .slice(0, 3)
+    .map((r, i) => `${i + 1}) ${r.name}｜欲望${r.desire_level}/5｜¥${r.price}`)
+    .join('；');
+
   const lines = rows.map((row, idx) => {
     const cat = row.category_label?.trim() || '未分类';
     const reason = row.reason?.trim().replace(/\s+/g, ' ') ?? '';
-    const reasonShort = reason.length > 120 ? `${reason.slice(0, 117)}…` : reason;
-    return `${idx + 1}. ${row.name}｜预估 ¥${row.price}｜欲望 ${row.desire_level}/5｜${cat}${reasonShort ? `｜理由：${reasonShort}` : ''}`;
+    const reasonShort = reason.length > 160 ? `${reason.slice(0, 157)}…` : reason;
+    return `${idx + 1}. ${row.name}｜预估 ¥${row.price}｜欲望 ${row.desire_level}/5｜${cat}${reasonShort ? `｜理由：${reasonShort}` : '｜理由：未填写'}`;
   });
+
   return [
-    `参考季度目标金额：¥${quarterGoal.toLocaleString('zh-CN')}（用于理解「占 Q 目标比例」等语境，非强制预算）`,
-    `清单共 ${rows.length} 条，总预估支出 ¥${totalPrice.toLocaleString('zh-CN')}`,
+    `参考季度目标金额：¥${quarterGoal.toLocaleString('zh-CN')}（用于理解占 Q 目标比例等语境，非强制预算）`,
+    `清单共 ${rows.length} 条，总预估支出 ¥${totalPrice.toLocaleString('zh-CN')}，约占季度目标 ${progressPct}%`,
+    `平均欲望等级：${avgDesire.toFixed(1)}/5；欲望等级分布：${desireDist || '无'}`,
+    `欲望≥4 的条目：${highDesireRows.length} 条，合计 ¥${highDesireTotal.toLocaleString('zh-CN')}`,
+    `类别金额分布：${categorySummary || '无'}`,
+    `建议优先关注（按欲望与价格）：${topFocus || '无'}`,
     '',
     '条目明细：',
     ...lines,

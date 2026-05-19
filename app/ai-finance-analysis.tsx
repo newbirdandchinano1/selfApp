@@ -11,7 +11,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import Svg, { Circle, Defs, Line, LinearGradient, Path, Stop } from 'react-native-svg';
 
 
-const AI_FINANCE_CACHE_KEY = 'ai_finance_dashboard_cache_v1';
+const AI_FINANCE_CACHE_KEY = 'ai_finance_dashboard_cache_v2';
 
 const EXPENSE_BREAKDOWN_COLORS = ['#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe'];
 
@@ -539,7 +539,9 @@ export default function AiFinanceAnalysisScreen() {
               <>
                 <View style={[styles.insightCard, { backgroundColor: surfaceLow, borderColor: outline }]}>
                   <ActivityIndicator size="small" color={secondary} style={{ alignSelf: 'flex-start' }} />
-                  <Text style={[styles.insightBody, { color: subtle }]}>模型正在生成分条建议…</Text>
+                  <Text style={[styles.insightBody, { color: subtle }]}>
+                    正在生成深度洞察（每条约 300～400 字）…
+                  </Text>
                 </View>
                 <View style={[styles.insightCard, { backgroundColor: surfaceLow, borderColor: outline }]}>
                   <ActivityIndicator size="small" color={primary} style={{ alignSelf: 'flex-start' }} />

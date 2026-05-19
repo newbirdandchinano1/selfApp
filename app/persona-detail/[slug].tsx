@@ -15,6 +15,7 @@ import { buildPersonaContextText, localCalendarYmd } from '@/lib/persona-portrai
 import {
   generatePersonaPortraitFromContext,
   getActiveAiLlmApiKey,
+  PERSONA_PORTRAIT_OVERVIEW_MIN_LEN,
   type PersonaPortraitAiData,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -61,11 +62,6 @@ const FALLBACK_AI_DIMS: { icon: 'local-drink' | 'fitness-center' | 'account-bala
   { icon: 'account-balance-wallet', title: '财务自律', sub: '延迟满足与目标感' },
 ];
 
-const FALLBACK_BODY_BULLETS = [
-  '体脂率需结合训练量与饮食结构解读，单点数值不构成医疗建议。',
-  '若处于增肌期，短期体脂波动属于正常现象。',
-];
-
 const FALLBACK_HYD_BULLETS = [
   '500ml 保温杯随身，上午喝完第一杯再进入深度工作。',
   '每完成一个番茄钟，起身补水 100–150ml。',
@@ -83,16 +79,19 @@ const FALLBACK_SAVINGS_MILESTONES = [
 ];
 
 const DEFAULT_PLAN_OVERVIEW =
-  '该维度综合统计你在任务与习惯上的闭环速度：按时完成率、延期恢复率与「青蛙」优先级执行情况。以下为基于你近 7 日本地数据的模型生成侧写，仅供参考。';
+  '该维度聚焦任务与习惯的闭环节奏。近一周若「完成」与「新建」比例失衡，往往说明排期偏满或收尾窗口不足——可在周末留出固定复盘块，把未闭环项压缩为不超过三条的青蛙清单，再按精力峰值重排。高认知任务宜落在状态最好的时段，琐碎维护型事项则集中在低能耗时段批量处理。你不必追求每日打满，关键是让最重要的那一件事先落地，用完成感带动下一项。样本较少时，先选一件最容易收尾的小任务完成即可。以上为基于本地记录的模型侧写，仅供自我观察，不构成专业建议。';
 
 const DEFAULT_BODY_OVERVIEW =
-  '你在资料页填写的身高、体重用于推算 BMI，与饮水、营养记录一起构成「身体自律」人格侧写（非医疗结论）。';
+  '身体成分侧写以你在资料页填写的身高、体重为起点，用于推算 BMI 并观察生活方式自律倾向（非医疗结论）。BMI 只是粗线条参考：同样数值在不同肌肉量、睡眠与饮食结构下意义不同，更适合看「是否长期稳定」而非追逐单点数字。若档案尚未填写完整，可先补全身高体重，再结合训练与作息做温和调整。增肌期体重上升、减脂期短期波动都较常见，不必因单日读数焦虑。建议把测量固定在每周同一时段，用趋势代替苛责。以下为模型根据现有档案生成的参考解读，请结合自身感受使用。';
 
 const DEFAULT_HYD_OVERVIEW =
-  '稳定饮水反映节律感与自我照料意愿。将「喝水」与固定锚点绑定（起床后、运动前后）更容易长期保持。';
+  '饮水人格反映的是节律感与自我照料：稳定补水往往与固定锚点（起床后、运动前后、每个番茄钟结束）绑定在一起，比「想起来再喝」更容易坚持。近一周若日均饮水低于目标，可先缩小杯子容量、降低单次心理负担，用「先喝完第一杯再开始深度工作」建立上午节奏。若已接近或达到目标，可把注意力转向分布是否均匀——下午与晚间适当补水有助于缓解疲劳感。记录天数偏少时，样本有限，解读会更偏通用建议；坚持打卡几天后刷新，解读会更贴近你的真实节律。以上为生活方式参考，不构成医疗建议。';
 
 const DEFAULT_SAVINGS_OVERVIEW =
-  '该卡片描述你在「延迟满足」与「目标拆解」上的倾向：是否愿意为远期目标压缩即时消费，以及你对现金流的敏感度。';
+  '储蓄人格侧写关注延迟满足与目标拆解：你是否愿意为远期目标压缩即时消费，以及记账、存钱与心愿清单是否形成闭环。近一周若支出偏高而储蓄入账偏少，不一定代表「自制力差」，更常见的是大额事项集中或分类口径变化——可先标出 1～2 笔最大支出，判断属于必要、改善还是冲动，再决定下周是否设「消费冷静期」。若储蓄入账稳定，说明你在现金流与目标之间已建立可复制的节律，值得把成功做法写下来（固定扣款日、先存后花等）。心愿清单的更新频率也反映你是否把欲望转化为可执行计划。以下为基于本地记账与存钱摘要的参考解读，不构成投资或法律建议。';
+
+const DEFAULT_AI_INSIGHT_OVERVIEW =
+  '综合洞察会把任务执行、身体照料、饮水节律与财务行为放在同一张图里看：它们往往互相牵引——任务压力大时饮水与睡眠容易失守，财务焦虑又会挤占复盘时间。近一周若某一维度明显拖后腿，不必同时改全部习惯，优先选「投入最小、反馈最快」的一条微行动（例如每天第一杯水、每天收尾一件小事、每周固定一笔储蓄）。若多维数据都偏少，说明记录还在起步阶段，先让数据长起来比追求满分更重要。你已经在用工具观察自己，这本身就是很关键的自律起点。刷新画像可让模型结合最新摘要更新解读。以下为综合侧写，仅供自我观察。';
 
 function SectionCard({
   children,
@@ -140,6 +139,53 @@ function RelLink({
       <Text style={[styles.relLinkText, { color: primary }]}>{label}</Text>
       <MaterialIcons name="chevron-right" size={22} color={primary} />
     </Pressable>
+  );
+}
+
+function resolvePersonaNarrative(
+  overview: string,
+  status: 'idle' | 'loading' | 'ok' | 'error',
+  fallback: string,
+): string {
+  if (status === 'loading') return '正在生成 AI 深度解读，篇幅约 300～400 字，请稍候…';
+  const trimmed = overview.trim();
+  if (trimmed.length > 0) return trimmed;
+  if (status === 'ok' || status === 'idle') return fallback;
+  return fallback;
+}
+
+function PersonaAiNarrative({
+  overview,
+  status,
+  fallback,
+  text,
+  outline,
+  surface,
+  borderSoft,
+  tertiary,
+}: {
+  overview: string;
+  status: 'idle' | 'loading' | 'ok' | 'error';
+  fallback: string;
+  text: string;
+  outline: string;
+  surface: string;
+  borderSoft: string;
+  tertiary: string;
+}) {
+  const body = resolvePersonaNarrative(overview, status, fallback);
+  const short =
+    status === 'ok' && overview.trim().length > 0 && overview.trim().length < PERSONA_PORTRAIT_OVERVIEW_MIN_LEN;
+  return (
+    <SectionCard surface={surface} border={borderSoft}>
+      <SectionTitle text="AI 深度解读" color={text} />
+      {short ? (
+        <Text style={[styles.aiNarrativeHint, { color: tertiary }]}>
+          当前解读偏短（约 {overview.trim().length} 字），可点上方「手动刷新」重新生成完整版（目标 300～400 字）。
+        </Text>
+      ) : null}
+      <Text style={[styles.aiNarrativePara, { color: outline }]}>{body}</Text>
+    </SectionCard>
   );
 }
 
@@ -352,7 +398,6 @@ export default function PersonaDetailScreen() {
         const planKicker = hKicker || 'EXECUTION';
         const planMain = hMain || '85%';
         const planCap = hCap || '本周目标达成率 · 参考侧写';
-        const planOverview = overview || DEFAULT_PLAN_OVERVIEW;
         const planStats = ai?.stats && ai.stats.length >= 3 ? ai.stats : FALLBACK_PLAN_STATS;
         const planBullets =
           ai?.bullets && ai.bullets.filter(b => b.trim()).length >= 2 ? ai.bullets.filter(b => b.trim()) : FALLBACK_PLAN_BULLETS;
@@ -368,9 +413,18 @@ export default function PersonaDetailScreen() {
                 <Text style={styles.heroCaption}>{planCap}</Text>
               </View>
             </View>
+            <PersonaAiNarrative
+              overview={overview}
+              status={portraitStatus}
+              fallback={DEFAULT_PLAN_OVERVIEW}
+              text={text}
+              outline={outline}
+              surface={surface}
+              borderSoft={borderSoft}
+              tertiary={tertiary}
+            />
             <SectionCard surface={surface} border={borderSoft}>
-              <SectionTitle text="执行概览" color={text} />
-              <Text style={[styles.para, { color: outline }]}>{planOverview}</Text>
+              <SectionTitle text="数据速览" color={text} />
               <View style={styles.statGrid}>
                 {planStats.map(row => (
                   <View key={row.label} style={[styles.statCell, { borderColor: borderSoft }]}>
@@ -396,9 +450,6 @@ export default function PersonaDetailScreen() {
         const bodyKicker = hKicker || 'BODY';
         const bodyMain = hMain || (bmiText !== '—' ? bmiText : '—');
         const bodyCap = hCap || 'BMI · 本地档案（非医疗）';
-        const bodyOverview = overview || DEFAULT_BODY_OVERVIEW;
-        const bodyBullets =
-          ai?.bullets && ai.bullets.filter(b => b.trim()).length >= 2 ? ai.bullets.filter(b => b.trim()) : FALLBACK_BODY_BULLETS;
         return (
           <>
             {statusHeader}
@@ -411,9 +462,18 @@ export default function PersonaDetailScreen() {
                 <Text style={styles.heroCaption}>{bodyCap}</Text>
               </View>
             </View>
+            <PersonaAiNarrative
+              overview={overview}
+              status={portraitStatus}
+              fallback={DEFAULT_BODY_OVERVIEW}
+              text={text}
+              outline={outline}
+              surface={surface}
+              borderSoft={borderSoft}
+              tertiary={tertiary}
+            />
             <SectionCard surface={surface} border={borderSoft}>
               <SectionTitle text="与档案联动" color={text} />
-              <Text style={[styles.para, { color: outline }]}>{bodyOverview}</Text>
               <View style={styles.profileFacts}>
                 <View style={[styles.factRow, { borderColor: borderSoft }]}>
                   <Text style={[styles.factLabel, { color: outline }]}>身高</Text>
@@ -429,12 +489,6 @@ export default function PersonaDetailScreen() {
                 </View>
               </View>
             </SectionCard>
-            <SectionCard surface={surface} border={borderSoft}>
-              <SectionTitle text="解读备忘" color={text} />
-              {bodyBullets.map((line, idx) => (
-                <Bullet key={idx} muted={outline} text={line} />
-              ))}
-            </SectionCard>
             <RelLink label="健康日历" onPress={goHealth} primary={secondary} />
             <RelLink label="编辑身体数据" onPress={goProfile} primary={primary} />
           </>
@@ -447,7 +501,6 @@ export default function PersonaDetailScreen() {
           hMain ||
           (hydMemo.avgMl >= 50 ? `${(hydMemo.avgMl / 1000).toFixed(1)}L` : healthRows.length ? `${Math.round(hydMemo.avgMl)} ml` : '—');
         const hydCap = hCap || '近 7 日饮水均值（本地）';
-        const hydOverview = overview || DEFAULT_HYD_OVERVIEW;
         const hydBullets =
           ai?.bullets && ai.bullets.filter(b => b.trim()).length >= 2 ? ai.bullets.filter(b => b.trim()) : FALLBACK_HYD_BULLETS;
         const barW = `${Math.max(4, hydMemo.pct)}%` as DimensionValue;
@@ -464,9 +517,18 @@ export default function PersonaDetailScreen() {
                 <Text style={styles.heroCaption}>{hydCap}</Text>
               </View>
             </View>
+            <PersonaAiNarrative
+              overview={overview}
+              status={portraitStatus}
+              fallback={DEFAULT_HYD_OVERVIEW}
+              text={text}
+              outline={outline}
+              surface={surface}
+              borderSoft={borderSoft}
+              tertiary={tertiary}
+            />
             <SectionCard surface={surface} border={borderSoft}>
-              <SectionTitle text="水分人格" color={text} />
-              <Text style={[styles.para, { color: outline }]}>{hydOverview}</Text>
+              <SectionTitle text="饮水进度" color={text} />
               <View style={styles.waterCompare}>
                 <View style={[styles.waterBarTrack, { backgroundColor: isDark ? 'rgba(148,163,184,0.2)' : '#e8ecff' }]}>
                   <View style={[styles.waterBarFill, { width: barW, backgroundColor: primary }]} />
@@ -489,7 +551,6 @@ export default function PersonaDetailScreen() {
         const savKicker = hKicker || 'WEALTH';
         const savMain = hMain || '储蓄侧写';
         const savCap = hCap || '基于近 7 日记账与存钱摘要';
-        const savOverview = overview || DEFAULT_SAVINGS_OVERVIEW;
         const savMilestones =
           ai?.milestones && ai.milestones.filter(m => m.trim()).length >= 2
             ? ai.milestones.filter(m => m.trim())
@@ -506,9 +567,18 @@ export default function PersonaDetailScreen() {
                 <Text style={styles.heroCaption}>{savCap}</Text>
               </View>
             </View>
+            <PersonaAiNarrative
+              overview={overview}
+              status={portraitStatus}
+              fallback={DEFAULT_SAVINGS_OVERVIEW}
+              text={text}
+              outline={outline}
+              surface={surface}
+              borderSoft={borderSoft}
+              tertiary={tertiary}
+            />
             <SectionCard surface={surface} border={borderSoft}>
-              <SectionTitle text="储蓄人格侧写" color={text} />
-              <Text style={[styles.para, { color: outline }]}>{savOverview}</Text>
+              <SectionTitle text="阶段里程碑" color={text} />
               <View style={styles.milestoneList}>
                 {savMilestones.map((t, i) => (
                   <View key={i} style={[styles.milestoneRow, { borderColor: borderSoft }]}>
@@ -525,10 +595,11 @@ export default function PersonaDetailScreen() {
       }
 
       case 'ai-insight': {
-        const rawQuote =
-          (ai?.ai_quote || ai?.overview || '').trim() ||
-          '你这周的饮水量提升了 15%，非常棒。考虑增加 10g 蛋白质摄入以支持健身训练。在执行储蓄计划方面你做得也很出色，请继续保持你的节奏！';
-        const displayQuote = rawQuote.includes('「') ? rawQuote : `「${rawQuote}」`;
+        const rawQuote = (ai?.ai_quote || '').trim();
+        const quoteFallback =
+          '你这周在任务、健康与财务之间呈现出可观察的联动：若某一维度暂时拖后腿，不必一次改全部习惯，先选投入最小、反馈最快的一条微行动即可。坚持记录几天后刷新画像，综合解读会更贴近你的真实节奏。';
+        const quoteBody = resolvePersonaNarrative(rawQuote, portraitStatus, quoteFallback);
+        const displayQuote = quoteBody.includes('「') ? quoteBody : `「${quoteBody}」`;
         const dimsToRender =
           ai && ai.dims.length >= 3
             ? ai.dims.slice(0, 3).map((d, i) => ({
@@ -544,9 +615,19 @@ export default function PersonaDetailScreen() {
               <View style={[styles.aiHeroIcon, { backgroundColor: primary }]}>
                 <MaterialIcons name="auto-awesome" size={32} color="#fff" />
               </View>
-              <Text style={[styles.aiHeroTitle, { color: text }]}>综合洞察</Text>
+              <Text style={[styles.aiHeroTitle, { color: text }]}>综合评语</Text>
               <Text style={[styles.aiQuoteBlock, { color: outline }]}>{displayQuote}</Text>
             </View>
+            <PersonaAiNarrative
+              overview={overview}
+              status={portraitStatus}
+              fallback={DEFAULT_AI_INSIGHT_OVERVIEW}
+              text={text}
+              outline={outline}
+              surface={surface}
+              borderSoft={borderSoft}
+              tertiary={tertiary}
+            />
             <SectionCard surface={surface} border={borderSoft}>
               <SectionTitle text="维度拆解" color={text} />
               {dimsToRender.map(dim => (
@@ -564,7 +645,7 @@ export default function PersonaDetailScreen() {
             <SectionCard surface={surface} border={borderSoft}>
               <SectionTitle text="说明" color={text} />
               <Text style={[styles.para, { color: outline }]}>
-                文案由智谱 GLM-4-Flash 根据你近 7 日在 App 内的聚合摘要生成，仅供自我观察与习惯参考，不构成医疗、投资或法律建议。
+                文案由智谱 GLM-4-Flash 根据你近 7 日在 App 内的聚合摘要生成（长文约 300～400 字），仅供自我观察与习惯参考，不构成医疗、投资或法律建议。可点击上方刷新重新生成。
               </Text>
             </SectionCard>
             <RelLink label="编辑个人资料" onPress={goProfile} primary={primary} />
@@ -715,6 +796,17 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 23,
     fontWeight: '500',
+  },
+  aiNarrativeHint: {
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  aiNarrativePara: {
+    fontSize: 16,
+    lineHeight: 26,
+    fontWeight: '500',
+    letterSpacing: 0.15,
   },
   statGrid: {
     flexDirection: 'row',

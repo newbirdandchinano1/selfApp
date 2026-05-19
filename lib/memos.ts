@@ -20,6 +20,8 @@ export type MemoItem = {
   ai_suggestions?: string;
   /** 最近一次生成 AI 评价的时间 ISO */
   ai_review_at?: string;
+  /** 由该备忘左滑「转待办」生成的独立待办 id（可重复再转，仅记录最近一次） */
+  linked_task_id?: string;
 };
 
 function newId(): string {
@@ -53,6 +55,7 @@ function parseList(raw: string | null): MemoItem[] {
       const ai_evaluation = typeof r.ai_evaluation === 'string' ? r.ai_evaluation : undefined;
       const ai_suggestions = typeof r.ai_suggestions === 'string' ? r.ai_suggestions : undefined;
       const ai_review_at = typeof r.ai_review_at === 'string' ? r.ai_review_at : undefined;
+      const linked_task_id = typeof r.linked_task_id === 'string' ? r.linked_task_id : undefined;
       if (!id || !created_at || !updated_at) continue;
       out.push({
         id,
@@ -63,6 +66,7 @@ function parseList(raw: string | null): MemoItem[] {
         ...(ai_evaluation != null && ai_evaluation !== '' ? { ai_evaluation } : {}),
         ...(ai_suggestions != null && ai_suggestions !== '' ? { ai_suggestions } : {}),
         ...(ai_review_at != null && ai_review_at !== '' ? { ai_review_at } : {}),
+        ...(linked_task_id != null && linked_task_id !== '' ? { linked_task_id } : {}),
       });
     }
     return out;
@@ -209,12 +213,25 @@ export function memoListPreviewBody(row: MemoItem): string {
   return one.length > 80 ? `${one.slice(0, 80)}…` : one;
 }
 
-/** 供智谱 AI 使用的备忘全文（标题 + 正文） */
+/** 供智谱 AI 使用的备忘全文（标题 + 正文 + 元信息） */
 export function memoContextForAiReview(row: MemoItem): string {
   const title = row.title.trim();
   const body = row.body.trim();
   if (!title && !body) return '';
   const parts: string[] = [];
+  const bodyLines = body ? body.split(/\n/).filter(l => l.trim().length > 0).length : 0;
+  const updatedLabel = row.updated_at
+    ? new Date(row.updated_at).toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '未知';
+  parts.push(
+    `【元信息】标题 ${title.length} 字；正文 ${body.length} 字${bodyLines > 0 ? `（约 ${bodyLines} 段/行）` : ''}；最近更新 ${updatedLabel}`,
+  );
   if (title) parts.push(`【标题】\n${title}`);
   if (body) parts.push(`【正文】\n${body}`);
   return parts.join('\n\n');

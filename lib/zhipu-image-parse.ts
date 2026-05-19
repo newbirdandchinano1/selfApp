@@ -731,7 +731,7 @@ export type FoodTextIntakeJson = {
   protein_g: number;
   carbohydrate_g: number;
   sodium_mg: number;
-  /** 1～3 句口语化中文，从均衡/控盐/搭配等角度点评 */
+  /** 120～400 字结构化中文点评（识别概要、营养结构、均衡注意、可行建议） */
   ai_evaluation: string;
 };
 
@@ -745,6 +745,17 @@ export type ParseFoodIntakeFromTextOptions = {
 export type ParseFoodIntakeFromTextResult =
   | { ok: true; data: FoodTextIntakeJson; rawContent: string; attempts: number }
   | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+/** 文字/拍照摄入写入 intake_ai_comment 的 ai_evaluation 字段写作要求 */
+const FOOD_INTAKE_AI_EVALUATION_GUIDE = `ai_evaluation 写作要求（必填且须充实）：
+- 简体中文，总字数建议 120～400 字，至少 4 句完整表述；禁止仅用一两句敷衍。
+- 自然段书写，不要用 markdown、编号列表或 JSON 嵌套。
+- 须依次涵盖（可写成连贯段落，用小标题感弱衔接即可）：
+  (1) 识别概要：本餐/图中主要食物、烹饪方式与可见份量或搭配特点；
+  (2) 营养结构：蛋白质、碳水、脂肪与钠盐的大致倾向（定性即可，勿大段复读数值字段）；
+  (3) 均衡与注意点：蔬菜、优质蛋白、精制碳水、油盐糖、膳食纤维等 1～2 条具体评价；
+  (4) 可行建议：针对本餐给出 1～2 条可执行的微调或下一餐搭配建议。
+- 语气亲切、像注册营养师口语点评；勿编造用户未提供的信息；勿做疾病诊断、用药或极端节食建议。`;
 
 const FOOD_TEXT_INTAKE_JSON_TEMPLATE = `{
   "result": {
@@ -812,15 +823,21 @@ export async function parseFoodIntakeFromText(
   if (!text) {
     return { ok: false, error: '描述为空', attempts: 0 };
   }
-  const question = (options.question ?? '分析这段饮食描述，估算蛋白质、碳水化合物、钠与应计入记录的水分（毫升）').trim();
+  const question = (
+    options.question ??
+    '请完整分析这段饮食描述：估算营养数值，并输出充实的 food_summary 与 ai_evaluation'
+  ).trim();
 
-  const systemContent = `只返回严格JSON，不要任何解释和markdown（含代码块）。顶层为一个对象，且必须包含 result；result 内字段：food_summary（简短中文概括所吃所喝）、hydration_ml、protein_g、carbohydrate_g、sodium_mg、ai_evaluation。
+  const systemContent = `只返回严格JSON，不要任何解释和markdown（含代码块）。顶层为一个对象，且必须包含 result；result 内字段：food_summary、hydration_ml、protein_g、carbohydrate_g、sodium_mg、ai_evaluation。
+
+- food_summary：1～2 句中文，概括所吃所喝、大致份量与烹饪或搭配特点（约 30～80 字，勿仅写菜名罗列）。
 
 hydration_ml（毫升，非负）的计入规则（必须遵守）：
 - **应计入**：用户明确提到的汤、羹、粥、饮品（水、茶、咖啡、奶茶、果汁、汽水、酒等）、牛奶/豆浆等流质、以及**水果**中可视为饮水的部分（可用常见经验估算，如一个中等苹果约对应少量水等，合理即可）。
 - **严禁计入**：米饭、面条、馒头、面包、炒菜、炖肉、烧烤、点心等**正餐固体食物**内部的隐性水分（菜肴「自带」的水、油焖蒸发的水等一律不要折算进 hydration_ml）。若描述里只有这类正餐、没有任何汤粥饮料水果等可饮水来源，则 hydration_ml 必须为 0。
 - protein_g、carbohydrate_g、sodium_mg 为非负数值，无法从描述推断时填 0。
-- ai_evaluation：1～3 句口语化中文，从均衡膳食、控盐、搭配等角度点评这一餐；勿重复罗列数字。
+
+${FOOD_INTAKE_AI_EVALUATION_GUIDE}
 
 必须遵循的形状：
 ${FOOD_TEXT_INTAKE_JSON_TEMPLATE}`;
@@ -834,7 +851,7 @@ ${FOOD_TEXT_INTAKE_JSON_TEMPLATE}`;
       systemContent,
       userContent: `${question}：${text}`,
       temperature: 0.0,
-      maxTokens: 1024,
+      maxTokens: 2048,
       maxAttempts: 1,
       retryDelayMs: 0,
       forceJsonObject: true,
@@ -1029,7 +1046,17 @@ export async function estimateDailyIntakeTargetsFromContext(
   return { ok: false, error: lastError, attempts: maxAttempts, httpStatus: lastHttp };
 }
 
-const FINANCE_STATS_ANALYSIS_JSON_HINT = `{"analysis":"2～5句中文个人财务建议，口语化、可操作，不要markdown"}`;
+const FINANCE_STATS_ANALYSIS_GUIDE = `analysis 写作要求（必填且须充实）：
+- 简体中文，总字数控制在 300～400 字（约 5～8 句，禁止少于 280 字或超过 420 字）；
+- 自然段书写，不要用 markdown、编号列表或 JSON 嵌套；
+- 须依次涵盖（可写成连贯段落）：
+  (1) 区间总览：收入、支出、结余的大致结构与本期特点（定性描述，勿逐条复读摘要数字）；
+  (2) 分类与习惯：主要收支分类占比反映的消费/收入习惯，点出 1～2 个突出类别或变化；
+  (3) 风险与亮点：大额支出、结余波动、储蓄空间或做得好的地方各 1 点（仅基于摘要，勿捏造）；
+  (4) 可行建议：给出 2～3 条具体、可执行的下月或本周微调建议（如控制某类支出、设定储蓄比例、复盘高额流水）。
+- 语气亲切专业；勿捏造摘要中未出现的交易、账户或金额；若几乎无收支，友好说明需多记账后再分析。`;
+
+const FINANCE_STATS_ANALYSIS_JSON_HINT = `{"analysis":"（此处为 300～400 字结构化中文财务分析，见系统要求）"}`;
 
 export type AnalyzeFinanceBillSummaryFromTextOptions = {
   apiKey: string;
@@ -1053,7 +1080,7 @@ function normalizeFinanceStatsAnalysisJson(parsed: unknown): string {
 }
 
 /**
- * 根据账单统计摘要生成简短中文建议（智谱 glm-4-flash，JSON 含 analysis 字段）。
+ * 根据账单统计摘要生成 300～400 字结构化中文分析（JSON 含 analysis 字段）。
  * 与 `parseFoodIntakeFromText` 类似：串行队列、1305 重试、JSON 围栏剥离。
  */
 export async function analyzeFinanceBillSummaryFromText(
@@ -1070,21 +1097,20 @@ export async function analyzeFinanceBillSummaryFromText(
     return { ok: false, error: '摘要为空', attempts: 0 };
   }
 
-  const systemContent = `你是个人记账应用里的财务助手。用户会提供一段时间内的本地记账统计摘要（中文，已脱敏聚合）。
+  const systemContent = `你是个人记账应用里的资深财务顾问。用户会提供一段时间内的本地记账统计摘要（中文，已脱敏聚合）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段 analysis（字符串）：
-- 用 2～5 句口语化中文，从消费习惯、储蓄、分类结构、可执行的小建议等角度点评；
-- 不要重复罗列摘要中的每一个数字；不要捏造摘要中未出现的交易或金额；
-- 若摘要显示几乎没有收支或笔数为 0，仅友好说明需要多记账才能分析习惯。
 
-输出形状示例（内容替换为你的生成）：${FINANCE_STATS_ANALYSIS_JSON_HINT}`;
+${FINANCE_STATS_ANALYSIS_GUIDE}
+
+输出形状示例（analysis 须替换为符合上述字数与结构的正文）：${FINANCE_STATS_ANALYSIS_JSON_HINT}`;
 
   const lr = await loopTextJsonLlmWithRetries<string>({
     apiKey: key,
     systemContent,
-    userContent: `以下是统计摘要，请生成 analysis 字段：\n\n${text}`,
+    userContent: `以下是统计摘要，请生成充实、约 300～400 字的 analysis 字段：\n\n${text}`,
     temperature: 0.25,
-    maxTokens: 600,
+    maxTokens: 1200,
     maxAttempts,
     retryDelayMs,
     finish: parsed => {
@@ -1102,7 +1128,17 @@ export async function analyzeFinanceBillSummaryFromText(
   return { ok: true, analysis: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
 }
 
-const CASH_FLOW_DASHBOARD_JSON_HINT = `{"analysis":"3～7句中文建议，口语化、可操作，不要markdown"}`;
+const CASH_FLOW_DASHBOARD_ANALYSIS_GUIDE = `analysis 写作要求（必填且须充实）：
+- 简体中文，总字数控制在 300～400 字（约 5～8 句，禁止少于 280 字或超过 420 字）；
+- 自然段书写，不要用 markdown、编号列表或 JSON 嵌套；
+- 须结合 ESBI、主动/被动收入、资产负债净现金流、自由现金流等概念，依次涵盖：
+  (1) 结构总览：主动与被动收入占比、总收入与总流出的平衡感，以及当前现金流「象限」特点（定性，勿逐条复读数字）；
+  (2) 资产与负债：资产性净流入、负债消耗、还款压力或净资产趋势中的 1～2 个关键点；
+  (3) 流出与效率：生活支出、非必要支出、自由现金流是否健康，点出 1 个亮点或风险；
+  (4) 可行建议：给出 2～3 条具体、可执行的下一步（如提升被动收入、优化负债结构、控制某类流出、补全台账等）。
+- 语气亲切专业；勿捏造摘要中未出现的条目或金额；若数据几乎为空，友好引导先补全收入、支出与资产负债。`;
+
+const CASH_FLOW_DASHBOARD_JSON_HINT = `{"analysis":"（此处为 300～400 字结构化中文现金流分析，见系统要求）"}`;
 
 export type AnalyzeCashFlowDashboardFromTextOptions = {
   apiKey: string;
@@ -1117,7 +1153,7 @@ export type AnalyzeCashFlowDashboardFromTextResult =
   | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
 
 /**
- * 根据「现金流图」页本地数据摘要生成中文分析与建议（智谱 glm-4-flash，JSON 含 analysis 字段）。
+ * 根据「现金流图」页本地数据摘要生成 300～400 字结构化分析（JSON 含 analysis 字段）。
  */
 export async function analyzeCashFlowDashboardFromText(
   options: AnalyzeCashFlowDashboardFromTextOptions,
@@ -1133,22 +1169,21 @@ export async function analyzeCashFlowDashboardFromText(
     return { ok: false, error: '摘要为空', attempts: 0 };
   }
 
-  const systemContent = `你是个人财务应用里「现金流图」模块的顾问，熟悉 ESBI 四象限、主动/被动收入、资产负债净现金流与自由现金流等概念。
+  const systemContent = `你是个人财务应用里「现金流图」模块的资深顾问，熟悉 ESBI 四象限、主动/被动收入、资产负债净现金流与自由现金流等概念。
 用户会提供从本地数据库聚合的中文摘要（已脱敏为名称与金额，无真实账号）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段 analysis（字符串）：
-- 用 3～7 句口语化中文，综合点评当前结构（如被动收入占比、财务自由进度、负债消耗、非必要支出、资产性净流入等），给出可执行的下一步建议；
-- 不要逐条复读摘要里的每一个数字；不要捏造摘要中未出现的条目或金额；
-- 若数据几乎为空，友好引导用户先补全收入、支出与资产负债台账。
 
-输出形状示例（内容替换为你的生成）：${CASH_FLOW_DASHBOARD_JSON_HINT}`;
+${CASH_FLOW_DASHBOARD_ANALYSIS_GUIDE}
+
+输出形状示例（analysis 须替换为符合上述字数与结构的正文）：${CASH_FLOW_DASHBOARD_JSON_HINT}`;
 
   const lr = await loopTextJsonLlmWithRetries<string>({
     apiKey: key,
     systemContent,
-    userContent: `以下是用户现金流图数据摘要，请生成 analysis 字段：\n\n${text}`,
+    userContent: `以下是用户现金流图数据摘要，请生成充实、约 300～400 字的 analysis 字段：\n\n${text}`,
     temperature: 0.3,
-    maxTokens: 800,
+    maxTokens: 1200,
     maxAttempts,
     retryDelayMs,
     finish: parsed => {
@@ -1166,7 +1201,7 @@ export async function analyzeCashFlowDashboardFromText(
   return { ok: true, analysis: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
 }
 
-const WISH_LIST_RATIONAL_REVIEW_JSON_HINT = `{"headline":"一句中文概括（建议不超过24字）","review":"2～6句理性消费分析与建议，口语化、可操作，不要markdown"}`;
+const WISH_LIST_RATIONAL_REVIEW_JSON_HINT = `{"headline":"一句中文概括（建议不超过24字）","review":"约300～400字的理性消费深度分析正文，分段、口语化、可操作，不要markdown"}`;
 
 export type AnalyzeWishListRationalReviewFromTextOptions = {
   apiKey: string;
@@ -1221,20 +1256,26 @@ export async function analyzeWishListRationalReviewFromText(
     return { ok: false, error: '清单上下文为空', attempts: 0 };
   }
 
-  const systemContent = `你是个人生活规划应用里的消费顾问。用户会提供本地「欲望/心愿清单」的聚合摘要（中文，已脱敏；仅名称、价格、欲望等级、类别与自填理由等）。
+  const systemContent = `你是个人生活规划应用里的消费顾问。用户会提供本地「欲望/心愿清单」的聚合摘要（中文，已脱敏；含汇总统计、类别分布、条目明细等）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含两个字符串字段：
 - headline：用一句话概括当前清单的消费风险或优先级焦点，建议不超过 24 个汉字，语气克制、不羞辱用户。
-- review：用 2～6 句口语化中文，从必要性、预算压力、欲望等级与理由一致性、可延后或替代方案等角度给出理性建议；不要重复逐条念清单；不要捏造摘要中未出现的商品或金额；若条目很少，可鼓励先沉淀需求再下单。
+- review：正文须达到 300～400 个汉字（含标点；低于 280 字视为不合格）。用 3～5 个自然段或清晰层次展开，口语化、克制、不羞辱用户；不要 markdown；不要逐条复读清单；不要捏造摘要中未出现的商品、金额或类别。建议覆盖：
+  1）整体画像：总支出、相对季度目标的占比与预算压力感；
+  2）欲望结构：高/中/低欲望分布，是否存在「高欲望+高价」集中；
+  3）类别与理由：哪些条目理由充分、哪些显得冲动或信息不足；
+  4）优先级：可入手、宜观望延后、可替代或降配的思路（可点名 1～2 个摘要中的典型称谓，勿罗列全部）；
+  5）行动收尾：1～2 条可执行的下一步（如冷静期、分拆大额、对齐季度目标等）。
+  若条目很少，可侧重需求沉淀与下单节奏，仍须写满 300 字左右。
 
 输出形状示例（内容须替换为你的生成）：${WISH_LIST_RATIONAL_REVIEW_JSON_HINT}`;
 
   const lr = await loopTextJsonLlmWithRetries<{ headline: string; review: string }>({
     apiKey: key,
     systemContent,
-    userContent: `以下是心愿清单上下文，请生成 headline 与 review 字段：\n\n${text}`,
+    userContent: `以下是心愿清单上下文。请生成 headline 与 review；其中 review 正文须为 300～400 汉字：\n\n${text}`,
     temperature: 0.35,
-    maxTokens: 800,
+    maxTokens: 1200,
     maxAttempts,
     retryDelayMs,
     finish: parsed => {
@@ -1308,7 +1349,7 @@ function normalizePersonaPortraitJson(parsed: unknown): PersonaPortraitAiData {
       .map(x => (typeof x === 'string' ? x : String(x)).trim())
       .filter(Boolean)
       .slice(0, 4)
-      .map(s => clipPersonaStr(s, 180));
+      .map(s => clipPersonaStr(s, 240));
   }
 
   const stats: { label: string; value: string; hint: string }[] = [];
@@ -1337,7 +1378,7 @@ function normalizePersonaPortraitJson(parsed: unknown): PersonaPortraitAiData {
       if (!row || typeof row !== 'object') continue;
       const r = row as Record<string, unknown>;
       const title = typeof r.title === 'string' ? clipPersonaStr(r.title, 36) : clipPersonaStr(String(r.title ?? ''), 36);
-      const sub = typeof r.sub === 'string' ? clipPersonaStr(r.sub, 90) : clipPersonaStr(String(r.sub ?? ''), 90);
+      const sub = typeof r.sub === 'string' ? clipPersonaStr(r.sub, 160) : clipPersonaStr(String(r.sub ?? ''), 160);
       if (title || sub) dims.push({ title: title || '维度', sub });
     }
   }
@@ -1346,20 +1387,72 @@ function normalizePersonaPortraitJson(parsed: unknown): PersonaPortraitAiData {
     hero_kicker: topStr('hero_kicker', 28, 'INSIGHT'),
     hero_main: topStr('hero_main', 40, '—'),
     hero_caption: topStr('hero_caption', 100, ''),
-    overview: topStr('overview', 900, ''),
+    overview: topStr('overview', 2000, ''),
     bullets,
     stats,
     milestones,
     dims,
-    ai_quote: topStr('ai_quote', 520, ''),
+    ai_quote: topStr('ai_quote', 2000, ''),
   };
 }
 
-function personaPortraitHasUsefulBody(d: PersonaPortraitAiData): boolean {
-  if (d.overview.trim().length >= 12) return true;
-  if (d.ai_quote.trim().length >= 12) return true;
-  if (d.bullets.some(b => b.trim().length >= 8)) return true;
-  return false;
+/** overview / ai_quote 目标篇幅（汉字，含标点） */
+export const PERSONA_PORTRAIT_OVERVIEW_MIN_LEN = 280;
+export const PERSONA_PORTRAIT_OVERVIEW_TARGET_MAX_LEN = 420;
+
+function personaTextLen(s: string): number {
+  return s.trim().length;
+}
+
+function personaBulletsOk(d: PersonaPortraitAiData, minItems: number, minEach: number): boolean {
+  const items = d.bullets.map(b => b.trim()).filter(b => personaTextLen(b) >= minEach);
+  return items.length >= minItems;
+}
+
+/** 按 slug 校验模型 JSON 是否达到「充足 AI 解读」标准；不通过则触发重试 */
+export function validatePersonaPortraitForSlug(
+  slug: string,
+  d: PersonaPortraitAiData,
+): { ok: true } | { ok: false; error: string } {
+  const oLen = personaTextLen(d.overview);
+  if (oLen < PERSONA_PORTRAIT_OVERVIEW_MIN_LEN) {
+    return { ok: false, error: `overview 仅 ${oLen} 字，须 ≥${PERSONA_PORTRAIT_OVERVIEW_MIN_LEN} 字（目标 300～400 字）` };
+  }
+
+  switch (slug) {
+    case 'plan-completion':
+    case 'hydration':
+      if (!personaBulletsOk(d, 2, 36)) {
+        return { ok: false, error: 'bullets 须 2～4 条且每条 ≥36 字' };
+      }
+      break;
+    case 'body-composition':
+      break;
+    case 'savings':
+      if (d.milestones.filter(m => m.trim()).length < 2) {
+        return { ok: false, error: 'milestones 须至少 2 条' };
+      }
+      break;
+    case 'ai-insight': {
+      const qLen = personaTextLen(d.ai_quote);
+      if (qLen < PERSONA_PORTRAIT_OVERVIEW_MIN_LEN) {
+        return { ok: false, error: `ai_quote 仅 ${qLen} 字，须 ≥${PERSONA_PORTRAIT_OVERVIEW_MIN_LEN} 字` };
+      }
+      const dims = d.dims.filter(x => x.title.trim() && x.sub.trim());
+      if (dims.length < 3) {
+        return { ok: false, error: 'dims 须 3 条且含 title/sub' };
+      }
+      for (const dim of dims) {
+        if (personaTextLen(dim.sub) < 55) {
+          return { ok: false, error: 'dims.sub 每条须 ≥55 字' };
+        }
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  return { ok: true };
 }
 
 /**
@@ -1384,7 +1477,7 @@ export async function generatePersonaPortraitFromContext(
     return { ok: false, error: '数据摘要为空', attempts: 0 };
   }
 
-  const systemContent = `你是自我管理类 App 里的「人格画像」文案生成器。用户会提供 persona_slug 与一段「本地真实数据摘要」（中文，已聚合脱敏）。
+  const systemContent = `你是自我管理类 App 里的「人格画像」文案生成器。用户会提供 persona_slug 与一段「本地真实数据摘要」（中文，已聚合脱敏，含任务/财务/饮水等统计）。
 你必须只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 
 硬性规则：
@@ -1392,10 +1485,16 @@ export async function generatePersonaPortraitFromContext(
 2) 事实：不要编造摘要里未出现的具体金额、天数、百分比、体脂率、诊断；摘要不足时坦诚样本少，并给温和、通用的微习惯建议。
 3) 医疗：身体成分、饮水、营养相关文案仅供生活方式参考，不得给出疾病诊断或用药建议。
 4) 字段必须齐全（可填空字符串或空数组），类型与示例一致。
+5) 长文篇幅（硬要求，未达标将整包判废并重试）：
+   - overview：每个 persona_slug 都必须写满 300～400 个汉字（含标点；低于 280 字不合格）。须分 4 段：①数据回顾（引用摘要数字）②模式洞察 ③优势与卡点 ④本周可执行微习惯。禁止用列表代替段落。
+   - ai-insight：除 overview 外，ai_quote 另须 300～400 字（口吻可更口语、像朋友写信）；dims 固定 3 条，sub 每条 70～120 字。
+   - plan-completion / hydration：bullets 2～4 条，每条 50～100 字，补充 overview 未写尽的可执行要点。
+   - body-composition：bullets 必须 []；全部深度内容写入 overview。
+   - savings：milestones 2～4 条；overview 仍须 300～400 字段落体。
 
 persona_slug 含义（决定侧重点，但仍需填满所有字段；不适用的数组可给 0～3 条或留空数组）：
-- plan-completion：任务完成、青蛙优先级、闭环节奏。
-- body-composition：身高体重 BMI、身体自律侧写（非医疗）。
+- plan-completion：仅任务完成、习惯打卡、青蛙优先级、闭环节奏；overview/stats/bullets 禁止出现储蓄、记账、收支、饮水、财务、心愿等非任务主题。
+- body-composition：身高体重 BMI、身体自律侧写（非医疗）；bullets 须为空数组 []，不要输出解读备忘式条目。
 - hydration：饮水均值与目标、节律与自我照料。
 - savings：储蓄/记账/延迟满足倾向（基于摘要中的数字）。
 - ai-insight：综合其它维度的一段「总评」式洞察，dims 给 3 条维度拆解。
@@ -1405,15 +1504,17 @@ persona_slug 含义（决定侧重点，但仍需填满所有字段；不适用�
   const lr = await loopTextJsonLlmWithRetries<PersonaPortraitAiData>({
     apiKey: key,
     systemContent,
-    userContent: `persona_slug=${slug}\n\n以下是用户本地数据摘要：\n\n${text}`,
-    temperature: 0.35,
-    maxTokens: 1400,
+    userContent: `persona_slug=${slug}\n\n以下是用户本地数据摘要。请生成 JSON。
+硬性篇幅：overview 必须 300～400 汉字（低于 280 字视为失败）${slug === 'ai-insight' ? '；ai_quote 另须 300～400 汉字；dims 三条 sub 各 70～120 字' : slug === 'body-composition' ? '；bullets 留空数组' : slug === 'plan-completion' || slug === 'hydration' ? '；bullets 2～4 条各 50～100 字' : ''}。\n\n${text}`,
+    temperature: 0.38,
+    maxTokens: 3600,
     maxAttempts,
     retryDelayMs,
     finish: parsed => {
       const data = normalizePersonaPortraitJson(parsed);
-      if (!personaPortraitHasUsefulBody(data)) {
-        return { ok: false, error: '模型返回内容过短或无效', details: parsed };
+      const check = validatePersonaPortraitForSlug(slug, data);
+      if (!check.ok) {
+        return { ok: false, error: check.error, details: parsed };
       }
       return { ok: true, value: data };
     },
@@ -1571,7 +1672,7 @@ export async function analyzeWishItemAiCommentFromText(
   return { ok: true, comment: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
 }
 
-const MEMO_REVIEW_JSON_HINT = `{"evaluation":"约80～200字的中文评价","suggestions":"3～6条可执行建议，可用换行分隔"}`;
+const MEMO_REVIEW_JSON_HINT = `{"evaluation":"约300～400字的中文深度分析","suggestions":"多条可执行建议，总字数约250～400字，可用换行分隔"}`;
 
 export type AnalyzeMemoReviewFromTextOptions = {
   apiKey: string;
@@ -1603,8 +1704,8 @@ function normalizeMemoReviewJson(
     suggestions = (o.advice as string).trim();
   }
   if (mode === 'memo') {
-    if (evaluation.length > 500) evaluation = `${evaluation.slice(0, 497)}…`;
-    if (suggestions.length > 800) suggestions = `${suggestions.slice(0, 797)}…`;
+    if (evaluation.length > 1200) evaluation = `${evaluation.slice(0, 1197)}…`;
+    if (suggestions.length > 1200) suggestions = `${suggestions.slice(0, 1197)}…`;
   }
   if (!evaluation && !suggestions) return null;
   if (!evaluation) evaluation = '（模型未单独输出评价，见下方建议。）';
@@ -1681,16 +1782,17 @@ export async function analyzeMemoReviewFromText(
     apiKey: options.apiKey,
     contextText: text,
     emptyContextError: '备忘内容为空',
-    systemInstruction: `你是个人效率应用里的备忘教练。用户会提供一条本地备忘录的「标题」与「正文」（均为中文或中英混排）。
+    systemInstruction: `你是个人效率应用里的备忘教练。用户会提供一条本地备忘录的元信息、标题与正文（均为中文或中英混排）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含两个字符串字段：
-- evaluation：对这条备忘内容的整体评价（是否清晰、是否可执行、是否缺关键信息等），2～5 句中文，总字数约 80～220 字；语气友善、具体，不要人身攻击；不要编造用户未写明的具体日程或金额。
-- suggestions：基于该备忘给出的 3～6 条可执行改进建议（如何改写、如何拆任务、如何补全要素等），用中文分号或换行分隔即可，总字数建议不超过 400 字。
+- evaluation：对备忘内容的深度分析，须 300～400 个汉字（含标点；低于 280 字视为不合格）。分 3～5 段展开，覆盖：意图是否清晰、结构是否便于执行、信息缺口、优先级与风险、与常见效率原则的契合度等；语气友善、具体，不人身攻击；不编造用户未写明的日程、金额或联系人。
+- suggestions：基于该备忘给出多条可执行改进建议（改写、拆任务、补全要素、设提醒等），用换行或分号分隔，总字数约 250～400 字；每条建议具体可操作。
 
 输出形状示例（内容须替换为你的生成）：${MEMO_REVIEW_JSON_HINT}`,
-    userMessage: `请根据以下备忘录内容生成 evaluation 与 suggestions 字段：\n\n${text}`,
+    userMessage: `请根据以下备忘录内容生成 evaluation 与 suggestions；evaluation 须 300～400 汉字：\n\n${text}`,
     maxAttempts: options.maxAttempts,
     retryDelayMs: options.retryDelayMs,
+    maxTokens: 1400,
   });
 }
 
@@ -1794,14 +1896,14 @@ export async function analyzeWeaknessReviewFromText(
     apiKey: options.apiKey,
     contextText: text,
     emptyContextError: '缺点描述为空',
-    systemInstruction: `你是个人成长应用中的「自我觉察」陪练。用户会自愿写下自己认为的一个缺点名称与详细说明，用于自我梳理，数据仅存于用户本机。
+    systemInstruction: `你是个人成长应用中的「自我觉察」陪练。用户会自愿写下自己认为的一个缺点名称与详细说明（含元信息），用于自我梳理，数据仅存于用户本机。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含两个字符串字段：
-- evaluation：对用户自述内容的善意、具体回应（可涉及常见心理机制、认知重构角度、自我同情等），2～5 句中文，总字数约 80～220 字；禁止羞辱、贴负面人格标签或绝对化评判；不要编造用户未写明的经历或事实；若内容可能涉及临床心理健康问题，不要下诊断，可温和提醒必要时寻求专业心理咨询或医疗支持。
-- suggestions：给出多条可执行的改进或应对策略（微习惯、环境设计、沟通、时间管理等），用中文分号或换行分隔；若条目较多可充分展开，须写完整、勿用「见上文」等省略。
+- evaluation：对用户自述的善意、深度回应，须 300～400 个汉字（含标点；低于 280 字视为不合格）。分 3～5 段展开，可涉及触发情境、常见心理机制、认知重构、自我同情与优势资源等；禁止羞辱、贴负面人格标签或绝对化评判；不编造用户未写明的经历；若可能涉及临床心理健康问题，不下诊断，可温和提醒寻求专业支持。
+- suggestions：给出多条可执行的改进或应对策略（微习惯、环境设计、沟通、边界、时间管理等），用换行或分号分隔，总字数约 250～400 字；须写完整、勿用「见上文」等省略。
 
 输出形状示例（内容须替换为你的生成）：${MEMO_REVIEW_JSON_HINT}`,
-    userMessage: `请根据以下用户自述的缺点信息生成 evaluation 与 suggestions 字段：\n\n${text}`,
+    userMessage: `请根据以下用户自述的缺点信息生成 evaluation 与 suggestions；evaluation 须 300～400 汉字：\n\n${text}`,
     maxAttempts: options.maxAttempts,
     retryDelayMs: options.retryDelayMs,
     reviewJsonNormalize: 'full',
@@ -1809,7 +1911,7 @@ export async function analyzeWeaknessReviewFromText(
   });
 }
 
-const USER_SKILLS_PORTFOLIO_JSON_HINT = `{"per_skill":[{"skill_id":"","evaluation":"","suggestions":""}],"overall_suggestions":"","profile_analysis":""}`;
+const USER_SKILLS_PORTFOLIO_JSON_HINT = `{"per_skill":[{"skill_id":"","evaluation":"","suggestions":""}],"overall_suggestions":"约280～400字综合建议","profile_analysis":"约300～400字能力结构总评"}`;
 
 export type UserSkillAiPortfolioSkillRow = {
   skill_id: string;
@@ -1899,21 +2001,27 @@ export async function analyzeUserSkillsPortfolioFromText(
   const expectedIds = lines.map(l => l.skill_id.trim());
   const display = options.userDisplayName.trim() || '用户';
   const bodyText = lines
-    .map(
-      l =>
-        `【维度】${l.dimension.trim()}\n【技能】${l.name.trim()}\n【skill_id】${l.skill_id.trim()}\n【自我描述】${l.description.trim()}`,
-    )
+    .map(l => {
+      const desc = l.description.trim();
+      return `【维度】${l.dimension.trim()}\n【技能】${l.name.trim()}\n【skill_id】${l.skill_id.trim()}\n【自我描述】（${desc.length} 字）\n${desc}`;
+    })
     .join('\n\n---\n\n');
 
-  const userBlock = `用户称呼：${display}\n\n以下是用户自报的各维度技能与自我描述（skill_id 必须原样回填到 JSON 的 per_skill 中）：\n\n${bodyText}`;
+  const dimensionSet = new Set(lines.map(l => l.dimension.trim()));
+  const userBlock = `用户称呼：${display}
+待评估：${dimensionSet.size} 个维度、${lines.length} 条技能（skill_id 须原样回填）。
+
+以下是各维度技能与自我描述：
+
+${bodyText}`;
 
   const systemContent = `你是职业发展教练与技能评估顾问。用户会提供多条「维度—技能名称—自我描述」，每条有唯一 skill_id。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段：
 - per_skill：数组；对输入中每一条技能各输出一项，且 skill_id 必须与输入完全一致。
-  每项含 evaluation（字符串，2～5 句中文，客观评价当前水平、亮点与不足）、suggestions（字符串，2～5 句中文，具体可执行的提升建议）。
-- overall_suggestions（字符串，5～10 句中文）：跨技能组合的发展路径、学习顺序与练习方式等综合建议。
-- profile_analysis（字符串，6～12 句中文）：对用户能力结构、优势短板、适合角色类型与中长期成长方向的总体分析。
+  每项含 evaluation（字符串，约 150～220 字，客观评价当前水平、亮点与不足）、suggestions（字符串，约 120～200 字，具体可执行的提升建议）。
+- overall_suggestions（字符串，约 280～400 字）：跨技能组合的发展路径、学习顺序与练习方式等综合建议，分 2～4 段。
+- profile_analysis（字符串，须 300～400 个汉字，含标点；低于 280 字视为不合格）：对用户能力结构、优势短板、适合角色类型与中长期成长方向的总体深度分析，分 3～5 段。
 
 要求：基于用户自述推断，不要捏造用户未提及的具体公司/证书/项目；语气专业、友善、具体。
 
@@ -1922,9 +2030,9 @@ export async function analyzeUserSkillsPortfolioFromText(
   const lr = await loopTextJsonLlmWithRetries<UserSkillAiPortfolioPayload>({
     apiKey: key,
     systemContent,
-    userContent: userBlock,
+    userContent: `${userBlock}\n\n请生成 JSON；profile_analysis 须 300～400 汉字。`,
     temperature: 0.35,
-    maxTokens: 6000,
+    maxTokens: 7200,
     maxAttempts,
     retryDelayMs,
     finish: parsed => {
@@ -2280,6 +2388,7 @@ export async function parseFinanceOneLinerFromImage(
   };
 }
 
+/** 深度洞察卡片；body 建议 300～400 字 */
 export type AiFinanceDashboardInsight = { title: string; body: string };
 
 /** AI 财务分析页：健康分、洞察、支出点评 + 三组 12 个月预测（前 6 历史 + 后 6 预测，单位：元） */
@@ -2311,7 +2420,14 @@ export type AnalyzeAiFinanceDashboardFromTextResult =
   | { ok: true; data: AiFinanceDashboardPayload; rawContent: string; attempts: number }
   | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
 
-const AI_FINANCE_DASHBOARD_JSON_HINT = `{"health_score":72,"health_summary":"…","insights":[{"title":"…","body":"…"},{"title":"…","body":"…"}],"expense_breakdown_comment":"…","savings_forecast_12":[0,0,0,0,0,0,0,0,0,0,0,0],"income_forecast_12":[0,0,0,0,0,0,0,0,0,0,0,0],"surplus_forecast_12":[0,0,0,0,0,0,0,0,0,0,0,0]}`;
+const AI_FINANCE_DASHBOARD_INSIGHTS_GUIDE = `insights 写作要求（长度恰好为 2 的数组，每项含 title 与 body，这是「AI 深度洞察」核心内容，须充实）：
+- title：8～16 字中文短语，概括本条洞察主题（如「储蓄率承压」「固定支出占比偏高」）；
+- body：简体中文 300～400 字（约 5～8 句，禁止少于 280 字或超过 420 字）；自然段书写，不要 markdown、编号列表或 JSON 嵌套；
+- 两条洞察须角度不同：例如一条偏「收支、储蓄率与月度节奏」，另一条偏「支出结构、风险点与下月可执行行动」；
+- 每条 body 须涵盖：(1) 基于摘要的现状判断（定性为主，勿逐条复读所有数字）；(2) 1～2 个具体风险或亮点；(3) 2～3 条可执行建议；
+- 禁止编造摘要中未出现的金额、账户或交易；数据极少时说明需先补全记账。`;
+
+const AI_FINANCE_DASHBOARD_JSON_HINT = `{"health_score":72,"health_summary":"…","insights":[{"title":"…","body":"（单条 300～400 字）"},{"title":"…","body":"（单条 300～400 字）"}],"expense_breakdown_comment":"…","savings_forecast_12":[0,0,0,0,0,0,0,0,0,0,0,0],"income_forecast_12":[0,0,0,0,0,0,0,0,0,0,0,0],"surplus_forecast_12":[0,0,0,0,0,0,0,0,0,0,0,0]}`;
 
 function clampHealthScore0to100(n: unknown): number {
   const x = typeof n === 'number' ? n : typeof n === 'string' ? Number(String(n).trim().replace(/,/g, '')) : NaN;
@@ -2398,7 +2514,7 @@ function normalizeAiFinanceDashboardPayload(
         : typeof row.text === 'string'
           ? row.text.trim()
           : '';
-    if (title && body) parsedInsights.push({ title, body: body.slice(0, 560) });
+    if (title && body) parsedInsights.push({ title, body: body.slice(0, 450) });
     if (parsedInsights.length >= 2) break;
   }
 
@@ -2440,7 +2556,7 @@ function normalizeAiFinanceDashboardPayload(
 }
 
 /**
- * AI 财务分析页专用：根据「本月汇总 + 分类 + 趋势数字」摘要，返回健康分、两条洞察卡片、支出结构点评。
+ * AI 财务分析页专用：根据「本月汇总 + 分类 + 趋势数字」摘要，返回健康分、两条深度洞察（各约 300～400 字）、支出结构点评。
  */
 export async function analyzeAiFinanceDashboardFromText(
   options: AnalyzeAiFinanceDashboardFromTextOptions,
@@ -2465,26 +2581,27 @@ export async function analyzeAiFinanceDashboardFromText(
       ? options.past6Income.map(v => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0))
       : [0, 0, 0, 0, 0, 0];
 
-  const systemContent = `你是个人记账应用里的财务顾问。用户会提供「本月及近月」聚合后的中文统计摘要（来自本地数据库，已脱敏）。
+  const systemContent = `你是个人记账应用里的资深财务顾问。用户会提供「本月及近月」聚合后的中文统计摘要（来自本地数据库，已脱敏）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 
 必须包含字段：
 1) health_score：0～100 的整数，综合储蓄率、收支稳定性、支出集中度等给出主观评分；无收入或数据极少时给 40～60 并偏低。
-2) health_summary：1～2 句中文，概括财务健康度（不要出现「JSON」「字段」等词）。
-3) insights：长度恰好为 2 的数组；每项含 title（≤12 字中文短语）与 body（2～4 句中文建议）。禁止编造摘要里不存在的具体金额或虚构扣款。
-4) expense_breakdown_comment：2～4 句中文，结合摘要里的支出分类占比做点评；若几乎无支出则提醒多记录。
+2) health_summary：2～3 句中文（约 60～120 字），概括财务健康度（不要出现「JSON」「字段」等词）。
+3) insights（AI 深度洞察，最重要）：
+${AI_FINANCE_DASHBOARD_INSIGHTS_GUIDE}
+4) expense_breakdown_comment：3～5 句中文（约 120～200 字），结合摘要里的支出分类占比做点评；若几乎无支出则提醒多记录。
 5) savings_forecast_12：长度恰好 12 的**数字数组**（单位：元）。索引 0～5 必须与摘要中「过去 6 个月每月净储蓄（收入−支出）」数值一致或极其接近；索引 5 为本月；索引 6～11 为你对未来 6 个月净储蓄的预测，要求平滑、可解释，避免断崖式跳变（除非摘要支持）。
 6) income_forecast_12：长度恰好 12 的数字数组（元）。索引 0～5 与摘要中过去 6 个月每月收入合计一致或接近；6～11 为未来 6 个月收入预测（非负）。
 7) surplus_forecast_12：长度恰好 12 的数字数组（元），表示每月「盈余/可储蓄」口径；通常可与净储蓄同趋势，但允许你根据摘要微调；索引 0～5 与过去 6 个月实际盈余对齐，6～11 为预测。
 
-输出形状示例（内容请替换）：${AI_FINANCE_DASHBOARD_JSON_HINT}`;
+输出形状示例（insights 的 body 须替换为符合上述字数要求的正文）：${AI_FINANCE_DASHBOARD_JSON_HINT}`;
 
   const lr = await loopTextJsonLlmWithRetries<AiFinanceDashboardPayload>({
     apiKey: key,
     systemContent,
-    userContent: `请根据以下摘要生成上述 JSON：\n\n${text.slice(0, 9500)}`,
+    userContent: `请根据以下摘要生成上述 JSON；其中 insights 两条 body 各须约 300～400 字：\n\n${text.slice(0, 9500)}`,
     temperature: 0.2,
-    maxTokens: 3200,
+    maxTokens: 4500,
     maxAttempts,
     retryDelayMs,
     finish: parsed => ({
@@ -2618,7 +2735,7 @@ export type FoodNutritionJson = {
   non_food_code: number;
   /** is_food=1 时：识别到的食物/菜品简称（简短中文） */
   food_name: string;
-  /** is_food=1 时：1～3 句口语化点评；is_food=0 时为空字符串 */
+  /** is_food=1 时：120～400 字结构化点评；is_food=0 时为空字符串 */
   ai_evaluation: string;
   /** 可食部分估算蛋白质，克 */
   protein_g: number;
@@ -2756,8 +2873,9 @@ const FOOD_NUTRITION_SCHEMA_TEXT = `只输出一个 JSON 对象，禁止 markdow
 字段与含义：
 - is_food：1=图中主要是可辨识的食物或可估算的菜品；0=明显非食物、无法辨认、无食物等。
 - non_food_code：当 is_food 为 1 时必须为 0；当 is_food 为 0 时必须为 1～3 的整数（1=明显非食物场景 2=无法识别或不清晰 3=过于混杂无法对单一食物估算）。
-- food_name：当 is_food 为 1 时填写简短中文食物/菜品名称（如「番茄炒蛋盖饭」）；is_food 为 0 时填空字符串 ""。
-- ai_evaluation：当 is_food 为 1 时填写 1～3 句口语化中文，从均衡、控盐、搭配角度点评图中这一餐；is_food 为 0 时填空字符串 ""。
+- food_name：当 is_food 为 1 时填写具体中文名称（可含主要配菜或烹饪方式，如「清炒西兰花配鸡胸肉」，约 8～30 字）；is_food 为 0 时填空字符串 ""。
+- ai_evaluation：当 is_food 为 1 时按下列要求填写；is_food 为 0 时填空字符串 ""。
+${FOOD_INTAKE_AI_EVALUATION_GUIDE}
 - protein_g、carbohydrate_g、sodium_mg：数字类型，非负；is_food 为 0 时三者均为 0。
 估算以「图中呈现的一份/一盘/可见主体」为基准；若无法合理估算则置 is_food=0 并设置 non_food_code，food_name 与 ai_evaluation 为空字符串，营养字段为 0。`;
 
@@ -2781,9 +2899,9 @@ export async function analyzeFoodNutritionFromImage(
 
   const mime = (options.imageMimeType ?? 'image/jpeg').trim() || 'image/jpeg';
 
-  const systemContent = `你是营养成分估算助手，根据用户上传的食物照片输出 JSON。\n${FOOD_NUTRITION_SCHEMA_TEXT}`;
+  const systemContent = `你是注册营养师风格的营养成分估算助手，根据用户上传的食物照片输出 JSON。除数值字段外，food_name 与 ai_evaluation 须具体、充实，便于用户理解本餐营养与改进方向。\n${FOOD_NUTRITION_SCHEMA_TEXT}`;
   let userText =
-    '请分析这张图片中的食物（若有），估算蛋白质、碳水化合物、钠含量，并输出 food_name 与 ai_evaluation，严格按系统要求的 JSON 字段与类型。';
+    '请分析这张图片中的食物（若有）：估算蛋白质、碳水化合物、钠含量；输出具体的 food_name；并撰写充实、分维度完整的 ai_evaluation（勿敷衍短评），严格按系统要求的 JSON 字段与类型。';
   const extra = options.supplementText?.trim();
   if (extra) {
     userText += `\n\n用户补充说明（请结合图片与说明一起判断份量、种类与可食部分）：\n${extra}`;

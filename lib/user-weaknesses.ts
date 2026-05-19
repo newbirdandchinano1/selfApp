@@ -195,6 +195,19 @@ export function weaknessContextForAiReview(row: UserWeaknessItem): string {
   const detail = row.detail.trim();
   if (!title && !detail) return '';
   const parts: string[] = [];
+  const detailLines = detail ? detail.split(/\n/).filter(l => l.trim().length > 0).length : 0;
+  const updatedLabel = row.updated_at
+    ? new Date(row.updated_at).toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '未知';
+  parts.push(
+    `【元信息】名称 ${title.length} 字；详情 ${detail.length} 字${detailLines > 0 ? `（约 ${detailLines} 段/行）` : ''}；最近更新 ${updatedLabel}`,
+  );
   if (title) parts.push(`【缺点名称】\n${title}`);
   if (detail) parts.push(`【详情说明】\n${detail}`);
   return parts.join('\n\n');

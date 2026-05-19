@@ -386,21 +386,6 @@ export default function EditProfileScreen() {
             </View>
           </View>
 
-          <View style={[styles.metaCard, { backgroundColor: `${palette.primary}0D`, borderColor: `${palette.primary}1F` }]}> 
-            <View style={styles.metaLeft}>
-              <Text style={[styles.metaTitle, { color: palette.primary }]}>数据精准度</Text>
-              <Text style={[styles.metaDesc, { color: isDark ? 'rgba(226,232,240,0.8)' : '#424754' }]}>
-                更新您的身体指标有助于我们的AI以 99.8% 的准确度计算您的代谢和健康基准。
-              </Text>
-            </View>
-            <View style={styles.scoreWrap}>
-              <View style={[styles.scoreOuter, { borderColor: `${palette.primary}33` }]}>
-                <View style={[styles.scoreInner, { borderColor: palette.primary }]} />
-                <Text style={[styles.scoreText, { color: palette.primary }]}>80%</Text>
-              </View>
-            </View>
-          </View>
-
           <Pressable onPress={saveProfile} style={[styles.submitBtn, { backgroundColor: palette.primary }]}>
             <Text style={styles.submitText}>更新个人资料</Text>
           </Pressable>
@@ -597,37 +582,6 @@ const styles = StyleSheet.create({
   metricRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 6 },
   metricInput: { flex: 1, borderBottomWidth: 1, paddingBottom: 8, fontSize: 30, fontWeight: '900' },
   metricUnit: { fontSize: 14, fontWeight: '800', paddingBottom: 8 },
-  metaCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  metaLeft: { flex: 1, gap: 6 },
-  metaTitle: { fontSize: 22, fontWeight: '800' },
-  metaDesc: { fontSize: 13, lineHeight: 20 },
-  scoreWrap: { width: 82, alignItems: 'center', justifyContent: 'center' },
-  scoreOuter: {
-    width: 74,
-    height: 74,
-    borderRadius: 37,
-    borderWidth: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  scoreInner: {
-    position: 'absolute',
-    width: 74,
-    height: 74,
-    borderRadius: 37,
-    borderWidth: 6,
-    borderTopColor: 'transparent',
-    borderLeftColor: 'transparent',
-    transform: [{ rotate: '40deg' }],
-  },
-  scoreText: { fontSize: 12, fontWeight: '900' },
   submitBtn: {
     marginTop: 6,
     borderRadius: 14,
