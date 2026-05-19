@@ -4,6 +4,7 @@ import type {
   VisionRecord,
   VisionWallCardModel,
   VisionWallFields,
+  VisionWallSubGoalItem,
 } from '@/lib/visions-registry';
 import { getTaskCompletionStatsByProjectIds } from '@/lib/repositories/tasks/task';
 import {
@@ -212,6 +213,28 @@ async function resolveLinkedTargetProgress(
   return getTaskCompletionStatsByProjectIds(ids);
 }
 
+async function resolveWallSubGoalItems(extra: VisionExtraPayload): Promise<VisionWallSubGoalItem[]> {
+  const subGoals = collectVisionSubGoalsFromExtra(extra);
+  return Promise.all(
+    subGoals.map(async sg => {
+      const ids = collectLinkedProjectsFromSubGoal(sg).map(p => p.id);
+      let taskProgress: VisionWallSubGoalItem['taskProgress'] = null;
+      if (ids.length > 0) {
+        const stats = await getTaskCompletionStatsByProjectIds(ids);
+        if (stats.total > 0) {
+          taskProgress = { completed: stats.completed, total: stats.total };
+        }
+      }
+      return {
+        id: sg.id,
+        name: sg.name,
+        boundProjectCount: ids.length,
+        taskProgress,
+      };
+    }),
+  );
+}
+
 function wallFieldsFromRow(
   row: VisionRow,
   extra: VisionExtraPayload,
@@ -256,7 +279,6 @@ function wallFieldsFromRow(
     case 'target': {
       const goalNum = Number(extra.goalTotal);
       const safeGoal = Number.isFinite(goalNum) && goalNum > 0 ? goalNum : 100;
-      const stepNum = Math.max(0.0001, Number(extra.step) || 1);
       const cur = Math.max(0, Number(extra.currentAmount ?? 0) || 0);
 
       if (linkedTaskProgress && linkedTaskProgress.total > 0) {
@@ -267,7 +289,6 @@ function wallFieldsFromRow(
           percentText: `${Math.round(pct * 100)}%`,
           percent: pct,
           taskProgressOnly: true,
-          wallAdjust: { current: cur, step: stepNum },
         };
       }
 
@@ -278,7 +299,6 @@ function wallFieldsFromRow(
         percentText: `${Math.round(pctManual * 100)}%`,
         percent: pctManual,
         taskProgressOnly: false,
-        wallAdjust: { current: cur, step: stepNum },
       };
     }
     case 'countdown': {
@@ -309,6 +329,10 @@ export async function visionRowToWallCard(row: VisionRow): Promise<VisionWallCar
   const linked = await resolveLinkedTargetProgress(row, extra);
   const wall = wallFieldsFromRow(row, extra, linked);
   const imageSource = resolveVisionBgImageSource(row.bg_option_idx, extra);
+  if (wall.kind === 'target') {
+    const subGoals = await resolveWallSubGoalItems(extra);
+    return { ...wall, imageSource, subGoals } as VisionWallCardModel;
+  }
   return { ...wall, imageSource } as VisionWallCardModel;
 }
 

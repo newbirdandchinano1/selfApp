@@ -26,7 +26,7 @@ import {
 } from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
@@ -242,6 +242,7 @@ const TITLE_MAX_LENGTH = 30;
 
 export default function EditTaskScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const params = useLocalSearchParams<{ id?: string; source?: string; from?: string | string[] }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
@@ -270,6 +271,25 @@ export default function EditTaskScreen() {
   const [subtasks, setSubtasks] = React.useState<SubtaskDraft[]>([]);
   const [parentDateLimit, setParentDateLimit] = React.useState<DateLimitYmd>({});
   const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
+
+  const skipAutoSaveRef = React.useRef(false);
+  const exitingAfterSaveRef = React.useRef(false);
+  const titleRef = React.useRef(title);
+  const notesRef = React.useRef(notes);
+  const priorityRef = React.useRef(priority);
+  const deadlineTextRef = React.useRef(deadlineText);
+  const reminderTextRef = React.useRef(reminderText);
+  const repeatTextRef = React.useRef(repeatText);
+  const scheduleMetaRef = React.useRef(scheduleMeta);
+  const taskSnapshotRef = React.useRef(taskSnapshot);
+  titleRef.current = title;
+  notesRef.current = notes;
+  priorityRef.current = priority;
+  deadlineTextRef.current = deadlineText;
+  reminderTextRef.current = reminderText;
+  repeatTextRef.current = repeatText;
+  scheduleMetaRef.current = scheduleMeta;
+  taskSnapshotRef.current = taskSnapshot;
 
   const subtaskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const selfLimit = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
@@ -528,60 +548,71 @@ export default function EditTaskScreen() {
     [router],
   );
 
-  const saveTask = React.useCallback(async () => {
-    if (!taskId || saving || loading) return;
-    const trimmedTitle = title.trim();
+  const persistTask = React.useCallback(async (): Promise<boolean> => {
+    if (!taskId || loading || skipAutoSaveRef.current) return true;
+    const trimmedTitle = titleRef.current.trim();
     if (!trimmedTitle) {
-      Alert.alert('无法保存任务', '请输入任务名称后再保存。');
-      return;
+      Alert.alert('无法保存任务', '请输入任务名称后再离开。');
+      return false;
     }
-    if (!taskSnapshot) return;
+    const snapshot = taskSnapshotRef.current;
+    if (!snapshot) return true;
 
-    setSaving(true);
     try {
+      setSaving(true);
+      const meta = scheduleMetaRef.current;
       const dueDate =
-        scheduleMeta?.mode === 'time' && scheduleMeta.range?.end
-          ? formatDate(scheduleMeta.range.end)
-          : extractDueDate(deadlineText);
+        meta?.mode === 'time' && meta.range?.end
+          ? formatDate(meta.range.end)
+          : extractDueDate(deadlineTextRef.current);
       await updateTask(taskId, {
         title: trimmedTitle,
-        note: notes.trim() || null,
-        priority: toTaskPriority(priorityKeyToLabel(priority)),
+        note: notesRef.current.trim() || null,
+        priority: toTaskPriority(priorityKeyToLabel(priorityRef.current)),
         due_date: dueDate,
         extra_data: JSON.stringify({
-          ...parseTaskExtraData(taskSnapshot.extra_data),
-          reminder: reminderText,
-          repeat: repeatText,
-          schedule: scheduleMeta,
+          ...parseTaskExtraData(snapshot.extra_data),
+          reminder: reminderTextRef.current,
+          repeat: repeatTextRef.current,
+          schedule: meta,
         }),
       });
-      const parentFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
+      const parentFrame = mergeDateLimit(scheduleMetaToDateLimit(meta), {
         end: toYmd(dueDate ?? undefined) ?? undefined,
       });
       const tightenFrame = mergeDateLimit(parentFrame, projectDateLimit);
       await tightenDescendantTasksOf(taskId, tightenFrame);
-      router.back();
+      return true;
     } catch (error) {
       console.warn('更新任务失败', error);
       Alert.alert('保存失败', '任务保存失败，请稍后重试。');
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [
-    deadlineText,
-    loading,
-    notes,
-    priority,
-    projectDateLimit,
-    reminderText,
-    repeatText,
-    router,
-    saving,
-    scheduleMeta,
-    taskId,
-    taskSnapshot,
-    title,
-  ]);
+  }, [loading, projectDateLimit, taskId]);
+
+  const exitWithSave = React.useCallback(async () => {
+    if (exitingAfterSaveRef.current || saving) return;
+    const ok = await persistTask();
+    if (!ok) return;
+    exitingAfterSaveRef.current = true;
+    router.back();
+  }, [persistTask, router, saving]);
+
+  React.useEffect(() => {
+    const unsub = navigation.addListener('beforeRemove', (e) => {
+      if (skipAutoSaveRef.current || exitingAfterSaveRef.current) return;
+      e.preventDefault();
+      void (async () => {
+        const ok = await persistTask();
+        if (!ok) return;
+        exitingAfterSaveRef.current = true;
+        navigation.dispatch(e.data.action);
+      })();
+    });
+    return unsub;
+  }, [navigation, persistTask]);
 
   /** 删除成功后：从详情→编辑来的栈上有已删除的详情页，需 dismiss 到任务 Tab */
   const navigateAfterDeleteTask = React.useCallback(() => {
@@ -609,6 +640,7 @@ export default function EditTaskScreen() {
             style: 'destructive',
             onPress: async () => {
               try {
+                skipAutoSaveRef.current = true;
                 setSaving(true);
                 await deleteTask(taskId);
                 navigateAfterDeleteTask();
@@ -630,6 +662,7 @@ export default function EditTaskScreen() {
             style: 'destructive',
             onPress: async () => {
               try {
+                skipAutoSaveRef.current = true;
                 setSaving(true);
                 await deleteTask(taskId);
                 navigateAfterDeleteTask();
@@ -658,22 +691,14 @@ export default function EditTaskScreen() {
           },
         ]}>
         <Pressable
-          onPress={() => router.back()}
+          onPress={() => void exitWithSave()}
+          disabled={saving || loading}
           hitSlop={10}
           style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: primary }]}>{loading ? '任务详情' : '编辑任务'}</Text>
-        <Pressable
-          onPress={saveTask}
-          disabled={saving || loading}
-          hitSlop={10}
-          style={({ pressed }) => [
-            styles.headerActionBtn,
-            { opacity: saving || loading ? 0.55 : pressed ? 0.75 : 1 },
-          ]}>
-          <Text style={[styles.headerActionText, { color: primary }]}>{saving ? '保存中' : '保存'}</Text>
-        </Pressable>
+        <View style={styles.headerActionSpacer} />
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
@@ -967,8 +992,7 @@ const styles = StyleSheet.create({
   },
   iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 24, fontWeight: '800', letterSpacing: -0.4 },
-  headerActionBtn: { minWidth: 46, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  headerActionText: { fontSize: 15, fontWeight: '800' },
+  headerActionSpacer: { width: 36, height: 36 },
   content: { paddingTop: 92, paddingHorizontal: 18, gap: 22 },
   section: { gap: 10 },
   sectionLabel: {

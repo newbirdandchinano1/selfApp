@@ -24,7 +24,7 @@ import {
   updateVision,
 } from '@/lib/repositories/visions/vision';
 import { visionRowToWallCard } from '@/lib/repositories/visions/vision-present';
-import type { VisionWallCardModel } from '@/lib/visions-registry';
+import type { VisionWallCardModel, VisionWallSubGoalItem } from '@/lib/visions-registry';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
@@ -59,6 +59,17 @@ function formatStoredAmount(n: number): string {
   return String(Number(n.toFixed(6)));
 }
 
+const WALL_SUB_GOALS_MAX_VISIBLE = 4;
+
+function subGoalWallMeta(sg: VisionWallSubGoalItem): string {
+  if (sg.taskProgress) {
+    const pct = Math.round((sg.taskProgress.completed / sg.taskProgress.total) * 100);
+    return `${pct}%`;
+  }
+  if (sg.boundProjectCount > 0) return '已绑定';
+  return '未绑定';
+}
+
 const VisionCard = ({
   card,
   visionId,
@@ -72,7 +83,9 @@ const VisionCard = ({
 }) => {
   const showProgressAdjust = card.kind === 'progress' && card.wallAdjust;
   const showCountAdjust = card.kind === 'count' && card.wallAdjust;
-  const showTargetAdjust = card.kind === 'target' && card.wallAdjust && !card.taskProgressOnly;
+  const targetSubGoals = card.kind === 'target' ? (card.subGoals ?? []) : [];
+  const visibleSubGoals = targetSubGoals.slice(0, WALL_SUB_GOALS_MAX_VISIBLE);
+  const hiddenSubGoalCount = targetSubGoals.length - visibleSubGoals.length;
 
   return (
     <View style={styles.card}>
@@ -195,23 +208,22 @@ const VisionCard = ({
           </View>
         ) : null}
 
-        {showTargetAdjust && card.wallAdjust ? (
-          <View style={styles.adjustRow}>
-            <Pressable
-              onPress={() => onAdjustAmount(visionId, -1, card.wallAdjust!.step)}
-              style={({ pressed }) => [styles.adjustBtn, pressed && { opacity: 0.85 }]}
-              accessibilityLabel="减少当前量"
-            >
-              <MaterialIcons name="remove" size={22} color="#fff" />
-            </Pressable>
-            <Text style={styles.adjustHint}>步长 {card.wallAdjust.step}</Text>
-            <Pressable
-              onPress={() => onAdjustAmount(visionId, 1, card.wallAdjust!.step)}
-              style={({ pressed }) => [styles.adjustBtn, styles.adjustBtnPrimary, pressed && { opacity: 0.9 }]}
-              accessibilityLabel="增加当前量"
-            >
-              <MaterialIcons name="add" size={22} color="#fff" />
-            </Pressable>
+        {card.kind === 'target' && visibleSubGoals.length > 0 ? (
+          <View style={styles.subGoalsBlock}>
+            <Text style={styles.subGoalsKicker}>小目标</Text>
+            <View style={styles.subGoalsList}>
+              {visibleSubGoals.map((sg, idx) => (
+                <View key={sg.id} style={styles.subGoalRow}>
+                  <Text style={styles.subGoalName} numberOfLines={1}>
+                    {idx + 1}. {sg.name}
+                  </Text>
+                  <Text style={styles.subGoalMeta}>{subGoalWallMeta(sg)}</Text>
+                </View>
+              ))}
+              {hiddenSubGoalCount > 0 ? (
+                <Text style={styles.subGoalsMore}>还有 {hiddenSubGoalCount} 个</Text>
+              ) : null}
+            </View>
           </View>
         ) : null}
       </View>
@@ -1131,6 +1143,43 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.4,
+  },
+  subGoalsBlock: {
+    marginTop: 6,
+    gap: 6,
+  },
+  subGoalsKicker: {
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  subGoalsList: {
+    gap: 4,
+  },
+  subGoalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  subGoalName: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.92)',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  subGoalMeta: {
+    color: 'rgba(255,255,255,0.65)',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  subGoalsMore: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 2,
   },
   cardTitle: {
     color: '#fff',

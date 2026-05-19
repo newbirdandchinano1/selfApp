@@ -4,8 +4,43 @@ import { Platform } from 'react-native';
 /** 与 `plugins/with-zheng-app-intents.js` 中 Swift 写入的文件名保持一致 */
 export const SHORTCUT_AUTO_LEDGER_PENDING_FILENAME = 'shortcut-auto-ledger-pending.png';
 
+/** App Intent 未传截图时写入，财务页改走剪贴板记账 */
+export const SHORTCUT_AUTO_LEDGER_CLIPBOARD_MARKER_FILENAME =
+  'shortcut-auto-ledger-clipboard.marker';
+
 export function getShortcutAutoLedgerPendingFile(): File {
   return new File(Paths.document, SHORTCUT_AUTO_LEDGER_PENDING_FILENAME);
+}
+
+function getShortcutClipboardMarkerFile(): File {
+  return new File(Paths.document, SHORTCUT_AUTO_LEDGER_CLIPBOARD_MARKER_FILENAME);
+}
+
+/** 是否有待处理的快捷指令截图（不删除文件） */
+export function hasShortcutAutoLedgerPending(): boolean {
+  if (Platform.OS === 'web') {
+    return false;
+  }
+  return getShortcutAutoLedgerPendingFile().exists;
+}
+
+/**
+ * 消费「走剪贴板」标记；存在则删除并返回 true。
+ */
+export function consumeShortcutClipboardMarker(): boolean {
+  if (Platform.OS === 'web') {
+    return false;
+  }
+  const file = getShortcutClipboardMarkerFile();
+  if (!file.exists) {
+    return false;
+  }
+  try {
+    file.delete();
+  } catch {
+    /* ignore */
+  }
+  return true;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

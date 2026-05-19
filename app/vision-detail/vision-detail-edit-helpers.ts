@@ -139,10 +139,6 @@ export function validateAndBuildVisionUpdate(
       break;
     }
     case 'target': {
-      const named = d.subGoals.filter(sg => sg.name.trim());
-      if (named.length === 0) {
-        return { ok: false, message: '请至少保留一个小目标并填写名称。' };
-      }
       const emptyNames = d.subGoals.some(
         sg =>
           !sg.name.trim() &&

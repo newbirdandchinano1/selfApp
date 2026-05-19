@@ -1,7 +1,12 @@
 import { setFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
+import {
+  consumeShortcutClipboardMarker,
+  hasShortcutAutoLedgerPending,
+} from '@/lib/shortcut-auto-ledger-pending';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import { useEffect } from 'react';
+import { AppState, Platform } from 'react-native';
 
 function matchesScreenshotDeepLink(url: string): boolean {
   const { hostname, path } = Linking.parse(url);
@@ -32,6 +37,18 @@ export function ScreenshotDeepLinkListener() {
   const router = useRouter();
 
   useEffect(() => {
+    const goToFinanceForShortcutHandoff = () => {
+      if (Platform.OS === 'web') return;
+      if (hasShortcutAutoLedgerPending()) {
+        router.replace('/(tabs)/finance');
+        return;
+      }
+      if (consumeShortcutClipboardMarker()) {
+        setFinanceSheetLaunchIntent({ kind: 'auto_ledger_clipboard_pending' });
+        router.replace('/(tabs)/finance');
+      }
+    };
+
     const go = (url: string) => {
       if (matchesAutoLedgerDeepLink(url)) {
         router.replace('/(tabs)/finance');
@@ -43,12 +60,22 @@ export function ScreenshotDeepLinkListener() {
       }
     };
 
+    goToFinanceForShortcutHandoff();
+
     void Linking.getInitialURL().then((initial) => {
       if (initial) go(initial);
     });
 
-    const sub = Linking.addEventListener('url', ({ url }) => go(url));
-    return () => sub.remove();
+    const linkingSub = Linking.addEventListener('url', ({ url }) => go(url));
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        goToFinanceForShortcutHandoff();
+      }
+    });
+    return () => {
+      linkingSub.remove();
+      appStateSub.remove();
+    };
   }, [router]);
 
   return null;

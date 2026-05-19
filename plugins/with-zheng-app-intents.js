@@ -1,12 +1,14 @@
 /**
  * 在主 App 中注册 App Intent：快捷指令可将截图作为参数传入（不经剪贴板），
- * 或回退到 zheng://screenshot 在财务页弹窗内走剪贴板（兼容旧快捷指令）。
+ * 未传图时写入剪贴板标记并由 JS 跳转财务页（仍兼容 zheng://screenshot 深链）。
  * 修改请编辑本文件；勿直接改 ios 下生成文件（prebuild 会覆盖）。
  */
 const { IOSConfig } = require('expo/config-plugins');
 
 /** 与 lib/shortcut-auto-ledger-pending.ts 中文件名一致 */
 const PENDING_FILENAME = 'shortcut-auto-ledger-pending.png';
+/** 无截图参数时走剪贴板记账，由 JS 读取此标记 */
+const CLIPBOARD_MARKER_FILENAME = 'shortcut-auto-ledger-clipboard.marker';
 
 const SWIFT_SOURCE = `//
 // ZhengAppIntents.swift
@@ -14,18 +16,31 @@ const SWIFT_SOURCE = `//
 //
 
 import AppIntents
-import UIKit
+import Foundation
 
 private enum ZhengShortcutAutoLedgerPending {
     static let fileName = "${PENDING_FILENAME}"
+    static let clipboardMarkerName = "${CLIPBOARD_MARKER_FILENAME}"
 
-    static func writeImageData(_ data: Data) throws -> URL {
+    static func documentsDirectory() throws -> URL {
         guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             throw NSError(domain: "ZhengShortcutAutoLedger", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "无法访问应用文档目录。",
             ])
         }
-        let dest = docs.appendingPathComponent(fileName)
+        return docs
+    }
+
+    static func writeClipboardMarker() throws {
+        let dest = try documentsDirectory().appendingPathComponent(clipboardMarkerName)
+        if FileManager.default.fileExists(atPath: dest.path) {
+            try FileManager.default.removeItem(at: dest)
+        }
+        try Data().write(to: dest, options: .atomic)
+    }
+
+    static func writeImageData(_ data: Data) throws -> URL {
+        let dest = try documentsDirectory().appendingPathComponent(fileName)
         if FileManager.default.fileExists(atPath: dest.path) {
             try FileManager.default.removeItem(at: dest)
         }
@@ -53,9 +68,9 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
         "接收快捷指令传入的截图并自动 AI 记账。推荐：截屏 → 从输入获取图像 → 运行本操作；未传图时将尝试打开剪贴板记账（旧方式）。"
     )
 
-    /// 由下方 UIApplication.shared.open 打开深链，勿与 openAppWhenRun = true 叠加，
-    /// 否则快捷指令会报「无法与帮助程序通信」但记账流程仍可执行。
-    static var openAppWhenRun: Bool = false
+    /// 由系统拉起主应用；勿再手动 open 深链 URL，否则快捷指令常报
+    /// 「无法与帮助程序通信」且无法自动打开 App（iOS 17+ 从快捷指令扩展调 open 易失败）。
+    static var openAppWhenRun: Bool = true
 
     @Parameter(
         title: "截图",
@@ -73,31 +88,19 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
             } catch {
                 return .result(dialog: IntentDialog("保存截图失败：\\(error.localizedDescription)"))
             }
-            guard let url = URL(string: "zheng://auto-ledger") else {
-                return .result(dialog: IntentDialog("无效链接。"))
-            }
-            await Self.openAppURL(url)
             return .result(dialog: IntentDialog("已打开应用，正在识别截图并记账…"))
         }
 
-        guard let url = URL(string: "zheng://screenshot") else {
-            return .result(dialog: IntentDialog("无效链接。"))
+        do {
+            try ZhengShortcutAutoLedgerPending.writeClipboardMarker()
+        } catch {
+            return .result(dialog: IntentDialog("准备剪贴板记账失败：\\(error.localizedDescription)"))
         }
-        await Self.openAppURL(url)
         return .result(
             dialog: IntentDialog(
                 "未收到截图，已打开剪贴板记账。推荐快捷指令：截屏 → 获取图像 → 运行「截图记账」并传入图像。"
             )
         )
-    }
-
-    @MainActor
-    private static func openAppURL(_ url: URL) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            UIApplication.shared.open(url, options: [:]) { _ in
-                continuation.resume()
-            }
-        }
     }
 }
 

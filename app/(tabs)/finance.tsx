@@ -77,6 +77,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   Dimensions,
   Easing,
   Image,
@@ -457,6 +458,8 @@ export default function FinanceScreen() {
   const autoLedgerHandoffTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoLedgerImageUriRef = React.useRef<string | null>(null);
   const autoLedgerSourceRef = React.useRef<'clipboard' | 'shortcut_intent' | 'picker'>('clipboard');
+  /** App Intent 将应用从后台唤起且财务 Tab 已聚焦时，用于再次消费待处理截图 */
+  const [shortcutHandoffEpoch, setShortcutHandoffEpoch] = React.useState(0);
   const financeTransactionsRef = React.useRef<FinanceTransactionRow[]>([]);
   const flowCategoryNamesRef = React.useRef<Record<string, string>>({});
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
@@ -467,6 +470,15 @@ export default function FinanceScreen() {
     defaultPaymentAccountId: null,
     defaultIncomeAccountId: null,
   });
+
+  React.useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        setShortcutHandoffEpoch((n) => n + 1);
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   React.useLayoutEffect(() => {
     financeTransactionsRef.current = financeTransactions;
@@ -1996,6 +2008,7 @@ export default function FinanceScreen() {
       applyManualOrTransferSheetIntent,
       resetSheetForm,
       startAutoLedgerHandoff,
+      shortcutHandoffEpoch,
     ])
   );
 

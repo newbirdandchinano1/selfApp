@@ -280,11 +280,6 @@ export default function VisionCreateScreen() {
     }
 
     if (trackType === 3) {
-      const named = subGoals.filter(sg => sg.name.trim());
-      if (named.length === 0) {
-        Alert.alert('提示', '请至少添加一个小目标并填写名称。');
-        return;
-      }
       const emptyNames = subGoals.some(
         sg => !sg.name.trim() && (sg.description?.trim() || (sg.linkedProjects?.length ?? 0) > 0)
       );

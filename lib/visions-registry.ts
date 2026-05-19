@@ -4,6 +4,14 @@
 
 export type VisionKind = 'progress' | 'count' | 'target' | 'countdown';
 
+/** 愿景墙「目标」卡片上的小目标摘要 */
+export type VisionWallSubGoalItem = {
+  id: string;
+  name: string;
+  boundProjectCount: number;
+  taskProgress: { completed: number; total: number } | null;
+};
+
 /** 卡片/详情背景：内置 require 或相册 URI */
 export type VisionCardImageSource = number | { uri: string };
 
@@ -37,7 +45,8 @@ export type VisionWallCardModel =
       imageSource: VisionCardImageSource;
       /** 来自关联项目任务时不展示手动加减 */
       taskProgressOnly?: boolean;
-      wallAdjust?: { current: number; step: number };
+      /** 绑定的小目标（墙卡底部展示，替代步长按钮） */
+      subGoals?: VisionWallSubGoalItem[];
     }
   | {
       kind: 'countdown';

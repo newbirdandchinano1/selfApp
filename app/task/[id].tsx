@@ -7,6 +7,7 @@ import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useNavigation } from '@react-navigation/native';
 import React from 'react';
 import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -270,6 +271,7 @@ export default function TaskDetailScreen() {
   const { id: idParam } = useLocalSearchParams<{ id?: string | string[] }>();
   const taskId = normalizeRouteParam(idParam);
   const router = useRouter();
+  const navigation = useNavigation();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
@@ -294,6 +296,11 @@ export default function TaskDetailScreen() {
   const scheduleSource = React.useMemo(() => `task-detail-${taskId || 'unknown'}`, [taskId]);
   const extraDataRef = React.useRef<string | null>(null);
   extraDataRef.current = extraData;
+  const dueDateRef = React.useRef<string | null>(null);
+  dueDateRef.current = dueDate;
+  const skipAutoSaveRef = React.useRef(false);
+  const exitingAfterSaveRef = React.useRef(false);
+  const taskLoadedRef = React.useRef(false);
 
   const applySchedulePick = React.useCallback((picked: SchedulePickerResult, baseExtraRaw: string | null) => {
     const currentMeta = parseTaskMeta(baseExtraRaw);
@@ -337,6 +344,7 @@ export default function TaskDetailScreen() {
     if (!taskId) return;
     const row = await getTaskById(taskId);
     if (row) {
+      taskLoadedRef.current = true;
       setTitle(row.title);
       setNote(row.note ?? '');
       setStatus(row.status);
@@ -349,6 +357,7 @@ export default function TaskDetailScreen() {
       setReminderOption(reminder && REMINDER_OPTIONS.includes(reminder as ReminderOption) ? (reminder as ReminderOption) : '不提前');
       setRepeatOption(repeat && REPEAT_OPTIONS.includes(repeat as RepeatOption) ? (repeat as RepeatOption) : '不重复');
     } else {
+      taskLoadedRef.current = false;
       setTitle('');
       setNote('');
       setStatus('todo');
@@ -374,22 +383,45 @@ export default function TaskDetailScreen() {
     }, [readScheduleResult])
   );
 
-  const handleSave = React.useCallback(async () => {
-    if (!taskId || saving) return;
+  const persistTaskDetail = React.useCallback(async (): Promise<boolean> => {
+    if (!taskId || !taskLoadedRef.current || skipAutoSaveRef.current) return true;
     try {
       setSaving(true);
       await updateTask(taskId, {
-        due_date: dueDate,
-        extra_data: extraData ?? null,
+        due_date: dueDateRef.current,
+        extra_data: extraDataRef.current ?? null,
       });
-      router.replace('/(tabs)/tasks');
+      return true;
     } catch (error) {
       console.warn('保存任务详情失败', error);
       Alert.alert('保存失败', '未能保存任务设置，请稍后重试。');
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [dueDate, extraData, router, saving, taskId]);
+  }, [taskId]);
+
+  const exitWithSave = React.useCallback(async () => {
+    if (exitingAfterSaveRef.current) return;
+    const ok = await persistTaskDetail();
+    if (!ok) return;
+    exitingAfterSaveRef.current = true;
+    router.back();
+  }, [persistTaskDetail, router]);
+
+  React.useEffect(() => {
+    const unsub = navigation.addListener('beforeRemove', (e) => {
+      if (skipAutoSaveRef.current || exitingAfterSaveRef.current) return;
+      e.preventDefault();
+      void (async () => {
+        const ok = await persistTaskDetail();
+        if (!ok) return;
+        exitingAfterSaveRef.current = true;
+        navigation.dispatch(e.data.action);
+      })();
+    });
+    return unsub;
+  }, [navigation, persistTaskDetail]);
 
   const bg = isDark ? theme.background : '#faf8ff';
   const surface = isDark ? 'rgba(30, 41, 59, 0.70)' : '#ffffff';
@@ -461,16 +493,15 @@ export default function TaskDetailScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['top']}>
       <View style={[styles.topBar, { backgroundColor: isDark ? 'rgba(15,23,42,0.75)' : 'rgba(250,248,255,0.86)', borderBottomColor: border }]}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.7 }]}>
+        <Pressable
+          onPress={() => void exitWithSave()}
+          disabled={saving}
+          hitSlop={10}
+          style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.7 }]}>
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
         <Text style={[styles.topTitle, { color: theme.text }]}>任务详情</Text>
-        <Pressable
-          onPress={handleSave}
-          hitSlop={10}
-          style={({ pressed }) => [styles.saveBtn, { borderColor: `${primary}33` }, pressed && { opacity: 0.75 }]}>
-          <Text style={[styles.saveBtnText, { color: primary }]}>{saving ? '保存中' : '保存'}</Text>
-        </Pressable>
+        <View style={styles.headerSpacer} />
       </View>
 
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 140 }]} showsVerticalScrollIndicator={false}>
@@ -733,21 +764,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  headerSpacer: {
+    width: 38,
+    height: 38,
+  },
   topTitle: {
     fontSize: 16,
     fontWeight: '800',
     letterSpacing: 0.2,
   },
-  saveBtn: {
-    minWidth: 48,
-    height: 34,
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-    borderWidth: 1,
-  },
-  saveBtnText: { fontSize: 13, fontWeight: '800' },
   content: { paddingHorizontal: 18, paddingTop: 18, gap: 22 },
   section: { gap: 12 },
   headline: {
