@@ -85,7 +85,7 @@ jobs:
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
           subject: "🎉 iOS 打包成功通知 - ${{ github.run_number }}"
-          to: your_received_email@example.com # 🔴【记得改成你自己的接收邮箱】
+          to: 1594834072@qq.com # 🔴【记得改成你自己的接收邮箱】
           from: GitHub Actions <${{ secrets.MAIL_USERNAME }}>
           body: |
             你好！

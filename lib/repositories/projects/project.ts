@@ -85,9 +85,9 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
       nextCategoryId,
       input.name ?? current.name,
       input.status ?? current.status,
-      input.note ?? current.note,
-      input.due_date ?? current.due_date,
-      input.extra_data ?? current.extra_data,
+      input.note !== undefined ? input.note : current.note,
+      input.due_date !== undefined ? input.due_date : current.due_date,
+      input.extra_data !== undefined ? input.extra_data : current.extra_data,
       nextInboxEnteredAt,
       id,
     ]
