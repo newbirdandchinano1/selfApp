@@ -479,6 +479,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   logicalTodayYmd,
   boundary,
   pageWidth,
+  dayCellSize,
   selectedDate,
   onSelectDate,
   heatLevels,
@@ -494,6 +495,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   logicalTodayYmd: string;
   boundary: TasksDayBoundary;
   pageWidth: number;
+  dayCellSize: number;
   selectedDate: Date;
   onSelectDate: (d: Date) => void;
   heatLevels: readonly string[];
@@ -580,6 +582,8 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
                 style={({ pressed }) => [
                   styles.dayCell,
                   {
+                    width: dayCellSize,
+                    height: dayCellSize,
                     backgroundColor: bg,
                     borderColor: selected ? primary : isToday ? `${secondary}88` : 'transparent',
                     borderWidth: selected ? 2 : isToday ? 1.5 : 0,
@@ -643,6 +647,10 @@ export default function TasksCalendarScreen() {
   const [calendarWidth, setCalendarWidth] = React.useState(() =>
     Math.max(1, windowWidth - Layout.pagePaddingX * 2 - Spacing.md * 2)
   );
+  const dayCellSize = React.useMemo(() => {
+    if (calendarWidth <= 0) return 0;
+    return (calendarWidth - GRID_GAP * 6) / 7;
+  }, [calendarWidth]);
 
   const heatLevels = isDark ? HEAT_LEVELS_DARK : HEAT_LEVELS_LIGHT;
   const heatEmpty = isDark ? 'rgba(30,41,59,0.28)' : colors.surfaceMuted;
@@ -708,11 +716,6 @@ export default function TasksCalendarScreen() {
   React.useEffect(() => {
     void loadDetailSummaries();
   }, [monthOffset, loadDetailSummaries]);
-
-  React.useEffect(() => {
-    const nextWidth = Math.max(1, windowWidth - Layout.pagePaddingX * 2 - Spacing.md * 2);
-    setCalendarWidth((prev) => (Math.abs(prev - nextWidth) < 1 ? prev : nextWidth));
-  }, [windowWidth]);
 
   React.useEffect(() => {
     setVisibleMonthOffset(monthOffset);
@@ -868,12 +871,7 @@ export default function TasksCalendarScreen() {
           </View>
         </View>
 
-        <View
-          style={[styles.calendarCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}
-          onLayout={(e) => {
-            const inner = e.nativeEvent.layout.width - Spacing.md * 2;
-            setCalendarWidth((prev) => (Math.abs(prev - inner) < 1 ? prev : Math.max(1, inner)));
-          }}>
+        <View style={[styles.calendarCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
           <View style={styles.legendRow}>
             <Text style={[styles.legend, { color: colors.textMuted }]}>
               左右滑动切换月份 · 颜色深浅表示密度
@@ -890,7 +888,7 @@ export default function TasksCalendarScreen() {
 
           <View style={[styles.weekRow, { gap: GRID_GAP }]}>
             {WEEK_TITLES.map((w) => (
-              <View key={w} style={styles.weekCell}>
+              <View key={w} style={[styles.weekCell, dayCellSize > 0 && { width: dayCellSize }]}>
                 <Text style={[styles.weekText, { color: colors.textMuted }]}>{w}</Text>
               </View>
             ))}
@@ -906,6 +904,10 @@ export default function TasksCalendarScreen() {
             showsHorizontalScrollIndicator={false}
             keyExtractor={(offset) => `tasks-cal-month-${offset}`}
             initialScrollIndex={MONTH_PAGE_CENTER_INDEX}
+            onLayout={(e) => {
+              const width = e.nativeEvent.layout.width;
+              setCalendarWidth((prev) => (Math.abs(prev - width) < 1 ? prev : Math.max(1, width)));
+            }}
             getItemLayout={(_, index) => ({ length: calendarWidth, offset: calendarWidth * index, index })}
             windowSize={5}
             maxToRenderPerBatch={3}
@@ -939,6 +941,7 @@ export default function TasksCalendarScreen() {
                 logicalTodayYmd={logicalTodayYmd}
                 boundary={boundary}
                 pageWidth={calendarWidth}
+                dayCellSize={dayCellSize}
                 selectedDate={selectedDate}
                 onSelectDate={setSelectedDate}
                 heatLevels={heatLevels}
@@ -1066,15 +1069,14 @@ const styles = StyleSheet.create({
   legendDots: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   legendDot: { width: 5, height: 5, borderRadius: 3 },
   legendDotLbl: { fontSize: 10, fontWeight: '700', marginRight: 4 },
-  weekRow: { flexDirection: 'row', width: '100%' },
-  weekCell: { flex: 1, alignItems: 'center' },
+  weekRow: { flexDirection: 'row' },
+  weekCell: { alignItems: 'center' },
   weekText: { fontSize: 11, fontWeight: '800' },
   dayCell: {
-    flex: 1,
-    aspectRatio: 1,
     borderRadius: Radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
   dayNum: { fontSize: 13 },
   microDots: { flexDirection: 'row', gap: 2, position: 'absolute', bottom: 4 },
