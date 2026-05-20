@@ -1317,7 +1317,7 @@ const PERSONA_PORTRAIT_JSON_HINT = `{"hero_kicker":"","hero_main":"","hero_capti
 
 export type GeneratePersonaPortraitOptions = {
   apiKey: string;
-  /** plan-completion | body-composition | hydration | savings | ai-insight */
+  /** plan-completion | health | savings | ai-insight */
   personaSlug: string;
   /** 中文本地数据摘要，由调用方组装 */
   contextText: string;
@@ -1421,12 +1421,10 @@ export function validatePersonaPortraitForSlug(
 
   switch (slug) {
     case 'plan-completion':
-    case 'hydration':
+    case 'health':
       if (!personaBulletsOk(d, 2, 36)) {
         return { ok: false, error: 'bullets 须 2～4 条且每条 ≥36 字' };
       }
-      break;
-    case 'body-composition':
       break;
     case 'savings':
       if (d.milestones.filter(m => m.trim()).length < 2) {
@@ -1488,14 +1486,12 @@ export async function generatePersonaPortraitFromContext(
 5) 长文篇幅（硬要求，未达标将整包判废并重试）：
    - overview：每个 persona_slug 都必须写满 300～400 个汉字（含标点；低于 280 字不合格）。须分 4 段：①数据回顾（引用摘要数字）②模式洞察 ③优势与卡点 ④本周可执行微习惯。禁止用列表代替段落。
    - ai-insight：除 overview 外，ai_quote 另须 300～400 字（口吻可更口语、像朋友写信）；dims 固定 3 条，sub 每条 70～120 字。
-   - plan-completion / hydration：bullets 2～4 条，每条 50～100 字，补充 overview 未写尽的可执行要点。
-   - body-composition：bullets 必须 []；全部深度内容写入 overview。
+   - plan-completion / health：bullets 2～4 条，每条 50～100 字，补充 overview 未写尽的可执行要点（健康维度可覆盖饮水、蛋白/碳水/钠、身体档案中的任一项）。
    - savings：milestones 2～4 条；overview 仍须 300～400 字段落体。
 
 persona_slug 含义（决定侧重点，但仍需填满所有字段；不适用的数组可给 0～3 条或留空数组）：
 - plan-completion：仅任务完成、习惯打卡、青蛙优先级、闭环节奏；overview/stats/bullets 禁止出现储蓄、记账、收支、饮水、财务、心愿等非任务主题。
-- body-composition：身高体重 BMI、身体自律侧写（非医疗）；bullets 须为空数组 []，不要输出解读备忘式条目。
-- hydration：饮水均值与目标、节律与自我照料。
+- health：综合健康页——身体档案（身高体重 BMI）、四营养维度日均与达成率、周环比、逐日明细；stats 建议 3 条分别对应水分/蛋白质/身体或综合照料；禁止编造体脂率或医疗诊断。
 - savings：储蓄/记账/延迟满足倾向（基于摘要中的数字）。
 - ai-insight：综合其它维度的一段「总评」式洞察，dims 给 3 条维度拆解。
 
@@ -1505,7 +1501,7 @@ persona_slug 含义（决定侧重点，但仍需填满所有字段；不适用�
     apiKey: key,
     systemContent,
     userContent: `persona_slug=${slug}\n\n以下是用户本地数据摘要。请生成 JSON。
-硬性篇幅：overview 必须 300～400 汉字（低于 280 字视为失败）${slug === 'ai-insight' ? '；ai_quote 另须 300～400 汉字；dims 三条 sub 各 70～120 字' : slug === 'body-composition' ? '；bullets 留空数组' : slug === 'plan-completion' || slug === 'hydration' ? '；bullets 2～4 条各 50～100 字' : ''}。\n\n${text}`,
+硬性篇幅：overview 必须 300～400 汉字（低于 280 字视为失败）${slug === 'ai-insight' ? '；ai_quote 另须 300～400 汉字；dims 三条 sub 各 70～120 字' : slug === 'plan-completion' || slug === 'health' ? '；bullets 2～4 条各 50～100 字' : ''}。\n\n${text}`,
     temperature: 0.38,
     maxTokens: 3600,
     maxAttempts,

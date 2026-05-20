@@ -3,6 +3,11 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { VisionSubGoalsSection } from '@/components/vision-sub-goals/VisionSubGoalsSection';
 import { createGoalDimension, listGoalDimensions } from '@/lib/repositories/goal-dimensions/goal-dimension';
 import type { GoalDimensionRow } from '@/lib/repositories/goal-dimensions/goal-dimension.types';
+import {
+  formatVisionAmountStored,
+  parseVisionAmountInput,
+  sanitizeVisionAmountInput,
+} from '@/lib/repositories/visions/vision-amount';
 import { createVision } from '@/lib/repositories/visions/vision';
 import type { VisionExtraPayload, VisionSubGoal } from '@/lib/repositories/visions/vision.types';
 import { serializeVisionSubGoalsForExtra } from '@/lib/repositories/visions/vision.types';
@@ -108,7 +113,7 @@ export default function VisionCreateScreen() {
   const [direction, setDirection] = useState<'positive' | 'negative'>('positive');
 
   const [goalTotal, setGoalTotal] = useState('100');
-  const [step, setStep] = useState('1');
+  const [currentAmount, setCurrentAmount] = useState('0');
   const [unit, setUnit] = useState('');
 
   // 计数配置
@@ -289,6 +294,16 @@ export default function VisionCreateScreen() {
       }
     }
 
+    let progressCurrentStored: string | undefined;
+    if (trackType === 0) {
+      const parsed = parseVisionAmountInput(currentAmount);
+      if (parsed === null) {
+        Alert.alert('提示', '当前完成值需为不小于 0 的数字，最多两位小数。');
+        return;
+      }
+      progressCurrentStored = formatVisionAmountStored(parsed);
+    }
+
     const id = `vn_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
     const track_kind = visionTrackKindFromCreateTab(trackType);
     const directionForDb = trackType === 0 || trackType === 3 ? direction : null;
@@ -297,7 +312,6 @@ export default function VisionCreateScreen() {
       dimensionId: dimRow.id,
       dimensionName: dimRow.title.trim(),
       goalTotal,
-      step,
       unit,
       countFrequency: 'daily',
       countStep,
@@ -305,7 +319,11 @@ export default function VisionCreateScreen() {
       countdownKind,
       endDate,
       dateFormat,
-      ...(trackType === 0 || trackType === 1 || trackType === 3 ? { currentAmount: '0' } : {}),
+      ...(trackType === 0
+        ? { currentAmount: progressCurrentStored! }
+        : trackType === 1 || trackType === 3
+          ? { currentAmount: '0' }
+          : {}),
     };
     if (trackType === 3) {
       const serialized = serializeVisionSubGoalsForExtra(subGoals);
@@ -794,7 +812,7 @@ export default function VisionCreateScreen() {
               <View style={styles.grid2}>
                 <View style={styles.grid2LabelsRow}>
                   <Text style={[styles.grid2Label, { color: outline }]}>目标总量</Text>
-                  <Text style={[styles.grid2Label, { color: outline }]}>步长</Text>
+                  <Text style={[styles.grid2Label, { color: outline }]}>当前完成值</Text>
                 </View>
                 <View style={styles.grid2InputsRow}>
                   <TextInput
@@ -806,10 +824,10 @@ export default function VisionCreateScreen() {
                     style={[styles.grid2Input, { color: textColor }]}
                   />
                   <TextInput
-                    value={step}
-                    onChangeText={setStep}
-                    keyboardType="numeric"
-                    placeholder=""
+                    value={currentAmount}
+                    onChangeText={t => setCurrentAmount(sanitizeVisionAmountInput(t))}
+                    keyboardType="decimal-pad"
+                    placeholder="0"
                     placeholderTextColor={placeholderColor}
                     style={[styles.grid2Input, { color: textColor }]}
                   />

@@ -39,6 +39,11 @@ import {
   MAX_GITHUB_SQLITE_JSON_UTF8_BYTES,
   utf8ByteLength,
 } from '@/lib/github-sqlite-backup-chunk';
+import { sleep, throwIfAborted } from '@/lib/github-fetch-retry';
+import type { GitHubBackupUploadFail } from '@/lib/github-backup-manager';
+
+/** 全量备份单文件上传失败后的重试次数（含首次，共 N 次尝试） */
+const FULL_BACKUP_FILE_UPLOAD_MAX_ATTEMPTS = 4;
 import type {
   FinanceAccountBalanceRow,
   FinanceFlowCategoryRow,
@@ -69,6 +74,18 @@ export type GithubFinanceCloudBackupPayload = {
   flowCategories: FinanceFlowCategoryRow[];
 };
 
+export type GithubCloudSyncProgress = {
+  phase: 'preparing' | 'collecting' | 'uploading';
+  /** 上传阶段：当前文件序号（1-based） */
+  fileIndex?: number;
+  fileCount?: number;
+  /** 如 `sqlite/tasks.json` */
+  fileLabel?: string;
+  /** 当前文件的重试序号（1-based，首次为 1） */
+  attempt?: number;
+  maxAttempts?: number;
+};
+
 export type GithubCloudSyncResult =
   | {
       ok: true;
@@ -85,6 +102,13 @@ export type GithubCloudSyncResult =
       /** 完整诊断（URL、HTTP、响应正文、网络错误栈等），用于 Modal 展示 */
       diagnosticText: string;
     };
+
+function isRetryableGithubUploadFailure(upload: GitHubBackupUploadFail): boolean {
+  if (upload.aborted) return false;
+  const s = upload.status;
+  if (s == null) return true;
+  return s === 408 || s === 425 || s === 429 || s >= 500;
+}
 
 export async function collectFinanceCloudBackupJson(): Promise<string> {
   const [bills, accounts, flowCategories] = await Promise.all([
@@ -233,14 +257,31 @@ async function uploadGithubBackupWithConfig(
 async function uploadGithubBackupMultiFiles(
   baseCfg: GitHubBackupConfig,
   specs: MultiFileUploadSpec[],
-  opts?: { signal?: AbortSignal },
+  opts?: {
+    signal?: AbortSignal;
+    onProgress?: (p: GithubCloudSyncProgress) => void;
+    fileUploadMaxAttempts?: number;
+  },
 ): Promise<GithubCloudSyncResult> {
+  const fileUploadMaxAttempts = opts?.fileUploadMaxAttempts ?? FULL_BACKUP_FILE_UPLOAD_MAX_ATTEMPTS;
+  const report = (p: GithubCloudSyncProgress) => opts?.onProgress?.(p);
+
   let lastOk: Extract<GitHubBackupUploadResult, { ok: true }> | null = null;
   const donePaths: string[] = [];
   if (opts?.signal?.aborted) {
     const message = '备份尚未开始即已中止（例如应用进入后台）';
     return { ok: false, reason: 'aborted', message, diagnosticText: message };
   }
+
+  report({
+    phase: 'uploading',
+    fileIndex: 0,
+    fileCount: specs.length,
+    fileLabel: undefined,
+    attempt: 1,
+    maxAttempts: fileUploadMaxAttempts,
+  });
+
   for (let i = 0; i < specs.length; i++) {
     if (opts?.signal?.aborted) {
       const message = `备份已中止：已完成 ${donePaths.length}/${specs.length} 个文件`;
@@ -255,12 +296,34 @@ async function uploadGithubBackupMultiFiles(
     }
     const spec = specs[i]!;
     const manager = new GitHubBackupManager({ ...baseCfg, path: spec.path });
-    const upload = await manager.uploadBackup(spec.body, {
-      message: `备份 ${spec.commitSuffix}`,
-      signal: opts?.signal,
-    });
-    if (!upload.ok) {
-      if ('aborted' in upload && upload.aborted) {
+    let upload: GitHubBackupUploadResult | null = null;
+    let lastFail: GitHubBackupUploadFail | null = null;
+
+    for (let attempt = 1; attempt <= fileUploadMaxAttempts; attempt++) {
+      throwIfAborted(opts?.signal);
+      report({
+        phase: 'uploading',
+        fileIndex: i + 1,
+        fileCount: specs.length,
+        fileLabel: spec.commitSuffix,
+        attempt,
+        maxAttempts: fileUploadMaxAttempts,
+      });
+
+      upload = await manager.uploadBackup(spec.body, {
+        message: `备份 ${spec.commitSuffix}`,
+        signal: opts?.signal,
+      });
+
+      if (upload.ok) {
+        lastOk = upload;
+        donePaths.push(spec.path);
+        lastFail = null;
+        break;
+      }
+
+      lastFail = upload;
+      if (upload.aborted) {
         const message = `备份已中止：已完成 ${donePaths.length}/${specs.length} 个文件`;
         const diagnosticText = [
           upload.diagnosticText,
@@ -270,21 +333,39 @@ async function uploadGithubBackupMultiFiles(
         ].join('\n\n');
         return { ok: false, reason: 'aborted', message: upload.message, diagnosticText };
       }
+
+      const canRetry = isRetryableGithubUploadFailure(upload) && attempt < fileUploadMaxAttempts;
+      if (!canRetry) break;
+
+      const waitMs = Math.min(12_000, 600 * 2 ** (attempt - 1));
+      try {
+        await sleep(waitMs, opts?.signal);
+      } catch {
+        const message = `备份已中止：已完成 ${donePaths.length}/${specs.length} 个文件`;
+        return { ok: false, reason: 'aborted', message, diagnosticText: message };
+      }
+    }
+
+    if (!upload?.ok) {
+      const fail = lastFail ?? upload;
+      const failUpload = fail && !fail.ok ? fail : null;
+      const attemptNote =
+        fileUploadMaxAttempts > 1
+          ? `（已自动重试 ${fileUploadMaxAttempts} 次仍失败）`
+          : '';
       const diagnosticText = [
-        `在上传第 ${i + 1}/${specs.length} 个文件时失败：${spec.path}`,
+        `在上传第 ${i + 1}/${specs.length} 个文件时失败：${spec.path}${attemptNote}`,
         donePaths.length > 0 ? `已成功写入 ${donePaths.length} 个文件：\n${donePaths.join('\n')}` : '尚无文件写入成功。',
         '',
-        upload.diagnosticText,
+        failUpload?.diagnosticText ?? '未知上传错误',
       ].join('\n\n');
       return {
         ok: false,
         reason: 'upload_failed',
-        message: `上传失败：${spec.path} — ${upload.message}`,
+        message: `上传失败：${spec.path} — ${failUpload?.message ?? '未知错误'}`,
         diagnosticText,
       };
     }
-    lastOk = upload;
-    donePaths.push(spec.path);
   }
   return { ok: true, upload: lastOk! };
 }
@@ -464,7 +545,10 @@ export async function triggerGithubFinanceCloudSync(
  */
 export async function triggerGithubCloudSync(opts?: {
   signal?: AbortSignal;
+  onProgress?: (p: GithubCloudSyncProgress) => void;
 }): Promise<GithubCloudSyncResult> {
+  const report = (p: GithubCloudSyncProgress) => opts?.onProgress?.(p);
+
   const cfg = await getGitHubBackupConfig();
   if (!cfg) {
     return {
@@ -481,6 +565,8 @@ export async function triggerGithubCloudSync(opts?: {
     return { ok: false, reason: 'unsupported_platform', message, diagnosticText: message };
   }
 
+  report({ phase: 'preparing' });
+
   const root = getGitHubFullBackupRootFromEnv();
   const lastUpdated = new Date().toISOString();
 
@@ -492,6 +578,8 @@ export async function triggerGithubCloudSync(opts?: {
   let userSkills: Awaited<ReturnType<typeof loadUserSkills>>;
   let weeklyReviewWeekday: number | null;
   let aiLlmProviderId: Awaited<ReturnType<typeof loadAiLlmProviderPreference>>;
+
+  report({ phase: 'collecting' });
 
   try {
     [
@@ -551,7 +639,10 @@ export async function triggerGithubCloudSync(opts?: {
     return { ok: false, reason: 'aborted', message, diagnosticText: message };
   }
 
-  const r = await uploadGithubBackupMultiFiles(cfg, specs, { signal: opts?.signal });
+  const r = await uploadGithubBackupMultiFiles(cfg, specs, {
+    signal: opts?.signal,
+    onProgress: opts?.onProgress,
+  });
   if (!r.ok) return r;
   await setLastFullGithubBackupAtIso(lastUpdated);
   clearAllGithubSqliteDirtyTables();

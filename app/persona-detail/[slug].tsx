@@ -11,7 +11,13 @@ import {
 } from '@/lib/repositories/insights/persona-portrait-cache';
 import { getDefaultUser } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
-import { buildPersonaContextText, localCalendarYmd } from '@/lib/persona-portrait-sync';
+import { ensureDailyAiIntakeTargetsForToday } from '@/lib/daily-intake-ai-targets';
+import {
+  buildHealthNutrientStats,
+  getIntakeTargetsSnapshot,
+  ymdAddDays,
+} from '@/lib/persona-health-context';
+import { buildPersonaContextText, localLogicalTodayYmd } from '@/lib/persona-portrait-sync';
 import {
   generatePersonaPortraitFromContext,
   getActiveAiLlmApiKey,
@@ -56,15 +62,22 @@ const FALLBACK_PLAN_STATS: { label: string; value: string; hint: string }[] = [
   { label: '恢复速度', value: '快', hint: '延期后 48h 内补做' },
 ];
 
-const FALLBACK_AI_DIMS: { icon: 'local-drink' | 'fitness-center' | 'account-balance-wallet'; title: string; sub: string }[] = [
-  { icon: 'local-drink', title: '饮水节律', sub: '执行力 + 自我照料' },
-  { icon: 'fitness-center', title: '营养结构', sub: '训练协同与蛋白质窗口' },
+const FALLBACK_AI_DIMS: { icon: 'favorite' | 'fitness-center' | 'account-balance-wallet'; title: string; sub: string }[] = [
+  { icon: 'favorite', title: '健康照料', sub: '身体档案与四营养维度' },
+  { icon: 'fitness-center', title: '执行节奏', sub: '任务闭环与习惯打卡' },
   { icon: 'account-balance-wallet', title: '财务自律', sub: '延迟满足与目标感' },
 ];
 
-const FALLBACK_HYD_BULLETS = [
+const FALLBACK_HEALTH_BULLETS = [
   '500ml 保温杯随身，上午喝完第一杯再进入深度工作。',
-  '每完成一个番茄钟，起身补水 100–150ml。',
+  '将蛋白质优先安排在运动后 1 小时内，用小份加餐降低一次性进食压力。',
+  '固定每周同一时段测量身高体重，用趋势代替对单日数字的苛责。',
+];
+
+const FALLBACK_HEALTH_STATS: { label: string; value: string; hint: string }[] = [
+  { label: '饮水均值', value: '—', hint: '近 7 日按记录推算' },
+  { label: '蛋白质', value: '—', hint: '对照首页目标' },
+  { label: '碳水/钠', value: '—', hint: '四维度综合照料' },
 ];
 
 const FALLBACK_PLAN_BULLETS = [
@@ -81,17 +94,14 @@ const FALLBACK_SAVINGS_MILESTONES = [
 const DEFAULT_PLAN_OVERVIEW =
   '该维度聚焦任务与习惯的闭环节奏。近一周若「完成」与「新建」比例失衡，往往说明排期偏满或收尾窗口不足——可在周末留出固定复盘块，把未闭环项压缩为不超过三条的青蛙清单，再按精力峰值重排。高认知任务宜落在状态最好的时段，琐碎维护型事项则集中在低能耗时段批量处理。你不必追求每日打满，关键是让最重要的那一件事先落地，用完成感带动下一项。样本较少时，先选一件最容易收尾的小任务完成即可。以上为基于本地记录的模型侧写，仅供自我观察，不构成专业建议。';
 
-const DEFAULT_BODY_OVERVIEW =
-  '身体成分侧写以你在资料页填写的身高、体重为起点，用于推算 BMI 并观察生活方式自律倾向（非医疗结论）。BMI 只是粗线条参考：同样数值在不同肌肉量、睡眠与饮食结构下意义不同，更适合看「是否长期稳定」而非追逐单点数字。若档案尚未填写完整，可先补全身高体重，再结合训练与作息做温和调整。增肌期体重上升、减脂期短期波动都较常见，不必因单日读数焦虑。建议把测量固定在每周同一时段，用趋势代替苛责。以下为模型根据现有档案生成的参考解读，请结合自身感受使用。';
-
-const DEFAULT_HYD_OVERVIEW =
-  '饮水人格反映的是节律感与自我照料：稳定补水往往与固定锚点（起床后、运动前后、每个番茄钟结束）绑定在一起，比「想起来再喝」更容易坚持。近一周若日均饮水低于目标，可先缩小杯子容量、降低单次心理负担，用「先喝完第一杯再开始深度工作」建立上午节奏。若已接近或达到目标，可把注意力转向分布是否均匀——下午与晚间适当补水有助于缓解疲劳感。记录天数偏少时，样本有限，解读会更偏通用建议；坚持打卡几天后刷新，解读会更贴近你的真实节律。以上为生活方式参考，不构成医疗建议。';
+const DEFAULT_HEALTH_OVERVIEW =
+  '健康人格画像把身体档案与四营养维度放在同一张图里：身高体重推算的 BMI 只是粗线条参考，更适合观察长期趋势；水分、蛋白质、碳水与钠的日均达成率则反映自我照料是否均衡。稳定补水往往与固定锚点（起床后、运动前后、每个番茄钟结束）绑定；蛋白质窗口可与训练协同。若近一周记录天数偏少，解读会更偏通用建议——坚持在健康页打卡几天后刷新，模型会结合逐日明细给出更贴近你的节律。以上为生活方式参考，不构成医疗诊断或用药建议。';
 
 const DEFAULT_SAVINGS_OVERVIEW =
   '储蓄人格侧写关注延迟满足与目标拆解：你是否愿意为远期目标压缩即时消费，以及记账、存钱与心愿清单是否形成闭环。近一周若支出偏高而储蓄入账偏少，不一定代表「自制力差」，更常见的是大额事项集中或分类口径变化——可先标出 1～2 笔最大支出，判断属于必要、改善还是冲动，再决定下周是否设「消费冷静期」。若储蓄入账稳定，说明你在现金流与目标之间已建立可复制的节律，值得把成功做法写下来（固定扣款日、先存后花等）。心愿清单的更新频率也反映你是否把欲望转化为可执行计划。以下为基于本地记账与存钱摘要的参考解读，不构成投资或法律建议。';
 
 const DEFAULT_AI_INSIGHT_OVERVIEW =
-  '综合洞察会把任务执行、身体照料、饮水节律与财务行为放在同一张图里看：它们往往互相牵引——任务压力大时饮水与睡眠容易失守，财务焦虑又会挤占复盘时间。近一周若某一维度明显拖后腿，不必同时改全部习惯，优先选「投入最小、反馈最快」的一条微行动（例如每天第一杯水、每天收尾一件小事、每周固定一笔储蓄）。若多维数据都偏少，说明记录还在起步阶段，先让数据长起来比追求满分更重要。你已经在用工具观察自己，这本身就是很关键的自律起点。刷新画像可让模型结合最新摘要更新解读。以下为综合侧写，仅供自我观察。';
+  '综合洞察会把任务执行、健康照料（身体档案与四营养维度）与财务行为放在同一张图里看：它们往往互相牵引——任务压力大时饮水与睡眠容易失守，财务焦虑又会挤占复盘时间。近一周若某一维度明显拖后腿，不必同时改全部习惯，优先选「投入最小、反馈最快」的一条微行动（例如每天第一杯水、每天收尾一件小事、每周固定一笔储蓄）。若多维数据都偏少，说明记录还在起步阶段，先让数据长起来比追求满分更重要。你已经在用工具观察自己，这本身就是很关键的自律起点。刷新画像可让模型结合最新摘要更新解读。以下为综合侧写，仅供自我观察。';
 
 function SectionCard({
   children,
@@ -233,12 +243,21 @@ export default function PersonaDetailScreen() {
 
     void (async () => {
       try {
-        const today = localCalendarYmd();
+        const today = localLogicalTodayYmd();
         const u = await getDefaultUser();
         if (!alive) return;
         setUser(u);
         const metrics = await fetchWeeklyReviewMetrics(new Date(), 'rolling-7');
-        const rows = u?.id ? await getHealthRecordsLast7Days(u.id) : [];
+        const prevEnd = ymdAddDays(today, -7);
+        const rows = u?.id ? await getHealthRecordsLast7Days(u.id, today) : [];
+        const prevRows = u?.id ? await getHealthRecordsLast7Days(u.id, prevEnd) : [];
+        let dailyAiTargets = null;
+        if (u) {
+          const dailyRes = await ensureDailyAiIntakeTargetsForToday({ user: u, todayYmd: today });
+          if (dailyRes.status === 'cached' || dailyRes.status === 'fresh') {
+            dailyAiTargets = dailyRes.row;
+          }
+        }
         if (!alive) return;
         setHealthRows(rows);
 
@@ -258,7 +277,11 @@ export default function PersonaDetailScreen() {
         setPortraitFromDiskToday(false);
         setPortraitStatus('loading');
         setPortraitError('');
-        const context = buildPersonaContextText(slug as PersonaPortraitCacheSlug, u, metrics, rows);
+        const context = buildPersonaContextText(slug as PersonaPortraitCacheSlug, u, metrics, rows, {
+          prevWeekHealthRows: prevRows,
+          dailyAiTargets,
+          todayYmd: today,
+        });
         const res = await generatePersonaPortraitFromContext({
           apiKey: getActiveAiLlmApiKey(),
           personaSlug: slug,
@@ -300,8 +323,7 @@ export default function PersonaDetailScreen() {
     if (!valid) return '画像详情';
     const titles: Record<PersonaDetailSlug, string> = {
       'plan-completion': '计划完成情况',
-      'body-composition': '体脂与身体成分',
-      hydration: '饮水与代谢',
+      health: '健康与营养',
       savings: '储蓄人格画像',
       'ai-insight': 'AI 智能人格洞察',
     };
@@ -312,8 +334,7 @@ export default function PersonaDetailScreen() {
     if (!valid) return primary;
     const map: Record<PersonaDetailSlug, string> = {
       'plan-completion': primary,
-      'body-composition': secondary,
-      hydration: primary,
+      health: secondary,
       savings: tertiary,
       'ai-insight': primary,
     };
@@ -329,8 +350,11 @@ export default function PersonaDetailScreen() {
 
   const progressBg = require('../../assets/profile/progress.png');
   const healthBg = require('../../assets/profile/health.png');
-  const waterBg = require('../../assets/profile/water.png');
   const savingsBg = require('../../assets/profile/savings.png');
+  const healthStats = useMemo(
+    () => buildHealthNutrientStats(healthRows, getIntakeTargetsSnapshot()),
+    [healthRows],
+  );
 
   const renderBody = () => {
     if (!valid) {
@@ -446,10 +470,25 @@ export default function PersonaDetailScreen() {
         );
       }
 
-      case 'body-composition': {
-        const bodyKicker = hKicker || 'BODY';
-        const bodyMain = hMain || (bmiText !== '—' ? bmiText : '—');
-        const bodyCap = hCap || 'BMI · 本地档案（非医疗）';
+      case 'health': {
+        const healthKicker = hKicker || 'WELLNESS';
+        const healthMain =
+          hMain ||
+          (bmiText !== '—'
+            ? bmiText
+            : hydMemo.avgMl >= 50
+              ? `${(hydMemo.avgMl / 1000).toFixed(1)}L`
+              : healthRows.length
+                ? `${Math.round(hydMemo.avgMl)} ml`
+                : '—');
+        const healthCap = hCap || '身体档案 · 四营养维度 · 近 7 日';
+        const healthBullets =
+          ai?.bullets && ai.bullets.filter(b => b.trim()).length >= 2
+            ? ai.bullets.filter(b => b.trim())
+            : FALLBACK_HEALTH_BULLETS;
+        const healthStatRows = ai?.stats && ai.stats.length >= 3 ? ai.stats : healthStats.length >= 3 ? healthStats : FALLBACK_HEALTH_STATS;
+        const barW = `${Math.max(4, hydMemo.pct)}%` as DimensionValue;
+        const hydCompareLabel = `饮水约 ${(hydMemo.avgMl / 1000).toFixed(2)} L / 日 · 目标 ${(hydMemo.targetMl / 1000).toFixed(1)} L / 日`;
         return (
           <>
             {statusHeader}
@@ -457,15 +496,15 @@ export default function PersonaDetailScreen() {
               <Image source={healthBg} style={StyleSheet.absoluteFillObject} contentFit="cover" />
               <View style={[styles.heroTint, { backgroundColor: `${secondary}99` }]} />
               <View style={styles.heroInner}>
-                <Text style={styles.heroKicker}>{bodyKicker}</Text>
-                <Text style={[styles.heroValue, heroMainStyle(bodyMain)]}>{bodyMain}</Text>
-                <Text style={styles.heroCaption}>{bodyCap}</Text>
+                <Text style={styles.heroKicker}>{healthKicker}</Text>
+                <Text style={[styles.heroValue, heroMainStyle(healthMain)]}>{healthMain}</Text>
+                <Text style={styles.heroCaption}>{healthCap}</Text>
               </View>
             </View>
             <PersonaAiNarrative
               overview={overview}
               status={portraitStatus}
-              fallback={DEFAULT_BODY_OVERVIEW}
+              fallback={DEFAULT_HEALTH_OVERVIEW}
               text={text}
               outline={outline}
               surface={surface}
@@ -473,7 +512,19 @@ export default function PersonaDetailScreen() {
               tertiary={tertiary}
             />
             <SectionCard surface={surface} border={borderSoft}>
-              <SectionTitle text="与档案联动" color={text} />
+              <SectionTitle text="数据速览" color={text} />
+              <View style={styles.statGrid}>
+                {healthStatRows.map(row => (
+                  <View key={row.label} style={[styles.statCell, { borderColor: borderSoft }]}>
+                    <Text style={[styles.statLabel, { color: outline }]}>{row.label}</Text>
+                    <Text style={[styles.statValue, { color: text }]}>{row.value}</Text>
+                    <Text style={[styles.statHint, { color: outline }]}>{row.hint}</Text>
+                  </View>
+                ))}
+              </View>
+            </SectionCard>
+            <SectionCard surface={surface} border={borderSoft}>
+              <SectionTitle text="身体档案" color={text} />
               <View style={styles.profileFacts}>
                 <View style={[styles.factRow, { borderColor: borderSoft }]}>
                   <Text style={[styles.factLabel, { color: outline }]}>身高</Text>
@@ -489,44 +540,6 @@ export default function PersonaDetailScreen() {
                 </View>
               </View>
             </SectionCard>
-            <RelLink label="健康日历" onPress={goHealth} primary={secondary} />
-            <RelLink label="编辑身体数据" onPress={goProfile} primary={primary} />
-          </>
-        );
-      }
-
-      case 'hydration': {
-        const hydKicker = hKicker || 'HYDRATION';
-        const hydMain =
-          hMain ||
-          (hydMemo.avgMl >= 50 ? `${(hydMemo.avgMl / 1000).toFixed(1)}L` : healthRows.length ? `${Math.round(hydMemo.avgMl)} ml` : '—');
-        const hydCap = hCap || '近 7 日饮水均值（本地）';
-        const hydBullets =
-          ai?.bullets && ai.bullets.filter(b => b.trim()).length >= 2 ? ai.bullets.filter(b => b.trim()) : FALLBACK_HYD_BULLETS;
-        const barW = `${Math.max(4, hydMemo.pct)}%` as DimensionValue;
-        const hydCompareLabel = `约 ${(hydMemo.avgMl / 1000).toFixed(2)} L / 日 · 目标 ${(hydMemo.targetMl / 1000).toFixed(1)} L / 日（按记录推算）`;
-        return (
-          <>
-            {statusHeader}
-            <View style={[styles.heroImageCard, { overflow: 'hidden' }]}>
-              <Image source={waterBg} style={StyleSheet.absoluteFillObject} contentFit="cover" />
-              <View style={[styles.heroTint, { backgroundColor: `${primary}88` }]} />
-              <View style={styles.heroInner}>
-                <Text style={styles.heroKicker}>{hydKicker}</Text>
-                <Text style={[styles.heroValue, heroMainStyle(hydMain)]}>{hydMain}</Text>
-                <Text style={styles.heroCaption}>{hydCap}</Text>
-              </View>
-            </View>
-            <PersonaAiNarrative
-              overview={overview}
-              status={portraitStatus}
-              fallback={DEFAULT_HYD_OVERVIEW}
-              text={text}
-              outline={outline}
-              surface={surface}
-              borderSoft={borderSoft}
-              tertiary={tertiary}
-            />
             <SectionCard surface={surface} border={borderSoft}>
               <SectionTitle text="饮水进度" color={text} />
               <View style={styles.waterCompare}>
@@ -538,11 +551,14 @@ export default function PersonaDetailScreen() {
             </SectionCard>
             <SectionCard surface={surface} border={borderSoft}>
               <SectionTitle text="可执行微习惯" color={text} />
-              {hydBullets.map((line, idx) => (
+              {healthBullets.map((line, idx) => (
                 <Bullet key={idx} muted={outline} text={line} />
               ))}
             </SectionCard>
-            <RelLink label="饮水记录" onPress={goIntake} primary={primary} />
+            <RelLink label="前往健康页" onPress={() => router.push('/(tabs)')} primary={secondary} />
+            <RelLink label="健康日历" onPress={goHealth} primary={secondary} />
+            <RelLink label="摄入记录" onPress={goIntake} primary={primary} />
+            <RelLink label="编辑身体数据" onPress={goProfile} primary={primary} />
           </>
         );
       }

@@ -250,7 +250,7 @@ export default function EditTaskScreen() {
   const isDark = colorScheme === 'dark';
 
   const taskId = typeof params.id === 'string' ? params.id : '';
-  /** 从任务详情进入编辑时，删除后需跳过已无效的详情页，直接回到任务 Tab */
+  /** 从任务详情进入编辑时，保存/删除后需跳过详情页，直接回到任务 Tab */
   const openedFromTaskDetail =
     params.from === 'task-detail' || (Array.isArray(params.from) && params.from[0] === 'task-detail');
   const scheduleSource =
@@ -355,6 +355,8 @@ export default function EditTaskScreen() {
       const dateLabel = formatDate(picked.date);
       const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
       setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
+    } else {
+      setDeadlineText('');
     }
     setReminderText(
       formatTaskReminderLabel({
@@ -592,13 +594,22 @@ export default function EditTaskScreen() {
     }
   }, [loading, projectDateLimit, taskId]);
 
+  /** 从详情→编辑离开（保存或删除）时跳过详情页，直接回到任务 Tab */
+  const navigateAfterLeaveEdit = React.useCallback(() => {
+    if (openedFromTaskDetail) {
+      router.dismissTo('/(tabs)/tasks');
+    } else {
+      router.back();
+    }
+  }, [openedFromTaskDetail, router]);
+
   const exitWithSave = React.useCallback(async () => {
     if (exitingAfterSaveRef.current || saving) return;
     const ok = await persistTask();
     if (!ok) return;
     exitingAfterSaveRef.current = true;
-    router.back();
-  }, [persistTask, router, saving]);
+    navigateAfterLeaveEdit();
+  }, [navigateAfterLeaveEdit, persistTask, saving]);
 
   React.useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', (e) => {
@@ -608,20 +619,17 @@ export default function EditTaskScreen() {
         const ok = await persistTask();
         if (!ok) return;
         exitingAfterSaveRef.current = true;
-        navigation.dispatch(e.data.action);
+        if (openedFromTaskDetail) {
+          router.dismissTo('/(tabs)/tasks');
+        } else {
+          navigation.dispatch(e.data.action);
+        }
       })();
     });
     return unsub;
-  }, [navigation, persistTask]);
+  }, [navigation, openedFromTaskDetail, persistTask, router]);
 
-  /** 删除成功后：从详情→编辑来的栈上有已删除的详情页，需 dismiss 到任务 Tab */
-  const navigateAfterDeleteTask = React.useCallback(() => {
-    if (openedFromTaskDetail) {
-      router.dismissTo('/(tabs)/tasks');
-    } else {
-      router.back();
-    }
-  }, [openedFromTaskDetail, router]);
+  const navigateAfterDeleteTask = navigateAfterLeaveEdit;
 
   const removeTask = React.useCallback(() => {
     if (!taskId || saving || loading) return;

@@ -1,4 +1,5 @@
 import { VisionSubGoalsSection } from '@/components/vision-sub-goals/VisionSubGoalsSection';
+import { sanitizeVisionAmountInput } from '@/lib/repositories/visions/vision-amount';
 import type { VisionRow } from '@/lib/repositories/visions/vision.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -228,7 +229,7 @@ export function VisionDetailEditor(props: Props) {
           <View style={[styles.grid2, { marginTop: 16 }]}>
             <View style={styles.grid2LabelsRow}>
               <Text style={[styles.grid2Label, { color: outline }]}>目标总量</Text>
-              <Text style={[styles.grid2Label, { color: outline }]}>步长</Text>
+              <Text style={[styles.grid2Label, { color: outline }]}>当前完成值</Text>
             </View>
             <View style={styles.grid2InputsRow}>
               <TextInput
@@ -239,9 +240,10 @@ export function VisionDetailEditor(props: Props) {
                 style={[styles.grid2Input, { color: textColor }]}
               />
               <TextInput
-                value={draft.step}
-                onChangeText={t => patchDraft({ step: t })}
-                keyboardType="numeric"
+                value={draft.currentAmount}
+                onChangeText={t => patchDraft({ currentAmount: sanitizeVisionAmountInput(t) })}
+                keyboardType="decimal-pad"
+                placeholder="0"
                 placeholderTextColor={placeholderColor}
                 style={[styles.grid2Input, { color: textColor }]}
               />

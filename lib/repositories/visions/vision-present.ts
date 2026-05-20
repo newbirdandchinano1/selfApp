@@ -16,6 +16,7 @@ import {
   type VisionTrackKind,
 } from './vision.types';
 import { parseVisionExtra } from './vision';
+import { formatVisionAmount } from './vision-amount';
 
 /** 关联项目下的任务完成统计，用于「目标」类愿景 */
 export type LinkedTargetTaskProgress = { total: number; completed: number } | null;
@@ -49,13 +50,6 @@ export function resolveVisionBgImageSource(
     return BG_SOURCES[bg_option_idx];
   }
   return bg1;
-}
-
-function formatVisionAmount(n: number): string {
-  if (!Number.isFinite(n)) return '0';
-  if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
-  const t = n.toFixed(4).replace(/\.?0+$/, '');
-  return t || '0';
 }
 
 function freqLabel(f?: VisionExtraPayload['countFrequency']): string {
@@ -247,19 +241,19 @@ function wallFieldsFromRow(
       const goal = Number(extra.goalTotal);
       const safeGoal = Number.isFinite(goal) && goal > 0 ? goal : 100;
       const cur = Math.max(0, Number(extra.currentAmount ?? 0) || 0);
-      const stepNum = Math.max(0.0001, Number(extra.step) || 1);
       const isNeg = row.direction === 'negative';
       const rightMain = isNeg
         ? `剩余 ${formatVisionAmount(Math.max(0, safeGoal - cur))} / ${formatVisionAmount(safeGoal)}${unitSuffix}`
         : `已完成 ${formatVisionAmount(cur)} / ${formatVisionAmount(safeGoal)}${unitSuffix}`;
+      const unit = extra.unit?.trim();
       return {
         kind: 'progress',
         title: row.title,
-        leftKicker: '本周进度',
-        leftValue: '待记录',
+        leftKicker: '当前完成',
+        leftValue: `${formatVisionAmount(cur)}${unitSuffix}`.trim(),
         rightKicker: '当前总量',
         rightValue: rightMain,
-        wallAdjust: { current: cur, step: stepNum },
+        wallAdjust: { current: cur, unit: unit || undefined },
       };
     }
     case 'count': {
@@ -331,6 +325,23 @@ export async function visionRowToWallCard(row: VisionRow): Promise<VisionWallCar
   const imageSource = resolveVisionBgImageSource(row.bg_option_idx, extra);
   if (wall.kind === 'target') {
     const subGoals = await resolveWallSubGoalItems(extra);
+    const hasSubGoals = collectVisionSubGoalsFromExtra(extra).length > 0;
+    const hasTaskProgress = linked != null && linked.total > 0;
+    if (!hasSubGoals && !hasTaskProgress) {
+      const goalNum = Number(extra.goalTotal);
+      const safeGoal = Number.isFinite(goalNum) && goalNum > 0 ? goalNum : 100;
+      const cur = Math.max(0, Number(extra.currentAmount ?? 0) || 0);
+      const isComplete = cur >= safeGoal;
+      return {
+        ...wall,
+        imageSource,
+        subGoals,
+        simpleComplete: true,
+        isComplete,
+        percent: isComplete ? 1 : 0,
+        percentText: isComplete ? '已完成' : '',
+      } as VisionWallCardModel;
+    }
     return { ...wall, imageSource, subGoals } as VisionWallCardModel;
   }
   return { ...wall, imageSource } as VisionWallCardModel;
@@ -390,6 +401,8 @@ export async function visionRowToProfileCarouselItem(
       progressText = '';
   }
 
+  const imageSource = resolveVisionBgImageSource(row.bg_option_idx, extra);
+
   return {
     id: row.id,
     kicker: kickerMap[row.track_kind],
@@ -397,6 +410,7 @@ export async function visionRowToProfileCarouselItem(
     progressText,
     progress: progressPct,
     year,
+    imageSource,
   };
 }
 

@@ -1,4 +1,5 @@
 import { parseVisionExtra, serializeVisionExtra } from '@/lib/repositories/visions/vision';
+import { formatVisionAmountStored, parseVisionAmountInput } from '@/lib/repositories/visions/vision-amount';
 import type { UpdateVisionInput, VisionExtraPayload, VisionRow, VisionSubGoal } from '@/lib/repositories/visions/vision.types';
 import {
   collectVisionSubGoalsFromExtra,
@@ -54,7 +55,7 @@ export type VisionEditDraft = {
   customBgUri: string | null;
   direction: 'positive' | 'negative';
   goalTotal: string;
-  step: string;
+  currentAmount: string;
   unit: string;
   countFrequency: NonNullable<VisionExtraPayload['countFrequency']>;
   countStep: string;
@@ -81,7 +82,7 @@ export function draftFromRow(row: VisionRow): VisionEditDraft {
     customBgUri: isCustom ? (extra.customBgUri?.trim() ?? null) : null,
     direction: row.direction === 'negative' ? 'negative' : 'positive',
     goalTotal: extra.goalTotal ?? '100',
-    step: extra.step ?? '1',
+    currentAmount: extra.currentAmount ?? '0',
     unit: extra.unit ?? '',
     countFrequency: extra.countFrequency ?? 'daily',
     countStep: extra.countStep ?? '1',
@@ -116,9 +117,12 @@ export function validateAndBuildVisionUpdate(
     case 'progress': {
       const g = Number(d.goalTotal);
       if (!Number.isFinite(g) || g <= 0) return { ok: false, message: '目标总量需为大于 0 的数字。' };
+      const cur = parseVisionAmountInput(d.currentAmount);
+      if (cur === null) return { ok: false, message: '当前完成值需为不小于 0 的数字，最多两位小数。' };
       extra.goalTotal = d.goalTotal.trim();
-      extra.step = d.step.trim();
+      extra.currentAmount = formatVisionAmountStored(cur);
       extra.unit = d.unit.trim();
+      delete extra.step;
       direction = d.direction;
       break;
     }

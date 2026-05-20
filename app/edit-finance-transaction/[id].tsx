@@ -89,6 +89,7 @@ export default function EditFinanceTransactionScreen() {
   const [datePickerOpen, setDatePickerOpen] = React.useState(false);
   const [timePickerOpen, setTimePickerOpen] = React.useState(false);
   const [includeInBudget, setIncludeInBudget] = React.useState(true);
+  const [aiComment, setAiComment] = React.useState('');
 
   const expenseCategories = React.useMemo<SheetCategory[]>(
     () => [
@@ -154,6 +155,7 @@ export default function EditFinanceTransactionScreen() {
       setNameDraft(txn.name?.trim() ?? '');
       setNoteDraft(txn.note?.trim() ?? '');
       setAmountDraft(Math.abs(Number(txn.amount)).toFixed(2));
+      setAiComment(txn.ai_comment?.trim() ?? '');
       const d = new Date(txn.happened_at);
       setHappenedAt(Number.isNaN(d.getTime()) ? new Date() : d);
       setAccountId(txn.account_id);
@@ -325,7 +327,7 @@ export default function EditFinanceTransactionScreen() {
               const active = tab === t;
               const lab = t === 'expense' ? '支出' : t === 'income' ? '收入' : '转账';
               return (
-                <Pressable
+                  <Pressable
                   key={t}
                   onPress={() => setTab(t)}
                   style={({ pressed }) => [
@@ -343,6 +345,61 @@ export default function EditFinanceTransactionScreen() {
 
         {tab !== 'transfer' ? (
           <View style={[styles.card, { backgroundColor: surface, borderColor: outlineVariant, marginTop: 12 }]}>
+            <Text style={[styles.label, { color: subtle }]}>账户</Text>
+          <Pressable
+            onPress={() => setAccountPickerOpen(true)}
+            style={({ pressed }) => [
+              styles.selectorRow,
+              { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#faf8ff' },
+              pressed && { opacity: 0.9 },
+            ]}>
+            <MaterialIcons name="account-balance-wallet" size={20} color={primary} />
+            <Text style={[styles.selectorText, { color: text }]}>{selectedAccount?.name ?? '选择账户'}</Text>
+            <MaterialIcons name="expand-more" size={22} color={subtle} />
+          </Pressable>
+
+            <Text style={[styles.label, { color: subtle, marginTop: 14 }]}>AI 评价</Text>
+            <View style={[styles.aiCommentCard, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#faf8ff' }]}>
+            <MaterialIcons name="auto-awesome" size={18} color={aiComment ? secondary : subtle} />
+            <Text style={[styles.aiCommentText, { color: aiComment ? text : subtle }]}>
+              {aiComment || '暂无 AI 评价，保存后会尝试自动生成；也可在列表页查看完整评价。'}
+            </Text>
+          </View>
+
+            {aiComment ? (
+            <Pressable
+              onPress={async () => {
+                if (!row || !selectedAccount) return;
+                try {
+                  setSaving(true);
+                  const signedAmount = selectedAccount.sign_rule > 0 ? Math.abs(Number(amountDraft)) : -Math.abs(Number(amountDraft));
+                  const absAmount = Math.abs(Number(amountDraft));
+                  if (!Number.isFinite(absAmount) || absAmount <= 0) {
+                    Alert.alert('金额无效', '请输入大于 0 的金额。');
+                    return;
+                  }
+                  const title = nameDraft.trim() || (tab === 'income' ? '收入' : tab === 'expense' ? '支出' : '转账');
+                  const result = await tryPersistFinanceTxnAiComment(row.id, {
+                    name: title,
+                    happened_at: happenedAt.toISOString(),
+                    transaction_type: tab,
+                    amount: signedAmount,
+                    note: noteDraft.trim() || null,
+                    accountLabel: selectedAccount.name,
+                    categoryLabel: selectedCategory?.label ?? '未分类',
+                  });
+                  setAiComment(result.ok ? result.comment : aiComment);
+                } catch (e) {
+                  console.warn('Failed to refresh finance AI comment:', e);
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              style={({ pressed }) => [styles.aiCommentAction, pressed && { opacity: 0.86 }]}>
+              <Text style={{ color: primary, fontWeight: '800' }}>重新生成 AI 评价</Text>
+            </Pressable>
+          ) : null}
+
             <Text style={[styles.label, { color: subtle }]}>分类</Text>
             <View style={styles.categoryGrid}>
               {activeCategories.map((item) => {
@@ -658,6 +715,29 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   selectorText: { flex: 1, marginLeft: 10, fontSize: 16, fontWeight: '600' },
+  aiCommentCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  aiCommentText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
+  },
+  aiCommentAction: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: 'rgba(96,165,250,0.08)',
+  },
   dateRow: { flexDirection: 'row', gap: 10 },
   dateChip: {
     flex: 1,

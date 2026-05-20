@@ -23,6 +23,12 @@ import {
   serializeVisionExtra,
   updateVision,
 } from '@/lib/repositories/visions/vision';
+import {
+  formatVisionAmount,
+  formatVisionAmountStored,
+  parseVisionAmountInput,
+  sanitizeVisionAmountInput,
+} from '@/lib/repositories/visions/vision-amount';
 import { visionRowToWallCard } from '@/lib/repositories/visions/vision-present';
 import type { VisionWallCardModel, VisionWallSubGoalItem } from '@/lib/visions-registry';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -39,6 +45,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
@@ -53,13 +60,14 @@ type WallSection = {
   dimRow?: GoalDimensionRow;
 };
 
-function formatStoredAmount(n: number): string {
-  if (!Number.isFinite(n)) return '0';
-  if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
-  return String(Number(n.toFixed(6)));
-}
-
 const WALL_SUB_GOALS_MAX_VISIBLE = 4;
+
+type ProgressEditTarget = {
+  visionId: string;
+  title: string;
+  current: number;
+  unit?: string;
+};
 
 function subGoalWallMeta(sg: VisionWallSubGoalItem): string {
   if (sg.taskProgress) {
@@ -75,13 +83,16 @@ const VisionCard = ({
   visionId,
   onOpenDetail,
   onAdjustAmount,
+  onOpenProgressEdit,
+  onToggleTargetComplete,
 }: {
   card: VisionWallCardModel;
   visionId: string;
   onOpenDetail: () => void;
   onAdjustAmount: (visionId: string, deltaSign: -1 | 1, step: number) => void;
+  onOpenProgressEdit: (target: ProgressEditTarget) => void;
+  onToggleTargetComplete: (visionId: string, isComplete: boolean) => void;
 }) => {
-  const showProgressAdjust = card.kind === 'progress' && card.wallAdjust;
   const showCountAdjust = card.kind === 'count' && card.wallAdjust;
   const targetSubGoals = card.kind === 'target' ? (card.subGoals ?? []) : [];
   const visibleSubGoals = targetSubGoals.slice(0, WALL_SUB_GOALS_MAX_VISIBLE);
@@ -95,16 +106,77 @@ const VisionCard = ({
       <View style={styles.cardOverlay} />
 
       <View style={styles.cardContent} pointerEvents="box-none">
-        <Pressable onPress={onOpenDetail} style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+        {card.kind === 'target' && card.simpleComplete ? (
+          <View style={styles.simpleCompleteRow}>
+            <Pressable
+              onPress={onOpenDetail}
+              style={({ pressed }) => [styles.simpleCompleteTitleTap, pressed && { opacity: 0.9 }]}
+            >
+              <Text
+                style={[styles.cardTitle, styles.simpleCompleteTitle, card.isComplete && styles.cardTitleDone]}
+                numberOfLines={2}
+              >
+                {card.title}
+              </Text>
+              {card.isComplete ? (
+                <View style={styles.completeBadge}>
+                  <MaterialIcons name="done" size={12} color="#bbf7d0" />
+                  <Text style={styles.completeBadgeText}>已完成</Text>
+                </View>
+              ) : null}
+            </Pressable>
+            <Pressable
+              onPress={() => onToggleTargetComplete(visionId, !!card.isComplete)}
+              style={({ pressed }) => [
+                styles.completeToggle,
+                card.isComplete && styles.completeToggleDone,
+                pressed && styles.completeTogglePressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={card.isComplete ? '标记为未完成' : '标记为已完成'}
+            >
+              {card.isComplete ? (
+                <MaterialIcons name="check" size={22} color="#fff" />
+              ) : null}
+            </Pressable>
+          </View>
+        ) : null}
+
+        {!(card.kind === 'target' && card.simpleComplete) ? (
+          <Pressable onPress={onOpenDetail} style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
           {card.kind === 'progress' && (
             <>
               <Text style={styles.cardTitle}>{card.title}</Text>
               <View style={styles.countRow}>
-                <View style={{ gap: 4 }}>
-                  <Text style={styles.countKicker}>{card.leftKicker}</Text>
-                  <Text style={styles.countValue}>{card.leftValue}</Text>
-                </View>
-                <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                {card.wallAdjust ? (
+                  <Pressable
+                    onPress={() =>
+                      onOpenProgressEdit({
+                        visionId,
+                        title: card.title,
+                        current: card.wallAdjust!.current,
+                        unit: card.wallAdjust!.unit,
+                      })
+                    }
+                    style={({ pressed }) => [styles.progressValueTap, pressed && { opacity: 0.88 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel="更新当前完成值"
+                  >
+                    <View style={{ gap: 4 }}>
+                      <Text style={styles.countKicker}>{card.leftKicker}</Text>
+                      <View style={styles.progressValueRow}>
+                        <Text style={styles.countValue}>{card.leftValue}</Text>
+                        <MaterialIcons name="edit" size={15} color="rgba(255,255,255,0.55)" />
+                      </View>
+                    </View>
+                  </Pressable>
+                ) : (
+                  <View style={{ gap: 4 }}>
+                    <Text style={styles.countKicker}>{card.leftKicker}</Text>
+                    <Text style={styles.countValue}>{card.leftValue}</Text>
+                  </View>
+                )}
+                <View style={{ alignItems: 'flex-end', gap: 4, flex: 1 }}>
                   <Text style={styles.countKicker}>{card.rightKicker}</Text>
                   <Text style={styles.countValue}>{card.rightValue}</Text>
                 </View>
@@ -128,7 +200,7 @@ const VisionCard = ({
             </>
           )}
 
-          {card.kind === 'target' && (
+          {card.kind === 'target' && !card.simpleComplete && (
             <>
               <Text style={styles.cardTitle}>{card.title}</Text>
               <View style={{ gap: 10 }}>
@@ -166,26 +238,7 @@ const VisionCard = ({
               </View>
             </>
           )}
-        </Pressable>
-
-        {showProgressAdjust && card.wallAdjust ? (
-          <View style={styles.adjustRow}>
-            <Pressable
-              onPress={() => onAdjustAmount(visionId, -1, card.wallAdjust!.step)}
-              style={({ pressed }) => [styles.adjustBtn, pressed && { opacity: 0.85 }]}
-              accessibilityLabel="减少进度量"
-            >
-              <MaterialIcons name="remove" size={22} color="#fff" />
-            </Pressable>
-            <Text style={styles.adjustHint}>步长 {card.wallAdjust.step}</Text>
-            <Pressable
-              onPress={() => onAdjustAmount(visionId, 1, card.wallAdjust!.step)}
-              style={({ pressed }) => [styles.adjustBtn, styles.adjustBtnPrimary, pressed && { opacity: 0.9 }]}
-              accessibilityLabel="增加进度量"
-            >
-              <MaterialIcons name="add" size={22} color="#fff" />
-            </Pressable>
-          </View>
+          </Pressable>
         ) : null}
 
         {showCountAdjust && card.wallAdjust ? (
@@ -240,6 +293,10 @@ export default function VisionWallScreen() {
 
   const [wallEntries, setWallEntries] = useState<WallEntry[]>([]);
   const [goalDimensions, setGoalDimensions] = useState<GoalDimensionRow[]>([]);
+  const [progressEdit, setProgressEdit] = useState<ProgressEditTarget | null>(null);
+  const [progressEditText, setProgressEditText] = useState('');
+  const [progressEditBusy, setProgressEditBusy] = useState(false);
+
   const [newDimModalVisible, setNewDimModalVisible] = useState(false);
   const [newDimTitle, setNewDimTitle] = useState('');
   const [newDimPriority, setNewDimPriority] = useState<DimensionPriorityValue>(DEFAULT_DIMENSION_PRIORITY);
@@ -284,6 +341,24 @@ export default function VisionWallScreen() {
     }, [loadWallEntries]),
   );
 
+  const onToggleTargetComplete = useCallback(
+    async (visionId: string, isComplete: boolean) => {
+      try {
+        const row = await getVisionRowById(visionId);
+        if (!row || row.track_kind !== 'target') return;
+        const extra = parseVisionExtra(row.extra_data) ?? {};
+        const goalNum = Number(extra.goalTotal);
+        const safeGoal = Number.isFinite(goalNum) && goalNum > 0 ? goalNum : 100;
+        extra.currentAmount = isComplete ? '0' : formatVisionAmountStored(safeGoal);
+        await updateVision(visionId, { extra_data: serializeVisionExtra(extra) });
+        await loadWallEntries();
+      } catch {
+        Alert.alert('更新失败', '无法保存完成状态，请重试。');
+      }
+    },
+    [loadWallEntries],
+  );
+
   const onAdjustVisionAmount = useCallback(
     async (visionId: string, deltaSign: -1 | 1, step: number) => {
       const safeStep = Number.isFinite(step) && step > 0 ? step : 1;
@@ -293,7 +368,7 @@ export default function VisionWallScreen() {
         const extra = parseVisionExtra(row.extra_data) ?? {};
         const cur = Number(extra.currentAmount ?? 0);
         const next = Math.max(0, cur + deltaSign * safeStep);
-        extra.currentAmount = formatStoredAmount(next);
+        extra.currentAmount = formatVisionAmountStored(next);
         await updateVision(visionId, { extra_data: serializeVisionExtra(extra) });
         await loadWallEntries();
       } catch {
@@ -302,6 +377,41 @@ export default function VisionWallScreen() {
     },
     [loadWallEntries],
   );
+
+  const openProgressEdit = useCallback((target: ProgressEditTarget) => {
+    setProgressEdit(target);
+    setProgressEditText(formatVisionAmount(target.current));
+  }, []);
+
+  const closeProgressEdit = useCallback(() => {
+    if (progressEditBusy) return;
+    setProgressEdit(null);
+    setProgressEditText('');
+  }, [progressEditBusy]);
+
+  const saveProgressEdit = useCallback(async () => {
+    if (!progressEdit || progressEditBusy) return;
+    const parsed = parseVisionAmountInput(progressEditText);
+    if (parsed === null) {
+      Alert.alert('提示', '请输入有效的非负数字，最多保留两位小数。');
+      return;
+    }
+    setProgressEditBusy(true);
+    try {
+      const row = await getVisionRowById(progressEdit.visionId);
+      if (!row || row.track_kind !== 'progress') return;
+      const extra = parseVisionExtra(row.extra_data) ?? {};
+      extra.currentAmount = formatVisionAmountStored(parsed);
+      await updateVision(progressEdit.visionId, { extra_data: serializeVisionExtra(extra) });
+      setProgressEdit(null);
+      setProgressEditText('');
+      await loadWallEntries();
+    } catch {
+      Alert.alert('更新失败', '无法保存当前完成值，请重试。');
+    } finally {
+      setProgressEditBusy(false);
+    }
+  }, [progressEdit, progressEditBusy, progressEditText, loadWallEntries]);
 
   const requestDeleteVision = useCallback((entry: WallEntry) => {
     Alert.alert('删除总目标', '确定删除这条总目标吗？删除后将从总目标墙与我的页移除；在同步或恢复功能前可能无法找回。', [
@@ -663,6 +773,8 @@ export default function VisionWallScreen() {
                                 router.push({ pathname: '/vision-detail/[id]', params: { id: entry.id } })
                               }
                               onAdjustAmount={onAdjustVisionAmount}
+                              onOpenProgressEdit={openProgressEdit}
+                              onToggleTargetComplete={onToggleTargetComplete}
                             />
                           </Swipeable>
                         ))
@@ -786,6 +898,82 @@ export default function VisionWallScreen() {
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <Text style={styles.dimModalBtnPrimaryText}>创建</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={progressEdit != null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeProgressEdit}
+      >
+        <View style={styles.dimModalRoot}>
+          <Pressable style={styles.dimModalBackdrop} onPress={closeProgressEdit} />
+          <View
+            style={[
+              styles.dimModalCard,
+              {
+                backgroundColor: isDark ? '#1e293b' : '#fff',
+                borderColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.45)',
+              },
+            ]}
+          >
+            <Text style={[styles.dimModalTitle, { color: theme.text }]}>更新进度</Text>
+            {progressEdit ? (
+              <Text style={[styles.progressModalSubtitle, { color: isDark ? 'rgba(148,163,184,0.95)' : 'rgba(114,119,133,0.9)' }]} numberOfLines={2}>
+                {progressEdit.title}
+              </Text>
+            ) : null}
+            <Text style={[styles.progressModalLabel, { color: isDark ? 'rgba(148,163,184,0.95)' : 'rgba(114,119,133,0.9)' }]}>
+              当前完成值{progressEdit?.unit ? `（${progressEdit.unit}）` : ''}
+            </Text>
+            <TextInput
+              value={progressEditText}
+              onChangeText={t => setProgressEditText(sanitizeVisionAmountInput(t))}
+              keyboardType="decimal-pad"
+              editable={!progressEditBusy}
+              autoFocus
+              placeholder="0"
+              placeholderTextColor={isDark ? 'rgba(148,163,184,0.5)' : 'rgba(114,119,133,0.45)'}
+              style={[
+                styles.progressModalInput,
+                {
+                  color: theme.text,
+                  backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : 'rgba(234,237,255,0.9)',
+                  borderColor: isDark ? 'rgba(148,163,184,0.25)' : 'rgba(194,198,214,0.45)',
+                },
+              ]}
+            />
+            <Text style={[styles.progressModalHint, { color: isDark ? 'rgba(148,163,184,0.75)' : 'rgba(114,119,133,0.65)' }]}>
+              支持最多两位小数
+            </Text>
+            <View style={styles.dimModalActions}>
+              <Pressable
+                onPress={closeProgressEdit}
+                disabled={progressEditBusy}
+                style={({ pressed }) => [
+                  styles.dimModalBtnGhost,
+                  { borderColor: isDark ? 'rgba(148,163,184,0.35)' : 'rgba(194,198,214,0.55)' },
+                  pressed && { opacity: 0.9 },
+                ]}
+              >
+                <Text style={[styles.dimModalBtnGhostText, { color: isDark ? 'rgba(148,163,184,0.95)' : 'rgba(114,119,133,0.9)' }]}>
+                  取消
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void saveProgressEdit()}
+                disabled={progressEditBusy}
+                style={[styles.dimModalBtnPrimary, { opacity: progressEditBusy ? 0.65 : 1 }]}
+              >
+                {progressEditBusy ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.dimModalBtnPrimaryText}>保存</Text>
                 )}
               </Pressable>
             </View>
@@ -1143,6 +1331,107 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.4,
+    flexShrink: 0,
+  },
+  simpleCompleteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  simpleCompleteTitleTap: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
+  },
+  simpleCompleteTitle: {
+    marginBottom: 0,
+  },
+  cardTitleDone: {
+    opacity: 0.62,
+    textDecorationLine: 'line-through',
+  },
+  completeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(34,197,94,0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(134,239,172,0.35)',
+  },
+  completeBadgeText: {
+    color: '#bbf7d0',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  completeToggle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.5)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    flexShrink: 0,
+  },
+  completeToggleDone: {
+    borderWidth: 0,
+    backgroundColor: '#22c55e',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#22c55e',
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.45,
+        shadowRadius: 8,
+      },
+      android: { elevation: 5 },
+      default: {},
+    }),
+  },
+  completeTogglePressed: {
+    transform: [{ scale: 0.92 }],
+    opacity: 0.92,
+  },
+  progressValueTap: {
+    flexShrink: 1,
+    maxWidth: '58%',
+  },
+  progressValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  progressModalSubtitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 14,
+    lineHeight: 20,
+  },
+  progressModalLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    marginBottom: 8,
+  },
+  progressModalInput: {
+    height: 48,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    fontSize: 18,
+    fontWeight: '800',
+    borderWidth: 1,
+  },
+  progressModalHint: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 8,
+    marginBottom: 4,
   },
   subGoalsBlock: {
     marginTop: 6,

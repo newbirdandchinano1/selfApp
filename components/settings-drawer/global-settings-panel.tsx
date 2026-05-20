@@ -13,7 +13,10 @@ import {
 import { AppInput } from '@/components/ui/app-input';
 import { getLastFullGithubBackupAtIso } from '@/lib/github-full-backup-local-meta';
 import { triggerGithubCloudRestoreFromFullBackup } from '@/lib/github-cloud-restore';
-import { triggerGithubCloudSync } from '@/lib/github-cloud-sync';
+import {
+  triggerGithubCloudSync,
+  type GithubCloudSyncProgress,
+} from '@/lib/github-cloud-sync';
 import {
   DEFAULT_GITHUB_FULL_BACKUP_ROOT,
   DEFAULT_GITHUB_OWNER,
@@ -57,6 +60,27 @@ function formatZhFullBackupTime(iso: string): string {
   return d.toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+const CLOUD_BACKUP_PRESS_DEBOUNCE_MS = 1200;
+
+function formatCloudBackupProgressLine(p: GithubCloudSyncProgress | null): string | null {
+  if (!p) return null;
+  if (p.phase === 'preparing') return '正在准备全量备份…';
+  if (p.phase === 'collecting') return '正在读取本地 SQLite 与 KV 数据…';
+  if (p.phase === 'uploading') {
+    const idx = p.fileIndex ?? 0;
+    const total = p.fileCount ?? 0;
+    const label = p.fileLabel ?? '文件';
+    const progress =
+      total > 0 ? `正在上传 ${Math.min(idx, total)}/${total}` : '正在上传';
+    const retry =
+      p.attempt != null && p.maxAttempts != null && p.attempt > 1
+        ? `（第 ${p.attempt}/${p.maxAttempts} 次重试）`
+        : '';
+    return `${progress}：${label}${retry}`;
+  }
+  return null;
+}
+
 type Props = {
   initialSection: SettingsSection | null;
   onSectionScrolled?: () => void;
@@ -94,8 +118,14 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [githubTokenSaving, setGithubTokenSaving] = useState(false);
 
   const [cloudBackupBusy, setCloudBackupBusy] = useState(false);
+  const [cloudBackupProgress, setCloudBackupProgress] = useState<GithubCloudSyncProgress | null>(null);
   const [cloudRestoreBusy, setCloudRestoreBusy] = useState(false);
   const githubCloudOpAbortRef = useRef<AbortController | null>(null);
+  /** 同步标记：备份/同步进行中（不依赖 setState，避免连点竞态） */
+  const githubCloudOpInFlightRef = useRef(false);
+  const lastCloudBackupPressAtRef = useRef(0);
+
+  const githubCloudOpBusy = cloudBackupBusy || cloudRestoreBusy;
   const [lastFullGithubBackupAtIso, setLastFullGithubBackupAtIso] = useState<string | null>(null);
   const [githubDiagModal, setGithubDiagModal] = useState<{
     visible: boolean;
@@ -211,10 +241,17 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   }, []);
 
   const runCloudBackup = useCallback(async () => {
+    if (githubCloudOpInFlightRef.current) return;
+    githubCloudOpInFlightRef.current = true;
+
     const ac = startGithubCloudOp();
     setCloudBackupBusy(true);
+    setCloudBackupProgress({ phase: 'preparing' });
     try {
-      const r = await triggerGithubCloudSync({ signal: ac.signal });
+      const r = await triggerGithubCloudSync({
+        signal: ac.signal,
+        onProgress: setCloudBackupProgress,
+      });
       if (r.ok) {
         const iso = r.lastFullBackupAt ?? null;
         if (iso) setLastFullGithubBackupAtIso(iso);
@@ -244,10 +281,28 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     } finally {
       endGithubCloudOp(ac);
       setCloudBackupBusy(false);
+      setCloudBackupProgress(null);
+      githubCloudOpInFlightRef.current = false;
     }
   }, [endGithubCloudOp, loadLastFullGithubBackupMeta, startGithubCloudOp]);
 
+  const requestCloudBackup = useCallback(() => {
+    const now = Date.now();
+    if (
+      githubCloudOpInFlightRef.current ||
+      githubCloudOpBusy ||
+      now - lastCloudBackupPressAtRef.current < CLOUD_BACKUP_PRESS_DEBOUNCE_MS
+    ) {
+      return;
+    }
+    lastCloudBackupPressAtRef.current = now;
+    void runCloudBackup();
+  }, [githubCloudOpBusy, runCloudBackup]);
+
   const runCloudRestore = useCallback(async () => {
+    if (githubCloudOpInFlightRef.current) return;
+    githubCloudOpInFlightRef.current = true;
+
     const ac = startGithubCloudOp();
     setCloudRestoreBusy(true);
     try {
@@ -275,19 +330,28 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     } finally {
       endGithubCloudOp(ac);
       setCloudRestoreBusy(false);
+      githubCloudOpInFlightRef.current = false;
     }
   }, [endGithubCloudOp]);
 
   const requestCloudRestore = useCallback(() => {
+    if (githubCloudOpInFlightRef.current || githubCloudOpBusy) return;
     Alert.alert(
       '从云同步',
       '将按 GitHub 上 manifest.json 所列文件，用云端全量备份覆盖本机数据。未备份的本地改动将丢失。确定继续？',
       [
         { text: '取消', style: 'cancel' },
-        { text: '确定覆盖并同步', style: 'destructive', onPress: () => void runCloudRestore() },
+        {
+          text: '确定覆盖并同步',
+          style: 'destructive',
+          onPress: () => {
+            if (githubCloudOpInFlightRef.current || githubCloudOpBusy) return;
+            void runCloudRestore();
+          },
+        },
       ],
     );
-  }, [runCloudRestore]);
+  }, [githubCloudOpBusy, runCloudRestore]);
 
   const runGeminiConnectivityProbe = useCallback(async () => {
     setGeminiProbeLoading(true);
@@ -471,9 +535,12 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
             </View>
           </View>
           <Pressable
-            onPress={() => void runCloudBackup()}
-            disabled={cloudBackupBusy || cloudRestoreBusy}
-            style={({ pressed }) => [{ opacity: pressed || cloudBackupBusy || cloudRestoreBusy ? 0.88 : 1 }]}>
+            onPress={requestCloudBackup}
+            disabled={githubCloudOpBusy}
+            pointerEvents={githubCloudOpBusy ? 'none' : 'auto'}
+            style={({ pressed }) => [
+              { opacity: githubCloudOpBusy ? 0.55 : pressed ? 0.88 : 1 },
+            ]}>
             <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
               {cloudBackupBusy ? (
                 <ActivityIndicator size="small" color={primary} />
@@ -485,6 +552,16 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                 <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
                   SQLite 各表与备忘、技能等 KV 写入仓库备份目录，并更新 manifest。
                 </Text>
+                {cloudBackupBusy
+                  ? (() => {
+                      const line = formatCloudBackupProgressLine(cloudBackupProgress);
+                      return line ? (
+                        <Text style={[styles.rowHint, { color: primary, marginTop: 6, fontWeight: '700' }]}>
+                          {line}
+                        </Text>
+                      ) : null;
+                    })()
+                  : null}
                 <Text style={[styles.rowHint, { color: outline, marginTop: 6, fontSize: 11 }]}>
                   {lastFullGithubBackupAtIso
                     ? `上次全量备份：${formatZhFullBackupTime(lastFullGithubBackupAtIso)}`
@@ -497,8 +574,11 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
           <Pressable
             onPress={requestCloudRestore}
-            disabled={cloudBackupBusy || cloudRestoreBusy}
-            style={({ pressed }) => [{ opacity: pressed || cloudBackupBusy || cloudRestoreBusy ? 0.88 : 1 }]}>
+            disabled={githubCloudOpBusy}
+            pointerEvents={githubCloudOpBusy ? 'none' : 'auto'}
+            style={({ pressed }) => [
+              { opacity: githubCloudOpBusy ? 0.55 : pressed ? 0.88 : 1 },
+            ]}>
             <View
               style={[
                 styles.card,

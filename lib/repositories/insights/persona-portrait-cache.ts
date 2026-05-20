@@ -3,8 +3,7 @@ import type { PersonaPortraitAiData } from '@/lib/zhipu-image-parse';
 
 export const PERSONA_PORTRAIT_SLUGS = [
   'plan-completion',
-  'body-composition',
-  'hydration',
+  'health',
   'savings',
   'ai-insight',
 ] as const;

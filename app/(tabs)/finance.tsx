@@ -356,6 +356,14 @@ function TxnItem({
   style?: StyleProp<ViewStyle>;
   onPress?: () => void;
 }) {
+  const [expanded, setExpanded] = React.useState(() => item.insight.length <= 44 || !item.insightIsAiBody);
+  React.useEffect(() => {
+    setExpanded(item.insight.length <= 44 || !item.insightIsAiBody);
+  }, [item.insight, item.insightIsAiBody]);
+
+  const canToggle = item.insightIsAiBody && item.insight.length > 44;
+  const maxLines = canToggle && !expanded ? 2 : undefined;
+
   const inner = (
     <Animated.View style={[styles.txnItem, style]}>
       <View style={[styles.txnIconWrap, { backgroundColor: outlineVariant }]}>
@@ -380,13 +388,21 @@ function TxnItem({
           ) : (
             <MaterialIcons name="auto-awesome" size={14} color={item.insightIsAiBody ? item.iconColor : themeSubtle} />
           )}
-          <Text
-            style={[
-              styles.insightText,
-              { color: item.insightIsAiBody ? item.iconColor : themeSubtle, flexShrink: 1 },
-            ]}>
-            {item.insight}
-          </Text>
+          <View style={styles.insightBodyWrap}>
+            <Text
+              numberOfLines={maxLines}
+              style={[
+                styles.insightText,
+                { color: item.insightIsAiBody ? item.iconColor : themeSubtle, flexShrink: 1 },
+              ]}>
+              {item.insight}
+            </Text>
+            {canToggle ? (
+              <Pressable onPress={() => setExpanded((v) => !v)} hitSlop={8}>
+                <Text style={[styles.insightToggleText, { color: item.iconColor }]}>{expanded ? '收起' : '展开'}</Text>
+              </Pressable>
+            ) : null}
+          </View>
         </View>
       </View>
     </Animated.View>
@@ -2881,7 +2897,7 @@ export default function FinanceScreen() {
 
         <View style={styles.content}>
           <Animated.View style={{ opacity: heroOpacity, transform: [{ translateY: heroTranslateY }] }}>
-            <View style={[styles.netCard, styles.budgetOverviewCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
+            <View style={[styles.netCard, styles.budgetOverviewCard, { backgroundColor: isDark ? baseTheme.surface : '#f7f9fd', borderColor: outlineVariant }]}>
                   <View style={[styles.netAccent, { backgroundColor: primary, width: 3 }]} />
 
                   <View style={styles.budgetTopRow}>
@@ -5084,7 +5100,7 @@ const styles = StyleSheet.create({
   insightTag: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 6,
     paddingVertical: 6,
     paddingHorizontal: 10,
@@ -5092,13 +5108,26 @@ const styles = StyleSheet.create({
     opacity: 0.95,
     maxWidth: '100%',
   },
+  insightBodyWrap: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  insightToggleText: {
+    fontSize: 10,
+    fontWeight: '800',
+    opacity: 0.92,
+  },
   insightTagPendingAi: {
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(148, 163, 184, 0.45)',
   },
   insightText: {
+    flex: 1,
+    minWidth: 0,
     fontSize: 10,
     fontWeight: '900',
+    lineHeight: 14,
     letterSpacing: 0.4,
   },
   composerWrap: {

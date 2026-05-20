@@ -24,7 +24,8 @@ export type VisionWallCardModel =
       rightKicker: string;
       rightValue: string;
       imageSource: VisionCardImageSource;
-      wallAdjust?: { current: number; step: number };
+      /** 愿景墙：可编辑的当前完成值（仅本地 DB 卡片填充） */
+      wallAdjust?: { current: number; unit?: string };
     }
   | {
       kind: 'count';
@@ -47,6 +48,9 @@ export type VisionWallCardModel =
       taskProgressOnly?: boolean;
       /** 绑定的小目标（墙卡底部展示，替代步长按钮） */
       subGoals?: VisionWallSubGoalItem[];
+      /** 无小目标且无关联任务进度：墙卡仅展示完成勾选 */
+      simpleComplete?: boolean;
+      isComplete?: boolean;
     }
   | {
       kind: 'countdown';
@@ -288,6 +292,7 @@ export type ProfileVisionCarouselItem = {
   progressText: string;
   progress: number;
   year: string;
+  imageSource: VisionCardImageSource;
 };
 
 export function getProfileVisionCarouselItems(): ProfileVisionCarouselItem[] {
@@ -304,6 +309,7 @@ export function getProfileVisionCarouselItems(): ProfileVisionCarouselItem[] {
       progressText: p.progressText,
       progress: p.progressPercent,
       year: p.year,
+      imageSource: v.imageSource,
     };
   });
 }

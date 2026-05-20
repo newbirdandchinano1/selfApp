@@ -277,16 +277,13 @@ export default function SchedulePickerScreen() {
     return dateLimit.start.getTime() === dateLimit.end.getTime();
   }, [dateLimit]);
   const [tab, setTab] = React.useState<TabMode>('date');
-  const [selectedDate, setSelectedDate] = React.useState<Date>(todayStart);
-  const [selectedQuickChip, setSelectedQuickChip] = React.useState<string>('今天');
+  const [selectedDate, setSelectedDate] = React.useState<Date | null>(null);
+  const [selectedQuickChip, setSelectedQuickChip] = React.useState<string>('');
   const [timeRangeKey, setTimeRangeKey] = React.useState<TimeRangeKey | null>(null);
   React.useEffect(() => {
     void timeRangeKey;
   }, [timeRangeKey]);
-  const [timeRange, setTimeRange] = React.useState<DateRange | null>(() => ({
-    start: todayStart,
-    end: addDays(todayStart, 1),
-  }));
+  const [timeRange, setTimeRange] = React.useState<DateRange | null>(null);
   const [timeSelectingEnd, setTimeSelectingEnd] = React.useState(false);
   const [monthOffset, setMonthOffset] = React.useState(0);
   const [visibleMonthOffset, setVisibleMonthOffset] = React.useState(0);
@@ -512,7 +509,7 @@ export default function SchedulePickerScreen() {
 
   // “日期”分页选了某一天时，确保开始/结束时间的日期部分也落在该天（只保留时分）。
   React.useEffect(() => {
-    if (tab !== 'date') return;
+    if (tab !== 'date' || !selectedDate) return;
     setStartTime((prev) => {
       const next = new Date(selectedDate);
       next.setHours(prev.getHours(), prev.getMinutes(), 0, 0);
@@ -526,10 +523,12 @@ export default function SchedulePickerScreen() {
   }, [selectedDate, tab]);
 
   React.useEffect(() => {
-    const clampedDate = clampDateInLimit(selectedDate, dateLimit);
-    if (clampedDate.getTime() !== selectedDate.getTime()) {
-      setSelectedDate(clampedDate);
-      setMonthOffset(getMonthDiff(todayStart, clampedDate));
+    if (selectedDate) {
+      const clampedDate = clampDateInLimit(selectedDate, dateLimit);
+      if (clampedDate.getTime() !== selectedDate.getTime()) {
+        setSelectedDate(clampedDate);
+        setMonthOffset(getMonthDiff(todayStart, clampedDate));
+      }
     }
     if (timeRange) {
       const clampedRange = clampRangeInLimit(timeRange, dateLimit);
@@ -567,20 +566,18 @@ export default function SchedulePickerScreen() {
       yearlyPickerOpenTimerRef.current = null;
     }
     setSettingModalStage('options');
-    const defaultDate = clampDateInLimit(todayStart, dateLimit);
-    setSelectedDate(defaultDate);
-    setSelectedQuickChip(defaultDate.getTime() === todayStart.getTime() ? '今天' : '');
+    setSelectedDate(null);
+    setSelectedQuickChip('');
     setTimeRangeKey(null);
     setTimeRange(null);
     setTimeSelectingEnd(false);
-    const defaultMonthOffset = getMonthDiff(todayStart, defaultDate);
-    setMonthOffset(defaultMonthOffset);
-    setVisibleMonthOffset(defaultMonthOffset);
+    setMonthOffset(0);
+    setVisibleMonthOffset(0);
     setAllDay(true);
     setHasExactTime(false);
-    const defaultStart = new Date(defaultDate);
+    const defaultStart = new Date(todayStart);
     defaultStart.setHours(13, 0, 0, 0);
-    const defaultEnd = new Date(defaultDate);
+    const defaultEnd = new Date(todayStart);
     defaultEnd.setHours(14, 0, 0, 0);
     setStartTime(defaultStart);
     setEndTime(defaultEnd);
@@ -643,12 +640,20 @@ export default function SchedulePickerScreen() {
           ...basePayload,
         };
       }
-      const resolvedRange = timeRange
-        ? timeRange
-        : {
-            start: startOfDay(selectedDate),
-            end: addDays(startOfDay(selectedDate), 1),
-          };
+      const resolvedRange =
+        timeRange ??
+        (selectedDate
+          ? {
+              start: startOfDay(selectedDate),
+              end: addDays(startOfDay(selectedDate), 1),
+            }
+          : null);
+      if (!resolvedRange) {
+        return {
+          mode: 'time',
+          ...basePayload,
+        };
+      }
       return {
         mode: 'time',
         ...basePayload,
@@ -669,7 +674,7 @@ export default function SchedulePickerScreen() {
     return {
       mode: 'date',
       ...basePayload,
-      date: toLocalYMD(selectedDate),
+      ...(selectedDate ? { date: toLocalYMD(selectedDate) } : {}),
     };
   }, [
     allDay,
@@ -863,21 +868,22 @@ export default function SchedulePickerScreen() {
       if (typeof parsed.allDay === 'boolean') setAllDay(parsed.allDay);
       if (typeof parsed.hasExactTime === 'boolean') setHasExactTime(parsed.hasExactTime);
 
-      const rawDateBase = parseDateFromYMD(parsed.date) ?? todayStart;
-      const dateBase = clampDateInLimit(rawDateBase, dateLimit);
-      const fallbackStart = new Date(dateBase);
+      const parsedDate = parseDateFromYMD(parsed.date);
+      const dateBase = parsedDate ? clampDateInLimit(parsedDate, dateLimit) : null;
+      const timeAnchor = dateBase ?? todayStart;
+      const fallbackStart = new Date(timeAnchor);
       fallbackStart.setHours(13, 0, 0, 0);
-      const fallbackEnd = new Date(dateBase);
+      const fallbackEnd = new Date(timeAnchor);
       fallbackEnd.setHours(14, 0, 0, 0);
       const nextStartTime = parseDateTime(parsed.startTime, fallbackStart);
       const nextEndTime = parseDateTime(parsed.endTime, fallbackEnd);
       setStartTime(nextStartTime);
       setEndTime(nextEndTime);
       setTimeDraft(nextStartTime);
-      setYearlyDate(parseDateFromYMD(parsed.yearlyDate) ?? new Date(dateBase));
+      setYearlyDate(parseDateFromYMD(parsed.yearlyDate) ?? new Date(timeAnchor));
 
       if (mode === 'time') {
-        const rangeStart = parseDateFromYMD(parsed.range?.start) ?? dateBase;
+        const rangeStart = parseDateFromYMD(parsed.range?.start) ?? dateBase ?? todayStart;
         const parsedRangeEnd = parseDateFromYMD(parsed.range?.end);
         const defaultRangeEnd = addDays(rangeStart, 1);
         const rangeEnd = parsedRangeEnd ?? defaultRangeEnd;
@@ -905,8 +911,13 @@ export default function SchedulePickerScreen() {
         return;
       }
 
-      setSelectedDate(dateBase);
-      setMonthOffset(getMonthDiff(todayStart, dateBase));
+      if (dateBase) {
+        setSelectedDate(dateBase);
+        setMonthOffset(getMonthDiff(todayStart, dateBase));
+      } else {
+        setSelectedDate(null);
+        setMonthOffset(0);
+      }
       setTimeRangeKey(null);
       setTimeRange(null);
       setTimeSelectingEnd(false);
@@ -932,7 +943,7 @@ export default function SchedulePickerScreen() {
             onPress={() => {
               if (isSingleDayLimit) return;
               if (!timeRange) {
-                const base = clampDateInLimit(startOfDay(selectedDate), dateLimit);
+                const base = clampDateInLimit(startOfDay(selectedDate ?? todayStart), dateLimit);
                 const forward = clampRangeInLimit({ start: base, end: addDays(base, 1) }, dateLimit);
                 const backward = clampRangeInLimit({ start: addDays(base, -1), end: base }, dateLimit);
                 const proposed =
@@ -1084,6 +1095,7 @@ export default function SchedulePickerScreen() {
                     const isSelected =
                       cell.inCurrentMonth &&
                       tab === 'date' &&
+                      selectedDate !== null &&
                       selectedDate.getFullYear() === cellDate.getFullYear() &&
                       selectedDate.getMonth() === cellDate.getMonth() &&
                       selectedDate.getDate() === cellDate.getDate();

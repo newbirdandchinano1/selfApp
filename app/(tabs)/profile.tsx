@@ -14,6 +14,9 @@ import {
   skillsProfilePreviewSubtitle,
   type UserSkillsSnapshot,
 } from '@/lib/user-skills';
+import { getHealthRecordsLast7Days } from '@/lib/repositories/health/health';
+import { computeHealthCardPreview, getIntakeTargetsSnapshot } from '@/lib/persona-health-context';
+import { localLogicalTodayYmd } from '@/lib/persona-portrait-sync';
 import { getDefaultUser } from '@/lib/repositories/users/user';
 import { listMemos } from '@/lib/memos';
 import { listUserWeaknesses } from '@/lib/user-weaknesses';
@@ -94,7 +97,6 @@ export default function ProfileScreen() {
   const weaknessAccent = isDark ? '#fb923c' : '#c2410c';
 
   const avatarUrl = user?.avatar_uri ? { uri: user.avatar_uri } : require('../../assets/profile/avatar.png');
-  const visionUrl = require('../../assets/profile/vision.png');
   const progressBgUrl = require('../../assets/profile/progress.png');
   const visionSectionYear = new Date().getFullYear();
   const displayName = user?.name?.trim() || '默认用户';
@@ -261,6 +263,27 @@ export default function ProfileScreen() {
     };
   }, [visionCards]);
 
+  const [healthCardPreview, setHealthCardPreview] = useState({
+    heroMain: '健康',
+    heroSub: '身体 · 饮水 · 营养',
+    tag: '记录解锁侧写',
+  });
+
+  const loadHealthCardPreview = useCallback(async () => {
+    try {
+      const u = await getDefaultUser();
+      if (!u?.id) {
+        setHealthCardPreview(computeHealthCardPreview(null, []));
+        return;
+      }
+      const today = localLogicalTodayYmd();
+      const rows = await getHealthRecordsLast7Days(u.id, today);
+      setHealthCardPreview(computeHealthCardPreview(u, rows, getIntakeTargetsSnapshot()));
+    } catch {
+      setHealthCardPreview(computeHealthCardPreview(null, []));
+    }
+  }, []);
+
   const loadUser = useCallback(async () => {
     try {
       const currentUser = await getDefaultUser();
@@ -277,6 +300,7 @@ export default function ProfileScreen() {
   useFocusEffect(
     useCallback(() => {
       loadUser();
+      void loadHealthCardPreview();
       void loadProfileVisions();
       void loadProfileWishItems();
       void loadWeeklyJournal();
@@ -285,6 +309,7 @@ export default function ProfileScreen() {
       void loadWeaknessCount();
     }, [
       loadUser,
+      loadHealthCardPreview,
       loadProfileVisions,
       loadProfileWishItems,
       loadWeeklyJournal,
@@ -295,7 +320,6 @@ export default function ProfileScreen() {
   );
 
   const healthBgUrl = require('../../assets/profile/health.png');
-  const waterBgUrl = require('../../assets/profile/water.png');
   const savingsBgUrl = require('../../assets/profile/savings.png');
 
   const headerFadeAnim = useRef(new Animated.Value(0)).current;
@@ -541,13 +565,12 @@ export default function ProfileScreen() {
                           style={[
                             styles.visionCard,
                             {
-                              backgroundColor: surface,
                               opacity,
                               transform: [{ perspective: 1000 }, { translateY }, { rotateZ: rotate }, { scale }],
                             },
                           ]}
                         >
-                          <Image source={visionUrl} style={styles.bgImage} contentFit="cover" />
+                          <Image source={item.imageSource} style={styles.bgImage} contentFit="cover" transition={120} />
                           <View style={styles.visionOverlay} />
                           <View style={styles.visionContent}>
                             <Text style={styles.cardKicker}>{item.kicker}</Text>
@@ -866,41 +889,26 @@ export default function ProfileScreen() {
               </View>
             </Pressable>
 
-            <View style={styles.twoColRow}>
-              <Pressable
-                onPress={() =>
-                  router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'body-composition' } })
-                }
-                style={({ pressed }) => [{ flex: 1, opacity: pressed ? 0.92 : 1 }]}
-              >
-                <View style={styles.smallCard}>
-                  <Image source={healthBgUrl} style={styles.bgImage} contentFit="cover" />
-                  <View style={[styles.tintLayer, { backgroundColor: `${secondary}66` }]} />
+            <Pressable
+              onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'health' } })}
+              style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
+            >
+              <View style={styles.healthPersonaCard}>
+                <Image source={healthBgUrl} style={styles.bgImage} contentFit="cover" />
+                <View style={[styles.tintLayer, { backgroundColor: `${secondary}66` }]} />
+                <View style={styles.healthPersonaTop}>
                   <View>
-                    <Text style={styles.cardKicker}>体脂率</Text>
-                    <Text style={styles.smallValue}>18%</Text>
+                    <Text style={styles.cardKicker}>健康与营养</Text>
+                    <Text style={styles.healthPersonaValue}>{healthCardPreview.heroMain}</Text>
+                    <Text style={styles.healthPersonaSub}>{healthCardPreview.heroSub}</Text>
                   </View>
                   <View style={styles.tagPill}>
-                    <Text style={styles.tagPillText}>健康态</Text>
+                    <Text style={styles.tagPillText}>{healthCardPreview.tag}</Text>
                   </View>
                 </View>
-              </Pressable>
-
-              <Pressable
-                onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'hydration' } })}
-                style={({ pressed }) => [{ flex: 1, opacity: pressed ? 0.92 : 1 }]}
-              >
-                <View style={styles.smallCard}>
-                  <Image source={waterBgUrl} style={styles.bgImage} contentFit="cover" />
-                  <View style={[styles.tintLayer, { backgroundColor: `${primary}55` }]} />
-                  <View>
-                    <Text style={styles.cardKicker}>饮水均值</Text>
-                    <Text style={styles.smallValue}>1.8L</Text>
-                  </View>
-                  <Text style={styles.smallHint}>每日焕活能量</Text>
-                </View>
-              </Pressable>
-            </View>
+                <Text style={styles.healthPersonaHint}>身体档案 · 四营养维度 · AI 侧写</Text>
+              </View>
+            </Pressable>
 
             <Pressable
               onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'savings' } })}
@@ -1143,7 +1151,7 @@ const styles = StyleSheet.create({
   },
   visionOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(19,27,46,0.78)',
+    backgroundColor: 'rgba(19,27,46,0.55)',
   },
   visionContent: {
     padding: 24,
@@ -1271,6 +1279,38 @@ const styles = StyleSheet.create({
     minHeight: 178,
     padding: 18,
     justifyContent: 'space-between',
+  },
+  healthPersonaCard: {
+    borderRadius: 22,
+    overflow: 'hidden',
+    minHeight: 168,
+    padding: 18,
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  healthPersonaTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  healthPersonaValue: {
+    color: '#fff',
+    fontSize: 40,
+    fontWeight: '900',
+    letterSpacing: -0.8,
+    marginTop: 4,
+  },
+  healthPersonaSub: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  healthPersonaHint: {
+    color: 'rgba(255,255,255,0.82)',
+    fontSize: 11,
+    fontWeight: '600',
   },
   smallValue: {
     color: '#fff',

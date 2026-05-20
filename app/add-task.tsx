@@ -292,6 +292,8 @@ export default function AddTaskScreen() {
       const dateLabel = formatDate(picked.date);
       const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
       setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
+    } else {
+      setDeadlineText('');
     }
     setReminderText(
       formatTaskReminderLabel({
