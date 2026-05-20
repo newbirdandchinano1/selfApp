@@ -22,6 +22,7 @@ import React from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  PixelRatio,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -34,8 +35,14 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 const WEEK_TITLES = ['一', '二', '三', '四', '五', '六', '日'];
 const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
 const GRID_GAP = 5;
+/** 固定边框宽度，避免选中/今日态改变 borderWidth 导致格子总宽度变化、与星期列错位 */
+const DAY_CELL_BORDER = 2;
 const MONTH_PAGE_SPAN = 121;
 const MONTH_PAGE_CENTER_INDEX = Math.floor(MONTH_PAGE_SPAN / 2);
+
+function roundCalendarWidth(width: number): number {
+  return PixelRatio.roundToNearestPixel(width);
+}
 
 function formatYmd(d: Date): string {
   const y = d.getFullYear();
@@ -68,10 +75,6 @@ function buildGridCellsForMonth(monthDate: Date) {
       inCurrentMonth: d.getMonth() === monthDate.getMonth(),
     };
   });
-}
-
-function isSameDay(a: Date, b: Date) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
 function formatTopDate(d: Date) {
@@ -480,7 +483,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   boundary,
   pageWidth,
   dayCellSize,
-  selectedDate,
+  selectedYmd,
   onSelectDate,
   heatLevels,
   heatEmpty,
@@ -496,7 +499,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   boundary: TasksDayBoundary;
   pageWidth: number;
   dayCellSize: number;
-  selectedDate: Date;
+  selectedYmd: string;
   onSelectDate: (d: Date) => void;
   heatLevels: readonly string[];
   heatEmpty: string;
@@ -516,6 +519,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
 
   React.useEffect(() => {
     let cancelled = false;
+    setSummaries(new Map());
     setLoading(true);
     (async () => {
       try {
@@ -546,9 +550,11 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
     return () => {
       cancelled = true;
     };
-  }, [gridStartYmd, gridEndYmd, boundary]);
+  }, [gridStartYmd, gridEndYmd, boundary, offset]);
 
-  if (loading) {
+  const gridTrackWidth = dayCellSize * 7 + GRID_GAP * 6;
+
+  if (loading || dayCellSize <= 0) {
     return (
       <View style={{ width: pageWidth, minHeight: pageWidth * 0.72, justifyContent: 'center' }}>
         <ActivityIndicator color={primary} />
@@ -557,14 +563,22 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   }
 
   return (
-    <View style={{ width: pageWidth, gap: GRID_GAP }}>
+    <View style={{ width: pageWidth }}>
+      <View style={{ width: gridTrackWidth, gap: GRID_GAP }}>
+        <View style={[styles.weekRow, { gap: GRID_GAP, marginBottom: GRID_GAP }]}>
+          {WEEK_TITLES.map((w) => (
+            <View key={w} style={[styles.weekCell, { width: dayCellSize }]}>
+              <Text style={[styles.weekText, { color: textMuted }]}>{w}</Text>
+            </View>
+          ))}
+        </View>
       {gridWeeks.map((week, wi) => (
         <View key={`week-${offset}-${wi}`} style={[styles.weekRow, { gap: GRID_GAP }]}>
           {week.map((cell: GridCell) => {
             const summary = summaries.get(cell.ymd);
             const level = getTasksCalendarCellLevel(summary);
             const bg = level === 0 ? heatEmpty : heatLevels[level];
-            const selected = isSameDay(cell.date, selectedDate);
+            const selected = cell.ymd === selectedYmd;
             const isToday = cell.ymd === logicalTodayYmd;
             const frogN = summary?.frogs.length ?? 0;
             const habitN = summary?.habits.length ?? 0;
@@ -586,7 +600,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
                     height: dayCellSize,
                     backgroundColor: bg,
                     borderColor: selected ? primary : isToday ? `${secondary}88` : 'transparent',
-                    borderWidth: selected ? 2 : isToday ? 1.5 : 0,
+                    borderWidth: DAY_CELL_BORDER,
                     opacity: cell.inCurrentMonth ? (pressed ? 0.9 : 1) : 0.42,
                   },
                 ]}>
@@ -613,6 +627,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
           })}
         </View>
       ))}
+      </View>
     </View>
   );
 });
@@ -636,21 +651,56 @@ export default function TasksCalendarScreen() {
   const [summaries, setSummaries] = React.useState<Map<string, TasksCalendarDaySummary>>(() => new Map());
   const [detailLoading, setDetailLoading] = React.useState(true);
 
+  const initialCalendarWidth = React.useMemo(
+    () => Math.max(1, roundCalendarWidth(windowWidth - Layout.pagePaddingX * 2 - Spacing.md * 2)),
+    [windowWidth]
+  );
+
   const pagerRef = React.useRef<FlatList<number>>(null);
   const pagerCurrentIndexRef = React.useRef(MONTH_PAGE_CENTER_INDEX);
   const pagerWidthReadyRef = React.useRef(false);
+  const calendarWidthRef = React.useRef(initialCalendarWidth);
   const pagerData = React.useMemo(
     () => Array.from({ length: MONTH_PAGE_SPAN }, (_, i) => i - MONTH_PAGE_CENTER_INDEX),
     []
   );
 
-  const [calendarWidth, setCalendarWidth] = React.useState(() =>
-    Math.max(1, windowWidth - Layout.pagePaddingX * 2 - Spacing.md * 2)
-  );
+  const [calendarWidth, setCalendarWidth] = React.useState(initialCalendarWidth);
   const dayCellSize = React.useMemo(() => {
     if (calendarWidth <= 0) return 0;
-    return (calendarWidth - GRID_GAP * 6) / 7;
+    return Math.floor((calendarWidth - GRID_GAP * 6) / 7);
   }, [calendarWidth]);
+  const pagerExtraData = React.useMemo(
+    () => `${calendarWidth}:${dayCellSize}`,
+    [calendarWidth, dayCellSize]
+  );
+  const selectedYmd = formatYmd(selectedDate);
+
+  React.useEffect(() => {
+    calendarWidthRef.current = calendarWidth;
+  }, [calendarWidth]);
+
+  const commitPagerIndex = React.useCallback((nextIndex: number) => {
+    const clamped = Math.max(0, Math.min(MONTH_PAGE_SPAN - 1, nextIndex));
+    pagerCurrentIndexRef.current = clamped;
+    const nextOffset = clamped - MONTH_PAGE_CENTER_INDEX;
+    setVisibleMonthOffset(nextOffset);
+    setMonthOffset((prev) => (prev === nextOffset ? prev : nextOffset));
+  }, []);
+
+  const snapPagerToOffset = React.useCallback(
+    (contentOffsetX: number, animated: boolean) => {
+      const w = calendarWidthRef.current;
+      if (w <= 0) return;
+      const nextIndex = Math.round(contentOffsetX / w);
+      const targetOffset = nextIndex * w;
+      if (Math.abs(contentOffsetX - targetOffset) > 0.5) {
+        pagerRef.current?.scrollToOffset({ offset: targetOffset, animated });
+      }
+      commitPagerIndex(nextIndex);
+    },
+    [commitPagerIndex]
+  );
 
   const heatLevels = isDark ? HEAT_LEVELS_DARK : HEAT_LEVELS_LIGHT;
   const heatEmpty = isDark ? 'rgba(30,41,59,0.28)' : colors.surfaceMuted;
@@ -666,32 +716,32 @@ export default function TasksCalendarScreen() {
     [todayMonthStart, visibleMonthOffset]
   );
 
-  const loadRange = React.useMemo(() => {
+  /** 当前可见月的 42 格范围；勿依赖 selectedDate，否则每次点选都会触发全量查库 */
+  const { startYmd: detailStartYmd, endYmd: detailEndYmd } = React.useMemo(() => {
     const monthBounds = monthGridBounds(visibleMonth);
-    let startYmd = monthBounds.gridStartYmd;
-    let endYmd = monthBounds.gridEndYmd;
-    const selectedYmd = formatYmd(selectedDate);
-    if (selectedYmd < startYmd || selectedYmd > endYmd) {
-      const selBounds = monthGridBounds(monthStart(selectedDate));
-      startYmd = selectedYmd < startYmd ? selBounds.gridStartYmd : startYmd;
-      endYmd = selectedYmd > endYmd ? selBounds.gridEndYmd : endYmd;
-    }
-    return { startYmd, endYmd };
-  }, [visibleMonth, selectedDate]);
+    return { startYmd: monthBounds.gridStartYmd, endYmd: monthBounds.gridEndYmd };
+  }, [visibleMonth]);
+
+  const detailRangeKey = `${detailStartYmd}:${detailEndYmd}`;
+  const detailRangeKeyRef = React.useRef('');
 
   const loadDetailSummaries = React.useCallback(async () => {
-    setDetailLoading(true);
+    const rangeKey = detailRangeKey;
+    const rangeChanged = rangeKey !== detailRangeKeyRef.current;
+    if (rangeChanged) {
+      detailRangeKeyRef.current = rangeKey;
+      setDetailLoading(true);
+    }
     try {
-      const { startYmd, endYmd } = loadRange;
       const [tasks, habits, projects, habitCheckInsByDay] = await Promise.all([
         getTasks(),
         getHabits(),
         getProjects(),
-        getHabitCheckInCountsByDateRange(startYmd, endYmd),
+        getHabitCheckInCountsByDateRange(detailStartYmd, detailEndYmd),
       ]);
       const map = buildTasksCalendarSummaries({
-        startYmd,
-        endYmd,
+        startYmd: detailStartYmd,
+        endYmd: detailEndYmd,
         tasks,
         habits,
         projects,
@@ -703,9 +753,9 @@ export default function TasksCalendarScreen() {
       console.warn('加载任务日历失败', e);
       setSummaries(new Map());
     } finally {
-      setDetailLoading(false);
+      if (rangeChanged) setDetailLoading(false);
     }
-  }, [loadRange, boundary]);
+  }, [detailStartYmd, detailEndYmd, detailRangeKey, boundary]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -715,18 +765,19 @@ export default function TasksCalendarScreen() {
 
   React.useEffect(() => {
     void loadDetailSummaries();
-  }, [monthOffset, loadDetailSummaries]);
+  }, [monthOffset, detailRangeKey, loadDetailSummaries]);
 
   React.useEffect(() => {
     setVisibleMonthOffset(monthOffset);
     if (calendarWidth <= 0) return;
 
     const nextIndex = monthOffset + MONTH_PAGE_CENTER_INDEX;
+    const w = calendarWidthRef.current;
     if (!pagerWidthReadyRef.current) {
       pagerWidthReadyRef.current = true;
       pagerCurrentIndexRef.current = nextIndex;
       requestAnimationFrame(() => {
-        pagerRef.current?.scrollToIndex({ index: nextIndex, animated: false });
+        pagerRef.current?.scrollToOffset({ offset: nextIndex * w, animated: false });
       });
       return;
     }
@@ -734,34 +785,18 @@ export default function TasksCalendarScreen() {
     if (nextIndex === pagerCurrentIndexRef.current) return;
     pagerCurrentIndexRef.current = nextIndex;
     requestAnimationFrame(() => {
-      pagerRef.current?.scrollToIndex({ index: nextIndex, animated: true });
+      pagerRef.current?.scrollToOffset({ offset: nextIndex * w, animated: true });
     });
   }, [calendarWidth, monthOffset]);
 
-  const scrollPagerToOffset = React.useCallback(
-    (offset: number, animated: boolean) => {
-      const index = offset + MONTH_PAGE_CENTER_INDEX;
-      pagerCurrentIndexRef.current = index;
-      pagerRef.current?.scrollToIndex({ index, animated });
-    },
-    []
-  );
-
   const goPrevMonth = React.useCallback(() => {
-    const next = monthOffset - 1;
-    setMonthOffset(next);
-    setVisibleMonthOffset(next);
-    scrollPagerToOffset(next, true);
-  }, [monthOffset, scrollPagerToOffset]);
+    setMonthOffset((prev) => prev - 1);
+  }, []);
 
   const goNextMonth = React.useCallback(() => {
-    const next = monthOffset + 1;
-    setMonthOffset(next);
-    setVisibleMonthOffset(next);
-    scrollPagerToOffset(next, true);
-  }, [monthOffset, scrollPagerToOffset]);
+    setMonthOffset((prev) => prev + 1);
+  }, []);
 
-  const selectedYmd = formatYmd(selectedDate);
   const selectedSummary = summaries.get(selectedYmd);
 
   const monthStats = React.useMemo(() => {
@@ -825,9 +860,7 @@ export default function TasksCalendarScreen() {
             <Pressable
               onPress={() => {
                 setMonthOffset(0);
-                setVisibleMonthOffset(0);
                 setSelectedDate(today);
-                scrollPagerToOffset(0, true);
               }}
               style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
               <Text style={{ fontSize: 13, fontWeight: '800', color: colors.primary }}>今天</Text>
@@ -886,63 +919,71 @@ export default function TasksCalendarScreen() {
             </View>
           </View>
 
-          <View style={[styles.weekRow, { gap: GRID_GAP }]}>
-            {WEEK_TITLES.map((w) => (
-              <View key={w} style={[styles.weekCell, dayCellSize > 0 && { width: dayCellSize }]}>
-                <Text style={[styles.weekText, { color: colors.textMuted }]}>{w}</Text>
-              </View>
-            ))}
-          </View>
-
+          {dayCellSize > 0 ? (
+          <View style={styles.calendarPagerClip}>
           <FlatList
             ref={pagerRef}
             data={pagerData}
             horizontal
-            pagingEnabled
+            nestedScrollEnabled
             directionalLockEnabled
             decelerationRate="fast"
+            bounces={false}
+            overScrollMode="never"
+            snapToInterval={calendarWidth}
+            snapToAlignment="start"
+            disableIntervalMomentum
             showsHorizontalScrollIndicator={false}
             keyExtractor={(offset) => `tasks-cal-month-${offset}`}
             initialScrollIndex={MONTH_PAGE_CENTER_INDEX}
+            extraData={pagerExtraData}
+            style={styles.calendarPager}
             onLayout={(e) => {
-              const width = e.nativeEvent.layout.width;
-              setCalendarWidth((prev) => (Math.abs(prev - width) < 1 ? prev : Math.max(1, width)));
+              const width = roundCalendarWidth(e.nativeEvent.layout.width);
+              calendarWidthRef.current = width;
+              setCalendarWidth((prev) => (Math.abs(prev - width) < 0.5 ? prev : Math.max(1, width)));
             }}
-            getItemLayout={(_, index) => ({ length: calendarWidth, offset: calendarWidth * index, index })}
+            getItemLayout={(_, index) => {
+              const w = calendarWidthRef.current;
+              return { length: w, offset: w * index, index };
+            }}
             windowSize={5}
             maxToRenderPerBatch={3}
-            removeClippedSubviews
+            updateCellsBatchingPeriod={16}
+            removeClippedSubviews={false}
             onScroll={(e) => {
-              if (calendarWidth <= 0) return;
-              const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
+              const w = calendarWidthRef.current;
+              if (w <= 0) return;
+              const rawIndex = e.nativeEvent.contentOffset.x / w;
               const previewOffset = Math.round(rawIndex) - MONTH_PAGE_CENTER_INDEX;
               setVisibleMonthOffset((prev) => (prev === previewOffset ? prev : previewOffset));
             }}
             scrollEventThrottle={16}
+            onScrollEndDrag={(e) => {
+              const velocityX = e.nativeEvent.velocity?.x ?? 0;
+              if (Math.abs(velocityX) > 0.2) return;
+              snapPagerToOffset(e.nativeEvent.contentOffset.x, true);
+            }}
             onMomentumScrollEnd={(e) => {
-              if (calendarWidth <= 0) return;
-              const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
-              const nextIndex = Math.round(rawIndex);
-              const nextOffset = nextIndex - MONTH_PAGE_CENTER_INDEX;
-              pagerCurrentIndexRef.current = nextIndex;
-              setVisibleMonthOffset(nextOffset);
-              setMonthOffset((prev) => (prev === nextOffset ? prev : nextOffset));
+              snapPagerToOffset(e.nativeEvent.contentOffset.x, false);
             }}
             onScrollToIndexFailed={(info) => {
-              if (calendarWidth <= 0) return;
+              const w = calendarWidthRef.current;
+              if (w <= 0) return;
               requestAnimationFrame(() => {
-                pagerRef.current?.scrollToOffset({ offset: info.index * calendarWidth, animated: false });
+                pagerRef.current?.scrollToOffset({ offset: info.index * w, animated: false });
               });
             }}
             renderItem={({ item: offset }) => (
               <TasksCalendarMonthPage
+                key={`tasks-cal-page-${offset}`}
                 offset={offset}
                 todayMonthStart={todayMonthStart}
                 logicalTodayYmd={logicalTodayYmd}
                 boundary={boundary}
                 pageWidth={calendarWidth}
                 dayCellSize={dayCellSize}
-                selectedDate={selectedDate}
+                selectedYmd={selectedYmd}
                 onSelectDate={setSelectedDate}
                 heatLevels={heatLevels}
                 heatEmpty={heatEmpty}
@@ -954,6 +995,12 @@ export default function TasksCalendarScreen() {
               />
             )}
           />
+          </View>
+          ) : (
+            <View style={{ minHeight: 120, alignItems: 'center', justifyContent: 'center' }}>
+              <ActivityIndicator color={colors.primary} />
+            </View>
+          )}
         </View>
 
         <View style={[styles.detailCard, shadows.card, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
@@ -1058,6 +1105,8 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     gap: Spacing.md,
   },
+  calendarPagerClip: { width: '100%', overflow: 'hidden' },
+  calendarPager: { width: '100%' },
   legendRow: {
     flexDirection: 'row',
     alignItems: 'center',

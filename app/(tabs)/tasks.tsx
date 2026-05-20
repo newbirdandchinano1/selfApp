@@ -26,6 +26,13 @@ import {
   type TaskTreeNode,
   updateTask,
 } from '@/lib/repositories/tasks/task';
+import {
+  backfillFrogCompletionEventsFromTasks,
+  getFrogCompletionCountsByDayRange,
+  getFrogCompletionsForAssignedDay,
+  insertFrogCompletionEvent,
+  type FrogCompletionDayItem,
+} from '@/lib/repositories/tasks/frog-completion-events';
 import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
@@ -645,7 +652,6 @@ const FROG_HEAT_LEVEL_COLORS_DARK = [
 type FrogHeatCell = { level: number | null; ymd: string | null };
 
 function FrogCompletedHeatmap({
-  tasks,
   logicalTodayYmd,
   textMain,
   textMuted,
@@ -653,8 +659,8 @@ function FrogCompletedHeatmap({
   innerCardBg,
   innerBorderColor,
   isDark,
+  reloadToken,
 }: {
-  tasks: TaskRow[];
   logicalTodayYmd: string;
   textMain: string;
   textMuted: string;
@@ -662,24 +668,58 @@ function FrogCompletedHeatmap({
   innerCardBg: string;
   innerBorderColor: string;
   isDark: boolean;
+  /** 任务勾选变更后递增，触发热力图从本地库重载 */
+  reloadToken: number;
 }) {
   const router = useRouter();
   const scrollRef = React.useRef<ScrollView>(null);
   const colors = isDark ? FROG_HEAT_LEVEL_COLORS_DARK : FROG_HEAT_LEVEL_COLORS_LIGHT;
   const [selectedYmd, setSelectedYmd] = React.useState<string | null>(null);
+  const [frogCountByYmd, setFrogCountByYmd] = React.useState<Map<string, number>>(new Map());
+  const [selectedDayItems, setSelectedDayItems] = React.useState<FrogCompletionDayItem[]>([]);
+  const [dayItemsLoading, setDayItemsLoading] = React.useState(false);
+  const backfillDoneRef = React.useRef(false);
 
-  const frogDoneTasksByYmd = React.useMemo(() => {
-    const map = new Map<string, TaskRow[]>();
-    for (const t of tasks) {
-      if (t.status !== 'done' && t.status !== 'cancelled') continue;
-      const assigned = (parseTaskMeta(t.extra_data).frogAssignedOn ?? '').trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(assigned)) continue;
-      const arr = map.get(assigned) ?? [];
-      arr.push(t);
-      map.set(assigned, arr);
+  const heatmapRange = React.useMemo(() => {
+    const todayCal = startOfLocalDay(new Date());
+    const thisMonday = mondayOfWeekContaining(todayCal);
+    const gridStartMonday = addLocalDays(thisMonday, -(FROG_HEATMAP_WEEKS - 1) * 7);
+    return { startYmd: formatLocalYmd(gridStartMonday), endYmd: logicalTodayYmd };
+  }, [logicalTodayYmd]);
+
+  const loadFrogHeatmap = React.useCallback(async () => {
+    if (!backfillDoneRef.current) {
+      backfillDoneRef.current = true;
+      try {
+        await backfillFrogCompletionEventsFromTasks();
+      } catch (e) {
+        console.warn('青蛙完成记录回填失败', e);
+      }
     }
-    return map;
-  }, [tasks]);
+    const counts = await getFrogCompletionCountsByDayRange(heatmapRange.startYmd, heatmapRange.endYmd);
+    setFrogCountByYmd(counts);
+  }, [heatmapRange.endYmd, heatmapRange.startYmd]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      void (async () => {
+        try {
+          await loadFrogHeatmap();
+        } catch (e) {
+          console.warn('加载青蛙热力图失败', e);
+          if (!cancelled) setFrogCountByYmd(new Map());
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [loadFrogHeatmap])
+  );
+
+  React.useEffect(() => {
+    void loadFrogHeatmap();
+  }, [loadFrogHeatmap, reloadToken]);
 
   const { weekColumns, monthTickColIndexes } = React.useMemo(() => {
     const todayCal = startOfLocalDay(new Date());
@@ -699,7 +739,7 @@ function FrogCompletedHeatmap({
         if (ymd > logicalTodayYmd) {
           cells.push({ level: null, ymd: null });
         } else {
-          const n = frogDoneTasksByYmd.get(ymd)?.length ?? 0;
+          const n = frogCountByYmd.get(ymd) ?? 0;
           cells.push({ level: Math.min(4, n), ymd });
         }
       }
@@ -717,9 +757,30 @@ function FrogCompletedHeatmap({
     }
 
     return { weekColumns, monthTickColIndexes };
-  }, [frogDoneTasksByYmd, logicalTodayYmd]);
+  }, [frogCountByYmd, logicalTodayYmd]);
 
-  const selectedFrogs = selectedYmd ? frogDoneTasksByYmd.get(selectedYmd) ?? [] : [];
+  React.useEffect(() => {
+    if (!selectedYmd) {
+      setSelectedDayItems([]);
+      return;
+    }
+    let cancelled = false;
+    setDayItemsLoading(true);
+    void (async () => {
+      try {
+        const items = await getFrogCompletionsForAssignedDay(selectedYmd);
+        if (!cancelled) setSelectedDayItems(items);
+      } catch (e) {
+        console.warn('加载青蛙完成明细失败', e);
+        if (!cancelled) setSelectedDayItems([]);
+      } finally {
+        if (!cancelled) setDayItemsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedYmd, reloadToken]);
 
   const onHeatCellPress = React.useCallback((cell: FrogHeatCell) => {
     if (!cell.ymd) return;
@@ -838,32 +899,41 @@ function FrogCompletedHeatmap({
                 {formatYmdCN(selectedYmd)}
               </Text>
               <Text style={[styles.frogHeatmapDetailFrogCount, { color: textMain }]}>
-                青蛙✖{selectedFrogs.length}
+                青蛙✖{frogCountByYmd.get(selectedYmd) ?? selectedDayItems.length}
               </Text>
             </View>
-            {selectedFrogs.length === 0 ? (
+            {dayItemsLoading ? (
+              <Text style={[styles.frogHeatmapDetailEmpty, { color: textMuted }]}>加载中…</Text>
+            ) : selectedDayItems.length === 0 ? (
               <Text style={[styles.frogHeatmapDetailEmpty, { color: textMuted }]}>该日暂无已完成记录</Text>
             ) : (
               <View style={styles.frogHeatmapDetailList}>
-                {selectedFrogs.map((t, idx) => (
-                  <Pressable
-                    key={t.id}
-                    onPress={() => router.push({ pathname: '/task/[id]', params: { id: t.id } })}
-                    style={({ pressed }) => [
-                      styles.frogHeatmapDetailRow,
-                      {
-                        borderBottomColor: isDark ? 'rgba(148,163,184,0.14)' : 'rgba(148,163,184,0.2)',
-                        opacity: pressed ? 0.85 : 1,
-                      },
-                      idx === selectedFrogs.length - 1 && { borderBottomWidth: 0 },
-                    ]}>
-                    <MaterialIcons name="eco" size={16} color={accentColor} style={{ marginTop: 1 }} />
-                    <Text style={[styles.frogHeatmapDetailTitle, { color: textMain }]} numberOfLines={2}>
-                      {t.title}
-                    </Text>
-                    <MaterialIcons name="chevron-right" size={18} color={textMuted} />
-                  </Pressable>
-                ))}
+                {selectedDayItems.map((item, idx) => {
+                  const title = (item.task_title ?? '').trim() || '（无标题）';
+                  const canOpen = Boolean(item.task_id?.trim());
+                  return (
+                    <Pressable
+                      key={item.id}
+                      disabled={!canOpen}
+                      onPress={() => {
+                        if (item.task_id) router.push({ pathname: '/task/[id]', params: { id: item.task_id } });
+                      }}
+                      style={({ pressed }) => [
+                        styles.frogHeatmapDetailRow,
+                        {
+                          borderBottomColor: isDark ? 'rgba(148,163,184,0.14)' : 'rgba(148,163,184,0.2)',
+                          opacity: pressed && canOpen ? 0.85 : 1,
+                        },
+                        idx === selectedDayItems.length - 1 && { borderBottomWidth: 0 },
+                      ]}>
+                      <MaterialIcons name="eco" size={16} color={accentColor} style={{ marginTop: 1 }} />
+                      <Text style={[styles.frogHeatmapDetailTitle, { color: textMain }]} numberOfLines={2}>
+                        {title}
+                      </Text>
+                      {canOpen ? <MaterialIcons name="chevron-right" size={18} color={textMuted} /> : null}
+                    </Pressable>
+                  );
+                })}
               </View>
             )}
           </View>
@@ -1100,6 +1170,7 @@ export default function TasksScreen() {
   const [projects, setProjects] = React.useState<ProjectRow[]>([]);
   const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [tasks, setTasks] = React.useState<TaskRow[]>([]);
+  const [frogHeatmapReloadToken, setFrogHeatmapReloadToken] = React.useState(0);
   const [projectTaskTreeMap, setProjectTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
   const [expandedProjectIds, setExpandedProjectIds] = React.useState<Record<string, boolean>>({});
   const [collapsedTaskIds, setCollapsedTaskIds] = React.useState<Record<string, boolean>>({});
@@ -1884,6 +1955,20 @@ export default function TasksScreen() {
         } catch (logErr) {
           console.warn('记录待办执行事件失败', logErr);
         }
+        const frogAssigned = (parseTaskMeta(current.extra_data).frogAssignedOn ?? '').trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(frogAssigned)) {
+          try {
+            await insertFrogCompletionEvent(
+              taskId,
+              frogAssigned,
+              wasDone ? 'reopened' : 'completed',
+              current.title ?? null
+            );
+          } catch (frogLogErr) {
+            console.warn('记录青蛙完成事件失败', frogLogErr);
+          }
+          setFrogHeatmapReloadToken((n) => n + 1);
+        }
         if (nextStatus === 'done' && current.project_id) {
           const pid = current.project_id;
           const proj = projects.find((p) => p.id === pid);
@@ -2568,7 +2653,6 @@ export default function TasksScreen() {
               </Animated.View>
 
               <FrogCompletedHeatmap
-                tasks={tasks}
                 logicalTodayYmd={logicalTodayYmd}
                 textMain={colors.text}
                 textMuted={outline}
@@ -2576,6 +2660,7 @@ export default function TasksScreen() {
                 innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
                 innerBorderColor={colors.outlineStrong}
                 isDark={isDark}
+                reloadToken={frogHeatmapReloadToken}
               />
             </View>
           </View>

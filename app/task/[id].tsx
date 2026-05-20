@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerResult } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import { getTaskById, getTaskTreeByRootTaskId, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -148,6 +149,46 @@ const WEEKDAY_OPTIONS = [
   { label: '周日', value: 7 },
 ];
 const MONTH_DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => i + 1);
+
+function parseYmdToDate(ymd: string | undefined | null): Date | null {
+  if (!ymd?.trim()) return null;
+  const m = ymd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function toLocalYmd(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function patchMetaWithRepeat(
+  currentMeta: TaskMetaExtra,
+  repeatOption: RepeatOption,
+  weeklyDays: number[],
+  monthlyDays: number[],
+  yearlyDate: Date,
+): TaskMetaExtra {
+  const repeatSummary =
+    repeatOption === '不重复' ? '不重复' : formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate);
+  const repeat = repeatOption === '不重复' ? '' : repeatSummary;
+  const schedule = currentMeta.schedule ?? ({} as TaskScheduleMeta);
+  return {
+    ...currentMeta,
+    repeat,
+    schedule: {
+      ...schedule,
+      repeatOption,
+      repeatSummary,
+      weeklyDays,
+      monthlyDays,
+      yearlyDate: toLocalYmd(yearlyDate),
+    },
+  };
+}
 
 function formatRepeatSummary(option: RepeatOption, weeklyDays: number[], monthlyDays: number[], yearlyDate: Date): string {
   if (option === '每周') {
@@ -332,6 +373,10 @@ export default function TaskDetailScreen() {
     setExtraData(JSON.stringify(nextMeta));
     setReminderOption(picked.reminderOption);
     setRepeatOption(picked.repeatOption);
+    if (picked.weeklyDays.length > 0) setWeeklyDays(picked.weeklyDays);
+    if (picked.monthlyDays.length > 0) setMonthlyDays(picked.monthlyDays);
+    const parsedYearly = parseYmdToDate(picked.yearlyDate);
+    if (parsedYearly) setYearlyDate(parsedYearly);
   }, []);
 
   const readScheduleResult = React.useCallback(() => {
@@ -353,9 +398,24 @@ export default function TaskDetailScreen() {
       setExtraData(row.extra_data ?? null);
       const parsed = parseTaskMeta(row.extra_data ?? null);
       const reminder = (typeof parsed.reminder === 'string' ? parsed.reminder : '') as ReminderOption | '';
-      const repeat = (typeof parsed.repeat === 'string' ? parsed.repeat : '') as RepeatOption | '';
-      setReminderOption(reminder && REMINDER_OPTIONS.includes(reminder as ReminderOption) ? (reminder as ReminderOption) : '不提前');
-      setRepeatOption(repeat && REPEAT_OPTIONS.includes(repeat as RepeatOption) ? (repeat as RepeatOption) : '不重复');
+      const scheduleReminder = parsed.schedule?.reminderOption;
+      setReminderOption(
+        scheduleReminder && REMINDER_OPTIONS.includes(scheduleReminder as ReminderOption)
+          ? (scheduleReminder as ReminderOption)
+          : reminder && REMINDER_OPTIONS.includes(reminder as ReminderOption)
+            ? (reminder as ReminderOption)
+            : '不提前',
+      );
+      const repeatSchedule = parseTaskRepeatSchedule(row.extra_data ?? null);
+      if (repeatSchedule) {
+        setRepeatOption(repeatSchedule.repeatOption);
+        if (repeatSchedule.weeklyDays.length > 0) setWeeklyDays(repeatSchedule.weeklyDays);
+        if (repeatSchedule.monthlyDays.length > 0) setMonthlyDays(repeatSchedule.monthlyDays);
+        const parsedYearly = parseYmdToDate(repeatSchedule.yearlyDate);
+        if (parsedYearly) setYearlyDate(parsedYearly);
+      } else {
+        setRepeatOption('不重复');
+      }
     } else {
       taskLoadedRef.current = false;
       setTitle('');
@@ -447,6 +507,19 @@ export default function TaskDetailScreen() {
   const settingPickerTitle = settingPickerType === 'reminder' ? '提醒设置' : '重复设置';
   const settingPickerOptions = settingPickerType === 'reminder' ? REMINDER_OPTIONS : REPEAT_OPTIONS;
   const settingPickerValue = settingPickerType === 'reminder' ? reminderOption : repeatOption;
+
+  const restoreRepeatFromExtra = React.useCallback(() => {
+    const repeatSchedule = parseTaskRepeatSchedule(extraData);
+    if (repeatSchedule) {
+      setRepeatOption(repeatSchedule.repeatOption);
+      setWeeklyDays(repeatSchedule.weeklyDays.length > 0 ? repeatSchedule.weeklyDays : [1]);
+      setMonthlyDays(repeatSchedule.monthlyDays.length > 0 ? repeatSchedule.monthlyDays : [1]);
+      const parsedYearly = parseYmdToDate(repeatSchedule.yearlyDate);
+      if (parsedYearly) setYearlyDate(parsedYearly);
+    } else {
+      setRepeatOption('不重复');
+    }
+  }, [extraData]);
 
   const toggleWeeklyDay = (day: number) => {
     setWeeklyDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
@@ -619,8 +692,10 @@ export default function TaskDetailScreen() {
       </View>
 
       <Modal visible={settingPickerType !== null} transparent animationType="fade" onRequestClose={() => setSettingPickerType(null)}>
-        <View style={styles.pickerBackdrop}>
-          <View style={[styles.pickerCard, { backgroundColor: isDark ? 'rgba(15,23,42,0.96)' : '#fff' }]}>
+        <Pressable style={styles.pickerBackdrop} onPress={() => setSettingPickerType(null)}>
+          <View
+            onStartShouldSetResponder={() => true}
+            style={[styles.pickerCard, { backgroundColor: isDark ? 'rgba(15,23,42,0.96)' : '#fff' }]}>
             <Text style={[styles.pickerTitle, { color: theme.text }]}>{settingPickerTitle}</Text>
             <View style={styles.optionList}>
               {settingPickerOptions.map((option) => {
@@ -642,7 +717,7 @@ export default function TaskDetailScreen() {
                         if (next === '每周' || next === '每月' || next === '每年') {
                           setRepeatDetailVisible(true);
                         } else {
-                          const nextMeta: TaskMetaExtra = { ...currentMeta, repeat: next === '不重复' ? '' : next };
+                          const nextMeta = patchMetaWithRepeat(currentMeta, next, weeklyDays, monthlyDays, yearlyDate);
                           setExtraData(JSON.stringify(nextMeta));
                         }
                       }
@@ -655,12 +730,26 @@ export default function TaskDetailScreen() {
               })}
             </View>
           </View>
-        </View>
+        </Pressable>
       </Modal>
 
-      <Modal visible={repeatDetailVisible} transparent animationType="fade" onRequestClose={() => setRepeatDetailVisible(false)}>
-        <View style={styles.pickerBackdrop}>
-          <View style={[styles.pickerCard, { backgroundColor: isDark ? 'rgba(15,23,42,0.96)' : '#fff' }]}>
+      <Modal
+        visible={repeatDetailVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          restoreRepeatFromExtra();
+          setRepeatDetailVisible(false);
+        }}>
+        <Pressable
+          style={styles.pickerBackdrop}
+          onPress={() => {
+            restoreRepeatFromExtra();
+            setRepeatDetailVisible(false);
+          }}>
+          <View
+            onStartShouldSetResponder={() => true}
+            style={[styles.pickerCard, { backgroundColor: isDark ? 'rgba(15,23,42,0.96)' : '#fff' }]}>
             <Text style={[styles.pickerTitle, { color: theme.text }]}>
               {repeatOption === '每周' ? '选择每周重复日' : repeatOption === '每月' ? '选择每月重复日期' : '选择每年重复日期'}
             </Text>
@@ -706,8 +795,7 @@ export default function TaskDetailScreen() {
               <Pressable
                 onPress={() => {
                   const currentMeta = parseTaskMeta(extraData);
-                  const repeatValue = repeatOption === '不重复' ? '' : formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate);
-                  const nextMeta: TaskMetaExtra = { ...currentMeta, repeat: repeatValue };
+                  const nextMeta = patchMetaWithRepeat(currentMeta, repeatOption, weeklyDays, monthlyDays, yearlyDate);
                   setExtraData(JSON.stringify(nextMeta));
                   setRepeatDetailVisible(false);
                 }}
@@ -716,11 +804,13 @@ export default function TaskDetailScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </Pressable>
       </Modal>
       <Modal visible={yearlyDatePickerVisible} transparent animationType="fade" onRequestClose={() => setYearlyDatePickerVisible(false)}>
-        <View style={styles.pickerBackdrop}>
-          <View style={[styles.pickerCard, { backgroundColor: isDark ? 'rgba(15,23,42,0.96)' : '#fff' }]}>
+        <Pressable style={styles.pickerBackdrop} onPress={() => setYearlyDatePickerVisible(false)}>
+          <View
+            onStartShouldSetResponder={() => true}
+            style={[styles.pickerCard, { backgroundColor: isDark ? 'rgba(15,23,42,0.96)' : '#fff' }]}>
             <Text style={[styles.pickerTitle, { color: theme.text }]}>选择每年日期</Text>
             <DateTimePicker
               value={yearlyDate}
@@ -741,7 +831,7 @@ export default function TaskDetailScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );

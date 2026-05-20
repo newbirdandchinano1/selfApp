@@ -2101,7 +2101,18 @@ function normalizeFinanceOneLinerPayload(parsed: unknown): {
   };
 }
 
+function readIsBillFromPayload(parsed: unknown): boolean | null {
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const o = parsed as Record<string, unknown>;
+  const v = o.is_bill ?? o.isBill ?? o.is_valid_bill;
+  if (typeof v === 'boolean') return v;
+  if (v === 'false' || v === 0 || v === '0') return false;
+  if (v === 'true' || v === 1 || v === '1') return true;
+  return null;
+}
+
 function normalizeFinanceOneLinerFromImagePayload(parsed: unknown): {
+  is_bill: boolean;
   transaction_type: 'expense' | 'income';
   amount: number;
   name: string;
@@ -2111,14 +2122,17 @@ function normalizeFinanceOneLinerFromImagePayload(parsed: unknown): {
 } | null {
   const base = normalizeFinanceOneLinerPayload(parsed);
   if (!base) return null;
-  if (typeof parsed !== 'object' || parsed === null) return { ...base, payment_account_label: null, account_name: null };
+  const isBill = readIsBillFromPayload(parsed) ?? true;
+  if (typeof parsed !== 'object' || parsed === null) {
+    return { ...base, is_bill: isBill, payment_account_label: null, account_name: null };
+  }
   const o = parsed as Record<string, unknown>;
   const payRaw = o.payment_account_label ?? o.payment_account ?? o.pay_account;
   const payment_account_label =
     typeof payRaw === 'string' && payRaw.trim().length > 0 ? payRaw.trim().slice(0, 80) : null;
   const accRaw = o.account_name ?? o.matched_account_name;
   const account_name = typeof accRaw === 'string' && accRaw.trim().length > 0 ? accRaw.trim().slice(0, 80) : null;
-  return { ...base, payment_account_label, account_name };
+  return { ...base, is_bill: isBill, payment_account_label, account_name };
 }
 
 /**
@@ -2256,7 +2270,7 @@ export type ParseFinanceOneLinerFromImageResult =
       rawContent: string;
       attempts: number;
     }
-  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+  | { ok: false; error: string; attempts: number; notBill?: boolean; httpStatus?: number; details?: unknown };
 
 /**
  * 从支付/账单/小票等截图中解析一笔主交易（视觉模型 + JSON，与一句话记账字段一致）。
@@ -2289,11 +2303,12 @@ export async function parseFinanceOneLinerFromImage(
     : '';
 
   const jsonTemplate = hasAccounts
-    ? `{"transaction_type":"expense","amount":0,"name":"","category_label":null,"payment_account_label":null,"account_name":null}`
-    : `{"transaction_type":"expense","amount":0,"name":"","category_label":null,"payment_account_label":null}`;
+    ? `{"is_bill":true,"transaction_type":"expense","amount":0,"name":"","category_label":null,"payment_account_label":null,"account_name":null}`
+    : `{"is_bill":true,"transaction_type":"expense","amount":0,"name":"","category_label":null,"payment_account_label":null}`;
 
   const question =
     '请查看这张手机屏幕截图（可能是支付成功页、账单详情、小票、转账或收款记录等）。识别其中一笔主要交易；若有多笔，取金额最大或信息最完整的一笔。\n' +
+    'is_bill：若截图不是支付/账单/小票/转账或收款等消费凭证（例如聊天、相册、游戏、风景、设置页等），设为 false，其余字段可填默认值，amount 填 0。\n' +
     '要求：transaction_type 仅 expense 或 income；amount 为人民币元且为正数，不得编造截图中不存在的数字；name 为不超过 20 字的中文事由；category_label 为简短中文分类名或 null。\n' +
     'payment_account_label：截图中实际扣款/付款方式的中文原文（如「花呗」「零钱」「招商银行信用卡(1234)」）；看不清则 null。\n' +
     (hasAccounts
@@ -2337,6 +2352,15 @@ export async function parseFinanceOneLinerFromImage(
     if (!payload && r.data && typeof r.data === 'object') {
       const inner = (r.data as Record<string, unknown>).result;
       payload = normalizeFinanceOneLinerFromImagePayload(inner);
+    }
+    if (payload && payload.is_bill === false) {
+      return {
+        ok: false,
+        error: '这不是账单或支付凭证截图',
+        notBill: true,
+        attempts: attempt,
+        details: r.data,
+      };
     }
     if (!payload || !Number.isFinite(payload.amount) || payload.amount <= 0) {
       lastError = '未能从截图中识别出有效金额与标题';
