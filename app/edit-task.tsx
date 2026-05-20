@@ -14,7 +14,6 @@ import {
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
-import { startProjectAiReviewInBackground } from '@/lib/project-ai-review-background';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
   countIncompleteDescendantTasks,
@@ -449,7 +448,6 @@ export default function EditTaskScreen() {
           schedule: subtaskSchedule,
         }),
       });
-      startProjectAiReviewInBackground(taskSnapshot.project_id);
       Alert.alert('已添加', '子任务已创建。');
       await loadSubtasks();
     } catch (error) {

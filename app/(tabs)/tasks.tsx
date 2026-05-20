@@ -35,7 +35,9 @@ import {
 import {
   addProjectAiPendingAnalysisListener,
   addProjectAiReviewSavedListener,
+  runProjectAiReview,
 } from '@/lib/project-ai-review-background';
+import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import {
   decrementTodayHabitCheckIn,
@@ -1169,10 +1171,12 @@ export default function TasksScreen() {
   }, [scrollQuickTodoAboveKeyboard]);
   const { boundary: dayBoundary, logicalTodayYmd } = useDayBoundary();
   const [projectAiPendingIds, setProjectAiPendingIds] = React.useState<ReadonlySet<string>>(() => new Set());
+  const [projectAiTriggerLoadingId, setProjectAiTriggerLoadingId] = React.useState<string | null>(null);
   const [projectAiModal, setProjectAiModal] = React.useState<{
     projectName: string;
     review: ProjectAiReview;
   } | null>(null);
+  const zhipuReady = isActiveAiLlmConfigured();
 
   const habitScheduleAnchorDate = React.useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
 
@@ -1209,6 +1213,31 @@ export default function TasksScreen() {
   const bgFloatAnim = React.useRef(new Animated.Value(0)).current;
   const frogDoneBounceMap = React.useRef<Record<string, Animated.Value>>({});
   const projectSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
+
+  const triggerProjectAiReview = React.useCallback(
+    async (projectId: string) => {
+      if (projectAiTriggerLoadingId || projectAiPendingIds.has(projectId)) return;
+      if (!zhipuReady) {
+        Alert.alert('未配置 AI', '请先在设置中配置智谱 API 密钥后再使用 AI 点评。');
+        return;
+      }
+      const tree = projectTaskTreeMap[projectId] ?? [];
+      if (tree.length === 0) {
+        Alert.alert('无法分析', '该项目下尚无任务，请先添加任务。');
+        return;
+      }
+      setProjectAiTriggerLoadingId(projectId);
+      try {
+        const r = await runProjectAiReview(projectId, { force: true });
+        if (!r.ok) {
+          Alert.alert('AI 分析失败', r.error);
+        }
+      } finally {
+        setProjectAiTriggerLoadingId(null);
+      }
+    },
+    [projectAiPendingIds, projectAiTriggerLoadingId, projectTaskTreeMap, zhipuReady],
+  );
 
   const loadProjects = React.useCallback(async () => {
     try {
@@ -3407,8 +3436,31 @@ export default function TasksScreen() {
                             ) : null}
                             {hasAnyTasks ? (() => {
                               const aiReview = parseProjectAiReview(project.extra_data);
-                              const aiPending = projectAiPendingIds.has(project.id);
-                              if (!aiPending && !aiReview?.evaluation && !aiReview?.suggestions) return null;
+                              const aiPending =
+                                projectAiPendingIds.has(project.id) || projectAiTriggerLoadingId === project.id;
+                              const hasAiContent = !!(aiReview?.evaluation || aiReview?.suggestions);
+                              if (!aiPending && !hasAiContent) {
+                                return (
+                                  <Pressable
+                                    onPress={(e) => {
+                                      e.stopPropagation?.();
+                                      void triggerProjectAiReview(project.id);
+                                    }}
+                                    disabled={!zhipuReady || aiPending}
+                                    hitSlop={6}
+                                    style={({ pressed }) => [
+                                      styles.projectAiTriggerBtn,
+                                      {
+                                        borderColor: isDark ? 'rgba(96,165,250,0.35)' : 'rgba(0,88,190,0.22)',
+                                        backgroundColor: isDark ? 'rgba(96,165,250,0.12)' : 'rgba(0,88,190,0.06)',
+                                        opacity: !zhipuReady ? 0.45 : pressed ? 0.82 : 1,
+                                      },
+                                    ]}>
+                                    <MaterialIcons name="auto-awesome" size={14} color={primary} />
+                                    <Text style={[styles.projectAiTriggerText, { color: primary }]}>生成 AI 点评</Text>
+                                  </Pressable>
+                                );
+                              }
                               return (
                                 <View style={styles.projectAiWrap}>
                                   {aiPending ? (
@@ -3417,28 +3469,43 @@ export default function TasksScreen() {
                                       <Text style={[styles.projectAiPreview, { color: outline }]}>AI 分析中…</Text>
                                     </View>
                                   ) : aiReview ? (
-                                    <Pressable
-                                      onPress={(e) => {
-                                        e.stopPropagation?.();
-                                        setProjectAiModal({ projectName: project.name, review: aiReview });
-                                      }}
-                                      hitSlop={6}
-                                      style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
-                                      <Text style={[styles.projectAiPreview, { color: colors.textSecondary }]} numberOfLines={2}>
-                                        <Text style={{ fontWeight: '800', color: primary }}>AI 点评：</Text>
-                                        {aiReview.evaluation || aiReview.suggestions}
-                                      </Text>
-                                      {aiReview.review_at ? (
-                                        <Text style={[styles.projectAiTime, { color: outline }]}>
-                                          {new Date(aiReview.review_at).toLocaleString('zh-CN', {
-                                            month: 'numeric',
-                                            day: 'numeric',
-                                            hour: '2-digit',
-                                            minute: '2-digit',
-                                          })}
+                                    <>
+                                      <Pressable
+                                        onPress={(e) => {
+                                          e.stopPropagation?.();
+                                          setProjectAiModal({ projectName: project.name, review: aiReview });
+                                        }}
+                                        hitSlop={6}
+                                        style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
+                                        <Text style={[styles.projectAiPreview, { color: colors.textSecondary }]} numberOfLines={2}>
+                                          <Text style={{ fontWeight: '800', color: primary }}>AI 点评：</Text>
+                                          {aiReview.evaluation || aiReview.suggestions}
                                         </Text>
-                                      ) : null}
-                                    </Pressable>
+                                        {aiReview.review_at ? (
+                                          <Text style={[styles.projectAiTime, { color: outline }]}>
+                                            {new Date(aiReview.review_at).toLocaleString('zh-CN', {
+                                              month: 'numeric',
+                                              day: 'numeric',
+                                              hour: '2-digit',
+                                              minute: '2-digit',
+                                            })}
+                                          </Text>
+                                        ) : null}
+                                      </Pressable>
+                                      <Pressable
+                                        onPress={(e) => {
+                                          e.stopPropagation?.();
+                                          void triggerProjectAiReview(project.id);
+                                        }}
+                                        disabled={!zhipuReady}
+                                        hitSlop={6}
+                                        style={({ pressed }) => [
+                                          styles.projectAiRetriggerBtn,
+                                          { opacity: !zhipuReady ? 0.45 : pressed ? 0.75 : 1 },
+                                        ]}>
+                                        <Text style={[styles.projectAiRetriggerText, { color: primary }]}>重新分析</Text>
+                                      </Pressable>
+                                    </>
                                   ) : null}
                                 </View>
                               );
@@ -4219,9 +4286,23 @@ const styles = StyleSheet.create({
   projectProgressTrack: { height: 6, borderRadius: 999, overflow: 'hidden', alignSelf: 'stretch' },
   projectProgressFill: { height: '100%' },
   projectAiWrap: { marginTop: 8 },
+  projectAiTriggerBtn: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  projectAiTriggerText: { fontSize: 12, fontWeight: '700' },
   projectAiPendingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   projectAiPreview: { fontSize: 12, fontWeight: '600', lineHeight: 18 },
   projectAiTime: { fontSize: 10, fontWeight: '600', marginTop: 4 },
+  projectAiRetriggerBtn: { marginTop: 6, alignSelf: 'flex-start' },
+  projectAiRetriggerText: { fontSize: 11, fontWeight: '700' },
   projectAiModalKicker: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 6 },
   projectAiModalBody: { fontSize: 14, fontWeight: '500', lineHeight: 22 },
   projectCount: { alignItems: 'flex-end' },

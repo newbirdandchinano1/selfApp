@@ -130,7 +130,9 @@ export async function runProjectAiReview(
   }
 }
 
-/** 项目新增任务后调用：后台自动生成并持久化（空项目、无密钥时静默跳过）。 */
+/**
+ * @deprecated 请使用 `runProjectAiReview` 由用户手动触发，避免保存/编辑项目时自动消耗 AI 配额。
+ */
 export function startProjectAiReviewInBackground(projectId: string | null | undefined): void {
   const id = projectId?.trim();
   if (!id) return;
@@ -138,7 +140,7 @@ export function startProjectAiReviewInBackground(projectId: string | null | unde
     try {
       const count = await countProjectTasks(id);
       if (count === 0) return;
-      await runProjectAiReview(id, { force: true });
+      await runProjectAiReview(id, { force: false });
     } catch {
       // 静默失败
     }

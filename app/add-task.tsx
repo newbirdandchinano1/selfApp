@@ -1,7 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
-import { startProjectAiReviewInBackground } from '@/lib/project-ai-review-background';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
   applyScheduleMetaToLabels,
@@ -390,7 +389,6 @@ export default function AddTaskScreen() {
             schedule: scheduleMeta,
           }),
         });
-        startProjectAiReviewInBackground(quickProjectId);
         router.back();
       } catch (error) {
         console.warn('创建任务失败', error);

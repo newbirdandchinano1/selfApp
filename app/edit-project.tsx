@@ -12,11 +12,7 @@ import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants
 import { getDatabase } from '@/lib/database.native';
 import { parseProjectExtraDataWithAi } from '@/lib/repositories/projects/project-ai-review';
 import { deleteProject, getProjectById, getProjectCategories, updateProject } from '@/lib/repositories/projects/project';
-import {
-  addProjectAiReviewSavedListener,
-  runProjectAiReview,
-  startProjectAiReviewInBackground,
-} from '@/lib/project-ai-review-background';
+import { addProjectAiReviewSavedListener, runProjectAiReview } from '@/lib/project-ai-review-background';
 import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
 import {
@@ -498,7 +494,6 @@ export default function EditProjectScreen() {
       globalThis.__addTaskResult = undefined;
       setSubtasks((prev) => [...prev, { ...task, children: [] }]);
       setPersistedTaskIds((prev) => new Set(prev).add(task.id));
-      startProjectAiReviewInBackground(projectId);
       showToast('已加入项目');
     } catch (error) {
       console.warn('添加任务写入失败', error);
@@ -723,7 +718,6 @@ export default function EditProjectScreen() {
 
     setSaving(true);
     let committed = false;
-    let hadNewTask = false;
     try {
       const db = await getDatabase();
       await db.execAsync('BEGIN IMMEDIATE');
@@ -743,7 +737,7 @@ export default function EditProjectScreen() {
         end: extractDueDate(deadlineText) ?? undefined,
       });
       const existingTasks = await getTasksByProjectId(projectId);
-      const existingTaskIds = new Set(existingTasks.map((item) => item.id));
+      const existingTaskIds = new Set(collectAllSubtaskIds(mapTaskTreeToSubtaskNodes(existingTasks)));
 
       const flatWithParents = flattenSubtasksWithParents(subtasks, null);
       for (const { subtask, parent_task_id } of flatWithParents) {
@@ -769,7 +763,6 @@ export default function EditProjectScreen() {
             id: subtask.id,
             ...payload,
           });
-          hadNewTask = true;
         }
       }
       await tightenAllProjectTasks(projectId, projectFrame);
@@ -789,10 +782,6 @@ export default function EditProjectScreen() {
     }
 
     if (!committed) return;
-
-    if (hadNewTask) {
-      startProjectAiReviewInBackground(projectId);
-    }
 
     try {
       if (Platform.OS !== 'web' && router.canGoBack()) {
@@ -1126,7 +1115,7 @@ export default function EditProjectScreen() {
             </View>
             <View style={[styles.aiReviewCard, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
               {subtasks.length === 0 ? (
-                <Text style={[styles.aiReviewHint, { color: outline }]}>添加任务后可自动或手动生成 AI 点评。</Text>
+                <Text style={[styles.aiReviewHint, { color: outline }]}>添加任务后，点击右上角「开始分析」生成 AI 点评。</Text>
               ) : aiReviewLoading ? (
                 <View style={styles.aiReviewPendingRow}>
                   <ActivityIndicator size="small" color={primary} />
