@@ -1,0 +1,123 @@
+name: iOS-Build-Final-email
+on:
+  push:
+    branches:
+      - main  # 如果你的主分支叫 master，记得改成 master
+  workflow_dispatch: # 建议保留这个，这样你既能自动执行，也能手动点击触发
+jobs:
+  build:
+    runs-on: macos-latest # 【关键修改】：回到最新的 macOS 系统，获取 Xcode 16.4
+    steps:
+      - name: 1. Checkout
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20 # 保持 Node 20 护体
+
+      - name: 3. Install Global Tools
+        run: |
+          npm install -g expo-cli eas-cli
+          sudo gem install cocoapods
+
+      - name: 4. Install Dependencies
+        run: npm install
+
+      - name: 5. Forced Prebuild
+        run: |
+          rm -rf ios
+          npx expo prebuild --platform ios --clean
+
+      - name: 6. Build Xcode Project
+        # 加上 id，方便后面邮件步骤判断状态，虽然用 if: failure() 也可以，但这样更严谨
+        id: xcode_build 
+        run: |
+          cd ios
+          ln -s $(command -v node) /usr/local/bin/node
+          
+          if [ ! -d *.xcworkspace ]; then
+            echo "手动执行 pod install..."
+            pod install
+          fi
+
+          WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
+          SCHEME=$(ls -d *.xcodeproj | sed 's/\.xcodeproj//' | head -n 1)
+          
+          echo "正在构建项目: $WORKSPACE"
+          echo "使用 Scheme: $SCHEME"
+          
+          # 【修改点】：将原本的 xcodebuild 输出重定向到整个项目根目录的 xcode_build.log 中
+          # 2>&1 表示把错误信息也一起写入日志
+          xcodebuild -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            -destination 'generic/platform=iOS' \
+            clean build > ../xcode_build.log 2>&1
+
+      - name: 7. Create IPA
+        run: |
+          mkdir -p Payload
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "*.app" -type d | grep "Release-iphoneos" | head -n 1)
+          cp -r "$APP_PATH" Payload/
+          zip -r MyApp.ipa Payload
+
+      - name: 8. Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyUnsignedIPA
+          path: MyApp.ipa
+
+      # ==========================================
+      # 🚀 新增：打包成功，发邮件送 IPA 附件
+      # ==========================================
+      - name: 9. Send Email on Success
+        if: success() # 只有前面所有步骤成功才会执行
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.qq.com # 如果是网易请换成 smtp.163.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "🎉 iOS 打包成功通知 - ${{ github.run_number }}"
+          to: your_received_email@example.com # 🔴【记得改成你自己的接收邮箱】
+          from: GitHub Actions <${{ secrets.MAIL_USERNAME }}>
+          body: |
+            你好！
+            
+            项目 [${{ github.repository }}] 的 iOS 自动化打包已成功完成！
+            本次构建编号: #${{ github.run_number }}
+            触发分支: ${{ github.ref_name }}
+            
+            未签名的 IPA 安装包已打包作为邮件附件，请查收。
+          attachments: MyApp.ipa # 发送打包好的 IPA
+
+      # ==========================================
+      # 🚀 新增：打包失败，发邮件送错误日志
+      # ==========================================
+      - name: 10. Send Email on Failure
+        if: failure() # 只要前面有任何一步失败（比如第6步编译报错），就会强制执行此步
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.qq.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "❌ iOS 打包失败报警 - ${{ github.run_number }}"
+          to: 1594834072@qq.com # 🔴【记得改成你自己的接收邮箱】
+          from: GitHub Actions <${{ secrets.MAIL_USERNAME }}>
+          body: |
+            你好！
+            
+            很抱歉，项目 [${{ github.repository }}] 的 iOS 自动化打包失败了。
+            本次构建编号: #${{ github.run_number }}
+            触发分支: ${{ github.ref_name }}
+            
+            请查看附件中的 `xcode_build.log` 错误日志进行排查。
+          # 附件检查：只有在第6步生成了日志才发送，如果没有（比如第4步npm install就挂了），就只发邮件不带附件
+          attachments: ${{ hashFiles('xcode_build.log') != '' && 'xcode_build.log' || '' }}
