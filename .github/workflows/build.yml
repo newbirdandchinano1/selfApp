@@ -1,7 +1,9 @@
 name: iOS-Build-Final-V7
 on:
-  workflow_dispatch:
-
+  push:
+    branches:
+      - main  # 如果你的主分支叫 master，记得改成 master
+  workflow_dispatch: # 建议保留这个，这样你既能自动执行，也能手动点击触发
 jobs:
   build:
     runs-on: macos-latest # 【关键修改】：回到最新的 macOS 系统，获取 Xcode 16.4
