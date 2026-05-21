@@ -10,6 +10,8 @@ export type VisionWallSubGoalItem = {
   name: string;
   boundProjectCount: number;
   taskProgress: { completed: number; total: number } | null;
+  /** 未绑定项目且已手动完成 */
+  standaloneDone?: boolean;
 };
 
 /** 卡片/详情背景：内置 require 或相册 URI */

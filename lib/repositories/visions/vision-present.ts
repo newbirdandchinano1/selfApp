@@ -11,6 +11,8 @@ import {
   collectLinkedProjectsFromSubGoal,
   collectVisionLinkedProjectsFromExtra,
   collectVisionSubGoalsFromExtra,
+  isStandaloneVisionSubGoal,
+  standaloneSubGoalTaskStats,
   type VisionExtraPayload,
   type VisionRow,
   type VisionTrackKind,
@@ -202,9 +204,28 @@ async function resolveLinkedTargetProgress(
   extra: VisionExtraPayload
 ): Promise<LinkedTargetTaskProgress> {
   if (row.track_kind !== 'target') return null;
+  const subGoals = collectVisionSubGoalsFromExtra(extra);
+  const standaloneStats = subGoals
+    .filter(isStandaloneVisionSubGoal)
+    .reduce(
+      (acc, sg) => {
+        const s = standaloneSubGoalTaskStats(sg);
+        return { total: acc.total + s.total, completed: acc.completed + s.completed };
+      },
+      { total: 0, completed: 0 }
+    );
   const ids = collectVisionLinkedProjectsFromExtra(extra).map(p => p.id);
-  if (ids.length === 0) return null;
-  return getTaskCompletionStatsByProjectIds(ids);
+  let taskTotal = 0;
+  let taskCompleted = 0;
+  if (ids.length > 0) {
+    const stats = await getTaskCompletionStatsByProjectIds(ids);
+    taskTotal = stats.total;
+    taskCompleted = stats.completed;
+  }
+  const total = taskTotal + standaloneStats.total;
+  const completed = taskCompleted + standaloneStats.completed;
+  if (total === 0) return null;
+  return { total, completed };
 }
 
 async function resolveWallSubGoalItems(extra: VisionExtraPayload): Promise<VisionWallSubGoalItem[]> {
@@ -218,12 +239,15 @@ async function resolveWallSubGoalItems(extra: VisionExtraPayload): Promise<Visio
         if (stats.total > 0) {
           taskProgress = { completed: stats.completed, total: stats.total };
         }
+      } else if (sg.done) {
+        taskProgress = { completed: 1, total: 1 };
       }
       return {
         id: sg.id,
         name: sg.name,
         boundProjectCount: ids.length,
         taskProgress,
+        standaloneDone: ids.length === 0 ? Boolean(sg.done) : undefined,
       };
     }),
   );
@@ -374,12 +398,15 @@ export async function visionRowToProfileCarouselItem(
     case 'target': {
       const subGoals = collectVisionSubGoalsFromExtra(extra);
       const boundCount = subGoals.filter(sg => collectLinkedProjectsFromSubGoal(sg).length > 0).length;
+      const standaloneCount = subGoals.filter(isStandaloneVisionSubGoal).length;
       if (subGoals.length > 0) {
         if (linked && linked.total > 0) {
           progressText =
-            boundCount > 0
-              ? `${subGoals.length} 个小目标 · 任务 ${linked.completed} / ${linked.total}`
-              : `${subGoals.length} 个小目标`;
+            boundCount > 0 && standaloneCount > 0
+              ? `${subGoals.length} 个小目标 · ${linked.completed} / ${linked.total}`
+              : boundCount > 0
+                ? `${subGoals.length} 个小目标 · 任务 ${linked.completed} / ${linked.total}`
+                : `${subGoals.length} 个小目标 · ${linked.completed} / ${linked.total}`;
           progressPct = Math.round((linked.completed / linked.total) * 100);
         } else if (boundCount > 0) {
           progressText = `${subGoals.length} 个小目标 · ${boundCount} 个已绑定项目`;

@@ -3,7 +3,11 @@ import {
   getTaskCompletionStatsByProjectIds,
 } from '@/lib/repositories/tasks/task';
 import type { VisionSubGoal } from '@/lib/repositories/visions/vision.types';
-import { collectLinkedProjectsFromSubGoal } from '@/lib/repositories/visions/vision.types';
+import {
+  collectLinkedProjectsFromSubGoal,
+  isStandaloneVisionSubGoal,
+  standaloneSubGoalTaskStats,
+} from '@/lib/repositories/visions/vision.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -91,7 +95,9 @@ export function VisionSubGoalsDetailPanel({
     percent: 0,
   });
   const [unbindingKey, setUnbindingKey] = useState<string | null>(null);
+  const [togglingDoneId, setTogglingDoneId] = useState<string | null>(null);
   const canUnbind = Boolean(onPersistSubGoals);
+  const canToggleDone = Boolean(onPersistSubGoals);
 
   const trackBg = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.45)';
   const summaryBg = isDark ? 'rgba(0,88,190,0.14)' : 'rgba(0,88,190,0.07)';
@@ -125,17 +131,30 @@ export function VisionSubGoalsDetailPanel({
         ),
         Promise.all(
           subGoals.map(async sg => {
-            const ids = collectLinkedProjectsFromSubGoal(sg).map(p => p.id);
-            if (ids.length === 0) {
-              return [sg.id, progressFromStats({ total: 0, completed: 0 })] as const;
+            if (isStandaloneVisionSubGoal(sg)) {
+              return [sg.id, progressFromStats(standaloneSubGoalTaskStats(sg))] as const;
             }
+            const ids = collectLinkedProjectsFromSubGoal(sg).map(p => p.id);
             const stats = await getTaskCompletionStatsByProjectIds(ids);
             return [sg.id, progressFromStats(stats)] as const;
           })
         ),
       ]);
 
-      setOverallProgress(progressFromStats(overallStats));
+      const standaloneStats = subGoals
+        .filter(isStandaloneVisionSubGoal)
+        .reduce(
+          (acc, sg) => {
+            const s = standaloneSubGoalTaskStats(sg);
+            return { total: acc.total + s.total, completed: acc.completed + s.completed };
+          },
+          { total: 0, completed: 0 }
+        );
+      const mergedOverall = {
+        total: overallStats.total + standaloneStats.total,
+        completed: overallStats.completed + standaloneStats.completed,
+      };
+      setOverallProgress(progressFromStats(mergedOverall));
       setProgressByProjectId(Object.fromEntries(projectEntries));
       setProgressById(Object.fromEntries(sgEntries));
     } catch {
@@ -156,6 +175,36 @@ export function VisionSubGoalsDetailPanel({
   const boundProjectCount = useMemo(
     () => subGoals.reduce((n, sg) => n + collectLinkedProjectsFromSubGoal(sg).length, 0),
     [subGoals]
+  );
+
+  const standaloneCount = useMemo(
+    () => subGoals.filter(isStandaloneVisionSubGoal).length,
+    [subGoals]
+  );
+
+  const toggleStandaloneDone = useCallback(
+    (sg: VisionSubGoal) => {
+      if (!onPersistSubGoals) return;
+      const nextDone = !sg.done;
+      setTogglingDoneId(sg.id);
+      const nextSubGoals = subGoals.map(item => {
+        if (item.id !== sg.id) return item;
+        if (nextDone) return { ...item, done: true };
+        const { done: _omit, ...rest } = item;
+        return rest;
+      });
+      void (async () => {
+        try {
+          await onPersistSubGoals(nextSubGoals);
+          await loadProgress();
+        } catch {
+          Alert.alert('更新失败', '无法更新本地数据，请稍后重试。');
+        } finally {
+          setTogglingDoneId(null);
+        }
+      })();
+    },
+    [loadProgress, onPersistSubGoals, subGoals]
   );
 
   const requestUnbind = useCallback(
@@ -208,6 +257,7 @@ export function VisionSubGoalsDetailPanel({
           <Text style={[styles.panelSubtitle, { color: outline }]}>
             {subGoals.length} 项
             {boundProjectCount > 0 ? ` · ${boundProjectCount} 个绑定项目` : ''}
+            {standaloneCount > 0 ? ` · ${standaloneCount} 个独立目标` : ''}
           </Text>
         </View>
       </View>
@@ -219,7 +269,7 @@ export function VisionSubGoalsDetailPanel({
       ) : (
         <>
           {/* —— 二级：整体进度摘要 —— */}
-          {boundProjectCount > 0 ? (
+          {boundProjectCount > 0 || standaloneCount > 0 ? (
             <View
               style={[
                 styles.summaryCard,
@@ -238,8 +288,14 @@ export function VisionSubGoalsDetailPanel({
               />
               <Text style={[styles.summaryMeta, { color: outline }]}>
                 {overallProgress.total > 0
-                  ? `全部绑定项目 · 任务 ${overallProgress.completed} / ${overallProgress.total}`
-                  : '已绑定项目，暂无统计任务'}
+                  ? boundProjectCount > 0 && standaloneCount > 0
+                    ? `绑定任务与独立目标 · ${overallProgress.completed} / ${overallProgress.total}`
+                    : standaloneCount > 0
+                      ? `独立目标 · ${overallProgress.completed} / ${overallProgress.total}`
+                      : `全部绑定项目 · 任务 ${overallProgress.completed} / ${overallProgress.total}`
+                  : boundProjectCount > 0
+                    ? '已绑定项目，暂无统计任务'
+                    : '点击小目标可标记完成'}
               </Text>
             </View>
           ) : null}
@@ -248,9 +304,12 @@ export function VisionSubGoalsDetailPanel({
           <View style={styles.subGoalList}>
             {subGoals.map((sg, idx) => {
               const bound = collectLinkedProjectsFromSubGoal(sg);
+              const standalone = bound.length === 0;
               const prog = progressById[sg.id] ?? { total: 0, completed: 0, percent: 0 };
               const pctLabel = `${Math.round(prog.percent * 100)}%`;
               const isLast = idx === subGoals.length - 1;
+              const doneColor = isDark ? '#34d399' : '#006c49';
+              const isTogglingDone = togglingDoneId === sg.id;
 
               return (
                 <View
@@ -266,11 +325,46 @@ export function VisionSubGoalsDetailPanel({
                 >
                   {/* 小目标标题行 */}
                   <View style={styles.subGoalHeader}>
-                    <View style={[styles.indexBadge, { backgroundColor: visionPrimary }]}>
-                      <Text style={styles.indexBadgeText}>{idx + 1}</Text>
-                    </View>
+                    {standalone && canToggleDone ? (
+                      <Pressable
+                        onPress={() => toggleStandaloneDone(sg)}
+                        disabled={isTogglingDone}
+                        hitSlop={6}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: Boolean(sg.done) }}
+                        accessibilityLabel={sg.done ? `取消完成 ${sg.name}` : `完成目标 ${sg.name}`}
+                        style={({ pressed }) => [
+                          styles.standaloneCheckBtn,
+                          { opacity: isTogglingDone ? 0.45 : pressed ? 0.75 : 1 },
+                        ]}
+                      >
+                        {isTogglingDone ? (
+                          <ActivityIndicator size="small" color={outline} />
+                        ) : (
+                          <MaterialIcons
+                            name={sg.done ? 'check-circle' : 'radio-button-unchecked'}
+                            size={26}
+                            color={sg.done ? doneColor : outline}
+                          />
+                        )}
+                      </Pressable>
+                    ) : (
+                      <View style={[styles.indexBadge, { backgroundColor: visionPrimary }]}>
+                        <Text style={styles.indexBadgeText}>{idx + 1}</Text>
+                      </View>
+                    )}
                     <View style={styles.subGoalHeaderMain}>
-                      <Text style={[styles.subGoalName, { color: textColor }]} numberOfLines={2}>
+                      <Text
+                        style={[
+                          styles.subGoalName,
+                          {
+                            color: textColor,
+                            opacity: standalone && sg.done ? 0.85 : 1,
+                            textDecorationLine: standalone && sg.done ? 'line-through' : 'none',
+                          },
+                        ]}
+                        numberOfLines={2}
+                      >
                         {sg.name}
                       </Text>
                       {sg.description ? (
@@ -279,7 +373,7 @@ export function VisionSubGoalsDetailPanel({
                         </Text>
                       ) : null}
                     </View>
-                    {bound.length > 0 ? (
+                    {bound.length > 0 || standalone ? (
                       <View style={[styles.pctPill, { backgroundColor: isDark ? 'rgba(0,88,190,0.25)' : 'rgba(0,88,190,0.1)' }]}>
                         <Text style={[styles.pctPillText, { color: visionPrimary }]}>{pctLabel}</Text>
                       </View>
@@ -301,10 +395,27 @@ export function VisionSubGoalsDetailPanel({
                       </Text>
                     </View>
                   ) : (
-                    <View style={[styles.emptyBindRow, { borderColor: subGoalCardBorder }]}>
-                      <MaterialIcons name="link" size={16} color={outline} />
-                      <Text style={[styles.emptyBindText, { color: outline }]}>未绑定项目</Text>
-                    </View>
+                    <Pressable
+                      onPress={canToggleDone ? () => toggleStandaloneDone(sg) : undefined}
+                      disabled={!canToggleDone || isTogglingDone}
+                      style={({ pressed }) => [
+                        styles.standaloneGoalRow,
+                        {
+                          borderColor: subGoalCardBorder,
+                          backgroundColor: isDark ? 'rgba(30,41,59,0.45)' : 'rgba(234,237,255,0.6)',
+                          opacity: !canToggleDone ? 1 : isTogglingDone ? 0.55 : pressed ? 0.88 : 1,
+                        },
+                      ]}
+                    >
+                      <MaterialIcons
+                        name={sg.done ? 'task-alt' : 'flag'}
+                        size={18}
+                        color={sg.done ? doneColor : visionPrimary}
+                      />
+                      <Text style={[styles.standaloneGoalText, { color: sg.done ? doneColor : outline }]}>
+                        {sg.done ? '已完成' : canToggleDone ? '点击标记完成' : '独立目标 · 未绑定项目'}
+                      </Text>
+                    </Pressable>
                   )}
 
                   {/* —— 三级：关联项目 —— */}
@@ -547,21 +658,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-  emptyBindRow: {
+  standaloneCheckBtn: {
+    width: 26,
+    height: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  standaloneGoalRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
     marginLeft: 36,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    borderStyle: 'dashed',
-    alignSelf: 'flex-start',
+    alignSelf: 'stretch',
   },
-  emptyBindText: {
-    fontSize: 12,
-    fontWeight: '600',
+  standaloneGoalText: {
+    fontSize: 13,
+    fontWeight: '700',
   },
   projectsSection: {
     gap: 8,

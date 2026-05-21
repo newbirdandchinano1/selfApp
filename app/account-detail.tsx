@@ -6,6 +6,7 @@ import { clearFinanceDefaultAccountIfDeleted } from '@/lib/finance-default-accou
 import { openFinanceSheet, subscribeFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import {
   applyFinanceAccountBalanceCorrection,
+  computeTransactionLedgerEffect,
   deleteFinanceAccount,
   financeBalanceInputTextFromLedger,
   financeTargetLedgerFromUserBalanceInput,
@@ -120,19 +121,11 @@ export default function AccountDetailScreen() {
     [],
   );
 
+  /** 与账本余额汇总 `computeTransactionLedgerEffect` 一致，负债初始余额等流水不再被错误翻成正数 */
   const getDisplayAmount = React.useCallback(
-    (tx: FinanceTransactionRow) => {
-      const absAmount = Math.abs(tx.amount);
-      if (isLiabilityAccount) {
-        if (tx.transaction_type === 'income') return -absAmount;
-        if (tx.transaction_type === 'expense') return absAmount;
-        return -tx.amount;
-      }
-      if (tx.transaction_type === 'income') return absAmount;
-      if (tx.transaction_type === 'expense') return -absAmount;
-      return tx.amount;
-    },
-    [isLiabilityAccount],
+    (tx: FinanceTransactionRow) =>
+      computeTransactionLedgerEffect(tx.transaction_type, tx.amount, tx.extra_data),
+    [],
   );
 
   const formatMoney = React.useCallback((amount: number) => {
@@ -556,7 +549,9 @@ export default function AccountDetailScreen() {
                             ]}>
                             <View style={styles.detailItemRow}>
                               <View style={styles.detailLeft}>
-                                <Text style={[Typography.body, styles.detailTime, { color: colors.textSecondary }]}>
+                                <Text
+                                  style={[Typography.caption, styles.detailTime, { color: colors.textSecondary }]}
+                                  numberOfLines={1}>
                                   {item.time}
                                 </Text>
                                 <View
@@ -837,7 +832,10 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   detailTime: {
-    width: 40,
+    width: 44,
+    flexShrink: 0,
+    textAlign: 'left',
+    fontVariant: ['tabular-nums'],
   },
   tagPill: {
     flexDirection: 'row',
@@ -865,7 +863,7 @@ const styles = StyleSheet.create({
   },
   sourceRow: {
     marginTop: Spacing.lg,
-    marginLeft: 50,
+    marginLeft: 44 + Spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.md,

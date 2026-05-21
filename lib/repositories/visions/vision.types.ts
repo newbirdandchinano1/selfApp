@@ -16,6 +16,8 @@ export type VisionSubGoal = {
   linkedProjects?: VisionLinkedProjectRef[];
   /** @deprecated 读取时并入 linkedProjects */
   linkedProject?: VisionLinkedProjectRef;
+  /** 未绑定项目时作为独立目标，可手动标记完成 */
+  done?: boolean;
 };
 
 /** 存入 extra_data JSON，便于扩展且不频繁改表结构 */
@@ -71,6 +73,16 @@ function normalizeLinkedProjectList(raw: unknown): VisionLinkedProjectRef[] {
   return out;
 }
 
+/** 未绑定项目的小目标，自身计为 1 个可完成目标 */
+export function isStandaloneVisionSubGoal(sg: VisionSubGoal): boolean {
+  return collectLinkedProjectsFromSubGoal(sg).length === 0;
+}
+
+/** 独立小目标的完成统计（total 恒为 1） */
+export function standaloneSubGoalTaskStats(sg: VisionSubGoal): { total: number; completed: number } {
+  return { total: 1, completed: sg.done ? 1 : 0 };
+}
+
 /** 小目标上已绑定的项目（兼容旧版单项目字段） */
 export function collectLinkedProjectsFromSubGoal(sg: VisionSubGoal): VisionLinkedProjectRef[] {
   const multi = normalizeLinkedProjectList(sg.linkedProjects);
@@ -102,11 +114,13 @@ export function collectVisionSubGoalsFromExtra(extra: VisionExtraPayload | null 
           : legacyOne
             ? [legacyOne]
             : [];
+      const done = (item as { done?: unknown }).done === true;
       out.push({
         id,
         name,
         ...(description ? { description } : {}),
         ...(merged.length > 0 ? { linkedProjects: merged } : {}),
+        ...(merged.length === 0 && done ? { done: true } : {}),
       });
     }
     if (out.length > 0) return out;
@@ -167,11 +181,13 @@ export function serializeVisionSubGoalsForExtra(subGoals: VisionSubGoal[]): Visi
         id: p.id.trim(),
         name: (p.name ?? '').trim(),
       }));
+      const standalone = linkedProjects.length === 0;
       return {
         id,
         name,
         ...(description ? { description } : {}),
         ...(linkedProjects.length > 0 ? { linkedProjects } : {}),
+        ...(standalone && sg.done ? { done: true } : {}),
       };
     })
     .filter((x): x is VisionSubGoal => x != null);

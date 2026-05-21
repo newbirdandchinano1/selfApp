@@ -72,10 +72,10 @@ type ProgressEditTarget = {
 function subGoalWallMeta(sg: VisionWallSubGoalItem): string {
   if (sg.taskProgress) {
     const pct = Math.round((sg.taskProgress.completed / sg.taskProgress.total) * 100);
-    return `${pct}%`;
+    return sg.standaloneDone && sg.taskProgress.total === 1 ? '已完成' : `${pct}%`;
   }
   if (sg.boundProjectCount > 0) return '已绑定';
-  return '未绑定';
+  return '未完成';
 }
 
 const VisionCard = ({
