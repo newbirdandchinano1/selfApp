@@ -1,3 +1,4 @@
+import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
 import { AppIconButton } from '@/components/ui';
 import { Layout, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
@@ -64,6 +65,12 @@ import {
   consumeShortcutImageHandoffExpected,
   subscribeShortcutHandoffConsume,
 } from '@/lib/shortcut-auto-ledger-route-bridge';
+import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
+import {
+  enterAutoLedgerSession,
+  leaveAutoLedgerSession,
+  runInAutoLedgerSession,
+} from '@/lib/auto-ledger-session';
 import { moveAppToBackground } from 'zheng-background';
 import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
 import {
@@ -477,6 +484,8 @@ export default function FinanceScreen() {
   const [autoLedgerToastMessage, setAutoLedgerToastMessage] = React.useState('正在识别截图并记账…');
   const autoLedgerReturnToPreviousAppRef = React.useRef(false);
   const autoLedgerDidBackgroundRef = React.useRef(false);
+  /** handoff 已在 startAutoLedgerHandoff 中 enter，process 结束时配对 leave */
+  const autoLedgerHandoffSessionHeldRef = React.useRef(false);
   const autoLedgerHandoffTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoLedgerImageUriRef = React.useRef<string | null>(null);
   const autoLedgerSourceRef = React.useRef<'clipboard' | 'shortcut_intent' | 'picker'>('clipboard');
@@ -1525,37 +1534,18 @@ export default function FinanceScreen() {
     [accountExtraMap]
   );
 
-  const expenseCategories = React.useMemo<SheetCategory[]>(
-    () => [
-      { key: 'food', icon: 'restaurant', label: '餐饮', color: primary },
-      { key: 'snack', icon: 'icecream', label: '零食', color: secondary },
-      { key: 'fruit', icon: 'eco', label: '水果', color: tertiary },
-      { key: 'drink', icon: 'local-cafe', label: '饮品', color: primary },
-      { key: 'cook', icon: 'set-meal', label: '做饭食材', color: secondary },
-      { key: 'traffic', icon: 'directions-car', label: '交通', color: tertiary },
-      { key: 'home', icon: 'home', label: '居住', color: primary },
-      { key: 'cloth', icon: 'checkroom', label: '服饰', color: secondary },
-      { key: 'play', icon: 'sports-esports', label: '娱乐', color: tertiary },
-      { key: 'other', icon: 'more-horiz', label: '其他', color: subtle },
-    ],
-    [primary, secondary, subtle, tertiary]
-  );
-
-  const incomeCategories = React.useMemo<SheetCategory[]>(
-    () => [
-      { key: 'salary', icon: 'payments', label: '工资', color: secondary },
-      { key: 'bonus', icon: 'card-giftcard', label: '奖金', color: primary },
-      { key: 'refund', icon: 'receipt-long', label: '报销', color: tertiary },
-      { key: 'invest', icon: 'savings', label: '理财', color: secondary },
-      { key: 'sideline', icon: 'storefront', label: '副业', color: primary },
-      { key: 'allowance', icon: 'volunteer-activism', label: '补贴', color: tertiary },
-      { key: 'redpack', icon: 'redeem', label: '红包', color: secondary },
-      { key: 'gift', icon: 'card-membership', label: '礼金', color: primary },
-      { key: 'rent', icon: 'home-work', label: '租金', color: tertiary },
-      { key: 'other-income', icon: 'add-card', label: '其他', color: subtle },
-    ],
-    [primary, secondary, subtle, tertiary]
-  );
+  const {
+    expenseCategories,
+    incomeCategories,
+    addModalVisible,
+    newCategoryName,
+    setNewCategoryName,
+    isSavingCategory,
+    openAddCategoryModal,
+    closeAddCategoryModal,
+    saveNewCategory,
+    confirmDeleteCustomCategory,
+  } = useFinanceSheetCategories({ primary, secondary, tertiary, subtle });
 
   const beginAutoLedgerShortcutSession = React.useCallback(() => {
     autoLedgerReturnToPreviousAppRef.current = true;
@@ -1568,11 +1558,13 @@ export default function FinanceScreen() {
   );
 
   const startAutoLedgerHandoff = React.useCallback(
-    (source: 'clipboard' | 'shortcut_intent', message?: string) => {
+    async (source: 'clipboard' | 'shortcut_intent', message?: string) => {
       beginAutoLedgerShortcutSession();
       autoLedgerSourceRef.current = source;
       setAutoLedgerToastMessage(message ?? '正在识别截图并记账…');
       setAutoLedgerToastVisible(true);
+      await enterAutoLedgerSession();
+      autoLedgerHandoffSessionHeldRef.current = true;
 
       if (autoLedgerHandoffTimerRef.current != null) {
         clearTimeout(autoLedgerHandoffTimerRef.current);
@@ -1622,6 +1614,11 @@ export default function FinanceScreen() {
       accounts: FinanceAccountBalanceRow[],
       ledgerSource: 'clipboard' | 'shortcut_intent' | 'picker' = 'clipboard',
     ) => {
+      const handoffHeld = autoLedgerHandoffSessionHeldRef.current;
+      if (!handoffHeld) {
+        await enterAutoLedgerSession();
+      }
+      try {
       autoLedgerImageUriRef.current = imageDataUri;
       autoLedgerSourceRef.current = ledgerSource;
       const handoff = isAutoLedgerHandoffSession();
@@ -1789,6 +1786,12 @@ export default function FinanceScreen() {
       } finally {
         setPendingAutoLedgers((prev) => prev.filter((row) => row.id !== pendingId));
       }
+      } finally {
+        if (handoffHeld) {
+          autoLedgerHandoffSessionHeldRef.current = false;
+        }
+        await leaveAutoLedgerSession();
+      }
     },
     [
       expenseCategories,
@@ -1819,11 +1822,15 @@ export default function FinanceScreen() {
     }
     autoLedgerImageUriRef.current = shortcutImageUri;
     if (list.length > 0) {
-      startAutoLedgerHandoff('shortcut_intent');
-      void processAutoLedgerFromImage(shortcutImageUri, list, 'shortcut_intent');
+      await startAutoLedgerHandoff('shortcut_intent');
+      await processAutoLedgerFromImage(shortcutImageUri, list, 'shortcut_intent');
     } else {
-      startAutoLedgerHandoff('shortcut_intent');
+      await startAutoLedgerHandoff('shortcut_intent');
       void notifyAutoLedgerFailure('请先添加至少一个账户。');
+      if (autoLedgerHandoffSessionHeldRef.current) {
+        autoLedgerHandoffSessionHeldRef.current = false;
+        await leaveAutoLedgerSession();
+      }
     }
   }, [
     loadFinanceAccounts,
@@ -2007,28 +2014,43 @@ export default function FinanceScreen() {
 
           if (intent) {
             if (intent.kind === 'auto_ledger_clipboard_pending') {
-              startAutoLedgerHandoff('clipboard', '正在读取并识别截图…');
-              const imageUri = await readClipboardImageForAutoLedger();
-              if (cancelled) return;
-              if (imageUri) {
-                if (list.length > 0) {
-                  void processAutoLedgerFromImage(imageUri, list, 'clipboard');
+              void (async () => {
+                await startAutoLedgerHandoff('clipboard', '正在读取并识别截图…');
+                const imageUri = await readClipboardImageForAutoLedger();
+                if (imageUri) {
+                  if (list.length > 0) {
+                    await processAutoLedgerFromImage(imageUri, list, 'clipboard');
+                  } else {
+                    void notifyAutoLedgerFailure('请先添加至少一个账户。');
+                    if (autoLedgerHandoffSessionHeldRef.current) {
+                      autoLedgerHandoffSessionHeldRef.current = false;
+                      await leaveAutoLedgerSession();
+                    }
+                  }
                 } else {
-                  void notifyAutoLedgerFailure('请先添加至少一个账户。');
+                  void notifyAutoLedgerFailure(
+                    '剪贴板里没有图片或读取失败，请先在快捷指令中复制截图并允许粘贴。',
+                  );
+                  if (autoLedgerHandoffSessionHeldRef.current) {
+                    autoLedgerHandoffSessionHeldRef.current = false;
+                    await leaveAutoLedgerSession();
+                  }
                 }
-              } else {
-                void notifyAutoLedgerFailure(
-                  '剪贴板里没有图片或读取失败，请先在快捷指令中复制截图并允许粘贴。',
-                );
-              }
+              })();
             } else if (intent.kind === 'auto_ledger_clipboard_image') {
-              if (list.length > 0) {
-                startAutoLedgerHandoff('clipboard');
-                void processAutoLedgerFromImage(intent.imageDataUri, list, 'clipboard');
-              } else {
-                startAutoLedgerHandoff('clipboard');
-                void notifyAutoLedgerFailure('请先添加至少一个账户。');
-              }
+              void (async () => {
+                if (list.length > 0) {
+                  await startAutoLedgerHandoff('clipboard');
+                  await processAutoLedgerFromImage(intent.imageDataUri, list, 'clipboard');
+                } else {
+                  await startAutoLedgerHandoff('clipboard');
+                  void notifyAutoLedgerFailure('请先添加至少一个账户。');
+                  if (autoLedgerHandoffSessionHeldRef.current) {
+                    autoLedgerHandoffSessionHeldRef.current = false;
+                    await leaveAutoLedgerSession();
+                  }
+                }
+              })();
             } else if (list.length > 0) {
               applyManualOrTransferSheetIntent(intent);
             }
@@ -2038,16 +2060,21 @@ export default function FinanceScreen() {
             if (!shortcutImageUri && expectingShortcutImage) {
               shortcutImageUri = await readClipboardImageForAutoLedger();
             }
-            if (cancelled) return;
             if (shortcutImageUri) {
-              autoLedgerImageUriRef.current = shortcutImageUri;
-              if (list.length > 0) {
-                startAutoLedgerHandoff('shortcut_intent');
-                void processAutoLedgerFromImage(shortcutImageUri, list, 'shortcut_intent');
-              } else {
-                startAutoLedgerHandoff('shortcut_intent');
-                void notifyAutoLedgerFailure('请先添加至少一个账户。');
-              }
+              void (async () => {
+                autoLedgerImageUriRef.current = shortcutImageUri;
+                if (list.length > 0) {
+                  await startAutoLedgerHandoff('shortcut_intent');
+                  await processAutoLedgerFromImage(shortcutImageUri!, list, 'shortcut_intent');
+                } else {
+                  await startAutoLedgerHandoff('shortcut_intent');
+                  void notifyAutoLedgerFailure('请先添加至少一个账户。');
+                  if (autoLedgerHandoffSessionHeldRef.current) {
+                    autoLedgerHandoffSessionHeldRef.current = false;
+                    await leaveAutoLedgerSession();
+                  }
+                }
+              })();
             }
           }
 
@@ -2071,7 +2098,6 @@ export default function FinanceScreen() {
       applyManualOrTransferSheetIntent,
       resetSheetForm,
       startAutoLedgerHandoff,
-      shortcutHandoffNonce,
     ])
   );
 
@@ -2834,7 +2860,9 @@ export default function FinanceScreen() {
           source === 'camera' ? '正在识别拍摄图片并记账…' : '正在识别相册图片并记账…',
         );
         setAutoLedgerToastVisible(true);
-        await processAutoLedgerFromImage(imageDataUri, accounts, 'picker');
+        await runInAutoLedgerSession(() =>
+          processAutoLedgerFromImage(imageDataUri, accounts, 'picker'),
+        );
       } catch (error) {
         console.warn('Failed to pick image for auto ledger:', error);
         Alert.alert('选择图片失败', '请稍后重试。');
@@ -3758,19 +3786,26 @@ export default function FinanceScreen() {
             ) : (
               <>
                 {activeSheetTab !== 'sentence' ? (
-                <View style={styles.categoryGrid}>
-                  {activeCategories.map((item) => {
-                    const isSelected = selectedCategoryKey === item.key;
-                    return (
-                    <Pressable key={item.key} style={styles.categoryItem} onPress={() => setSelectedCategoryKey(item.key)}>
-                      <View style={[styles.categoryIconWrap, { backgroundColor: isSelected ? `${item.color}20` : outlineVariant, borderColor: isSelected ? item.color : 'transparent' }]}>
-                        <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={22} color={item.color} />
-                      </View>
-                      <Text style={[styles.categoryLabel, { color: isSelected ? item.color : subtle }]}>{item.label}</Text>
-                    </Pressable>
-                    );
-                  })}
-                </View>
+                <FinanceCategoryPicker
+                  categories={activeCategories}
+                  selectedKey={selectedCategoryKey}
+                  onSelectKey={setSelectedCategoryKey}
+                  transactionType={activeSheetTab === 'income' ? 'income' : 'expense'}
+                  subtle={subtle}
+                  primary={primary}
+                  text={text}
+                  surface={surface}
+                  outlineVariant={outlineVariant}
+                  styles={styles}
+                  onAddPress={() => openAddCategoryModal(activeSheetTab === 'income' ? 'income' : 'expense')}
+                  onLongPressCustom={confirmDeleteCustomCategory}
+                  addModalVisible={addModalVisible}
+                  newCategoryName={newCategoryName}
+                  onChangeNewCategoryName={setNewCategoryName}
+                  isSavingCategory={isSavingCategory}
+                  onCloseAddModal={closeAddCategoryModal}
+                  onSaveNewCategory={() => void saveNewCategory(setSelectedCategoryKey)}
+                />
                 ) : (
                   <View style={styles.sentenceHintBox}>
                     <Text style={[styles.sentenceHintText, { color: subtle }]}>

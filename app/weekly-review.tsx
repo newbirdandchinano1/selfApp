@@ -166,6 +166,11 @@ function toYmdLocal(d: Date): string {
   return `${d.getFullYear()}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
+/** 每日复盘：过去与自然日「今天」可填；未来日期不可填。 */
+function isDailyReviewEditableYmd(ymd: string, todayYmd: string): boolean {
+  return ymd <= todayYmd;
+}
+
 const PLACEHOLDERS = {
   summary:
     '这周发生了什么？完成了哪些计划？有什么收获与结果？遇到什么问题、进展如何？见了哪些重要的人、谈了什么？',
@@ -439,15 +444,15 @@ export default function WeeklyReviewScreen() {
   }, [canEdit, periodStartYmd, adjustTasks, adjustSavings, adjustPlans]);
 
   const setDailyFieldForYmd = useCallback((ymd: string, key: DailyFieldKey, value: string) => {
-    if (ymd !== todayYmd) return;
+    if (!isDailyReviewEditableYmd(ymd, todayYmd)) return;
     setDailyEntries(prev =>
       prev.map(e => (e.ymd === ymd ? { ...e, fields: { ...e.fields, [key]: value } } : e)),
     );
-  }, []);
+  }, [todayYmd]);
 
   const onSaveDaily = useCallback(async (ymd: string, fields: DailyStructured) => {
-    if (ymd !== todayYmd) {
-      Alert.alert('暂不可保存', '每日复盘仅支持填写与保存「今天」的内容。');
+    if (!isDailyReviewEditableYmd(ymd, todayYmd)) {
+      Alert.alert('暂不可保存', '每日复盘不可填写未来日期；过去与今天可保存。');
       return;
     }
     setDailySavingYmd(ymd);
@@ -562,11 +567,11 @@ export default function WeeklyReviewScreen() {
                 <Text style={[styles.dailySectionTitle, { color: text }]}>每日复盘</Text>
                 <Text style={[styles.dailyPeriodLine, { color: primary }]}>{dailyPeriodLabel}</Text>
                 <Text style={[styles.dailySectionHint, { color: outline }]}>
-                  区间以「下一次每周复盘日」为终点向前 7 天（与周度统计一致）；仅「今天」可填写与保存，其他日期仅可查看已保存内容。生成周度 AI 建议时会参考本周期内各日已填内容。
+                  区间以「下一次每周复盘日」为终点向前 7 天（与周度统计一致）；过去与自然日「今天」可填写与保存，未来日期仅可查看。生成周度 AI 建议时会参考本周期内各日已填内容。
                 </Text>
                 {dailyEntries.map(entry => {
                   const open = expandedDailyYmd === entry.ymd;
-                  const isTodayEntry = entry.ymd === todayYmd;
+                  const canEditDailyEntry = isDailyReviewEditableYmd(entry.ymd, todayYmd);
                   const previewRaw = dailyEntryPreviewText(entry.fields);
                   const previewShort =
                     previewRaw.length > 48 ? `${previewRaw.slice(0, 48)}…` : previewRaw || '（未填写）';
@@ -578,10 +583,10 @@ export default function WeeklyReviewScreen() {
                         <View style={{ flex: 1, minWidth: 0 }}>
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                             <Text style={[styles.dailyDayTitle, { color: text }]}>{entry.label}</Text>
-                            {!isTodayEntry ? (
+                            {!canEditDailyEntry ? (
                               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                                 <MaterialIcons name="lock-outline" size={16} color={outline} />
-                                <Text style={{ fontSize: 11, fontWeight: '800', color: outline }}>仅查看</Text>
+                                <Text style={{ fontSize: 11, fontWeight: '800', color: outline }}>未来 · 仅查看</Text>
                               </View>
                             ) : null}
                           </View>
@@ -606,7 +611,7 @@ export default function WeeklyReviewScreen() {
                                     placeholderTextColor={outline}
                                     multiline
                                     textAlignVertical="top"
-                                    editable={isTodayEntry}
+                                    editable={canEditDailyEntry}
                                     style={[
                                       styles.dailyFieldInput,
                                       {
@@ -614,7 +619,7 @@ export default function WeeklyReviewScreen() {
                                         backgroundColor: inputSurface,
                                         borderColor: inputBorder,
                                         color: text,
-                                        opacity: isTodayEntry ? 1 : 0.72,
+                                        opacity: canEditDailyEntry ? 1 : 0.72,
                                       },
                                     ]}
                                   />
@@ -622,7 +627,7 @@ export default function WeeklyReviewScreen() {
                               ))}
                             </View>
                           ))}
-                          {isTodayEntry ? (
+                          {canEditDailyEntry ? (
                             <Pressable
                               onPress={() => void onSaveDaily(entry.ymd, entry.fields)}
                               disabled={dailySavingYmd === entry.ymd}
@@ -645,7 +650,7 @@ export default function WeeklyReviewScreen() {
                                   opacity: 1,
                                 },
                               ]}>
-                              <Text style={[styles.dailySaveBtnText, { color: outline }]}>非当日，不可编辑与保存</Text>
+                              <Text style={[styles.dailySaveBtnText, { color: outline }]}>未来日期，不可编辑与保存</Text>
                             </View>
                           )}
                         </View>

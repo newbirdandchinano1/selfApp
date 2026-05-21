@@ -40,7 +40,7 @@ export async function runSilentGithubCloudSyncIfRemoteNewer(): Promise<void> {
   if (manifest.bundledDbVersion != null && manifest.bundledDbVersion > DB_VERSION) {
     if (__DEV__) {
       console.warn(
-        '[github launch] 云端备份的 bundledDbVersion 高于本应用 DB_VERSION，跳过静默同步（请先升级应用）',
+        '[kv launch] 云端备份的 bundledDbVersion 高于本应用 DB_VERSION，跳过静默同步（请先升级应用）',
       );
     }
     return;
@@ -57,6 +57,6 @@ export async function runSilentGithubCloudSyncIfRemoteNewer(): Promise<void> {
 
   const result = await triggerGithubCloudRestoreFromFullBackup();
   if (__DEV__ && !result.ok && result.reason !== 'no_config' && result.reason !== 'aborted') {
-    console.warn('[github launch] 静默从云同步失败', result.message);
+    console.warn('[kv launch] 静默从云同步失败', result.message);
   }
 }

@@ -22,7 +22,7 @@ export function parseFinanceAccountExtraObject(extraData: string | null): Record
 
 /**
  * 是否勾选「不计入」汇总：为 true 时从聚合数字中剔除该账户。
- * 资产账户：不计入总资产；负债账户：不计入总负债；首页净资产与资产页 hero 区均一致。
+ * 资产账户：不计入总资产；负债账户：同样不计入总资产；首页净资产与资产页 hero 区均一致。
  */
 export function isFinanceAccountExcludedFromAggregates(extraData: string | null): boolean {
   const obj = parseFinanceAccountExtraObject(extraData);
@@ -30,7 +30,7 @@ export function isFinanceAccountExcludedFromAggregates(extraData: string | null)
 }
 
 /**
- * 在保留原有 extra 字段的前提下，写入或清除「不计入资产/负债汇总」标记（存贮键名仍为 exclude_from_total_assets）。
+ * 在保留原有 extra 字段的前提下，写入或清除「不计入总资产汇总」标记（存贮键名仍为 exclude_from_total_assets）。
  * @returns 可传给 `updateFinanceAccount` 的 `extra_data` 字符串
  */
 export function mergeFinanceAccountExcludeFromTotalAssets(

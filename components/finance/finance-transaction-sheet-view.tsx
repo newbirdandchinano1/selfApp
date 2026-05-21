@@ -1,3 +1,4 @@
+import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
 import type { FinanceTransactionSheetController } from '@/hooks/use-finance-transaction-sheet-controller';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -62,6 +63,14 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
     activeCategories,
     selectedCategoryKey,
     setSelectedCategoryKey,
+    openAddCategoryModal,
+    closeAddCategoryModal,
+    saveNewCategory,
+    confirmDeleteCustomCategory,
+    addModalVisible,
+    newCategoryName,
+    setNewCategoryName,
+    isSavingCategory,
     zhipuTxnReady,
     aiLlmProviderLabel,
     sheetSentence,
@@ -338,19 +347,26 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
             ) : (
               <>
                 {activeSheetTab !== 'sentence' ? (
-                <View style={styles.categoryGrid}>
-                  {activeCategories.map((item) => {
-                    const isSelected = selectedCategoryKey === item.key;
-                    return (
-                    <Pressable key={item.key} style={styles.categoryItem} onPress={() => setSelectedCategoryKey(item.key)}>
-                      <View style={[styles.categoryIconWrap, { backgroundColor: isSelected ? `${item.color}20` : outlineVariant, borderColor: isSelected ? item.color : 'transparent' }]}>
-                        <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={22} color={item.color} />
-                      </View>
-                      <Text style={[styles.categoryLabel, { color: isSelected ? item.color : subtle }]}>{item.label}</Text>
-                    </Pressable>
-                    );
-                  })}
-                </View>
+                <FinanceCategoryPicker
+                  categories={activeCategories}
+                  selectedKey={selectedCategoryKey}
+                  onSelectKey={setSelectedCategoryKey}
+                  transactionType={activeSheetTab === 'income' ? 'income' : 'expense'}
+                  subtle={subtle}
+                  primary={primary}
+                  text={text}
+                  surface={surface}
+                  outlineVariant={outlineVariant}
+                  styles={styles}
+                  onAddPress={() => openAddCategoryModal(activeSheetTab === 'income' ? 'income' : 'expense')}
+                  onLongPressCustom={confirmDeleteCustomCategory}
+                  addModalVisible={addModalVisible}
+                  newCategoryName={newCategoryName}
+                  onChangeNewCategoryName={setNewCategoryName}
+                  isSavingCategory={isSavingCategory}
+                  onCloseAddModal={closeAddCategoryModal}
+                  onSaveNewCategory={() => void saveNewCategory(setSelectedCategoryKey)}
+                />
                 ) : (
                   <View style={styles.sentenceHintBox}>
                     <Text style={[styles.sentenceHintText, { color: subtle }]}>

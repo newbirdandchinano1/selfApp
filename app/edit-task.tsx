@@ -25,7 +25,7 @@ import {
 } from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused, useNavigation, usePreventRemove } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
@@ -242,6 +242,7 @@ const TITLE_MAX_LENGTH = 30;
 export default function EditTaskScreen() {
   const router = useRouter();
   const navigation = useNavigation();
+  const isFocused = useIsFocused();
   const params = useLocalSearchParams<{ id?: string; source?: string; from?: string | string[] }>();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
@@ -273,6 +274,7 @@ export default function EditTaskScreen() {
 
   const skipAutoSaveRef = React.useRef(false);
   const exitingAfterSaveRef = React.useRef(false);
+  const [skipRemoveGuard, setSkipRemoveGuard] = React.useState(false);
   const titleRef = React.useRef(title);
   const notesRef = React.useRef(notes);
   const priorityRef = React.useRef(priority);
@@ -606,26 +608,26 @@ export default function EditTaskScreen() {
     const ok = await persistTask();
     if (!ok) return;
     exitingAfterSaveRef.current = true;
+    setSkipRemoveGuard(true);
     navigateAfterLeaveEdit();
   }, [navigateAfterLeaveEdit, persistTask, saving]);
 
-  React.useEffect(() => {
-    const unsub = navigation.addListener('beforeRemove', (e) => {
-      if (skipAutoSaveRef.current || exitingAfterSaveRef.current) return;
-      e.preventDefault();
-      void (async () => {
-        const ok = await persistTask();
-        if (!ok) return;
-        exitingAfterSaveRef.current = true;
-        if (openedFromTaskDetail) {
-          router.dismissTo('/(tabs)/tasks');
-        } else {
-          navigation.dispatch(e.data.action);
-        }
-      })();
-    });
-    return unsub;
-  }, [navigation, openedFromTaskDetail, persistTask, router]);
+  const preventRemove =
+    isFocused && !loading && !skipRemoveGuard && !skipAutoSaveRef.current && !exitingAfterSaveRef.current;
+
+  usePreventRemove(preventRemove, ({ data }) => {
+    void (async () => {
+      const ok = await persistTask();
+      if (!ok) return;
+      exitingAfterSaveRef.current = true;
+      setSkipRemoveGuard(true);
+      if (openedFromTaskDetail) {
+        router.dismissTo('/(tabs)/tasks');
+      } else {
+        navigation.dispatch(data.action);
+      }
+    })();
+  });
 
   const navigateAfterDeleteTask = navigateAfterLeaveEdit;
 
@@ -647,6 +649,7 @@ export default function EditTaskScreen() {
             onPress: async () => {
               try {
                 skipAutoSaveRef.current = true;
+                setSkipRemoveGuard(true);
                 setSaving(true);
                 await deleteTask(taskId);
                 navigateAfterDeleteTask();
@@ -669,6 +672,7 @@ export default function EditTaskScreen() {
             onPress: async () => {
               try {
                 skipAutoSaveRef.current = true;
+                setSkipRemoveGuard(true);
                 setSaving(true);
                 await deleteTask(taskId);
                 navigateAfterDeleteTask();

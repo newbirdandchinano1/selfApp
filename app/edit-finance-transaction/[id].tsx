@@ -1,5 +1,8 @@
+import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
+import { FINANCE_SHEET_CATEGORY_ID_PREFIX } from '@/lib/repositories/finance/finance-sheet-category';
 import {
   deleteFinanceTransaction,
   getFinanceAccountsWithBalance,
@@ -28,13 +31,6 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type SheetTab = 'expense' | 'income' | 'transfer';
-
-type SheetCategory = {
-  key: string;
-  icon: keyof typeof MaterialIcons.glyphMap;
-  label: string;
-  color: string;
-};
 
 function parseExtraData(raw: string | null): Record<string, unknown> {
   if (!raw) return {};
@@ -91,37 +87,19 @@ export default function EditFinanceTransactionScreen() {
   const [includeInBudget, setIncludeInBudget] = React.useState(true);
   const [aiComment, setAiComment] = React.useState('');
 
-  const expenseCategories = React.useMemo<SheetCategory[]>(
-    () => [
-      { key: 'food', icon: 'restaurant', label: '餐饮', color: primary },
-      { key: 'snack', icon: 'icecream', label: '零食', color: secondary },
-      { key: 'fruit', icon: 'eco', label: '水果', color: tertiary },
-      { key: 'drink', icon: 'local-cafe', label: '饮品', color: primary },
-      { key: 'cook', icon: 'set-meal', label: '做饭食材', color: secondary },
-      { key: 'traffic', icon: 'directions-car', label: '交通', color: tertiary },
-      { key: 'home', icon: 'home', label: '居住', color: primary },
-      { key: 'cloth', icon: 'checkroom', label: '服饰', color: secondary },
-      { key: 'play', icon: 'sports-esports', label: '娱乐', color: tertiary },
-      { key: 'other', icon: 'more-horiz', label: '其他', color: subtle },
-    ],
-    [primary, secondary, subtle, tertiary],
-  );
-
-  const incomeCategories = React.useMemo<SheetCategory[]>(
-    () => [
-      { key: 'salary', icon: 'payments', label: '工资', color: secondary },
-      { key: 'bonus', icon: 'card-giftcard', label: '奖金', color: primary },
-      { key: 'refund', icon: 'receipt-long', label: '报销', color: tertiary },
-      { key: 'invest', icon: 'savings', label: '理财', color: secondary },
-      { key: 'sideline', icon: 'storefront', label: '副业', color: primary },
-      { key: 'allowance', icon: 'volunteer-activism', label: '补贴', color: tertiary },
-      { key: 'redpack', icon: 'redeem', label: '红包', color: secondary },
-      { key: 'gift', icon: 'card-membership', label: '礼金', color: primary },
-      { key: 'rent', icon: 'home-work', label: '租金', color: tertiary },
-      { key: 'other-income', icon: 'add-card', label: '其他', color: subtle },
-    ],
-    [primary, secondary, subtle, tertiary],
-  );
+  const {
+    expenseCategories,
+    incomeCategories,
+    addModalVisible,
+    newCategoryName,
+    setNewCategoryName,
+    isSavingCategory,
+    openAddCategoryModal,
+    closeAddCategoryModal,
+    saveNewCategory,
+    confirmDeleteCustomCategory,
+    customCategoriesReady,
+  } = useFinanceSheetCategories({ primary, secondary, tertiary, subtle });
 
   const activeCategories = tab === 'income' ? incomeCategories : tab === 'expense' ? expenseCategories : [];
 
@@ -162,13 +140,21 @@ export default function EditFinanceTransactionScreen() {
 
       const extra = parseExtraData(txn.extra_data);
       const ck = typeof extra.category_key === 'string' ? extra.category_key : null;
+      const cl = typeof extra.category_label === 'string' ? extra.category_label.trim() : '';
+      const pool = ttype === 'income' ? incomeCategories : expenseCategories;
       if (ck) {
-        const expenseKeys = new Set(expenseCategories.map((c) => c.key));
-        const incomeKeys = new Set(incomeCategories.map((c) => c.key));
-        if (ttype === 'income' && incomeKeys.has(ck)) setCategoryKey(ck);
-        else if (ttype === 'expense' && expenseKeys.has(ck)) setCategoryKey(ck);
-        else if (ttype === 'expense') setCategoryKey(expenseKeys.has(ck) ? ck : 'other');
-        else if (ttype === 'income') setCategoryKey(incomeKeys.has(ck) ? ck : 'other-income');
+        const keys = new Set(pool.map((c) => c.key));
+        if (keys.has(ck) || ck.startsWith(FINANCE_SHEET_CATEGORY_ID_PREFIX)) {
+          setCategoryKey(ck);
+        } else if (cl) {
+          const byLabel = pool.find((c) => c.label === cl);
+          setCategoryKey(byLabel?.key ?? (ttype === 'income' ? 'other-income' : 'other'));
+        } else {
+          setCategoryKey(ttype === 'income' ? 'other-income' : 'other');
+        }
+      } else if (cl) {
+        const byLabel = pool.find((c) => c.label === cl);
+        setCategoryKey(byLabel?.key ?? (ttype === 'income' ? 'other-income' : 'other'));
       } else {
         setCategoryKey(ttype === 'income' ? 'salary' : 'food');
       }
@@ -188,13 +174,15 @@ export default function EditFinanceTransactionScreen() {
   }, [load]);
 
   React.useEffect(() => {
-    if (tab === 'expense' && !expenseCategories.some((c) => c.key === categoryKey)) {
-      setCategoryKey('food');
+    if (!customCategoriesReady) return;
+    const pool = tab === 'income' ? incomeCategories : expenseCategories;
+    if (pool.some((c) => c.key === categoryKey)) return;
+    if (categoryKey.startsWith(FINANCE_SHEET_CATEGORY_ID_PREFIX)) {
+      setCategoryKey(tab === 'income' ? 'other-income' : 'other');
+      return;
     }
-    if (tab === 'income' && !incomeCategories.some((c) => c.key === categoryKey)) {
-      setCategoryKey('salary');
-    }
-  }, [categoryKey, expenseCategories, incomeCategories, tab]);
+    setCategoryKey(tab === 'income' ? 'salary' : 'food');
+  }, [categoryKey, customCategoriesReady, expenseCategories, incomeCategories, tab]);
 
   const onSave = React.useCallback(async () => {
     if (!row || !selectedAccount) {
@@ -229,7 +217,8 @@ export default function EditFinanceTransactionScreen() {
         note: noteDraft.trim() || null,
         extra_data: mergeExtraData(row.extra_data, extraPatch),
       });
-      if (tab !== 'transfer') {
+      const existingAiComment = row.ai_comment?.trim() ?? '';
+      if (tab !== 'transfer' && !existingAiComment) {
         await tryPersistFinanceTxnAiComment(row.id, {
           name: title,
           happened_at: happenedAt.toISOString(),
@@ -401,25 +390,26 @@ export default function EditFinanceTransactionScreen() {
           ) : null}
 
             <Text style={[styles.label, { color: subtle }]}>分类</Text>
-            <View style={styles.categoryGrid}>
-              {activeCategories.map((item) => {
-                const sel = categoryKey === item.key;
-                return (
-                  <Pressable key={item.key} style={styles.categoryItem} onPress={() => setCategoryKey(item.key)}>
-                    <View
-                      style={[
-                        styles.categoryIconWrap,
-                        { backgroundColor: sel ? `${item.color}22` : outlineVariant, borderColor: sel ? item.color : 'transparent' },
-                      ]}>
-                      <MaterialIcons name={item.icon} size={22} color={item.color} />
-                    </View>
-                    <Text style={[styles.categoryLabel, { color: sel ? item.color : subtle }]} numberOfLines={1}>
-                      {item.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
+            <FinanceCategoryPicker
+              categories={activeCategories}
+              selectedKey={categoryKey}
+              onSelectKey={setCategoryKey}
+              transactionType={tab === 'income' ? 'income' : 'expense'}
+              subtle={subtle}
+              primary={primary}
+              text={text}
+              surface={surface}
+              outlineVariant={outlineVariant}
+              styles={styles}
+              onAddPress={() => openAddCategoryModal(tab === 'income' ? 'income' : 'expense')}
+              onLongPressCustom={confirmDeleteCustomCategory}
+              addModalVisible={addModalVisible}
+              newCategoryName={newCategoryName}
+              onChangeNewCategoryName={setNewCategoryName}
+              isSavingCategory={isSavingCategory}
+              onCloseAddModal={closeAddCategoryModal}
+              onSaveNewCategory={() => void saveNewCategory(setCategoryKey)}
+            />
           </View>
         ) : (
           <View style={[styles.card, { backgroundColor: surface, borderColor: outlineVariant, marginTop: 12 }]}>

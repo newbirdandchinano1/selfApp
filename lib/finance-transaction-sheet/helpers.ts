@@ -9,6 +9,8 @@ export type SheetCategory = {
   icon: keyof typeof MaterialIcons.glyphMap;
   label: string;
   color: string;
+  /** 用户自定义分类（可长按删除） */
+  isCustom?: boolean;
 };
 
 export type ParsedOneLiner = {
@@ -110,4 +112,15 @@ export function buildIncomeCategories(primary: string, secondary: string, tertia
     { key: 'rent', icon: 'home-work', label: '租金', color: tertiary },
     { key: 'other-income', icon: 'add-card', label: '其他', color: subtle },
   ];
+}
+
+/** 将用户自定义分类插入到内置「其他」之前。 */
+export function mergeSheetCategories(builtin: SheetCategory[], custom: SheetCategory[]): SheetCategory[] {
+  if (!custom.length) return builtin;
+  const builtinKeys = new Set(builtin.map((c) => c.key));
+  const extra = custom.filter((c) => !builtinKeys.has(c.key));
+  if (!extra.length) return builtin;
+  const otherIdx = builtin.findIndex((c) => c.key === 'other' || c.key === 'other-income');
+  if (otherIdx < 0) return [...builtin, ...extra];
+  return [...builtin.slice(0, otherIdx), ...extra, ...builtin.slice(otherIdx)];
 }

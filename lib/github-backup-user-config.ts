@@ -4,21 +4,27 @@ import { Platform } from 'react-native';
 
 import type { GitHubBackupConfig } from '@/lib/github-backup-manager';
 
-/** 内置仓库归属（用户只需填 Token） */
-export const DEFAULT_GITHUB_OWNER = 'newbirdandchinano1';
-export const DEFAULT_GITHUB_REPO = 'APP-data';
-/** 账单单文件自动同步路径 */
+/** Cloudflare Worker KV 接口根地址 */
+export const DEFAULT_KV_API_URL = 'https://odd-cloud-eae0.1594834072.workers.dev/';
+/** 内置访问密钥（可在设置中覆盖） */
+export const DEFAULT_KV_AUTH_TOKEN = 'zhen8907146';
+/** 账单单文件自动同步 key */
 export const DEFAULT_GITHUB_BACKUP_PATH = 'backups/user_data.json';
-/** 全量备份根目录（含 sqlite/、kv/、manifest.json） */
+/** 全量备份根前缀（含 sqlite/、kv/、manifest.json） */
 export const DEFAULT_GITHUB_FULL_BACKUP_ROOT = 'backups/selfapp';
 
-const TOKEN_STORAGE_KEY = '@selfapp/github-backup-token';
-/** 旧版 SecureStore / Web 键，首次读取时迁移到 {@link TOKEN_STORAGE_KEY} */
+/** @deprecated 已迁移至 Cloudflare KV，保留常量名避免大范围重命名 */
+export const DEFAULT_GITHUB_OWNER = '';
+/** @deprecated 已迁移至 Cloudflare KV */
+export const DEFAULT_GITHUB_REPO = '';
+
+const TOKEN_STORAGE_KEY = '@selfapp/kv-backup-auth-token';
 const LEGACY_TOKEN_SECURE_KEY = 'selfapp:github-backup-token';
 const LEGACY_TOKEN_WEB_KEY = '@selfapp/github-backup-token-web';
+const LEGACY_TOKEN_STORAGE_KEY = '@selfapp/github-backup-token';
 
 export const GITHUB_BACKUP_NOT_CONFIGURED_MSG =
-  '未配置 GitHub：请在「设置 → 云备份与同步」中填写 Personal Access Token（需 repo 权限）。';
+  '未配置云端访问密钥：请在「设置 → 云备份与同步」中填写密钥，或使用应用内置默认值。';
 
 let cachedToken: string | null = null;
 
@@ -28,6 +34,16 @@ function isNonEmptyToken(value: string | null | undefined): value is string {
 
 async function migrateLegacyTokenIfNeeded(): Promise<string | null> {
   try {
+    const fromNewKey = await AsyncStorage.getItem(TOKEN_STORAGE_KEY);
+    if (isNonEmptyToken(fromNewKey)) return fromNewKey;
+
+    const fromLegacyAsync = await AsyncStorage.getItem(LEGACY_TOKEN_STORAGE_KEY);
+    if (isNonEmptyToken(fromLegacyAsync)) {
+      await AsyncStorage.setItem(TOKEN_STORAGE_KEY, fromLegacyAsync);
+      await AsyncStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+      return fromLegacyAsync;
+    }
+
     if (Platform.OS !== 'web') {
       const legacy = await SecureStore.getItemAsync(LEGACY_TOKEN_SECURE_KEY);
       if (isNonEmptyToken(legacy)) {
@@ -62,7 +78,7 @@ async function readPersistedToken(): Promise<string | null> {
   }
 }
 
-async function resolveGithubBackupToken(): Promise<string | null> {
+async function resolveKvAuthToken(): Promise<string> {
   if (isNonEmptyToken(cachedToken)) return cachedToken;
   const stored = await readPersistedToken();
   if (isNonEmptyToken(stored)) {
@@ -70,27 +86,33 @@ async function resolveGithubBackupToken(): Promise<string | null> {
     return stored;
   }
   if (__DEV__) {
-    const fromEnv = process.env.EXPO_PUBLIC_GITHUB_TOKEN;
+    const fromEnv = process.env.EXPO_PUBLIC_KV_AUTH_TOKEN ?? process.env.EXPO_PUBLIC_GITHUB_TOKEN;
     if (isNonEmptyToken(fromEnv)) return fromEnv;
   }
-  return null;
+  return DEFAULT_KV_AUTH_TOKEN;
 }
 
-/** 启动时调用：从 AsyncStorage 灌入内存缓存，供设置页与云备份读取 */
+/** 启动时调用：从 AsyncStorage 灌入内存缓存 */
 export async function loadGithubBackupTokenCache(): Promise<boolean> {
   cachedToken = await readPersistedToken();
-  return isNonEmptyToken(cachedToken);
+  return isNonEmptyToken(cachedToken) || isNonEmptyToken(DEFAULT_KV_AUTH_TOKEN);
 }
 
 export function hasGithubUserTokenSync(): boolean {
-  return isNonEmptyToken(cachedToken);
+  return isNonEmptyToken(cachedToken) || isNonEmptyToken(DEFAULT_KV_AUTH_TOKEN);
+}
+
+/** 仅返回用户在本机保存的自定义密钥（不含内置默认值） */
+export async function getGithubUserCustomToken(): Promise<string | null> {
+  if (isNonEmptyToken(cachedToken)) return cachedToken;
+  return readPersistedToken();
 }
 
 export async function getGithubUserToken(): Promise<string | null> {
-  return resolveGithubBackupToken();
+  const token = await resolveKvAuthToken();
+  return isNonEmptyToken(token) ? token : null;
 }
 
-/** 原样持久化，不做 trim 或格式校验 */
 export async function setGithubUserToken(token: string): Promise<void> {
   await AsyncStorage.setItem(TOKEN_STORAGE_KEY, token);
   cachedToken = token;
@@ -108,6 +130,7 @@ export async function clearGithubUserToken(): Promise<void> {
       await SecureStore.deleteItemAsync(LEGACY_TOKEN_SECURE_KEY);
     }
     await AsyncStorage.removeItem(LEGACY_TOKEN_WEB_KEY);
+    await AsyncStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
   } catch {
     // ignore
   }
@@ -118,12 +141,11 @@ export function getGitHubFullBackupRoot(): string {
 }
 
 export async function getGitHubBackupConfig(): Promise<GitHubBackupConfig | null> {
-  const token = await resolveGithubBackupToken();
+  const token = await resolveKvAuthToken();
   if (!isNonEmptyToken(token)) return null;
   return {
     token,
-    owner: DEFAULT_GITHUB_OWNER,
-    repo: DEFAULT_GITHUB_REPO,
+    apiUrl: DEFAULT_KV_API_URL,
     path: DEFAULT_GITHUB_BACKUP_PATH,
   };
 }

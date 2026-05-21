@@ -57,7 +57,7 @@ export function markGithubSqliteTableDirty(table: string): void {
 }
 
 /**
- * 在写入与 GitHub 全量备份 manifest 中 `kv/` 对应的 AsyncStorage 数据后调用，
+ * 在写入与云端全量备份 manifest 中 `kv/` 对应的 AsyncStorage 数据后调用，
  * 触发防抖增量上传该 `kv/{slice}.json`。
  */
 export function markGithubKvSliceDirty(slice: GithubCloudKvManifestSlice | string): void {

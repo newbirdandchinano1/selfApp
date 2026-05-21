@@ -208,7 +208,7 @@ async function buildKvSliceUploadSpec(
   );
   if (utf8ByteLength(body) > MAX_GITHUB_SQLITE_JSON_UTF8_BYTES) {
     throw new Error(
-      `KV「${key}」序列化后超过 GitHub 单文件建议上限（约 ${Math.round(MAX_GITHUB_SQLITE_JSON_UTF8_BYTES / 1024)}KB）`,
+      `KV「${key}」序列化后超过单条 KV 建议上限（约 ${Math.round(MAX_GITHUB_SQLITE_JSON_UTF8_BYTES / 1024)}KB）`,
     );
   }
   const path = `${backupRoot}/kv/${key}.json`;
@@ -230,7 +230,7 @@ async function uploadGithubBackupWithConfig(
   opts?: { signal?: AbortSignal },
 ): Promise<GithubCloudSyncResult> {
   if (utf8ByteLength(json) > MAX_GITHUB_SQLITE_JSON_UTF8_BYTES) {
-    const message = `账单 JSON 超过 GitHub 单文件建议上限（约 ${Math.round(MAX_GITHUB_SQLITE_JSON_UTF8_BYTES / 1024)}KB），请使用个人页「一键全量备份」或精简数据后再试。`;
+    const message = `账单 JSON 超过单条 KV 建议上限（约 ${Math.round(MAX_GITHUB_SQLITE_JSON_UTF8_BYTES / 1024)}KB），请使用设置页「一键全量备份」或精简数据后再试。`;
     return { ok: false, reason: 'upload_failed', message, diagnosticText: message };
   }
   const manager = new GitHubBackupManager(cfg);
@@ -438,7 +438,7 @@ function buildMultiFileFullBackupSpecs(
     );
     if (utf8ByteLength(body) > MAX_GITHUB_SQLITE_JSON_UTF8_BYTES) {
       throw new Error(
-        `KV「${kv.name}」序列化后超过 GitHub 单文件建议上限（约 ${Math.round(MAX_GITHUB_SQLITE_JSON_UTF8_BYTES / 1024)}KB），请精简数据或联系开发者支持分片 KV。`,
+        `KV「${kv.name}」序列化后超过单条 KV 建议上限（约 ${Math.round(MAX_GITHUB_SQLITE_JSON_UTF8_BYTES / 1024)}KB），请精简数据或联系开发者支持分片。`,
       );
     }
     const path = `${root}/kv/${kv.name}.json`;
@@ -655,7 +655,7 @@ export async function triggerGithubCloudSync(opts?: {
 }
 
 /**
- * 将脏 SQLite 表与 manifest 中已登记的 KV 切片增量写入 GitHub。
+ * 将脏 SQLite 表与 manifest 中已登记的 KV 切片增量写入云端 KV。
  * 依赖仓库中已存在可解析的全量 manifest；财务相关表仍走 `scheduleGithubFinanceCloudSyncDebounced`。
  */
 export async function pushGithubIncrementalCloudDirtyToCloudIfNeeded(): Promise<void> {
@@ -835,7 +835,7 @@ export async function pushGithubIncrementalCloudDirtyToCloudIfNeeded(): Promise<
 
 let financeBackupDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** 账单变更后调用：合并多次操作为一次上传，避免频繁打 GitHub API */
+/** 账单变更后调用：合并多次操作为一次上传，避免频繁打云端 API */
 export function scheduleGithubFinanceCloudSyncDebounced(delayMs = 4000): void {
   if (financeBackupDebounceTimer) {
     clearTimeout(financeBackupDebounceTimer);

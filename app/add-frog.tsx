@@ -26,6 +26,42 @@ type FrogTaskMeta = {
   frogAssignedOn?: string;
 };
 
+type TaskScheduleMeta = {
+  mode?: 'date' | 'time';
+  date?: string;
+  range?: { start: string; end: string };
+};
+
+function parseTaskSchedule(extraData: string | null): TaskScheduleMeta | null {
+  if (!extraData) return null;
+  try {
+    const parsed = JSON.parse(extraData) as { schedule?: TaskScheduleMeta };
+    return parsed?.schedule ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function formatScheduleDateToYMD(value: string): string {
+  const t = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return t.slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** 与任务 Tab 一致：逻辑日是否落在日程区间内 */
+function isLogicalDayInYmdRange(todayYmd: string, startYmd: string, endYmd: string): boolean {
+  if (!startYmd || !endYmd) return true;
+  if (todayYmd < startYmd) return false;
+  if (startYmd === endYmd) return todayYmd === startYmd;
+  if (endYmd === addDaysToYmd(startYmd, 1)) return todayYmd < endYmd;
+  return todayYmd <= endYmd;
+}
+
 function parseTaskExtraData(raw: string | null): Record<string, unknown> {
   if (!raw) return {};
   try {
@@ -121,12 +157,40 @@ function formatDueSubtitle(dueDate: string, now: Date) {
   return now.getTime() > parsed.date.getTime() ? `今日 ${hh}:${mm} 已过期` : `今日 ${hh}:${mm}`;
 }
 
-function getTaskDueDayYmd(t: TaskRow): string | null {
+function getTaskDueDayYmdFromDueDate(t: TaskRow): string | null {
   if (!t.due_date?.trim()) return null;
   if (!isValidDate(t.due_date)) return null;
   const parsed = parseDueDateAsLocalMoment(t.due_date);
   if (!parsed) return null;
   return formatLocalYmd(parsed.date);
+}
+
+/** 用于青蛙时间线分组：区间任务在「今天落在区间内」时归入今日，否则按区间起止日推断 */
+function getTaskDueDayYmdForFrog(t: TaskRow, todayYmd: string): string | null {
+  const schedule = parseTaskSchedule(t.extra_data);
+  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    const start = formatScheduleDateToYMD(schedule.range.start);
+    const end = formatScheduleDateToYMD(schedule.range.end);
+    if (start && end) {
+      if (isLogicalDayInYmdRange(todayYmd, start, end)) return todayYmd;
+      if (todayYmd < start) return start;
+      return end;
+    }
+  }
+  return getTaskDueDayYmdFromDueDate(t);
+}
+
+function taskOverlapsFrogPickWindow(t: TaskRow, todayYmd: string, lastIncludedYmd: string): boolean {
+  const schedule = parseTaskSchedule(t.extra_data);
+  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    const start = formatScheduleDateToYMD(schedule.range.start);
+    const end = formatScheduleDateToYMD(schedule.range.end);
+    if (start && end) return start <= lastIncludedYmd && end >= todayYmd;
+  }
+  if (!t.due_date?.trim()) return true;
+  const dueYmd = getTaskDueDayYmdForFrog(t, todayYmd);
+  if (!dueYmd) return true;
+  return dueYmd <= lastIncludedYmd;
 }
 
 function getTaskDueSortMs(t: TaskRow): number | null {
@@ -201,12 +265,7 @@ function groupTasksToSections(rows: TaskRow[], now: Date, todayYmd: string): Sec
       const assignedOn = typeof extra.frogAssignedOn === 'string' ? extra.frogAssignedOn : '';
       return assignedOn !== todayYmd;
     })
-    .filter((t) => {
-      const dueYmd = getTaskDueDayYmd(t);
-      if (!t.due_date?.trim()) return true;
-      if (!dueYmd) return true;
-      return dueYmd <= lastIncludedYmd;
-    });
+    .filter((t) => taskOverlapsFrogPickWindow(t, todayYmd, lastIncludedYmd));
 
   const secToday: Item[] = [];
   const secSoon: Item[] = [];
@@ -216,7 +275,7 @@ function groupTasksToSections(rows: TaskRow[], now: Date, todayYmd: string): Sec
 
   eligible.forEach((t) => {
     const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
-    const dueYmd = getTaskDueDayYmd(t);
+    const dueYmd = getTaskDueDayYmdForFrog(t, todayYmd);
     const bucket = timeBucketForDueYmd(dueYmd, todayYmd, soonEndYmd, weekEndYmd, sevenEndYmd);
     if (bucket === 'exclude') return;
 

@@ -1,5 +1,5 @@
 /**
- * 全量 / 增量 GitHub 多文件备份共用的 manifest 结构（与云端 `manifest.json` 一致）。
+ * 全量 / 增量云端多 key 备份共用的 manifest 结构（与云端 `manifest.json` 一致）。
  */
 
 import { parseSqliteBackupRepoPath } from '@/lib/github-sqlite-backup-chunk';

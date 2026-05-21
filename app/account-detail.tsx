@@ -459,16 +459,16 @@ export default function AccountDetailScreen() {
             </View>
           </View>
 
-          {/* 资产：不计入「总资产」汇总；负债：不计入「总负债」汇总；首页净资产均与资产页一致 */}
+          {/* 资产：不计入「总资产」汇总；负债：同样是不计入「总资产」汇总；首页净资产均与资产页一致 */}
           {account ? (
             <View style={[styles.optionRow, { borderTopColor: colors.outline }]}>
               <View style={styles.optionTextCol}>
-                <Text style={[Typography.bodyStrong, { color: colors.text }]}>
-                  {isLiabilityAccount ? '不计入总负债' : '不计入总资产'}
+                <Text style={[Typography.bodyStrong, { color: colors.text }]}> 
+                  不计入总资产
                 </Text>
-                <Text style={[Typography.caption, styles.optionHint, { color: colors.textSecondary }]}>
+                <Text style={[Typography.caption, styles.optionHint, { color: colors.textSecondary }]}> 
                   {isLiabilityAccount
-                    ? '开启后，该负债不参与首页净资产与资产页「总负债」汇总'
+                    ? '开启后，该负债不参与首页净资产与资产页「总资产」汇总'
                     : '开启后，该账户不参与首页净资产与资产页「总资产」汇总'}
                 </Text>
               </View>

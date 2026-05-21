@@ -11,5 +11,15 @@ class ZhengBackgroundModule : Module() {
       val activity = appContext.currentActivity
       activity?.moveTaskToBack(true)
     }
+
+    AsyncFunction("beginBackgroundExecution") {
+      val context = appContext.reactContext ?: return@AsyncFunction
+      ZhengBackgroundForegroundService.begin(context)
+    }
+
+    AsyncFunction("endBackgroundExecution") {
+      val context = appContext.reactContext ?: return@AsyncFunction
+      ZhengBackgroundForegroundService.end(context)
+    }
   }
 }

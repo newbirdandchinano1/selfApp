@@ -7,7 +7,7 @@ import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useNavigation } from '@react-navigation/native';
+import { useIsFocused, useNavigation, usePreventRemove } from '@react-navigation/native';
 import React from 'react';
 import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -272,6 +272,7 @@ export default function TaskDetailScreen() {
   const taskId = normalizeRouteParam(idParam);
   const router = useRouter();
   const navigation = useNavigation();
+  const isFocused = useIsFocused();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
@@ -300,7 +301,8 @@ export default function TaskDetailScreen() {
   dueDateRef.current = dueDate;
   const skipAutoSaveRef = React.useRef(false);
   const exitingAfterSaveRef = React.useRef(false);
-  const taskLoadedRef = React.useRef(false);
+  const [taskLoaded, setTaskLoaded] = React.useState(false);
+  const [skipRemoveGuard, setSkipRemoveGuard] = React.useState(false);
 
   const applySchedulePick = React.useCallback((picked: SchedulePickerResult, baseExtraRaw: string | null) => {
     const currentMeta = parseTaskMeta(baseExtraRaw);
@@ -344,7 +346,7 @@ export default function TaskDetailScreen() {
     if (!taskId) return;
     const row = await getTaskById(taskId);
     if (row) {
-      taskLoadedRef.current = true;
+      setTaskLoaded(true);
       setTitle(row.title);
       setNote(row.note ?? '');
       setStatus(row.status);
@@ -357,7 +359,7 @@ export default function TaskDetailScreen() {
       setReminderOption(reminder && REMINDER_OPTIONS.includes(reminder as ReminderOption) ? (reminder as ReminderOption) : '不提前');
       setRepeatOption(repeat && REPEAT_OPTIONS.includes(repeat as RepeatOption) ? (repeat as RepeatOption) : '不重复');
     } else {
-      taskLoadedRef.current = false;
+      setTaskLoaded(false);
       setTitle('');
       setNote('');
       setStatus('todo');
@@ -384,7 +386,7 @@ export default function TaskDetailScreen() {
   );
 
   const persistTaskDetail = React.useCallback(async (): Promise<boolean> => {
-    if (!taskId || !taskLoadedRef.current || skipAutoSaveRef.current) return true;
+    if (!taskId || !taskLoaded || skipAutoSaveRef.current) return true;
     try {
       setSaving(true);
       await updateTask(taskId, {
@@ -399,29 +401,28 @@ export default function TaskDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [taskId]);
+  }, [taskId, taskLoaded]);
 
   const exitWithSave = React.useCallback(async () => {
     if (exitingAfterSaveRef.current) return;
     const ok = await persistTaskDetail();
     if (!ok) return;
     exitingAfterSaveRef.current = true;
+    setSkipRemoveGuard(true);
     router.back();
   }, [persistTaskDetail, router]);
 
-  React.useEffect(() => {
-    const unsub = navigation.addListener('beforeRemove', (e) => {
-      if (skipAutoSaveRef.current || exitingAfterSaveRef.current) return;
-      e.preventDefault();
-      void (async () => {
-        const ok = await persistTaskDetail();
-        if (!ok) return;
-        exitingAfterSaveRef.current = true;
-        navigation.dispatch(e.data.action);
-      })();
-    });
-    return unsub;
-  }, [navigation, persistTaskDetail]);
+  const preventRemove = isFocused && taskLoaded && !skipRemoveGuard && !skipAutoSaveRef.current;
+
+  usePreventRemove(preventRemove, ({ data }) => {
+    void (async () => {
+      const ok = await persistTaskDetail();
+      if (!ok) return;
+      exitingAfterSaveRef.current = true;
+      setSkipRemoveGuard(true);
+      navigation.dispatch(data.action);
+    })();
+  });
 
   const bg = isDark ? theme.background : '#faf8ff';
   const surface = isDark ? 'rgba(30, 41, 59, 0.70)' : '#ffffff';

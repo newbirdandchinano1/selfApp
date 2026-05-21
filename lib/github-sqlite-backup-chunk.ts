@@ -1,5 +1,5 @@
 /**
- * GitHub Contents API 对单文件 JSON 体积有限制；超大表拆成多段 `*.partNNN.json` 上传。
+ * 单条 KV 值体积有限制；超大表拆成多段 `*.partNNN.json` 上传。
  */
 
 export const MAX_GITHUB_SQLITE_JSON_UTF8_BYTES = 950 * 1024;

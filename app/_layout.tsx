@@ -141,7 +141,10 @@ function RootLayoutInner() {
             <Stack.Screen name="add-frog" />
             <Stack.Screen name="add-task" />
             <Stack.Screen name="add-standalone-todo" />
-            <Stack.Screen name="edit-task" />
+            <Stack.Screen
+              name="edit-task"
+              options={{ gestureEnabled: false, headerBackButtonMenuEnabled: false }}
+            />
             <Stack.Screen name="add-project" />
             <Stack.Screen name="add-subtask" />
             <Stack.Screen name="add-account" />
@@ -152,7 +155,10 @@ function RootLayoutInner() {
             <Stack.Screen name="vision-create" />
             <Stack.Screen name="edit-goal-dimension/[id]" />
             <Stack.Screen name="vision-detail/[id]" />
-            <Stack.Screen name="task/[id]" />
+            <Stack.Screen
+              name="task/[id]"
+              options={{ gestureEnabled: false, headerBackButtonMenuEnabled: false }}
+            />
             <Stack.Screen name="health-calendar" />
             <Stack.Screen name="intake-history" />
             <Stack.Screen name="finance-calendar" />

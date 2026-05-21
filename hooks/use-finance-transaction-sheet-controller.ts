@@ -21,17 +21,15 @@ import {
   parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
 import {
-  buildExpenseCategories,
-  buildIncomeCategories,
   parseFinanceSentenceLocal,
   pickSheetCategoryForParsed,
   type AccountPickerTarget,
   type ParsedOneLiner,
   type SentenceLedgerPreviewState,
   type SentenceResolveResult,
-  type SheetCategory,
   type SheetTab,
 } from '@/lib/finance-transaction-sheet/helpers';
+import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Dimensions, Platform, type KeyboardEvent } from 'react-native';
@@ -98,14 +96,19 @@ export function useFinanceTransactionSheetController({
     defaultIncomeAccountId: null,
   });
 
-  const expenseCategories = React.useMemo(
-    () => buildExpenseCategories(primary, secondary, tertiary, subtle),
-    [primary, secondary, subtle, tertiary],
-  );
-  const incomeCategories = React.useMemo(
-    () => buildIncomeCategories(primary, secondary, tertiary, subtle),
-    [primary, secondary, subtle, tertiary],
-  );
+  const sheetCategories = useFinanceSheetCategories({ primary, secondary, tertiary, subtle });
+  const {
+    expenseCategories,
+    incomeCategories,
+    addModalVisible,
+    newCategoryName,
+    setNewCategoryName,
+    isSavingCategory,
+    openAddCategoryModal,
+    closeAddCategoryModal,
+    saveNewCategory,
+    confirmDeleteCustomCategory,
+  } = sheetCategories;
 
   const zhipuTxnReady = isActiveAiLlmConfigured();
   const aiLlmProviderLabel = getActiveAiLlmProviderLabel();
@@ -813,6 +816,14 @@ export function useFinanceTransactionSheetController({
     setSelectedHappenedAt,
     setSheetAmount,
     isSavingTransaction,
+    openAddCategoryModal,
+    closeAddCategoryModal,
+    saveNewCategory,
+    confirmDeleteCustomCategory,
+    addModalVisible,
+    newCategoryName,
+    setNewCategoryName,
+    isSavingCategory,
   };
 }
 

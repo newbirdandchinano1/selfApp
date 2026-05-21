@@ -19,10 +19,10 @@ import {
 } from '@/lib/github-cloud-sync';
 import {
   DEFAULT_GITHUB_FULL_BACKUP_ROOT,
-  DEFAULT_GITHUB_OWNER,
-  DEFAULT_GITHUB_REPO,
+  DEFAULT_KV_API_URL,
+  DEFAULT_KV_AUTH_TOKEN,
   clearGithubUserToken,
-  getGithubUserToken,
+  getGithubUserCustomToken,
   hasGithubUserTokenSync,
   loadGithubBackupTokenCache,
   setGithubUserToken,
@@ -149,10 +149,9 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
   const refreshGithubTokenFromStorage = useCallback(async () => {
     await loadGithubBackupTokenCache();
-    const token = await getGithubUserToken();
-    const configured = typeof token === 'string' && token.length > 0;
-    setGithubTokenConfigured(configured);
-    setGithubTokenDraft(token ?? '');
+    const custom = await getGithubUserCustomToken();
+    setGithubTokenConfigured(hasGithubUserTokenSync());
+    setGithubTokenDraft(custom ?? '');
   }, []);
 
   useEffect(() => {
@@ -162,15 +161,17 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   }, [loadLastFullGithubBackupMeta, refreshGithubTokenFromStorage]);
 
   const saveGithubToken = useCallback(async () => {
-    if (githubTokenDraft.length === 0) {
-      Alert.alert('GitHub Token', '请输入内容后再保存，或点「清除」移除已保存的 Token。');
-      return;
-    }
     setGithubTokenSaving(true);
     try {
+      if (githubTokenDraft.length === 0) {
+        await clearGithubUserToken();
+        setGithubTokenConfigured(true);
+        Alert.alert('已恢复默认', '将使用应用内置 Cloudflare KV 访问密钥。');
+        return;
+      }
       await setGithubUserToken(githubTokenDraft);
       setGithubTokenConfigured(true);
-      Alert.alert('已保存', 'Token 已写入本机并持久保存，重启应用后仍有效。');
+      Alert.alert('已保存', '自定义密钥已写入本机，重启应用后仍有效。');
     } catch (e) {
       Alert.alert('保存失败', e instanceof Error ? e.message : String(e));
     } finally {
@@ -179,7 +180,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   }, [githubTokenDraft]);
 
   const clearGithubToken = useCallback(() => {
-    Alert.alert('清除 GitHub Token', '清除后云备份与从云同步将不可用，直到重新填写 Token。', [
+    Alert.alert('清除自定义密钥', '清除后将使用应用内置默认密钥；也可重新填写自定义密钥。', [
       { text: '取消', style: 'cancel' },
       {
         text: '清除',
@@ -265,7 +266,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           r.multiFileBackup != null
             ? `\n\n已上传 ${r.multiFileBackup.fileCount} 个 JSON 文件到「${r.multiFileBackup.root}/」。`
             : '';
-        Alert.alert('云备份', `各表与本地 KV 已写入仓库。${multi}${timeLine}${sub}`);
+        Alert.alert('云备份', `各表与本地数据已写入 Cloudflare KV。${multi}${timeLine}${sub}`);
       } else if (r.reason === 'aborted') {
         Alert.alert('云备份已中止', r.message);
       } else if (r.reason === 'unsupported_platform') {
@@ -338,7 +339,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     if (githubCloudOpInFlightRef.current || githubCloudOpBusy) return;
     Alert.alert(
       '从云同步',
-      '将按 GitHub 上 manifest.json 所列文件，用云端全量备份覆盖本机数据。未备份的本地改动将丢失。确定继续？',
+      '将按云端 manifest.json 所列 key，用全量备份覆盖本机数据。未备份的本地改动将丢失。确定继续？',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -489,18 +490,17 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           style={styles.section}>
           {renderSectionHead('BACKUP', '云备份与同步')}
           <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 12 }]}>
-            <Text style={[styles.rowTitle, { color: text }]}>GitHub Personal Access Token</Text>
+            <Text style={[styles.rowTitle, { color: text }]}>Cloudflare KV 访问密钥</Text>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 18 }]}>
-              仓库已内置：{DEFAULT_GITHUB_OWNER}/{DEFAULT_GITHUB_REPO}，备份目录 {DEFAULT_GITHUB_FULL_BACKUP_ROOT}
-              /。粘贴 Token 后点保存（仅存本机 AsyncStorage，不打进安装包）。
+              接口：{DEFAULT_KV_API_URL}，备份前缀 {DEFAULT_GITHUB_FULL_BACKUP_ROOT}/。留空保存则使用内置默认密钥；自定义密钥仅存本机。
             </Text>
             <Text style={[styles.rowHint, { color: githubTokenConfigured ? primary : outline, fontWeight: '700' }]}>
-              {githubTokenConfigured ? '已配置 Token，可使用下方备份与同步' : '尚未配置 Token'}
+              {githubTokenConfigured ? '已就绪，可使用下方备份与同步' : '将使用内置默认密钥'}
             </Text>
             <AppInput
               value={githubTokenDraft}
               onChangeText={setGithubTokenDraft}
-              placeholder="粘贴或输入 GitHub Token"
+              placeholder={`留空则用内置密钥；默认 ${DEFAULT_KV_AUTH_TOKEN.slice(0, 4)}…`}
               autoCapitalize="none"
               autoCorrect={false}
               spellCheck={false}
@@ -529,7 +529,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                 {githubTokenSaving ? (
                   <ActivityIndicator size="small" color={primary} />
                 ) : (
-                  <Text style={[styles.rowTitle, { color: primary, fontSize: 14 }]}>保存 Token</Text>
+                  <Text style={[styles.rowTitle, { color: primary, fontSize: 14 }]}>保存密钥</Text>
                 )}
               </Pressable>
             </View>
@@ -548,9 +548,9 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                 <MaterialIcons name="cloud-upload" size={26} color={primary} />
               )}
               <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>一键全量备份到 GitHub</Text>
+                <Text style={[styles.rowTitle, { color: text }]}>一键全量备份到云端</Text>
                 <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  SQLite 各表与备忘、技能等 KV 写入仓库备份目录，并更新 manifest。
+                  SQLite 各表与备忘、技能等数据写入 Cloudflare KV，并更新 manifest。
                 </Text>
                 {cloudBackupBusy
                   ? (() => {
@@ -597,7 +597,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               <View style={{ flex: 1 }}>
                 <Text style={[styles.rowTitle, { color: text }]}>从云同步到本机</Text>
                 <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  读取 manifest.json，用云端快照覆盖本机 SQLite 与 KV 数据。
+                  从云端 KV 读取 manifest.json，用快照覆盖本机 SQLite 与本地 KV 数据。
                 </Text>
               </View>
               <MaterialIcons name="chevron-right" size={22} color={outline} />
