@@ -30,6 +30,12 @@ import {
   sanitizeVisionAmountInput,
 } from '@/lib/repositories/visions/vision-amount';
 import { visionRowToWallCard } from '@/lib/repositories/visions/vision-present';
+import {
+  collectLinkedProjectsFromSubGoal,
+  collectVisionSubGoalsFromExtra,
+  isBoundVisionSubGoalTaskComplete,
+  serializeVisionSubGoalsForExtra,
+} from '@/lib/repositories/visions/vision.types';
 import type { VisionWallCardModel, VisionWallSubGoalItem } from '@/lib/visions-registry';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -70,12 +76,21 @@ type ProgressEditTarget = {
 };
 
 function subGoalWallMeta(sg: VisionWallSubGoalItem): string {
-  if (sg.taskProgress) {
-    const pct = Math.round((sg.taskProgress.completed / sg.taskProgress.total) * 100);
-    return sg.standaloneDone && sg.taskProgress.total === 1 ? '已完成' : `${pct}%`;
+  if (sg.boundProjectCount > 0) {
+    if (isBoundVisionSubGoalTaskComplete(sg.taskProgress)) return '已完成';
+    if (sg.taskProgress && sg.taskProgress.total > 0) {
+      const pct = Math.round((sg.taskProgress.completed / sg.taskProgress.total) * 100);
+      return `${pct}%`;
+    }
+    return '已绑定';
   }
-  if (sg.boundProjectCount > 0) return '已绑定';
+  if (sg.standaloneDone) return '已完成';
   return '未完成';
+}
+
+function isWallSubGoalDone(sg: VisionWallSubGoalItem): boolean {
+  if (sg.boundProjectCount > 0) return isBoundVisionSubGoalTaskComplete(sg.taskProgress);
+  return Boolean(sg.standaloneDone);
 }
 
 const VisionCard = ({
@@ -85,6 +100,8 @@ const VisionCard = ({
   onAdjustAmount,
   onOpenProgressEdit,
   onToggleTargetComplete,
+  onToggleSubGoalDone,
+  togglingSubGoalId,
 }: {
   card: VisionWallCardModel;
   visionId: string;
@@ -92,6 +109,8 @@ const VisionCard = ({
   onAdjustAmount: (visionId: string, deltaSign: -1 | 1, step: number) => void;
   onOpenProgressEdit: (target: ProgressEditTarget) => void;
   onToggleTargetComplete: (visionId: string, isComplete: boolean) => void;
+  onToggleSubGoalDone: (visionId: string, subGoalId: string) => void;
+  togglingSubGoalId: string | null;
 }) => {
   const showCountAdjust = card.kind === 'count' && card.wallAdjust;
   const targetSubGoals = card.kind === 'target' ? (card.subGoals ?? []) : [];
@@ -265,14 +284,59 @@ const VisionCard = ({
           <View style={styles.subGoalsBlock}>
             <Text style={styles.subGoalsKicker}>小目标</Text>
             <View style={styles.subGoalsList}>
-              {visibleSubGoals.map((sg, idx) => (
-                <View key={sg.id} style={styles.subGoalRow}>
-                  <Text style={styles.subGoalName} numberOfLines={1}>
-                    {idx + 1}. {sg.name}
-                  </Text>
-                  <Text style={styles.subGoalMeta}>{subGoalWallMeta(sg)}</Text>
-                </View>
-              ))}
+              {visibleSubGoals.map((sg, idx) => {
+                const unbound = sg.boundProjectCount === 0;
+                const done = isWallSubGoalDone(sg);
+                const isToggling = togglingSubGoalId === `${visionId}:${sg.id}`;
+
+                return (
+                  <View key={sg.id} style={styles.subGoalRow}>
+                    {unbound ? (
+                      <Pressable
+                        onPress={() => onToggleSubGoalDone(visionId, sg.id)}
+                        disabled={isToggling}
+                        hitSlop={6}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: done }}
+                        accessibilityLabel={done ? `取消完成 ${sg.name}` : `完成小目标 ${sg.name}`}
+                        style={({ pressed }) => [
+                          styles.subGoalCheckBtn,
+                          { opacity: isToggling ? 0.45 : pressed ? 0.75 : 1 },
+                        ]}
+                      >
+                        {isToggling ? (
+                          <ActivityIndicator size="small" color="rgba(255,255,255,0.65)" />
+                        ) : (
+                          <MaterialIcons
+                            name={done ? 'check-circle' : 'radio-button-unchecked'}
+                            size={20}
+                            color={done ? '#bbf7d0' : 'rgba(255,255,255,0.55)'}
+                          />
+                        )}
+                      </Pressable>
+                    ) : (
+                      <MaterialIcons
+                        name={done ? 'check-circle' : 'radio-button-unchecked'}
+                        size={20}
+                        color={done ? '#bbf7d0' : 'rgba(255,255,255,0.4)'}
+                        style={styles.subGoalCheckIcon}
+                      />
+                    )}
+                    <Text
+                      style={[
+                        styles.subGoalName,
+                        done && styles.subGoalNameDone,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {idx + 1}. {sg.name}
+                    </Text>
+                    <Text style={[styles.subGoalMeta, done && styles.subGoalMetaDone]}>
+                      {subGoalWallMeta(sg)}
+                    </Text>
+                  </View>
+                );
+              })}
               {hiddenSubGoalCount > 0 ? (
                 <Text style={styles.subGoalsMore}>还有 {hiddenSubGoalCount} 个</Text>
               ) : null}
@@ -296,6 +360,7 @@ export default function VisionWallScreen() {
   const [progressEdit, setProgressEdit] = useState<ProgressEditTarget | null>(null);
   const [progressEditText, setProgressEditText] = useState('');
   const [progressEditBusy, setProgressEditBusy] = useState(false);
+  const [togglingSubGoalKey, setTogglingSubGoalKey] = useState<string | null>(null);
 
   const [newDimModalVisible, setNewDimModalVisible] = useState(false);
   const [newDimTitle, setNewDimTitle] = useState('');
@@ -339,6 +404,43 @@ export default function VisionWallScreen() {
     useCallback(() => {
       void loadWallEntries();
     }, [loadWallEntries]),
+  );
+
+  const onToggleSubGoalDone = useCallback(
+    async (visionId: string, subGoalId: string) => {
+      const toggleKey = `${visionId}:${subGoalId}`;
+      setTogglingSubGoalKey(toggleKey);
+      try {
+        const row = await getVisionRowById(visionId);
+        if (!row || row.track_kind !== 'target') return;
+        const extra = parseVisionExtra(row.extra_data) ?? {};
+        const subGoals = collectVisionSubGoalsFromExtra(extra);
+        const target = subGoals.find(sg => sg.id === subGoalId);
+        if (!target || collectLinkedProjectsFromSubGoal(target).length > 0) return;
+
+        const nextDone = !target.done;
+        const nextSubGoals = subGoals.map(sg => {
+          if (sg.id !== subGoalId) return sg;
+          if (nextDone) return { ...sg, done: true };
+          const { done: _omit, ...rest } = sg;
+          return rest;
+        });
+        const serialized = serializeVisionSubGoalsForExtra(nextSubGoals);
+        const nextExtra = { ...extra };
+        if (serialized.length > 0) {
+          nextExtra.subGoals = serialized;
+        } else {
+          delete nextExtra.subGoals;
+        }
+        await updateVision(visionId, { extra_data: serializeVisionExtra(nextExtra) });
+        await loadWallEntries();
+      } catch {
+        Alert.alert('更新失败', '无法更新小目标完成状态，请稍后重试。');
+      } finally {
+        setTogglingSubGoalKey(null);
+      }
+    },
+    [loadWallEntries],
   );
 
   const onToggleTargetComplete = useCallback(
@@ -775,6 +877,8 @@ export default function VisionWallScreen() {
                               onAdjustAmount={onAdjustVisionAmount}
                               onOpenProgressEdit={openProgressEdit}
                               onToggleTargetComplete={onToggleTargetComplete}
+                              onToggleSubGoalDone={onToggleSubGoalDone}
+                              togglingSubGoalId={togglingSubGoalKey}
                             />
                           </Swipeable>
                         ))
@@ -1450,8 +1554,16 @@ const styles = StyleSheet.create({
   subGoalRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
+    gap: 8,
+  },
+  subGoalCheckBtn: {
+    width: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  subGoalCheckIcon: {
+    width: 22,
   },
   subGoalName: {
     flex: 1,
@@ -1459,10 +1571,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
+  subGoalNameDone: {
+    color: 'rgba(255,255,255,0.72)',
+    textDecorationLine: 'line-through',
+  },
   subGoalMeta: {
     color: 'rgba(255,255,255,0.65)',
     fontSize: 11,
     fontWeight: '800',
+  },
+  subGoalMetaDone: {
+    color: '#bbf7d0',
   },
   subGoalsMore: {
     color: 'rgba(255,255,255,0.5)',

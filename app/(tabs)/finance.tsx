@@ -42,16 +42,13 @@ import {
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
-import { notifyAutoLedgerFailure, notifyAutoLedgerHint } from '@/lib/auto-ledger-notify';
-
-const AUTO_LEDGER_NOT_BILL_MESSAGE =
-  '这不是账单或支付凭证截图，请换一张支付成功页、账单详情或小票等图片。';
 import {
-  AUTO_LEDGER_HANDOFF_SPLASH_MS,
-  AUTO_LEDGER_MAX_ATTEMPTS,
-  AUTO_LEDGER_RETRY_DELAY_MS,
-  sleepMs,
-} from '@/lib/auto-ledger-retry';
+  hideAutoLedgerToast,
+  showAutoLedgerToast,
+  subscribeAutoLedgerCompleted,
+  subscribeAutoLedgerUiState,
+} from '@/lib/auto-ledger-events';
+import { cancelAutoLedgerJob, processAutoLedgerFromImage } from '@/lib/auto-ledger-runner';
 import {
   loadFinanceDefaultAccounts,
   sanitizeFinanceDefaultAccounts,
@@ -60,32 +57,17 @@ import {
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import { setFinanceSheetBridge } from '@/lib/finance-sheet-bridge';
 import { consumeFinanceSheetLaunchIntent, type FinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
-import {
-  consumeShortcutAutoLedgerImageDataUri,
-  hasShortcutAutoLedgerPending,
-} from '@/lib/shortcut-auto-ledger-pending';
-import {
-  consumeShortcutImageHandoffExpected,
-  subscribeShortcutHandoffConsume,
-} from '@/lib/shortcut-auto-ledger-route-bridge';
 import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
-import {
-  enterAutoLedgerSession,
-  leaveAutoLedgerSession,
-  runInAutoLedgerSession,
-} from '@/lib/auto-ledger-session';
-import { moveAppToBackground } from 'zheng-background';
 import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
 import {
   getActiveAiLlmApiKey,
   getActiveAiLlmProviderLabel,
   isActiveAiLlmConfigured,
-  parseFinanceOneLinerFromImage,
   parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
@@ -485,17 +467,8 @@ export default function FinanceScreen() {
   const [pendingAutoLedgers, setPendingAutoLedgers] = React.useState<PendingAutoLedgerRow[]>([]);
   const [autoLedgerToastVisible, setAutoLedgerToastVisible] = React.useState(false);
   const [autoLedgerToastMessage, setAutoLedgerToastMessage] = React.useState('正在识别截图并记账…');
-  const autoLedgerReturnToPreviousAppRef = React.useRef(false);
-  const autoLedgerDidBackgroundRef = React.useRef(false);
-  /** handoff 已在 startAutoLedgerHandoff 中 enter，process 结束时配对 leave */
-  const autoLedgerHandoffSessionHeldRef = React.useRef(false);
-  const autoLedgerHandoffTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoLedgerImageUriRef = React.useRef<string | null>(null);
   const autoLedgerSourceRef = React.useRef<'clipboard' | 'shortcut_intent' | 'picker'>('clipboard');
-  const cancelledAutoLedgerIdsRef = React.useRef<Set<string>>(new Set());
-  /** 已在财务 Tab 时再次触发快捷指令 handoff（由根级 listener 通知） */
-  const [shortcutHandoffNonce, setShortcutHandoffNonce] = React.useState(0);
-  const isFinanceTabFocused = useIsFocused();
   const financeTransactionsRef = React.useRef<FinanceTransactionRow[]>([]);
   const flowCategoryNamesRef = React.useRef<Record<string, string>>({});
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
@@ -508,8 +481,10 @@ export default function FinanceScreen() {
   });
 
   React.useEffect(() => {
-    return subscribeShortcutHandoffConsume(() => {
-      setShortcutHandoffNonce((n) => n + 1);
+    return subscribeAutoLedgerUiState((state) => {
+      setPendingAutoLedgers(state.pending);
+      setAutoLedgerToastVisible(state.toastVisible);
+      setAutoLedgerToastMessage(state.toastMessage);
     });
   }, []);
 
@@ -604,6 +579,13 @@ export default function FinanceScreen() {
       setFinanceAccounts([]);
     }
   }, []);
+
+  React.useEffect(() => {
+    return subscribeAutoLedgerCompleted(() => {
+      void loadFinanceTransactions();
+      void loadFinanceAccounts();
+    });
+  }, [loadFinanceAccounts, loadFinanceTransactions]);
 
   const handleDeleteFinanceTxn = React.useCallback(
     (txnId: string, displayTitle: string) => {
@@ -1560,340 +1542,9 @@ export default function FinanceScreen() {
     confirmDeleteCustomCategory,
   } = useFinanceSheetCategories({ primary, secondary, tertiary, subtle });
 
-  const beginAutoLedgerShortcutSession = React.useCallback(() => {
-    autoLedgerReturnToPreviousAppRef.current = true;
-    autoLedgerDidBackgroundRef.current = false;
+  const cancelPendingAutoLedger = React.useCallback((pendingId: string) => {
+    cancelAutoLedgerJob(pendingId);
   }, []);
-
-  const isAutoLedgerHandoffSession = React.useCallback(
-    () => autoLedgerReturnToPreviousAppRef.current || autoLedgerDidBackgroundRef.current,
-    [],
-  );
-
-  const dismissAutoLedgerHandoffSplash = React.useCallback(() => {
-    if (autoLedgerHandoffTimerRef.current != null) {
-      clearTimeout(autoLedgerHandoffTimerRef.current);
-      autoLedgerHandoffTimerRef.current = null;
-    }
-    setAutoLedgerToastVisible(false);
-    autoLedgerReturnToPreviousAppRef.current = false;
-  }, []);
-
-  const startAutoLedgerHandoff = React.useCallback(
-    async (source: 'clipboard' | 'shortcut_intent', message?: string) => {
-      beginAutoLedgerShortcutSession();
-      autoLedgerSourceRef.current = source;
-      setAutoLedgerToastMessage(message ?? '正在识别截图并记账…');
-      setAutoLedgerToastVisible(true);
-      await enterAutoLedgerSession();
-      autoLedgerHandoffSessionHeldRef.current = true;
-
-      if (autoLedgerHandoffTimerRef.current != null) {
-        clearTimeout(autoLedgerHandoffTimerRef.current);
-      }
-      autoLedgerHandoffTimerRef.current = setTimeout(() => {
-        autoLedgerHandoffTimerRef.current = null;
-        setAutoLedgerToastVisible(false);
-        autoLedgerReturnToPreviousAppRef.current = false;
-        autoLedgerDidBackgroundRef.current = true;
-        void moveAppToBackground();
-      }, AUTO_LEDGER_HANDOFF_SPLASH_MS);
-    },
-    [beginAutoLedgerShortcutSession],
-  );
-
-  const cancelPendingAutoLedger = React.useCallback(
-    (pendingId: string) => {
-      cancelledAutoLedgerIdsRef.current.add(pendingId);
-      setPendingAutoLedgers((prev) => prev.filter((row) => row.id !== pendingId));
-      dismissAutoLedgerHandoffSplash();
-    },
-    [dismissAutoLedgerHandoffSplash],
-  );
-
-  React.useEffect(() => {
-    return () => {
-      if (autoLedgerHandoffTimerRef.current != null) {
-        clearTimeout(autoLedgerHandoffTimerRef.current);
-      }
-    };
-  }, []);
-
-  const readClipboardImageForAutoLedger = React.useCallback(async (): Promise<string | null> => {
-    if (Platform.OS === 'web') {
-      return null;
-    }
-    try {
-      const has = await Clipboard.hasImageAsync();
-      if (!has) {
-        return null;
-      }
-      const img = await Clipboard.getImageAsync({ format: 'png' });
-      if (!img?.data) {
-        return null;
-      }
-      autoLedgerImageUriRef.current = img.data;
-      return img.data;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const processAutoLedgerFromImage = React.useCallback(
-    async (
-      imageDataUri: string,
-      accounts: FinanceAccountBalanceRow[],
-      ledgerSource: 'clipboard' | 'shortcut_intent' | 'picker' = 'clipboard',
-    ) => {
-      const handoffHeld = autoLedgerHandoffSessionHeldRef.current;
-      if (!handoffHeld) {
-        await enterAutoLedgerSession();
-      }
-      try {
-      autoLedgerImageUriRef.current = imageDataUri;
-      autoLedgerSourceRef.current = ledgerSource;
-      const handoff = isAutoLedgerHandoffSession();
-
-      const key = getActiveAiLlmApiKey().trim();
-      if (!key) {
-        const prov = getActiveAiLlmProviderLabel();
-        const env =
-          prov === '豆包'
-            ? 'EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）'
-            : 'EXPO_PUBLIC_ZHIPU_API_KEY';
-        const msg = `未配置 ${prov} 密钥（${env}）。`;
-        if (handoff) {
-          void notifyAutoLedgerFailure(msg);
-        } else {
-          Alert.alert('无法自动记账', msg);
-        }
-        return;
-      }
-
-      if (!accounts.length) {
-        const msg = '请先添加至少一个账户。';
-        if (handoff) {
-          void notifyAutoLedgerFailure(msg);
-        } else {
-          Alert.alert('无法自动记账', msg);
-        }
-        return;
-      }
-
-      const pendingId = `pending_auto_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-      const maxAttempts = AUTO_LEDGER_MAX_ATTEMPTS;
-      cancelledAutoLedgerIdsRef.current.delete(pendingId);
-      setPendingAutoLedgers((prev) => [
-        { id: pendingId, source: ledgerSource, retryAttempt: 1, maxAttempts },
-        ...prev,
-      ]);
-
-      const isCancelled = () => cancelledAutoLedgerIdsRef.current.has(pendingId);
-      const accountHints = accounts.map((a) => ({ name: a.name, account_no: a.account_no }));
-      let lastError = '请稍后重试。';
-
-      try {
-        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-          if (isCancelled()) return;
-
-          if (attempt > 1) {
-            setPendingAutoLedgers((prev) =>
-              prev.map((row) =>
-                row.id === pendingId ? { ...row, retryAttempt: attempt, maxAttempts } : row,
-              ),
-            );
-            await sleepMs(AUTO_LEDGER_RETRY_DELAY_MS);
-            if (isCancelled()) return;
-          }
-
-          try {
-            const resolved = await parseFinanceOneLinerFromImage({
-              apiKey: key,
-              imageDataUri,
-              accounts: accountHints,
-              maxAttempts: 2,
-              retryDelayMs: 800,
-            });
-            if (isCancelled()) return;
-
-            if (!resolved.ok) {
-              if (resolved.notBill) {
-                if (handoff) {
-                  void notifyAutoLedgerHint(AUTO_LEDGER_NOT_BILL_MESSAGE);
-                } else {
-                  Alert.alert('提示', AUTO_LEDGER_NOT_BILL_MESSAGE);
-                }
-                return;
-              }
-              lastError = resolved.error;
-              console.warn(`Auto ledger parse attempt ${attempt}/${maxAttempts} failed:`, resolved.error);
-              continue;
-            }
-
-            const defaults = sanitizeFinanceDefaultAccounts(defaultAccountsRef.current, accounts);
-            const account = pickAccountForAutoLedger(
-              accounts,
-              {
-                transaction_type: resolved.transaction_type,
-                account_name: resolved.account_name,
-                payment_account_label: resolved.payment_account_label,
-              },
-              defaults,
-            );
-            if (!account) {
-              const msg = '请先添加至少一个账户。';
-              if (handoff) {
-                void notifyAutoLedgerFailure(msg);
-              } else {
-                Alert.alert('无法自动记账', msg);
-              }
-              return;
-            }
-
-            const parsed = {
-              transaction_type: resolved.transaction_type,
-              amount: resolved.amount,
-              name: resolved.name,
-              category_label: resolved.category_label,
-            };
-
-            const cat = pickSheetCategoryForParsed(
-              parsed.transaction_type,
-              parsed.category_label,
-              expenseCategories,
-              incomeCategories,
-            );
-            const transactionType = parsed.transaction_type;
-            const amountAbs = parsed.amount;
-            const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
-            const boundsErr = validateFinanceLedgerBalanceAfterChange(
-              account.sign_rule,
-              account.balance ?? 0,
-              transactionType,
-              signedAmount,
-              null,
-            );
-            if (boundsErr) {
-              if (handoff) {
-                void notifyAutoLedgerFailure(boundsErr);
-              } else {
-                Alert.alert('无法记账', boundsErr);
-              }
-              return;
-            }
-
-            const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-            const happenedAtIso = new Date().toISOString();
-            const noteLine =
-              ledgerSource === 'shortcut_intent'
-                ? `快捷指令截图 · ${parsed.name}`
-                : ledgerSource === 'picker'
-                  ? `图片记账 · ${parsed.name}`
-                  : `剪贴板截图 · ${parsed.name}`;
-
-            await createFinanceTransaction({
-              id: txnId,
-              name: parsed.name,
-              happened_at: happenedAtIso,
-              account_id: account.id,
-              transaction_type: transactionType,
-              amount: signedAmount,
-              note: noteLine,
-              extra_data: JSON.stringify({
-                manual: true,
-                sentence: true,
-                parse_source: 'ai',
-                from_clipboard_screenshot: ledgerSource === 'clipboard',
-                from_shortcut_intent: ledgerSource === 'shortcut_intent',
-                from_picker_image: ledgerSource === 'picker',
-                recognized_payment_account: resolved.payment_account_label,
-                matched_account_name: account.name,
-                category_key: cat.key,
-                category_label: cat.label,
-                attachments: [{ type: 'image', uri: imageDataUri }],
-              }),
-            });
-            await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-            scheduleGithubFinanceCloudSyncDebounced();
-            return;
-          } catch (error) {
-            lastError =
-              error instanceof Error && error.message.trim() ? error.message : '请稍后重试。';
-            console.warn(`Auto ledger attempt ${attempt}/${maxAttempts} failed:`, error);
-          }
-        }
-
-        if (isCancelled()) return;
-
-        const failMsg = `已自动重试 ${maxAttempts} 次仍未成功，请检查网络或截图是否清晰后重试。\n\n${lastError}`;
-        if (handoff) {
-          void notifyAutoLedgerFailure(failMsg);
-        } else {
-          Alert.alert('自动记账失败', failMsg);
-        }
-      } finally {
-        cancelledAutoLedgerIdsRef.current.delete(pendingId);
-        setPendingAutoLedgers((prev) => prev.filter((row) => row.id !== pendingId));
-      }
-      } finally {
-        if (handoffHeld) {
-          autoLedgerHandoffSessionHeldRef.current = false;
-        }
-        await leaveAutoLedgerSession();
-      }
-    },
-    [
-      expenseCategories,
-      incomeCategories,
-      isAutoLedgerHandoffSession,
-      loadFinanceAccounts,
-      loadFinanceTransactions,
-      pickAccountForAutoLedger,
-    ],
-  );
-
-  /** 截图参数 handoff：已在财务 Tab 聚焦时由 listener notify 触发，避免仅依赖 useFocusEffect 重跑时机 */
-  const tryConsumeShortcutImageHandoff = React.useCallback(async () => {
-    const expectingShortcutImage = consumeShortcutImageHandoffExpected();
-    if (!hasShortcutAutoLedgerPending() && !expectingShortcutImage) {
-      return;
-    }
-    if (financeAccountsRef.current.length === 0) {
-      await loadFinanceAccounts();
-    }
-    const list = financeAccountsRef.current;
-    let shortcutImageUri = await consumeShortcutAutoLedgerImageDataUri();
-    if (!shortcutImageUri && expectingShortcutImage) {
-      shortcutImageUri = await readClipboardImageForAutoLedger();
-    }
-    if (!shortcutImageUri) {
-      return;
-    }
-    autoLedgerImageUriRef.current = shortcutImageUri;
-    if (list.length > 0) {
-      await startAutoLedgerHandoff('shortcut_intent');
-      await processAutoLedgerFromImage(shortcutImageUri, list, 'shortcut_intent');
-    } else {
-      await startAutoLedgerHandoff('shortcut_intent');
-      void notifyAutoLedgerFailure('请先添加至少一个账户。');
-      if (autoLedgerHandoffSessionHeldRef.current) {
-        autoLedgerHandoffSessionHeldRef.current = false;
-        await leaveAutoLedgerSession();
-      }
-    }
-  }, [
-    loadFinanceAccounts,
-    processAutoLedgerFromImage,
-    readClipboardImageForAutoLedger,
-    startAutoLedgerHandoff,
-  ]);
-
-  React.useEffect(() => {
-    if (!isFinanceTabFocused || shortcutHandoffNonce === 0) {
-      return;
-    }
-    void tryConsumeShortcutImageHandoff();
-  }, [isFinanceTabFocused, shortcutHandoffNonce, tryConsumeShortcutImageHandoff]);
 
   const keypadRows = React.useMemo(
     () => [
@@ -2061,70 +1712,13 @@ export default function FinanceScreen() {
           const intent = consumeFinanceSheetLaunchIntent();
           const list = financeAccountsRef.current;
 
-          if (intent) {
-            if (intent.kind === 'auto_ledger_clipboard_pending') {
-              void (async () => {
-                await startAutoLedgerHandoff('clipboard', '正在读取并识别截图…');
-                const imageUri = await readClipboardImageForAutoLedger();
-                if (imageUri) {
-                  if (list.length > 0) {
-                    await processAutoLedgerFromImage(imageUri, list, 'clipboard');
-                  } else {
-                    void notifyAutoLedgerFailure('请先添加至少一个账户。');
-                    if (autoLedgerHandoffSessionHeldRef.current) {
-                      autoLedgerHandoffSessionHeldRef.current = false;
-                      await leaveAutoLedgerSession();
-                    }
-                  }
-                } else {
-                  void notifyAutoLedgerFailure(
-                    '剪贴板里没有图片或读取失败，请先在快捷指令中复制截图并允许粘贴。',
-                  );
-                  if (autoLedgerHandoffSessionHeldRef.current) {
-                    autoLedgerHandoffSessionHeldRef.current = false;
-                    await leaveAutoLedgerSession();
-                  }
-                }
-              })();
-            } else if (intent.kind === 'auto_ledger_clipboard_image') {
-              void (async () => {
-                if (list.length > 0) {
-                  await startAutoLedgerHandoff('clipboard');
-                  await processAutoLedgerFromImage(intent.imageDataUri, list, 'clipboard');
-                } else {
-                  await startAutoLedgerHandoff('clipboard');
-                  void notifyAutoLedgerFailure('请先添加至少一个账户。');
-                  if (autoLedgerHandoffSessionHeldRef.current) {
-                    autoLedgerHandoffSessionHeldRef.current = false;
-                    await leaveAutoLedgerSession();
-                  }
-                }
-              })();
-            } else if (list.length > 0) {
-              applyManualOrTransferSheetIntent(intent);
-            }
-          } else {
-            const expectingShortcutImage = consumeShortcutImageHandoffExpected();
-            let shortcutImageUri = await consumeShortcutAutoLedgerImageDataUri();
-            if (!shortcutImageUri && expectingShortcutImage) {
-              shortcutImageUri = await readClipboardImageForAutoLedger();
-            }
-            if (shortcutImageUri) {
-              void (async () => {
-                autoLedgerImageUriRef.current = shortcutImageUri;
-                if (list.length > 0) {
-                  await startAutoLedgerHandoff('shortcut_intent');
-                  await processAutoLedgerFromImage(shortcutImageUri!, list, 'shortcut_intent');
-                } else {
-                  await startAutoLedgerHandoff('shortcut_intent');
-                  void notifyAutoLedgerFailure('请先添加至少一个账户。');
-                  if (autoLedgerHandoffSessionHeldRef.current) {
-                    autoLedgerHandoffSessionHeldRef.current = false;
-                    await leaveAutoLedgerSession();
-                  }
-                }
-              })();
-            }
+          if (
+            intent &&
+            intent.kind !== 'auto_ledger_clipboard_pending' &&
+            intent.kind !== 'auto_ledger_clipboard_image' &&
+            list.length > 0
+          ) {
+            applyManualOrTransferSheetIntent(intent);
           }
 
           const settings = await loadMonthBudgetSettings();
@@ -2142,11 +1736,8 @@ export default function FinanceScreen() {
       getDefaultSheetAccountIdForTab,
       loadFinanceAccounts,
       loadFinanceTransactions,
-      processAutoLedgerFromImage,
-      readClipboardImageForAutoLedger,
       applyManualOrTransferSheetIntent,
       resetSheetForm,
-      startAutoLedgerHandoff,
     ])
   );
 
@@ -2905,22 +2496,20 @@ export default function FinanceScreen() {
         const mime = asset.mimeType?.trim() || 'image/jpeg';
         const imageDataUri = `data:${mime};base64,${b64}`;
 
-        setAutoLedgerToastMessage(
+        showAutoLedgerToast(
           source === 'camera' ? '正在识别拍摄图片并记账…' : '正在识别相册图片并记账…',
         );
-        setAutoLedgerToastVisible(true);
-        await runInAutoLedgerSession(() =>
-          processAutoLedgerFromImage(imageDataUri, accounts, 'picker'),
-        );
+        await processAutoLedgerFromImage(imageDataUri, accounts, 'picker', { showAlerts: true });
+        await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
       } catch (error) {
         console.warn('Failed to pick image for auto ledger:', error);
         Alert.alert('选择图片失败', '请稍后重试。');
       } finally {
         setIsPickingImage(false);
-        setAutoLedgerToastVisible(false);
+        hideAutoLedgerToast();
       }
     },
-    [isPickingImage, processAutoLedgerFromImage],
+    [isPickingImage, loadFinanceAccounts, loadFinanceTransactions],
   );
 
   return (

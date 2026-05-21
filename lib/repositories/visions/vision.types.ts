@@ -83,6 +83,17 @@ export function standaloneSubGoalTaskStats(sg: VisionSubGoal): { total: number; 
   return { total: 1, completed: sg.done ? 1 : 0 };
 }
 
+/** 绑定项目的小目标：关联任务全部完成时视为自动完成 */
+export function isBoundVisionSubGoalTaskComplete(
+  taskProgress: { completed: number; total: number } | null | undefined
+): boolean {
+  return (
+    taskProgress != null &&
+    taskProgress.total > 0 &&
+    taskProgress.completed >= taskProgress.total
+  );
+}
+
 /** 小目标上已绑定的项目（兼容旧版单项目字段） */
 export function collectLinkedProjectsFromSubGoal(sg: VisionSubGoal): VisionLinkedProjectRef[] {
   const multi = normalizeLinkedProjectList(sg.linkedProjects);
