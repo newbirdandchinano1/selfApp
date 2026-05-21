@@ -240,6 +240,8 @@ export async function initDatabase() {
       gender TEXT NOT NULL DEFAULT '男',
       lifestyle TEXT NOT NULL DEFAULT '长期静坐不运动',
       goal TEXT NOT NULL DEFAULT '无',
+      workout_days TEXT,
+      rest_days TEXT,
       birthday TEXT,
       height REAL NOT NULL DEFAULT 0,
       weight REAL NOT NULL DEFAULT 0,
@@ -528,6 +530,8 @@ export async function initDatabase() {
   await ensureColumn(db, 'users', 'gender', 'TEXT');
   await ensureColumn(db, 'users', 'lifestyle', 'TEXT');
   await ensureColumn(db, 'users', 'goal', 'TEXT');
+  await ensureColumn(db, 'users', 'workout_days', 'TEXT');
+  await ensureColumn(db, 'users', 'rest_days', 'TEXT');
   await ensureColumn(db, 'users', 'birthday', 'TEXT');
   // Some SQLite builds don't allow adding a NOT NULL column via ALTER TABLE reliably.
   // Keep it nullable on migration and treat NULL as "unsorted" in queries.

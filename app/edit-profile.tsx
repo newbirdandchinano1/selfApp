@@ -30,9 +30,32 @@ import { invalidateDailyIntakeAiTargetsCache } from '@/lib/daily-intake-ai-targe
 const GENDER_OPTIONS = ['男', '女'] as const;
 const LIFESTYLE_OPTIONS = ['长期静坐不运动', '健身', '高强度锻炼'] as const;
 const GOAL_OPTIONS = ['无', '减脂', '增肌'] as const;
+const WEEK_DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'] as const;
 const DEFAULT_GENDER: (typeof GENDER_OPTIONS)[number] = '男';
 const DEFAULT_LIFESTYLE: (typeof LIFESTYLE_OPTIONS)[number] = '长期静坐不运动';
 const DEFAULT_GOAL: (typeof GOAL_OPTIONS)[number] = '无';
+
+function isFitnessLifestyle(lifestyle: (typeof LIFESTYLE_OPTIONS)[number]): boolean {
+  return lifestyle === '健身' || lifestyle === '高强度锻炼';
+}
+
+function parseWeekDaysJson(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (d): d is (typeof WEEK_DAYS)[number] =>
+        typeof d === 'string' && (WEEK_DAYS as readonly string[]).includes(d)
+    );
+  } catch {
+    return [];
+  }
+}
+
+function serializeWeekDays(days: string[]): string {
+  return JSON.stringify(days);
+}
 
 function parseIsoDateLocal(iso: string): Date {
   const [y, m, d] = iso.split('-').map(Number);
@@ -67,6 +90,7 @@ export default function EditProfileScreen() {
   const [gender, setGender] = useState<(typeof GENDER_OPTIONS)[number]>(DEFAULT_GENDER);
   const [lifestyle, setLifestyle] = useState<(typeof LIFESTYLE_OPTIONS)[number]>(DEFAULT_LIFESTYLE);
   const [goal, setGoal] = useState<(typeof GOAL_OPTIONS)[number]>(DEFAULT_GOAL);
+  const [workoutDays, setWorkoutDays] = useState<string[]>([]);
   const [height, setHeight] = useState('0');
   const [weight, setWeight] = useState('0');
   const [birthdayIso, setBirthdayIso] = useState<string | null>(null);
@@ -78,14 +102,30 @@ export default function EditProfileScreen() {
   };
 
 
+  const showFitnessFields = isFitnessLifestyle(lifestyle);
+
+  const toggleWorkoutDay = (day: string) => {
+    setWorkoutDays(prev => (prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]));
+  };
+
+  const handleLifestyleChange = (option: (typeof LIFESTYLE_OPTIONS)[number]) => {
+    setLifestyle(option);
+    if (!isFitnessLifestyle(option)) {
+      setGoal(DEFAULT_GOAL);
+      setWorkoutDays([]);
+    }
+  };
+
   const saveProfile = async () => {
     try {
+      const fitnessActive = isFitnessLifestyle(lifestyle);
       await updateDefaultUser({
         name,
         avatar_uri: avatarUri,
         gender,
         lifestyle,
-        goal,
+        goal: fitnessActive ? goal : DEFAULT_GOAL,
+        workout_days: fitnessActive ? serializeWeekDays(workoutDays) : '[]',
         birthday: birthdayIso,
         height: Number(height),
         weight: Number(weight),
@@ -158,6 +198,7 @@ export default function EditProfileScreen() {
         ? (user.goal as (typeof GOAL_OPTIONS)[number])
         : DEFAULT_GOAL
     );
+    setWorkoutDays(parseWeekDaysJson(user.workout_days));
     setHeight(String(user.height ?? 0));
     setWeight(String(user.weight ?? 0));
     setBirthdayIso(user.birthday ?? null);
@@ -312,7 +353,7 @@ export default function EditProfileScreen() {
                   return (
                     <Pressable
                       key={option}
-                      onPress={() => setLifestyle(option)}
+                      onPress={() => handleLifestyleChange(option)}
                       style={[
                         styles.optionChip,
                         {
@@ -328,29 +369,57 @@ export default function EditProfileScreen() {
               </View>
             </View>
 
-            <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
-              <Text style={[styles.fieldLabel, { color: palette.outline }]}>目标</Text>
-              <View style={styles.optionRow}>
-                {GOAL_OPTIONS.map(option => {
-                  const active = goal === option;
-                  return (
-                    <Pressable
-                      key={option}
-                      onPress={() => setGoal(option)}
-                      style={[
-                        styles.optionChip,
-                        {
-                          borderColor: active ? palette.primary : palette.outlineVariant,
-                          backgroundColor: active ? `${palette.primary}16` : 'transparent',
-                        },
-                      ]}
-                    >
-                      <Text style={[styles.optionText, { color: active ? palette.primary : palette.text }]}>{option}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
+            {showFitnessFields ? (
+              <>
+                <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
+                  <Text style={[styles.fieldLabel, { color: palette.outline }]}>目标</Text>
+                  <View style={styles.optionRow}>
+                    {GOAL_OPTIONS.map(option => {
+                      const active = goal === option;
+                      return (
+                        <Pressable
+                          key={option}
+                          onPress={() => setGoal(option)}
+                          style={[
+                            styles.optionChip,
+                            {
+                              borderColor: active ? palette.primary : palette.outlineVariant,
+                              backgroundColor: active ? `${palette.primary}16` : 'transparent',
+                            },
+                          ]}
+                        >
+                          <Text style={[styles.optionText, { color: active ? palette.primary : palette.text }]}>{option}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
+                  <Text style={[styles.fieldLabel, { color: palette.outline }]}>健身日</Text>
+                  <View style={styles.weekDayRow}>
+                    {WEEK_DAYS.map(day => {
+                      const active = workoutDays.includes(day);
+                      return (
+                        <Pressable
+                          key={day}
+                          onPress={() => toggleWorkoutDay(day)}
+                          style={[
+                            styles.weekDayChip,
+                            {
+                              borderColor: active ? palette.primary : palette.outlineVariant,
+                              backgroundColor: active ? `${palette.primary}16` : 'transparent',
+                            },
+                          ]}
+                        >
+                          <Text style={[styles.weekDayText, { color: active ? palette.primary : palette.text }]}>{day}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              </>
+            ) : null}
           </View>
 
           <View style={styles.group}>
@@ -577,6 +646,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   optionText: { fontSize: 14, fontWeight: '700' },
+  weekDayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  weekDayChip: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    minHeight: 34,
+    minWidth: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  weekDayText: { fontSize: 13, fontWeight: '700' },
   metricGrid: { gap: 12 },
   metricCard: { borderRadius: 16, padding: 18, borderWidth: 1 },
   metricRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 6 },

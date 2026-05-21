@@ -1,5 +1,6 @@
 import { getDatabase } from '@/lib/database.native';
 
+import { isWishItemFulfilled } from './wish-list-extra';
 import type { WishItemRow } from './wish-list.types';
 
 const META_KEY = 'wish_list_rational_ai_v1';
@@ -12,8 +13,9 @@ export type WishListRationalAiCachePayload = {
 
 /** 用于判断「清单是否变化需重新请求理性评审」的稳定指纹（含条目内容与更新时间）。 */
 export function computeWishListRationalFingerprint(rows: WishItemRow[]): string {
-  if (rows.length === 0) return '__empty__';
-  const sorted = [...rows].sort((a, b) => a.id.localeCompare(b.id));
+  const active = rows.filter(r => !isWishItemFulfilled(r));
+  if (active.length === 0) return '__empty__';
+  const sorted = [...active].sort((a, b) => a.id.localeCompare(b.id));
   return JSON.stringify(
     sorted.map(r => ({
       id: r.id,

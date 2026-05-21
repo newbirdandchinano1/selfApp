@@ -1,6 +1,37 @@
+import type { UserDayScheduleKind } from '@/lib/user-workout-schedule';
+
 export type NutritionV2ActivityLevel = 'Sedentary' | 'Fitness' | 'High-Intensity';
 export type NutritionV2Goal = 'None' | 'Fat Loss' | 'Muscle Gain';
 export type NutritionV2Gender = 'Male' | 'Female';
+
+export type NutritionV2Metrics = {
+  Water_ml: number;
+  Protein_g: number;
+  Carbohydrate_g: number;
+  Sodium_mg: number;
+};
+
+/** 在基础公式目标上按今日健身日/休息日微调（仅健身/高强度档案生效） */
+export function adjustNutritionMetricsForDaySchedule(
+  metrics: NutritionV2Metrics,
+  kind: UserDayScheduleKind,
+): NutritionV2Metrics {
+  if (kind === 'sedentary') return metrics;
+  if (kind === 'workout') {
+    return {
+      Water_ml: Math.round(metrics.Water_ml * 1.08),
+      Protein_g: Math.round(metrics.Protein_g * 1.12),
+      Carbohydrate_g: Math.round(metrics.Carbohydrate_g * 1.1),
+      Sodium_mg: Math.round(metrics.Sodium_mg * 1.1),
+    };
+  }
+  return {
+    Water_ml: Math.round(metrics.Water_ml * 0.98),
+    Protein_g: Math.round(metrics.Protein_g * 0.92),
+    Carbohydrate_g: Math.round(metrics.Carbohydrate_g * 0.88),
+    Sodium_mg: Math.round(metrics.Sodium_mg * 0.9),
+  };
+}
 
 export function mapLifestyleToActivityLevel(lifestyle?: string | null): NutritionV2ActivityLevel {
   if (lifestyle === '健身') return 'Fitness';
@@ -77,5 +108,5 @@ export function calculateNutritionV2(
     Protein_g: Math.round(totalProteinG),
     Carbohydrate_g: Math.round(totalCarbohydrateG),
     Sodium_mg: Math.round(totalSodiumMg),
-  };
+  } satisfies NutritionV2Metrics;
 }

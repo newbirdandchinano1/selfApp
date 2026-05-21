@@ -1,11 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
+  adjustNutritionMetricsForDaySchedule,
   calculateNutritionV2,
   mapGenderToNutritionGender,
   mapGoalToNutritionGoal,
   mapLifestyleToActivityLevel,
 } from '@/lib/nutrition-heuristic';
+import {
+  formatUserWorkoutWeekPlanZh,
+  getChineseWeekdayLabelFromYmd,
+  getUserDayScheduleKind,
+  getUserDayScheduleLabelZh,
+} from '@/lib/user-workout-schedule';
 import { getHealthRecordsLast7Days } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import type { UserRow } from '@/lib/repositories/users/user.types';
@@ -24,12 +31,15 @@ export type DailyAiIntakeTargetsRow = {
   rationale_zh: string | null;
 };
 
-function buildProfileFingerprint(user: UserRow): string {
+function buildProfileFingerprint(user: UserRow, todayYmd: string): string {
   return JSON.stringify({
     id: user.id,
     gender: user.gender,
     lifestyle: user.lifestyle,
     goal: user.goal,
+    workout_days: user.workout_days,
+    rest_days: user.rest_days,
+    todayDaySchedule: getUserDayScheduleKind(user, todayYmd),
     height: user.height,
     weight: user.weight,
     birthday: user.birthday,
@@ -97,12 +107,20 @@ function buildContextBlock(params: {
   const h = Number(user.height) || 0;
   const age = Number(user.age) || 0;
   const recentSodium = aggregateIntakeByDate(records).get(todayYmd)?.s ?? 0;
-  const heuristic = calculateNutritionV2(w, h, age, gender, activity, g, recentSodium);
+  const baseHeuristic = calculateNutritionV2(w, h, age, gender, activity, g, recentSodium);
+  const daySchedule = getUserDayScheduleKind(user, todayYmd);
+  const heuristic = adjustNutritionMetricsForDaySchedule(baseHeuristic, daySchedule);
+  const weekdayLabel = getChineseWeekdayLabelFromYmd(todayYmd);
+  const scheduleLine =
+    daySchedule === 'sedentary'
+      ? '【今日日程】静坐习惯，无周训练/休息日划分。'
+      : `【今日日程】${weekdayLabel ?? todayYmd} 为${getUserDayScheduleLabelZh(daySchedule)}。周计划：${formatUserWorkoutWeekPlanZh(user)}。请按今日类型调整四项摄入目标：健身日适度提高蛋白质、碳水、水分与钠以支持训练与出汗；休息日温和降低训练日定量（尤其碳水与钠），仍保证基础营养。`;
 
   return [
     `【今日日期】${todayYmd}`,
     `【用户档案】称呼：${user.name ?? '用户'}；性别：${user.gender}；生日：${user.birthday ?? '未填'}；年龄(档案)：${age}；身高 cm：${h}；体重 kg：${w}；生活方式：${user.lifestyle}；目标：${user.goal}`,
-    `【本地公式参考目标（供你对齐数量级，可微调）】水分 ${heuristic.Water_ml} ml；蛋白质 ${heuristic.Protein_g} g；碳水 ${heuristic.Carbohydrate_g} g；钠 ${heuristic.Sodium_mg} mg`,
+    scheduleLine,
+    `【本地公式参考目标（已按今日${getUserDayScheduleLabelZh(daySchedule)}微调，供你对齐数量级）】水分 ${heuristic.Water_ml} ml；蛋白质 ${heuristic.Protein_g} g；碳水 ${heuristic.Carbohydrate_g} g；钠 ${heuristic.Sodium_mg} mg`,
     `【近7日（含今日）每日摄入合计】`,
     buildSevenDayDigest(records, todayYmd),
   ].join('\n\n');
@@ -162,7 +180,7 @@ export async function ensureDailyAiIntakeTargetsForToday(params: {
   todayYmd: string;
 }): Promise<EnsureDailyAiIntakeTargetsResult> {
   const { user, todayYmd } = params;
-  const fingerprint = buildProfileFingerprint(user);
+  const fingerprint = buildProfileFingerprint(user, todayYmd);
   const cached = await readCache();
   if (
     cached &&

@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { deleteWishItem, listWishItems } from '@/lib/repositories/wish-list/wish-list';
+import { isWishItemFulfilled } from '@/lib/repositories/wish-list/wish-list-extra';
+import { deleteWishItem, listWishItems, setWishItemFulfilled } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import {
   clearWishListRationalAiCache,
@@ -144,22 +145,25 @@ export default function WishListScreen() {
   const primary = isDark ? '#60a5fa' : '#0058be';
   const borderSoft = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.25)';
 
+  const activeItems = useMemo(() => items.filter(r => !isWishItemFulfilled(r)), [items]);
+  const fulfilledItems = useMemo(() => items.filter(r => isWishItemFulfilled(r)), [items]);
+
   const summary = useMemo(() => {
-    const total = items.reduce((sum, row) => sum + (Number.isFinite(row.price) ? row.price : 0), 0);
+    const total = activeItems.reduce((sum, row) => sum + (Number.isFinite(row.price) ? row.price : 0), 0);
     const progress = quarterTarget > 0 ? Math.min(999, Math.round((total / quarterTarget) * 100)) : 0;
     return { total, progress };
-  }, [items]);
+  }, [activeItems]);
 
   const topDesireName = useMemo(() => {
-    const sorted = [...items].sort((a, b) => b.desire_level - a.desire_level || b.price - a.price);
+    const sorted = [...activeItems].sort((a, b) => b.desire_level - a.desire_level || b.price - a.price);
     return sorted[0]?.name ?? null;
-  }, [items]);
+  }, [activeItems]);
 
   const wishListAiContextText = useMemo(() => {
-    if (items.length === 0) return '';
-    const total = items.reduce((sum, row) => sum + (Number.isFinite(row.price) ? row.price : 0), 0);
-    return buildWishListAiContextText(items, quarterTarget, total);
-  }, [items]);
+    if (activeItems.length === 0) return '';
+    const total = activeItems.reduce((sum, row) => sum + (Number.isFinite(row.price) ? row.price : 0), 0);
+    return buildWishListAiContextText(activeItems, quarterTarget, total);
+  }, [activeItems]);
 
   const wishListFp = useMemo(() => computeWishListRationalFingerprint(items), [items]);
 
@@ -171,7 +175,7 @@ export default function WishListScreen() {
     void (async () => {
       if (rationalRunRef.current !== reqId) return;
 
-      if (items.length === 0) {
+      if (activeItems.length === 0) {
         setAiHeadline(null);
         setAiReview(null);
         setAiError(null);
@@ -238,20 +242,35 @@ export default function WishListScreen() {
       if (rationalRunRef.current !== reqId) return;
       setRationalRefreshToken(0);
     })();
-  }, [initialLoading, wishListFp, items.length, wishListAiContextText, zhipuReady, rationalRefreshToken]);
+  }, [initialLoading, wishListFp, activeItems.length, wishListAiContextText, zhipuReady, rationalRefreshToken]);
 
   const bumpAiRefresh = useCallback(() => {
     setRationalRefreshToken(t => t + 1);
   }, []);
 
   const aiHeadingDisplay = useMemo(() => {
-    if (items.length === 0) return '从添加第一条开始';
+    if (activeItems.length === 0) return fulfilledItems.length > 0 ? '待购清单已清空' : '从添加第一条开始';
     if (aiHeadline?.trim()) return aiHeadline.trim();
     return topDesireName ? '关注高欲望单品' : '建议策略性延后';
-  }, [items.length, aiHeadline, topDesireName]);
+  }, [activeItems.length, fulfilledItems.length, aiHeadline, topDesireName]);
 
   const showAiPending =
-    zhipuReady && items.length > 0 && (aiLoading || (!aiHeadline && !aiReview && !aiError));
+    zhipuReady && activeItems.length > 0 && (aiLoading || (!aiHeadline && !aiReview && !aiError));
+
+  const requestMarkFulfilled = useCallback(
+    (row: WishItemRow, fulfilled: boolean) => {
+      void (async () => {
+        try {
+          await setWishItemFulfilled(row.id, fulfilled);
+          const fresh = await listWishItems();
+          setItems(fresh);
+        } catch {
+          Alert.alert('操作失败', '请稍后重试');
+        }
+      })();
+    },
+    [],
+  );
 
   const requestDeleteWish = useCallback(
     (row: WishItemRow) => {
@@ -327,97 +346,10 @@ export default function WishListScreen() {
           </View>
         </View>
 
-        <View style={[styles.aiReviewCard, { backgroundColor: cardSoft }]}>
-          <View style={[styles.aiDecor, { backgroundColor: `${primary}12` }]} />
-          <View style={styles.aiHead}>
-            <View style={styles.aiKickerRow}>
-              <MaterialIcons name="auto-awesome" size={18} color={primary} />
-              <Text style={[styles.aiKicker, { color: primary }]}>AI 理性评审</Text>
-            </View>
-            <Text style={[styles.aiHeading, { color: text }]}>{aiHeadingDisplay}</Text>
-          </View>
-          <View style={[styles.aiBody, { borderTopColor: borderSoft }]}>
-            {items.length === 0 ? (
-              <Text style={[styles.aiText, { color: outline }]}>
-                清单为空时暂无消费压力分析。点击右下角添加好物，数据将来自本地数据库。
-              </Text>
-            ) : (
-              <>
-                {aiReview?.trim() ? (
-                  <Text style={[styles.aiText, { color: outline }]}>{aiReview.trim()}</Text>
-                ) : (
-                  <>
-                    <Text style={[styles.aiText, { color: outline }]}>
-                      当前共
-                      <Text style={[styles.aiTextStrong, { color: text }]}> {items.length} </Text>
-                      条心愿，总预估
-                      <Text style={[styles.aiTextStrong, { color: text }]}> {formatCny(summary.total)} </Text>
-                      。
-                      {topDesireName ? (
-                        <>
-                          {' '}
-                          其中<Text style={[styles.aiTextStrong, { color: text }]}> {topDesireName} </Text>
-                          欲望等级较高，可优先评估必要性再下单。
-                        </>
-                      ) : null}
-                    </Text>
-                    {showAiPending ? (
-                      <View style={styles.aiPendingRow}>
-                        <ActivityIndicator size="small" color={primary} />
-                        <Text style={[styles.aiPendingText, { color: outline }]}>正在请求智谱 GLM…</Text>
-                      </View>
-                    ) : null}
-                    {aiError ? (
-                      <Text style={[styles.aiText, { color: '#b45309' }]}>
-                        生成失败：{aiError}。可点击「刷新 AI 评审」重试。
-                      </Text>
-                    ) : null}
-                  </>
-                )}
-
-                {!zhipuReady ? (
-                  <Text style={[styles.aiText, { color: outline }]}>
-                    <Text style={[styles.aiAdviceTag, { color: primary }]}>提示：</Text>
-                    配置智谱 API 密钥（EXPO_PUBLIC_ZHIPU_API_KEY）后，可由模型根据上文明细生成理性消费评审，与记账、备忘等能力共用同一密钥。
-                  </Text>
-                ) : null}
-
-                {aiReview?.trim() ? (
-                  <Text style={[styles.aiText, { color: outline }]}>
-                    <Text style={[styles.aiAdviceTag, { color: primary }]}>说明：</Text>
-                    内容由智谱模型根据本地清单生成，仅供自我观察参考，不构成消费或投资建议。
-                  </Text>
-                ) : null}
-
-                {zhipuReady && items.length > 0 ? (
-                  <Pressable
-                    onPress={() => bumpAiRefresh()}
-                    disabled={aiLoading}
-                    style={({ pressed }) => [
-                      styles.aiRefreshBtn,
-                      {
-                        borderColor: borderSoft,
-                        backgroundColor: isDark ? 'rgba(30,41,59,0.6)' : 'rgba(255,255,255,0.75)',
-                        opacity: aiLoading ? 0.55 : pressed ? 0.88 : 1,
-                      },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="刷新 AI 理性评审">
-                    <MaterialIcons name="refresh" size={18} color={primary} />
-                    <Text style={[styles.aiRefreshBtnText, { color: primary }]}>
-                      {aiLoading ? '刷新中…' : '刷新 AI 评审'}
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </>
-            )}
-          </View>
-        </View>
-
         <View style={styles.listSection}>
           <View style={styles.listKickerRow}>
             <Text style={[styles.listKicker, { color: outline }]}>目标好物</Text>
-            <Text style={[styles.listSwipeHint, { color: outline }]}>左滑删除</Text>
+            <Text style={[styles.listSwipeHint, { color: outline }]}>左滑可实现 · 删除</Text>
           </View>
           {!initialLoading && items.length === 0 ? (
             <View style={[styles.emptyCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
@@ -426,7 +358,12 @@ export default function WishListScreen() {
               <Text style={[styles.emptySub, { color: outline }]}>保存的条目会显示在这里</Text>
             </View>
           ) : null}
-          {items.map(row => {
+          {!initialLoading && items.length > 0 && activeItems.length === 0 ? (
+            <Text style={[styles.listEmptyActiveHint, { color: outline }]}>
+              待购清单已全部实现，可在下方「已实现」中查看或恢复。
+            </Text>
+          ) : null}
+          {activeItems.map(row => {
             const highlighted = row.desire_level >= 4;
             const thumb = row.reference_image_uri;
             return (
@@ -435,15 +372,26 @@ export default function WishListScreen() {
                 overshootRight={false}
                 rightThreshold={48}
                 renderRightActions={() => (
-                  <Pressable
-                    onPress={() => requestDeleteWish(row)}
-                    style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}
-                    accessibilityRole="button"
-                    accessibilityLabel={`删除 ${row.name}`}
-                  >
-                    <MaterialIcons name="delete-outline" size={24} color="#fff" />
-                    <Text style={styles.swipeDeleteText}>删除</Text>
-                  </Pressable>
+                  <View style={styles.swipeActionTrack}>
+                    <Pressable
+                      onPress={() => requestMarkFulfilled(row, true)}
+                      style={({ pressed }) => [styles.swipeFulfillAction, pressed && { opacity: 0.92 }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`标记 ${row.name} 已实现`}
+                    >
+                      <MaterialIcons name="check-circle" size={22} color="#fff" />
+                      <Text style={styles.swipeDeleteText}>已实现</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => requestDeleteWish(row)}
+                      style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`删除 ${row.name}`}
+                    >
+                      <MaterialIcons name="delete-outline" size={24} color="#fff" />
+                      <Text style={styles.swipeDeleteText}>删除</Text>
+                    </Pressable>
+                  </View>
                 )}
               >
                 <Pressable
@@ -505,6 +453,170 @@ export default function WishListScreen() {
               </Swipeable>
             );
           })}
+        </View>
+
+        {fulfilledItems.length > 0 ? (
+          <View style={styles.listSection}>
+            <View style={styles.listKickerRow}>
+              <Text style={[styles.listKicker, { color: outline }]}>已实现</Text>
+              <Text style={[styles.listSwipeHint, { color: outline }]}>{fulfilledItems.length} 条</Text>
+            </View>
+            {fulfilledItems.map(row => {
+              const thumb = row.reference_image_uri;
+              return (
+                <Swipeable
+                  key={row.id}
+                  overshootRight={false}
+                  rightThreshold={48}
+                  renderRightActions={() => (
+                    <View style={styles.swipeActionTrack}>
+                      <Pressable
+                        onPress={() => requestMarkFulfilled(row, false)}
+                        style={({ pressed }) => [styles.swipeRestoreAction, pressed && { opacity: 0.92 }]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`恢复 ${row.name} 为待购`}
+                      >
+                        <MaterialIcons name="undo" size={22} color="#fff" />
+                        <Text style={styles.swipeDeleteText}>恢复</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => requestDeleteWish(row)}
+                        style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`删除 ${row.name}`}
+                      >
+                        <MaterialIcons name="delete-outline" size={24} color="#fff" />
+                        <Text style={styles.swipeDeleteText}>删除</Text>
+                      </Pressable>
+                    </View>
+                  )}
+                >
+                  <Pressable
+                    onPress={() => router.push({ pathname: '/edit-wish-item/[id]', params: { id: row.id } })}
+                    style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
+                  >
+                    <View style={[styles.itemCard, styles.itemCardFulfilled, { backgroundColor: cardBg }]}>
+                      <View style={styles.itemMainRow}>
+                        <View style={[styles.itemIconWrap, { backgroundColor: cardSoft }]}>
+                          {thumb ? (
+                            <Image source={{ uri: thumb }} style={styles.itemThumb} contentFit="cover" transition={150} />
+                          ) : (
+                            <MaterialIcons name="check-circle" size={28} color={isDark ? '#34d399' : '#006c49'} />
+                          )}
+                        </View>
+                        <View style={styles.itemContent}>
+                          <View style={styles.itemTextWrap}>
+                            <Text style={[styles.itemName, styles.itemNameFulfilled, { color: text }]}>{row.name}</Text>
+                            <View style={styles.fulfilledBadgeRow}>
+                              <View style={[styles.fulfilledBadge, { backgroundColor: isDark ? 'rgba(52,211,153,0.18)' : 'rgba(0,108,73,0.1)' }]}>
+                                <Text style={[styles.fulfilledBadgeText, { color: isDark ? '#34d399' : '#006c49' }]}>
+                                  已实现
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
+                          <View style={styles.itemPriceWrap}>
+                            <Text style={[styles.itemPrice, styles.itemPriceFulfilled, { color: outline }]}>
+                              {formatCny(row.price)}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+                  </Pressable>
+                </Swipeable>
+              );
+            })}
+          </View>
+        ) : null}
+
+        <View style={[styles.aiReviewCard, { backgroundColor: cardSoft }]}>
+          <View style={[styles.aiDecor, { backgroundColor: `${primary}12` }]} />
+          <View style={styles.aiHead}>
+            <View style={styles.aiKickerRow}>
+              <MaterialIcons name="auto-awesome" size={18} color={primary} />
+              <Text style={[styles.aiKicker, { color: primary }]}>AI 理性评审</Text>
+            </View>
+            <Text style={[styles.aiHeading, { color: text }]}>{aiHeadingDisplay}</Text>
+          </View>
+          <View style={[styles.aiBody, { borderTopColor: borderSoft }]}>
+            {activeItems.length === 0 ? (
+              <Text style={[styles.aiText, { color: outline }]}>
+                {items.length === 0
+                  ? '清单为空时暂无消费压力分析。点击右下角添加好物，数据将来自本地数据库。'
+                  : '当前无待购条目，AI 评审仅针对未实现的心愿。可将已实现条目恢复后再生成。'}
+              </Text>
+            ) : (
+              <>
+                {aiReview?.trim() ? (
+                  <Text style={[styles.aiText, { color: outline }]}>{aiReview.trim()}</Text>
+                ) : (
+                  <>
+                    <Text style={[styles.aiText, { color: outline }]}>
+                      当前共
+                      <Text style={[styles.aiTextStrong, { color: text }]}> {activeItems.length} </Text>
+                      条待购心愿，总预估
+                      <Text style={[styles.aiTextStrong, { color: text }]}> {formatCny(summary.total)} </Text>
+                      。
+                      {topDesireName ? (
+                        <>
+                          {' '}
+                          其中<Text style={[styles.aiTextStrong, { color: text }]}> {topDesireName} </Text>
+                          欲望等级较高，可优先评估必要性再下单。
+                        </>
+                      ) : null}
+                    </Text>
+                    {showAiPending ? (
+                      <View style={styles.aiPendingRow}>
+                        <ActivityIndicator size="small" color={primary} />
+                        <Text style={[styles.aiPendingText, { color: outline }]}>正在请求智谱 GLM…</Text>
+                      </View>
+                    ) : null}
+                    {aiError ? (
+                      <Text style={[styles.aiText, { color: '#b45309' }]}>
+                        生成失败：{aiError}。可点击「刷新 AI 评审」重试。
+                      </Text>
+                    ) : null}
+                  </>
+                )}
+
+                {!zhipuReady ? (
+                  <Text style={[styles.aiText, { color: outline }]}>
+                    <Text style={[styles.aiAdviceTag, { color: primary }]}>提示：</Text>
+                    配置智谱 API 密钥（EXPO_PUBLIC_ZHIPU_API_KEY）后，可由模型根据上文明细生成理性消费评审，与记账、备忘等能力共用同一密钥。
+                  </Text>
+                ) : null}
+
+                {aiReview?.trim() ? (
+                  <Text style={[styles.aiText, { color: outline }]}>
+                    <Text style={[styles.aiAdviceTag, { color: primary }]}>说明：</Text>
+                    内容由智谱模型根据本地清单生成，仅供自我观察参考，不构成消费或投资建议。
+                  </Text>
+                ) : null}
+
+                {zhipuReady && activeItems.length > 0 ? (
+                  <Pressable
+                    onPress={() => bumpAiRefresh()}
+                    disabled={aiLoading}
+                    style={({ pressed }) => [
+                      styles.aiRefreshBtn,
+                      {
+                        borderColor: borderSoft,
+                        backgroundColor: isDark ? 'rgba(30,41,59,0.6)' : 'rgba(255,255,255,0.75)',
+                        opacity: aiLoading ? 0.55 : pressed ? 0.88 : 1,
+                      },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="刷新 AI 理性评审">
+                    <MaterialIcons name="refresh" size={18} color={primary} />
+                    <Text style={[styles.aiRefreshBtnText, { color: primary }]}>
+                      {aiLoading ? '刷新中…' : '刷新 AI 评审'}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </>
+            )}
+          </View>
         </View>
       </ScrollView>
 
@@ -732,14 +844,41 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     opacity: 0.85,
   },
+  listEmptyActiveHint: {
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  swipeActionTrack: {
+    width: 176,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    alignSelf: 'stretch',
+    marginLeft: 10,
+    marginVertical: 2,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  swipeFulfillAction: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#006c49',
+    gap: 4,
+  },
+  swipeRestoreAction: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0058be',
+    gap: 4,
+  },
   swipeDeleteAction: {
-    width: 88,
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#dc2626',
-    borderRadius: 20,
-    marginLeft: 10,
-    marginVertical: 2,
     gap: 4,
   },
   swipeDeleteText: {
@@ -769,6 +908,32 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     flexDirection: 'column',
     alignItems: 'stretch',
+  },
+  itemCardFulfilled: {
+    opacity: 0.88,
+  },
+  itemNameFulfilled: {
+    textDecorationLine: 'line-through',
+    opacity: 0.72,
+  },
+  itemPriceFulfilled: {
+    textDecorationLine: 'line-through',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  fulfilledBadgeRow: {
+    marginTop: 4,
+  },
+  fulfilledBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  fulfilledBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
   itemMainRow: {
     flexDirection: 'row',

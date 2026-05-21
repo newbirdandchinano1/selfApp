@@ -63,6 +63,7 @@ import {
   taskHasRepeatingSchedule,
 } from '@/lib/task-repeat-rollover';
 import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
+import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -1358,6 +1359,8 @@ export default function TasksScreen() {
   const bgFloatAnim = React.useRef(new Animated.Value(0)).current;
   const frogDoneBounceMap = React.useRef<Record<string, Animated.Value>>({});
   const projectSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
+  const standaloneTodoSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
+  const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
 
   const triggerProjectAiReview = React.useCallback(
     async (projectId: string) => {
@@ -2144,8 +2147,47 @@ export default function TasksScreen() {
   }, [loadTasks, quickTodoDraft, quickTodoSaving]);
 
   /** 左滑删除：软删除整棵子树，并刷新列表（与 DB deleteTask 行为一致） */
+  const handleUpgradeStandaloneTodo = React.useCallback(
+    async (taskId: string) => {
+      if (upgradingStandaloneTodoId) return;
+      standaloneTodoSwipeableRefs.current[taskId]?.close();
+      setUpgradingStandaloneTodoId(taskId);
+      try {
+        const result = await upgradeStandaloneTodoToProject(taskId);
+        if (!result.ok) {
+          Alert.alert('无法升级', result.message);
+          return;
+        }
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        const rows = await loadProjects();
+        await loadTasks();
+        await loadProjectTasks(rows);
+        setExpandedProjectIds((prev) => {
+          const next = { ...prev, [result.projectId]: true };
+          void saveExpandedProjectState(next);
+          return next;
+        });
+        Alert.alert('已升级为项目', `「${result.projectName}」已创建，原待办成为项目下的主任务。`);
+      } catch (err) {
+        console.warn('待办升级为项目失败', err);
+        Alert.alert('升级失败', '请稍后重试。');
+        await loadTasks();
+      } finally {
+        setUpgradingStandaloneTodoId(null);
+      }
+    },
+    [
+      loadProjectTasks,
+      loadProjects,
+      loadTasks,
+      saveExpandedProjectState,
+      upgradingStandaloneTodoId,
+    ]
+  );
+
   const confirmDeleteStandaloneTodo = React.useCallback(
     (taskId: string, titleLabel: string) => {
+      standaloneTodoSwipeableRefs.current[taskId]?.close();
       Alert.alert('删除待办', `确定删除「${titleLabel}」吗？（若有子任务会一并删除）`, [
         { text: '取消', style: 'cancel' },
         {
@@ -2754,6 +2796,7 @@ export default function TasksScreen() {
                   <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 18 }]}>待办</Text>
                   <Text style={[styles.standaloneTodoSubtitle, { color: outline }]}>
                     暂不挂项目 · 进行中 {standaloneTodoOpenCount} 条
+                    {standaloneTodos.length > 0 ? ' · 左滑可升级或删除' : ''}
                   </Text>
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
@@ -2866,15 +2909,41 @@ export default function TasksScreen() {
                     const dueDisplayYmd = getStandaloneTodoOverdueDisplayYmd(t);
                     const effectivePriority = getEffectiveTaskPriority(t, logicalTodayYmd);
                     const checkColor = getTaskPriorityCheckColor(effectivePriority, isDark);
+                    const isUpgrading = upgradingStandaloneTodoId === t.id;
                     return (
                       <View key={t.id} style={styles.standaloneTodoSwipeWrap}>
                         <Swipeable
+                          ref={(r) => {
+                            standaloneTodoSwipeableRefs.current[t.id] = r;
+                          }}
                           overshootRight={false}
                           friction={2}
                           renderRightActions={() => (
                             <View style={styles.standaloneSwipeActions}>
                               <Pressable
+                                onPress={() => void handleUpgradeStandaloneTodo(t.id)}
+                                disabled={!!upgradingStandaloneTodoId}
+                                style={({ pressed }) => [
+                                  styles.standaloneSwipeUpgrade,
+                                  {
+                                    backgroundColor: secondary,
+                                    opacity: isUpgrading ? 0.55 : pressed ? 0.9 : 1,
+                                  },
+                                ]}
+                                accessibilityRole="button"
+                                accessibilityLabel={`将 ${t.title} 升级为项目`}>
+                                {isUpgrading ? (
+                                  <ActivityIndicator color="#fff" size="small" />
+                                ) : (
+                                  <MaterialIcons name="upgrade" size={22} color="#fff" />
+                                )}
+                                <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
+                                  升级
+                                </Text>
+                              </Pressable>
+                              <Pressable
                                 onPress={() => confirmDeleteStandaloneTodo(t.id, t.title)}
+                                disabled={!!upgradingStandaloneTodoId}
                                 style={({ pressed }) => [
                                   styles.standaloneSwipeDelete,
                                   { backgroundColor: colors.danger, opacity: pressed ? 0.9 : 1 },
@@ -4786,6 +4855,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'stretch',
     marginLeft: -10,
+    gap: 6,
+  },
+  standaloneSwipeUpgrade: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'stretch',
+    minWidth: 96,
+    paddingHorizontal: Spacing['2xl'],
+    borderRadius: Radius.xl,
+    gap: Spacing.md,
+  },
+  standaloneSwipeUpgradeText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
+    flexShrink: 0,
   },
   /**
    * 删除条与卡片同高；横向「图标 + 删除」；
@@ -4796,8 +4882,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'stretch',
-    minWidth: 118,
-    paddingHorizontal: Spacing['4xl'],
+    minWidth: 96,
+    paddingHorizontal: Spacing['2xl'],
     borderTopRightRadius: Radius.xl,
     borderBottomRightRadius: Radius.xl,
     gap: Spacing.md,
