@@ -241,7 +241,7 @@ export default function MemoListScreen() {
         <View style={[styles.rowCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
           <View style={[styles.rowAccent, { backgroundColor: tertiary }]} />
           <Pressable
-            onPress={() => router.push({ pathname: '/memo-edit/[id]', params: { id: item.id } })}
+            onPress={() => router.push({ pathname: '/memo-view/[id]', params: { id: item.id } })}
             style={({ pressed }) => [styles.rowBody, { opacity: pressed ? 0.92 : 1 }]}
           >
             <Text style={[styles.rowTitle, { color: text }]} numberOfLines={2}>

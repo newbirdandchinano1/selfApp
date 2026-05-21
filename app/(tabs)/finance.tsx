@@ -42,7 +42,10 @@ import {
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
-import { notifyAutoLedgerFailure } from '@/lib/auto-ledger-notify';
+import { notifyAutoLedgerFailure, notifyAutoLedgerHint } from '@/lib/auto-ledger-notify';
+
+const AUTO_LEDGER_NOT_BILL_MESSAGE =
+  '这不是账单或支付凭证截图，请换一张支付成功页、账单详情或小票等图片。';
 import {
   AUTO_LEDGER_HANDOFF_SPLASH_MS,
   AUTO_LEDGER_MAX_ATTEMPTS,
@@ -489,6 +492,7 @@ export default function FinanceScreen() {
   const autoLedgerHandoffTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoLedgerImageUriRef = React.useRef<string | null>(null);
   const autoLedgerSourceRef = React.useRef<'clipboard' | 'shortcut_intent' | 'picker'>('clipboard');
+  const cancelledAutoLedgerIdsRef = React.useRef<Set<string>>(new Set());
   /** 已在财务 Tab 时再次触发快捷指令 handoff（由根级 listener 通知） */
   const [shortcutHandoffNonce, setShortcutHandoffNonce] = React.useState(0);
   const isFinanceTabFocused = useIsFocused();
@@ -526,6 +530,7 @@ export default function FinanceScreen() {
   const [budgetRefreshDay, setBudgetRefreshDay] = React.useState(DEFAULT_BUDGET_REFRESH_DAY);
   const [budgetRefreshDayDraft, setBudgetRefreshDayDraft] = React.useState(DEFAULT_BUDGET_REFRESH_DAY);
   const [isBudgetAdjustVisible, setIsBudgetAdjustVisible] = React.useState(false);
+  const [isTodayBudgetHintVisible, setIsTodayBudgetHintVisible] = React.useState(false);
   const [budgetBaseDraft, setBudgetBaseDraft] = React.useState('');
   const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
   const [fixedExpensesDraft, setFixedExpensesDraft] = React.useState<BudgetFixedExpense[]>([]);
@@ -1351,12 +1356,20 @@ export default function FinanceScreen() {
       ? dailyBudgetFromIncome
       : dailyBudgetFromRemaining;
   const todayAvailableAmount = Math.max(0, dailyBudgetAmount - todayBudgetExpenseTotal);
+  const todayBudgetOverAmount =
+    dailyBudgetAmount > 0 ? Math.max(0, todayBudgetExpenseTotal - dailyBudgetAmount) : 0;
+  const isTodayBudgetOver = todayBudgetOverAmount > 0;
   const todayBudgetUsagePct = dailyBudgetAmount > 0 ? Math.min(1, todayBudgetExpenseTotal / dailyBudgetAmount) : 0;
 
   const budgetUiNaturalMonth = budgetRefreshDay === DEFAULT_BUDGET_REFRESH_DAY;
   const budgetUiScopeShort = budgetUiNaturalMonth ? '本月' : '本周期';
   const budgetUiPrevCarryLabel = budgetUiNaturalMonth ? '上月剩余' : '上周期剩余';
   const budgetUiIncludePrevLabel = budgetUiNaturalMonth ? '包含上月结余' : '包含上周期结余';
+  const todayBudgetDailyExplain = hasConfiguredMonthBudget
+    ? `剩余预算 ÷ 含今天在内的 ${daysLeftIncludingToday} 天`
+    : budgetPeriodIncome > 0
+      ? `本周期收入 ÷ ${budgetPeriodTotalDays} 天（未设置月预算时）`
+      : `${budgetUiScopeShort}预算 ÷ 含今天在内的 ${daysLeftIncludingToday} 天`;
 
   /** 净资产汇总：排除标记为「不计入总资产/总负债」的账户，与资产页 hero、账户详情开关一致 */
   const netTotalForTrend = React.useMemo(
@@ -1557,6 +1570,15 @@ export default function FinanceScreen() {
     [],
   );
 
+  const dismissAutoLedgerHandoffSplash = React.useCallback(() => {
+    if (autoLedgerHandoffTimerRef.current != null) {
+      clearTimeout(autoLedgerHandoffTimerRef.current);
+      autoLedgerHandoffTimerRef.current = null;
+    }
+    setAutoLedgerToastVisible(false);
+    autoLedgerReturnToPreviousAppRef.current = false;
+  }, []);
+
   const startAutoLedgerHandoff = React.useCallback(
     async (source: 'clipboard' | 'shortcut_intent', message?: string) => {
       beginAutoLedgerShortcutSession();
@@ -1578,6 +1600,15 @@ export default function FinanceScreen() {
       }, AUTO_LEDGER_HANDOFF_SPLASH_MS);
     },
     [beginAutoLedgerShortcutSession],
+  );
+
+  const cancelPendingAutoLedger = React.useCallback(
+    (pendingId: string) => {
+      cancelledAutoLedgerIdsRef.current.add(pendingId);
+      setPendingAutoLedgers((prev) => prev.filter((row) => row.id !== pendingId));
+      dismissAutoLedgerHandoffSplash();
+    },
+    [dismissAutoLedgerHandoffSplash],
   );
 
   React.useEffect(() => {
@@ -1651,16 +1682,20 @@ export default function FinanceScreen() {
 
       const pendingId = `pending_auto_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const maxAttempts = AUTO_LEDGER_MAX_ATTEMPTS;
+      cancelledAutoLedgerIdsRef.current.delete(pendingId);
       setPendingAutoLedgers((prev) => [
         { id: pendingId, source: ledgerSource, retryAttempt: 1, maxAttempts },
         ...prev,
       ]);
 
+      const isCancelled = () => cancelledAutoLedgerIdsRef.current.has(pendingId);
       const accountHints = accounts.map((a) => ({ name: a.name, account_no: a.account_no }));
       let lastError = '请稍后重试。';
 
       try {
         for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          if (isCancelled()) return;
+
           if (attempt > 1) {
             setPendingAutoLedgers((prev) =>
               prev.map((row) =>
@@ -1668,6 +1703,7 @@ export default function FinanceScreen() {
               ),
             );
             await sleepMs(AUTO_LEDGER_RETRY_DELAY_MS);
+            if (isCancelled()) return;
           }
 
           try {
@@ -1678,7 +1714,17 @@ export default function FinanceScreen() {
               maxAttempts: 2,
               retryDelayMs: 800,
             });
+            if (isCancelled()) return;
+
             if (!resolved.ok) {
+              if (resolved.notBill) {
+                if (handoff) {
+                  void notifyAutoLedgerHint(AUTO_LEDGER_NOT_BILL_MESSAGE);
+                } else {
+                  Alert.alert('提示', AUTO_LEDGER_NOT_BILL_MESSAGE);
+                }
+                return;
+              }
               lastError = resolved.error;
               console.warn(`Auto ledger parse attempt ${attempt}/${maxAttempts} failed:`, resolved.error);
               continue;
@@ -1777,6 +1823,8 @@ export default function FinanceScreen() {
           }
         }
 
+        if (isCancelled()) return;
+
         const failMsg = `已自动重试 ${maxAttempts} 次仍未成功，请检查网络或截图是否清晰后重试。\n\n${lastError}`;
         if (handoff) {
           void notifyAutoLedgerFailure(failMsg);
@@ -1784,6 +1832,7 @@ export default function FinanceScreen() {
           Alert.alert('自动记账失败', failMsg);
         }
       } finally {
+        cancelledAutoLedgerIdsRef.current.delete(pendingId);
         setPendingAutoLedgers((prev) => prev.filter((row) => row.id !== pendingId));
       }
       } finally {
@@ -3012,19 +3061,28 @@ export default function FinanceScreen() {
                       ) : null}
                     </View>
 
-                    <View style={styles.budgetTodayRing}>
+                    <Pressable
+                      onPress={() => setIsTodayBudgetHintVisible(true)}
+                      style={({ pressed }) => [styles.budgetTodayRing, pressed && { opacity: 0.82 }]}
+                      accessibilityRole="button"
+                      accessibilityLabel="查看今日可用与剩余预算说明">
                       {(() => {
                         const ringSize = 78;
                         const stroke = 3.5;
                         const r = (ringSize - stroke) / 2;
                         const c = 2 * Math.PI * r;
-                        const dash = c * todayBudgetUsagePct;
+                        const dash = c * (isTodayBudgetOver ? 1 : todayBudgetUsagePct);
                         const ringTrack = isDark ? 'rgba(148,163,184,0.18)' : '#e3eefc';
-                        const ringProg = isDark ? '#60a5fa' : '#7eb6ff';
+                        const budgetAlertColor = isDark ? '#f87171' : '#dc2626';
+                        const ringProg = isTodayBudgetOver
+                          ? budgetAlertColor
+                          : isDark
+                            ? '#60a5fa'
+                            : '#7eb6ff';
                         return (
                           <View style={{ width: ringSize, height: ringSize, alignItems: 'center', justifyContent: 'center' }}>
                             <Svg
-                              key={`today-budget-ring-${todayBudgetUsagePct.toFixed(4)}-${todayAvailableAmount.toFixed(2)}`}
+                              key={`today-budget-ring-${todayBudgetUsagePct.toFixed(4)}-${todayAvailableAmount.toFixed(2)}-${todayBudgetOverAmount.toFixed(2)}`}
                               width={ringSize}
                               height={ringSize}
                               viewBox={`0 0 ${ringSize} ${ringSize}`}
@@ -3042,17 +3100,30 @@ export default function FinanceScreen() {
                               />
                             </Svg>
                             <View style={styles.budgetRingCenter}>
-                              <Text style={[styles.budgetRingLabel, { color: subtle }]} numberOfLines={2}>
-                                今日可用
+                              <Text
+                                style={[
+                                  styles.budgetRingLabel,
+                                  { color: isTodayBudgetOver ? budgetAlertColor : subtle },
+                                ]}
+                                numberOfLines={2}>
+                                {isTodayBudgetOver ? '超出预算' : '今日可用'}
                               </Text>
-                              <Text style={[styles.budgetRingValue, { color: text }]}>
-                                {showNetAmounts ? formatCurrencyWithDecimals(todayAvailableAmount) : hiddenAmountText}
+                              <Text
+                                style={[
+                                  styles.budgetRingValue,
+                                  { color: isTodayBudgetOver ? budgetAlertColor : text },
+                                ]}>
+                                {showNetAmounts
+                                  ? formatCurrencyWithDecimals(
+                                      isTodayBudgetOver ? todayBudgetOverAmount : todayAvailableAmount,
+                                    )
+                                  : hiddenAmountText}
                               </Text>
                             </View>
                           </View>
                         );
                       })()}
-                    </View>
+                    </Pressable>
                   </View>
 
                   <View style={[styles.budgetNetDivider, { backgroundColor: outlineVariant }]} />
@@ -3352,7 +3423,22 @@ export default function FinanceScreen() {
               );
 
               if (t.isPendingPlaceholder) {
-                return <React.Fragment key={t.id}>{rowBody}</React.Fragment>;
+                return (
+                  <React.Fragment key={t.id}>
+                    {rowBody}
+                    <Pressable
+                      onPress={() => cancelPendingAutoLedger(t.id)}
+                      style={({ pressed }) => [
+                        styles.pendingAutoLedgerCancelBtn,
+                        { borderColor: outlineVariant, backgroundColor: surface },
+                        pressed && { opacity: 0.88 },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="取消 AI 识别">
+                      <Text style={[styles.pendingAutoLedgerCancelText, { color: subtle }]}>取消识别</Text>
+                    </Pressable>
+                  </React.Fragment>
+                );
               }
 
               return (
@@ -4493,9 +4579,129 @@ export default function FinanceScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      <Modal
+        visible={isTodayBudgetHintVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setIsTodayBudgetHintVisible(false)}>
+        <View style={styles.budgetModalOverlayInner}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => setIsTodayBudgetHintVisible(false)} />
+          <View style={[styles.budgetDetailsSheet, { paddingBottom: Math.max(24, insets.bottom), backgroundColor: surface }]}>
+            <View style={styles.budgetDetailsHeader}>
+              <Text style={[styles.budgetDetailsTitle, { color: text }]}>今日可用与剩余预算</Text>
+              <Pressable
+                onPress={() => setIsTodayBudgetHintVisible(false)}
+                style={({ pressed }) => [styles.pickerModalCloseBtn, pressed && { opacity: 0.75 }]}
+                accessibilityRole="button"
+                accessibilityLabel="关闭">
+                <MaterialIcons name="close" size={22} color={subtle} />
+              </Pressable>
+            </View>
+
+            <View style={styles.budgetHintBody}>
+              <View
+                style={[
+                  styles.budgetHintCard,
+                  { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f7f9fd', borderColor: outlineVariant },
+                ]}>
+                <View style={[styles.budgetHintAccent, { backgroundColor: primary }]} />
+                <View
+                  style={[
+                    styles.budgetHintIconWrap,
+                    { backgroundColor: isDark ? 'rgba(96, 165, 250, 0.14)' : 'rgba(0, 88, 190, 0.09)' },
+                  ]}>
+                  <MaterialIcons name="account-balance-wallet" size={22} color={primary} />
+                </View>
+                <View style={styles.budgetHintTextCol}>
+                  <Text style={[styles.budgetHintLabel, { color: subtle }]}>剩余预算</Text>
+                  <Text style={[styles.budgetHintValue, { color: text }]}>
+                    {showNetAmounts ? formatCurrencyWithDecimals(todayBudgetSurplusAmount) : hiddenAmountText}
+                  </Text>
+                  <Text style={[styles.budgetHintExplain, { color: subtle }]}>
+                    {budgetUiScopeShort}真实可支配预算减去本周期已计入预算的支出。标记为「不计入预算」的支出不会减少剩余预算。
+                  </Text>
+                </View>
+              </View>
+
+              <View
+                style={[
+                  styles.budgetHintCard,
+                  { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f7f9fd', borderColor: outlineVariant },
+                ]}>
+                <View style={[styles.budgetHintAccent, { backgroundColor: tertiary }]} />
+                <View
+                  style={[
+                    styles.budgetHintIconWrap,
+                    { backgroundColor: isDark ? 'rgba(251, 191, 36, 0.14)' : 'rgba(130, 81, 0, 0.09)' },
+                  ]}>
+                  <MaterialIcons name="pie-chart" size={22} color={tertiary} />
+                </View>
+                <View style={styles.budgetHintTextCol}>
+                  <Text style={[styles.budgetHintLabel, { color: subtle }]}>
+                    {isTodayBudgetOver ? '今日超出预算' : '今日可用预算'}
+                  </Text>
+                  <Text style={[styles.budgetHintValue, { color: isTodayBudgetOver ? '#dc2626' : primary }]}>
+                    {showNetAmounts
+                      ? formatCurrencyWithDecimals(
+                          isTodayBudgetOver ? todayBudgetOverAmount : todayAvailableAmount,
+                        )
+                      : hiddenAmountText}
+                  </Text>
+                  {showNetAmounts ? (
+                    <View
+                      style={[
+                        styles.budgetHintMetaCapsule,
+                        {
+                          backgroundColor: isTodayBudgetOver
+                            ? isDark
+                              ? 'rgba(248,113,113,0.14)'
+                              : '#fef2f2'
+                            : isDark
+                              ? 'rgba(96,165,250,0.14)'
+                              : '#eef2fb',
+                        },
+                      ]}>
+                      <Text
+                        style={[
+                          styles.budgetHintMetaText,
+                          { color: isTodayBudgetOver ? (isDark ? '#f87171' : '#dc2626') : primary },
+                        ]}>
+                        日均可支配 {formatCurrencyWithDecimals(dailyBudgetAmount)} · 今日已用{' '}
+                        {formatCurrencyWithDecimals(todayBudgetExpenseTotal)}
+                        {isTodayBudgetOver
+                          ? ` · 超出 ${formatCurrencyWithDecimals(todayBudgetOverAmount)}`
+                          : ''}
+                      </Text>
+                    </View>
+                  ) : null}
+                  <Text style={[styles.budgetHintExplain, { color: subtle }]}>
+                    日均可支配按 {todayBudgetDailyExplain} 计算；今日可用 = 日均可支配 − 今日已计入预算的支出。
+                    {isTodayBudgetOver
+                      ? ' 超出日均可支配时，圆环变红并显示超支金额。'
+                      : ' 圆环进度表示今日已用占日均可支配的比例。'}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <Pressable
+              onPress={() => setIsTodayBudgetHintVisible(false)}
+              style={({ pressed }) => [
+                styles.budgetDetailsSaveBtn,
+                { backgroundColor: tertiary, opacity: pressed ? 0.92 : 1 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="知道了">
+              <Text style={styles.budgetDetailsSaveText}>知道了</Text>
+            </Pressable>
+            <View style={[styles.budgetDetailsHomeIndicator, { backgroundColor: isDark ? '#9ca3af' : '#111827' }]} />
+          </View>
+        </View>
+      </Modal>
+
       {autoLedgerToastVisible ? (
         <View
-          pointerEvents="none"
+          pointerEvents="box-none"
           style={[styles.autoLedgerToastWrap, { top: insets.top + 8 }]}
           accessibilityLiveRegion="polite">
           <View style={[styles.autoLedgerToast, { backgroundColor: surface, borderColor: outlineVariant }]}>
@@ -4503,6 +4709,16 @@ export default function FinanceScreen() {
             <Text style={[styles.autoLedgerToastText, { color: text }]} numberOfLines={2}>
               {autoLedgerToastMessage}
             </Text>
+            {pendingAutoLedgers.length > 0 ? (
+              <Pressable
+                onPress={() => cancelPendingAutoLedger(pendingAutoLedgers[0].id)}
+                hitSlop={8}
+                style={({ pressed }) => [pressed && { opacity: 0.75 }]}
+                accessibilityRole="button"
+                accessibilityLabel="取消 AI 识别">
+                <Text style={[styles.autoLedgerToastCancel, { color: primary }]}>取消</Text>
+              </Pressable>
+            ) : null}
           </View>
         </View>
       ) : null}
@@ -4662,6 +4878,70 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: -0.2,
     textAlign: 'center',
+  },
+  budgetHintBody: {
+    paddingHorizontal: 24,
+    gap: 12,
+    marginBottom: 20,
+  },
+  budgetHintCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingVertical: 14,
+    paddingRight: 14,
+    paddingLeft: 10,
+    gap: 10,
+    overflow: 'hidden',
+  },
+  budgetHintAccent: {
+    width: 3,
+    alignSelf: 'stretch',
+    borderRadius: 999,
+    marginLeft: 2,
+  },
+  budgetHintIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  budgetHintTextCol: {
+    flex: 1,
+    gap: 6,
+    minWidth: 0,
+  },
+  budgetHintLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  budgetHintValue: {
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  budgetHintMetaCapsule: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    maxWidth: '100%',
+  },
+  budgetHintMetaText: {
+    fontSize: 11,
+    fontWeight: '800',
+    lineHeight: 15,
+    letterSpacing: 0.1,
+  },
+  budgetHintExplain: {
+    fontSize: 12,
+    fontWeight: '500',
+    lineHeight: 17,
+    opacity: 0.92,
   },
   budgetNetDivider: {
     height: 1,
@@ -4886,6 +5166,20 @@ const styles = StyleSheet.create({
   },
   txnSwipeForegroundPending: {
     opacity: 0.92,
+  },
+  pendingAutoLedgerCancelBtn: {
+    alignSelf: 'flex-end',
+    marginTop: 4,
+    marginBottom: 8,
+    marginRight: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  pendingAutoLedgerCancelText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   swipeDeleteTrack: {
     width: 100,
@@ -5867,6 +6161,11 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.12,
     shadowRadius: 12,
     elevation: 6,
+  },
+  autoLedgerToastCancel: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 10,
   },
   autoLedgerToastText: {
     flex: 1,

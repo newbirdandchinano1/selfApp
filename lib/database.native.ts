@@ -3,7 +3,7 @@ import { enableGithubSqliteMutationTrackingOnDatabase } from '@/lib/github-sqlit
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 23;
+export const DB_VERSION = 24;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -125,6 +125,16 @@ export async function initDatabase() {
     CREATE TABLE IF NOT EXISTS task_execution_events (
       id TEXT PRIMARY KEY NOT NULL,
       task_id TEXT,
+      action TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      task_title TEXT,
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS frog_completion_events (
+      id TEXT PRIMARY KEY NOT NULL,
+      task_id TEXT,
+      assigned_ymd TEXT NOT NULL,
       action TEXT NOT NULL,
       created_at TEXT NOT NULL,
       task_title TEXT,
@@ -653,6 +663,8 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_task_items_task_id ON task_items(task_id);
     CREATE INDEX IF NOT EXISTS idx_task_execution_events_created_at ON task_execution_events(created_at);
     CREATE INDEX IF NOT EXISTS idx_task_execution_events_task_id ON task_execution_events(task_id);
+    CREATE INDEX IF NOT EXISTS idx_frog_completion_events_assigned_ymd ON frog_completion_events(assigned_ymd);
+    CREATE INDEX IF NOT EXISTS idx_frog_completion_events_task_id ON frog_completion_events(task_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_updated_at ON accounts(updated_at);
     CREATE INDEX IF NOT EXISTS idx_account_transactions_account_id ON account_transactions(account_id);
     CREATE INDEX IF NOT EXISTS idx_finance_accounts_updated_at ON finance_accounts(updated_at);
@@ -830,6 +842,7 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS finance_accounts;
     DROP TABLE IF EXISTS account_transactions;
     DROP TABLE IF EXISTS accounts;
+    DROP TABLE IF EXISTS frog_completion_events;
     DROP TABLE IF EXISTS task_execution_events;
     DROP TABLE IF EXISTS task_items;
     DROP TABLE IF EXISTS tasks;
