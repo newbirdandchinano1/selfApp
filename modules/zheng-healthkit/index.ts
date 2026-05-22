@@ -20,14 +20,24 @@ export type HealthKitCategoryRow = {
   source: string;
 };
 
+export type HealthKitAppIdentity = {
+  displayName: string;
+  bundleIdentifier: string;
+  bundleName: string;
+};
+
 export type HealthKitSnapshot = {
   available: boolean;
+  /** 是否已向系统登记（不等于每项数据都已允许读取） */
   authorized: boolean;
   fetchedAt: string;
   characteristics: Record<string, string>;
   quantities: HealthKitQuantityRow[];
   categories: HealthKitCategoryRow[];
   errors: string[];
+  requestStatus?: HealthKitAuthorizationRequestStatus;
+  appDisplayName?: string;
+  bundleIdentifier?: string;
   /** 用户在健康 App 里未授权读取的指标数量 */
   skippedUnauthorized?: number;
   /** 已授权但暂无记录的指标数量 */
@@ -42,10 +52,19 @@ export type HealthKitBlockReason =
   | 'ipad_unsupported'
   | 'healthkit_unavailable';
 
+export type HealthKitAuthorizationRequestStatus =
+  | 'shouldRequest'
+  | 'unnecessary'
+  | 'unknown'
+  | 'unavailable';
+
 type ZhengHealthKitNative = {
   isAvailable: () => Promise<boolean>;
   requestAuthorization: () => Promise<boolean>;
   fetchAllHealthData: () => Promise<HealthKitSnapshot>;
+  getAppDisplayName: () => Promise<string>;
+  getAppIdentity: () => Promise<HealthKitAppIdentity>;
+  getAuthorizationRequestStatus: () => Promise<HealthKitAuthorizationRequestStatus>;
 };
 
 const native = requireOptionalNativeModule<ZhengHealthKitNative>('ZhengHealthKit');
@@ -117,6 +136,60 @@ export async function requestHealthKitAuthorization(): Promise<boolean> {
   }
 }
 
+/** iPhone 主屏幕与健康 App 列表里显示的应用名 */
+export async function getHealthKitAppDisplayName(): Promise<string> {
+  const identity = await getHealthKitAppIdentity();
+  return identity.displayName;
+}
+
+export async function getHealthKitAppIdentity(): Promise<HealthKitAppIdentity> {
+  const fallbackName =
+    (typeof Constants.expoConfig?.name === 'string' && Constants.expoConfig.name.trim()) ||
+    '小郑的自我修养';
+  if (!isAppleHealthKitSupported() || !native) {
+    return { displayName: fallbackName, bundleIdentifier: '', bundleName: '' };
+  }
+  try {
+    if (native.getAppIdentity) {
+      const raw = await native.getAppIdentity();
+      const displayName =
+        (typeof raw?.displayName === 'string' && raw.displayName.trim()) || fallbackName;
+      return {
+        displayName,
+        bundleIdentifier:
+          typeof raw?.bundleIdentifier === 'string' ? raw.bundleIdentifier.trim() : '',
+        bundleName: typeof raw?.bundleName === 'string' ? raw.bundleName.trim() : '',
+      };
+    }
+    const name = await native.getAppDisplayName();
+    return {
+      displayName: typeof name === 'string' && name.trim() ? name.trim() : fallbackName,
+      bundleIdentifier: '',
+      bundleName: '',
+    };
+  } catch {
+    return { displayName: fallbackName, bundleIdentifier: '', bundleName: '' };
+  }
+}
+
+export async function getHealthKitAuthorizationRequestStatus(): Promise<HealthKitAuthorizationRequestStatus> {
+  if (!isAppleHealthKitSupported() || !native) return 'unavailable';
+  try {
+    const status = await native.getAuthorizationRequestStatus();
+    if (
+      status === 'shouldRequest' ||
+      status === 'unnecessary' ||
+      status === 'unknown' ||
+      status === 'unavailable'
+    ) {
+      return status;
+    }
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 export async function fetchAppleHealthKitSnapshot(): Promise<HealthKitSnapshot> {
   if (!isAppleHealthKitSupported()) return { ...EMPTY_SNAPSHOT };
   const block = await getHealthKitBlockReason();
@@ -131,6 +204,7 @@ export async function fetchAppleHealthKitSnapshot(): Promise<HealthKitSnapshot> 
         errors: [healthKitBlockReasonMessage('native_module_missing')],
       };
     }
+    const requestStatus = raw.requestStatus;
     return {
       available: Boolean(raw.available),
       authorized: Boolean(raw.authorized),
@@ -139,6 +213,21 @@ export async function fetchAppleHealthKitSnapshot(): Promise<HealthKitSnapshot> 
       quantities: Array.isArray(raw.quantities) ? (raw.quantities as HealthKitQuantityRow[]) : [],
       categories: Array.isArray(raw.categories) ? (raw.categories as HealthKitCategoryRow[]) : [],
       errors: Array.isArray(raw.errors) ? raw.errors.map(String) : [],
+      requestStatus:
+        requestStatus === 'shouldRequest' ||
+        requestStatus === 'unnecessary' ||
+        requestStatus === 'unknown' ||
+        requestStatus === 'unavailable'
+          ? requestStatus
+          : undefined,
+      appDisplayName:
+        typeof raw.appDisplayName === 'string' && raw.appDisplayName.trim()
+          ? raw.appDisplayName.trim()
+          : undefined,
+      bundleIdentifier:
+        typeof raw.bundleIdentifier === 'string' && raw.bundleIdentifier.trim()
+          ? raw.bundleIdentifier.trim()
+          : undefined,
       skippedUnauthorized: Number(raw.skippedUnauthorized ?? 0) || 0,
       skippedNoData: Number(raw.skippedNoData ?? 0) || 0,
     };

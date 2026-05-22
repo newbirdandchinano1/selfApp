@@ -184,6 +184,9 @@ function RootLayoutInner() {
             <Stack.Screen name="persona-detail/[slug]" />
             <Stack.Screen name="weekly-review" />
             <Stack.Screen name="my-skills" />
+            <Stack.Screen name="my-recipes" />
+            <Stack.Screen name="recipe-view/[id]" />
+            <Stack.Screen name="recipe-edit/[id]" />
             <Stack.Screen name="zhipu-api-test" />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />

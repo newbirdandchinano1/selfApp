@@ -8,6 +8,7 @@ import {
   mergePrerequisiteIdsIntoExtraData,
   validatePrerequisiteSelection,
 } from '@/lib/repositories/projects/project-prerequisites';
+import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
 import { createProject, getProjectCategories, getProjects, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -341,7 +342,8 @@ export default function AddProjectScreen() {
 
     setCreating(true);
     try {
-      const extra = mergePrerequisiteIdsIntoExtraData({ schedule: scheduleMeta }, prerequisiteProjectIds);
+      const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
+      const extra = mergePrerequisiteIdsIntoExtraData({ schedule: scheduleToSave }, prerequisiteProjectIds);
       await createProject({
         id: buildProjectId(),
         name: trimmedTitle,

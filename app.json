@@ -11,8 +11,12 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.myselfManage.appdemo",
+      "entitlements": {
+        "com.apple.developer.healthkit": true
+      },
       "infoPlist": {
         "CFBundleDisplayName": "小郑的自我修养",
+        "CFBundleName": "小郑的自我修养",
         "ITSAppUsesNonExemptEncryption": false
       }
     },

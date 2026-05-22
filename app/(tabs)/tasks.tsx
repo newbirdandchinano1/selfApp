@@ -20,6 +20,12 @@ import {
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import { buildProjectLockMap, sortProjectsForList } from '@/lib/repositories/projects/project-prerequisites';
 import {
+  getProjectScheduleLabel,
+  getProjectScheduleYmdBounds,
+  isProjectScheduleExpired,
+  isProjectScheduleNotYetStarted,
+} from '@/lib/repositories/projects/project-schedule-status';
+import {
   createTask,
   deleteTask,
   getTasks,
@@ -1053,15 +1059,6 @@ async function applyOverdueTaskPriorityBump(rows: TaskRow[], logicalTodayYmd: st
   return count;
 }
 
-function getProjectScheduleLabel(project: ProjectRow, schedule: ProjectScheduleMeta | null) {
-  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
-    const end = formatScheduleDateToYMD(schedule.range.end);
-    return `${start} ~ ${end}`;
-  }
-  return project.due_date ? formatScheduleDateToYMD(project.due_date) : null;
-}
-
 /** 递归：收纳、到期自动归档等需整棵树均完成或取消 */
 function areAllTasksInProjectTreeDone(nodes: TaskTreeNode[]): boolean {
   for (const n of nodes) {
@@ -1299,8 +1296,8 @@ export default function TasksScreen() {
   }, []);
 
   const projectLockMap = React.useMemo(
-    () => buildProjectLockMap(projects, projectTaskTreeMap),
-    [projects, projectTaskTreeMap],
+    () => buildProjectLockMap(projects, projectTaskTreeMap, logicalTodayYmd),
+    [logicalTodayYmd, projects, projectTaskTreeMap],
   );
 
   const lockedProjectIds = React.useMemo(() => {
@@ -3173,7 +3170,8 @@ export default function TasksScreen() {
                 <View style={styles.projectList}>
                 {projectsShownInList.map((project) => {
                   const lockInfo = projectLockMap.get(project.id);
-                  const isLocked = !!lockInfo?.locked;
+                  const isScheduleNotStarted = isProjectScheduleNotYetStarted(project, logicalTodayYmd);
+                  const isLocked = !!(lockInfo?.locked || isScheduleNotStarted);
                   const isCompleted = project.status === 'completed' || project.status === 'archived';
                   const isArchived = project.status === 'archived';
                   const projectAccent = isLocked ? outline : isCompleted ? success : primary;
@@ -3186,25 +3184,13 @@ export default function TasksScreen() {
                       : soft;
                   const doneMuted = colors.textMuted;
                   const schedule = parseProjectSchedule(project.extra_data);
-                  const dueDateLabel = getProjectScheduleLabel(project, schedule);
-                  const isRangeSchedule = !!(schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end);
+                  const dueDateLabel = getProjectScheduleLabel(project);
+                  const isRangeSchedule = !!(dueDateLabel && dueDateLabel.includes(' ~ '));
                   const todayYmd = logicalTodayYmd;
-                  const rangeEndYmd = isRangeSchedule ? formatScheduleDateToYMD(schedule!.range!.end) : null;
+                  const scheduleBounds = getProjectScheduleYmdBounds(project);
+                  const rangeEndYmd = isRangeSchedule ? scheduleBounds.endYmd : null;
                   const dueYmd = !isRangeSchedule && project.due_date ? formatScheduleDateToYMD(project.due_date) : null;
-                  const isExpiredRange = (() => {
-                    if (!rangeEndYmd) return false;
-                    const end = ymdToLocalDate(rangeEndYmd);
-                    const today = ymdToLocalDate(todayYmd);
-                    if (!end || !today) return false;
-                    return today.getTime() > end.getTime();
-                  })();
-                  const isExpiredDue = (() => {
-                    if (!dueYmd) return false;
-                    const due = ymdToLocalDate(dueYmd);
-                    const today = ymdToLocalDate(todayYmd);
-                    if (!due || !today) return false;
-                    return today.getTime() > due.getTime();
-                  })();
+                  const isScheduleExpired = !isCompleted && isProjectScheduleExpired(project, todayYmd);
                   const noteText = project.note?.trim();
                   const categoryLabel = !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? '收集箱' : projectCategoryMap.get(project.category_id) ?? '未分类';
                   const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
@@ -3527,7 +3513,12 @@ export default function TasksScreen() {
                                 style={[
                                   styles.projectTitle,
                                   {
-                                    color: isLocked || isCompleted ? doneMuted : colors.text,
+                                    color: isScheduleExpired
+                                      ? error
+                                      : isLocked || isCompleted
+                                        ? doneMuted
+                                        : colors.text,
+                                    fontWeight: isScheduleExpired ? '800' : '700',
                                     flex: 1,
                                   },
                                   isCompleted && styles.projectTitleDone,
@@ -3536,7 +3527,21 @@ export default function TasksScreen() {
                                 numberOfLines={2}>
                                 {project.name}
                               </Text>
-                              {isLocked ? (
+                              {isScheduleExpired ? (
+                                <View
+                                  style={[
+                                    styles.projectDoneBadge,
+                                    {
+                                      backgroundColor: isDark ? 'rgba(248,113,113,0.16)' : 'rgba(186,26,26,0.1)',
+                                      borderColor: isDark ? 'rgba(248,113,113,0.38)' : 'rgba(186,26,26,0.28)',
+                                    },
+                                  ]}>
+                                  <MaterialIcons name="report-problem" size={12} color={error} />
+                                  <Text style={[styles.projectDoneBadgeText, { color: error, fontWeight: '800' }]}>
+                                    已过期
+                                  </Text>
+                                </View>
+                              ) : isLocked ? (
                                 <View
                                   style={[
                                     styles.projectDoneBadge,
@@ -3566,13 +3571,22 @@ export default function TasksScreen() {
                             </View>
                             <View style={styles.projectSubRow}>
                               {dueDateLabel ? (
-                                <Text style={[styles.projectSub, { color: isCompleted ? doneMuted : outline }]}>
-                                  {isRangeSchedule
-                                    ? isExpiredRange && rangeEndYmd
+                                <Text
+                                  style={[
+                                    styles.projectSub,
+                                    {
+                                      color: isScheduleExpired ? error : isCompleted ? doneMuted : outline,
+                                      fontWeight: isScheduleExpired ? '800' : '600',
+                                    },
+                                  ]}>
+                                  {isScheduleExpired
+                                    ? isRangeSchedule && rangeEndYmd
                                       ? `已于：${formatYmdCN(rangeEndYmd)} 过期`
-                                      : dueDateLabel
-                                    : isExpiredDue && dueYmd
-                                      ? `已于：${formatYmdCN(dueYmd)} 过期`
+                                      : dueYmd
+                                        ? `已于：${formatYmdCN(dueYmd)} 过期`
+                                        : `已于：${dueDateLabel} 过期`
+                                    : isRangeSchedule
+                                      ? dueDateLabel
                                       : dueYmd
                                         ? formatProjectDueText(dueYmd, logicalTodayYmd)
                                         : `截止 ${dueDateLabel}`}
@@ -3588,6 +3602,17 @@ export default function TasksScreen() {
                             {isLocked && (lockInfo?.unmetPrerequisiteNames.length ?? 0) > 0 ? (
                               <Text style={[styles.projectLockHint, { color: outline }]} numberOfLines={2}>
                                 等待前置：{lockInfo!.unmetPrerequisiteNames.join('、')}（完成后解锁，暂不可分配青蛙）
+                              </Text>
+                            ) : null}
+                            {isScheduleNotStarted ? (
+                              <Text style={[styles.projectLockHint, { color: outline }]} numberOfLines={2}>
+                                计划将于{' '}
+                                {formatYmdCN(
+                                  lockInfo?.scheduleStartYmd ??
+                                    getProjectScheduleYmdBounds(project).startYmd ??
+                                    '',
+                                )}{' '}
+                                开始，到达前暂不可分配青蛙
                               </Text>
                             ) : null}
                             {noteText ? (

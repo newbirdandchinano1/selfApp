@@ -9,7 +9,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as React from 'react';
-import { FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View, useWindowDimensions } from 'react-native';
+import { Alert, FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 type TabMode = 'date' | 'time';
@@ -596,6 +596,13 @@ export default function SchedulePickerScreen() {
     setToastMessage('');
     setTimeDraft(defaultStart);
     setTimePickerTarget('start');
+  };
+
+  const confirmClearSchedule = () => {
+    Alert.alert('清除日程设置', '将清除已选日期、时间区间、提醒与重复等设置，是否继续？', [
+      { text: '取消', style: 'cancel' },
+      { text: '清除', style: 'destructive', onPress: resetToDefaultState },
+    ]);
   };
 
   const showToast = React.useCallback((message: string) => {
@@ -1265,7 +1272,7 @@ export default function SchedulePickerScreen() {
 
             <Pressable
               style={[styles.clearBtn, { borderColor: colors.outline, backgroundColor: colors.surface }]}
-              onPress={resetToDefaultState}
+              onPress={confirmClearSchedule}
             >
               <Text style={[styles.clearText, { color: colors.danger }]}>清除</Text>
             </Pressable>
@@ -1357,7 +1364,7 @@ export default function SchedulePickerScreen() {
               </Pressable>
             </View>
 
-            <Pressable style={[styles.clearBtn, { borderColor: colors.outline, backgroundColor: colors.surface }]} onPress={resetToDefaultState}>
+            <Pressable style={[styles.clearBtn, { borderColor: colors.outline, backgroundColor: colors.surface }]} onPress={confirmClearSchedule}>
               <Text style={[styles.clearText, { color: colors.danger }]}>清除</Text>
             </Pressable>
           </>

@@ -4,12 +4,12 @@ import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
-import Constants from 'expo-constants';
 import { Stack, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -31,13 +31,17 @@ import { invalidateDailyIntakeAiTargetsCache } from '@/lib/daily-intake-ai-targe
 import {
   buildHealthKitDisplayRows,
   extractProfileMetricsFromHealthKit,
+  healthKitAuthStatusHint,
   healthKitReadSummary,
   healthKitSettingsHelpLines,
+  healthKitStatusSubtitle,
   type HealthKitDisplayRow,
 } from '@/lib/apple-healthkit';
-import type { HealthKitSnapshot } from 'zheng-healthkit';
+import type { HealthKitAuthorizationRequestStatus, HealthKitSnapshot } from 'zheng-healthkit';
 import {
   fetchAppleHealthKitSnapshot,
+  getHealthKitAppIdentity,
+  getHealthKitAuthorizationRequestStatus,
   getHealthKitBlockReason,
   healthKitBlockReasonMessage,
   isAppleHealthKitSupported,
@@ -122,11 +126,31 @@ export default function EditProfileScreen() {
   const [healthKitExpanded, setHealthKitExpanded] = useState(false);
   const [healthKitBlockReason, setHealthKitBlockReason] = useState<HealthKitBlockReason | null>(null);
   const [healthKitHelpOpen, setHealthKitHelpOpen] = useState(false);
+  const [iosAppDisplayName, setIosAppDisplayName] = useState('小郑的自我修养');
+  const [iosBundleIdentifier, setIosBundleIdentifier] = useState('com.myselfManage.appdemo');
+  const [healthKitAuthStatus, setHealthKitAuthStatus] =
+    useState<HealthKitAuthorizationRequestStatus | null>(null);
 
-  const iosAppDisplayName =
-    Platform.OS === 'ios'
-      ? (Constants.expoConfig?.name as string | undefined) ?? '小郑的自我修养'
-      : '';
+  const refreshHealthKitRegistration = async () => {
+    if (!healthKitSupported) return;
+    const [identity, status] = await Promise.all([
+      getHealthKitAppIdentity(),
+      getHealthKitAuthorizationRequestStatus(),
+    ]);
+    setIosAppDisplayName(identity.displayName);
+    if (identity.bundleIdentifier) setIosBundleIdentifier(identity.bundleIdentifier);
+    setHealthKitAuthStatus(status);
+  };
+
+  const openHealthApp = async () => {
+    const url = 'x-apple-health://';
+    const canOpen = await Linking.canOpenURL(url);
+    if (!canOpen) {
+      Alert.alert('提示', '无法打开「健康」App，请从主屏幕手动进入。');
+      return;
+    }
+    await Linking.openURL(url);
+  };
 
   const handleNumericInput = (value: string, setter: (next: string) => void) => {
     setter(value.replace(/\D+/g, ''));
@@ -182,11 +206,28 @@ export default function EditProfileScreen() {
         return;
       }
       if (requestAuth) {
+        const statusBefore = await getHealthKitAuthorizationRequestStatus();
+        if (statusBefore === 'unnecessary') {
+          Alert.alert(
+            '不会再弹出授权窗',
+            `这是 iOS 正常行为（已向系统登记过）。\n\n请到：设置 → 健康 → 数据访问与设备\n查找「${iosAppDisplayName}」${
+              iosBundleIdentifier ? `\n或 Bundle ID：${iosBundleIdentifier}` : ''
+            }\n并打开身高、体重、步数等读取开关。`,
+            [
+              { text: '打开「健康」App', onPress: () => void openHealthApp() },
+              { text: '知道了', style: 'cancel' },
+            ],
+          );
+        }
         await requestHealthKitAuthorization();
       }
       const snapshot = await fetchAppleHealthKitSnapshot();
       setHealthKitSnapshot(snapshot);
       setHealthKitRows(buildHealthKitDisplayRows(snapshot));
+      if (snapshot.appDisplayName) setIosAppDisplayName(snapshot.appDisplayName);
+      if (snapshot.bundleIdentifier) setIosBundleIdentifier(snapshot.bundleIdentifier);
+      if (snapshot.requestStatus) setHealthKitAuthStatus(snapshot.requestStatus);
+      await refreshHealthKitRegistration();
       if (!snapshot.available && snapshot.errors[0]) {
         setHealthKitBlockReason('healthkit_unavailable');
       }
@@ -262,6 +303,7 @@ export default function EditProfileScreen() {
     void (async () => {
       const block = await getHealthKitBlockReason();
       setHealthKitBlockReason(block);
+      if (!block) await refreshHealthKitRegistration();
     })();
   }, [healthKitSupported]);
 
@@ -298,8 +340,21 @@ export default function EditProfileScreen() {
     [healthKitSnapshot, iosAppDisplayName],
   );
   const healthKitSettingsHelp = useMemo(
-    () => healthKitSettingsHelpLines(iosAppDisplayName),
-    [iosAppDisplayName],
+    () => healthKitSettingsHelpLines(iosAppDisplayName, healthKitAuthStatus),
+    [iosAppDisplayName, healthKitAuthStatus],
+  );
+  const healthKitRegistrationHint = useMemo(
+    () => healthKitAuthStatusHint(healthKitAuthStatus, iosAppDisplayName),
+    [healthKitAuthStatus, iosAppDisplayName],
+  );
+  const healthKitSubline = useMemo(
+    () =>
+      healthKitLoading
+        ? '正在读取…'
+        : healthKitBlockReason
+          ? healthKitBlockReasonMessage(healthKitBlockReason)
+          : healthKitStatusSubtitle(healthKitSnapshot, healthKitAuthStatus, healthKitRows.length),
+    [healthKitLoading, healthKitBlockReason, healthKitSnapshot, healthKitAuthStatus, healthKitRows.length],
   );
 
   const openBirthdayPicker = () => {
@@ -562,19 +617,40 @@ export default function EditProfileScreen() {
                   <MaterialIcons name="favorite" size={22} color="#e11d48" />
                   <View style={styles.healthKitHeaderText}>
                     <Text style={[styles.healthKitTitle, { color: palette.text }]}>健康 App 数据</Text>
-                    <Text style={[styles.healthKitSub, { color: palette.outline }]}>
-                      {healthKitLoading
-                        ? '正在读取…'
-                        : healthKitBlockReason
-                          ? healthKitBlockReasonMessage(healthKitBlockReason)
-                          : healthKitSnapshot?.available
-                            ? healthKitRows.length > 0
-                              ? `已读取 ${healthKitRows.length} 项 · ${healthKitSnapshot.fetchedAt ? new Date(healthKitSnapshot.fetchedAt).toLocaleString('zh-CN') : ''}`
-                              : '已授权，暂无可用记录（请在「健康」App 中确认数据来源）'
-                            : '点击下方「读取健康数据」连接 Apple 健康'}
-                    </Text>
+                    <Text style={[styles.healthKitSub, { color: palette.outline }]}>{healthKitSubline}</Text>
                   </View>
                 </View>
+
+                {!healthKitBlockReason ? (
+                  <View
+                    style={[
+                      styles.healthKitNameBanner,
+                      { backgroundColor: isDark ? 'rgba(225,29,72,0.12)' : '#fff1f2', borderColor: '#fecdd3' },
+                    ]}
+                  >
+                    <Text style={[styles.healthKitNameBannerTitle, { color: palette.text }]}>
+                      在「健康」里请搜索此名称
+                    </Text>
+                    <Text style={[styles.healthKitNameBannerValue, { color: '#e11d48' }]}>
+                      {iosAppDisplayName || '（未读取到显示名）'}
+                    </Text>
+                    {iosBundleIdentifier ? (
+                      <Text style={[styles.healthKitNameBannerBundle, { color: palette.outline }]}>
+                        Bundle ID：{iosBundleIdentifier}
+                      </Text>
+                    ) : null}
+                    <Text style={[styles.healthKitNameBannerSub, { color: palette.outline }]}>
+                      在「健康 → 数据访问与设备」里按显示名或 Bundle ID 查找；主屏幕无名字时可在
+                      设置 → 主屏幕 检查是否隐藏了 App 名称。
+                    </Text>
+                  </View>
+                ) : null}
+
+                {healthKitRegistrationHint ? (
+                  <Text style={[styles.healthKitHintLine, { color: palette.outline }]}>
+                    {healthKitRegistrationHint}
+                  </Text>
+                ) : null}
 
                 <View style={styles.healthKitActions}>
                   <Pressable
@@ -601,6 +677,29 @@ export default function EditProfileScreen() {
 
                 {healthKitSummaryHint ? (
                   <Text style={[styles.healthKitHintLine, { color: palette.outline }]}>{healthKitSummaryHint}</Text>
+                ) : null}
+
+                {!healthKitBlockReason ? (
+                  <View style={styles.healthKitLinkRow}>
+                    <Pressable
+                      onPress={() => void openHealthApp()}
+                      style={[styles.healthKitOpenHealthBtn, { borderColor: palette.outlineVariant, flex: 1 }]}
+                    >
+                      <MaterialIcons name="favorite" size={18} color={palette.primary} />
+                      <Text style={[styles.healthKitOpenHealthText, { color: palette.primary }]}>
+                        打开「健康」
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => Linking.openSettings()}
+                      style={[styles.healthKitOpenHealthBtn, { borderColor: palette.outlineVariant, flex: 1 }]}
+                    >
+                      <MaterialIcons name="settings" size={18} color={palette.primary} />
+                      <Text style={[styles.healthKitOpenHealthText, { color: palette.primary }]}>
+                        本 App 设置
+                      </Text>
+                    </Pressable>
+                  </View>
                 ) : null}
 
                 <Pressable onPress={() => setHealthKitHelpOpen(v => !v)} style={styles.healthKitHelpToggle}>
@@ -887,6 +986,22 @@ const styles = StyleSheet.create({
   },
   submitText: { color: '#fff', fontSize: 16, fontWeight: '800' },
   healthKitCard: { borderRadius: 16, padding: 18, borderWidth: 1, gap: 14 },
+  healthKitNameBanner: { borderRadius: 12, padding: 12, borderWidth: 1, gap: 4 },
+  healthKitNameBannerTitle: { fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
+  healthKitNameBannerValue: { fontSize: 20, fontWeight: '900' },
+  healthKitNameBannerBundle: { fontSize: 11, fontWeight: '700', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  healthKitNameBannerSub: { fontSize: 11, fontWeight: '600', lineHeight: 16 },
+  healthKitLinkRow: { flexDirection: 'row', gap: 10 },
+  healthKitOpenHealthBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  healthKitOpenHealthText: { fontSize: 13, fontWeight: '800' },
   healthKitHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   healthKitHeaderText: { flex: 1, gap: 4 },
   healthKitTitle: { fontSize: 17, fontWeight: '800' },

@@ -53,6 +53,7 @@ import {
 } from 'react-native';
 import { Gesture, GestureDetector, ScrollView, type PanGesture } from 'react-native-gesture-handler';
 import type { SettingsSection } from './settings-drawer-context';
+import { useSettingsDrawer } from './settings-drawer-context';
 
 function formatZhFullBackupTime(iso: string): string {
   const d = new Date(iso);
@@ -90,6 +91,7 @@ type Props = {
 
 export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panCloseGesture }: Props) {
   const router = useRouter();
+  const { close: closeSettingsDrawer } = useSettingsDrawer();
   const { preference, colorScheme, setPreference } = useThemePreference();
   const isDark = colorScheme === 'dark';
   const theme = Colors[colorScheme];
@@ -411,6 +413,27 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled">
+        <View style={styles.section}>
+          {renderSectionHead('RECIPES', '我的菜谱')}
+          <Pressable
+            onPress={() => {
+              closeSettingsDrawer();
+              router.push('/my-recipes');
+            }}
+            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
+            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+              <MaterialIcons name="restaurant-menu" size={26} color={isDark ? '#fb923c' : '#c2410c'} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowTitle, { color: text }]}>我的菜谱</Text>
+                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                  按分类管理拿手菜，支持食材/步骤分项录入与成品图。
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={22} color={outline} />
+            </View>
+          </Pressable>
+        </View>
+
         <View
           onLayout={ev => onSectionLayout('appearance', ev.nativeEvent.layout.y)}
           style={styles.section}>

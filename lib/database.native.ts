@@ -3,7 +3,7 @@ import { enableGithubSqliteMutationTrackingOnDatabase } from '@/lib/github-sqlit
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 24;
+export const DB_VERSION = 25;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -490,6 +490,32 @@ export async function initDatabase() {
       payload_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS recipe_categories (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      version INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS recipe_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      category_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      ingredients_json TEXT NOT NULL DEFAULT '[]',
+      steps_json TEXT NOT NULL DEFAULT '[]',
+      notes TEXT,
+      finished_image_uri TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      version INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (category_id) REFERENCES recipe_categories(id) ON DELETE CASCADE
+    );
   `);
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
@@ -712,6 +738,10 @@ export async function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_daily_review_journal_record_date ON daily_review_journal(record_date_ymd);
     CREATE INDEX IF NOT EXISTS idx_daily_review_journal_updated ON daily_review_journal(updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_recipe_categories_updated_at ON recipe_categories(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_recipe_items_category_id ON recipe_items(category_id);
+    CREATE INDEX IF NOT EXISTS idx_recipe_items_updated_at ON recipe_items(updated_at);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
@@ -830,6 +860,9 @@ export async function initDatabase() {
     }
   }
 
+  const { migrateRecipesStorageToSqliteIfNeeded } = await import('@/lib/recipes');
+  await migrateRecipesStorageToSqliteIfNeeded(db);
+
   enableGithubSqliteMutationTrackingOnDatabase(db as never);
 
   return db;
@@ -861,6 +894,8 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS cash_flow_incomes;
     DROP TABLE IF EXISTS cash_flow_holdings;
     DROP TABLE IF EXISTS cash_flow_profile;
+    DROP TABLE IF EXISTS recipe_items;
+    DROP TABLE IF EXISTS recipe_categories;
     DROP TABLE IF EXISTS wish_items;
     DROP TABLE IF EXISTS goal_dimensions;
     DROP TABLE IF EXISTS visions;

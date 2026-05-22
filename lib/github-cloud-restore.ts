@@ -11,6 +11,7 @@ import { DB_VERSION, getDatabase } from '@/lib/database';
 import { serializeErrorForDiagnostic } from '@/lib/github-cloud-sync';
 import { parseSqliteBackupRepoPath } from '@/lib/github-sqlite-backup-chunk';
 import { memoItemsFromBackupPayload, replaceMemosFromCloudRestore } from '@/lib/memos';
+import { recipeStoreFromBackupPayload, replaceRecipesFromCloudRestore } from '@/lib/recipes';
 import {
   replaceUserWeaknessesFromCloudRestore,
   userWeaknessItemsFromBackupPayload,
@@ -216,6 +217,11 @@ async function applyKvFromDump(key: string, payload: unknown): Promise<void> {
     case 'memos': {
       const items = memoItemsFromBackupPayload(payload);
       await replaceMemosFromCloudRestore(items);
+      break;
+    }
+    case 'recipes': {
+      const store = recipeStoreFromBackupPayload(payload);
+      await replaceRecipesFromCloudRestore(store);
       break;
     }
     case 'user_weaknesses': {

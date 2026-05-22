@@ -11,6 +11,7 @@ import {
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { DB_VERSION, getDatabase, getSchemaVersion } from '@/lib/database';
 import { listMemos } from '@/lib/memos';
+import { loadRecipeStore } from '@/lib/recipes';
 import { listUserWeaknesses } from '@/lib/user-weaknesses';
 import { loadUserSkills } from '@/lib/user-skills';
 import { getWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
@@ -171,6 +172,12 @@ async function buildKvSliceUploadSpec(
       const items = await listMemos();
       payload = items;
       rowCount = items.length;
+      break;
+    }
+    case 'recipes': {
+      const store = await loadRecipeStore();
+      payload = store;
+      rowCount = store.recipes.length;
       break;
     }
     case 'user_weaknesses': {
@@ -378,13 +385,15 @@ function buildMultiFileFullBackupSpecs(
     sqlite: Record<string, unknown[]>;
     sqliteTableErrors: Record<string, string>;
     memos: Awaited<ReturnType<typeof listMemos>>;
+    recipes: Awaited<ReturnType<typeof loadRecipeStore>>;
     userWeaknesses: Awaited<ReturnType<typeof listUserWeaknesses>>;
     userSkills: Awaited<ReturnType<typeof loadUserSkills>>;
     weeklyReviewWeekday: number | null;
     aiLlmProviderId: Awaited<ReturnType<typeof loadAiLlmProviderPreference>>;
   },
 ): MultiFileUploadSpec[] {
-  const { lastUpdated, dbSchemaVersion, sqlite, sqliteTableErrors, memos, userWeaknesses, userSkills } = input;
+  const { lastUpdated, dbSchemaVersion, sqlite, sqliteTableErrors, memos, recipes, userWeaknesses, userSkills } =
+    input;
   const { weeklyReviewWeekday, aiLlmProviderId } = input;
 
   const specs: MultiFileUploadSpec[] = [];
@@ -416,6 +425,7 @@ function buildMultiFileFullBackupSpecs(
 
   const kvSpecs: { name: string; body: unknown; rowCount?: number }[] = [
     { name: 'memos', body: memos, rowCount: memos.length },
+    { name: 'recipes', body: recipes, rowCount: recipes.recipes.length },
     { name: 'user_weaknesses', body: userWeaknesses, rowCount: userWeaknesses.length },
     { name: 'user_skills', body: userSkills },
     {
@@ -574,6 +584,7 @@ export async function triggerGithubCloudSync(opts?: {
   let sqlite: Record<string, unknown[]>;
   let sqliteTableErrors: Record<string, string>;
   let memos: Awaited<ReturnType<typeof listMemos>>;
+  let recipes: Awaited<ReturnType<typeof loadRecipeStore>>;
   let userWeaknesses: Awaited<ReturnType<typeof listUserWeaknesses>>;
   let userSkills: Awaited<ReturnType<typeof loadUserSkills>>;
   let weeklyReviewWeekday: number | null;
@@ -586,6 +597,7 @@ export async function triggerGithubCloudSync(opts?: {
       dbSchemaVersion,
       { sqlite, sqliteTableErrors },
       memos,
+      recipes,
       userWeaknesses,
       userSkills,
       weeklyReviewWeekday,
@@ -594,6 +606,7 @@ export async function triggerGithubCloudSync(opts?: {
       getSchemaVersion(),
       collectAllSqliteTableSnapshots(),
       listMemos(),
+      loadRecipeStore(),
       listUserWeaknesses(),
       loadUserSkills(),
       getWeeklyReviewConfiguredWeekday(),
@@ -618,6 +631,7 @@ export async function triggerGithubCloudSync(opts?: {
       sqlite,
       sqliteTableErrors,
       memos,
+      recipes,
       userWeaknesses,
       userSkills,
       weeklyReviewWeekday,

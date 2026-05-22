@@ -17,6 +17,7 @@ import {
   parsePrerequisiteProjectIds,
   validatePrerequisiteSelection,
 } from '@/lib/repositories/projects/project-prerequisites';
+import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
 import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
 import { addProjectAiReviewSavedListener, runProjectAiReview } from '@/lib/project-ai-review-background';
 import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
@@ -759,8 +760,9 @@ export default function EditProjectScreen() {
       await db.execAsync('BEGIN IMMEDIATE');
       const normalizedCategoryId =
         !selectedCategoryId || selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
+      const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
       const mergedExtra = mergePrerequisiteIdsIntoExtraData(
-        { ...projectExtraData, schedule: scheduleMeta },
+        { ...projectExtraData, schedule: scheduleToSave },
         prerequisiteProjectIds,
       );
       await updateProject(projectId, {
@@ -770,7 +772,7 @@ export default function EditProjectScreen() {
         due_date: extractDueDate(deadlineText),
         extra_data: JSON.stringify(mergedExtra),
       });
-      const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
+      const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleToSave), {
         end: extractDueDate(deadlineText) ?? undefined,
       });
       const existingTasks = await getTasksByProjectId(projectId);

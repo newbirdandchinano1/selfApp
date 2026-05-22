@@ -173,7 +173,7 @@ export default function AddTaskScreen() {
 
   const [title, setTitle] = React.useState('');
   const [notes, setNotes] = React.useState('');
-  const [priority, setPriority] = React.useState<PriorityKey>('urgent-important');
+  const [priority, setPriority] = React.useState<PriorityKey>('not-urgent-not-important');
   const [priorityOpen, setPriorityOpen] = React.useState(false);
   const [mainTaskOpen, setMainTaskOpen] = React.useState(false);
   const [mainTaskQuery, setMainTaskQuery] = React.useState('');

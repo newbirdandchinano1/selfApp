@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 /** 与全量备份 `manifest` 中 `kv/*.json` 的 `name` 一致 */
 export const GITHUB_CLOUD_KV_MANIFEST_SLICES = [
   'memos',
+  'recipes',
   'user_weaknesses',
   'user_skills',
   'weekly_review',

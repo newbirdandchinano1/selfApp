@@ -365,14 +365,14 @@ export default function AddFrogScreen() {
           treeMap[p.id] = await getTasksByProjectId(p.id);
         }),
       );
-      const lockMap = buildProjectLockMap(projectRows, treeMap);
+      const now = new Date();
+      const boundary = await loadTasksDayBoundary();
+      const todayYmd = getLogicalLocalYmd(now, boundary);
+      const lockMap = buildProjectLockMap(projectRows, treeMap, todayYmd);
       const locked = new Set<string>();
       lockMap.forEach((info, id) => {
         if (info.locked) locked.add(id);
       });
-      const now = new Date();
-      const boundary = await loadTasksDayBoundary();
-      const todayYmd = getLogicalLocalYmd(now, boundary);
       setTaskMap(Object.fromEntries(rows.map((r) => [r.id, r])));
       setLockedProjectIds(locked);
       setSections(groupTasksToSections(rows, now, todayYmd, locked));

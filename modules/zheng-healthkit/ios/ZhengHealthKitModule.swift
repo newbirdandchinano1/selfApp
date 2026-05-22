@@ -18,6 +18,57 @@ public class ZhengHealthKitModule: Module {
     AsyncFunction("fetchAllHealthData") { () -> [String: Any] in
       await self.buildSnapshot()
     }
+
+    AsyncFunction("getAppDisplayName") { () -> String in
+      await MainActor.run { Self.bundleDisplayName() }
+    }
+
+    /// shouldRequest = 尚未向系统登记；unnecessary = 已登记（会出现在「健康」数据访问列表）
+    AsyncFunction("getAuthorizationRequestStatus") { () -> String in
+      await self.authorizationRequestStatusLabel()
+    }
+
+    AsyncFunction("getAppIdentity") { () -> [String: String] in
+      await MainActor.run { Self.appIdentityPayload() }
+    }
+  }
+
+  @MainActor
+  private static func bundleDisplayName() -> String {
+    let display = (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !display.isEmpty { return display }
+    let name = (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !name.isEmpty { return name }
+    return Bundle.main.localizedInfoDictionary?["CFBundleDisplayName"] as? String ?? ""
+  }
+
+  @MainActor
+  private static func appIdentityPayload() -> [String: String] {
+    [
+      "displayName": bundleDisplayName(),
+      "bundleIdentifier": Bundle.main.bundleIdentifier ?? "",
+      "bundleName": (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? "",
+    ]
+  }
+
+  @MainActor
+  private func authorizationRequestStatusLabel() async -> String {
+    guard HKHealthStore.isHealthDataAvailable() else { return "unavailable" }
+    let readTypes = Self.readObjectTypes()
+    return await withCheckedContinuation { continuation in
+      store.getRequestStatusForAuthorization(toShare: Set<HKSampleType>(), read: readTypes) { status, _ in
+        switch status {
+        case .shouldRequest:
+          continuation.resume(returning: "shouldRequest")
+        case .unnecessary:
+          continuation.resume(returning: "unnecessary")
+        case .unknown:
+          continuation.resume(returning: "unknown")
+        @unknown default:
+          continuation.resume(returning: "unknown")
+        }
+      }
+    }
   }
 
   // MARK: - Authorization
@@ -25,23 +76,14 @@ public class ZhengHealthKitModule: Module {
   @MainActor
   private func requestReadAuthorization() async -> Bool {
     guard HKHealthStore.isHealthDataAvailable() else { return false }
+    let status = await authorizationRequestStatusLabel()
+    // 已向系统登记后，Apple 不会再次弹出授权窗，须到「健康」App 里改权限
+    guard status == "shouldRequest" else { return true }
     let readTypes = Self.readObjectTypes()
     return await withCheckedContinuation { continuation in
       store.requestAuthorization(toShare: Set<HKSampleType>(), read: readTypes) { success, _ in
         continuation.resume(returning: success)
       }
-    }
-  }
-
-  @MainActor
-  private func canRead(_ type: HKObjectType) -> Bool {
-    switch store.authorizationStatus(for: type) {
-    case .sharingAuthorized:
-      return true
-    case .notDetermined:
-      return true
-    default:
-      return false
     }
   }
 
@@ -98,6 +140,10 @@ public class ZhengHealthKitModule: Module {
 
     guard HKHealthStore.isHealthDataAvailable() else { return payload }
 
+    let requestStatus = await authorizationRequestStatusLabel()
+    payload["requestStatus"] = requestStatus
+    payload["appDisplayName"] = Self.bundleDisplayName()
+    payload["bundleIdentifier"] = Bundle.main.bundleIdentifier ?? ""
     payload["authorized"] = await requestReadAuthorization()
 
     var characteristics = [String: String]()
@@ -128,10 +174,6 @@ public class ZhengHealthKitModule: Module {
 
     for id in Self.quantityIdentifiers() {
       guard let qType = HKQuantityType.quantityType(forIdentifier: id) else { continue }
-      if !canRead(qType) {
-        skippedUnauthorized += 1
-        continue
-      }
       if Self.cumulativeIds.contains(id) {
         if let row = await fetchCumulative(type: qType, identifier: id.rawValue, start: startOfToday, end: now, label: "今日") {
           quantities.append(row)
@@ -150,12 +192,10 @@ public class ZhengHealthKitModule: Module {
     payload["quantities"] = quantities
 
     var categories = [[String: Any]]()
-    if let sleepType = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis), canRead(sleepType) {
+    if let sleepType = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) {
       let rows = await fetchRecentCategories(type: sleepType, identifier: HKCategoryTypeIdentifier.sleepAnalysis.rawValue, limit: 5)
       categories.append(contentsOf: rows)
       if rows.isEmpty { skippedNoData += 1 }
-    } else if HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) != nil {
-      skippedUnauthorized += 1
     }
 
     payload["categories"] = categories

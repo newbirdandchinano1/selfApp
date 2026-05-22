@@ -1,12 +1,19 @@
 import type { TaskTreeNode } from '../tasks/task';
 import type { ProjectRow } from './project.types';
 import { parseProjectExtraDataWithAi, type ProjectExtraDataWithAi } from './project-ai-review';
+import {
+  getProjectScheduleYmdBounds,
+  isProjectScheduleNotYetStarted,
+} from './project-schedule-status';
 
 export const PREREQUISITE_PROJECT_IDS_KEY = 'prerequisite_project_ids';
 
 export type ProjectLockInfo = {
   locked: boolean;
   unmetPrerequisiteNames: string[];
+  /** 计划区间/日期尚未开始 */
+  scheduleNotStarted: boolean;
+  scheduleStartYmd: string | null;
 };
 
 /** 递归：项目内任务树是否全部完成或取消 */
@@ -52,6 +59,7 @@ export function getPrerequisiteIdsFromExtra(extra: ProjectExtraDataWithAi): stri
 export function buildProjectLockMap(
   projects: ProjectRow[],
   treeMap: Record<string, TaskTreeNode[]>,
+  todayYmd?: string,
 ): Map<string, ProjectLockInfo> {
   const byId = new Map(projects.map((p) => [p.id, p]));
   const fulfilledCache = new Map<string, boolean>();
@@ -77,7 +85,14 @@ export function buildProjectLockMap(
         unmet.push(byId.get(pid)?.name?.trim() || '未知项目');
       }
     }
-    map.set(project.id, { locked: unmet.length > 0, unmetPrerequisiteNames: unmet });
+    const scheduleNotStarted = todayYmd ? isProjectScheduleNotYetStarted(project, todayYmd) : false;
+    const scheduleStartYmd = scheduleNotStarted ? getProjectScheduleYmdBounds(project).startYmd : null;
+    map.set(project.id, {
+      locked: unmet.length > 0 || scheduleNotStarted,
+      unmetPrerequisiteNames: unmet,
+      scheduleNotStarted,
+      scheduleStartYmd,
+    });
   }
   return map;
 }
@@ -151,9 +166,9 @@ export function sortProjectsForList(rows: ProjectRow[], lockedProjectIds?: Set<s
       try {
         const parsed = JSON.parse(scheduleRaw) as { schedule?: { mode?: string; range?: { end?: string } } };
         const schedule = parsed?.schedule;
-        if (schedule?.mode === 'time' && schedule.range?.end) {
-          const end = schedule.range.end.trim();
-          const ms = Date.parse(end);
+        const rangeEnd = schedule?.range?.end?.trim();
+        if (rangeEnd) {
+          const ms = Date.parse(rangeEnd);
           if (!Number.isNaN(ms)) return ms;
         }
       } catch {
