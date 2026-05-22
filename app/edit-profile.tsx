@@ -35,9 +35,11 @@ import {
 import type { HealthKitSnapshot } from 'zheng-healthkit';
 import {
   fetchAppleHealthKitSnapshot,
+  getHealthKitBlockReason,
+  healthKitBlockReasonMessage,
   isAppleHealthKitSupported,
-  isHealthKitAvailable,
   requestHealthKitAuthorization,
+  type HealthKitBlockReason,
 } from 'zheng-healthkit';
 
 const GENDER_OPTIONS = ['男', '女'] as const;
@@ -115,6 +117,7 @@ export default function EditProfileScreen() {
   const [healthKitSnapshot, setHealthKitSnapshot] = useState<HealthKitSnapshot | null>(null);
   const [healthKitRows, setHealthKitRows] = useState<HealthKitDisplayRow[]>([]);
   const [healthKitExpanded, setHealthKitExpanded] = useState(false);
+  const [healthKitBlockReason, setHealthKitBlockReason] = useState<HealthKitBlockReason | null>(null);
 
   const handleNumericInput = (value: string, setter: (next: string) => void) => {
     setter(value.replace(/\D+/g, ''));
@@ -162,8 +165,9 @@ export default function EditProfileScreen() {
     if (!healthKitSupported) return;
     setHealthKitLoading(true);
     try {
-      const available = await isHealthKitAvailable();
-      if (!available) {
+      const block = await getHealthKitBlockReason();
+      setHealthKitBlockReason(block);
+      if (block) {
         setHealthKitSnapshot(null);
         setHealthKitRows([]);
         return;
@@ -174,6 +178,9 @@ export default function EditProfileScreen() {
       const snapshot = await fetchAppleHealthKitSnapshot();
       setHealthKitSnapshot(snapshot);
       setHealthKitRows(buildHealthKitDisplayRows(snapshot));
+      if (!snapshot.available && snapshot.errors[0]) {
+        setHealthKitBlockReason('healthkit_unavailable');
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : '读取健康数据失败';
       Alert.alert('Apple 健康', message);
@@ -538,11 +545,13 @@ export default function EditProfileScreen() {
                     <Text style={[styles.healthKitSub, { color: palette.outline }]}>
                       {healthKitLoading
                         ? '正在读取…'
-                        : healthKitSnapshot?.available
-                          ? healthKitRows.length > 0
-                            ? `已读取 ${healthKitRows.length} 项 · ${healthKitSnapshot.fetchedAt ? new Date(healthKitSnapshot.fetchedAt).toLocaleString('zh-CN') : ''}`
-                            : '已授权，暂无可用记录（请在「健康」App 中确认数据来源）'
-                          : '此设备不支持 HealthKit'}
+                        : healthKitBlockReason
+                          ? healthKitBlockReasonMessage(healthKitBlockReason)
+                          : healthKitSnapshot?.available
+                            ? healthKitRows.length > 0
+                              ? `已读取 ${healthKitRows.length} 项 · ${healthKitSnapshot.fetchedAt ? new Date(healthKitSnapshot.fetchedAt).toLocaleString('zh-CN') : ''}`
+                              : '已授权，暂无可用记录（请在「健康」App 中确认数据来源）'
+                            : '正在连接 Apple 健康…'}
                     </Text>
                   </View>
                 </View>
@@ -550,8 +559,8 @@ export default function EditProfileScreen() {
                 <View style={styles.healthKitActions}>
                   <Pressable
                     onPress={() => void loadHealthKitData(true)}
-                    disabled={healthKitLoading}
-                    style={[styles.healthKitBtnGhost, { borderColor: palette.outlineVariant }]}
+                    disabled={healthKitLoading || Boolean(healthKitBlockReason)}
+                    style={[styles.healthKitBtnGhost, { borderColor: palette.outlineVariant, opacity: healthKitBlockReason ? 0.5 : 1 }]}
                   >
                     {healthKitLoading ? (
                       <ActivityIndicator size="small" color={palette.primary} />

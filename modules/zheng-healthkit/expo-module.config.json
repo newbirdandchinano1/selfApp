@@ -1,6 +1,7 @@
 {
-  "platforms": ["ios"],
-  "ios": {
-    "modules": ["ZhengHealthKitModule"]
+  "platforms": ["apple"],
+  "apple": {
+    "modules": ["ZhengHealthKitModule"],
+    "podspecPath": "ios/ZhengHealthKit.podspec"
   }
 }
