@@ -157,8 +157,9 @@ export function extractProfileMetricsFromHealthKit(snapshot: HealthKitSnapshot):
 
   for (const q of snapshot.quantities) {
     if (q.identifier.endsWith('Height') && q.aggregation === 'latest') {
-      const meters = q.unit === 'm' ? q.value : q.value;
-      heightCm = Math.round(meters * 100);
+      if (q.unit === 'cm') heightCm = Math.round(q.value);
+      else if (q.unit === 'm') heightCm = Math.round(q.value * 100);
+      else heightCm = Math.round(q.value);
     }
     if (q.identifier.endsWith('BodyMass') && q.aggregation === 'latest') {
       weightKg = Math.round(q.value * 10) / 10;

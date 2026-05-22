@@ -250,7 +250,10 @@ export default function EditProfileScreen() {
   
   useEffect(() => {
     if (!healthKitSupported) return;
-    void loadHealthKitData(true);
+    void (async () => {
+      const block = await getHealthKitBlockReason();
+      setHealthKitBlockReason(block);
+    })();
   }, [healthKitSupported]);
 
   useEffect(() => {
@@ -551,7 +554,7 @@ export default function EditProfileScreen() {
                             ? healthKitRows.length > 0
                               ? `已读取 ${healthKitRows.length} 项 · ${healthKitSnapshot.fetchedAt ? new Date(healthKitSnapshot.fetchedAt).toLocaleString('zh-CN') : ''}`
                               : '已授权，暂无可用记录（请在「健康」App 中确认数据来源）'
-                            : '正在连接 Apple 健康…'}
+                            : '点击下方「读取健康数据」连接 Apple 健康'}
                     </Text>
                   </View>
                 </View>
@@ -565,7 +568,9 @@ export default function EditProfileScreen() {
                     {healthKitLoading ? (
                       <ActivityIndicator size="small" color={palette.primary} />
                     ) : (
-                      <Text style={[styles.healthKitBtnGhostText, { color: palette.primary }]}>刷新</Text>
+                      <Text style={[styles.healthKitBtnGhostText, { color: palette.primary }]}>
+                        {healthKitRows.length ? '刷新' : '读取健康数据'}
+                      </Text>
                     )}
                   </Pressable>
                   <Pressable

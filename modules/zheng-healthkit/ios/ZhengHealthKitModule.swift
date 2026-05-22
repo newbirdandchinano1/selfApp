@@ -8,17 +8,13 @@ public class ZhengHealthKitModule: Module {
     Name("ZhengHealthKit")
 
     AsyncFunction("isAvailable") { () -> Bool in
-      HKHealthStore.isHealthDataAvailable()
+      await MainActor.run {
+        HKHealthStore.isHealthDataAvailable()
+      }
     }
 
     AsyncFunction("requestAuthorization") { () -> Bool in
-      guard HKHealthStore.isHealthDataAvailable() else { return false }
-      let readTypes = Self.allReadObjectTypes()
-      return await withCheckedContinuation { continuation in
-        self.store.requestAuthorization(toShare: [], read: readTypes) { success, _ in
-          continuation.resume(returning: success)
-        }
-      }
+      await self.requestReadAuthorization()
     }
 
     AsyncFunction("fetchAllHealthData") { () -> [String: Any] in
@@ -26,34 +22,34 @@ public class ZhengHealthKitModule: Module {
     }
   }
 
-  // MARK: - Types
+  // MARK: - Authorization
 
-  private static func allReadObjectTypes() -> Set<HKObjectType> {
+  @MainActor
+  private func requestReadAuthorization() async -> Bool {
+    guard HKHealthStore.isHealthDataAvailable() else { return false }
+    let readTypes = Self.readObjectTypes()
+    return await withCheckedContinuation { continuation in
+      store.requestAuthorization(toShare: Set<HKSampleType>(), read: readTypes) { success, _ in
+        continuation.resume(returning: success)
+      }
+    }
+  }
+
+  private static func readObjectTypes() -> Set<HKObjectType> {
     var set = Set<HKObjectType>()
 
-    let characteristicIds: [HKCharacteristicTypeIdentifier] = [
-      .dateOfBirth,
-      .biologicalSex,
-      .bloodType,
-      .fitzpatrickSkinType,
-      .wheelchairUse,
-    ]
-    for id in characteristicIds {
-      if let t = HKObjectType.characteristicType(forIdentifier: id) {
-        set.insert(t)
-      }
+    for id: HKCharacteristicTypeIdentifier in [
+      .dateOfBirth, .biologicalSex, .bloodType, .fitzpatrickSkinType, .wheelchairUse,
+    ] {
+      if let t = HKObjectType.characteristicType(forIdentifier: id) { set.insert(t) }
     }
 
-    for id in quantityIdentifiers() {
-      if let t = HKQuantityType.quantityType(forIdentifier: id) {
-        set.insert(t)
-      }
+    for id: HKQuantityTypeIdentifier in quantityIdentifiers() {
+      if let t = HKQuantityType.quantityType(forIdentifier: id) { set.insert(t) }
     }
 
-    for id in categoryIdentifiers() {
-      if let t = HKCategoryType.categoryType(forIdentifier: id) {
-        set.insert(t)
-      }
+    if let sleep = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) {
+      set.insert(sleep)
     }
 
     return set
@@ -64,121 +60,38 @@ public class ZhengHealthKitModule: Module {
       .bodyMass,
       .height,
       .bodyMassIndex,
-      .bodyFatPercentage,
-      .leanBodyMass,
-      .waistCircumference,
       .stepCount,
-      .distanceWalkingRunning,
-      .distanceCycling,
-      .flightsClimbed,
       .activeEnergyBurned,
-      .basalEnergyBurned,
-      .appleExerciseTime,
-      .appleStandTime,
       .heartRate,
       .restingHeartRate,
-      .walkingHeartRateAverage,
-      .heartRateVariabilitySDNN,
       .oxygenSaturation,
-      .respiratoryRate,
-      .vo2Max,
       .bloodPressureSystolic,
       .bloodPressureDiastolic,
-      .bloodGlucose,
-      .insulinDelivery,
-      .dietaryEnergyConsumed,
-      .dietaryProtein,
-      .dietaryCarbohydrates,
-      .dietaryFatTotal,
-      .dietarySugar,
-      .dietaryFiber,
-      .dietarySodium,
       .dietaryWater,
-      .dietaryCaffeine,
-      .numberOfAlcoholicBeverages,
-      .environmentalAudioExposure,
-      .headphoneAudioExposure,
-      .numberOfTimesFallen,
-      .sixMinuteWalkTestDistance,
-      .walkingSpeed,
-      .walkingStepLength,
-      .walkingAsymmetryPercentage,
-      .walkingDoubleSupportPercentage,
-      .stairAscentSpeed,
-      .stairDescentSpeed,
     ]
   }
 
-  private static func categoryIdentifiers() -> [HKCategoryTypeIdentifier] {
-    [
-      .sleepAnalysis,
-      .appleStandHour,
-      .mindfulSession,
-      .highHeartRateEvent,
-      .lowHeartRateEvent,
-      .irregularHeartRhythmEvent,
-      .lowCardioFitnessEvent,
-      .sexualActivity,
-      .intermenstrualBleeding,
-      .menstrualFlow,
-      .ovulationTestResult,
-      .pregnancy,
-      .pregnancyTestResult,
-      .progesteroneTestResult,
-      .cervicalMucusQuality,
-      .contraceptive,
-      .lactation,
-    ]
-  }
-
-  private static let cumulativeQuantityIds: Set<HKQuantityTypeIdentifier> = [
-    .stepCount,
-    .distanceWalkingRunning,
-    .distanceCycling,
-    .flightsClimbed,
-    .activeEnergyBurned,
-    .basalEnergyBurned,
-    .appleExerciseTime,
-    .appleStandTime,
-    .dietaryEnergyConsumed,
-    .dietaryProtein,
-    .dietaryCarbohydrates,
-    .dietaryFatTotal,
-    .dietarySugar,
-    .dietaryFiber,
-    .dietarySodium,
-    .dietaryWater,
-    .dietaryCaffeine,
-    .numberOfAlcoholicBeverages,
-    .environmentalAudioExposure,
-    .headphoneAudioExposure,
-    .numberOfTimesFallen,
+  private static let cumulativeIds: Set<HKQuantityTypeIdentifier> = [
+    .stepCount, .activeEnergyBurned, .dietaryWater,
   ]
 
   // MARK: - Snapshot
 
+  @MainActor
   private func buildSnapshot() async -> [String: Any] {
     var payload: [String: Any] = [
       "available": HKHealthStore.isHealthDataAvailable(),
       "authorized": false,
       "fetchedAt": iso8601Now(),
-      "characteristics": [:] as [String: String],
-      "quantities": [] as [[String: Any]],
-      "categories": [] as [[String: Any]],
-      "errors": [] as [String],
+      "characteristics": [String: String](),
+      "quantities": [[String: Any]](),
+      "categories": [[String: Any]](),
+      "errors": [String](),
     ]
 
-    guard HKHealthStore.isHealthDataAvailable() else {
-      return payload
-    }
+    guard HKHealthStore.isHealthDataAvailable() else { return payload }
 
-    let authorized = await withCheckedContinuation { continuation in
-      let readTypes = Self.allReadObjectTypes()
-      store.requestAuthorization(toShare: [], read: readTypes) { success, _ in
-        continuation.resume(returning: success)
-      }
-    }
-    payload["authorized"] = authorized
+    payload["authorized"] = await requestReadAuthorization()
 
     var characteristics = [String: String]()
     var errors = [String]()
@@ -186,23 +99,18 @@ public class ZhengHealthKitModule: Module {
     if let dob = try? store.dateOfBirthComponents(), let date = Calendar.current.date(from: dob) {
       characteristics["dateOfBirth"] = iso8601Date(date)
     }
-
     if let sex = try? store.biologicalSex() {
       characteristics["biologicalSex"] = biologicalSexLabel(sex.biologicalSex)
     }
-
     if let blood = try? store.bloodType() {
       characteristics["bloodType"] = bloodTypeLabel(blood.bloodType)
     }
-
     if let skin = try? store.fitzpatrickSkinType() {
       characteristics["fitzpatrickSkinType"] = fitzpatrickLabel(skin.skinType)
     }
-
     if let wheelchair = try? store.wheelchairUse() {
       characteristics["wheelchairUse"] = wheelchairLabel(wheelchair.wheelchairUse)
     }
-
     payload["characteristics"] = characteristics
 
     let now = Date()
@@ -213,43 +121,28 @@ public class ZhengHealthKitModule: Module {
     for id in Self.quantityIdentifiers() {
       guard let qType = HKQuantityType.quantityType(forIdentifier: id) else { continue }
       do {
-        if Self.cumulativeQuantityIds.contains(id) {
-          if let row = try await fetchCumulativeQuantity(
-            type: qType,
-            identifier: id.rawValue,
-            start: startOfToday,
-            end: now,
-            label: "今日"
-          ) {
+        if Self.cumulativeIds.contains(id) {
+          if let row = try await fetchCumulative(type: qType, identifier: id.rawValue, start: startOfToday, end: now, label: "今日") {
             quantities.append(row)
           }
-          if let row = try await fetchCumulativeQuantity(
-            type: qType,
-            identifier: id.rawValue,
-            start: weekAgo,
-            end: now,
-            label: "近7日"
-          ) {
+          if let row = try await fetchCumulative(type: qType, identifier: id.rawValue, start: weekAgo, end: now, label: "近7日") {
             quantities.append(row)
           }
-        } else if let row = try await fetchLatestQuantity(type: qType, identifier: id.rawValue) {
+        } else if let row = try await fetchLatest(type: qType, identifier: id.rawValue) {
           quantities.append(row)
         }
       } catch {
         errors.append("\(id.rawValue): \(error.localizedDescription)")
       }
     }
-
     payload["quantities"] = quantities
 
     var categories = [[String: Any]]()
-    for id in Self.categoryIdentifiers() {
-      guard let cType = HKCategoryType.categoryType(forIdentifier: id) else { continue }
+    if let sleepType = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) {
       do {
-        let rows = try await fetchRecentCategorySamples(type: cType, identifier: id.rawValue, limit: 3)
-        categories.append(contentsOf: rows)
+        categories.append(contentsOf: try await fetchRecentCategories(type: sleepType, identifier: HKCategoryTypeIdentifier.sleepAnalysis.rawValue, limit: 5))
       } catch {
-        errors.append("\(id.rawValue): \(error.localizedDescription)")
+        errors.append("sleep: \(error.localizedDescription)")
       }
     }
     payload["categories"] = categories
@@ -259,42 +152,30 @@ public class ZhengHealthKitModule: Module {
     return payload
   }
 
-  // MARK: - Queries
+  // MARK: - Queries (main thread)
 
-  private func fetchLatestQuantity(type: HKQuantityType, identifier: String) async throws -> [String: Any]? {
+  @MainActor
+  private func fetchLatest(type: HKQuantityType, identifier: String) async throws -> [String: Any]? {
     try await withCheckedThrowingContinuation { continuation in
       let sort = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
-      let query = HKSampleQuery(
-        sampleType: type,
-        predicate: nil,
-        limit: 1,
-        sortDescriptors: [sort]
-      ) { _, samples, error in
+      let query = HKSampleQuery(sampleType: type, predicate: nil, limit: 1, sortDescriptors: [sort]) { _, samples, error in
         if let error {
           continuation.resume(throwing: error)
           return
         }
-        guard let sample = samples?.first as? HKQuantitySample else {
+        guard let sample = samples?.first as? HKQuantitySample,
+              let row = Self.row(from: sample, identifier: identifier, aggregation: "latest") else {
           continuation.resume(returning: nil)
           return
         }
-        let unit = Self.preferredUnit(for: type)
-        let value = sample.quantity.doubleValue(for: unit)
-        continuation.resume(returning: [
-          "identifier": identifier,
-          "value": value,
-          "unit": unit.unitString,
-          "startDate": self.iso8601Date(sample.startDate),
-          "endDate": self.iso8601Date(sample.endDate),
-          "source": sample.sourceRevision.source.name,
-          "aggregation": "latest",
-        ])
+        continuation.resume(returning: row)
       }
       store.execute(query)
     }
   }
 
-  private func fetchCumulativeQuantity(
+  @MainActor
+  private func fetchCumulative(
     type: HKQuantityType,
     identifier: String,
     start: Date,
@@ -303,53 +184,32 @@ public class ZhengHealthKitModule: Module {
   ) async throws -> [String: Any]? {
     try await withCheckedThrowingContinuation { continuation in
       let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
-      let query = HKStatisticsQuery(
-        quantityType: type,
-        quantitySamplePredicate: predicate,
-        options: .cumulativeSum
-      ) { _, stats, error in
+      let query = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, stats, error in
         if let error {
           continuation.resume(throwing: error)
           return
         }
-        guard let sum = stats?.sumQuantity() else {
+        guard let sum = stats?.sumQuantity(),
+              let row = Self.row(from: sum, type: type, identifier: identifier, start: start, end: end, aggregation: label) else {
           continuation.resume(returning: nil)
           return
         }
-        let unit = Self.preferredUnit(for: type)
-        let value = sum.doubleValue(for: unit)
-        continuation.resume(returning: [
-          "identifier": identifier,
-          "value": value,
-          "unit": unit.unitString,
-          "startDate": self.iso8601Date(start),
-          "endDate": self.iso8601Date(end),
-          "source": "HealthKit",
-          "aggregation": label,
-        ])
+        continuation.resume(returning: row)
       }
       store.execute(query)
     }
   }
 
-  private func fetchRecentCategorySamples(
-    type: HKCategoryType,
-    identifier: String,
-    limit: Int
-  ) async throws -> [[String: Any]] {
+  @MainActor
+  private func fetchRecentCategories(type: HKCategoryType, identifier: String, limit: Int) async throws -> [[String: Any]] {
     try await withCheckedThrowingContinuation { continuation in
       let sort = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
-      let query = HKSampleQuery(
-        sampleType: type,
-        predicate: nil,
-        limit: limit,
-        sortDescriptors: [sort]
-      ) { _, samples, error in
+      let query = HKSampleQuery(sampleType: type, predicate: nil, limit: limit, sortDescriptors: [sort]) { _, samples, error in
         if let error {
           continuation.resume(throwing: error)
           return
         }
-        let rows: [[String: Any]] = (samples as? [HKCategorySample] ?? []).map { sample in
+        let rows = (samples as? [HKCategorySample] ?? []).map { sample -> [String: Any] in
           [
             "identifier": identifier,
             "value": self.categoryValueLabel(sample),
@@ -364,82 +224,84 @@ public class ZhengHealthKitModule: Module {
     }
   }
 
-  // MARK: - Formatting
+  // MARK: - Safe quantity conversion (wrong HKUnit causes native crash)
 
-  private static func preferredUnit(for type: HKQuantityType) -> HKUnit {
+  private static func row(
+    from sample: HKQuantitySample,
+    identifier: String,
+    aggregation: String
+  ) -> [String: Any]? {
+    row(from: sample.quantity, type: sample.quantityType, identifier: identifier, start: sample.startDate, end: sample.endDate, source: sample.sourceRevision.source.name, aggregation: aggregation)
+  }
+
+  private static func row(
+    from quantity: HKQuantity,
+    type: HKQuantityType,
+    identifier: String,
+    start: Date,
+    end: Date,
+    aggregation: String,
+    source: String = "HealthKit"
+  ) -> [String: Any]? {
+    guard let unit = compatibleUnit(for: type),
+          quantity.is(compatibleWith: unit) else { return nil }
+    let value = jsonSafe(quantity.doubleValue(for: unit))
+    return [
+      "identifier": identifier,
+      "value": value,
+      "unit": unit.unitString,
+      "startDate": iso8601DateStatic(start),
+      "endDate": iso8601DateStatic(end),
+      "source": source,
+      "aggregation": aggregation,
+    ]
+  }
+
+  private static func compatibleUnit(for type: HKQuantityType) -> HKUnit? {
     switch type.identifier {
     case HKQuantityTypeIdentifier.bodyMass.rawValue,
          HKQuantityTypeIdentifier.leanBodyMass.rawValue:
       return .gramUnit(with: .kilo)
-    case HKQuantityTypeIdentifier.height.rawValue,
-         HKQuantityTypeIdentifier.waistCircumference.rawValue,
-         HKQuantityTypeIdentifier.sixMinuteWalkTestDistance.rawValue,
-         HKQuantityTypeIdentifier.walkingStepLength.rawValue:
-      return .meter()
-    case HKQuantityTypeIdentifier.stepCount.rawValue,
-         HKQuantityTypeIdentifier.flightsClimbed.rawValue,
-         HKQuantityTypeIdentifier.numberOfTimesFallen.rawValue,
-         HKQuantityTypeIdentifier.numberOfAlcoholicBeverages.rawValue:
+    case HKQuantityTypeIdentifier.height.rawValue:
+      return .meterUnit(with: .centi)
+    case HKQuantityTypeIdentifier.bodyMassIndex.rawValue:
       return .count()
-    case HKQuantityTypeIdentifier.heartRate.rawValue,
-         HKQuantityTypeIdentifier.restingHeartRate.rawValue,
-         HKQuantityTypeIdentifier.walkingHeartRateAverage.rawValue,
-         HKQuantityTypeIdentifier.respiratoryRate.rawValue:
-      return HKUnit.count().unitDivided(by: .minute())
-    case HKQuantityTypeIdentifier.activeEnergyBurned.rawValue,
-         HKQuantityTypeIdentifier.basalEnergyBurned.rawValue,
-         HKQuantityTypeIdentifier.dietaryEnergyConsumed.rawValue:
+    case HKQuantityTypeIdentifier.stepCount.rawValue:
+      return .count()
+    case HKQuantityTypeIdentifier.activeEnergyBurned.rawValue:
       return .kilocalorie()
-    case HKQuantityTypeIdentifier.appleExerciseTime.rawValue,
-         HKQuantityTypeIdentifier.appleStandTime.rawValue:
-      return .minute()
-    case HKQuantityTypeIdentifier.distanceWalkingRunning.rawValue,
-         HKQuantityTypeIdentifier.distanceCycling.rawValue:
-      return .meterUnit(with: .kilo)
-    case HKQuantityTypeIdentifier.dietaryWater.rawValue:
-      return .literUnit(with: .milli)
-    case HKQuantityTypeIdentifier.bloodGlucose.rawValue:
-      return HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))
+    case HKQuantityTypeIdentifier.heartRate.rawValue,
+         HKQuantityTypeIdentifier.restingHeartRate.rawValue:
+      return HKUnit.count().unitDivided(by: .minute())
+    case HKQuantityTypeIdentifier.oxygenSaturation.rawValue:
+      return .percent()
     case HKQuantityTypeIdentifier.bloodPressureSystolic.rawValue,
          HKQuantityTypeIdentifier.bloodPressureDiastolic.rawValue:
       return .millimeterOfMercury()
-    case HKQuantityTypeIdentifier.oxygenSaturation.rawValue,
-         HKQuantityTypeIdentifier.bodyFatPercentage.rawValue,
-         HKQuantityTypeIdentifier.walkingAsymmetryPercentage.rawValue,
-         HKQuantityTypeIdentifier.walkingDoubleSupportPercentage.rawValue,
-         HKQuantityTypeIdentifier.atrialFibrillationBurden.rawValue:
-      return .percent()
-    case HKQuantityTypeIdentifier.dietarySodium.rawValue:
-      return .gramUnit(with: .milli)
-    case HKQuantityTypeIdentifier.environmentalAudioExposure.rawValue,
-         HKQuantityTypeIdentifier.headphoneAudioExposure.rawValue:
-      return .decibelAWeightedSoundPressureLevel()
-    case HKQuantityTypeIdentifier.waterTemperature.rawValue:
-      return .degreeCelsius()
-    case HKQuantityTypeIdentifier.underwaterDepth.rawValue:
-      return .meter()
+    case HKQuantityTypeIdentifier.dietaryWater.rawValue:
+      return .literUnit(with: .milli)
     default:
-      return .count()
+      return nil
     }
   }
+
+  private static func jsonSafe(_ value: Double) -> Double {
+    guard value.isFinite else { return 0 }
+    return value
+  }
+
+  // MARK: - Labels
 
   private func categoryValueLabel(_ sample: HKCategorySample) -> String {
     if sample.categoryType.identifier == HKCategoryTypeIdentifier.sleepAnalysis.rawValue {
       switch sample.value {
-      case HKCategoryValueSleepAnalysis.inBed.rawValue:
-        return "在床上"
-      case HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue:
-        return "睡眠"
-      case HKCategoryValueSleepAnalysis.awake.rawValue:
-        return "清醒"
-      case HKCategoryValueSleepAnalysis.asleepCore.rawValue:
-        return "核心睡眠"
-      case HKCategoryValueSleepAnalysis.asleepDeep.rawValue:
-        return "深睡"
-      case HKCategoryValueSleepAnalysis.asleepREM.rawValue:
-        return "REM"
-      default:
-        return "睡眠(\(sample.value))"
+      case HKCategoryValueSleepAnalysis.inBed.rawValue: return "在床上"
+      case HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue: return "睡眠"
+      case HKCategoryValueSleepAnalysis.awake.rawValue: return "清醒"
+      case HKCategoryValueSleepAnalysis.asleepCore.rawValue: return "核心睡眠"
+      case HKCategoryValueSleepAnalysis.asleepDeep.rawValue: return "深睡"
+      case HKCategoryValueSleepAnalysis.asleepREM.rawValue: return "REM"
+      default: return "睡眠(\(sample.value))"
       }
     }
     return String(sample.value)
@@ -481,20 +343,16 @@ public class ZhengHealthKitModule: Module {
   }
 
   private func wheelchairLabel(_ use: HKWheelchairUse) -> String {
-    switch use {
-    case .yes: return "是"
-    case .no: return "否"
-    default: return "未设置"
-    }
+    switch use { case .yes: return "是"; case .no: return "否"; default: return "未设置" }
   }
 
-  private func iso8601Now() -> String {
-    iso8601Date(Date())
-  }
+  private func iso8601Now() -> String { Self.iso8601DateStatic(Date()) }
 
-  private func iso8601Date(_ date: Date) -> String {
+  private func iso8601Date(_ date: Date) -> String { Self.iso8601DateStatic(date) }
+
+  private static func iso8601DateStatic(_ date: Date) -> String {
     let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    formatter.formatOptions = [.withInternetDateTime]
     return formatter.string(from: date)
   }
 }
