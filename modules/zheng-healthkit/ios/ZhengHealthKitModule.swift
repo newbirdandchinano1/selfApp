@@ -231,7 +231,7 @@ public class ZhengHealthKitModule: Module {
     identifier: String,
     aggregation: String
   ) -> [String: Any]? {
-    row(from: sample.quantity, type: sample.quantityType, identifier: identifier, start: sample.startDate, end: sample.endDate, source: sample.sourceRevision.source.name, aggregation: aggregation)
+    row(from: sample.quantity, type: sample.quantityType, identifier: identifier, start: sample.startDate, end: sample.endDate, aggregation: aggregation, source: sample.sourceRevision.source.name)
   }
 
   private static func row(
