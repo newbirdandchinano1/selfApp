@@ -74,7 +74,8 @@
           }
         }
       ],
-      "./plugins/with-zheng-app-intents"
+      "./plugins/with-zheng-app-intents",
+      "./plugins/with-zheng-healthkit"
     ],
     "experiments": {
       "typedRoutes": true,

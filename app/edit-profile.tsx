@@ -7,6 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Stack, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Modal,
   Platform,
@@ -26,6 +27,18 @@ import { getDefaultUser, updateDefaultUser } from '@/lib/repositories/users/user
 import type { UserRow } from '@/lib/repositories/users/user.types';
 
 import { invalidateDailyIntakeAiTargetsCache } from '@/lib/daily-intake-ai-targets';
+import {
+  buildHealthKitDisplayRows,
+  extractProfileMetricsFromHealthKit,
+  type HealthKitDisplayRow,
+} from '@/lib/apple-healthkit';
+import type { HealthKitSnapshot } from 'zheng-healthkit';
+import {
+  fetchAppleHealthKitSnapshot,
+  isAppleHealthKitSupported,
+  isHealthKitAvailable,
+  requestHealthKitAuthorization,
+} from 'zheng-healthkit';
 
 const GENDER_OPTIONS = ['男', '女'] as const;
 const LIFESTYLE_OPTIONS = ['长期静坐不运动', '健身', '高强度锻炼'] as const;
@@ -97,6 +110,12 @@ export default function EditProfileScreen() {
   const [showBirthdayPicker, setShowBirthdayPicker] = useState(false);
   const [birthdayDraft, setBirthdayDraft] = useState(() => new Date(1990, 0, 1));
 
+  const healthKitSupported = isAppleHealthKitSupported();
+  const [healthKitLoading, setHealthKitLoading] = useState(false);
+  const [healthKitSnapshot, setHealthKitSnapshot] = useState<HealthKitSnapshot | null>(null);
+  const [healthKitRows, setHealthKitRows] = useState<HealthKitDisplayRow[]>([]);
+  const [healthKitExpanded, setHealthKitExpanded] = useState(false);
+
   const handleNumericInput = (value: string, setter: (next: string) => void) => {
     setter(value.replace(/\D+/g, ''));
   };
@@ -139,6 +158,50 @@ export default function EditProfileScreen() {
     }
   };
 
+  const loadHealthKitData = async (requestAuth = false) => {
+    if (!healthKitSupported) return;
+    setHealthKitLoading(true);
+    try {
+      const available = await isHealthKitAvailable();
+      if (!available) {
+        setHealthKitSnapshot(null);
+        setHealthKitRows([]);
+        return;
+      }
+      if (requestAuth) {
+        await requestHealthKitAuthorization();
+      }
+      const snapshot = await fetchAppleHealthKitSnapshot();
+      setHealthKitSnapshot(snapshot);
+      setHealthKitRows(buildHealthKitDisplayRows(snapshot));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '读取健康数据失败';
+      Alert.alert('Apple 健康', message);
+    } finally {
+      setHealthKitLoading(false);
+    }
+  };
+
+  const applyHealthKitToProfile = () => {
+    if (!healthKitSnapshot) return;
+    const { heightCm, weightKg } = extractProfileMetricsFromHealthKit(healthKitSnapshot);
+    if (heightCm != null && heightCm > 0) setHeight(String(Math.round(heightCm)));
+    if (weightKg != null && weightKg > 0) setWeight(String(weightKg));
+
+    const dob = healthKitSnapshot.characteristics.dateOfBirth;
+    if (dob) {
+      const d = new Date(dob);
+      if (!Number.isNaN(d.getTime())) setBirthdayIso(toIsoDate(d));
+    }
+
+    const sex = healthKitSnapshot.characteristics.biologicalSex;
+    if (sex === '女' || sex === '男') {
+      setGender(sex);
+    }
+
+    Alert.alert('已填入', '已将 Apple 健康中的身高、体重等可用数据同步到表单（请检查后保存）。');
+  };
+
   const pickAvatar = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
@@ -178,6 +241,11 @@ export default function EditProfileScreen() {
     };
   }, []);
   
+  useEffect(() => {
+    if (!healthKitSupported) return;
+    void loadHealthKitData(true);
+  }, [healthKitSupported]);
+
   useEffect(() => {
     if (!user) return;
   
@@ -455,6 +523,105 @@ export default function EditProfileScreen() {
             </View>
           </View>
 
+          {healthKitSupported ? (
+            <View style={styles.group}>
+              <View style={styles.groupTitleRow}>
+                <View style={[styles.groupMark, { backgroundColor: '#e11d48' }]} />
+                <Text style={[styles.groupTitle, { color: palette.outline }]}>Apple 健康</Text>
+              </View>
+
+              <View style={[styles.healthKitCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
+                <View style={styles.healthKitHeader}>
+                  <MaterialIcons name="favorite" size={22} color="#e11d48" />
+                  <View style={styles.healthKitHeaderText}>
+                    <Text style={[styles.healthKitTitle, { color: palette.text }]}>健康 App 数据</Text>
+                    <Text style={[styles.healthKitSub, { color: palette.outline }]}>
+                      {healthKitLoading
+                        ? '正在读取…'
+                        : healthKitSnapshot?.available
+                          ? healthKitRows.length > 0
+                            ? `已读取 ${healthKitRows.length} 项 · ${healthKitSnapshot.fetchedAt ? new Date(healthKitSnapshot.fetchedAt).toLocaleString('zh-CN') : ''}`
+                            : '已授权，暂无可用记录（请在「健康」App 中确认数据来源）'
+                          : '此设备不支持 HealthKit'}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.healthKitActions}>
+                  <Pressable
+                    onPress={() => void loadHealthKitData(true)}
+                    disabled={healthKitLoading}
+                    style={[styles.healthKitBtnGhost, { borderColor: palette.outlineVariant }]}
+                  >
+                    {healthKitLoading ? (
+                      <ActivityIndicator size="small" color={palette.primary} />
+                    ) : (
+                      <Text style={[styles.healthKitBtnGhostText, { color: palette.primary }]}>刷新</Text>
+                    )}
+                  </Pressable>
+                  <Pressable
+                    onPress={applyHealthKitToProfile}
+                    disabled={healthKitLoading || !healthKitRows.length}
+                    style={[styles.healthKitBtnPrimary, { backgroundColor: palette.primary, opacity: healthKitRows.length ? 1 : 0.45 }]}
+                  >
+                    <Text style={styles.healthKitBtnPrimaryText}>填入表单</Text>
+                  </Pressable>
+                </View>
+
+                {healthKitSnapshot?.errors?.length ? (
+                  <Text style={[styles.healthKitError, { color: '#b45309' }]}>
+                    部分类型读取失败（{healthKitSnapshot.errors.length}）
+                  </Text>
+                ) : null}
+
+                {healthKitRows.length > 0 ? (
+                  <>
+                    <Pressable
+                      onPress={() => setHealthKitExpanded(v => !v)}
+                      style={styles.healthKitToggle}
+                    >
+                      <Text style={[styles.healthKitToggleText, { color: palette.outline }]}>
+                        {healthKitExpanded ? '收起全部' : `展开全部（${healthKitRows.length} 项）`}
+                      </Text>
+                      <MaterialIcons
+                        name={healthKitExpanded ? 'expand-less' : 'expand-more'}
+                        size={22}
+                        color={palette.outline}
+                      />
+                    </Pressable>
+
+                    <View style={styles.healthKitList}>
+                      {(healthKitExpanded ? healthKitRows : healthKitRows.slice(0, 8)).map(row => (
+                        <View
+                          key={row.key}
+                          style={[styles.healthKitRow, { borderBottomColor: palette.outlineVariant }]}
+                        >
+                          <Text style={[styles.healthKitRowLabel, { color: palette.outline }]} numberOfLines={1}>
+                            {row.label}
+                          </Text>
+                          <Text style={[styles.healthKitRowValue, { color: palette.text }]} numberOfLines={2}>
+                            {row.value}
+                          </Text>
+                          {row.meta ? (
+                            <Text style={[styles.healthKitRowMeta, { color: palette.outline }]} numberOfLines={1}>
+                              {row.meta}
+                            </Text>
+                          ) : null}
+                        </View>
+                      ))}
+                    </View>
+                  </>
+                ) : null}
+              </View>
+            </View>
+          ) : (
+            <View style={[styles.healthKitHintCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
+              <Text style={[styles.healthKitHint, { color: palette.outline }]}>
+                Apple 健康数据仅在 iOS 真机上可用；Android / Web 请手动填写体征。
+              </Text>
+            </View>
+          )}
+
           <Pressable onPress={saveProfile} style={[styles.submitBtn, { backgroundColor: palette.primary }]}>
             <Text style={styles.submitText}>更新个人资料</Text>
           </Pressable>
@@ -670,4 +837,46 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   submitText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  healthKitCard: { borderRadius: 16, padding: 18, borderWidth: 1, gap: 14 },
+  healthKitHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  healthKitHeaderText: { flex: 1, gap: 4 },
+  healthKitTitle: { fontSize: 17, fontWeight: '800' },
+  healthKitSub: { fontSize: 12, fontWeight: '600', lineHeight: 18 },
+  healthKitActions: { flexDirection: 'row', gap: 10 },
+  healthKitBtnGhost: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  healthKitBtnGhostText: { fontSize: 14, fontWeight: '800' },
+  healthKitBtnPrimary: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  healthKitBtnPrimaryText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  healthKitError: { fontSize: 11, fontWeight: '700' },
+  healthKitToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  healthKitToggleText: { fontSize: 12, fontWeight: '800' },
+  healthKitList: { gap: 0 },
+  healthKitRow: {
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 2,
+  },
+  healthKitRowLabel: { fontSize: 10, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
+  healthKitRowValue: { fontSize: 16, fontWeight: '800' },
+  healthKitRowMeta: { fontSize: 11, fontWeight: '600' },
+  healthKitHintCard: { borderRadius: 14, padding: 16, borderWidth: 1 },
+  healthKitHint: { fontSize: 13, fontWeight: '600', lineHeight: 20 },
 });
