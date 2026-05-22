@@ -294,6 +294,28 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
   );
 }
 
+/** 将根任务及其所有子任务挂到同一项目（用于待办升级为项目等场景） */
+export async function assignProjectIdToTaskSubtree(rootTaskId: string, projectId: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `WITH RECURSIVE subtree(id) AS (
+        SELECT id FROM tasks WHERE id = ? AND deleted_at IS NULL
+        UNION ALL
+        SELECT t.id
+          FROM tasks t
+          JOIN subtree s ON t.parent_task_id = s.id
+         WHERE t.deleted_at IS NULL
+     )
+     UPDATE tasks
+        SET project_id = ?,
+            updated_at = datetime('now'),
+            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+            version = version + 1
+      WHERE id IN (SELECT id FROM subtree)`,
+    [rootTaskId, projectId],
+  );
+}
+
 export async function deleteTask(id: string) {
   const db = await getDatabase();
   await db.runAsync(

@@ -985,7 +985,8 @@ export async function estimateDailyIntakeTargetsFromContext(
 
 须遵守：
 - 结合用户性别、年龄、身高体重、运动与目标（减脂/增肌）与近7日各营养素摄入趋势做微调；若近几日某营养素持续明显偏低或偏高，目标应温和纠正而非极端跳变。
-- 钠目标需兼顾运动出汗与心血管风险：久坐偏低、高强度可略高。
+- 若上下文标明今日为「健身日」，蛋白质与碳水可适度上调，水分与钠略增以支持训练与出汗；若标明「休息日」，在保障基础营养前提下温和低于健身日（尤其碳水与钠），勿照搬训练日定量。
+- 钠目标需兼顾运动出汗与心血管风险：久坐偏低、高强度可略高；健身日可略高于同日休息日。
 - 输出数值须为合理整数或最多一位小数的数字（建议四舍五入为整数）。`;
 
   let lastError = '未知错误';
@@ -1348,8 +1349,8 @@ function normalizePersonaPortraitJson(parsed: unknown): PersonaPortraitAiData {
     bullets = o.bullets
       .map(x => (typeof x === 'string' ? x : String(x)).trim())
       .filter(Boolean)
-      .slice(0, 4)
-      .map(s => clipPersonaStr(s, 240));
+      .slice(0, 6)
+      .map(s => clipPersonaStr(s, 200));
   }
 
   const stats: { label: string; value: string; hint: string }[] = [];
@@ -1396,54 +1397,64 @@ function normalizePersonaPortraitJson(parsed: unknown): PersonaPortraitAiData {
   };
 }
 
-/** overview / ai_quote 目标篇幅（汉字，含标点） */
+/** overview 可选短导语上限；主解读在 bullets */
 export const PERSONA_PORTRAIT_OVERVIEW_MIN_LEN = 280;
 export const PERSONA_PORTRAIT_OVERVIEW_TARGET_MAX_LEN = 420;
+export const PERSONA_PORTRAIT_BULLET_MIN_COUNT = 4;
+export const PERSONA_PORTRAIT_BULLET_MAX_COUNT = 6;
+export const PERSONA_PORTRAIT_BULLET_MIN_EACH = 28;
 
 function personaTextLen(s: string): number {
   return s.trim().length;
 }
 
-function personaBulletsOk(d: PersonaPortraitAiData, minItems: number, minEach: number): boolean {
+function personaBulletsOk(d: PersonaPortraitAiData, minItems: number, maxItems: number, minEach: number): boolean {
   const items = d.bullets.map(b => b.trim()).filter(b => personaTextLen(b) >= minEach);
-  return items.length >= minItems;
+  return items.length >= minItems && items.length <= maxItems;
 }
 
-/** 按 slug 校验模型 JSON 是否达到「充足 AI 解读」标准；不通过则触发重试 */
+/** 按 slug 校验模型 JSON 是否达到「分点 AI 解读」标准；不通过则触发重试 */
 export function validatePersonaPortraitForSlug(
   slug: string,
   d: PersonaPortraitAiData,
 ): { ok: true } | { ok: false; error: string } {
-  const oLen = personaTextLen(d.overview);
-  if (oLen < PERSONA_PORTRAIT_OVERVIEW_MIN_LEN) {
-    return { ok: false, error: `overview 仅 ${oLen} 字，须 ≥${PERSONA_PORTRAIT_OVERVIEW_MIN_LEN} 字（目标 300～400 字）` };
+  const min = PERSONA_PORTRAIT_BULLET_MIN_COUNT;
+  const max = PERSONA_PORTRAIT_BULLET_MAX_COUNT;
+  const each = PERSONA_PORTRAIT_BULLET_MIN_EACH;
+
+  if (!personaBulletsOk(d, min, max, each)) {
+    const n = d.bullets.map(b => b.trim()).filter(b => personaTextLen(b) >= each).length;
+    return {
+      ok: false,
+      error: `bullets 须 ${min}～${max} 条且每条 ≥${each} 字（当前有效 ${n} 条）`,
+    };
+  }
+
+  if (personaTextLen(d.overview) > 160) {
+    return { ok: false, error: 'overview 须为 0～160 字短导语，勿写长段落（主内容放在 bullets）' };
   }
 
   switch (slug) {
-    case 'plan-completion':
-    case 'health':
-      if (!personaBulletsOk(d, 2, 36)) {
-        return { ok: false, error: 'bullets 须 2～4 条且每条 ≥36 字' };
-      }
-      break;
     case 'savings':
       if (d.milestones.filter(m => m.trim()).length < 2) {
         return { ok: false, error: 'milestones 须至少 2 条' };
       }
       break;
     case 'ai-insight': {
-      const qLen = personaTextLen(d.ai_quote);
-      if (qLen < PERSONA_PORTRAIT_OVERVIEW_MIN_LEN) {
-        return { ok: false, error: `ai_quote 仅 ${qLen} 字，须 ≥${PERSONA_PORTRAIT_OVERVIEW_MIN_LEN} 字` };
-      }
       const dims = d.dims.filter(x => x.title.trim() && x.sub.trim());
       if (dims.length < 3) {
         return { ok: false, error: 'dims 须 3 条且含 title/sub' };
       }
       for (const dim of dims) {
-        if (personaTextLen(dim.sub) < 55) {
-          return { ok: false, error: 'dims.sub 每条须 ≥55 字' };
+        if (personaTextLen(dim.sub) < 24) {
+          return { ok: false, error: 'dims.sub 每条须 ≥24 字（分点式一句）' };
         }
+        if (personaTextLen(dim.sub) > 100) {
+          return { ok: false, error: 'dims.sub 每条勿超过 100 字' };
+        }
+      }
+      if (personaTextLen(d.ai_quote) > 120) {
+        return { ok: false, error: 'ai_quote 须 ≤120 字或留空（主解读用 bullets）' };
       }
       break;
     }
@@ -1483,11 +1494,11 @@ export async function generatePersonaPortraitFromContext(
 2) 事实：不要编造摘要里未出现的具体金额、天数、百分比、体脂率、诊断；摘要不足时坦诚样本少，并给温和、通用的微习惯建议。
 3) 医疗：身体成分、饮水、营养相关文案仅供生活方式参考，不得给出疾病诊断或用药建议。
 4) 字段必须齐全（可填空字符串或空数组），类型与示例一致。
-5) 长文篇幅（硬要求，未达标将整包判废并重试）：
-   - overview：每个 persona_slug 都必须写满 300～400 个汉字（含标点；低于 280 字不合格）。须分 4 段：①数据回顾（引用摘要数字）②模式洞察 ③优势与卡点 ④本周可执行微习惯。禁止用列表代替段落。
-   - ai-insight：除 overview 外，ai_quote 另须 300～400 字（口吻可更口语、像朋友写信）；dims 固定 3 条，sub 每条 70～120 字。
-   - plan-completion / health：bullets 2～4 条，每条 50～100 字，补充 overview 未写尽的可执行要点（健康维度可覆盖饮水、蛋白/碳水/钠、身体档案中的任一项）。
-   - savings：milestones 2～4 条；overview 仍须 300～400 字段落体。
+5) 解读形态（硬要求，未达标将整包判废并重试）：
+   - 主解读必须用 bullets：4～6 条，每条 35～90 个汉字，独立成句、可扫读；禁止在 bullets 里用「①②③」或 markdown。四条须分别覆盖：①数据回顾（引用摘要数字）②模式洞察 ③优势与卡点 ④可执行微习惯（第 5～6 条可补充维度专属要点）。
+   - overview：仅 0～80 字可选短导语（一句话定调），禁止写长段落；勿把 overview 当作主解读。
+   - ai-insight：bullets 同上；ai_quote 可选 ≤80 字金句或留空；dims 固定 3 条，sub 每条 30～80 字、一句说清该维度。
+   - savings：bullets 4～6 条 + milestones 2～4 条（里程碑短语，与 bullets 勿重复堆砌）。
 
 persona_slug 含义（决定侧重点，但仍需填满所有字段；不适用的数组可给 0～3 条或留空数组）：
 - plan-completion：仅任务完成、习惯打卡、青蛙优先级、闭环节奏；overview/stats/bullets 禁止出现储蓄、记账、收支、饮水、财务、心愿等非任务主题。
@@ -1501,7 +1512,7 @@ persona_slug 含义（决定侧重点，但仍需填满所有字段；不适用�
     apiKey: key,
     systemContent,
     userContent: `persona_slug=${slug}\n\n以下是用户本地数据摘要。请生成 JSON。
-硬性篇幅：overview 必须 300～400 汉字（低于 280 字视为失败）${slug === 'ai-insight' ? '；ai_quote 另须 300～400 汉字；dims 三条 sub 各 70～120 字' : slug === 'plan-completion' || slug === 'health' ? '；bullets 2～4 条各 50～100 字' : ''}。\n\n${text}`,
+硬性要求：bullets 必须 4～6 条、每条 35～90 字的分点总结（主解读）；overview 仅 0～80 字短导语${slug === 'ai-insight' ? '；dims 三条 sub 各 30～80 字' : slug === 'savings' ? '；milestones 2～4 条' : ''}。\n\n${text}`,
     temperature: 0.38,
     maxTokens: 3600,
     maxAttempts,
@@ -2035,6 +2046,201 @@ ${bodyText}`;
       const data = normalizeUserSkillAiPortfolioJson(parsed, expectedIds);
       if (!data) {
         return { ok: false, error: '模型未返回有效的技能评估结构', details: parsed };
+      }
+      return { ok: true, value: data };
+    },
+  });
+
+  if (!lr.ok) {
+    return { ok: false, error: lr.error, attempts: lr.attempts, httpStatus: lr.httpStatus, details: lr.details };
+  }
+  return { ok: true, data: lr.value, rawContent: lr.rawContent, attempts: lr.attempts };
+}
+
+export const VISION_WALL_AI_SECTION_BODY_MIN_LEN = 220;
+export const VISION_WALL_AI_SECTION_BODY_TARGET_MIN_TOTAL = 1600;
+
+const VISION_WALL_AI_JSON_HINT = `{"feasibility_score":72,"headline":"一句总评","sections":[{"title":"总体可行性评估","body":"（单节≥220字）"},{"title":"时间与节奏诊断","body":"…"},{"title":"目标组合与资源冲突","body":"…"},{"title":"优化建议与行动路径","body":"…"}],"per_goal":[{"goal_id":"","title":"","feasibility_level":"偏高|中等|偏低","remain_assessment":"…","optimization":"…"}],"closing_summary":"（收尾总结≥280字）"}`;
+
+export type VisionWallAiSection = {
+  title: string;
+  body: string;
+};
+
+export type VisionWallAiPerGoalRow = {
+  goal_id: string;
+  title: string;
+  feasibility_level: string;
+  remain_assessment: string;
+  optimization: string;
+};
+
+export type VisionWallAiAssessmentPayload = {
+  feasibility_score: number;
+  headline: string;
+  sections: VisionWallAiSection[];
+  per_goal: VisionWallAiPerGoalRow[];
+  closing_summary: string;
+};
+
+export type AnalyzeVisionWallGoalsFromTextOptions = {
+  apiKey: string;
+  userDisplayName?: string;
+  planDigestText: string;
+  expectedGoalIds: string[];
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+export type AnalyzeVisionWallGoalsFromTextResult =
+  | { ok: true; data: VisionWallAiAssessmentPayload; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function normalizeVisionWallAiAssessmentJson(
+  parsed: unknown,
+  expectedGoalIds: string[],
+): VisionWallAiAssessmentPayload | null {
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const o = parsed as Record<string, unknown>;
+
+  const headline = typeof o.headline === 'string' ? o.headline.trim() : '';
+  const closing =
+    typeof o.closing_summary === 'string'
+      ? o.closing_summary.trim()
+      : typeof o.summary === 'string'
+        ? o.summary.trim()
+        : '';
+
+  const scoreRaw = o.feasibility_score ?? o.score;
+  const scoreNum =
+    typeof scoreRaw === 'number' ? scoreRaw : typeof scoreRaw === 'string' ? Number(scoreRaw) : NaN;
+  const feasibility_score = Number.isFinite(scoreNum)
+    ? Math.max(0, Math.min(100, Math.round(scoreNum)))
+    : 65;
+
+  const rawSections = Array.isArray(o.sections) ? o.sections : [];
+  const sections: VisionWallAiSection[] = [];
+  for (const item of rawSections) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Record<string, unknown>;
+    const title = typeof row.title === 'string' ? row.title.trim().slice(0, 40) : '';
+    const body = typeof row.body === 'string' ? row.body.trim() : '';
+    if (title && body) sections.push({ title, body });
+  }
+
+  const rawGoals = Array.isArray(o.per_goal) ? o.per_goal : Array.isArray(o.per_plan) ? o.per_plan : [];
+  const byId = new Map<string, VisionWallAiPerGoalRow>();
+  for (const item of rawGoals) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Record<string, unknown>;
+    const goal_id = typeof row.goal_id === 'string' ? row.goal_id.trim() : '';
+    if (!goal_id) continue;
+    const title = typeof row.title === 'string' ? row.title.trim() : '';
+    const feasibility_level =
+      typeof row.feasibility_level === 'string'
+        ? row.feasibility_level.trim()
+        : typeof row.feasibility === 'string'
+          ? row.feasibility.trim()
+          : '';
+    const remain_assessment =
+      typeof row.remain_assessment === 'string'
+        ? row.remain_assessment.trim()
+        : typeof row.time_assessment === 'string'
+          ? row.time_assessment.trim()
+          : '';
+    const optimization =
+      typeof row.optimization === 'string'
+        ? row.optimization.trim()
+        : typeof row.suggestions === 'string'
+          ? row.suggestions.trim()
+          : '';
+    byId.set(goal_id, { goal_id, title, feasibility_level, remain_assessment, optimization });
+  }
+
+  const per_goal: VisionWallAiPerGoalRow[] = expectedGoalIds.map(id => {
+    const row = byId.get(id);
+    if (row && (row.remain_assessment || row.optimization)) return row;
+    return {
+      goal_id: id,
+      title: row?.title ?? '',
+      feasibility_level: row?.feasibility_level ?? '中等',
+      remain_assessment: row?.remain_assessment ?? '（模型未返回该条目的时间评估）',
+      optimization: row?.optimization ?? '（模型未返回该条目的优化建议）',
+    };
+  });
+
+  if (sections.length < 3 && !headline && !closing) return null;
+
+  const sectionsTotalLen = sections.reduce((s, x) => s + x.body.length, 0);
+  if (sections.length < 3 || sectionsTotalLen < VISION_WALL_AI_SECTION_BODY_TARGET_MIN_TOTAL) {
+    return null;
+  }
+  for (const sec of sections) {
+    if (sec.body.length < VISION_WALL_AI_SECTION_BODY_MIN_LEN) return null;
+  }
+  if (closing.length < 260) return null;
+
+  return {
+    feasibility_score,
+    headline: headline.length > 0 ? headline : '年度目标组合需结合时间与进度综合调整',
+    sections,
+    per_goal,
+    closing_summary: closing,
+  };
+}
+
+/**
+ * 总目标墙：根据各计划进度、截止日与剩余完成时间，生成可行性评估与优化建议（智谱/豆包 JSON，格式化 sections）。
+ */
+export async function analyzeVisionWallGoalsFromText(
+  options: AnalyzeVisionWallGoalsFromTextOptions,
+): Promise<AnalyzeVisionWallGoalsFromTextResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 6);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 900);
+  const key = options.apiKey.trim();
+  if (!key) {
+    return { ok: false, error: '未配置 API 密钥', attempts: 0 };
+  }
+  const digest = options.planDigestText.trim();
+  if (!digest) {
+    return { ok: false, error: '没有可评估的计划数据', attempts: 0 };
+  }
+  const expectedGoalIds = options.expectedGoalIds.filter(id => id.trim().length > 0);
+  if (expectedGoalIds.length === 0) {
+    return { ok: false, error: '没有可评估的计划条目', attempts: 0 };
+  }
+
+  const display = options.userDisplayName?.trim() || '用户';
+  const userBlock = `用户称呼：${display}
+待评估计划条目数：${expectedGoalIds.length}（goal_id 须原样回填至 per_goal）
+
+${digest}`;
+
+  const systemContent = `你是年度目标规划教练与可行性分析顾问。用户会提供其「总目标墙」上的全部计划（含总目标、小目标、存钱计划），每条已标注截止日与「剩余完成时间」。
+只输出一个标准 JSON 对象，不要 markdown 代码块、不要 JSON 以外的文字。
+必须包含：
+- feasibility_score：0～100 整数，表示当前目标组合整体可达成度主观评分；
+- headline：16～32 字中文，概括整体判断；
+- sections：数组，至少 4 项，每项含 title（8～20 字小节标题）与 body（简体中文单节正文须 ≥${VISION_WALL_AI_SECTION_BODY_MIN_LEN} 字；全文字数尽量充实，四节合计建议 ≥${VISION_WALL_AI_SECTION_BODY_TARGET_MIN_TOTAL} 字）。建议小节：总体可行性评估、时间与节奏诊断、目标组合与资源冲突、优化建议与行动路径。自然段书写，不要用 markdown 符号。
+- per_goal：数组；对输入中每一条计划各输出一项，goal_id 必须与输入完全一致。每项含 title（可复述计划名）、feasibility_level（偏高/中等/偏低 三选一）、remain_assessment（结合剩余完成时间与进度，约 80～150 字）、optimization（可执行优化建议，约 100～180 字）。
+- closing_summary：收尾总结，须 ≥280 字，分 2～4 段，归纳优先级排序与下月行动清单。
+
+要求：基于摘要推断，勿捏造未出现的金额/日期；数据稀少时说明需先补全目标与进度；语气专业、具体、鼓励。
+
+输出形状示例（内容须替换）：${VISION_WALL_AI_JSON_HINT}`;
+
+  const lr = await loopTextJsonLlmWithRetries<VisionWallAiAssessmentPayload>({
+    apiKey: key,
+    systemContent,
+    userContent: `${userBlock}\n\n请生成 JSON；sections 各节 body 须充实，closing_summary 须 ≥280 字。`,
+    temperature: 0.38,
+    maxTokens: 8192,
+    maxAttempts,
+    retryDelayMs,
+    finish: parsed => {
+      const data = normalizeVisionWallAiAssessmentJson(parsed, expectedGoalIds);
+      if (!data) {
+        return { ok: false, error: '模型未返回有效的目标墙评估结构或篇幅不足', details: parsed };
       }
       return { ok: true, value: data };
     },

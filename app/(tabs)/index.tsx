@@ -31,11 +31,13 @@ import {
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { ensureDailyAiIntakeTargetsForToday, type DailyAiIntakeTargetsRow } from '@/lib/daily-intake-ai-targets';
 import {
+  adjustNutritionMetricsForDaySchedule,
   calculateNutritionV2,
   mapGenderToNutritionGender,
   mapGoalToNutritionGoal,
   mapLifestyleToActivityLevel,
 } from '@/lib/nutrition-heuristic';
+import { getUserDayScheduleKind, getUserDayScheduleLabelZh } from '@/lib/user-workout-schedule';
 import {
   analyzeFoodNutritionFromImage,
   getActiveAiLlmApiKey,
@@ -1532,7 +1534,7 @@ export default function HealthScreen() {
     const activityLevel = mapLifestyleToActivityLevel(user.lifestyle);
     const nutritionGoal = mapGoalToNutritionGoal(user.goal);
     const nutritionGender = mapGenderToNutritionGender(user.gender);
-    const metrics = calculateNutritionV2(
+    const base = calculateNutritionV2(
       user.weight ?? 0,
       user.height ?? 0,
       user.age ?? 0,
@@ -1541,12 +1543,16 @@ export default function HealthScreen() {
       nutritionGoal,
       selectedDayIntakeTotals?.sodium ?? 0
     );
+    const metrics = adjustNutritionMetricsForDaySchedule(
+      base,
+      getUserDayScheduleKind(user, logicalTodayYmd),
+    );
 
     if (assistantTab === '水分') return metrics.Water_ml;
     if (assistantTab === '蛋白质') return metrics.Protein_g;
     if (assistantTab === '碳水') return metrics.Carbohydrate_g;
     return metrics.Sodium_mg;
-  }, [assistantTab, user, selectedDayIntakeTotals?.sodium]);
+  }, [assistantTab, user, selectedDayIntakeTotals?.sodium, logicalTodayYmd]);
 
 
   const avgValue = React.useMemo(() => {
@@ -1614,19 +1620,35 @@ export default function HealthScreen() {
     };
   }, [assistantTab, bestValue, avgValue, communityValue, dailyAiTargets, dailyAiLoading]);
 
+  const todayScheduleLabel = React.useMemo(() => {
+    if (!user) return null;
+    const kind = getUserDayScheduleKind(user, logicalTodayYmd);
+    if (kind === 'sedentary') return null;
+    return getUserDayScheduleLabelZh(kind);
+  }, [user, logicalTodayYmd]);
+
   const assistantSuggestRows = React.useMemo(
     () =>
       [
         {
           kind: 'best' as const,
           tag: dailyAiTargets
-            ? 'AI 今日建议（综合档案与近7日摄入，每日更新一次）'
-            : '今日最佳(基于你的活动和身体指标计算)',
+            ? todayScheduleLabel
+              ? `AI 今日建议（今日${todayScheduleLabel}，综合档案与近7日摄入，每日更新一次）`
+              : 'AI 今日建议（综合档案与近7日摄入，每日更新一次）'
+            : todayScheduleLabel
+              ? `今日最佳(今日${todayScheduleLabel}，基于档案与活动指标)`
+              : '今日最佳(基于你的活动和身体指标计算)',
         },
         { kind: 'avg' as const, tag: '上周平均(基于您的日常活动指标计算)' },
-        { kind: 'community' as const, tag: '社群达标(基于您的身体指标计算)' },
+        {
+          kind: 'community' as const,
+          tag: todayScheduleLabel
+            ? `社群达标(今日${todayScheduleLabel}，基于身体指标与周计划)`
+            : '社群达标(基于您的身体指标计算)',
+        },
       ] as const,
-    [dailyAiTargets]
+    [dailyAiTargets, todayScheduleLabel]
   );
 
   /** 输入框与推荐行双向同步：多行数值相同时保留当前选中项，避免被固定写成「总是 best」 */
@@ -2617,7 +2639,11 @@ export default function HealthScreen() {
 
             <View style={styles.suggestIntroRow}>
               <MaterialIcons name="auto-awesome" size={18} color={currentAssistant.accent} />
-              <Text style={[styles.suggestIntroText, { color: colors.textSecondary }]}>基于您的历史记录和今日活动：</Text>
+              <Text style={[styles.suggestIntroText, { color: colors.textSecondary }]}>
+                {todayScheduleLabel
+                  ? `基于您的历史记录与今日（${todayScheduleLabel}）活动：`
+                  : '基于您的历史记录和今日活动：'}
+              </Text>
             </View>
             {dailyAiLoading ? (
               <Text style={[styles.suggestAiHint, { color: colors.textSecondary }]}>正在生成今日 AI 摄入建议…</Text>

@@ -1,6 +1,8 @@
 import { GoalDimensionFormFields } from '@/components/goal-dimension/GoalDimensionFormFields';
+import { VisionWallAiAssessmentSection } from '@/components/vision-wall/VisionWallAiAssessmentSection';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getDefaultUser } from '@/lib/repositories/users/user';
 import {
   createGoalDimension,
   deleteGoalDimension,
@@ -30,7 +32,25 @@ import {
   sanitizeVisionAmountInput,
 } from '@/lib/repositories/visions/vision-amount';
 import { visionRowToWallCard } from '@/lib/repositories/visions/vision-present';
+import {
+  collectLinkedProjectsFromSubGoal,
+  collectVisionSubGoalsFromExtra,
+  isBoundVisionSubGoalTaskComplete,
+  serializeVisionSubGoalsForExtra,
+} from '@/lib/repositories/visions/vision.types';
 import type { VisionWallCardModel, VisionWallSubGoalItem } from '@/lib/visions-registry';
+import { loadVisionWallAiCache, saveVisionWallAiCache } from '@/lib/vision-wall-ai-cache';
+import {
+  buildVisionWallPlanContext,
+  formatPlanRemainLabel,
+  resolveVisionPlanDeadlineYmd,
+  type VisionWallPlanContext,
+} from '@/lib/vision-wall-plan-context';
+import {
+  analyzeVisionWallGoalsFromText,
+  getActiveAiLlmApiKey,
+  type VisionWallAiAssessmentPayload,
+} from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
@@ -51,7 +71,14 @@ import {
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-type WallEntry = { id: string; card: VisionWallCardModel; dimensionId: string | null; dimensionName: string | null };
+type WallEntry = {
+  id: string;
+  card: VisionWallCardModel;
+  dimensionId: string | null;
+  dimensionName: string | null;
+  planDeadlineYmd: string;
+  planRemainLabel: string;
+};
 
 type WallSection = {
   key: string;
@@ -70,33 +97,49 @@ type ProgressEditTarget = {
 };
 
 function subGoalWallMeta(sg: VisionWallSubGoalItem): string {
-  if (sg.taskProgress) {
-    const pct = Math.round((sg.taskProgress.completed / sg.taskProgress.total) * 100);
-    return sg.standaloneDone && sg.taskProgress.total === 1 ? '已完成' : `${pct}%`;
+  if (sg.boundProjectCount > 0) {
+    if (isBoundVisionSubGoalTaskComplete(sg.taskProgress)) return '已完成';
+    if (sg.taskProgress && sg.taskProgress.total > 0) {
+      const pct = Math.round((sg.taskProgress.completed / sg.taskProgress.total) * 100);
+      return `${pct}%`;
+    }
+    return '已绑定';
   }
-  if (sg.boundProjectCount > 0) return '已绑定';
+  if (sg.standaloneDone) return '已完成';
   return '未完成';
+}
+
+function isWallSubGoalDone(sg: VisionWallSubGoalItem): boolean {
+  if (sg.boundProjectCount > 0) return isBoundVisionSubGoalTaskComplete(sg.taskProgress);
+  return Boolean(sg.standaloneDone);
 }
 
 const VisionCard = ({
   card,
   visionId,
+  planRemainLabel,
   onOpenDetail,
   onAdjustAmount,
   onOpenProgressEdit,
   onToggleTargetComplete,
+  onToggleSubGoalDone,
+  togglingSubGoalId,
 }: {
   card: VisionWallCardModel;
   visionId: string;
+  planRemainLabel?: string;
   onOpenDetail: () => void;
   onAdjustAmount: (visionId: string, deltaSign: -1 | 1, step: number) => void;
   onOpenProgressEdit: (target: ProgressEditTarget) => void;
   onToggleTargetComplete: (visionId: string, isComplete: boolean) => void;
+  onToggleSubGoalDone: (visionId: string, subGoalId: string) => void;
+  togglingSubGoalId: string | null;
 }) => {
   const showCountAdjust = card.kind === 'count' && card.wallAdjust;
   const targetSubGoals = card.kind === 'target' ? (card.subGoals ?? []) : [];
   const visibleSubGoals = targetSubGoals.slice(0, WALL_SUB_GOALS_MAX_VISIBLE);
   const hiddenSubGoalCount = targetSubGoals.length - visibleSubGoals.length;
+  const showPlanRemain = planRemainLabel && card.kind !== 'countdown';
 
   return (
     <View style={styles.card}>
@@ -261,18 +304,72 @@ const VisionCard = ({
           </View>
         ) : null}
 
+        {showPlanRemain ? (
+          <View style={styles.planRemainRow}>
+            <MaterialIcons name="schedule" size={14} color="rgba(255,255,255,0.55)" />
+            <Text style={styles.planRemainText} numberOfLines={2}>
+              {planRemainLabel}
+            </Text>
+          </View>
+        ) : null}
+
         {card.kind === 'target' && visibleSubGoals.length > 0 ? (
           <View style={styles.subGoalsBlock}>
             <Text style={styles.subGoalsKicker}>小目标</Text>
             <View style={styles.subGoalsList}>
-              {visibleSubGoals.map((sg, idx) => (
-                <View key={sg.id} style={styles.subGoalRow}>
-                  <Text style={styles.subGoalName} numberOfLines={1}>
-                    {idx + 1}. {sg.name}
-                  </Text>
-                  <Text style={styles.subGoalMeta}>{subGoalWallMeta(sg)}</Text>
-                </View>
-              ))}
+              {visibleSubGoals.map((sg, idx) => {
+                const unbound = sg.boundProjectCount === 0;
+                const done = isWallSubGoalDone(sg);
+                const isToggling = togglingSubGoalId === `${visionId}:${sg.id}`;
+
+                return (
+                  <View key={sg.id} style={styles.subGoalRow}>
+                    {unbound ? (
+                      <Pressable
+                        onPress={() => onToggleSubGoalDone(visionId, sg.id)}
+                        disabled={isToggling}
+                        hitSlop={6}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: done }}
+                        accessibilityLabel={done ? `取消完成 ${sg.name}` : `完成小目标 ${sg.name}`}
+                        style={({ pressed }) => [
+                          styles.subGoalCheckBtn,
+                          { opacity: isToggling ? 0.45 : pressed ? 0.75 : 1 },
+                        ]}
+                      >
+                        {isToggling ? (
+                          <ActivityIndicator size="small" color="rgba(255,255,255,0.65)" />
+                        ) : (
+                          <MaterialIcons
+                            name={done ? 'check-circle' : 'radio-button-unchecked'}
+                            size={20}
+                            color={done ? '#bbf7d0' : 'rgba(255,255,255,0.55)'}
+                          />
+                        )}
+                      </Pressable>
+                    ) : (
+                      <MaterialIcons
+                        name={done ? 'check-circle' : 'radio-button-unchecked'}
+                        size={20}
+                        color={done ? '#bbf7d0' : 'rgba(255,255,255,0.4)'}
+                        style={styles.subGoalCheckIcon}
+                      />
+                    )}
+                    <Text
+                      style={[
+                        styles.subGoalName,
+                        done && styles.subGoalNameDone,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {idx + 1}. {sg.name}
+                    </Text>
+                    <Text style={[styles.subGoalMeta, done && styles.subGoalMetaDone]}>
+                      {subGoalWallMeta(sg)}
+                    </Text>
+                  </View>
+                );
+              })}
               {hiddenSubGoalCount > 0 ? (
                 <Text style={styles.subGoalsMore}>还有 {hiddenSubGoalCount} 个</Text>
               ) : null}
@@ -296,6 +393,13 @@ export default function VisionWallScreen() {
   const [progressEdit, setProgressEdit] = useState<ProgressEditTarget | null>(null);
   const [progressEditText, setProgressEditText] = useState('');
   const [progressEditBusy, setProgressEditBusy] = useState(false);
+  const [togglingSubGoalKey, setTogglingSubGoalKey] = useState<string | null>(null);
+  const [planContext, setPlanContext] = useState<VisionWallPlanContext | null>(null);
+  const [aiAssessment, setAiAssessment] = useState<VisionWallAiAssessmentPayload | null>(null);
+  const [aiGeneratedAt, setAiGeneratedAt] = useState<string | null>(null);
+  const [aiCacheFingerprint, setAiCacheFingerprint] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [displayName, setDisplayName] = useState('');
 
   const [newDimModalVisible, setNewDimModalVisible] = useState(false);
   const [newDimTitle, setNewDimTitle] = useState('');
@@ -311,8 +415,24 @@ export default function VisionWallScreen() {
 
   const loadWallEntries = useCallback(async () => {
     try {
-      const [rows, dims] = await Promise.all([listVisions(), listGoalDimensions()]);
+      const year = new Date().getFullYear();
+      const [rows, dims, ctx, cached, user] = await Promise.all([
+        listVisions(),
+        listGoalDimensions(),
+        buildVisionWallPlanContext(),
+        loadVisionWallAiCache(),
+        getDefaultUser(),
+      ]);
       setGoalDimensions(dims);
+      setPlanContext(ctx);
+      setDisplayName(user?.name?.trim() || '默认用户');
+      if (cached?.data) {
+        setAiAssessment(cached.data);
+        setAiGeneratedAt(cached.generated_at);
+        setAiCacheFingerprint(cached.fingerprint);
+      } else {
+        setAiCacheFingerprint(null);
+      }
       const dbEntries: WallEntry[] = await Promise.all(
         rows.map(async r => {
           const ex = parseVisionExtra(r.extra_data);
@@ -320,11 +440,19 @@ export default function VisionWallScreen() {
             typeof ex?.dimensionId === 'string' && ex.dimensionId.trim() ? ex.dimensionId.trim() : null;
           const dimensionName =
             typeof ex?.dimensionName === 'string' && ex.dimensionName.trim() ? ex.dimensionName.trim() : null;
+          const deadline = resolveVisionPlanDeadlineYmd(r, ex, year);
+          const card = await visionRowToWallCard(r);
+          const remain =
+            r.track_kind === 'countdown' && card.kind === 'countdown'
+              ? card.remainText
+              : formatPlanRemainLabel(deadline);
           return {
             id: r.id,
-            card: await visionRowToWallCard(r),
+            card,
             dimensionId,
             dimensionName,
+            planDeadlineYmd: deadline,
+            planRemainLabel: remain,
           };
         }),
       );
@@ -332,13 +460,96 @@ export default function VisionWallScreen() {
     } catch {
       setWallEntries([]);
       setGoalDimensions([]);
+      setPlanContext(null);
     }
   }, []);
+
+  const aiStale = useMemo(() => {
+    if (!planContext || !aiAssessment || !aiCacheFingerprint) return false;
+    return planContext.fingerprint !== aiCacheFingerprint;
+  }, [aiAssessment, aiCacheFingerprint, planContext]);
+
+  const onRunAiAssessment = useCallback(async () => {
+    const key = getActiveAiLlmApiKey().trim();
+    if (!key) {
+      Alert.alert('无法调用 AI', '请配置智谱 API 密钥（环境变量 EXPO_PUBLIC_ZHIPU_API_KEY 或应用内置渠道）。');
+      return;
+    }
+    if (!planContext || planContext.plans.length === 0) {
+      Alert.alert('暂无可评估内容', '请先创建总目标或存钱计划后再试。');
+      return;
+    }
+    setAiLoading(true);
+    try {
+      const r = await analyzeVisionWallGoalsFromText({
+        apiKey: key,
+        userDisplayName: displayName,
+        planDigestText: planContext.digest_text,
+        expectedGoalIds: planContext.plans.map(p => p.goal_id),
+        maxAttempts: 6,
+        retryDelayMs: 900,
+      });
+      if (!r.ok) {
+        Alert.alert('生成失败', r.error || '请稍后重试');
+        return;
+      }
+      const generated_at = new Date().toISOString();
+      setAiAssessment(r.data);
+      setAiGeneratedAt(generated_at);
+      setAiCacheFingerprint(planContext.fingerprint);
+      await saveVisionWallAiCache({
+        fingerprint: planContext.fingerprint,
+        generated_at,
+        data: r.data,
+      });
+    } catch (e) {
+      Alert.alert('生成失败', e instanceof Error ? e.message : String(e));
+    } finally {
+      setAiLoading(false);
+    }
+  }, [displayName, planContext]);
 
   useFocusEffect(
     useCallback(() => {
       void loadWallEntries();
     }, [loadWallEntries]),
+  );
+
+  const onToggleSubGoalDone = useCallback(
+    async (visionId: string, subGoalId: string) => {
+      const toggleKey = `${visionId}:${subGoalId}`;
+      setTogglingSubGoalKey(toggleKey);
+      try {
+        const row = await getVisionRowById(visionId);
+        if (!row || row.track_kind !== 'target') return;
+        const extra = parseVisionExtra(row.extra_data) ?? {};
+        const subGoals = collectVisionSubGoalsFromExtra(extra);
+        const target = subGoals.find(sg => sg.id === subGoalId);
+        if (!target || collectLinkedProjectsFromSubGoal(target).length > 0) return;
+
+        const nextDone = !target.done;
+        const nextSubGoals = subGoals.map(sg => {
+          if (sg.id !== subGoalId) return sg;
+          if (nextDone) return { ...sg, done: true };
+          const { done: _omit, ...rest } = sg;
+          return rest;
+        });
+        const serialized = serializeVisionSubGoalsForExtra(nextSubGoals);
+        const nextExtra = { ...extra };
+        if (serialized.length > 0) {
+          nextExtra.subGoals = serialized;
+        } else {
+          delete nextExtra.subGoals;
+        }
+        await updateVision(visionId, { extra_data: serializeVisionExtra(nextExtra) });
+        await loadWallEntries();
+      } catch {
+        Alert.alert('更新失败', '无法更新小目标完成状态，请稍后重试。');
+      } finally {
+        setTogglingSubGoalKey(null);
+      }
+    },
+    [loadWallEntries],
   );
 
   const onToggleTargetComplete = useCallback(
@@ -769,12 +980,15 @@ export default function VisionWallScreen() {
                             <VisionCard
                               card={entry.card}
                               visionId={entry.id}
+                              planRemainLabel={entry.planRemainLabel}
                               onOpenDetail={() =>
                                 router.push({ pathname: '/vision-detail/[id]', params: { id: entry.id } })
                               }
                               onAdjustAmount={onAdjustVisionAmount}
                               onOpenProgressEdit={openProgressEdit}
                               onToggleTargetComplete={onToggleTargetComplete}
+                              onToggleSubGoalDone={onToggleSubGoalDone}
+                              togglingSubGoalId={togglingSubGoalKey}
                             />
                           </Swipeable>
                         ))
@@ -830,6 +1044,19 @@ export default function VisionWallScreen() {
               })
             )}
           </View>
+
+          <VisionWallAiAssessmentSection
+            isDark={isDark}
+            textColor={theme.text}
+            outlineColor={isDark ? 'rgba(148,163,184,0.88)' : 'rgba(114,119,133,0.88)'}
+            primaryColor="#0058be"
+            planCount={planContext?.plans.length ?? 0}
+            assessment={aiAssessment}
+            generatedAt={aiGeneratedAt}
+            loading={aiLoading}
+            stale={aiStale}
+            onRun={() => void onRunAiAssessment()}
+          />
 
           <Text style={[styles.footerText, { color: isDark ? 'rgba(226,232,240,0.45)' : 'rgba(114,119,133,0.45)' }]}>
             The Quantified Life • © 2024
@@ -1450,8 +1677,16 @@ const styles = StyleSheet.create({
   subGoalRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
+    gap: 8,
+  },
+  subGoalCheckBtn: {
+    width: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  subGoalCheckIcon: {
+    width: 22,
   },
   subGoalName: {
     flex: 1,
@@ -1459,16 +1694,36 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
+  subGoalNameDone: {
+    color: 'rgba(255,255,255,0.72)',
+    textDecorationLine: 'line-through',
+  },
   subGoalMeta: {
     color: 'rgba(255,255,255,0.65)',
     fontSize: 11,
     fontWeight: '800',
+  },
+  subGoalMetaDone: {
+    color: '#bbf7d0',
   },
   subGoalsMore: {
     color: 'rgba(255,255,255,0.5)',
     fontSize: 11,
     fontWeight: '700',
     marginTop: 2,
+  },
+  planRemainRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  planRemainText: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 16,
   },
   cardTitle: {
     color: '#fff',

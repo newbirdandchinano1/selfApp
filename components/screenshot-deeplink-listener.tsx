@@ -5,6 +5,7 @@ import {
   peekShortcutHandoffKind,
   prepareShortcutHandoffLaunchIntent,
 } from '@/lib/shortcut-auto-ledger-handoff';
+import { scheduleConsumeAutoLedger } from '@/lib/auto-ledger-runner';
 import { notifyShortcutHandoffConsume } from '@/lib/shortcut-auto-ledger-route-bridge';
 import * as Linking from 'expo-linking';
 import { usePathname, useRootNavigationState, useRouter } from 'expo-router';
@@ -75,9 +76,8 @@ export function ScreenshotDeepLinkListener() {
       lastHandoffKeyRef.current = handoffKey;
 
       const run = () => {
-        if (!prepareShortcutHandoffLaunchIntent()) {
-          return;
-        }
+        void prepareShortcutHandoffLaunchIntent();
+        scheduleConsumeAutoLedger('handoff');
         const pathAfterPrepare = pathnameRef.current;
         if (isOnFinanceTab(pathAfterPrepare)) {
           scheduleHandoffConsumeNotify();

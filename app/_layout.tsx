@@ -19,6 +19,7 @@ import { loadThemePreference } from '@/lib/theme-preference';
 import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
 import { hydrateGithubCloudDirtyFromStorage } from '@/lib/github-sqlite-dirty-track';
 import { runSilentGithubCloudSyncIfRemoteNewer } from '@/lib/github-cloud-launch';
+import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
 import { TaskReminderNotificationListener } from '@/components/task-reminder-notification-listener';
@@ -134,6 +135,7 @@ function RootLayoutInner() {
         ) : (
           <>
             <ScreenshotDeepLinkListener />
+            <AutoLedgerCoordinator dbReady={isDbReady} />
             <TaskReminderNotificationListener />
             <FinanceSheetHost />
             <Stack screenOptions={{ headerShown: false }}>

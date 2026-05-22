@@ -21,7 +21,7 @@ import { buildPersonaContextText, localLogicalTodayYmd } from '@/lib/persona-por
 import {
   generatePersonaPortraitFromContext,
   getActiveAiLlmApiKey,
-  PERSONA_PORTRAIT_OVERVIEW_MIN_LEN,
+  PERSONA_PORTRAIT_BULLET_MIN_COUNT,
   type PersonaPortraitAiData,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -91,17 +91,19 @@ const FALLBACK_SAVINGS_MILESTONES = [
   '定投节律：固定扣款降低决策成本',
 ];
 
-const DEFAULT_PLAN_OVERVIEW =
-  '该维度聚焦任务与习惯的闭环节奏。近一周若「完成」与「新建」比例失衡，往往说明排期偏满或收尾窗口不足——可在周末留出固定复盘块，把未闭环项压缩为不超过三条的青蛙清单，再按精力峰值重排。高认知任务宜落在状态最好的时段，琐碎维护型事项则集中在低能耗时段批量处理。你不必追求每日打满，关键是让最重要的那一件事先落地，用完成感带动下一项。样本较少时，先选一件最容易收尾的小任务完成即可。以上为基于本地记录的模型侧写，仅供自我观察，不构成专业建议。';
+const FALLBACK_SAVINGS_BULLETS = [
+  '先看近一周支出结构：标出 1～2 笔最大支出，区分必要、改善与冲动，再决定下周是否设冷静期。',
+  '储蓄入账稳定时，把「固定扣款日、先存后花」写下来，复制成功节律比追求单次大额更重要。',
+  '支出偏高而储蓄偏少，常见原因是大额集中或分类变化，不必简单归因于自制力。',
+  '心愿清单更新频率反映你是否把欲望转化为计划；可与存钱目标联动做延迟满足练习。',
+];
 
-const DEFAULT_HEALTH_OVERVIEW =
-  '健康人格画像把身体档案与四营养维度放在同一张图里：身高体重推算的 BMI 只是粗线条参考，更适合观察长期趋势；水分、蛋白质、碳水与钠的日均达成率则反映自我照料是否均衡。稳定补水往往与固定锚点（起床后、运动前后、每个番茄钟结束）绑定；蛋白质窗口可与训练协同。若近一周记录天数偏少，解读会更偏通用建议——坚持在健康页打卡几天后刷新，模型会结合逐日明细给出更贴近你的节律。以上为生活方式参考，不构成医疗诊断或用药建议。';
-
-const DEFAULT_SAVINGS_OVERVIEW =
-  '储蓄人格侧写关注延迟满足与目标拆解：你是否愿意为远期目标压缩即时消费，以及记账、存钱与心愿清单是否形成闭环。近一周若支出偏高而储蓄入账偏少，不一定代表「自制力差」，更常见的是大额事项集中或分类口径变化——可先标出 1～2 笔最大支出，判断属于必要、改善还是冲动，再决定下周是否设「消费冷静期」。若储蓄入账稳定，说明你在现金流与目标之间已建立可复制的节律，值得把成功做法写下来（固定扣款日、先存后花等）。心愿清单的更新频率也反映你是否把欲望转化为可执行计划。以下为基于本地记账与存钱摘要的参考解读，不构成投资或法律建议。';
-
-const DEFAULT_AI_INSIGHT_OVERVIEW =
-  '综合洞察会把任务执行、健康照料（身体档案与四营养维度）与财务行为放在同一张图里看：它们往往互相牵引——任务压力大时饮水与睡眠容易失守，财务焦虑又会挤占复盘时间。近一周若某一维度明显拖后腿，不必同时改全部习惯，优先选「投入最小、反馈最快」的一条微行动（例如每天第一杯水、每天收尾一件小事、每周固定一笔储蓄）。若多维数据都偏少，说明记录还在起步阶段，先让数据长起来比追求满分更重要。你已经在用工具观察自己，这本身就是很关键的自律起点。刷新画像可让模型结合最新摘要更新解读。以下为综合侧写，仅供自我观察。';
+const FALLBACK_AI_INSIGHT_BULLETS = [
+  '任务、健康与财务常互相牵引：压力大时饮水与复盘容易失守，宜先稳住一条最小微行动。',
+  '不必同时改全部习惯，优先选投入最小、反馈最快的一条（如每日第一杯水或每日收尾一件小事）。',
+  '多维数据偏少时，先让记录长起来比追求满分更重要；坚持打卡后再刷新画像会更准。',
+  '你已在用工具观察自己，这本身就是关键的自律起点；每周留一块复盘时间串联三维度。',
+];
 
 function SectionCard({
   children,
@@ -152,49 +154,73 @@ function RelLink({
   );
 }
 
-function resolvePersonaNarrative(
-  overview: string,
+function splitOverviewToBullets(overview: string): string[] {
+  const t = overview.trim();
+  if (!t) return [];
+  const parts = t
+    .split(/[。！？；\n]+/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 18);
+  return parts.slice(0, 6);
+}
+
+function resolveInsightBullets(
+  ai: PersonaPortraitAiData | null,
   status: 'idle' | 'loading' | 'ok' | 'error',
-  fallback: string,
-): string {
-  if (status === 'loading') return '正在生成 AI 深度解读，篇幅约 300～400 字，请稍候…';
-  const trimmed = overview.trim();
-  if (trimmed.length > 0) return trimmed;
-  if (status === 'ok' || status === 'idle') return fallback;
+  fallback: string[],
+): string[] {
+  if (status === 'loading') {
+    return ['正在生成分点解读，请稍候…'];
+  }
+  const fromAi = (ai?.bullets ?? []).map(b => b.trim()).filter(Boolean);
+  if (fromAi.length >= PERSONA_PORTRAIT_BULLET_MIN_COUNT) return fromAi;
+  if (status === 'ok' && fromAi.length >= 2) return fromAi;
+  const legacy = splitOverviewToBullets(ai?.overview ?? '');
+  if (legacy.length >= 2) return legacy;
   return fallback;
 }
 
-function PersonaAiNarrative({
-  overview,
+function PersonaAiBulletedInsight({
+  ai,
+  intro,
   status,
-  fallback,
+  fallbackBullets,
   text,
   outline,
   surface,
   borderSoft,
   tertiary,
 }: {
-  overview: string;
+  ai: PersonaPortraitAiData | null;
+  intro: string;
   status: 'idle' | 'loading' | 'ok' | 'error';
-  fallback: string;
+  fallbackBullets: string[];
   text: string;
   outline: string;
   surface: string;
   borderSoft: string;
   tertiary: string;
 }) {
-  const body = resolvePersonaNarrative(overview, status, fallback);
-  const short =
-    status === 'ok' && overview.trim().length > 0 && overview.trim().length < PERSONA_PORTRAIT_OVERVIEW_MIN_LEN;
+  const bullets = resolveInsightBullets(ai, status, fallbackBullets);
+  const introTrim = intro.trim();
+  const sparse =
+    status === 'ok' &&
+    (ai?.bullets ?? []).filter(b => b.trim().length >= 20).length < PERSONA_PORTRAIT_BULLET_MIN_COUNT;
   return (
     <SectionCard surface={surface} border={borderSoft}>
       <SectionTitle text="AI 深度解读" color={text} />
-      {short ? (
+      {sparse ? (
         <Text style={[styles.aiNarrativeHint, { color: tertiary }]}>
-          当前解读偏短（约 {overview.trim().length} 字），可点上方「手动刷新」重新生成完整版（目标 300～400 字）。
+          分点偏少，可点上方「手动刷新」重新生成（目标 4～6 条）。
         </Text>
       ) : null}
-      <Text style={[styles.aiNarrativePara, { color: outline }]}>{body}</Text>
+      {introTrim ? <Text style={[styles.aiNarrativeIntro, { color: outline }]}>{introTrim}</Text> : null}
+      {bullets.map((line, idx) => (
+        <View key={`${idx}-${line.slice(0, 12)}`} style={styles.bulletRow}>
+          <Text style={[styles.bulletIndex, { color: tertiary }]}>{idx + 1}.</Text>
+          <Text style={[styles.bulletText, { color: outline }]}>{line}</Text>
+        </View>
+      ))}
     </SectionCard>
   );
 }
@@ -371,7 +397,7 @@ export default function PersonaDetailScreen() {
     const hKicker = (ai?.hero_kicker ?? '').trim();
     const hMain = (ai?.hero_main ?? '').trim();
     const hCap = (ai?.hero_caption ?? '').trim();
-    const overview = (ai?.overview ?? '').trim();
+    const intro = (ai?.overview ?? '').trim();
 
     const cacheToolbar =
       portraitStatus === 'ok' ? (
@@ -423,8 +449,6 @@ export default function PersonaDetailScreen() {
         const planMain = hMain || '85%';
         const planCap = hCap || '本周目标达成率 · 参考侧写';
         const planStats = ai?.stats && ai.stats.length >= 3 ? ai.stats : FALLBACK_PLAN_STATS;
-        const planBullets =
-          ai?.bullets && ai.bullets.filter(b => b.trim()).length >= 2 ? ai.bullets.filter(b => b.trim()) : FALLBACK_PLAN_BULLETS;
         return (
           <>
             {statusHeader}
@@ -437,10 +461,11 @@ export default function PersonaDetailScreen() {
                 <Text style={styles.heroCaption}>{planCap}</Text>
               </View>
             </View>
-            <PersonaAiNarrative
-              overview={overview}
+            <PersonaAiBulletedInsight
+              ai={ai}
+              intro={intro}
               status={portraitStatus}
-              fallback={DEFAULT_PLAN_OVERVIEW}
+              fallbackBullets={FALLBACK_PLAN_BULLETS}
               text={text}
               outline={outline}
               surface={surface}
@@ -459,12 +484,6 @@ export default function PersonaDetailScreen() {
                 ))}
               </View>
             </SectionCard>
-            <SectionCard surface={surface} border={borderSoft}>
-              <SectionTitle text="节奏建议" color={text} />
-              {planBullets.map((line, idx) => (
-                <Bullet key={idx} muted={outline} text={line} />
-              ))}
-            </SectionCard>
             <RelLink label="前往任务中心" onPress={goTasks} primary={primary} />
           </>
         );
@@ -482,10 +501,6 @@ export default function PersonaDetailScreen() {
                 ? `${Math.round(hydMemo.avgMl)} ml`
                 : '—');
         const healthCap = hCap || '身体档案 · 四营养维度 · 近 7 日';
-        const healthBullets =
-          ai?.bullets && ai.bullets.filter(b => b.trim()).length >= 2
-            ? ai.bullets.filter(b => b.trim())
-            : FALLBACK_HEALTH_BULLETS;
         const healthStatRows = ai?.stats && ai.stats.length >= 3 ? ai.stats : healthStats.length >= 3 ? healthStats : FALLBACK_HEALTH_STATS;
         const barW = `${Math.max(4, hydMemo.pct)}%` as DimensionValue;
         const hydCompareLabel = `饮水约 ${(hydMemo.avgMl / 1000).toFixed(2)} L / 日 · 目标 ${(hydMemo.targetMl / 1000).toFixed(1)} L / 日`;
@@ -501,10 +516,11 @@ export default function PersonaDetailScreen() {
                 <Text style={styles.heroCaption}>{healthCap}</Text>
               </View>
             </View>
-            <PersonaAiNarrative
-              overview={overview}
+            <PersonaAiBulletedInsight
+              ai={ai}
+              intro={intro}
               status={portraitStatus}
-              fallback={DEFAULT_HEALTH_OVERVIEW}
+              fallbackBullets={FALLBACK_HEALTH_BULLETS}
               text={text}
               outline={outline}
               surface={surface}
@@ -549,12 +565,6 @@ export default function PersonaDetailScreen() {
                 <Text style={[styles.waterCompareText, { color: outline }]}>{hydCompareLabel}</Text>
               </View>
             </SectionCard>
-            <SectionCard surface={surface} border={borderSoft}>
-              <SectionTitle text="可执行微习惯" color={text} />
-              {healthBullets.map((line, idx) => (
-                <Bullet key={idx} muted={outline} text={line} />
-              ))}
-            </SectionCard>
             <RelLink label="前往健康页" onPress={() => router.push('/(tabs)')} primary={secondary} />
             <RelLink label="健康日历" onPress={goHealth} primary={secondary} />
             <RelLink label="摄入记录" onPress={goIntake} primary={primary} />
@@ -583,10 +593,11 @@ export default function PersonaDetailScreen() {
                 <Text style={styles.heroCaption}>{savCap}</Text>
               </View>
             </View>
-            <PersonaAiNarrative
-              overview={overview}
+            <PersonaAiBulletedInsight
+              ai={ai}
+              intro={intro}
               status={portraitStatus}
-              fallback={DEFAULT_SAVINGS_OVERVIEW}
+              fallbackBullets={FALLBACK_SAVINGS_BULLETS}
               text={text}
               outline={outline}
               surface={surface}
@@ -612,10 +623,6 @@ export default function PersonaDetailScreen() {
 
       case 'ai-insight': {
         const rawQuote = (ai?.ai_quote || '').trim();
-        const quoteFallback =
-          '你这周在任务、健康与财务之间呈现出可观察的联动：若某一维度暂时拖后腿，不必一次改全部习惯，先选投入最小、反馈最快的一条微行动即可。坚持记录几天后刷新画像，综合解读会更贴近你的真实节奏。';
-        const quoteBody = resolvePersonaNarrative(rawQuote, portraitStatus, quoteFallback);
-        const displayQuote = quoteBody.includes('「') ? quoteBody : `「${quoteBody}」`;
         const dimsToRender =
           ai && ai.dims.length >= 3
             ? ai.dims.slice(0, 3).map((d, i) => ({
@@ -631,13 +638,16 @@ export default function PersonaDetailScreen() {
               <View style={[styles.aiHeroIcon, { backgroundColor: primary }]}>
                 <MaterialIcons name="auto-awesome" size={32} color="#fff" />
               </View>
-              <Text style={[styles.aiHeroTitle, { color: text }]}>综合评语</Text>
-              <Text style={[styles.aiQuoteBlock, { color: outline }]}>{displayQuote}</Text>
+              <Text style={[styles.aiHeroTitle, { color: text }]}>综合洞察</Text>
+              {rawQuote ? (
+                <Text style={[styles.aiQuoteBlock, { color: outline }]}>{rawQuote.includes('「') ? rawQuote : `「${rawQuote}」`}</Text>
+              ) : null}
             </View>
-            <PersonaAiNarrative
-              overview={overview}
+            <PersonaAiBulletedInsight
+              ai={ai}
+              intro={intro}
               status={portraitStatus}
-              fallback={DEFAULT_AI_INSIGHT_OVERVIEW}
+              fallbackBullets={FALLBACK_AI_INSIGHT_BULLETS}
               text={text}
               outline={outline}
               surface={surface}
@@ -647,21 +657,21 @@ export default function PersonaDetailScreen() {
             <SectionCard surface={surface} border={borderSoft}>
               <SectionTitle text="维度拆解" color={text} />
               {dimsToRender.map(dim => (
-                <View key={dim.title} style={[styles.dimRow, { borderColor: borderSoft }]}>
-                  <View style={[styles.dimIcon, { backgroundColor: `${primary}18` }]}>
-                    <MaterialIcons name={dim.icon} size={22} color={primary} />
-                  </View>
-                  <View style={styles.dimText}>
+                <View key={dim.title} style={[styles.dimBlock, { borderColor: borderSoft }]}>
+                  <View style={styles.dimTitleRow}>
+                    <View style={[styles.dimIcon, { backgroundColor: `${primary}18` }]}>
+                      <MaterialIcons name={dim.icon} size={22} color={primary} />
+                    </View>
                     <Text style={[styles.dimTitle, { color: text }]}>{dim.title}</Text>
-                    <Text style={[styles.dimSub, { color: outline }]}>{dim.sub}</Text>
                   </View>
+                  <Bullet muted={outline} text={dim.sub} />
                 </View>
               ))}
             </SectionCard>
             <SectionCard surface={surface} border={borderSoft}>
               <SectionTitle text="说明" color={text} />
               <Text style={[styles.para, { color: outline }]}>
-                文案由智谱 GLM-4-Flash 根据你近 7 日在 App 内的聚合摘要生成（长文约 300～400 字），仅供自我观察与习惯参考，不构成医疗、投资或法律建议。可点击上方刷新重新生成。
+                文案由智谱 GLM-4-Flash 根据你近 7 日在 App 内的聚合摘要生成分点解读，仅供自我观察与习惯参考，不构成医疗、投资或法律建议。可点击上方刷新重新生成。
               </Text>
             </SectionCard>
             <RelLink label="编辑个人资料" onPress={goProfile} primary={primary} />
@@ -818,11 +828,11 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '700',
   },
-  aiNarrativePara: {
-    fontSize: 16,
-    lineHeight: 26,
-    fontWeight: '500',
-    letterSpacing: 0.15,
+  aiNarrativeIntro: {
+    fontSize: 14,
+    lineHeight: 22,
+    fontWeight: '700',
+    marginBottom: 8,
   },
   statGrid: {
     flexDirection: 'row',
@@ -863,6 +873,13 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 3,
     marginTop: 8,
+  },
+  bulletIndex: {
+    width: 22,
+    fontSize: 14,
+    fontWeight: '900',
+    lineHeight: 21,
+    marginTop: 1,
   },
   bulletText: {
     flex: 1,
@@ -959,31 +976,27 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     textAlign: 'center',
   },
-  dimRow: {
+  dimBlock: {
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 6,
+  },
+  dimTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 10,
   },
   dimIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dimText: {
-    flex: 1,
-    gap: 4,
-  },
   dimTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  dimSub: {
-    fontSize: 13,
-    fontWeight: '600',
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '900',
   },
   aiStatusBar: {
     flexDirection: 'row',

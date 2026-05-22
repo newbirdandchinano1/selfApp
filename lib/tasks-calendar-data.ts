@@ -115,10 +115,38 @@ function standaloneTodoPassesDayBoundaryFilter(
   return doneLogicalYmd >= logicalViewYmd;
 }
 
+function isStandaloneTodoOpen(task: TaskRow): boolean {
+  return task.status !== 'done' && task.status !== 'cancelled';
+}
+
+function isStandaloneTodoScheduleExpired(task: TaskRow, logicalViewYmd: string): boolean {
+  if (!isStandaloneTodoOpen(task)) return false;
+  if (parseTaskRepeatSchedule(task.extra_data)) return false;
+  const schedule = parseProjectSchedule(task.extra_data);
+  if (!schedule) return false;
+  if (schedule.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    const start = formatScheduleDateToYMD(schedule.range.start);
+    const end = formatScheduleDateToYMD(schedule.range.end);
+    return !isLogicalDayInYmdRange(logicalViewYmd, start, end);
+  }
+  if (schedule.date) {
+    return logicalViewYmd > formatScheduleDateToYMD(schedule.date);
+  }
+  return false;
+}
+
 function standaloneTodoPassesRepeatDayFilter(task: TaskRow, logicalViewYmd: string): boolean {
   const schedule = parseTaskRepeatSchedule(task.extra_data);
   if (!schedule) return true;
-  return isTaskRepeatDueOnLogicalDay(logicalViewYmd, schedule);
+  if (isTaskRepeatDueOnLogicalDay(logicalViewYmd, schedule)) return true;
+  if (!isStandaloneTodoOpen(task)) return false;
+  const dueYmd = task.due_date?.trim().slice(0, 10) ?? '';
+  const dueOverdue =
+    !!dueYmd &&
+    logicalViewYmd > dueYmd &&
+    task.status !== 'done' &&
+    task.status !== 'cancelled';
+  return dueOverdue || isStandaloneTodoScheduleExpired(task, logicalViewYmd);
 }
 
 function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalViewYmd: string): boolean {
@@ -127,10 +155,13 @@ function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalViewYmd:
   if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
     const start = formatScheduleDateToYMD(schedule.range.start);
     const end = formatScheduleDateToYMD(schedule.range.end);
-    return isLogicalDayInYmdRange(logicalViewYmd, start, end);
+    if (isLogicalDayInYmdRange(logicalViewYmd, start, end)) return true;
+    return isStandaloneTodoOpen(task) && isStandaloneTodoScheduleExpired(task, logicalViewYmd);
   }
   if (schedule?.date) {
-    return logicalViewYmd === formatScheduleDateToYMD(schedule.date);
+    const schedYmd = formatScheduleDateToYMD(schedule.date);
+    if (logicalViewYmd === schedYmd) return true;
+    return isStandaloneTodoOpen(task) && logicalViewYmd > schedYmd;
   }
   return true;
 }

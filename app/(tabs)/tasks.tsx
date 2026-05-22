@@ -64,6 +64,7 @@ import {
   taskHasRepeatingSchedule,
 } from '@/lib/task-repeat-rollover';
 import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
+import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -454,11 +455,13 @@ function standaloneTodoPassesDayBoundaryFilter(
   return doneLogicalYmd >= logicalTodayYmd;
 }
 
-/** 设置了重复的独立待办：仅在今日属于重复周期时才出现在「待办」列表 */
+/** 设置了重复的独立待办：重复日展示；非重复日仅当截止/计划已过期时保留 */
 function standaloneTodoPassesRepeatDayFilter(task: TaskRow, logicalTodayYmd: string): boolean {
   const schedule = parseTaskRepeatSchedule(task.extra_data);
   if (!schedule) return true;
-  return isTaskRepeatDueOnLogicalDay(logicalTodayYmd, schedule);
+  if (isTaskRepeatDueOnLogicalDay(logicalTodayYmd, schedule)) return true;
+  if (!isStandaloneTodoOpen(task)) return false;
+  return isTaskRowOverdue(task, logicalTodayYmd) || isStandaloneTodoScheduleExpired(task, logicalTodayYmd);
 }
 
 function addDaysToYmd(ymd: string, days: number): string {
@@ -480,7 +483,7 @@ function isLogicalDayInYmdRange(todayYmd: string, startYmd: string, endYmd: stri
   return todayYmd <= endYmd;
 }
 
-/** 独立待办：仅当「今天」落在已设日期/时间段内时才出现在列表（重复规则由 repeat 过滤器处理） */
+/** 独立待办：计划日/区间内展示；过期未完成仍保留在列表（重复规则由 repeat 过滤器处理） */
 function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalTodayYmd: string): boolean {
   if (parseTaskRepeatSchedule(task.extra_data)) return true;
 
@@ -488,10 +491,13 @@ function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalTodayYmd
   if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
     const start = formatScheduleDateToYMD(schedule.range.start);
     const end = formatScheduleDateToYMD(schedule.range.end);
-    return isLogicalDayInYmdRange(logicalTodayYmd, start, end);
+    if (isLogicalDayInYmdRange(logicalTodayYmd, start, end)) return true;
+    return isStandaloneTodoOpen(task) && isStandaloneTodoScheduleExpired(task, logicalTodayYmd);
   }
   if (schedule?.date) {
-    return logicalTodayYmd === formatScheduleDateToYMD(schedule.date);
+    const schedYmd = formatScheduleDateToYMD(schedule.date);
+    if (logicalTodayYmd === schedYmd) return true;
+    return isStandaloneTodoOpen(task) && logicalTodayYmd > schedYmd;
   }
 
   return true;
@@ -961,6 +967,75 @@ function isTaskRowOverdue(task: TaskRow, logicalTodayYmd: string): boolean {
   return isTaskDueOverdue(due, isDone, logicalTodayYmd);
 }
 
+function isStandaloneTodoOpen(task: TaskRow): boolean {
+  return task.status !== 'done' && task.status !== 'cancelled';
+}
+
+/** 独立待办：日程日/区间已结束且未完成（非重复任务） */
+function isStandaloneTodoScheduleExpired(task: TaskRow, logicalTodayYmd: string): boolean {
+  if (!isStandaloneTodoOpen(task)) return false;
+  if (parseTaskRepeatSchedule(task.extra_data)) return false;
+
+  const schedule = parseProjectSchedule(task.extra_data);
+  if (!schedule) return false;
+
+  if (schedule.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    const start = formatScheduleDateToYMD(schedule.range.start);
+    const end = formatScheduleDateToYMD(schedule.range.end);
+    return !isLogicalDayInYmdRange(logicalTodayYmd, start, end);
+  }
+  if (schedule.date) {
+    const schedYmd = formatScheduleDateToYMD(schedule.date);
+    return logicalTodayYmd > schedYmd;
+  }
+  return false;
+}
+
+/** 独立待办在列表中是否算「过期」：截止日已过、计划日/区间已过，或重复日错过未完成 */
+function isStandaloneTodoOverdue(task: TaskRow, logicalTodayYmd: string): boolean {
+  if (!isStandaloneTodoOpen(task)) return false;
+  if (isTaskRowOverdue(task, logicalTodayYmd)) return true;
+  if (isStandaloneTodoScheduleExpired(task, logicalTodayYmd)) return true;
+
+  const repeat = parseTaskRepeatSchedule(task.extra_data);
+  if (repeat && !isTaskRepeatDueOnLogicalDay(logicalTodayYmd, repeat)) {
+    return isTaskRowOverdue(task, logicalTodayYmd) || isStandaloneTodoScheduleExpired(task, logicalTodayYmd);
+  }
+
+  return false;
+}
+
+function getStandaloneTodoOverdueSortMs(task: TaskRow): number {
+  const due = task.due_date?.slice(0, 10) ?? '';
+  if (due) {
+    const d = ymdToLocalDate(due);
+    if (d) return d.getTime();
+  }
+  const schedule = parseProjectSchedule(task.extra_data);
+  if (schedule?.mode === 'time' && schedule.range?.end) {
+    const endYmd = formatScheduleDateToYMD(schedule.range.end);
+    const d = ymdToLocalDate(endYmd);
+    if (d) return d.getTime();
+  }
+  if (schedule?.date) {
+    const d = ymdToLocalDate(formatScheduleDateToYMD(schedule.date));
+    if (d) return d.getTime();
+  }
+  const ms = Date.parse(task.created_at);
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+function getStandaloneTodoOverdueDisplayYmd(task: TaskRow): string {
+  const due = task.due_date?.slice(0, 10) ?? '';
+  if (due.trim()) return due;
+  const schedule = parseProjectSchedule(task.extra_data);
+  if (schedule?.mode === 'time' && schedule.range?.end) {
+    return formatScheduleDateToYMD(schedule.range.end);
+  }
+  if (schedule?.date) return formatScheduleDateToYMD(schedule.date);
+  return '';
+}
+
 /** 过期未完成待办在列表/四象限中按「紧急重要」展示与分组。 */
 function getEffectiveTaskPriority(task: TaskRow, logicalTodayYmd: string): number {
   if (isTaskRowOverdue(task, logicalTodayYmd)) return URGENT_IMPORTANT_PRIORITY;
@@ -1258,6 +1333,8 @@ export default function TasksScreen() {
   const bgFloatAnim = React.useRef(new Animated.Value(0)).current;
   const frogDoneBounceMap = React.useRef<Record<string, Animated.Value>>({});
   const projectSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
+  const standaloneTodoSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
+  const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
 
   const triggerProjectAiReview = React.useCallback(
     async (projectId: string) => {
@@ -1670,6 +1747,13 @@ export default function TasksScreen() {
       const da = isDoneRow(a);
       const db = isDoneRow(b);
       if (da !== db) return da ? 1 : -1;
+      const oa = isStandaloneTodoOverdue(a, logicalTodayYmd);
+      const ob = isStandaloneTodoOverdue(b, logicalTodayYmd);
+      if (oa !== ob) return oa ? -1 : 1;
+      if (oa && ob) {
+        const dueCmp = getStandaloneTodoOverdueSortMs(a) - getStandaloneTodoOverdueSortMs(b);
+        if (dueCmp !== 0) return dueCmp;
+      }
       return createdMs(a) - createdMs(b);
     });
   }, [tasks, dayBoundary, logicalTodayYmd]);
@@ -2037,8 +2121,47 @@ export default function TasksScreen() {
   }, [loadTasks, quickTodoDraft, quickTodoSaving]);
 
   /** 左滑删除：软删除整棵子树，并刷新列表（与 DB deleteTask 行为一致） */
+  const handleUpgradeStandaloneTodo = React.useCallback(
+    async (taskId: string) => {
+      if (upgradingStandaloneTodoId) return;
+      standaloneTodoSwipeableRefs.current[taskId]?.close();
+      setUpgradingStandaloneTodoId(taskId);
+      try {
+        const result = await upgradeStandaloneTodoToProject(taskId);
+        if (!result.ok) {
+          Alert.alert('无法升级', result.message);
+          return;
+        }
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        const rows = await loadProjects();
+        await loadTasks();
+        await loadProjectTasks(rows);
+        setExpandedProjectIds((prev) => {
+          const next = { ...prev, [result.projectId]: true };
+          void saveExpandedProjectState(next);
+          return next;
+        });
+        Alert.alert('已升级为项目', `「${result.projectName}」已创建，原待办成为项目下的主任务。`);
+      } catch (err) {
+        console.warn('待办升级为项目失败', err);
+        Alert.alert('升级失败', '请稍后重试。');
+        await loadTasks();
+      } finally {
+        setUpgradingStandaloneTodoId(null);
+      }
+    },
+    [
+      loadProjectTasks,
+      loadProjects,
+      loadTasks,
+      saveExpandedProjectState,
+      upgradingStandaloneTodoId,
+    ]
+  );
+
   const confirmDeleteStandaloneTodo = React.useCallback(
     (taskId: string, titleLabel: string) => {
+      standaloneTodoSwipeableRefs.current[taskId]?.close();
       Alert.alert('删除待办', `确定删除「${titleLabel}」吗？（若有子任务会一并删除）`, [
         { text: '取消', style: 'cancel' },
         {
@@ -2647,6 +2770,7 @@ export default function TasksScreen() {
                   <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 18 }]}>待办</Text>
                   <Text style={[styles.standaloneTodoSubtitle, { color: outline }]}>
                     暂不挂项目 · 进行中 {standaloneTodoOpenCount} 条
+                    {standaloneTodos.length > 0 ? ' · 左滑可升级或删除' : ''}
                   </Text>
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
@@ -2755,18 +2879,45 @@ export default function TasksScreen() {
                     const due = t.due_date?.slice(0, 10) ?? '';
                     const repeat = (meta.repeat ?? '').trim();
                     const reminder = (meta.reminder ?? '').trim();
-                    const overdue = isTaskDueOverdue(due, isDone, logicalTodayYmd);
+                    const overdue = isStandaloneTodoOverdue(t, logicalTodayYmd);
+                    const dueDisplayYmd = getStandaloneTodoOverdueDisplayYmd(t);
                     const effectivePriority = getEffectiveTaskPriority(t, logicalTodayYmd);
                     const checkColor = getTaskPriorityCheckColor(effectivePriority, isDark);
+                    const isUpgrading = upgradingStandaloneTodoId === t.id;
                     return (
                       <View key={t.id} style={styles.standaloneTodoSwipeWrap}>
                         <Swipeable
+                          ref={(r) => {
+                            standaloneTodoSwipeableRefs.current[t.id] = r;
+                          }}
                           overshootRight={false}
                           friction={2}
                           renderRightActions={() => (
                             <View style={styles.standaloneSwipeActions}>
                               <Pressable
+                                onPress={() => void handleUpgradeStandaloneTodo(t.id)}
+                                disabled={!!upgradingStandaloneTodoId}
+                                style={({ pressed }) => [
+                                  styles.standaloneSwipeUpgrade,
+                                  {
+                                    backgroundColor: secondary,
+                                    opacity: isUpgrading ? 0.55 : pressed ? 0.9 : 1,
+                                  },
+                                ]}
+                                accessibilityRole="button"
+                                accessibilityLabel={`将 ${t.title} 升级为项目`}>
+                                {isUpgrading ? (
+                                  <ActivityIndicator color="#fff" size="small" />
+                                ) : (
+                                  <MaterialIcons name="upgrade" size={22} color="#fff" />
+                                )}
+                                <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
+                                  升级
+                                </Text>
+                              </Pressable>
+                              <Pressable
                                 onPress={() => confirmDeleteStandaloneTodo(t.id, t.title)}
+                                disabled={!!upgradingStandaloneTodoId}
                                 style={({ pressed }) => [
                                   styles.standaloneSwipeDelete,
                                   { backgroundColor: colors.danger, opacity: pressed ? 0.9 : 1 },
@@ -2784,8 +2935,9 @@ export default function TasksScreen() {
                             style={[
                               styles.standaloneTodoCard,
                               {
-                                backgroundColor: card,
-                                borderColor: outlineVariant,
+                                backgroundColor: overdue && !isDone ? `${error}0c` : card,
+                                borderColor: overdue && !isDone ? error : outlineVariant,
+                                borderWidth: overdue && !isDone ? 1.5 : StyleSheet.hairlineWidth,
                                 shadowColor: '#000',
                               },
                             ]}>
@@ -2827,7 +2979,7 @@ export default function TasksScreen() {
                                 {noteText}
                               </Text>
                             ) : null}
-                            {!!due ? (
+                            {!!dueDisplayYmd ? (
                               <View style={styles.deadlineRow}>
                                 <View
                                   style={[
@@ -2835,7 +2987,7 @@ export default function TasksScreen() {
                                     { backgroundColor: overdue ? `${error}22` : `${primary}14` },
                                   ]}>
                                   <Text style={[styles.deadlineText, { color: overdue ? error : primary }]}>
-                                    {formatTaskDueText(due, logicalTodayYmd)}
+                                    {formatTaskDueText(dueDisplayYmd, logicalTodayYmd)}
                                   </Text>
                                 </View>
                                 {overdue ? (
@@ -2844,6 +2996,13 @@ export default function TasksScreen() {
                                     <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
                                   </View>
                                 ) : null}
+                              </View>
+                            ) : overdue ? (
+                              <View style={styles.deadlineRow}>
+                                <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
+                                  <MaterialIcons name="report-problem" size={12} color={error} />
+                                  <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
+                                </View>
                               </View>
                             ) : null}
                             {!!repeat || !!reminder ? (
@@ -4700,6 +4859,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'stretch',
     marginLeft: -10,
+    gap: 6,
+  },
+  standaloneSwipeUpgrade: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'stretch',
+    minWidth: 96,
+    paddingHorizontal: Spacing['2xl'],
+    borderRadius: Radius.xl,
+    gap: Spacing.md,
+  },
+  standaloneSwipeUpgradeText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
+    flexShrink: 0,
   },
   /**
    * 删除条与卡片同高；横向「图标 + 删除」；
@@ -4710,8 +4886,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'stretch',
-    minWidth: 118,
-    paddingHorizontal: Spacing['4xl'],
+    minWidth: 96,
+    paddingHorizontal: Spacing['2xl'],
     borderTopRightRadius: Radius.xl,
     borderBottomRightRadius: Radius.xl,
     gap: Spacing.md,

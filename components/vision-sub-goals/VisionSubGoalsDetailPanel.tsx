@@ -5,6 +5,7 @@ import {
 import type { VisionSubGoal } from '@/lib/repositories/visions/vision.types';
 import {
   collectLinkedProjectsFromSubGoal,
+  isBoundVisionSubGoalTaskComplete,
   isStandaloneVisionSubGoal,
   standaloneSubGoalTaskStats,
 } from '@/lib/repositories/visions/vision.types';
@@ -306,7 +307,14 @@ export function VisionSubGoalsDetailPanel({
               const bound = collectLinkedProjectsFromSubGoal(sg);
               const standalone = bound.length === 0;
               const prog = progressById[sg.id] ?? { total: 0, completed: 0, percent: 0 };
-              const pctLabel = `${Math.round(prog.percent * 100)}%`;
+              const boundAutoDone =
+                !standalone &&
+                isBoundVisionSubGoalTaskComplete({
+                  completed: prog.completed,
+                  total: prog.total,
+                });
+              const isDone = standalone ? Boolean(sg.done) : boundAutoDone;
+              const pctLabel = isDone ? '已完成' : `${Math.round(prog.percent * 100)}%`;
               const isLast = idx === subGoals.length - 1;
               const doneColor = isDark ? '#34d399' : '#006c49';
               const isTogglingDone = togglingDoneId === sg.id;
@@ -348,6 +356,8 @@ export function VisionSubGoalsDetailPanel({
                           />
                         )}
                       </Pressable>
+                    ) : boundAutoDone ? (
+                      <MaterialIcons name="check-circle" size={26} color={doneColor} style={{ marginTop: 1 }} />
                     ) : (
                       <View style={[styles.indexBadge, { backgroundColor: visionPrimary }]}>
                         <Text style={styles.indexBadgeText}>{idx + 1}</Text>
@@ -359,8 +369,8 @@ export function VisionSubGoalsDetailPanel({
                           styles.subGoalName,
                           {
                             color: textColor,
-                            opacity: standalone && sg.done ? 0.85 : 1,
-                            textDecorationLine: standalone && sg.done ? 'line-through' : 'none',
+                            opacity: isDone ? 0.85 : 1,
+                            textDecorationLine: isDone ? 'line-through' : 'none',
                           },
                         ]}
                         numberOfLines={2}
@@ -389,9 +399,11 @@ export function VisionSubGoalsDetailPanel({
                         height={6}
                       />
                       <Text style={[styles.subGoalProgressMeta, { color: outline }]}>
-                        {prog.total > 0
-                          ? `本小目标 · ${prog.completed} / ${prog.total} 任务`
-                          : '已绑定，暂无任务'}
+                        {boundAutoDone
+                          ? '本小目标 · 关联项目任务已全部完成'
+                          : prog.total > 0
+                            ? `本小目标 · ${prog.completed} / ${prog.total} 任务`
+                            : '已绑定，暂无任务'}
                       </Text>
                     </View>
                   ) : (

@@ -2,6 +2,11 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { Platform } from 'react-native';
 
 import { getDatabase } from '../../database.native';
+import {
+  parseWishItemExtra,
+  serializeWishItemExtra,
+  type WishItemExtraPayload,
+} from './wish-list-extra';
 import type { CreateWishItemInput, UpdateWishItemInput, WishItemRow } from './wish-list.types';
 
 export function createWishItemId(): string {
@@ -176,6 +181,19 @@ export async function clearWishItemAiReview(id: string) {
 }
 
 /** 写入单条 AI 评价（不修改 updated_at，避免触发「需重新生成」的误判）。 */
+/** 标记心愿已实现或未实现（写入 extra_data.fulfilled_at） */
+export async function setWishItemFulfilled(id: string, fulfilled: boolean) {
+  const current = await getWishItemById(id);
+  if (!current) return;
+  const extra: WishItemExtraPayload = parseWishItemExtra(current.extra_data) ?? {};
+  if (fulfilled) {
+    extra.fulfilled_at = new Date().toISOString();
+  } else {
+    delete extra.fulfilled_at;
+  }
+  await updateWishItem(id, { extra_data: serializeWishItemExtra(extra) });
+}
+
 export async function patchWishItemAiReview(id: string, ai_comment: string) {
   const db = await getDatabase();
   const trimmed = ai_comment.trim();

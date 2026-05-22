@@ -110,11 +110,11 @@ export function buildPersonaContextText(
     health:
       '综合健康页：身体档案（身高体重 BMI）、四营养维度（水/蛋白/碳水/钠）的日均与达成率、周环比、逐日明细与自我照料节律；须引用摘要数字，禁止编造体脂率或医疗诊断。',
     savings: '侧重收支净流、储蓄入账与延迟满足倾向。',
-    'ai-insight': '综合任务、健康、财务与心愿线索，给出跨维度总评（overview 与 ai_quote 均需充实）。',
+    'ai-insight': '综合任务、健康、财务与心愿线索，给出跨维度分点总评（bullets 为主）。',
   };
   lines.push(`当前请求的画像维度 persona_slug = ${slug}。${slugFocus[slug]}`);
   lines.push(
-    '请围绕该维度组织主标题区与正文。overview 须写满 300～400 汉字（分四段：数据回顾、模式洞察、优势与卡点、可执行微习惯）；不要编造摘要中未出现的金额或医疗诊断。',
+    '请围绕该维度组织主标题区与分点解读。bullets 须 4～6 条（数据回顾、模式洞察、优势卡点、可执行建议）；overview 仅可选一句短导语；不要编造摘要中未出现的金额或医疗诊断。',
   );
   return lines.join('\n');
 }
