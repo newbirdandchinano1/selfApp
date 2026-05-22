@@ -1,7 +1,9 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
-import { getTasks, updateTask } from '@/lib/repositories/tasks/task';
+import { buildProjectLockMap } from '@/lib/repositories/projects/project-prerequisites';
+import { getProjects } from '@/lib/repositories/projects/project';
+import { getTasks, getTasksByProjectId, updateTask, type TaskTreeNode } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -243,7 +245,12 @@ function timeBucketForDueYmd(
   return 'exclude';
 }
 
-function groupTasksToSections(rows: TaskRow[], now: Date, todayYmd: string): Section[] {
+function groupTasksToSections(
+  rows: TaskRow[],
+  now: Date,
+  todayYmd: string,
+  lockedProjectIds: Set<string>,
+): Section[] {
   const soonEndYmd = addDaysToYmd(todayYmd, 3);
   const weekEndYmd = weekEndSundayYmd(now);
   const sevenEndYmd = addDaysToYmd(todayYmd, 7);
@@ -259,6 +266,7 @@ function groupTasksToSections(rows: TaskRow[], now: Date, todayYmd: string): Sec
   const eligible = rows
     .filter((t) => t.status !== 'done' && t.status !== 'cancelled')
     .filter((t) => !isStandaloneTodoTask(t))
+    .filter((t) => !t.project_id || !lockedProjectIds.has(t.project_id))
     .filter((t) => !hasUnfinishedChild.has(t.id))
     .filter((t) => {
       const extra = parseTaskExtraData(t.extra_data);
@@ -339,22 +347,35 @@ export default function AddFrogScreen() {
   const isDark = colorScheme === 'dark';
 
   const [sections, setSections] = React.useState<Section[]>(() =>
-    groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY)),
+    groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set()),
   );
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [taskMap, setTaskMap] = React.useState<Record<string, TaskRow>>({});
+  const [lockedProjectIds, setLockedProjectIds] = React.useState<Set<string>>(() => new Set());
 
   const loadEligibleTasks = React.useCallback(async () => {
     setLoading(true);
     try {
-      const rows = await getTasks();
+      const [rows, projectRows] = await Promise.all([getTasks(), getProjects()]);
+      const treeMap: Record<string, TaskTreeNode[]> = {};
+      await Promise.all(
+        projectRows.map(async (p) => {
+          treeMap[p.id] = await getTasksByProjectId(p.id);
+        }),
+      );
+      const lockMap = buildProjectLockMap(projectRows, treeMap);
+      const locked = new Set<string>();
+      lockMap.forEach((info, id) => {
+        if (info.locked) locked.add(id);
+      });
       const now = new Date();
       const boundary = await loadTasksDayBoundary();
       const todayYmd = getLogicalLocalYmd(now, boundary);
       setTaskMap(Object.fromEntries(rows.map((r) => [r.id, r])));
-      setSections(groupTasksToSections(rows, now, todayYmd));
+      setLockedProjectIds(locked);
+      setSections(groupTasksToSections(rows, now, todayYmd, locked));
       setSelected((prev) => {
         const allowed = new Set(rows.filter((r) => !isStandaloneTodoTask(r)).map((r) => r.id));
         const next: Record<string, boolean> = {};
@@ -365,9 +386,12 @@ export default function AddFrogScreen() {
       });
     } catch (e) {
       console.warn('加载青蛙候选任务失败', e);
-      setSections(groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY)));
+      setSections(
+        groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set()),
+      );
       setSelected({});
       setTaskMap({});
+      setLockedProjectIds(new Set());
     } finally {
       setLoading(false);
     }
@@ -409,6 +433,14 @@ export default function AddFrogScreen() {
       const boundary = await loadTasksDayBoundary();
       const today = getLogicalLocalYmd(new Date(), boundary);
       const ids = selectedIds.slice();
+      const lockedPick = ids.find((id) => {
+        const row = taskMap[id];
+        return row?.project_id && lockedProjectIds.has(row.project_id);
+      });
+      if (lockedPick) {
+        Alert.alert('无法指派', '所选任务所属项目仍被前置项目锁定，请先完成前置项目。');
+        return;
+      }
       await Promise.all(
         ids.map(async (id) => {
           const row = taskMap[id];
@@ -428,7 +460,7 @@ export default function AddFrogScreen() {
     } finally {
       setSaving(false);
     }
-  }, [router, saving, selectedIds, taskMap]);
+  }, [lockedProjectIds, router, saving, selectedIds, taskMap]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: surface }]} edges={['top']}>

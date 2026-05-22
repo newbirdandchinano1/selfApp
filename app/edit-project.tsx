@@ -8,13 +8,19 @@ import {
 import { tightenAllProjectTasks } from '@/lib/tighten-task-schedules';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getDatabase } from '@/lib/database.native';
 import { parseProjectExtraDataWithAi } from '@/lib/repositories/projects/project-ai-review';
-import { deleteProject, getProjectById, getProjectCategories, updateProject } from '@/lib/repositories/projects/project';
+import {
+  mergePrerequisiteIdsIntoExtraData,
+  parsePrerequisiteProjectIds,
+  validatePrerequisiteSelection,
+} from '@/lib/repositories/projects/project-prerequisites';
+import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
 import { addProjectAiReviewSavedListener, runProjectAiReview } from '@/lib/project-ai-review-background';
 import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
-import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
+import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import {
   countIncompleteTasksByProjectId,
   createTask,
@@ -365,6 +371,9 @@ export default function EditProjectScreen() {
   const [categories, setCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
+  const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
+  const [projectsLoading, setProjectsLoading] = React.useState(true);
+  const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [toastVisible, setToastVisible] = React.useState(false);
@@ -529,6 +538,7 @@ export default function EditProjectScreen() {
       setReminderText(loadedSchedule ? formatTaskReminderLabel(loadedSchedule) : '');
       setRepeatText(loadedSchedule?.repeatOption === '不重复' ? '' : loadedSchedule?.repeatSummary ?? '');
       setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
+      setPrerequisiteProjectIds(parsePrerequisiteProjectIds(project.extra_data));
       const projectTasks = await getTasksByProjectId(projectId);
       const tree = mapTaskTreeToSubtaskNodes(projectTasks);
       setSubtasks(tree);
@@ -592,6 +602,26 @@ export default function EditProjectScreen() {
       }
     };
     loadCategories();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let mounted = true;
+    const loadAllProjects = async () => {
+      setProjectsLoading(true);
+      try {
+        const rows = await getProjects();
+        if (mounted) setAllProjects(rows);
+      } catch (error) {
+        console.warn('加载项目列表失败', error);
+        if (mounted) setAllProjects([]);
+      } finally {
+        if (mounted) setProjectsLoading(false);
+      }
+    };
+    void loadAllProjects();
     return () => {
       mounted = false;
     };
@@ -716,6 +746,12 @@ export default function EditProjectScreen() {
     }
     if (saving) return;
 
+    const prereqValidation = validatePrerequisiteSelection(projectId, prerequisiteProjectIds, allProjects);
+    if (!prereqValidation.ok) {
+      Alert.alert('无法保存项目', prereqValidation.message);
+      return;
+    }
+
     setSaving(true);
     let committed = false;
     try {
@@ -723,15 +759,16 @@ export default function EditProjectScreen() {
       await db.execAsync('BEGIN IMMEDIATE');
       const normalizedCategoryId =
         !selectedCategoryId || selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
+      const mergedExtra = mergePrerequisiteIdsIntoExtraData(
+        { ...projectExtraData, schedule: scheduleMeta },
+        prerequisiteProjectIds,
+      );
       await updateProject(projectId, {
         category_id: normalizedCategoryId,
         name: trimmedTitle,
         note: notes.trim() || null,
         due_date: extractDueDate(deadlineText),
-        extra_data: JSON.stringify({
-          ...projectExtraData,
-          schedule: scheduleMeta,
-        }),
+        extra_data: JSON.stringify(mergedExtra),
       });
       const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
         end: extractDueDate(deadlineText) ?? undefined,
@@ -799,7 +836,20 @@ export default function EditProjectScreen() {
         console.warn('备用跳转失败', e2);
       }
     }
-  }, [deadlineText, notes, projectExtraData, projectId, router, saving, scheduleMeta, selectedCategoryId, subtasks, title]);
+  }, [
+    allProjects,
+    deadlineText,
+    notes,
+    prerequisiteProjectIds,
+    projectExtraData,
+    projectId,
+    router,
+    saving,
+    scheduleMeta,
+    selectedCategoryId,
+    subtasks,
+    title,
+  ]);
 
   const removeProject = React.useCallback(() => {
     if (!projectId || saving || loading) return;
@@ -1019,6 +1069,25 @@ export default function EditProjectScreen() {
               </View>
               <MaterialIcons name="expand-more" size={20} color={outline} />
             </Pressable>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>前置项目</Text>
+            <PrerequisiteProjectPickerField
+              selectedIds={prerequisiteProjectIds}
+              allProjects={allProjects}
+              excludeProjectId={projectId}
+              loading={projectsLoading || loading}
+              disabled={loading}
+              onChange={setPrerequisiteProjectIds}
+              textColor={theme.text}
+              outline={outline}
+              placeholderColor={outlineVariant}
+              primary={primary}
+              surfaceLow={surfaceLow}
+              surfaceLowest={surfaceLowest}
+              isDark={isDark}
+            />
           </View>
 
           <View style={styles.section}>

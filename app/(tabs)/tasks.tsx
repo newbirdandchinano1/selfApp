@@ -18,6 +18,7 @@ import {
   updateProjectCategory,
 } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import { buildProjectLockMap, sortProjectsForList } from '@/lib/repositories/projects/project-prerequisites';
 import {
   createTask,
   deleteTask,
@@ -575,46 +576,6 @@ function ymdToLocalDate(ymd: string): Date | null {
   const day = Number(m[3]);
   if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
   return new Date(year, month - 1, day);
-}
-
-/** 与项目卡片展示的截止/区间语义一致，用于列表排序 */
-function getProjectListSortDueMs(project: ProjectRow): number {
-  const schedule = parseProjectSchedule(project.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.end) {
-    const endYmd = formatScheduleDateToYMD(schedule.range.end);
-    const d = ymdToLocalDate(endYmd);
-    if (d) return d.getTime();
-    const ms = Date.parse(schedule.range.end);
-    return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
-  }
-  if (project.due_date?.trim()) {
-    const ymd = formatScheduleDateToYMD(project.due_date);
-    const d = ymdToLocalDate(ymd);
-    if (d) return d.getTime();
-    const ms = Date.parse(project.due_date);
-    return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
-  }
-  return Number.POSITIVE_INFINITY;
-}
-
-/** 项目列表：已完成/归档在后；有截止日期（含区间结束日）按日期升序；同日按更新时间降序（与任务树一致） */
-function sortProjectsForList(rows: ProjectRow[]): ProjectRow[] {
-  const safeTime = (value: string | null | undefined) => {
-    if (!value) return 0;
-    const ms = Date.parse(value);
-    return Number.isNaN(ms) ? 0 : ms;
-  };
-  const clone = [...rows];
-  clone.sort((a, b) => {
-    const doneA = a.status === 'completed' || a.status === 'archived';
-    const doneB = b.status === 'completed' || b.status === 'archived';
-    if (doneA !== doneB) return doneA ? 1 : -1;
-    const dueA = getProjectListSortDueMs(a);
-    const dueB = getProjectListSortDueMs(b);
-    if (dueA !== dueB) return dueA - dueB;
-    return safeTime(b.updated_at) - safeTime(a.updated_at);
-  });
-  return clone;
 }
 
 function startOfLocalDay(d: Date): Date {
@@ -1262,6 +1223,19 @@ export default function TasksScreen() {
     };
   }, []);
 
+  const projectLockMap = React.useMemo(
+    () => buildProjectLockMap(projects, projectTaskTreeMap),
+    [projects, projectTaskTreeMap],
+  );
+
+  const lockedProjectIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    projectLockMap.forEach((info, id) => {
+      if (info.locked) ids.add(id);
+    });
+    return ids;
+  }, [projectLockMap]);
+
   const projectsShownInList = React.useMemo(() => {
     const base =
       projectTab === 'all'
@@ -1269,8 +1243,8 @@ export default function TasksScreen() {
         : projectTab === INBOX_PROJECT_CATEGORY_ID
           ? projects.filter((p) => isProjectInInboxCategory(p.category_id))
           : projects.filter((p) => p.category_id === projectTab);
-    return sortProjectsForList(base);
-  }, [projects, projectTab]);
+    return sortProjectsForList(base, lockedProjectIds);
+  }, [lockedProjectIds, projects, projectTab]);
 
   React.useEffect(() => {
     if (taskTab === INBOX_PROJECT_CATEGORY_ID) setTaskTab('all');
@@ -3039,10 +3013,18 @@ export default function TasksScreen() {
                 />
                 <View style={styles.projectList}>
                 {projectsShownInList.map((project) => {
+                  const lockInfo = projectLockMap.get(project.id);
+                  const isLocked = !!lockInfo?.locked;
                   const isCompleted = project.status === 'completed' || project.status === 'archived';
                   const isArchived = project.status === 'archived';
-                  const projectAccent = isCompleted ? success : primary;
-                  const projectCardBg = isCompleted ? projectDoneSurface : soft;
+                  const projectAccent = isLocked ? outline : isCompleted ? success : primary;
+                  const projectCardBg = isLocked
+                    ? isDark
+                      ? 'rgba(30,41,59,0.55)'
+                      : 'rgba(241,243,248,0.95)'
+                    : isCompleted
+                      ? projectDoneSurface
+                      : soft;
                   const doneMuted = colors.textMuted;
                   const schedule = parseProjectSchedule(project.extra_data);
                   const dueDateLabel = getProjectScheduleLabel(project, schedule);
@@ -3352,12 +3334,16 @@ export default function TasksScreen() {
                             styles.projectCard,
                             {
                               backgroundColor: projectCardBg,
-                              opacity: isCompleted ? 0.92 : 0.86,
-                              borderColor: isCompleted
+                              opacity: isLocked ? 0.58 : isCompleted ? 0.92 : 0.86,
+                              borderColor: isLocked
                                 ? isDark
-                                  ? 'rgba(52, 211, 153, 0.28)'
-                                  : 'rgba(0, 108, 73, 0.22)'
-                                : 'rgba(148,163,184,0.12)',
+                                  ? 'rgba(148,163,184,0.28)'
+                                  : 'rgba(148,163,184,0.35)'
+                                : isCompleted
+                                  ? isDark
+                                    ? 'rgba(52, 211, 153, 0.28)'
+                                    : 'rgba(0, 108, 73, 0.22)'
+                                  : 'rgba(148,163,184,0.12)',
                             },
                           ]}>
                       <ScalePressable
@@ -3372,7 +3358,7 @@ export default function TasksScreen() {
                         ]}>
                         <View style={styles.projectHeadLeft}>
                           <MaterialIcons
-                            name={isCompleted ? 'check-circle' : 'data-usage'}
+                            name={isLocked ? 'lock' : isCompleted ? 'check-circle' : 'data-usage'}
                             size={22}
                             color={projectAccent}
                           />
@@ -3382,7 +3368,7 @@ export default function TasksScreen() {
                                 style={[
                                   styles.projectTitle,
                                   {
-                                    color: isCompleted ? doneMuted : colors.text,
+                                    color: isLocked || isCompleted ? doneMuted : colors.text,
                                     flex: 1,
                                   },
                                   isCompleted && styles.projectTitleDone,
@@ -3391,7 +3377,19 @@ export default function TasksScreen() {
                                 numberOfLines={2}>
                                 {project.name}
                               </Text>
-                              {isCompleted ? (
+                              {isLocked ? (
+                                <View
+                                  style={[
+                                    styles.projectDoneBadge,
+                                    {
+                                      backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : 'rgba(114,119,133,0.1)',
+                                      borderColor: isDark ? 'rgba(148,163,184,0.38)' : 'rgba(114,119,133,0.28)',
+                                    },
+                                  ]}>
+                                  <MaterialIcons name="lock" size={12} color={outline} />
+                                  <Text style={[styles.projectDoneBadgeText, { color: outline }]}>待解锁</Text>
+                                </View>
+                              ) : isCompleted ? (
                                 <View
                                   style={[
                                     styles.projectDoneBadge,
@@ -3428,6 +3426,11 @@ export default function TasksScreen() {
                                 分类 {categoryLabel}
                               </Text>
                             </View>
+                            {isLocked && (lockInfo?.unmetPrerequisiteNames.length ?? 0) > 0 ? (
+                              <Text style={[styles.projectLockHint, { color: outline }]} numberOfLines={2}>
+                                等待前置：{lockInfo!.unmetPrerequisiteNames.join('、')}（完成后解锁，暂不可分配青蛙）
+                              </Text>
+                            ) : null}
                             {noteText ? (
                               <View
                                 style={[
@@ -4361,6 +4364,7 @@ const styles = StyleSheet.create({
   },
   projectNoteIcon: { marginTop: 1 },
   projectNoteText: { flex: 1, fontSize: 12, fontWeight: '500', lineHeight: 18, fontStyle: 'italic' },
+  projectLockHint: { fontSize: 11, fontWeight: '600', lineHeight: 16, marginTop: 4 },
   projectMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 },
   projectSub: { fontSize: 10, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
   projectSubStrong: { fontSize: 10, fontWeight: '900', letterSpacing: 0.6 },

@@ -2,9 +2,14 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
-import { createProject, getProjectCategories, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
-import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
+import {
+  mergePrerequisiteIdsIntoExtraData,
+  validatePrerequisiteSelection,
+} from '@/lib/repositories/projects/project-prerequisites';
+import { createProject, getProjectCategories, getProjects, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
+import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
@@ -145,6 +150,9 @@ export default function AddProjectScreen() {
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
+  const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
+  const [projectsLoading, setProjectsLoading] = React.useState(true);
+  const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
   const appliedRouteCategoryRef = React.useRef(false);
 
   const routeCategoryId = React.useMemo(() => {
@@ -267,6 +275,26 @@ export default function AddProjectScreen() {
     };
   }, []);
 
+  React.useEffect(() => {
+    let mounted = true;
+    const loadAllProjects = async () => {
+      setProjectsLoading(true);
+      try {
+        const rows = await getProjects();
+        if (mounted) setAllProjects(rows);
+      } catch (error) {
+        console.warn('加载项目列表失败', error);
+        if (mounted) setAllProjects([]);
+      } finally {
+        if (mounted) setProjectsLoading(false);
+      }
+    };
+    void loadAllProjects();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const selectableProjectCategories = React.useMemo(
     () => categories.filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID),
     [categories]
@@ -305,17 +333,22 @@ export default function AddProjectScreen() {
     }
     if (creating) return;
 
+    const prereqValidation = validatePrerequisiteSelection(null, prerequisiteProjectIds, allProjects);
+    if (!prereqValidation.ok) {
+      Alert.alert('无法创建项目', prereqValidation.message);
+      return;
+    }
+
     setCreating(true);
     try {
+      const extra = mergePrerequisiteIdsIntoExtraData({ schedule: scheduleMeta }, prerequisiteProjectIds);
       await createProject({
         id: buildProjectId(),
         name: trimmedTitle,
         category_id: selectedCategoryId,
         note: notes.trim() || null,
         due_date: extractDueDate(deadlineText),
-        extra_data: JSON.stringify({
-          schedule: scheduleMeta,
-        }),
+        extra_data: JSON.stringify(extra),
       });
       router.back();
     } catch (error) {
@@ -324,7 +357,7 @@ export default function AddProjectScreen() {
     } finally {
       setCreating(false);
     }
-  }, [creating, deadlineText, notes, router, scheduleMeta, selectedCategoryId, title]);
+  }, [allProjects, creating, deadlineText, notes, prerequisiteProjectIds, router, scheduleMeta, selectedCategoryId, title]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -369,6 +402,23 @@ export default function AddProjectScreen() {
               </View>
               <MaterialIcons name="expand-more" size={20} color={outline} />
             </Pressable>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>前置项目</Text>
+            <PrerequisiteProjectPickerField
+              selectedIds={prerequisiteProjectIds}
+              allProjects={allProjects}
+              loading={projectsLoading}
+              onChange={setPrerequisiteProjectIds}
+              textColor={theme.text}
+              outline={outline}
+              placeholderColor={outlineVariant}
+              primary={primary}
+              surfaceLow={surfaceLow}
+              surfaceLowest={surfaceLowest}
+              isDark={isDark}
+            />
           </View>
 
           <View style={styles.section}>
