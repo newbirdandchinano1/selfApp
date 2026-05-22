@@ -8,9 +8,7 @@ public class ZhengHealthKitModule: Module {
     Name("ZhengHealthKit")
 
     AsyncFunction("isAvailable") { () -> Bool in
-      await MainActor.run {
-        HKHealthStore.isHealthDataAvailable()
-      }
+      await MainActor.run { HKHealthStore.isHealthDataAvailable() }
     }
 
     AsyncFunction("requestAuthorization") { () -> Bool in
@@ -35,23 +33,31 @@ public class ZhengHealthKitModule: Module {
     }
   }
 
+  @MainActor
+  private func canRead(_ type: HKObjectType) -> Bool {
+    switch store.authorizationStatus(for: type) {
+    case .sharingAuthorized:
+      return true
+    case .notDetermined:
+      return true
+    default:
+      return false
+    }
+  }
+
   private static func readObjectTypes() -> Set<HKObjectType> {
     var set = Set<HKObjectType>()
-
     for id: HKCharacteristicTypeIdentifier in [
       .dateOfBirth, .biologicalSex, .bloodType, .fitzpatrickSkinType, .wheelchairUse,
     ] {
       if let t = HKObjectType.characteristicType(forIdentifier: id) { set.insert(t) }
     }
-
-    for id: HKQuantityTypeIdentifier in quantityIdentifiers() {
+    for id in quantityIdentifiers() {
       if let t = HKQuantityType.quantityType(forIdentifier: id) { set.insert(t) }
     }
-
     if let sleep = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) {
       set.insert(sleep)
     }
-
     return set
   }
 
@@ -59,7 +65,6 @@ public class ZhengHealthKitModule: Module {
     [
       .bodyMass,
       .height,
-      .bodyMassIndex,
       .stepCount,
       .activeEnergyBurned,
       .heartRate,
@@ -87,6 +92,8 @@ public class ZhengHealthKitModule: Module {
       "quantities": [[String: Any]](),
       "categories": [[String: Any]](),
       "errors": [String](),
+      "skippedUnauthorized": 0,
+      "skippedNoData": 0,
     ]
 
     guard HKHealthStore.isHealthDataAvailable() else { return payload }
@@ -94,8 +101,6 @@ public class ZhengHealthKitModule: Module {
     payload["authorized"] = await requestReadAuthorization()
 
     var characteristics = [String: String]()
-    var errors = [String]()
-
     if let dob = try? store.dateOfBirthComponents(), let date = Calendar.current.date(from: dob) {
       characteristics["dateOfBirth"] = iso8601Date(date)
     }
@@ -118,49 +123,58 @@ public class ZhengHealthKitModule: Module {
     let startOfToday = Calendar.current.startOfDay(for: now)
 
     var quantities = [[String: Any]]()
+    var skippedUnauthorized = 0
+    var skippedNoData = 0
+
     for id in Self.quantityIdentifiers() {
       guard let qType = HKQuantityType.quantityType(forIdentifier: id) else { continue }
-      do {
-        if Self.cumulativeIds.contains(id) {
-          if let row = try await fetchCumulative(type: qType, identifier: id.rawValue, start: startOfToday, end: now, label: "今日") {
-            quantities.append(row)
-          }
-          if let row = try await fetchCumulative(type: qType, identifier: id.rawValue, start: weekAgo, end: now, label: "近7日") {
-            quantities.append(row)
-          }
-        } else if let row = try await fetchLatest(type: qType, identifier: id.rawValue) {
+      if !canRead(qType) {
+        skippedUnauthorized += 1
+        continue
+      }
+      if Self.cumulativeIds.contains(id) {
+        if let row = await fetchCumulative(type: qType, identifier: id.rawValue, start: startOfToday, end: now, label: "今日") {
+          quantities.append(row)
+        } else {
+          skippedNoData += 1
+        }
+        if let row = await fetchCumulative(type: qType, identifier: id.rawValue, start: weekAgo, end: now, label: "近7日") {
           quantities.append(row)
         }
-      } catch {
-        errors.append("\(id.rawValue): \(error.localizedDescription)")
+      } else if let row = await fetchLatest(type: qType, identifier: id.rawValue) {
+        quantities.append(row)
+      } else {
+        skippedNoData += 1
       }
     }
     payload["quantities"] = quantities
 
     var categories = [[String: Any]]()
-    if let sleepType = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) {
-      do {
-        categories.append(contentsOf: try await fetchRecentCategories(type: sleepType, identifier: HKCategoryTypeIdentifier.sleepAnalysis.rawValue, limit: 5))
-      } catch {
-        errors.append("sleep: \(error.localizedDescription)")
-      }
+    if let sleepType = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis), canRead(sleepType) {
+      let rows = await fetchRecentCategories(type: sleepType, identifier: HKCategoryTypeIdentifier.sleepAnalysis.rawValue, limit: 5)
+      categories.append(contentsOf: rows)
+      if rows.isEmpty { skippedNoData += 1 }
+    } else if HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) != nil {
+      skippedUnauthorized += 1
     }
+
     payload["categories"] = categories
-    payload["errors"] = errors
+    payload["skippedUnauthorized"] = skippedUnauthorized
+    payload["skippedNoData"] = skippedNoData
     payload["fetchedAt"] = iso8601Now()
 
     return payload
   }
 
-  // MARK: - Queries (main thread)
+  // MARK: - Queries (never throw — 无数据/未授权不算错误)
 
   @MainActor
-  private func fetchLatest(type: HKQuantityType, identifier: String) async throws -> [String: Any]? {
-    try await withCheckedThrowingContinuation { continuation in
+  private func fetchLatest(type: HKQuantityType, identifier: String) async -> [String: Any]? {
+    await withCheckedContinuation { continuation in
       let sort = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
       let query = HKSampleQuery(sampleType: type, predicate: nil, limit: 1, sortDescriptors: [sort]) { _, samples, error in
-        if let error {
-          continuation.resume(throwing: error)
+        if error != nil {
+          continuation.resume(returning: nil)
           return
         }
         guard let sample = samples?.first as? HKQuantitySample,
@@ -181,12 +195,12 @@ public class ZhengHealthKitModule: Module {
     start: Date,
     end: Date,
     label: String
-  ) async throws -> [String: Any]? {
-    try await withCheckedThrowingContinuation { continuation in
+  ) async -> [String: Any]? {
+    await withCheckedContinuation { continuation in
       let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
       let query = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, stats, error in
-        if let error {
-          continuation.resume(throwing: error)
+        if error != nil {
+          continuation.resume(returning: nil)
           return
         }
         guard let sum = stats?.sumQuantity(),
@@ -201,12 +215,12 @@ public class ZhengHealthKitModule: Module {
   }
 
   @MainActor
-  private func fetchRecentCategories(type: HKCategoryType, identifier: String, limit: Int) async throws -> [[String: Any]] {
-    try await withCheckedThrowingContinuation { continuation in
+  private func fetchRecentCategories(type: HKCategoryType, identifier: String, limit: Int) async -> [[String: Any]] {
+    await withCheckedContinuation { continuation in
       let sort = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
       let query = HKSampleQuery(sampleType: type, predicate: nil, limit: limit, sortDescriptors: [sort]) { _, samples, error in
-        if let error {
-          continuation.resume(throwing: error)
+        if error != nil {
+          continuation.resume(returning: [])
           return
         }
         let rows = (samples as? [HKCategorySample] ?? []).map { sample -> [String: Any] in
@@ -224,14 +238,22 @@ public class ZhengHealthKitModule: Module {
     }
   }
 
-  // MARK: - Safe quantity conversion (wrong HKUnit causes native crash)
+  // MARK: - Safe quantity conversion
 
   private static func row(
     from sample: HKQuantitySample,
     identifier: String,
     aggregation: String
   ) -> [String: Any]? {
-    row(from: sample.quantity, type: sample.quantityType, identifier: identifier, start: sample.startDate, end: sample.endDate, aggregation: aggregation, source: sample.sourceRevision.source.name)
+    row(
+      from: sample.quantity,
+      type: sample.quantityType,
+      identifier: identifier,
+      start: sample.startDate,
+      end: sample.endDate,
+      aggregation: aggregation,
+      source: sample.sourceRevision.source.name
+    )
   }
 
   private static func row(
@@ -243,12 +265,10 @@ public class ZhengHealthKitModule: Module {
     aggregation: String,
     source: String = "HealthKit"
   ) -> [String: Any]? {
-    guard let unit = compatibleUnit(for: type),
-          quantity.is(compatibleWith: unit) else { return nil }
-    let value = jsonSafe(quantity.doubleValue(for: unit))
+    guard let unit = compatibleUnit(for: type), quantity.is(compatibleWith: unit) else { return nil }
     return [
       "identifier": identifier,
-      "value": value,
+      "value": jsonSafe(quantity.doubleValue(for: unit)),
       "unit": unit.unitString,
       "startDate": iso8601DateStatic(start),
       "endDate": iso8601DateStatic(end),
@@ -259,13 +279,10 @@ public class ZhengHealthKitModule: Module {
 
   private static func compatibleUnit(for type: HKQuantityType) -> HKUnit? {
     switch type.identifier {
-    case HKQuantityTypeIdentifier.bodyMass.rawValue,
-         HKQuantityTypeIdentifier.leanBodyMass.rawValue:
+    case HKQuantityTypeIdentifier.bodyMass.rawValue:
       return .gramUnit(with: .kilo)
     case HKQuantityTypeIdentifier.height.rawValue:
       return .meterUnit(with: .centi)
-    case HKQuantityTypeIdentifier.bodyMassIndex.rawValue:
-      return .count()
     case HKQuantityTypeIdentifier.stepCount.rawValue:
       return .count()
     case HKQuantityTypeIdentifier.activeEnergyBurned.rawValue:
@@ -347,7 +364,6 @@ public class ZhengHealthKitModule: Module {
   }
 
   private func iso8601Now() -> String { Self.iso8601DateStatic(Date()) }
-
   private func iso8601Date(_ date: Date) -> String { Self.iso8601DateStatic(date) }
 
   private static func iso8601DateStatic(_ date: Date) -> String {

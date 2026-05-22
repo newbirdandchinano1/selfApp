@@ -12,6 +12,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.myselfManage.appdemo",
       "infoPlist": {
+        "CFBundleDisplayName": "小郑的自我修养",
         "ITSAppUsesNonExemptEncryption": false
       }
     },

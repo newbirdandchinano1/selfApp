@@ -28,6 +28,10 @@ export type HealthKitSnapshot = {
   quantities: HealthKitQuantityRow[];
   categories: HealthKitCategoryRow[];
   errors: string[];
+  /** 用户在健康 App 里未授权读取的指标数量 */
+  skippedUnauthorized?: number;
+  /** 已授权但暂无记录的指标数量 */
+  skippedNoData?: number;
 };
 
 /** 无法使用 HealthKit 时的具体原因（用于界面提示） */
@@ -135,6 +139,8 @@ export async function fetchAppleHealthKitSnapshot(): Promise<HealthKitSnapshot> 
       quantities: Array.isArray(raw.quantities) ? (raw.quantities as HealthKitQuantityRow[]) : [],
       categories: Array.isArray(raw.categories) ? (raw.categories as HealthKitCategoryRow[]) : [],
       errors: Array.isArray(raw.errors) ? raw.errors.map(String) : [],
+      skippedUnauthorized: Number(raw.skippedUnauthorized ?? 0) || 0,
+      skippedNoData: Number(raw.skippedNoData ?? 0) || 0,
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : '读取健康数据失败';

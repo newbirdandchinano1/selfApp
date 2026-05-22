@@ -11,63 +11,18 @@ const CHARACTERISTIC_LABELS: Record<string, string> = {
 const QUANTITY_LABELS: Record<string, string> = {
   HKQuantityTypeIdentifierBodyMass: '体重',
   HKQuantityTypeIdentifierHeight: '身高',
-  HKQuantityTypeIdentifierBodyMassIndex: 'BMI',
-  HKQuantityTypeIdentifierBodyFatPercentage: '体脂率',
-  HKQuantityTypeIdentifierLeanBodyMass: '去脂体重',
-  HKQuantityTypeIdentifierWaistCircumference: '腰围',
   HKQuantityTypeIdentifierStepCount: '步数',
-  HKQuantityTypeIdentifierDistanceWalkingRunning: '步行+跑步距离',
-  HKQuantityTypeIdentifierDistanceCycling: '骑行距离',
-  HKQuantityTypeIdentifierFlightsClimbed: '爬楼层数',
   HKQuantityTypeIdentifierActiveEnergyBurned: '活动能量',
-  HKQuantityTypeIdentifierBasalEnergyBurned: '基础代谢',
-  HKQuantityTypeIdentifierAppleExerciseTime: '锻炼时长',
-  HKQuantityTypeIdentifierAppleStandTime: '站立时长',
   HKQuantityTypeIdentifierHeartRate: '心率',
   HKQuantityTypeIdentifierRestingHeartRate: '静息心率',
-  HKQuantityTypeIdentifierWalkingHeartRateAverage: '步行平均心率',
-  HKQuantityTypeIdentifierHeartRateVariabilitySDNN: '心率变异性',
   HKQuantityTypeIdentifierOxygenSaturation: '血氧',
-  HKQuantityTypeIdentifierRespiratoryRate: '呼吸频率',
-  HKQuantityTypeIdentifierVO2Max: '最大摄氧量',
   HKQuantityTypeIdentifierBloodPressureSystolic: '收缩压',
   HKQuantityTypeIdentifierBloodPressureDiastolic: '舒张压',
-  HKQuantityTypeIdentifierBloodGlucose: '血糖',
-  HKQuantityTypeIdentifierInsulinDelivery: '胰岛素',
-  HKQuantityTypeIdentifierDietaryEnergyConsumed: '膳食能量',
-  HKQuantityTypeIdentifierDietaryProtein: '蛋白质摄入',
-  HKQuantityTypeIdentifierDietaryCarbohydrates: '碳水摄入',
-  HKQuantityTypeIdentifierDietaryFatTotal: '脂肪摄入',
-  HKQuantityTypeIdentifierDietarySugar: '糖摄入',
-  HKQuantityTypeIdentifierDietaryFiber: '膳食纤维',
-  HKQuantityTypeIdentifierDietarySodium: '钠摄入',
   HKQuantityTypeIdentifierDietaryWater: '饮水量',
-  HKQuantityTypeIdentifierDietaryCaffeine: '咖啡因',
-  HKQuantityTypeIdentifierNumberOfAlcoholicBeverages: '酒精饮品',
-  HKQuantityTypeIdentifierEnvironmentalAudioExposure: '环境音量',
-  HKQuantityTypeIdentifierHeadphoneAudioExposure: '耳机音量',
-  HKQuantityTypeIdentifierNumberOfTimesFallen: '跌倒次数',
-  HKQuantityTypeIdentifierSixMinuteWalkTestDistance: '6分钟步行距离',
-  HKQuantityTypeIdentifierWalkingSpeed: '步行速度',
-  HKQuantityTypeIdentifierWalkingStepLength: '步幅',
-  HKQuantityTypeIdentifierWalkingAsymmetryPercentage: '步态不对称',
-  HKQuantityTypeIdentifierWalkingDoubleSupportPercentage: '双脚支撑占比',
-  HKQuantityTypeIdentifierStairAscentSpeed: '上楼梯速度',
-  HKQuantityTypeIdentifierStairDescentSpeed: '下楼梯速度',
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
   HKCategoryTypeIdentifierSleepAnalysis: '睡眠',
-  HKCategoryTypeIdentifierAppleStandHour: '站立小时',
-  HKCategoryTypeIdentifierMindfulSession: '正念',
-  HKCategoryTypeIdentifierHighHeartRateEvent: '高心率事件',
-  HKCategoryTypeIdentifierLowHeartRateEvent: '低心率事件',
-  HKCategoryTypeIdentifierIrregularHeartRhythmEvent: '心律不齐',
-  HKCategoryTypeIdentifierLowCardioFitnessEvent: '低心肺适能',
-  HKCategoryTypeIdentifierSexualActivity: '性生活',
-  HKCategoryTypeIdentifierMenstrualFlow: '月经流量',
-  HKCategoryTypeIdentifierOvulationTestResult: '排卵检测',
-  HKCategoryTypeIdentifierPregnancy: '怀孕',
 };
 
 export type HealthKitDisplayRow = {
@@ -77,11 +32,44 @@ export type HealthKitDisplayRow = {
   meta?: string;
 };
 
+/** 健康数据读取后的友好说明（非错误） */
+export function healthKitReadSummary(snapshot: HealthKitSnapshot, appDisplayName?: string): string | null {
+  const parts: string[] = [];
+  const unauthorized = snapshot.skippedUnauthorized ?? 0;
+  const noData = snapshot.skippedNoData ?? 0;
+  if (unauthorized > 0) parts.push(`${unauthorized} 项未授权`);
+  if (noData > 0) parts.push(`${noData} 项暂无记录`);
+  // 兼容旧版原生：把 errors 数量视为未读到的指标，不再展示「读取失败」
+  if (!parts.length && snapshot.errors.length > 0 && snapshot.quantities.length + snapshot.categories.length > 0) {
+    parts.push(`${snapshot.errors.length} 项无数据或未授权`);
+  }
+  if (!parts.length) return null;
+  const name = appDisplayName?.trim() || '本 App';
+  return `${parts.join('，')}。请在「健康」里找到「${name}」（名称与主屏幕图标下方一致）并开启读取权限。`;
+}
+
+/** 在系统「健康」里找不到本 App 时的说明 */
+export function healthKitSettingsHelpLines(appDisplayName?: string): string[] {
+  const name = appDisplayName?.trim() || '本 App';
+  return [
+    `列表里显示的是主屏幕图标下的名字「${name}」，不一定是项目里的中文名。`,
+    '须先在编辑个人资料里点过「读取健康数据」并出现过系统授权弹窗，才会出现在列表中。',
+    '路径一：设置 → 健康 → 数据访问与设备 → 找到本 App。',
+    '路径二：打开「健康」App → 右上角头像 → 隐私与访问 → 编辑来源。',
+    '若仍没有：请确认安装的是包含 HealthKit 的最新 iOS 开发包（旧包不会出现在健康列表里）。',
+  ];
+}
+
 function formatNumber(value: number, unit: string): string {
   if (!Number.isFinite(value)) return '—';
+  let display = value;
+  let displayUnit = unit;
+  if (unit === '%' && value > 0 && value <= 1) {
+    display = value * 100;
+  }
   const rounded =
-    Math.abs(value) >= 100 ? Math.round(value) : Math.round(value * 10) / 10;
-  const unitLabel = unit === 'count' ? '' : ` ${unit}`;
+    Math.abs(display) >= 100 ? Math.round(display) : Math.round(display * 10) / 10;
+  const unitLabel = displayUnit === 'count' ? '' : ` ${displayUnit}`;
   return `${rounded}${unitLabel}`.trim();
 }
 
@@ -164,10 +152,6 @@ export function extractProfileMetricsFromHealthKit(snapshot: HealthKitSnapshot):
     if (q.identifier.endsWith('BodyMass') && q.aggregation === 'latest') {
       weightKg = Math.round(q.value * 10) / 10;
     }
-  }
-
-  if (snapshot.characteristics.dateOfBirth) {
-    // 生日由 characteristics 单独展示，不在此返回
   }
 
   return { heightCm, weightKg };

@@ -4,6 +4,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import Constants from 'expo-constants';
 import { Stack, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
@@ -30,6 +31,8 @@ import { invalidateDailyIntakeAiTargetsCache } from '@/lib/daily-intake-ai-targe
 import {
   buildHealthKitDisplayRows,
   extractProfileMetricsFromHealthKit,
+  healthKitReadSummary,
+  healthKitSettingsHelpLines,
   type HealthKitDisplayRow,
 } from '@/lib/apple-healthkit';
 import type { HealthKitSnapshot } from 'zheng-healthkit';
@@ -118,6 +121,12 @@ export default function EditProfileScreen() {
   const [healthKitRows, setHealthKitRows] = useState<HealthKitDisplayRow[]>([]);
   const [healthKitExpanded, setHealthKitExpanded] = useState(false);
   const [healthKitBlockReason, setHealthKitBlockReason] = useState<HealthKitBlockReason | null>(null);
+  const [healthKitHelpOpen, setHealthKitHelpOpen] = useState(false);
+
+  const iosAppDisplayName =
+    Platform.OS === 'ios'
+      ? (Constants.expoConfig?.name as string | undefined) ?? '小郑的自我修养'
+      : '';
 
   const handleNumericInput = (value: string, setter: (next: string) => void) => {
     setter(value.replace(/\D+/g, ''));
@@ -284,6 +293,14 @@ export default function EditProfileScreen() {
 
   const birthdayMaxDate = useMemo(() => new Date(), []);
   const birthdayMinDate = useMemo(() => new Date(1900, 0, 1), []);
+  const healthKitSummaryHint = useMemo(
+    () => (healthKitSnapshot ? healthKitReadSummary(healthKitSnapshot, iosAppDisplayName) : null),
+    [healthKitSnapshot, iosAppDisplayName],
+  );
+  const healthKitSettingsHelp = useMemo(
+    () => healthKitSettingsHelpLines(iosAppDisplayName),
+    [iosAppDisplayName],
+  );
 
   const openBirthdayPicker = () => {
     setBirthdayDraft(birthdayIso ? parseIsoDateLocal(birthdayIso) : new Date(1990, 0, 1));
@@ -582,10 +599,28 @@ export default function EditProfileScreen() {
                   </Pressable>
                 </View>
 
-                {healthKitSnapshot?.errors?.length ? (
-                  <Text style={[styles.healthKitError, { color: '#b45309' }]}>
-                    部分类型读取失败（{healthKitSnapshot.errors.length}）
+                {healthKitSummaryHint ? (
+                  <Text style={[styles.healthKitHintLine, { color: palette.outline }]}>{healthKitSummaryHint}</Text>
+                ) : null}
+
+                <Pressable onPress={() => setHealthKitHelpOpen(v => !v)} style={styles.healthKitHelpToggle}>
+                  <Text style={[styles.healthKitHelpToggleText, { color: palette.primary }]}>
+                    {healthKitHelpOpen ? '收起' : '在「健康」里找不到本 App？'}
                   </Text>
+                  <MaterialIcons
+                    name={healthKitHelpOpen ? 'expand-less' : 'help-outline'}
+                    size={20}
+                    color={palette.primary}
+                  />
+                </Pressable>
+                {healthKitHelpOpen ? (
+                  <View style={styles.healthKitHelpBox}>
+                    {healthKitSettingsHelp.map((line, index) => (
+                      <Text key={index} style={[styles.healthKitHelpItem, { color: palette.outline }]}>
+                        · {line}
+                      </Text>
+                    ))}
+                  </View>
                 ) : null}
 
                 {healthKitRows.length > 0 ? (
@@ -874,7 +909,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   healthKitBtnPrimaryText: { color: '#fff', fontSize: 14, fontWeight: '800' },
-  healthKitError: { fontSize: 11, fontWeight: '700' },
+  healthKitHintLine: { fontSize: 11, fontWeight: '600', lineHeight: 17 },
+  healthKitHelpToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  healthKitHelpToggleText: { fontSize: 12, fontWeight: '800' },
+  healthKitHelpBox: { gap: 6, paddingBottom: 4 },
+  healthKitHelpItem: { fontSize: 11, lineHeight: 17, fontWeight: '600' },
   healthKitToggle: {
     flexDirection: 'row',
     alignItems: 'center',
