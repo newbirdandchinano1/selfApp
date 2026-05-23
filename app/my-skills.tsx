@@ -3,12 +3,13 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { getDefaultUser } from '@/lib/repositories/users/user';
 import {
   countSkillsInSnapshot,
+  createDesiredSkillItem,
   createEmptyUserSkillsSnapshot,
-  createSkillDimension,
   createSkillItem,
+  ensureUserSkillsSnapshot,
   loadUserSkills,
   saveUserSkills,
-  type UserSkillDimension,
+  type DesiredSkillItem,
   type UserSkillItem,
   type UserSkillsSnapshot,
 } from '@/lib/user-skills';
@@ -34,18 +35,18 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+const AI_SKILL_DIMENSION = '现有技能';
+
 function applyAiToSnapshot(snapshot: UserSkillsSnapshot, data: UserSkillAiPortfolioPayload): UserSkillsSnapshot {
+  const safe = ensureUserSkillsSnapshot(snapshot);
   const map = new Map(data.per_skill.map(p => [p.skill_id.trim(), p]));
   return {
-    ...snapshot,
-    dimensions: snapshot.dimensions.map(d => ({
-      ...d,
-      skills: d.skills.map(s => {
-        const row = map.get(s.id.trim());
-        if (!row) return s;
-        return { ...s, last_evaluation: row.evaluation, last_suggestions: row.suggestions };
-      }),
-    })),
+    ...safe,
+    skills: safe.skills.map(s => {
+      const row = map.get(s.id.trim());
+      if (!row) return s;
+      return { ...s, last_evaluation: row.evaluation, last_suggestions: row.suggestions };
+    }),
     last_ai_at: new Date().toISOString(),
     last_overall_suggestions: data.overall_suggestions,
     last_profile_analysis: data.profile_analysis,
@@ -81,7 +82,7 @@ export default function MySkillsScreen() {
     setLoading(true);
     try {
       const [skills, user] = await Promise.all([loadUserSkills(), getDefaultUser()]);
-      setSnapshot(skills);
+      setSnapshot(ensureUserSkillsSnapshot(skills));
       setDisplayName(user?.name?.trim() || '默认用户');
     } catch {
       setSnapshot(createEmptyUserSkillsSnapshot());
@@ -93,6 +94,17 @@ export default function MySkillsScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    setSnapshot(prev => {
+      const safe = ensureUserSkillsSnapshot(prev);
+      if (safe !== prev) {
+        void saveUserSkills(safe);
+        return safe;
+      }
+      return prev;
+    });
+  }, []);
 
   const persistSoon = useCallback((next: UserSkillsSnapshot) => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -108,10 +120,11 @@ export default function MySkillsScreen() {
     [],
   );
 
-  const updateDimensions = useCallback(
-    (fn: (prev: UserSkillDimension[]) => UserSkillDimension[]) => {
+  const updateSkills = useCallback(
+    (fn: (prev: UserSkillItem[]) => UserSkillItem[]) => {
       setSnapshot(prev => {
-        const next = { ...prev, dimensions: fn(prev.dimensions) };
+        const safe = ensureUserSkillsSnapshot(prev);
+        const next = { ...safe, skills: fn(safe.skills) };
         persistSoon(next);
         return next;
       });
@@ -119,66 +132,56 @@ export default function MySkillsScreen() {
     [persistSoon],
   );
 
-  const onAddDimension = () => {
-    updateDimensions(d => [...d, createSkillDimension()]);
+  const updateDesiredSkills = useCallback(
+    (fn: (prev: DesiredSkillItem[]) => DesiredSkillItem[]) => {
+      setSnapshot(prev => {
+        const safe = ensureUserSkillsSnapshot(prev);
+        const next = { ...safe, desired_skills: fn(safe.desired_skills) };
+        persistSoon(next);
+        return next;
+      });
+    },
+    [persistSoon],
+  );
+
+  const skills = snapshot.skills ?? [];
+  const desiredSkills = snapshot.desired_skills ?? [];
+
+  const onAddSkill = () => {
+    updateSkills(list => [...list, createSkillItem()]);
   };
 
-  const onRemoveDimension = (id: string) => {
-    Alert.alert('删除维度', '将同时删除该维度下的全部技能与本地缓存的 AI 结果。确定？', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '删除',
-        style: 'destructive',
-        onPress: () => updateDimensions(d => d.filter(x => x.id !== id)),
-      },
-    ]);
+  const onRemoveSkill = (skillId: string) => {
+    updateSkills(list => list.filter(s => s.id !== skillId));
   };
 
-  const onSetDimensionTitle = (id: string, title: string) => {
-    updateDimensions(d => d.map(dim => (dim.id === id ? { ...dim, title } : dim)));
+  const onPatchSkill = (skillId: string, patch: Partial<UserSkillItem>) => {
+    updateSkills(list => list.map(s => (s.id === skillId ? { ...s, ...patch } : s)));
   };
 
-  const onAddSkill = (dimensionId: string) => {
-    updateDimensions(d =>
-      d.map(dim => (dim.id === dimensionId ? { ...dim, skills: [...dim.skills, createSkillItem()] } : dim)),
-    );
+  const onAddDesiredSkill = () => {
+    updateDesiredSkills(list => [...list, createDesiredSkillItem()]);
   };
 
-  const onRemoveSkill = (dimensionId: string, skillId: string) => {
-    updateDimensions(d =>
-      d.map(dim =>
-        dim.id === dimensionId ? { ...dim, skills: dim.skills.filter(s => s.id !== skillId) } : dim,
-      ),
-    );
+  const onRemoveDesiredSkill = (id: string) => {
+    updateDesiredSkills(list => list.filter(s => s.id !== id));
   };
 
-  const onPatchSkill = (dimensionId: string, skillId: string, patch: Partial<UserSkillItem>) => {
-    updateDimensions(d =>
-      d.map(dim =>
-        dim.id === dimensionId
-          ? {
-              ...dim,
-              skills: dim.skills.map(s => (s.id === skillId ? { ...s, ...patch } : s)),
-            }
-          : dim,
-      ),
-    );
+  const onPatchDesiredSkill = (id: string, patch: Partial<DesiredSkillItem>) => {
+    updateDesiredSkills(list => list.map(s => (s.id === id ? { ...s, ...patch } : s)));
   };
 
   const linesForAi = useMemo(() => {
     const out: { skill_id: string; dimension: string; name: string; description: string }[] = [];
-    for (const dim of snapshot.dimensions) {
-      const dtitle = dim.title.trim() || '未命名维度';
-      for (const s of dim.skills) {
-        const name = s.name.trim();
-        const desc = s.description.trim();
-        if (name && desc) {
-          out.push({ skill_id: s.id, dimension: dtitle, name, description: desc });
-        }
+    for (const s of skills) {
+      const name = s.name.trim();
+      const desc = s.description.trim();
+      if (name && desc) {
+        out.push({ skill_id: s.id, dimension: AI_SKILL_DIMENSION, name, description: desc });
       }
     }
     return out;
-  }, [snapshot.dimensions]);
+  }, [skills]);
 
   const runnableCount = linesForAi.length;
 
@@ -218,6 +221,7 @@ export default function MySkillsScreen() {
   };
 
   const skillTotal = countSkillsInSnapshot(snapshot);
+  const desiredTotal = desiredSkills.length;
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right', 'bottom']}>
@@ -244,120 +248,151 @@ export default function MySkillsScreen() {
             keyboardDismissMode="on-drag"
             contentContainerStyle={[styles.scroll, { paddingBottom: 32 + insets.bottom }]}>
             <Text style={[styles.intro, { color: outline }]}>
-              自定义「维度」（如编程、沟通、健康习惯等），在每个维度下添加技能并写下自我描述。保存后点击「请求 AI
+              添加你现有的技能并写下自我描述。保存后点击「请求 AI
               评估」：将逐条给出评估与建议，并在底部输出综合建议与总体能力分析（基于智谱 GLM，与记账等功能共用密钥配置）。
             </Text>
 
             <View style={[styles.statRow, { borderColor: outlineVariant }]}>
               <Text style={[styles.statText, { color: text }]}>
-                {snapshot.dimensions.length} 个维度 · {skillTotal} 条技能 · 可评估 {runnableCount} 条
+                {skillTotal} 条现有技能 · 可评估 {runnableCount} 条 · {desiredTotal} 项想学
               </Text>
             </View>
 
+            <View style={styles.sectionHeaderText}>
+              <Text style={[styles.sectionTitle, { color: text }]}>现有技能</Text>
+            </View>
+
             <Pressable
-              onPress={onAddDimension}
+              onPress={onAddSkill}
               style={({ pressed }) => [
                 styles.primaryBtn,
                 { backgroundColor: primary, opacity: pressed ? 0.88 : 1 },
               ]}>
               <MaterialIcons name="add" size={22} color="#fff" />
-              <Text style={styles.primaryBtnText}>添加维度</Text>
+              <Text style={styles.primaryBtnText}>添加技能</Text>
             </Pressable>
 
-            {snapshot.dimensions.length === 0 ? (
+            {skills.length === 0 ? (
               <View style={[styles.emptyCard, { borderColor: outlineVariant, backgroundColor: surface }]}>
-                <MaterialIcons name="category" size={40} color={outline} />
+                <MaterialIcons name="psychology" size={40} color={outline} />
                 <Text style={[styles.emptyTitle, { color: text }]}>从这里开始</Text>
                 <Text style={[styles.emptyHint, { color: outline }]}>
-                  先添加一个维度，再在该维度下添加具体技能与描述。
+                  点击上方按钮，添加你已有的技能与自我描述。
                 </Text>
               </View>
             ) : null}
 
-            {snapshot.dimensions.map(dim => (
+            {skills.map(skill => (
               <View
-                key={dim.id}
-                style={[styles.dimCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                <View style={styles.dimHead}>
-                  <TextInput
-                    value={dim.title}
-                    onChangeText={t => onSetDimensionTitle(dim.id, t)}
-                    placeholder="维度名称"
-                    placeholderTextColor={outline}
-                    style={[styles.dimTitleInput, { color: text, borderColor: outlineVariant, backgroundColor: inputSurface }]}
-                  />
-                  <Pressable
-                    onPress={() => onRemoveDimension(dim.id)}
-                    hitSlop={8}
-                    style={({ pressed }) => [{ opacity: pressed ? 0.65 : 1, padding: 6 }]}>
-                    <MaterialIcons name="delete-outline" size={22} color={outline} />
+                key={skill.id}
+                style={[styles.skillCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                <View style={styles.skillHead}>
+                  <Text style={[styles.skillLabel, { color: outline }]}>技能名称</Text>
+                  <Pressable onPress={() => onRemoveSkill(skill.id)} hitSlop={8}>
+                    <MaterialIcons name="close" size={20} color={outline} />
                   </Pressable>
                 </View>
+                <TextInput
+                  value={skill.name}
+                  onChangeText={t => onPatchSkill(skill.id, { name: t })}
+                  placeholder="例如：TypeScript / 公开演讲"
+                  placeholderTextColor={outline}
+                  style={[styles.input, { color: text, borderColor: inputBorder, backgroundColor: inputSurface }]}
+                />
+                <Text style={[styles.skillLabel, { color: outline, marginTop: 10 }]}>自我描述</Text>
+                <TextInput
+                  value={skill.description}
+                  onChangeText={t => onPatchSkill(skill.id, { description: t })}
+                  placeholder="你目前掌握到什么程度？做过哪些相关实践？"
+                  placeholderTextColor={outline}
+                  multiline
+                  textAlignVertical="top"
+                  style={[
+                    styles.input,
+                    styles.textArea,
+                    { color: text, borderColor: inputBorder, backgroundColor: inputSurface },
+                  ]}
+                />
 
-                <Pressable
-                  onPress={() => onAddSkill(dim.id)}
-                  style={({ pressed }) => [
-                    styles.secondaryBtn,
-                    { borderColor: `${primary}55`, opacity: pressed ? 0.85 : 1 },
-                  ]}>
-                  <MaterialIcons name="post-add" size={20} color={primary} />
-                  <Text style={[styles.secondaryBtnText, { color: primary }]}>在此维度下添加技能</Text>
-                </Pressable>
-
-                {dim.skills.length === 0 ? (
-                  <Text style={[styles.muted, { color: outline }]}>该维度下还没有技能。</Text>
-                ) : null}
-
-                {dim.skills.map(skill => (
-                  <View
-                    key={skill.id}
-                    style={[styles.skillBlock, { borderTopColor: outlineVariant, borderTopWidth: StyleSheet.hairlineWidth }]}>
-                    <View style={styles.skillHead}>
-                      <Text style={[styles.skillLabel, { color: outline }]}>技能名称</Text>
-                      <Pressable onPress={() => onRemoveSkill(dim.id, skill.id)} hitSlop={8}>
-                        <MaterialIcons name="close" size={20} color={outline} />
-                      </Pressable>
-                    </View>
-                    <TextInput
-                      value={skill.name}
-                      onChangeText={t => onPatchSkill(dim.id, skill.id, { name: t })}
-                      placeholder="例如：TypeScript / 公开演讲"
-                      placeholderTextColor={outline}
-                      style={[styles.input, { color: text, borderColor: inputBorder, backgroundColor: inputSurface }]}
-                    />
-                    <Text style={[styles.skillLabel, { color: outline, marginTop: 10 }]}>自我描述</Text>
-                    <TextInput
-                      value={skill.description}
-                      onChangeText={t => onPatchSkill(dim.id, skill.id, { description: t })}
-                      placeholder="你目前掌握到什么程度？做过哪些相关实践？希望达到什么目标？"
-                      placeholderTextColor={outline}
-                      multiline
-                      textAlignVertical="top"
-                      style={[
-                        styles.input,
-                        styles.textArea,
-                        { color: text, borderColor: inputBorder, backgroundColor: inputSurface },
-                      ]}
-                    />
-
-                    {skill.last_evaluation?.trim() || skill.last_suggestions?.trim() ? (
-                      <View style={[styles.aiSkillBox, { backgroundColor: isDark ? 'rgba(15,23,42,0.4)' : '#f0f4ff' }]}>
-                        {skill.last_evaluation?.trim() ? (
-                          <View style={{ marginBottom: 10 }}>
-                            <Text style={[styles.aiSub, { color: primary }]}>AI 评估</Text>
-                            <Text style={[styles.aiBody, { color: text }]}>{skill.last_evaluation.trim()}</Text>
-                          </View>
-                        ) : null}
-                        {skill.last_suggestions?.trim() ? (
-                          <View>
-                            <Text style={[styles.aiSub, { color: secondary }]}>提升建议</Text>
-                            <Text style={[styles.aiBody, { color: text }]}>{skill.last_suggestions.trim()}</Text>
-                          </View>
-                        ) : null}
+                {skill.last_evaluation?.trim() || skill.last_suggestions?.trim() ? (
+                  <View style={[styles.aiSkillBox, { backgroundColor: isDark ? 'rgba(15,23,42,0.4)' : '#f0f4ff' }]}>
+                    {skill.last_evaluation?.trim() ? (
+                      <View style={{ marginBottom: 10 }}>
+                        <Text style={[styles.aiSub, { color: primary }]}>AI 评估</Text>
+                        <Text style={[styles.aiBody, { color: text }]}>{skill.last_evaluation.trim()}</Text>
+                      </View>
+                    ) : null}
+                    {skill.last_suggestions?.trim() ? (
+                      <View>
+                        <Text style={[styles.aiSub, { color: secondary }]}>提升建议</Text>
+                        <Text style={[styles.aiBody, { color: text }]}>{skill.last_suggestions.trim()}</Text>
                       </View>
                     ) : null}
                   </View>
-                ))}
+                ) : null}
+              </View>
+            ))}
+
+            <View style={[styles.sectionHeader, { borderTopColor: outlineVariant }]}>
+              <View style={styles.sectionHeaderText}>
+                <Text style={[styles.sectionTitle, { color: text }]}>我想要的技能</Text>
+                <Text style={[styles.sectionHint, { color: outline }]}>
+                  记录你想学习的技能，以及期望达到的水平。
+                </Text>
+              </View>
+            </View>
+
+            <Pressable
+              onPress={onAddDesiredSkill}
+              style={({ pressed }) => [
+                styles.secondaryBtn,
+                { borderColor: `${secondary}55`, opacity: pressed ? 0.85 : 1 },
+              ]}>
+              <MaterialIcons name="add-circle-outline" size={20} color={secondary} />
+              <Text style={[styles.secondaryBtnText, { color: secondary }]}>添加想学的技能</Text>
+            </Pressable>
+
+            {desiredSkills.length === 0 ? (
+              <View style={[styles.emptyCard, { borderColor: outlineVariant, backgroundColor: surface }]}>
+                <MaterialIcons name="flag" size={36} color={outline} />
+                <Text style={[styles.emptyTitle, { color: text }]}>还没有学习目标</Text>
+                <Text style={[styles.emptyHint, { color: outline }]}>
+                  点击上方按钮，添加你想掌握的技能与目标水平。
+                </Text>
+              </View>
+            ) : null}
+
+            {desiredSkills.map(item => (
+              <View
+                key={item.id}
+                style={[styles.skillCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                <View style={styles.skillHead}>
+                  <Text style={[styles.skillLabel, { color: outline }]}>技能名称</Text>
+                  <Pressable onPress={() => onRemoveDesiredSkill(item.id)} hitSlop={8}>
+                    <MaterialIcons name="close" size={20} color={outline} />
+                  </Pressable>
+                </View>
+                <TextInput
+                  value={item.name}
+                  onChangeText={t => onPatchDesiredSkill(item.id, { name: t })}
+                  placeholder="例如：Rust / 数据分析 / 钢琴"
+                  placeholderTextColor={outline}
+                  style={[styles.input, { color: text, borderColor: inputBorder, backgroundColor: inputSurface }]}
+                />
+                <Text style={[styles.skillLabel, { color: outline, marginTop: 10 }]}>期望达到的水平</Text>
+                <TextInput
+                  value={item.target_level}
+                  onChangeText={t => onPatchDesiredSkill(item.id, { target_level: t })}
+                  placeholder="例如：能独立做小型项目 / 日常会话流利 / 能弹完整曲目"
+                  placeholderTextColor={outline}
+                  multiline
+                  textAlignVertical="top"
+                  style={[
+                    styles.input,
+                    styles.textArea,
+                    { color: text, borderColor: inputBorder, backgroundColor: inputSurface },
+                  ]}
+                />
               </View>
             ))}
 
@@ -458,23 +493,20 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 17, fontWeight: '800' },
   emptyHint: { fontSize: 14, textAlign: 'center', lineHeight: 21 },
-  dimCard: {
+  skillCard: {
     borderRadius: 16,
     borderWidth: 1,
     padding: 14,
     gap: 10,
   },
-  dimHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  dimTitleInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 16,
-    fontWeight: '800',
+  sectionHeader: {
+    paddingTop: 8,
+    marginTop: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
-  skillBlock: { paddingTop: 12 },
+  sectionHeaderText: { gap: 4 },
+  sectionTitle: { fontSize: 17, fontWeight: '900' },
+  sectionHint: { fontSize: 13, lineHeight: 20, fontWeight: '600' },
   skillHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
   skillLabel: { fontSize: 12, fontWeight: '800', letterSpacing: 0.6 },
   input: {
@@ -486,7 +518,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   textArea: { minHeight: 96, paddingTop: 12 },
-  muted: { fontSize: 13, fontWeight: '600', marginTop: 4 },
   aiSkillBox: { marginTop: 12, borderRadius: 12, padding: 12 },
   aiSub: { fontSize: 12, fontWeight: '900', marginBottom: 4 },
   aiBody: { fontSize: 14, lineHeight: 22, fontWeight: '600' },

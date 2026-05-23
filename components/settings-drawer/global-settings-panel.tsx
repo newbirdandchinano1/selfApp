@@ -457,6 +457,24 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           <Pressable
             onPress={() => {
               closeSettingsDrawer();
+              router.push('/earned-rewards');
+            }}
+            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
+            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+              <MaterialIcons name="emoji-events" size={26} color={memoAccent} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowTitle, { color: text }]}>已获得奖励</Text>
+                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                  完成任务或项目后自动入账；在此查看并点击兑现。
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={22} color={outline} />
+            </View>
+          </Pressable>
+
+          <Pressable
+            onPress={() => {
+              closeSettingsDrawer();
               router.push('/weakness-list');
             }}
             style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
@@ -483,7 +501,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               <View style={{ flex: 1 }}>
                 <Text style={[styles.rowTitle, { color: text }]}>我的技能</Text>
                 <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  自定义维度 · AI 评估；为每个技能写下自我描述后可一键请求 AI 评估。
+                  记录现有技能与自评，还可添加学习目标；填写描述后可一键请求 AI 评估。
                 </Text>
               </View>
               <MaterialIcons name="chevron-right" size={22} color={outline} />

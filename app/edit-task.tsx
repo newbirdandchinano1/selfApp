@@ -41,6 +41,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
+import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
+import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
+import {
+  mergeCompletionRewardIntoExtraData,
+  parseCompletionRewardFromExtraData,
+} from '@/lib/completion-reward/completion-reward-extra';
 
 type PriorityKey =
   | 'urgent-important'
@@ -245,6 +252,7 @@ type EditTaskFormSnapshot = {
   reminderText: string;
   repeatText: string;
   scheduleMeta: TaskScheduleMeta | null;
+  completionReward: CompletionReward;
 };
 
 function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
@@ -275,6 +283,7 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
     reminderText,
     repeatText,
     scheduleMeta,
+    completionReward: parseCompletionRewardFromExtraData(task.extra_data),
   };
 }
 
@@ -286,6 +295,7 @@ function buildFormSnapshotFromFields(input: {
   reminderText: string;
   repeatText: string;
   scheduleMeta: TaskScheduleMeta | null;
+  completionReward: CompletionReward;
 }): EditTaskFormSnapshot {
   return {
     title: input.title.trim(),
@@ -295,6 +305,7 @@ function buildFormSnapshotFromFields(input: {
     reminderText: input.reminderText,
     repeatText: input.repeatText,
     scheduleMeta: input.scheduleMeta,
+    completionReward: input.completionReward,
   };
 }
 
@@ -337,6 +348,7 @@ export default function EditTaskScreen() {
   const [subtasks, setSubtasks] = React.useState<SubtaskDraft[]>([]);
   const [parentDateLimit, setParentDateLimit] = React.useState<DateLimitYmd>({});
   const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
+  const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
 
   const skipAutoSaveRef = React.useRef(false);
   const exitingAfterSaveRef = React.useRef(false);
@@ -349,6 +361,7 @@ export default function EditTaskScreen() {
   const repeatTextRef = React.useRef(repeatText);
   const scheduleMetaRef = React.useRef(scheduleMeta);
   const taskSnapshotRef = React.useRef(taskSnapshot);
+  const completionRewardRef = React.useRef(completionReward);
   titleRef.current = title;
   notesRef.current = notes;
   priorityRef.current = priority;
@@ -357,6 +370,7 @@ export default function EditTaskScreen() {
   repeatTextRef.current = repeatText;
   scheduleMetaRef.current = scheduleMeta;
   taskSnapshotRef.current = taskSnapshot;
+  completionRewardRef.current = completionReward;
 
   const subtaskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const selfLimit = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
@@ -404,9 +418,10 @@ export default function EditTaskScreen() {
       reminderText,
       repeatText,
       scheduleMeta,
+      completionReward,
     });
     return !formSnapshotsEqual(loadedFormSnapshot, current);
-  }, [deadlineText, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
+  }, [completionReward, deadlineText, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
 
   const loadSubtasks = React.useCallback(async () => {
     if (!taskId) return;
@@ -575,6 +590,7 @@ export default function EditTaskScreen() {
         setReminderText(reminder);
         setRepeatText(repeat);
       }
+      setCompletionReward(parseCompletionRewardFromExtraData(task.extra_data));
 
       let parentLimit: DateLimitYmd = {};
       if (task.parent_task_id) {
@@ -653,12 +669,15 @@ export default function EditTaskScreen() {
         note: notesRef.current.trim() || null,
         priority: toTaskPriority(priorityKeyToLabel(priorityRef.current)),
         due_date: dueDate,
-        extra_data: JSON.stringify({
-          ...parseTaskExtraData(snapshot.extra_data),
-          reminder: reminderTextRef.current,
-          repeat: repeatTextRef.current,
-          schedule: meta,
-        }),
+        extra_data: mergeCompletionRewardIntoExtraData(
+          JSON.stringify({
+            ...parseTaskExtraData(snapshot.extra_data),
+            reminder: reminderTextRef.current,
+            repeat: repeatTextRef.current,
+            schedule: meta,
+          }),
+          completionRewardRef.current,
+        ),
       });
       const parentFrame = mergeDateLimit(scheduleMetaToDateLimit(meta), {
         end: toYmd(dueDate ?? undefined) ?? undefined,
@@ -1007,6 +1026,22 @@ export default function EditTaskScreen() {
                 </View>
               )}
             </View>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>完成奖励</Text>
+            <CompletionRewardField
+              value={completionReward}
+              onChange={setCompletionReward}
+              disabled={loading}
+              textColor={theme.text}
+              outline={outline}
+              placeholderColor={outlineVariant}
+              primary={primary}
+              surfaceLow={surfaceLow}
+              surfaceLowest={surfaceLowest}
+              isDark={isDark}
+            />
           </View>
 
           <View style={styles.section}>

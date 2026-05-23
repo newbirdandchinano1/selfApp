@@ -17,6 +17,10 @@ import React from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
+import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
+import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
+import { mergeCompletionRewardIntoExtraData } from '@/lib/completion-reward/completion-reward-extra';
 
 type Subtask = { id: string; title: string; done: boolean };
 
@@ -154,6 +158,7 @@ export default function AddProjectScreen() {
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
+  const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
   const appliedRouteCategoryRef = React.useRef(false);
 
   const routeCategoryId = React.useMemo(() => {
@@ -350,7 +355,7 @@ export default function AddProjectScreen() {
         category_id: selectedCategoryId,
         note: notes.trim() || null,
         due_date: extractDueDate(deadlineText),
-        extra_data: JSON.stringify(extra),
+        extra_data: mergeCompletionRewardIntoExtraData(JSON.stringify(extra), completionReward),
       });
       router.back();
     } catch (error) {
@@ -359,7 +364,7 @@ export default function AddProjectScreen() {
     } finally {
       setCreating(false);
     }
-  }, [allProjects, creating, deadlineText, notes, prerequisiteProjectIds, router, scheduleMeta, selectedCategoryId, title]);
+  }, [allProjects, completionReward, creating, deadlineText, notes, prerequisiteProjectIds, router, scheduleMeta, selectedCategoryId, title]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -475,6 +480,21 @@ export default function AddProjectScreen() {
             </View>
           </View>
           */}
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>完成奖励</Text>
+            <CompletionRewardField
+              value={completionReward}
+              onChange={setCompletionReward}
+              textColor={theme.text}
+              outline={outline}
+              placeholderColor={outlineVariant}
+              primary={primary}
+              surfaceLow={surfaceLow}
+              surfaceLowest={surfaceLowest}
+              isDark={isDark}
+            />
+          </View>
 
           <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>上下文备注</Text>

@@ -48,6 +48,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
+import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
+import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
+import {
+  mergeCompletionRewardIntoExtraData,
+  parseCompletionRewardFromExtraData,
+} from '@/lib/completion-reward/completion-reward-extra';
 
 type Subtask = {
   id: string;
@@ -375,6 +382,7 @@ export default function EditProjectScreen() {
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
+  const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [toastVisible, setToastVisible] = React.useState(false);
@@ -540,6 +548,7 @@ export default function EditProjectScreen() {
       setRepeatText(loadedSchedule?.repeatOption === '不重复' ? '' : loadedSchedule?.repeatSummary ?? '');
       setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
       setPrerequisiteProjectIds(parsePrerequisiteProjectIds(project.extra_data));
+      setCompletionReward(parseCompletionRewardFromExtraData(project.extra_data));
       const projectTasks = await getTasksByProjectId(projectId);
       const tree = mapTaskTreeToSubtaskNodes(projectTasks);
       setSubtasks(tree);
@@ -770,7 +779,7 @@ export default function EditProjectScreen() {
         name: trimmedTitle,
         note: notes.trim() || null,
         due_date: extractDueDate(deadlineText),
-        extra_data: JSON.stringify(mergedExtra),
+        extra_data: mergeCompletionRewardIntoExtraData(JSON.stringify(mergedExtra), completionReward),
       });
       const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleToSave), {
         end: extractDueDate(deadlineText) ?? undefined,
@@ -843,6 +852,7 @@ export default function EditProjectScreen() {
     deadlineText,
     notes,
     prerequisiteProjectIds,
+    completionReward,
     projectExtraData,
     projectId,
     router,
@@ -1227,6 +1237,22 @@ export default function EditProjectScreen() {
                 </Text>
               )}
             </View>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>完成奖励</Text>
+            <CompletionRewardField
+              value={completionReward}
+              onChange={setCompletionReward}
+              disabled={loading}
+              textColor={theme.text}
+              outline={outline}
+              placeholderColor={outlineVariant}
+              primary={primary}
+              surfaceLow={surfaceLow}
+              surfaceLowest={surfaceLowest}
+              isDark={isDark}
+            />
           </View>
 
           <View style={styles.section}>

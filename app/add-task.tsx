@@ -30,6 +30,10 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
+import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
+import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
+import { mergeCompletionRewardIntoExtraData } from '@/lib/completion-reward/completion-reward-extra';
 
 type Subtask = {
   id: string;
@@ -184,6 +188,7 @@ export default function AddTaskScreen() {
   const [scheduleMeta, setScheduleMeta] = React.useState<TaskScheduleMeta | null>(null);
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const quickProjectId = firstRouteParam(params.projectId);
@@ -383,11 +388,14 @@ export default function AddTaskScreen() {
           status: 'todo',
           priority: labelToTaskPriority(currentPriority.label),
           due_date: extractDueDateFromDeadlineText(deadlineText) ?? null,
-          extra_data: JSON.stringify({
-            reminder: reminderText || '',
-            repeat: repeatText || '',
-            schedule: scheduleMeta,
-          }),
+          extra_data: mergeCompletionRewardIntoExtraData(
+            JSON.stringify({
+              reminder: reminderText || '',
+              repeat: repeatText || '',
+              schedule: scheduleMeta,
+            }),
+            completionReward,
+          ),
         });
         router.back();
       } catch (error) {
@@ -560,6 +568,21 @@ export default function AddTaskScreen() {
             </View>
           </View>
           */}
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>完成奖励</Text>
+            <CompletionRewardField
+              value={completionReward}
+              onChange={setCompletionReward}
+              textColor={theme.text}
+              outline={outline}
+              placeholderColor={outlineVariant}
+              primary={primary}
+              surfaceLow={surfaceLow}
+              surfaceLowest={surfaceLowest}
+              isDark={isDark}
+            />
+          </View>
 
           <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>上下文备注</Text>

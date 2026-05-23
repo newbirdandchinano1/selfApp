@@ -3,7 +3,7 @@ import { enableGithubSqliteMutationTrackingOnDatabase } from '@/lib/github-sqlit
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 25;
+export const DB_VERSION = 26;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -516,6 +516,25 @@ export async function initDatabase() {
       version INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (category_id) REFERENCES recipe_categories(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS earned_rewards (
+      id TEXT PRIMARY KEY NOT NULL,
+      source_type TEXT NOT NULL CHECK (source_type IN ('task', 'project')),
+      source_id TEXT NOT NULL,
+      source_title TEXT NOT NULL,
+      reward_kind TEXT NOT NULL CHECK (reward_kind IN ('wish', 'custom')),
+      wish_item_id TEXT,
+      label TEXT NOT NULL,
+      earned_at TEXT NOT NULL,
+      redeemed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT,
+      FOREIGN KEY (wish_item_id) REFERENCES wish_items(id) ON DELETE SET NULL
+    );
   `);
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
@@ -733,6 +752,11 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_wish_items_updated_at ON wish_items(updated_at);
     CREATE INDEX IF NOT EXISTS idx_wish_items_category_id ON wish_items(category_id);
 
+    CREATE INDEX IF NOT EXISTS idx_earned_rewards_earned_at ON earned_rewards(earned_at);
+    CREATE INDEX IF NOT EXISTS idx_earned_rewards_source ON earned_rewards(source_type, source_id);
+    CREATE INDEX IF NOT EXISTS idx_earned_rewards_redeemed_at ON earned_rewards(redeemed_at);
+    CREATE INDEX IF NOT EXISTS idx_earned_rewards_updated_at ON earned_rewards(updated_at);
+
     CREATE INDEX IF NOT EXISTS idx_weekly_review_journal_week ON weekly_review_journal(week_start_ymd);
     CREATE INDEX IF NOT EXISTS idx_weekly_review_journal_updated ON weekly_review_journal(updated_at);
 
@@ -896,6 +920,7 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS cash_flow_profile;
     DROP TABLE IF EXISTS recipe_items;
     DROP TABLE IF EXISTS recipe_categories;
+    DROP TABLE IF EXISTS earned_rewards;
     DROP TABLE IF EXISTS wish_items;
     DROP TABLE IF EXISTS goal_dimensions;
     DROP TABLE IF EXISTS visions;

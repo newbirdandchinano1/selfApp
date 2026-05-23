@@ -13,14 +13,16 @@ export type UserSkillItem = {
   last_suggestions?: string;
 };
 
-export type UserSkillDimension = {
+export type DesiredSkillItem = {
   id: string;
-  title: string;
-  skills: UserSkillItem[];
+  name: string;
+  /** 期望达到的水平 */
+  target_level: string;
 };
 
 export type UserSkillsSnapshot = {
-  dimensions: UserSkillDimension[];
+  skills: UserSkillItem[];
+  desired_skills: DesiredSkillItem[];
   last_ai_at: string | null;
   last_overall_suggestions: string | null;
   last_profile_analysis: string | null;
@@ -32,19 +34,20 @@ function newId(): string {
 
 export function createEmptyUserSkillsSnapshot(): UserSkillsSnapshot {
   return {
-    dimensions: [],
+    skills: [],
+    desired_skills: [],
     last_ai_at: null,
     last_overall_suggestions: null,
     last_profile_analysis: null,
   };
 }
 
-export function createSkillDimension(title = '新维度'): UserSkillDimension {
-  return { id: newId(), title, skills: [] };
-}
-
 export function createSkillItem(): UserSkillItem {
   return { id: newId(), name: '', description: '' };
+}
+
+export function createDesiredSkillItem(): DesiredSkillItem {
+  return { id: newId(), name: '', target_level: '' };
 }
 
 function normalizeItem(raw: unknown): UserSkillItem | null {
@@ -58,25 +61,42 @@ function normalizeItem(raw: unknown): UserSkillItem | null {
   return { id, name, description, last_evaluation, last_suggestions };
 }
 
-function normalizeDimension(raw: unknown): UserSkillDimension | null {
+function normalizeDesiredSkill(raw: unknown): DesiredSkillItem | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const o = raw as Record<string, unknown>;
   const id = typeof o.id === 'string' && o.id.trim() ? o.id.trim() : newId();
-  const title = typeof o.title === 'string' ? o.title : '未命名维度';
-  const skillsRaw = o.skills;
-  const skills: UserSkillItem[] = Array.isArray(skillsRaw)
-    ? skillsRaw.map(normalizeItem).filter((x): x is UserSkillItem => x != null)
-    : [];
-  return { id, title, skills };
+  const name = typeof o.name === 'string' ? o.name : '';
+  const target_level = typeof o.target_level === 'string' ? o.target_level : '';
+  return { id, name, target_level };
+}
+
+function flattenLegacyDimensions(raw: unknown): UserSkillItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: UserSkillItem[] = [];
+  for (const dim of raw) {
+    if (typeof dim !== 'object' || dim === null) continue;
+    const skillsRaw = (dim as Record<string, unknown>).skills;
+    if (!Array.isArray(skillsRaw)) continue;
+    for (const item of skillsRaw) {
+      const normalized = normalizeItem(item);
+      if (normalized) out.push(normalized);
+    }
+  }
+  return out;
 }
 
 export function normalizeUserSkillsSnapshot(parsed: unknown): UserSkillsSnapshot {
   if (typeof parsed !== 'object' || parsed === null) return createEmptyUserSkillsSnapshot();
   const o = parsed as Record<string, unknown>;
-  const dimsRaw = o.dimensions;
-  const dimensions: UserSkillDimension[] = Array.isArray(dimsRaw)
-    ? dimsRaw.map(normalizeDimension).filter((x): x is UserSkillDimension => x != null)
+
+  const skillsRaw = o.skills;
+  let skills: UserSkillItem[] = Array.isArray(skillsRaw)
+    ? skillsRaw.map(normalizeItem).filter((x): x is UserSkillItem => x != null)
     : [];
+  if (skills.length === 0 && Array.isArray(o.dimensions)) {
+    skills = flattenLegacyDimensions(o.dimensions);
+  }
+
   const last_ai_at =
     typeof o.last_ai_at === 'string' && o.last_ai_at.trim() ? o.last_ai_at.trim() : null;
   const last_overall_suggestions =
@@ -87,12 +107,30 @@ export function normalizeUserSkillsSnapshot(parsed: unknown): UserSkillsSnapshot
     typeof o.last_profile_analysis === 'string' && o.last_profile_analysis.trim()
       ? o.last_profile_analysis.trim()
       : null;
+  const desiredRaw = o.desired_skills;
+  const desired_skills: DesiredSkillItem[] = Array.isArray(desiredRaw)
+    ? desiredRaw.map(normalizeDesiredSkill).filter((x): x is DesiredSkillItem => x != null)
+    : [];
   return {
-    dimensions,
+    skills,
+    desired_skills,
     last_ai_at,
     last_overall_suggestions,
     last_profile_analysis,
   };
+}
+
+/** 确保快照字段完整（兼容旧版 dimensions 结构与热更新残留 state） */
+export function ensureUserSkillsSnapshot(input: unknown): UserSkillsSnapshot {
+  if (
+    typeof input === 'object' &&
+    input !== null &&
+    Array.isArray((input as UserSkillsSnapshot).skills) &&
+    Array.isArray((input as UserSkillsSnapshot).desired_skills)
+  ) {
+    return input as UserSkillsSnapshot;
+  }
+  return normalizeUserSkillsSnapshot(input);
 }
 
 export async function loadUserSkills(): Promise<UserSkillsSnapshot> {
@@ -107,19 +145,25 @@ export async function loadUserSkills(): Promise<UserSkillsSnapshot> {
 }
 
 export async function saveUserSkills(snapshot: UserSkillsSnapshot): Promise<void> {
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  const normalized = ensureUserSkillsSnapshot(snapshot);
+  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
   markGithubKvSliceDirty('user_skills');
 }
 
 export function countSkillsInSnapshot(s: UserSkillsSnapshot): number {
-  return s.dimensions.reduce((n, d) => n + d.skills.length, 0);
+  return ensureUserSkillsSnapshot(s).skills.length;
+}
+
+export function countDesiredSkillsInSnapshot(s: UserSkillsSnapshot): number {
+  return ensureUserSkillsSnapshot(s).desired_skills.length;
 }
 
 export function skillsProfilePreviewSubtitle(s: UserSkillsSnapshot): string {
-  const dim = s.dimensions.length;
   const n = countSkillsInSnapshot(s);
-  if (dim === 0) return '自定义维度，记录技能与自评，一键生成 AI 分析与建议';
-  if (n === 0) return `${dim} 个维度 · 尚未添加技能`;
-  if (s.last_ai_at) return `${dim} 维 · ${n} 项技能 · 已生成 AI 评估`;
-  return `${dim} 维 · ${n} 项技能 · 填写描述后可请求 AI 评估`;
+  const desired = countDesiredSkillsInSnapshot(s);
+  const desiredHint = desired > 0 ? ` · ${desired} 项想学的技能` : '';
+  if (n === 0 && desired === 0) return '记录现有技能与自评，一键生成 AI 分析与建议';
+  if (n === 0) return `${desired} 项想学的技能 · 还可添加现有技能`;
+  if (s.last_ai_at) return `${n} 项技能 · 已生成 AI 评估${desiredHint}`;
+  return `${n} 项技能 · 填写描述后可请求 AI 评估${desiredHint}`;
 }

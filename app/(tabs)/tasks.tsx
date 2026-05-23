@@ -1,5 +1,7 @@
 import { AppIconButton } from '@/components/ui';
+import { CompletionRewardBadge } from '@/components/completion-reward/CompletionRewardBadge';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import {
   INBOX_PROJECT_CATEGORY_ID,
@@ -75,6 +77,7 @@ import {
 } from '@/lib/task-repeat-rollover';
 import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
 import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
+import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -1230,6 +1233,7 @@ export default function TasksScreen() {
   /** 底部「无项目待办」快捷输入框内容 */
   const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
   const [quickTodoSaving, setQuickTodoSaving] = React.useState(false);
+  const [wishNameById, setWishNameById] = React.useState<Map<string, string>>(() => new Map());
   /** 键盘占用高度：用于主列表底部留白，避免快捷待办被键盘挡住后无法滚到位 */
   const [mainScrollKeyboardPad, setMainScrollKeyboardPad] = React.useState(0);
   const mainScrollRef = React.useRef<ScrollView>(null);
@@ -1689,6 +1693,14 @@ export default function TasksScreen() {
           await loadProjectTasks(workingRows);
         }
         await loadHabits();
+        try {
+          const wishRows = await listWishItems();
+          if (!cancelled) {
+            setWishNameById(new Map(wishRows.map((r) => [r.id, r.name])));
+          }
+        } catch {
+          if (!cancelled) setWishNameById(new Map());
+        }
       })();
       return () => {
         cancelled = true;
@@ -1929,10 +1941,14 @@ export default function TasksScreen() {
 
   const moveProjectToInboxById = React.useCallback(async (projectId: string) => {
     try {
+      const proj = projects.find((p) => p.id === projectId) ?? (await getProjectById(projectId));
       await updateProject(projectId, {
         category_id: INBOX_PROJECT_CATEGORY_ID,
         status: 'completed',
       });
+      if (proj) {
+        await tryGrantProjectCompletionReward(proj);
+      }
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       projectSwipeableRefs.current[projectId]?.close();
       await loadProjects();
@@ -1940,7 +1956,7 @@ export default function TasksScreen() {
       console.warn('收纳项目失败', err);
       Alert.alert('操作失败', '未能将项目移至收集箱，请稍后重试。');
     }
-  }, [loadProjects]);
+  }, [loadProjects, projects]);
 
   const handleProjectSwipeArchive = React.useCallback(
     (project: ProjectRow) => {
@@ -2010,6 +2026,13 @@ export default function TasksScreen() {
           await insertTaskExecutionEvent(taskId, wasDone ? 'reopened' : 'completed', current.title ?? null);
         } catch (logErr) {
           console.warn('记录待办执行事件失败', logErr);
+        }
+        if (nextStatus === 'done') {
+          await tryGrantTaskCompletionReward({
+            id: current.id,
+            title: current.title,
+            extra_data: nextExtraData,
+          });
         }
         const frogAssigned = (parseTaskMeta(current.extra_data).frogAssignedOn ?? '').trim();
         if (/^\d{4}-\d{2}-\d{2}$/.test(frogAssigned)) {
@@ -2507,6 +2530,13 @@ export default function TasksScreen() {
                 ) : null}
               </View>
             ) : null}
+            <CompletionRewardBadge
+              extraData={t.extra_data}
+              wishNameById={wishNameById}
+              outline={outline}
+              accent={tertiary}
+              isDark={isDark}
+            />
           </View>
         </ScalePressable>
       </View>
@@ -3025,6 +3055,13 @@ export default function TasksScreen() {
                                 ) : null}
                               </View>
                             ) : null}
+                            <CompletionRewardBadge
+                              extraData={t.extra_data}
+                              wishNameById={wishNameById}
+                              outline={outline}
+                              accent={tertiary}
+                              isDark={isDark}
+                            />
                           </Pressable>
                           </View>
                         </Swipeable>
@@ -3395,6 +3432,13 @@ export default function TasksScreen() {
                                         <Text style={[styles.projectTaskMetaText, { color: outline }]}>{reminder}</Text>
                                       </View>
                                     )}
+                                    <CompletionRewardBadge
+                                      extraData={node.extra_data}
+                                      wishNameById={wishNameById}
+                                      outline={outline}
+                                      accent={tertiary}
+                                      isDark={isDark}
+                                    />
                                   </View>
                                 );
                               })()}
@@ -3686,6 +3730,13 @@ export default function TasksScreen() {
                                   </Text>
                                 </View>
                               )}
+                              <CompletionRewardBadge
+                                extraData={project.extra_data}
+                                wishNameById={wishNameById}
+                                outline={outline}
+                                accent={tertiary}
+                                isDark={isDark}
+                              />
                             </View>
                             {progress.total > 0 ? (
                               <>
