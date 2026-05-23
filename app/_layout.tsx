@@ -3,13 +3,12 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import * as Notifications from 'expo-notifications';
-import { ActivityIndicator, Platform, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, InteractionManager, Platform, Pressable, Text, View } from 'react-native';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
 import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
-import { loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { initDatabase } from '@/lib/database';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
@@ -19,6 +18,7 @@ import { loadThemePreference } from '@/lib/theme-preference';
 import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
 import { hydrateGithubCloudDirtyFromStorage } from '@/lib/github-sqlite-dirty-track';
 import { runSilentGithubCloudSyncIfRemoteNewer } from '@/lib/github-cloud-launch';
+import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
@@ -46,25 +46,32 @@ function RootLayoutInner() {
 
   useEffect(() => {
     let mounted = true;
+    const runDeferredBootstrap = () => {
+      void (async () => {
+        try {
+          await loadPersistedIntakeTargets();
+          await loadThemePreference();
+          await loadAiLlmProviderPreference();
+          await loadGithubBackupTokenCache();
+          if (Platform.OS !== 'web') {
+            void runSilentGithubCloudSyncIfRemoteNewer();
+            void ensurePersonaPortraitsForTodayInBackground();
+          }
+        } catch (e) {
+          console.warn('后台初始化失败', e);
+        }
+      })();
+    };
+
     const run = async () => {
       try {
         await initDatabase();
         await hydrateGithubCloudDirtyFromStorage();
-        if (Platform.OS !== 'web') {
-          void runSilentGithubCloudSyncIfRemoteNewer();
-        }
-        await loadPersistedIntakeTargets();
-        await loadThemePreference();
-        await loadTasksDayBoundary();
-        await loadAiLlmProviderPreference();
-        await loadGithubBackupTokenCache();
-        if (Platform.OS !== 'web') {
-          void ensurePersonaPortraitsForTodayInBackground();
-        }
         if (mounted) {
           setDbError(null);
           setIsDbReady(true);
         }
+        InteractionManager.runAfterInteractions(runDeferredBootstrap);
       } catch (e) {
         console.warn('数据库初始化失败', e);
         if (mounted) {
@@ -101,18 +108,17 @@ function RootLayoutInner() {
                     try {
                       await initDatabase();
                       await hydrateGithubCloudDirtyFromStorage();
-                      if (Platform.OS !== 'web') {
-                        void runSilentGithubCloudSyncIfRemoteNewer();
-                      }
-                      await loadPersistedIntakeTargets();
-                      await loadThemePreference();
-                      await loadTasksDayBoundary();
-                      await loadAiLlmProviderPreference();
-                      await loadGithubBackupTokenCache();
-                      if (Platform.OS !== 'web') {
-                        void ensurePersonaPortraitsForTodayInBackground();
-                      }
                       setIsDbReady(true);
+                      InteractionManager.runAfterInteractions(() => {
+                        void loadPersistedIntakeTargets();
+                        void loadThemePreference();
+                        void loadAiLlmProviderPreference();
+                        void loadGithubBackupTokenCache();
+                        if (Platform.OS !== 'web') {
+                          void runSilentGithubCloudSyncIfRemoteNewer();
+                          void ensurePersonaPortraitsForTodayInBackground();
+                        }
+                      });
                     } catch (e) {
                       console.warn('数据库初始化失败', e);
                       setDbError('数据库初始化失败，请重试。');
@@ -138,6 +144,7 @@ function RootLayoutInner() {
             <AutoLedgerCoordinator dbReady={isDbReady} />
             <TaskReminderNotificationListener />
             <FinanceSheetHost />
+            <AppErrorBoundary>
             <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="add-frog" />
@@ -193,6 +200,7 @@ function RootLayoutInner() {
             <Stack.Screen name="screenshot" />
             <Stack.Screen name="auto-ledger" />
           </Stack>
+            </AppErrorBoundary>
           </>
         )}
         <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />

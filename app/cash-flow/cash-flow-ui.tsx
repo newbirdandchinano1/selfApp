@@ -8,13 +8,12 @@ import {
   persistCashFlowState,
 } from '@/lib/repositories/cash-flow/cash-flow';
 import { CASH_FLOW_EMPTY_STATE } from '@/lib/repositories/cash-flow/cash-flow.defaults';
-import type {
-  CashFlowExpenseBucket,
-  CashFlowState,
-  Holding,
-  IncomeItem,
-  Quadrant,
-} from '@/lib/repositories/cash-flow/cash-flow.types';
+import {
+  buildCashFlowAiSummaryText,
+  calculateCashFlowMetrics,
+  computeCashFlowAiFingerprint,
+  type CashFlowMetrics,
+} from '@/lib/cash-flow/cash-flow-metrics';
 import { analyzeCashFlowDashboardFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -32,6 +31,12 @@ import {
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import type {
+  CashFlowExpenseBucket,
+  CashFlowState,
+  IncomeItem,
+  Quadrant,
+} from '@/lib/repositories/cash-flow/cash-flow.types';
 
 type ExpenseFlowType = CashFlowExpenseBucket;
 type ActiveTab =
@@ -45,80 +50,7 @@ type ActiveTab =
   | 'detail_liability'
   | 'detail_expense';
 
-type CategorizedHolding = Holding & { netCashflow: number; isAsset: boolean };
-
-type Metrics = {
-  activeIncome: number;
-  totalPassiveIncome: number;
-  totalIncome: number;
-  totalExpenses: number;
-  freeCashFlow: number;
-  assetInflow: number;
-  liabilityOutflow: number;
-  freedomProgress: number;
-  passiveRatio: number;
-  pattern: string;
-  categorizedHoldings: CategorizedHolding[];
-  totalAssetsValue: number;
-  totalLiabilitiesValue: number;
-};
-
-function calculateMetrics(state: CashFlowState): Metrics {
-  const activeIncome = state.incomes
-    .filter((i) => ['E', 'S'].includes(i.quadrant))
-    .reduce((sum, i) => sum + i.amount, 0);
-  const purePassiveIncome = state.incomes
-    .filter((i) => ['B', 'I'].includes(i.quadrant))
-    .reduce((sum, i) => sum + i.amount, 0);
-
-  let assetInflow = 0;
-  let liabilityOutflow = 0;
-  let totalAssetsValue = 0;
-  let totalLiabilitiesValue = 0;
-
-  const categorizedHoldings: CategorizedHolding[] = state.holdings.map((h) => {
-    const netCashflow = h.inflow - h.outflow;
-    const isAsset = netCashflow > 0;
-    if (isAsset) {
-      assetInflow += netCashflow;
-      totalAssetsValue += h.principal;
-    } else {
-      liabilityOutflow += Math.abs(netCashflow);
-      totalLiabilitiesValue += h.principal;
-    }
-    return { ...h, netCashflow, isAsset };
-  });
-
-  const totalPassiveIncome = purePassiveIncome + assetInflow;
-  const totalIncome = activeIncome + totalPassiveIncome;
-  const totalExpenses = state.necessaryExpenses + state.unnecessaryExpenses + liabilityOutflow;
-  const freeCashFlow = totalIncome - totalExpenses;
-
-  const freedomProgress =
-    state.necessaryExpenses > 0 ? (totalPassiveIncome / state.necessaryExpenses) * 100 : 0;
-  const passiveRatio = totalIncome > 0 ? (totalPassiveIncome / totalIncome) * 100 : 0;
-
-  let pattern = '穷人模式';
-  if (freedomProgress >= 100) pattern = '财务自由 🎉';
-  else if (liabilityOutflow > assetInflow && activeIncome > 0) pattern = '老鼠赛跑 🐀';
-  else if (assetInflow > 0) pattern = '快车道起步 🚀';
-
-  return {
-    activeIncome,
-    totalPassiveIncome,
-    totalIncome,
-    totalExpenses,
-    freeCashFlow,
-    assetInflow,
-    liabilityOutflow,
-    freedomProgress,
-    passiveRatio,
-    pattern,
-    categorizedHoldings,
-    totalAssetsValue,
-    totalLiabilitiesValue,
-  };
-}
+type Metrics = CashFlowMetrics;
 
 const VIEW_TITLES: Record<Exclude<ActiveTab, 'dashboard'>, string> = {
   entry: '记一笔流水',
@@ -188,88 +120,6 @@ function formatMoney(value: number) {
 
 const CASH_FLOW_AI_CACHE_KEY = 'cash_flow_dashboard_ai_v2';
 
-function computeCashFlowAiFingerprint(state: CashFlowState, metrics: Metrics): string {
-  return JSON.stringify({
-    necessaryExpenses: state.necessaryExpenses,
-    unnecessaryExpenses: state.unnecessaryExpenses,
-    goals: state.goals,
-    incomes: [...state.incomes]
-      .map((i) => [i.id, i.name, i.amount, i.quadrant])
-      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
-    holdings: [...state.holdings]
-      .map((h) => [h.id, h.name, h.principal, h.inflow, h.outflow, h.extra])
-      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
-    expenseLines: [...state.expenseLines]
-      .map((l) => [l.id, l.name, l.amount, l.bucket])
-      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
-    pattern: metrics.pattern,
-    freedomProgress: Math.round(metrics.freedomProgress * 100) / 100,
-    passiveRatio: Math.round(metrics.passiveRatio * 100) / 100,
-    freeCashFlow: Math.round(metrics.freeCashFlow * 100) / 100,
-    totalIncome: Math.round(metrics.totalIncome * 100) / 100,
-    totalExpenses: Math.round(metrics.totalExpenses * 100) / 100,
-  });
-}
-
-function buildCashFlowAiSummaryText(state: CashFlowState, metrics: Metrics): string {
-  const lines: string[] = [];
-  lines.push('【说明】以下为应用内「现金流图」同一套口径的月度模型数据，非银行对账单。');
-  lines.push('');
-  lines.push('【汇总指标】');
-  lines.push(`财务形态：${metrics.pattern}`);
-  lines.push(`财务自由进度(被动收入÷必要支出)：${metrics.freedomProgress.toFixed(1)}%`);
-  lines.push(`被动收入占比：${metrics.passiveRatio.toFixed(1)}%`);
-  lines.push(`主动收入(E/S)：${formatMoney(metrics.activeIncome)}`);
-  lines.push(`被动收入(B/I+资产净流入)：${formatMoney(metrics.totalPassiveIncome)}`);
-  lines.push(`月度总收入：${formatMoney(metrics.totalIncome)}`);
-  lines.push(`月度总流出(必要+非必要+负债月供)：${formatMoney(metrics.totalExpenses)}`);
-  lines.push(`自由现金流：${formatMoney(metrics.freeCashFlow)}`);
-  lines.push(`资产净流入(口袋)：${formatMoney(metrics.assetInflow)}`);
-  lines.push(`负债净流出(月供等)：${formatMoney(metrics.liabilityOutflow)}`);
-  lines.push(`台账资产本金合计(约)：${formatMoney(metrics.totalAssetsValue)}`);
-  lines.push(`台账负债本金合计(约)：${formatMoney(metrics.totalLiabilitiesValue)}`);
-  lines.push(`目标被动收入：${formatMoney(state.goals.targetPassiveIncome)}；目标月数：${state.goals.targetMonths}`);
-  lines.push('');
-  lines.push('【收入明细】');
-  if (state.incomes.length === 0) {
-    lines.push('（无）');
-  } else {
-    for (const i of state.incomes) {
-      lines.push(`- ${i.name || '未命名'}｜${formatMoney(i.amount)}｜象限${i.quadrant}`);
-    }
-  }
-  lines.push('');
-  lines.push('【资产负债台账·现金流】');
-  const holdRows = metrics.categorizedHoldings;
-  const maxH = 36;
-  const slice = holdRows.slice(0, maxH);
-  for (const h of slice) {
-    const tag = h.isAsset ? '资产(净入袋)' : '负债(消耗)';
-    lines.push(
-      `- ${h.name || '未命名'}｜${tag}｜净现金流 ${h.netCashflow >= 0 ? '+' : ''}${formatMoney(h.netCashflow)}｜流入${formatMoney(h.inflow)}流出${formatMoney(h.outflow)}｜本金约${formatMoney(h.principal)}`
-    );
-  }
-  if (holdRows.length > maxH) {
-    lines.push(`… 另有 ${holdRows.length - maxH} 条台账未列出`);
-  }
-  if (holdRows.length === 0) {
-    lines.push('（无）');
-  }
-  lines.push('');
-  lines.push('【生活流出】');
-  lines.push(`必要支出(汇总)：${formatMoney(state.necessaryExpenses)}`);
-  lines.push(`非必要消费(汇总)：${formatMoney(state.unnecessaryExpenses)}`);
-  lines.push('支出流水行：');
-  if (state.expenseLines.length === 0) {
-    lines.push('（无单独行，可能仅填了汇总）');
-  } else {
-    for (const l of state.expenseLines) {
-      lines.push(`- ${l.name || '未命名'}｜${l.bucket === 'necessary' ? '必要' : '非必要'}｜${formatMoney(l.amount)}`);
-    }
-  }
-  return lines.join('\n');
-}
-
 type ToastState = { message: string; type: 'success' | 'warning' } | null;
 
 type CashFlowContextValue = {
@@ -295,7 +145,7 @@ export function CashFlowProvider({ children }: { children: React.ReactNode }) {
   const skipNextPersist = useRef(true);
   const [toast, setToast] = useState<ToastState>(null);
 
-  const metrics = useMemo(() => calculateMetrics(state), [state]);
+  const metrics = useMemo(() => calculateCashFlowMetrics(state), [state]);
 
   useEffect(() => {
     let cancelled = false;
@@ -638,23 +488,28 @@ function MobileDashboard({
   );
 
   const expensePanoramaLines = useMemo((): PanoramaBreakLine[] => {
-    const rows: PanoramaBreakLine[] = [];
-    if (state.necessaryExpenses > 0) {
-      rows.push({ key: 'nec', name: '必要支出', amount: formatMoney(state.necessaryExpenses) });
-    }
-    if (state.unnecessaryExpenses > 0) {
-      rows.push({ key: 'unn', name: '非必要消费', amount: formatMoney(state.unnecessaryExpenses) });
-    }
-    if (metrics.liabilityOutflow > 0) {
-      rows.push({
-        key: 'liab-pay',
-        name: '负债月供',
-        amount: formatMoney(metrics.liabilityOutflow),
+    type SortRow = PanoramaBreakLine & { sortVal: number };
+    const expenseRows: SortRow[] = state.expenseLines
+      .filter((l) => l.amount > 0)
+      .map((l) => ({
+        key: `exp-${l.id}`,
+        name: l.name.trim() || (l.bucket === 'necessary' ? '必要支出' : '非必要消费'),
+        amount: formatMoney(l.amount),
+        sortVal: l.amount,
+      }));
+    const liabRows: SortRow[] = metrics.categorizedHoldings
+      .filter((h) => !h.isAsset && h.outflow > 0)
+      .map((h) => ({
+        key: `liab-${h.id}`,
+        name: h.name.trim() || '负债项',
+        amount: formatMoney(h.outflow),
         amountColor: '#f43f5e',
-      });
-    }
-    return rows;
-  }, [state.necessaryExpenses, state.unnecessaryExpenses, metrics.liabilityOutflow]);
+        sortVal: h.outflow,
+      }));
+    return [...expenseRows, ...liabRows]
+      .sort((a, b) => b.sortVal - a.sortVal)
+      .map(({ key, name, amount, amountColor }) => ({ key, name, amount, amountColor }));
+  }, [state.expenseLines, metrics.categorizedHoldings]);
 
   const fcfPanoramaLines = useMemo(
     (): PanoramaBreakLine[] => [
@@ -1915,7 +1770,7 @@ function MobileSimulator({
     };
   }, [state, simName, simPrincipal, simInflow, simOutflow]);
 
-  const simMetrics = useMemo(() => calculateMetrics(simulatedState), [simulatedState]);
+  const simMetrics = useMemo(() => calculateCashFlowMetrics(simulatedState), [simulatedState]);
   const infNum = parseFloat(simInflow) || 0;
   const outNum = parseFloat(simOutflow) || 0;
   const isAsset = infNum > outNum;

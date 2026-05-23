@@ -70,6 +70,8 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
     addModalVisible,
     newCategoryName,
     setNewCategoryName,
+    newCategoryIcon,
+    setNewCategoryIcon,
     isSavingCategory,
     zhipuTxnReady,
     aiLlmProviderLabel,
@@ -363,6 +365,8 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                   addModalVisible={addModalVisible}
                   newCategoryName={newCategoryName}
                   onChangeNewCategoryName={setNewCategoryName}
+                  newCategoryIcon={newCategoryIcon}
+                  onChangeNewCategoryIcon={setNewCategoryIcon}
                   isSavingCategory={isSavingCategory}
                   onCloseAddModal={closeAddCategoryModal}
                   onSaveNewCategory={() => void saveNewCategory(setSelectedCategoryKey)}

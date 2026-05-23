@@ -179,15 +179,17 @@ export function weaknessListPreviewTitle(row: UserWeaknessItem): string {
   const t = row.title.trim();
   if (t) return t;
   const first = row.detail.trim().split(/\n/)[0]?.trim() ?? '';
-  if (first) return first.length > 48 ? `${first.slice(0, 48)}…` : first;
+  if (first) return first;
   return '未命名缺点';
 }
 
 export function weaknessListPreviewDetail(row: UserWeaknessItem): string {
   const b = row.detail.trim();
-  if (!b) return '（无详情）';
-  const one = b.split(/\n/)[0]!.trim();
-  return one.length > 80 ? `${one.slice(0, 80)}…` : one;
+  return b || '（无详情）';
+}
+
+export function weaknessHasAiReview(row: UserWeaknessItem): boolean {
+  return Boolean(row.ai_review_at?.trim());
 }
 
 export function weaknessContextForAiReview(row: UserWeaknessItem): string {

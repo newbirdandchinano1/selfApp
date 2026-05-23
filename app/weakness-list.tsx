@@ -248,13 +248,13 @@ export default function WeaknessListScreen() {
         <View style={[styles.rowCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
           <View style={[styles.rowAccent, { backgroundColor: weaknessAccent }]} />
           <Pressable
-            onPress={() => router.push({ pathname: '/weakness-edit/[id]', params: { id: item.id } })}
+            onPress={() => router.push({ pathname: '/weakness-view/[id]', params: { id: item.id } })}
             style={({ pressed }) => [styles.rowBody, { opacity: pressed ? 0.92 : 1 }]}
           >
-            <Text style={[styles.rowTitle, { color: text }]} numberOfLines={2}>
+            <Text style={[styles.rowTitle, { color: text }]}>
               {weaknessListPreviewTitle(item)}
             </Text>
-            <Text style={[styles.rowSub, { color: outline }]} numberOfLines={2}>
+            <Text style={[styles.rowSub, { color: outline }]}>
               {weaknessListPreviewDetail(item)}
             </Text>
             {item.ai_review_at?.trim() ? (

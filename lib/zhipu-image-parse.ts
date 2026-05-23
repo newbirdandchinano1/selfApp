@@ -2808,6 +2808,7 @@ export async function analyzeAiFinanceDashboardFromText(
       : [0, 0, 0, 0, 0, 0];
 
   const systemContent = `你是个人记账应用里的资深财务顾问。用户会提供「本月及近月」聚合后的中文统计摘要（来自本地数据库，已脱敏）。
+摘要可能包含两段：**记账流水**（实际收支与分类）与 **现金流图·月度模型**（ESBI 象限收入、资产负债台账、必要/非必要流出、自由现金流等，与记账口径独立）。若存在现金流图段落，生成 health_score、insights 与三组 12 个月预测曲线时须综合两段信息：记账历史约束索引 0～5 的实际数值；现金流图中的被动收入占比、负债月供、自由现金流与财务形态用于校准未来 6 个月（索引 6～11）的趋势方向与合理性，勿与记账数字简单相加重复计数。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 
 必须包含字段：
@@ -2816,16 +2817,16 @@ export async function analyzeAiFinanceDashboardFromText(
 3) insights（AI 深度洞察，最重要）：
 ${AI_FINANCE_DASHBOARD_INSIGHTS_GUIDE}
 4) expense_breakdown_comment：3～5 句中文（约 120～200 字），结合摘要里的支出分类占比做点评；若几乎无支出则提醒多记录。
-5) savings_forecast_12：长度恰好 12 的**数字数组**（单位：元）。索引 0～5 必须与摘要中「过去 6 个月每月净储蓄（收入−支出）」数值一致或极其接近；索引 5 为本月；索引 6～11 为你对未来 6 个月净储蓄的预测，要求平滑、可解释，避免断崖式跳变（除非摘要支持）。
-6) income_forecast_12：长度恰好 12 的数字数组（元）。索引 0～5 与摘要中过去 6 个月每月收入合计一致或接近；6～11 为未来 6 个月收入预测（非负）。
-7) surplus_forecast_12：长度恰好 12 的数字数组（元），表示每月「盈余/可储蓄」口径；通常可与净储蓄同趋势，但允许你根据摘要微调；索引 0～5 与过去 6 个月实际盈余对齐，6～11 为预测。
+5) savings_forecast_12：长度恰好 12 的**数字数组**（单位：元）。索引 0～5 必须与摘要中「过去 6 个月每月净储蓄（收入−支出）」记账数值一致或极其接近；索引 5 为本月；索引 6～11 为未来 6 个月净储蓄预测，须结合现金流图中的自由现金流、负债消耗与被动收入趋势做平滑外推，避免断崖式跳变（除非摘要支持）。
+6) income_forecast_12：长度恰好 12 的数字数组（元）。索引 0～5 与摘要中过去 6 个月每月收入合计（记账）一致或接近；6～11 为未来 6 个月收入预测（非负），可参考现金流图中主动/被动收入结构与目标被动收入。
+7) surplus_forecast_12：长度恰好 12 的数字数组（元），表示每月「盈余/可储蓄」口径；通常可与净储蓄同趋势，但允许结合现金流图自由现金流微调；索引 0～5 与过去 6 个月实际盈余对齐，6～11 为预测。
 
 输出形状示例（insights 的 body 须替换为符合上述字数要求的正文）：${AI_FINANCE_DASHBOARD_JSON_HINT}`;
 
   const lr = await loopTextJsonLlmWithRetries<AiFinanceDashboardPayload>({
     apiKey: key,
     systemContent,
-    userContent: `请根据以下摘要生成上述 JSON；其中 insights 两条 body 各须约 300～400 字：\n\n${text.slice(0, 9500)}`,
+    userContent: `请根据以下摘要生成上述 JSON；其中 insights 两条 body 各须约 300～400 字：\n\n${text.slice(0, 12000)}`,
     temperature: 0.2,
     maxTokens: 4500,
     maxAttempts,

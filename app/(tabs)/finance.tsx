@@ -351,7 +351,7 @@ function pickSheetCategoryForParsed(
   return pool[0];
 }
 
-function TxnItem({
+function TxnItemInner({
   themeText,
   themeSubtle,
   outlineVariant,
@@ -429,6 +429,8 @@ function TxnItem({
   return inner;
 }
 
+const TxnItem = React.memo(TxnItemInner);
+
 export default function FinanceScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -500,6 +502,7 @@ export default function FinanceScreen() {
   const flowCategoryNamesRef = React.useRef<Record<string, string>>({});
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
   const txnAiBackfillRunning = React.useRef(false);
+  const txnAiFlushTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const txnAiSkippedIdsRef = React.useRef<Set<string>>(new Set());
   const runTxnAiBackfillRef = React.useRef<() => Promise<void>>(async () => undefined);
   const defaultAccountsRef = React.useRef<FinanceDefaultAccounts>({
@@ -535,6 +538,8 @@ export default function FinanceScreen() {
   const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
   const [fixedExpensesDraft, setFixedExpensesDraft] = React.useState<BudgetFixedExpense[]>([]);
   const [payingFixedExpenseId, setPayingFixedExpenseId] = React.useState<string | null>(null);
+  /** 防止固定支出快速支付/撤销连点产生并发流水。 */
+  const fixedExpenseQuickPayLockRef = React.useRef<Set<string>>(new Set());
   /** 收支明细：除「今天」外，初次最多再展示的历史日数（2 → 今天+前两日共三天） */
   const INITIAL_HISTORY_DAY_SLICES = 2;
   /** 触底后继续加载的历史日数（按有记录的自然日聚合） */
@@ -573,6 +578,14 @@ export default function FinanceScreen() {
       }),
     ]).start();
   }, [revealAnim]);
+
+  const scheduleFinanceTransactionsFlush = React.useCallback(() => {
+    if (txnAiFlushTimerRef.current) clearTimeout(txnAiFlushTimerRef.current);
+    txnAiFlushTimerRef.current = setTimeout(() => {
+      txnAiFlushTimerRef.current = null;
+      setFinanceTransactions([...financeTransactionsRef.current]);
+    }, 400);
+  }, []);
 
   const loadFinanceTransactions = React.useCallback(async () => {
     try {
@@ -630,9 +643,10 @@ export default function FinanceScreen() {
   );
 
   React.useEffect(() => {
-    void loadFinanceTransactions();
-    void loadFinanceAccounts();
-  }, [loadFinanceAccounts, loadFinanceTransactions]);
+    return () => {
+      if (txnAiFlushTimerRef.current) clearTimeout(txnAiFlushTimerRef.current);
+    };
+  }, []);
 
   React.useEffect(() => {
     void loadMonthBudgetSettings().then(setMonthBudgetSettings);
@@ -774,11 +788,10 @@ export default function FinanceScreen() {
             categoryLabel,
           });
           if (result.ok) {
-            setFinanceTransactions((prev) => {
-              const next = prev.map((t) => (t.id === txn.id ? { ...t, ai_comment: result.comment } : t));
-              financeTransactionsRef.current = next;
-              return next;
-            });
+            financeTransactionsRef.current = financeTransactionsRef.current.map((t) =>
+              t.id === txn.id ? { ...t, ai_comment: result.comment } : t,
+            );
+            scheduleFinanceTransactionsFlush();
           } else {
             txnAiSkippedIdsRef.current.add(txn.id);
             setTxnAiFailEpoch((e) => e + 1);
@@ -788,9 +801,14 @@ export default function FinanceScreen() {
         }
       }
     } finally {
+      if (txnAiFlushTimerRef.current) {
+        clearTimeout(txnAiFlushTimerRef.current);
+        txnAiFlushTimerRef.current = null;
+      }
+      setFinanceTransactions([...financeTransactionsRef.current]);
       txnAiBackfillRunning.current = false;
     }
-  }, []);
+  }, [scheduleFinanceTransactionsFlush]);
 
   React.useLayoutEffect(() => {
     runTxnAiBackfillRef.current = runTxnAiBackfill;
@@ -1253,23 +1271,16 @@ export default function FinanceScreen() {
     [getTxnDisplayAmount, budgetPeriodTransactions]
   );
 
-  /** 本预算周期内，各固定支出最近一次快速支付对应的流水 ID。 */
-  const budgetFixedExpenseQuickPayTxnIdByFixedId = React.useMemo(() => {
-    const candidates: { fixedId: string; txnId: string; at: number }[] = [];
+  /** 本预算周期内，各固定支出快速支付产生的全部流水 ID（含连点竞态产生的重复记录）。 */
+  const budgetFixedExpenseTxnIdsByFixedId = React.useMemo(() => {
+    const map = new Map<string, string[]>();
     for (const txn of budgetPeriodTransactions) {
       if (txn.transaction_type !== 'expense') continue;
       const fixedId = getBudgetFixedExpenseIdFromTxnExtra(txn.extra_data);
       if (!fixedId) continue;
-      candidates.push({
-        fixedId,
-        txnId: txn.id,
-        at: new Date(txn.happened_at).getTime(),
-      });
-    }
-    candidates.sort((a, b) => b.at - a.at);
-    const map = new Map<string, string>();
-    for (const c of candidates) {
-      if (!map.has(c.fixedId)) map.set(c.fixedId, c.txnId);
+      const list = map.get(fixedId) ?? [];
+      list.push(txn.id);
+      map.set(fixedId, list);
     }
     return map;
   }, [budgetPeriodTransactions]);
@@ -1448,6 +1459,8 @@ export default function FinanceScreen() {
   const selectedNetTrend =
     netTrendPoints[selectedNetTrendIndex] ?? netTrendPoints[netTrendLastIndex] ?? { value: netTotalForTrend, label: '今天', dayKey: netWorthTrendDayKey };
   const isSelectedNetTrendToday = selectedNetTrendIndex === netTrendLastIndex;
+  /** 今日净资产必须与账户余额汇总一致；历史日期仍用趋势回溯值。 */
+  const displayedNetWorthAmount = isSelectedNetTrendToday ? netTotalForTrend : selectedNetTrend.value;
 
   /** 与 Svg viewBox 一致；inset 需 ≥ 终点圆点半径 + 描边，避免裁切。 */
   const trendChartGeometry = React.useMemo(() => {
@@ -1553,6 +1566,8 @@ export default function FinanceScreen() {
     addModalVisible,
     newCategoryName,
     setNewCategoryName,
+    newCategoryIcon,
+    setNewCategoryIcon,
     isSavingCategory,
     openAddCategoryModal,
     closeAddCategoryModal,
@@ -2211,6 +2226,7 @@ export default function FinanceScreen() {
     (item: BudgetFixedExpense) => {
       const title = item.name.trim();
       if (!title || !(item.amount > 0)) return;
+      if (fixedExpenseQuickPayLockRef.current.has(item.id)) return;
 
       const accountId = getDefaultSheetAccountIdForTab('expense', financeAccounts);
       const account =
@@ -2220,79 +2236,82 @@ export default function FinanceScreen() {
         return;
       }
 
-      const existingTxnId = budgetFixedExpenseQuickPayTxnIdByFixedId.get(item.id);
-      if (existingTxnId) {
-        void (async () => {
-          try {
-            setPayingFixedExpenseId(item.id);
-            await deleteFinanceTransaction(existingTxnId);
-            await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-            scheduleGithubFinanceCloudSyncDebounced();
-          } catch (error) {
-            console.warn('Failed to undo fixed expense quick pay:', error);
-            Alert.alert(
-              '撤销失败',
-              error instanceof Error && error.message.trim() ? error.message : '无法撤销支付记录，请稍后重试。',
-            );
-          } finally {
-            setPayingFixedExpenseId(null);
-          }
-        })();
-        return;
+      const existingTxnIds = budgetFixedExpenseTxnIdsByFixedId.get(item.id) ?? [];
+      const isUndo = existingTxnIds.length > 0;
+
+      if (!isUndo) {
+        const amountAbs = item.amount;
+        const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
+        const boundsErr = validateFinanceLedgerBalanceAfterChange(
+          account.sign_rule,
+          account.balance ?? 0,
+          'expense',
+          signedAmount,
+          null,
+        );
+        if (boundsErr) {
+          Alert.alert('无法记账', boundsErr);
+          return;
+        }
       }
 
-      const amountAbs = item.amount;
-      const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
-      const boundsErr = validateFinanceLedgerBalanceAfterChange(
-        account.sign_rule,
-        account.balance ?? 0,
-        'expense',
-        signedAmount,
-        null,
-      );
-      if (boundsErr) {
-        Alert.alert('无法记账', boundsErr);
-        return;
-      }
+      fixedExpenseQuickPayLockRef.current.add(item.id);
+      setPayingFixedExpenseId(item.id);
 
-      const cat = expenseCategories[0];
       void (async () => {
         try {
-          setPayingFixedExpenseId(item.id);
-          const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-          await createFinanceTransaction({
-            id: txnId,
-            name: title,
-            happened_at: new Date().toISOString(),
-            account_id: account.id,
-            transaction_type: 'expense',
-            amount: signedAmount,
-            note: '固定支出快速支付',
-            extra_data: JSON.stringify({
-              manual: true,
-              exclude_from_budget: true,
-              budget_fixed_expense_pay: true,
-              budget_fixed_expense_id: item.id,
-              budget_month_key: currentMonthKey,
-              category_key: cat?.key ?? null,
-              category_label: cat?.label ?? null,
-            }),
-          });
+          if (isUndo) {
+            for (const txnId of existingTxnIds) {
+              await deleteFinanceTransaction(txnId);
+            }
+          } else {
+            const cat = expenseCategories[0];
+            const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+            const amountAbs = item.amount;
+            const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
+            await createFinanceTransaction({
+              id: txnId,
+              name: title,
+              happened_at: new Date().toISOString(),
+              account_id: account.id,
+              transaction_type: 'expense',
+              amount: signedAmount,
+              note: '固定支出快速支付',
+              extra_data: JSON.stringify({
+                manual: true,
+                exclude_from_budget: true,
+                budget_fixed_expense_pay: true,
+                budget_fixed_expense_id: item.id,
+                budget_month_key: currentMonthKey,
+                category_key: cat?.key ?? null,
+                category_label: cat?.label ?? null,
+              }),
+            });
+          }
           await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+          setSelectedNetTrendIndex((prev) => {
+            const last = netTrendPointCountRef.current - 1;
+            return last >= 0 ? last : prev;
+          });
           scheduleGithubFinanceCloudSyncDebounced();
         } catch (error) {
-          console.warn('Failed to quick-pay fixed expense:', error);
+          console.warn(isUndo ? 'Failed to undo fixed expense quick pay:' : 'Failed to quick-pay fixed expense:', error);
           Alert.alert(
-            '支付失败',
-            error instanceof Error && error.message.trim() ? error.message : '记录保存失败，请稍后重试。',
+            isUndo ? '撤销失败' : '支付失败',
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : isUndo
+                ? '无法撤销支付记录，请稍后重试。'
+                : '记录保存失败，请稍后重试。',
           );
         } finally {
+          fixedExpenseQuickPayLockRef.current.delete(item.id);
           setPayingFixedExpenseId(null);
         }
       })();
     },
     [
-      budgetFixedExpenseQuickPayTxnIdByFixedId,
+      budgetFixedExpenseTxnIdsByFixedId,
       currentMonthKey,
       expenseCategories,
       financeAccounts,
@@ -2305,7 +2324,7 @@ export default function FinanceScreen() {
   const renderFixedExpensePayButton = React.useCallback(
     (item: BudgetFixedExpense) => {
       if (!isFixedExpensePayable(item)) return null;
-      const isPaid = budgetFixedExpenseQuickPayTxnIdByFixedId.has(item.id);
+      const isPaid = (budgetFixedExpenseTxnIdsByFixedId.get(item.id)?.length ?? 0) > 0;
       const isBusy = payingFixedExpenseId === item.id;
       return (
         <Pressable
@@ -2349,7 +2368,7 @@ export default function FinanceScreen() {
       isDark,
       isFixedExpensePayable,
       outlineVariant,
-      budgetFixedExpenseQuickPayTxnIdByFixedId,
+      budgetFixedExpenseTxnIdsByFixedId,
       payingFixedExpenseId,
       primary,
     ],
@@ -3156,7 +3175,7 @@ export default function FinanceScreen() {
                     {!isSelectedNetTrendToday ? ' · 净资产' : ''}
                   </Text>
                   <Text style={[styles.budgetNetAmount, { color: text }]}>
-                    {showNetAmounts ? formatCurrencyWithDecimals(selectedNetTrend.value) : hiddenAmountText}
+                    {showNetAmounts ? formatCurrencyWithDecimals(displayedNetWorthAmount) : hiddenAmountText}
                   </Text>
 
                   <View style={styles.trendChartWrap}>
@@ -3384,29 +3403,14 @@ export default function FinanceScreen() {
           <View style={[styles.sectionDivider, { backgroundColor: outlineVariant }]} />
           <View style={styles.timelineWrap}>
             <View style={[styles.timelineLine, { backgroundColor: outlineVariant }]} />
-            {todayDisplayTxns.map((t, idx) => {
-              const progress = revealAnim.interpolate({
-                inputRange: [0, 0.4, 1],
-                outputRange: [0, 0, 1],
-              });
-
-              const itemOpacity = progress.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0, 1],
-              });
-
-              const itemTranslateY = progress.interpolate({
-                inputRange: [0, 1],
-                outputRange: [16 + idx * 5, 0],
-              });
-
+            {todayDisplayTxns.map((t) => {
               const rowBody = (
                 <Animated.View
                   style={[
                     styles.txnSwipeForeground,
                     { backgroundColor: surface, borderColor: outlineVariant },
                     t.isPendingPlaceholder ? styles.txnSwipeForegroundPending : null,
-                    { opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] },
+                    { opacity: listOpacity, transform: [{ translateY: listTranslateY }] },
                   ]}>
                   <TxnItem
                     themeText={text}
@@ -3489,23 +3493,7 @@ export default function FinanceScreen() {
                     </View>
                   </View>
                 </View>
-                {section.items.map((t, idx) => {
-                  const progress = revealAnim.interpolate({
-                    inputRange: [0, 0.4, 1],
-                    outputRange: [0, 0, 1],
-                  });
-
-                  const itemOpacity = progress.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, 1],
-                  });
-
-                  const itemTranslateY = progress.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [12 + idx * 4, 0],
-                  });
-
-                  return (
+                {section.items.map((t) => (
                     <Swipeable
                       key={t.id}
                       friction={2}
@@ -3527,7 +3515,7 @@ export default function FinanceScreen() {
                         style={[
                           styles.txnSwipeForeground,
                           { backgroundColor: surface, borderColor: outlineVariant },
-                          { opacity: itemOpacity, transform: [{ translateY: itemTranslateY }] },
+                          { opacity: listOpacity, transform: [{ translateY: listTranslateY }] },
                         ]}>
                         <TxnItem
                           themeText={text}
@@ -3538,8 +3526,7 @@ export default function FinanceScreen() {
                         />
                       </Animated.View>
                     </Swipeable>
-                  );
-                })}
+                  ))}
                 <View style={[styles.dayDivider, { backgroundColor: outlineVariant }]} />
               </React.Fragment>
             ))}
@@ -3888,6 +3875,8 @@ export default function FinanceScreen() {
                   addModalVisible={addModalVisible}
                   newCategoryName={newCategoryName}
                   onChangeNewCategoryName={setNewCategoryName}
+                  newCategoryIcon={newCategoryIcon}
+                  onChangeNewCategoryIcon={setNewCategoryIcon}
                   isSavingCategory={isSavingCategory}
                   onCloseAddModal={closeAddCategoryModal}
                   onSaveNewCategory={() => void saveNewCategory(setSelectedCategoryKey)}

@@ -1,4 +1,6 @@
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { buildCashFlowAiSummaryText, calculateCashFlowMetrics } from '@/lib/cash-flow/cash-flow-metrics';
+import { loadCashFlowState } from '@/lib/repositories/cash-flow/cash-flow';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
 import { analyzeAiFinanceDashboardFromText, getActiveAiLlmApiKey, type AiFinanceDashboardPayload } from '@/lib/zhipu-image-parse';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -67,6 +69,7 @@ export default function AiFinanceAnalysisScreen() {
   const [selectedForecastIndex, setSelectedForecastIndex] = React.useState(5);
   const [selectedSurplusForecastIndex, setSelectedSurplusForecastIndex] = React.useState(5);
   const [selectedIncomeForecastIndex, setSelectedIncomeForecastIndex] = React.useState(5);
+  const [cashFlowAiBlock, setCashFlowAiBlock] = React.useState<string | null>(null);
 
   const formatCurrency = React.useCallback((value: number) => `¥${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`, []);
 
@@ -189,6 +192,15 @@ export default function AiFinanceAnalysisScreen() {
       setSelectedForecastIndex(5);
       setSelectedSurplusForecastIndex(5);
       setSelectedIncomeForecastIndex(5);
+
+      try {
+        const cfState = await loadCashFlowState();
+        const cfMetrics = calculateCashFlowMetrics(cfState);
+        setCashFlowAiBlock(buildCashFlowAiSummaryText(cfState, cfMetrics));
+      } catch (cfError) {
+        console.warn('Failed to load cash flow for AI digest:', cfError);
+        setCashFlowAiBlock(null);
+      }
     } catch (error) {
       console.warn('Failed to load monthly overview:', error);
       setMonthlyIncome(0);
@@ -204,6 +216,7 @@ export default function AiFinanceAnalysisScreen() {
       setSelectedForecastIndex(5);
       setSelectedSurplusForecastIndex(5);
       setSelectedIncomeForecastIndex(5);
+      setCashFlowAiBlock(null);
     } finally {
       setBootReady(true);
     }
@@ -334,8 +347,14 @@ export default function AiFinanceAnalysisScreen() {
         lines.push(`  - ${r.name}: ${r.amount.toFixed(2)} 元，占本月支出 ${(r.pct * 100).toFixed(1)}%`),
       );
     }
+    if (cashFlowAiBlock) {
+      lines.push('');
+      lines.push('---');
+      lines.push('【现金流图·月度模型】（与记账流水独立口径，用于补充主动/被动收入、资产负债与自由现金流视角）');
+      lines.push(cashFlowAiBlock);
+    }
     return lines.join('\n');
-  }, [expenseBreakdownRows, monthlyExpense, monthlyIncome, monthlySavingsDelta, past6Income, past6MonthKeys, past6Net]);
+  }, [cashFlowAiBlock, expenseBreakdownRows, monthlyExpense, monthlyIncome, monthlySavingsDelta, past6Income, past6MonthKeys, past6Net]);
 
   const fallbackHealthScore = React.useMemo(() => {
     if (monthlyIncome <= 0) return monthlyExpense > 0 ? 48 : 55;
@@ -451,7 +470,7 @@ export default function AiFinanceAnalysisScreen() {
         <View style={[styles.staleBanner, { backgroundColor: colors.primaryMuted, borderColor: outline }]}>
           <MaterialIcons name="info-outline" size={18} color={primary} />
           <Text style={[styles.staleBannerText, { color: text }]}>
-            本地账单或分类已变化，以下为上次保存的分析。点击「更新分析」获取与当前数据一致的结论。
+            本地账单、分类或现金流图数据已变化，以下为上次保存的分析。点击「更新分析」获取与当前数据一致的结论。
           </Text>
         </View>
       ) : null}

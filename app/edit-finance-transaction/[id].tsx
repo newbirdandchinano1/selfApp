@@ -93,6 +93,8 @@ export default function EditFinanceTransactionScreen() {
     addModalVisible,
     newCategoryName,
     setNewCategoryName,
+    newCategoryIcon,
+    setNewCategoryIcon,
     isSavingCategory,
     openAddCategoryModal,
     closeAddCategoryModal,
@@ -406,6 +408,8 @@ export default function EditFinanceTransactionScreen() {
               addModalVisible={addModalVisible}
               newCategoryName={newCategoryName}
               onChangeNewCategoryName={setNewCategoryName}
+              newCategoryIcon={newCategoryIcon}
+              onChangeNewCategoryIcon={setNewCategoryIcon}
               isSavingCategory={isSavingCategory}
               onCloseAddModal={closeAddCategoryModal}
               onSaveNewCategory={() => void saveNewCategory(setCategoryKey)}

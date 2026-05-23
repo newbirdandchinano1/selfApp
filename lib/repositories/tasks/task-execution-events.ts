@@ -43,6 +43,14 @@ export async function getTaskExecutionEventsByAction(
   action: TaskExecutionEventAction,
   limit = 500
 ): Promise<TaskExecutionEventWithTitle[]> {
+  return getTaskExecutionEventsByActionPage(action, limit, 0);
+}
+
+export async function getTaskExecutionEventsByActionPage(
+  action: TaskExecutionEventAction,
+  limit: number,
+  offset: number
+): Promise<TaskExecutionEventWithTitle[]> {
   const db = await getDatabase();
   return db.getAllAsync<TaskExecutionEventWithTitle>(
     `SELECT e.id, e.task_id, e.action, e.created_at,
@@ -52,12 +60,43 @@ export async function getTaskExecutionEventsByAction(
       WHERE e.action = ?
         AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}
       ORDER BY datetime(e.created_at) DESC
-      LIMIT ?`,
-    [action, limit]
+      LIMIT ? OFFSET ?`,
+    [action, limit, offset]
   );
 }
 
+export async function countTaskExecutionEventsInScope(): Promise<number> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ cnt: number | null }>(
+    `SELECT COUNT(1) AS cnt
+       FROM task_execution_events e
+       INNER JOIN tasks t ON t.id = e.task_id
+      WHERE ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}`
+  );
+  return Number(row?.cnt ?? 0);
+}
+
+export async function countTaskExecutionEventsByAction(action: TaskExecutionEventAction): Promise<number> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ cnt: number | null }>(
+    `SELECT COUNT(1) AS cnt
+       FROM task_execution_events e
+       INNER JOIN tasks t ON t.id = e.task_id
+      WHERE e.action = ?
+        AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}`,
+    [action]
+  );
+  return Number(row?.cnt ?? 0);
+}
+
 export async function getRecentTaskExecutionEvents(limit: number): Promise<TaskExecutionEventWithTitle[]> {
+  return getRecentTaskExecutionEventsPage(limit, 0);
+}
+
+export async function getRecentTaskExecutionEventsPage(
+  limit: number,
+  offset: number
+): Promise<TaskExecutionEventWithTitle[]> {
   const db = await getDatabase();
   return db.getAllAsync<TaskExecutionEventWithTitle>(
     `SELECT e.id, e.task_id, e.action, e.created_at,
@@ -66,8 +105,8 @@ export async function getRecentTaskExecutionEvents(limit: number): Promise<TaskE
        INNER JOIN tasks t ON t.id = e.task_id
       WHERE ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}
       ORDER BY datetime(e.created_at) DESC
-      LIMIT ?`,
-    [limit]
+      LIMIT ? OFFSET ?`,
+    [limit, offset]
   );
 }
 

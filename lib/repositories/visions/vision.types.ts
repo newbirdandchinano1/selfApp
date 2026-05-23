@@ -239,8 +239,8 @@ export type UpdateVisionInput = Partial<
   >
 >;
 
-/** 创建页 tab 索引 → track_kind */
-export function visionTrackKindFromCreateTab(tab: 0 | 1 | 2 | 3): VisionTrackKind {
-  const map: VisionTrackKind[] = ['progress', 'count', 'countdown', 'target'];
+/** 创建页 tab 索引 → track_kind（无「计数」） */
+export function visionTrackKindFromCreateTab(tab: 0 | 1 | 2): VisionTrackKind {
+  const map: VisionTrackKind[] = ['progress', 'countdown', 'target'];
   return map[tab];
 }

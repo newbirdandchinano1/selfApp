@@ -237,6 +237,71 @@ function priorityKeyToLabel(key: PriorityKey): string {
   return '不紧急不重要';
 }
 
+type EditTaskFormSnapshot = {
+  title: string;
+  notes: string;
+  priority: PriorityKey;
+  deadlineText: string;
+  reminderText: string;
+  repeatText: string;
+  scheduleMeta: TaskScheduleMeta | null;
+};
+
+function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
+  const priorityLabel = fromTaskPriority(task.priority);
+  const extraData = parseTaskExtraData(task.extra_data);
+  const reminder = typeof extraData.reminder === 'string' ? extraData.reminder : '';
+  const repeat = typeof extraData.repeat === 'string' ? extraData.repeat : '';
+  const loadedSchedule = (extraData.schedule ?? null) as TaskScheduleMeta | null;
+
+  let deadlineText = task.due_date ? formatDate(task.due_date) : '';
+  let reminderText = reminder;
+  let repeatText = repeat;
+  let scheduleMeta: TaskScheduleMeta | null = null;
+
+  if (loadedSchedule) {
+    scheduleMeta = loadedSchedule;
+    reminderText = formatTaskReminderLabel(loadedSchedule);
+    repeatText = loadedSchedule.repeatOption === '不重复' ? '' : loadedSchedule.repeatSummary;
+    deadlineText =
+      buildDeadlineTextFromSchedule(loadedSchedule) || (task.due_date ? formatDate(task.due_date) : '');
+  }
+
+  return {
+    title: (task.title ?? '').trim(),
+    notes: (task.note ?? '').trim(),
+    priority: mapPriorityTextToKey(priorityLabel),
+    deadlineText,
+    reminderText,
+    repeatText,
+    scheduleMeta,
+  };
+}
+
+function buildFormSnapshotFromFields(input: {
+  title: string;
+  notes: string;
+  priority: PriorityKey;
+  deadlineText: string;
+  reminderText: string;
+  repeatText: string;
+  scheduleMeta: TaskScheduleMeta | null;
+}): EditTaskFormSnapshot {
+  return {
+    title: input.title.trim(),
+    notes: input.notes.trim(),
+    priority: input.priority,
+    deadlineText: input.deadlineText,
+    reminderText: input.reminderText,
+    repeatText: input.repeatText,
+    scheduleMeta: input.scheduleMeta,
+  };
+}
+
+function formSnapshotsEqual(a: EditTaskFormSnapshot, b: EditTaskFormSnapshot): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 const TITLE_MAX_LENGTH = 30;
 
 export default function EditTaskScreen() {
@@ -268,6 +333,7 @@ export default function EditTaskScreen() {
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [taskSnapshot, setTaskSnapshot] = React.useState<TaskRow | null>(null);
+  const [loadedFormSnapshot, setLoadedFormSnapshot] = React.useState<EditTaskFormSnapshot | null>(null);
   const [subtasks, setSubtasks] = React.useState<SubtaskDraft[]>([]);
   const [parentDateLimit, setParentDateLimit] = React.useState<DateLimitYmd>({});
   const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
@@ -327,6 +393,20 @@ export default function EditTaskScreen() {
     { key: 'not-urgent-not-important', label: '不紧急不重要', color: isDark ? '#94a3b8' : '#727785' },
   ];
   const currentPriority = priorityOptions.find((p) => p.key === priority) ?? priorityOptions[0];
+
+  const isDirty = React.useMemo(() => {
+    if (!loadedFormSnapshot || loading) return false;
+    const current = buildFormSnapshotFromFields({
+      title,
+      notes,
+      priority,
+      deadlineText,
+      reminderText,
+      repeatText,
+      scheduleMeta,
+    });
+    return !formSnapshotsEqual(loadedFormSnapshot, current);
+  }, [deadlineText, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
 
   const loadSubtasks = React.useCallback(async () => {
     if (!taskId) return;
@@ -475,6 +555,7 @@ export default function EditTaskScreen() {
         return;
       }
       setTaskSnapshot(task);
+      setLoadedFormSnapshot(buildFormSnapshotFromTask(task));
       setTitle(task.title ?? '');
       setNotes(task.note ?? '');
       setDeadlineText(task.due_date ? formatDate(task.due_date) : '');
@@ -603,30 +684,63 @@ export default function EditTaskScreen() {
     }
   }, [openedFromTaskDetail, router]);
 
-  const exitWithSave = React.useCallback(async () => {
-    if (exitingAfterSaveRef.current || saving) return;
-    const ok = await persistTask();
-    if (!ok) return;
-    exitingAfterSaveRef.current = true;
-    setSkipRemoveGuard(true);
-    navigateAfterLeaveEdit();
-  }, [navigateAfterLeaveEdit, persistTask, saving]);
-
-  const preventRemove =
-    isFocused && !loading && !skipRemoveGuard && !skipAutoSaveRef.current && !exitingAfterSaveRef.current;
-
-  usePreventRemove(preventRemove, ({ data }) => {
-    void (async () => {
-      const ok = await persistTask();
-      if (!ok) return;
+  const performLeave = React.useCallback(
+    (leaveAction?: () => void) => {
+      if (exitingAfterSaveRef.current || saving) return;
       exitingAfterSaveRef.current = true;
       setSkipRemoveGuard(true);
-      if (openedFromTaskDetail) {
-        router.dismissTo('/(tabs)/tasks');
-      } else {
-        navigation.dispatch(data.action);
-      }
-    })();
+      if (leaveAction) leaveAction();
+      else navigateAfterLeaveEdit();
+    },
+    [navigateAfterLeaveEdit, saving],
+  );
+
+  const promptUnsavedChanges = React.useCallback(
+    (onLeave: () => void) => {
+      Alert.alert('未保存的更改', '是否保存本次修改？', [
+        { text: '取消', style: 'cancel' },
+        { text: '不保存', style: 'destructive', onPress: onLeave },
+        {
+          text: '保存',
+          onPress: () =>
+            void (async () => {
+              const ok = await persistTask();
+              if (!ok) return;
+              onLeave();
+            })(),
+        },
+      ]);
+    },
+    [persistTask],
+  );
+
+  const handleBackPress = React.useCallback(() => {
+    if (saving || loading) return;
+    if (!isDirty) {
+      performLeave();
+      return;
+    }
+    promptUnsavedChanges(() => performLeave());
+  }, [isDirty, loading, performLeave, promptUnsavedChanges, saving]);
+
+  const preventRemove =
+    isFocused &&
+    isDirty &&
+    !loading &&
+    !skipRemoveGuard &&
+    !skipAutoSaveRef.current &&
+    !exitingAfterSaveRef.current;
+
+  usePreventRemove(preventRemove, ({ data }) => {
+    promptUnsavedChanges(() =>
+      performLeave(() => {
+        if (openedFromTaskDetail) {
+          router.dismissTo('/(tabs)/tasks');
+        } else {
+          navigation.dispatch(data.action);
+        }
+      }),
+    );
   });
 
   const navigateAfterDeleteTask = navigateAfterLeaveEdit;
@@ -701,7 +815,7 @@ export default function EditTaskScreen() {
           },
         ]}>
         <Pressable
-          onPress={() => void exitWithSave()}
+          onPress={handleBackPress}
           disabled={saving || loading}
           hitSlop={10}
           style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>

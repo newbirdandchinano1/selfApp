@@ -15,6 +15,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 type Item = {
   id: string;
   title: string;
+  parentLabel: string | null;
+  projectLabel: string | null;
   subtitle: string;
   tone: 'error' | 'primary' | 'tertiary' | 'outline';
   /** 有截止日期时用于组内排序：时间戳升序；无日期为 null */
@@ -53,15 +55,6 @@ function formatScheduleDateToYMD(value: string): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
-}
-
-/** 与任务 Tab 一致：逻辑日是否落在日程区间内 */
-function isLogicalDayInYmdRange(todayYmd: string, startYmd: string, endYmd: string): boolean {
-  if (!startYmd || !endYmd) return true;
-  if (todayYmd < startYmd) return false;
-  if (startYmd === endYmd) return todayYmd === startYmd;
-  if (endYmd === addDaysToYmd(startYmd, 1)) return todayYmd < endYmd;
-  return todayYmd <= endYmd;
 }
 
 function parseTaskExtraData(raw: string | null): Record<string, unknown> {
@@ -167,35 +160,34 @@ function getTaskDueDayYmdFromDueDate(t: TaskRow): string | null {
   return formatLocalYmd(parsed.date);
 }
 
-/** 用于青蛙时间线分组：区间任务在「今天落在区间内」时归入今日，否则按区间起止日推断 */
-function getTaskDueDayYmdForFrog(t: TaskRow, todayYmd: string): string | null {
+/** 用于青蛙时间线分组：区间任务以结束日（最后一天）为准，与任务 Tab 截止口径一致 */
+function getTaskDueDayYmdForFrog(t: TaskRow): string | null {
   const schedule = parseTaskSchedule(t.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
+  if (schedule?.mode === 'time' && schedule.range?.end) {
     const end = formatScheduleDateToYMD(schedule.range.end);
-    if (start && end) {
-      if (isLogicalDayInYmdRange(todayYmd, start, end)) return todayYmd;
-      if (todayYmd < start) return start;
-      return end;
-    }
+    if (end) return end;
   }
   return getTaskDueDayYmdFromDueDate(t);
 }
 
 function taskOverlapsFrogPickWindow(t: TaskRow, todayYmd: string, lastIncludedYmd: string): boolean {
   const schedule = parseTaskSchedule(t.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
+  if (schedule?.mode === 'time' && schedule.range?.end) {
     const end = formatScheduleDateToYMD(schedule.range.end);
-    if (start && end) return start <= lastIncludedYmd && end >= todayYmd;
+    if (end) return end >= todayYmd && end <= lastIncludedYmd;
   }
   if (!t.due_date?.trim()) return true;
-  const dueYmd = getTaskDueDayYmdForFrog(t, todayYmd);
+  const dueYmd = getTaskDueDayYmdForFrog(t);
   if (!dueYmd) return true;
   return dueYmd <= lastIncludedYmd;
 }
 
-function getTaskDueSortMs(t: TaskRow): number | null {
+function getTaskDueSortMsForFrog(t: TaskRow): number | null {
+  const dueYmd = getTaskDueDayYmdForFrog(t);
+  if (dueYmd) {
+    const d = ymdToLocalDate(dueYmd);
+    if (d) return d.getTime();
+  }
   if (!t.due_date?.trim() || !isValidDate(t.due_date)) return null;
   const parsed = parseDueDateAsLocalMoment(t.due_date);
   return parsed ? parsed.date.getTime() : null;
@@ -245,12 +237,27 @@ function timeBucketForDueYmd(
   return 'exclude';
 }
 
+function getTaskContextLabels(
+  t: TaskRow,
+  taskTitleById: Map<string, string>,
+  projectNameById: Record<string, string>,
+): { parentLabel: string | null; projectLabel: string | null } {
+  const parentLabel = t.parent_task_id
+    ? `上级任务：${taskTitleById.get(t.parent_task_id) ?? '（未找到）'}`
+    : null;
+  const projectName = t.project_id ? projectNameById[t.project_id] : null;
+  const projectLabel = projectName ? `所属项目：${projectName}` : null;
+  return { parentLabel, projectLabel };
+}
+
 function groupTasksToSections(
   rows: TaskRow[],
   now: Date,
   todayYmd: string,
   lockedProjectIds: Set<string>,
+  projectNameById: Record<string, string>,
 ): Section[] {
+  const taskTitleById = new Map(rows.map((r) => [r.id, r.title]));
   const soonEndYmd = addDaysToYmd(todayYmd, 3);
   const weekEndYmd = weekEndSundayYmd(now);
   const sevenEndYmd = addDaysToYmd(todayYmd, 7);
@@ -283,21 +290,23 @@ function groupTasksToSections(
 
   eligible.forEach((t) => {
     const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
-    const dueYmd = getTaskDueDayYmdForFrog(t, todayYmd);
+    const dueYmd = getTaskDueDayYmdForFrog(t);
     const bucket = timeBucketForDueYmd(dueYmd, todayYmd, soonEndYmd, weekEndYmd, sevenEndYmd);
     if (bucket === 'exclude') return;
 
-    const dueSortKey = getTaskDueSortMs(t);
+    const dueSortKey = getTaskDueSortMsForFrog(t);
     const subtitle =
-      bucket === 'nodate' || !t.due_date?.trim()
+      bucket === 'nodate' || !dueYmd
         ? '未设置截止日期'
-        : t.due_date && isValidDate(t.due_date)
-          ? formatDueCaption(t.due_date, now)
-          : '未设置截止日期';
+        : formatDueCaption(dueYmd, now);
+
+    const { parentLabel, projectLabel } = getTaskContextLabels(t, taskTitleById, projectNameById);
 
     const item: Item = {
       id: t.id,
       title: t.title,
+      parentLabel,
+      projectLabel,
       subtitle,
       tone,
       dueSortKey,
@@ -347,7 +356,7 @@ export default function AddFrogScreen() {
   const isDark = colorScheme === 'dark';
 
   const [sections, setSections] = React.useState<Section[]>(() =>
-    groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set()),
+    groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {}),
   );
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
   const [loading, setLoading] = React.useState(true);
@@ -375,7 +384,8 @@ export default function AddFrogScreen() {
       });
       setTaskMap(Object.fromEntries(rows.map((r) => [r.id, r])));
       setLockedProjectIds(locked);
-      setSections(groupTasksToSections(rows, now, todayYmd, locked));
+      const projectNameById = Object.fromEntries(projectRows.map((p) => [p.id, p.name]));
+      setSections(groupTasksToSections(rows, now, todayYmd, locked, projectNameById));
       setSelected((prev) => {
         const allowed = new Set(rows.filter((r) => !isStandaloneTodoTask(r)).map((r) => r.id));
         const next: Record<string, boolean> = {};
@@ -387,7 +397,7 @@ export default function AddFrogScreen() {
     } catch (e) {
       console.warn('加载青蛙候选任务失败', e);
       setSections(
-        groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set()),
+        groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {}),
       );
       setSelected({});
       setTaskMap({});
@@ -581,6 +591,16 @@ export default function AddFrogScreen() {
                             style={({ pressed }) => [styles.itemText, pressed && { opacity: 0.82 }]}
                             onPress={() => router.push({ pathname: '/task/[id]', params: { id: it.id } })}>
                             <Text style={[styles.itemTitle, { color: checked ? hoverColor : titleColor }]}>{it.title}</Text>
+                            {it.parentLabel ? (
+                              <Text style={[styles.itemContextHint, { color: outline }]} numberOfLines={1}>
+                                {it.parentLabel}
+                              </Text>
+                            ) : null}
+                            {it.projectLabel ? (
+                              <Text style={[styles.itemContextHint, { color: outline }]} numberOfLines={1}>
+                                {it.projectLabel}
+                              </Text>
+                            ) : null}
                             {it.subtitle ? (
                               <Text style={[styles.itemSubtitle, { color: theme.textSecondary }]}>{it.subtitle}</Text>
                             ) : null}
@@ -744,6 +764,12 @@ const styles = StyleSheet.create({
   itemTitle: {
     fontSize: 14,
     fontWeight: '700',
+  },
+  itemContextHint: {
+    fontSize: 10,
+    fontWeight: '700',
+    opacity: 0.7,
+    letterSpacing: 0.2,
   },
   itemSubtitle: {
     fontSize: 12,

@@ -901,72 +901,15 @@ export default function HealthScreen() {
     return `${sign}${rounded}% VS 上周`;
   }, [healthRecords, prevWeekHealthRecords, intakeTargetsSnapshot]);
 
-  const metricPercentAnims = React.useRef({
-    hydration: new Animated.Value(0),
-    protein: new Animated.Value(0),
-    carbohydrate: new Animated.Value(0),
-    sodium: new Animated.Value(0),
-  }).current;
-  const [animatedMetricPercents, setAnimatedMetricPercents] = React.useState({
-    hydration: 0,
-    protein: 0,
-    carbohydrate: 0,
-    sodium: 0,
-  });
-
-  React.useEffect(() => {
-    const hydrationId = metricPercentAnims.hydration.addListener(({ value }) =>
-      setAnimatedMetricPercents((prev) => ({ ...prev, hydration: value }))
-    );
-    const proteinId = metricPercentAnims.protein.addListener(({ value }) =>
-      setAnimatedMetricPercents((prev) => ({ ...prev, protein: value }))
-    );
-    const carbohydrateId = metricPercentAnims.carbohydrate.addListener(({ value }) =>
-      setAnimatedMetricPercents((prev) => ({ ...prev, carbohydrate: value }))
-    );
-    const sodiumId = metricPercentAnims.sodium.addListener(({ value }) =>
-      setAnimatedMetricPercents((prev) => ({ ...prev, sodium: value }))
-    );
-    return () => {
-      metricPercentAnims.hydration.removeListener(hydrationId);
-      metricPercentAnims.protein.removeListener(proteinId);
-      metricPercentAnims.carbohydrate.removeListener(carbohydrateId);
-      metricPercentAnims.sodium.removeListener(sodiumId);
-    };
-  }, [metricPercentAnims]);
-
-  React.useEffect(() => {
-    const nextHydration = dayIntakeDisplay.hydration.percent;
-    const nextProtein = dayIntakeDisplay.protein.percent;
-    const nextCarbohydrate = dayIntakeDisplay.carbohydrate.percent;
-    const nextSodium = dayIntakeDisplay.sodium.percent;
-    Animated.parallel([
-      Animated.timing(metricPercentAnims.hydration, {
-        toValue: nextHydration,
-        duration: 420,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }),
-      Animated.timing(metricPercentAnims.protein, {
-        toValue: nextProtein,
-        duration: 420,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }),
-      Animated.timing(metricPercentAnims.carbohydrate, {
-        toValue: nextCarbohydrate,
-        duration: 420,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }),
-      Animated.timing(metricPercentAnims.sodium, {
-        toValue: nextSodium,
-        duration: 420,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }),
-    ]).start();
-  }, [dayIntakeDisplay, metricPercentAnims]);
+  const metricPercents = React.useMemo(
+    () => ({
+      hydration: dayIntakeDisplay.hydration.percent,
+      protein: dayIntakeDisplay.protein.percent,
+      carbohydrate: dayIntakeDisplay.carbohydrate.percent,
+      sodium: dayIntakeDisplay.sodium.percent,
+    }),
+    [dayIntakeDisplay],
+  );
 
   const playIntakeFeedbackAnimation = React.useCallback(() => {
     metricImpactAnims.forEach((anim) => anim.setValue(0));
@@ -1863,7 +1806,7 @@ export default function HealthScreen() {
           {nutrientMetricMeta.map((item, index) => {
             const row = dayIntakeDisplay[item.key];
             const displayTarget = row.target;
-            const animatedPercent = Math.round(animatedMetricPercents[item.key]);
+            const animatedPercent = Math.round(metricPercents[item.key]);
 
             const openAssistantByCard = () => {
               if (item.key === 'hydration') {
@@ -1978,7 +1921,7 @@ export default function HealthScreen() {
                 <View style={styles.statusLineRow}>
                   <Text style={[styles.statusItemTitle, { color: colors.text }]}>水分摄入</Text>
                   <Text style={[styles.statusBadge, { color: HealthNutrientAccents.hydration, backgroundColor: `${HealthNutrientAccents.hydration}1A` }]}>
-                    {Math.round(animatedMetricPercents.hydration)}%
+                    {Math.round(metricPercents.hydration)}%
                   </Text>
                 </View>
                 <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
@@ -1996,7 +1939,7 @@ export default function HealthScreen() {
                   <View
                     style={[
                       styles.statusTrackFill,
-                      { width: `${Math.round(animatedMetricPercents.hydration)}%`, backgroundColor: HealthNutrientAccents.hydration },
+                      { width: `${Math.round(metricPercents.hydration)}%`, backgroundColor: HealthNutrientAccents.hydration },
                     ]}
                   />
                 </View>
@@ -2009,7 +1952,7 @@ export default function HealthScreen() {
                 <View style={styles.statusLineRow}>
                   <Text style={[styles.statusItemTitle, { color: colors.text }]}>蛋白质摄入</Text>
                   <Text style={[styles.statusBadge, { color: HealthNutrientAccents.protein, backgroundColor: `${HealthNutrientAccents.protein}1A` }]}>
-                    {Math.round(animatedMetricPercents.protein)}%
+                    {Math.round(metricPercents.protein)}%
                   </Text>
                 </View>
                 <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
@@ -2027,7 +1970,7 @@ export default function HealthScreen() {
                   <View
                     style={[
                       styles.statusTrackFill,
-                      { width: `${Math.round(animatedMetricPercents.protein)}%`, backgroundColor: HealthNutrientAccents.protein },
+                      { width: `${Math.round(metricPercents.protein)}%`, backgroundColor: HealthNutrientAccents.protein },
                     ]}
                   />
                 </View>
@@ -2040,7 +1983,7 @@ export default function HealthScreen() {
                 <View style={styles.statusLineRow}>
                   <Text style={[styles.statusItemTitle, { color: colors.text }]}>碳水摄入</Text>
                   <Text style={[styles.statusBadge, { color: HealthNutrientAccents.carbohydrate, backgroundColor: `${HealthNutrientAccents.carbohydrate}1A` }]}>
-                    {Math.round(animatedMetricPercents.carbohydrate)}%
+                    {Math.round(metricPercents.carbohydrate)}%
                   </Text>
                 </View>
                 <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
@@ -2058,7 +2001,7 @@ export default function HealthScreen() {
                   <View
                     style={[
                       styles.statusTrackFill,
-                      { width: `${Math.round(animatedMetricPercents.carbohydrate)}%`, backgroundColor: HealthNutrientAccents.carbohydrate },
+                      { width: `${Math.round(metricPercents.carbohydrate)}%`, backgroundColor: HealthNutrientAccents.carbohydrate },
                     ]}
                   />
                 </View>
@@ -2071,7 +2014,7 @@ export default function HealthScreen() {
                 <View style={styles.statusLineRow}>
                   <Text style={[styles.statusItemTitle, { color: colors.text }]}>钠含量监控</Text>
                   <Text style={[styles.statusBadge, { color: HealthNutrientAccents.sodium, backgroundColor: `${HealthNutrientAccents.sodium}1A` }]}>
-                    {Math.round(animatedMetricPercents.sodium)}%
+                    {Math.round(metricPercents.sodium)}%
                   </Text>
                 </View>
                 <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
@@ -2089,7 +2032,7 @@ export default function HealthScreen() {
                   <View
                     style={[
                       styles.statusTrackFill,
-                      { width: `${Math.round(animatedMetricPercents.sodium)}%`, backgroundColor: HealthNutrientAccents.sodium },
+                      { width: `${Math.round(metricPercents.sodium)}%`, backgroundColor: HealthNutrientAccents.sodium },
                     ]}
                   />
                 </View>

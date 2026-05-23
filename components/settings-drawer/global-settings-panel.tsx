@@ -1,4 +1,6 @@
+import { AppInput } from '@/components/ui/app-input';
 import { Colors } from '@/constants/theme';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
 import type { AiLlmProviderId } from '@/lib/ai-llm-provider-preference';
 import {
@@ -10,13 +12,6 @@ import {
   probeGeminiTextAndVisionConnectivity,
   type GeminiConnectivityProbeRow,
 } from '@/lib/gemini-generative';
-import { AppInput } from '@/components/ui/app-input';
-import { getLastFullGithubBackupAtIso } from '@/lib/github-full-backup-local-meta';
-import { triggerGithubCloudRestoreFromFullBackup } from '@/lib/github-cloud-restore';
-import {
-  triggerGithubCloudSync,
-  type GithubCloudSyncProgress,
-} from '@/lib/github-cloud-sync';
 import {
   DEFAULT_GITHUB_FULL_BACKUP_ROOT,
   DEFAULT_KV_API_URL,
@@ -27,7 +22,12 @@ import {
   loadGithubBackupTokenCache,
   setGithubUserToken,
 } from '@/lib/github-backup-user-config';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { triggerGithubCloudRestoreFromFullBackup } from '@/lib/github-cloud-restore';
+import {
+  triggerGithubCloudSync,
+  type GithubCloudSyncProgress,
+} from '@/lib/github-cloud-sync';
+import { getLastFullGithubBackupAtIso } from '@/lib/github-full-backup-local-meta';
 import {
   DEFAULT_TASKS_DAY_BOUNDARY,
   formatTasksDayBoundaryLabel,
@@ -99,6 +99,9 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const outline = isDark ? 'rgba(148,163,184,0.8)' : '#727785';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.35)';
   const primary = isDark ? '#60a5fa' : '#0058be';
+  const secondary = isDark ? '#34d399' : '#006c49';
+  const memoAccent = isDark ? '#fbbf24' : '#825100';
+  const weaknessAccent = isDark ? '#fb923c' : '#c2410c';
   const cardBg = isDark ? 'rgba(30,41,59,0.55)' : '#ffffff';
   const cardBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)';
 
@@ -414,7 +417,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled">
         <View style={styles.section}>
-          {renderSectionHead('RECIPES', '我的菜谱')}
+          {renderSectionHead('MANAGE', '个人管理')}
           <Pressable
             onPress={() => {
               closeSettingsDrawer();
@@ -427,6 +430,60 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                 <Text style={[styles.rowTitle, { color: text }]}>我的菜谱</Text>
                 <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
                   按分类管理拿手菜，支持食材/步骤分项录入与成品图。
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={22} color={outline} />
+            </View>
+          </Pressable>
+
+          <Pressable
+            onPress={() => {
+              closeSettingsDrawer();
+              router.push('/memo-list');
+            }}
+            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
+            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+              <MaterialIcons name="description" size={26} color={memoAccent} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowTitle, { color: text }]}>备忘录</Text>
+                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                  本地备忘 · 离线保存；支持标题与正文，左滑可转待办或删除。
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={22} color={outline} />
+            </View>
+          </Pressable>
+
+          <Pressable
+            onPress={() => {
+              closeSettingsDrawer();
+              router.push('/weakness-list');
+            }}
+            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
+            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+              <MaterialIcons name="psychology-alt" size={26} color={weaknessAccent} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowTitle, { color: text }]}>我的缺点</Text>
+                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                  自我觉察 · 本机保存；记录缺点与表现后自动生成 AI 分析与建议。
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={22} color={outline} />
+            </View>
+          </Pressable>
+
+          <Pressable
+            onPress={() => {
+              closeSettingsDrawer();
+              router.push('/my-skills');
+            }}
+            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
+            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+              <MaterialIcons name="psychology" size={26} color={secondary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowTitle, { color: text }]}>我的技能</Text>
+                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                  自定义维度 · AI 评估；为每个技能写下自我描述后可一键请求 AI 评估。
                 </Text>
               </View>
               <MaterialIcons name="chevron-right" size={22} color={outline} />

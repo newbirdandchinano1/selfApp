@@ -2,6 +2,12 @@ import { AppButton, AppCard, AppIconButton, ScreenHeader } from '@/components/ui
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
+import {
+  BUILTIN_SHEET_CATEGORY_LABELS,
+  getFinanceTransactionCategoryLabel,
+  isInitialBalanceFinanceTransaction,
+  parseFinanceTransactionExtra,
+} from '@/lib/repositories/finance/finance-transaction-extra';
 import type { FinanceFlowCategoryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { analyzeFinanceBillSummaryFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -44,6 +50,15 @@ type TopExpenseItem = {
   desc: string;
   amount: number;
   icon: keyof typeof MaterialIcons.glyphMap;
+};
+
+type TrendPoint = {
+  dateKey: string;
+  label: string;
+  rawValue: number;
+  heightPct: number;
+  income: number;
+  expense: number;
 };
 
 const CATEGORY_COLORS = ['#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe', '#0ea5e9', '#38bdf8'];
@@ -144,6 +159,31 @@ function getCategoryIcon(category?: FinanceFlowCategoryRow) {
   }
 }
 
+function resolveTransactionCategory(
+  txn: FinanceTransactionRow,
+  categoryMap: Map<string, FinanceFlowCategoryRow>,
+  categoryByName: Map<string, FinanceFlowCategoryRow>,
+) {
+  if (txn.flow_category_id) {
+    const row = categoryMap.get(txn.flow_category_id);
+    if (row) {
+      return { key: row.id, name: row.name, icon: getCategoryIcon(row), row };
+    }
+  }
+
+  const extra = parseFinanceTransactionExtra(txn.extra_data);
+  const label = extra.category_label?.trim() || (extra.category_key ? BUILTIN_SHEET_CATEGORY_LABELS[extra.category_key] : undefined);
+  if (label) {
+    const row = categoryByName.get(label);
+    if (row) {
+      return { key: row.id, name: row.name, icon: getCategoryIcon(row), row };
+    }
+    return { key: `label:${label}`, name: label, icon: DEFAULT_CATEGORY_ICON, row: undefined };
+  }
+
+  return { key: 'uncategorized', name: '未分类', icon: DEFAULT_CATEGORY_ICON, row: undefined };
+}
+
 export default function FinanceStatsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -161,6 +201,7 @@ export default function FinanceStatsScreen() {
   const [categoryMode, setCategoryMode] = React.useState<CategoryMode>('expense');
   const [trendMode, setTrendMode] = React.useState<TrendMode>('expense');
   const [rankMode, setRankMode] = React.useState<RankMode>('expense');
+  const [selectedTrendIndex, setSelectedTrendIndex] = React.useState<number | null>(null);
   const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const [categories, setCategories] = React.useState<FinanceFlowCategoryRow[]>([]);
   const [aiBillAnalysis, setAiBillAnalysis] = React.useState<string | null>(null);
@@ -220,6 +261,8 @@ export default function FinanceStatsScreen() {
   }, [range.endYmd, range.startYmd, transactions]);
 
   const categoryMap = React.useMemo(() => new Map(categories.map((category) => [category.id, category])), [categories]);
+  const categoryByName = React.useMemo(() => new Map(categories.map((category) => [category.name, category])), [categories]);
+  const categoryNameById = React.useMemo(() => new Map(categories.map((category) => [category.id, category.name])), [categories]);
   const totalIncome = React.useMemo(
     () => filteredTransactions.filter((txn) => txn.transaction_type === 'income').reduce((sum, txn) => sum + Math.abs(txn.amount), 0),
     [filteredTransactions]
@@ -238,12 +281,11 @@ export default function FinanceStatsScreen() {
       const isIncome = txn.transaction_type === 'income';
       const isExpense = txn.transaction_type !== 'income' && txn.transaction_type !== 'transfer';
       if ((categoryMode === 'income' && !isIncome) || (categoryMode === 'expense' && !isExpense)) return;
-      const category = txn.flow_category_id ? categoryMap.get(txn.flow_category_id) : undefined;
-      const key = category?.id ?? 'uncategorized';
-      const current = bucket.get(key) ?? { name: category?.name ?? '未分类', amount: 0, count: 0, icon: getCategoryIcon(category) };
+      const resolved = resolveTransactionCategory(txn, categoryMap, categoryByName);
+      const current = bucket.get(resolved.key) ?? { name: resolved.name, amount: 0, count: 0, icon: resolved.icon };
       current.amount += Math.abs(txn.amount);
       current.count += 1;
-      bucket.set(key, current);
+      bucket.set(resolved.key, current);
     });
     return Array.from(bucket.values())
       .sort((a, b) => b.amount - a.amount)
@@ -256,7 +298,7 @@ export default function FinanceStatsScreen() {
         icon: item.icon,
         color: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
       }));
-  }, [categoryMap, categoryMode, categoryTotal, filteredTransactions]);
+  }, [categoryByName, categoryMap, categoryMode, categoryTotal, filteredTransactions]);
 
   const dailyRows = React.useMemo<BillSummaryItem[]>(() => {
     const bucket = new Map<string, { income: number; expense: number }>();
@@ -282,21 +324,22 @@ export default function FinanceStatsScreen() {
 
   const topRankItems = React.useMemo<TopExpenseItem[]>(() => {
     return filteredTransactions
+      .filter((txn) => !isInitialBalanceFinanceTransaction(txn))
       .filter((txn) => rankMode === 'income' ? txn.transaction_type === 'income' : txn.transaction_type !== 'income' && txn.transaction_type !== 'transfer')
       .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
       .slice(0, 5)
       .map((txn, index) => {
-        const category = txn.flow_category_id ? categoryMap.get(txn.flow_category_id) : undefined;
+        const resolved = resolveTransactionCategory(txn, categoryMap, categoryByName);
         return {
           id: txn.id,
           rank: index + 1,
-          name: category ? `${category.name}-${txn.name}` : txn.name,
+          name: resolved.name === '未分类' ? txn.name : `${resolved.name}-${txn.name}`,
           desc: txn.note ?? txn.ai_comment ?? '',
           amount: Math.abs(txn.amount),
-          icon: getCategoryIcon(category),
+          icon: resolved.icon,
         };
       });
-  }, [categoryMap, filteredTransactions, rankMode]);
+  }, [categoryByName, categoryMap, filteredTransactions, rankMode]);
 
   const shiftRange = React.useCallback((direction: -1 | 1) => {
     if (activeTab === '自定义') {
@@ -376,9 +419,17 @@ export default function FinanceStatsScreen() {
       });
       const rawValues = monthly.map((item) => pickTrendValue(item.income, item.expense));
       const max = Math.max(...rawValues.map((value) => Math.abs(value)), 1);
+      const year = range.start.getFullYear();
+      const points: TrendPoint[] = monthly.map((item, index) => ({
+        dateKey: `${year}-${String(index + 1).padStart(2, '0')}`,
+        label: `${index + 1}月`,
+        rawValue: pickTrendValue(item.income, item.expense),
+        heightPct: Math.max(2, (Math.abs(pickTrendValue(item.income, item.expense)) / max) * 100),
+        income: item.income,
+        expense: item.expense,
+      }));
       return {
-        rawValues,
-        values: rawValues.map((value) => Math.max(2, (Math.abs(value) / max) * 100)),
+        points,
         axis: ['1月', '3月', '6月', '9月', '12月'],
       };
     }
@@ -392,27 +443,54 @@ export default function FinanceStatsScreen() {
       else current.expense += Math.abs(txn.amount);
       daily.set(day, current);
     });
-    const rawValues: number[] = [];
+    const points: TrendPoint[] = [];
     const cursor = new Date(range.start);
     while (cursor <= range.end) {
-      const item = daily.get(formatYmd(cursor)) ?? { income: 0, expense: 0 };
-      rawValues.push(pickTrendValue(item.income, item.expense));
+      const dayKey = formatYmd(cursor);
+      const item = daily.get(dayKey) ?? { income: 0, expense: 0 };
+      points.push({
+        dateKey: dayKey,
+        label: formatChineseDate(cursor),
+        rawValue: pickTrendValue(item.income, item.expense),
+        heightPct: 0,
+        income: item.income,
+        expense: item.expense,
+      });
       cursor.setDate(cursor.getDate() + 1);
     }
-    const max = Math.max(...rawValues.map((value) => Math.abs(value)), 1);
+    const max = Math.max(...points.map((point) => Math.abs(point.rawValue)), 1);
+    points.forEach((point) => {
+      point.heightPct = Math.max(2, (Math.abs(point.rawValue) / max) * 100);
+    });
     const shouldShowAxisYear = range.start.getFullYear() !== range.end.getFullYear();
     return {
-      rawValues,
-      values: rawValues.map((value) => Math.max(2, (Math.abs(value) / max) * 100)),
+      points,
       axis: activeTab === '周'
         ? Array.from({ length: 7 }, (_, index) => formatMonthDay(addDays(range.start, index)))
         : buildDateAxis(range.start, range.end, shouldShowAxisYear),
     };
   }, [activeTab, filteredTransactions, range.end, range.start, trendMode]);
 
+  React.useEffect(() => {
+    setSelectedTrendIndex(null);
+  }, [activeTab, currentDate, customEndDate, customStartDate, trendMode]);
+
   const trendTotal = trendMode === 'income' ? totalIncome : trendMode === 'balance' ? balance : totalExpense;
-  const trendTitle = trendMode === 'income' ? '每日收入趋势' : trendMode === 'balance' ? '每日结余趋势' : '每日支出趋势';
   const trendModeLabel = trendMode === 'income' ? '收入' : trendMode === 'balance' ? '结余' : '支出';
+  const selectedTrendPoint = selectedTrendIndex != null ? trendData.points[selectedTrendIndex] ?? null : null;
+  const trendTipText = React.useMemo(() => {
+    if (selectedTrendPoint) {
+      if (trendMode === 'balance') {
+        const balanceValue = selectedTrendPoint.income - selectedTrendPoint.expense;
+        return `${selectedTrendPoint.label} · 收入 ${formatMoney(selectedTrendPoint.income)} · 支出 ${formatMoney(selectedTrendPoint.expense)} · 结余 ${balanceValue < 0 ? '-' : ''}${formatMoney(Math.abs(balanceValue))}`;
+      }
+      const value = trendMode === 'income' ? selectedTrendPoint.income : selectedTrendPoint.expense;
+      return `${selectedTrendPoint.label} · ${trendModeLabel} ${formatMoney(value)}`;
+    }
+    if (!filteredTransactions.length) return '当前区间暂无账单数据';
+    return `区间内共 ${filteredTransactions.length} 笔，${trendModeLabel} ${trendTotal < 0 ? '-' : ''}${formatMoney(Math.abs(trendTotal))} · 点击柱形查看具体日期`;
+  }, [filteredTransactions.length, selectedTrendPoint, trendMode, trendModeLabel, trendTotal]);
+  const trendTitle = trendMode === 'income' ? '每日收入趋势' : trendMode === 'balance' ? '每日结余趋势' : '每日支出趋势';
   const trendAccent = trendMode === 'income' ? incomeColor : trendMode === 'balance' ? balanceColor : expenseColor;
   const shouldShowCustomYear = range.start.getFullYear() !== range.end.getFullYear();
   const rangeLabel = activeTab === '年'
@@ -437,8 +515,7 @@ export default function FinanceStatsScreen() {
     const expenseMap = new Map<string, { amount: number; count: number }>();
     const incomeMap = new Map<string, { amount: number; count: number }>();
     for (const txn of filteredTransactions) {
-      const cat = txn.flow_category_id ? categoryMap.get(txn.flow_category_id) : undefined;
-      const name = cat?.name ?? '未分类';
+      const name = getFinanceTransactionCategoryLabel(txn, categoryNameById) ?? '未分类';
       if (txn.transaction_type === 'income') {
         const cur = incomeMap.get(name) ?? { amount: 0, count: 0 };
         cur.amount += Math.abs(txn.amount);
@@ -487,7 +564,7 @@ export default function FinanceStatsScreen() {
 
     const s = parts.join('\n');
     return s.length > 8000 ? `${s.slice(0, 8000)}\n…（摘要已截断）` : s;
-  }, [balance, categoryMap, filteredTransactions, range.endYmd, range.startYmd, rangeLabel, totalExpense, totalIncome]);
+  }, [balance, categoryNameById, filteredTransactions, range.endYmd, range.startYmd, rangeLabel, totalExpense, totalIncome]);
 
   React.useEffect(() => {
     setAiBillAnalysis(null);
@@ -755,25 +832,36 @@ export default function FinanceStatsScreen() {
 
           <View style={[styles.trendTip, { backgroundColor: colors.surfaceSubtle }]}>
             <Text style={[Typography.caption, { color: colors.textSecondary }]}>
-              {filteredTransactions.length
-                ? `区间内共 ${filteredTransactions.length} 笔，${trendModeLabel} ${trendTotal < 0 ? '-' : ''}${formatMoney(Math.abs(trendTotal))}`
-                : '当前区间暂无账单数据'}
+              {trendTipText}
             </Text>
           </View>
 
           <View style={styles.trendChart}>
-            {trendData.values.map((h, idx) => (
-              <View
-                key={`bar-${idx}`}
-                style={[
-                  styles.trendBar,
-                  {
-                    height: `${h}%`,
-                    backgroundColor: h > 10 ? trendAccent : colors.primaryMuted,
-                  },
-                ]}
-              />
-            ))}
+            {trendData.points.map((point, idx) => {
+              const selected = selectedTrendIndex === idx;
+              return (
+                <Pressable
+                  key={`bar-${point.dateKey}`}
+                  onPress={() => setSelectedTrendIndex((prev) => (prev === idx ? null : idx))}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${point.label} ${trendModeLabel} ${formatMoney(Math.abs(point.rawValue))}`}
+                  style={({ pressed }) => [
+                    styles.trendBarWrap,
+                    pressed && { opacity: 0.82 },
+                  ]}>
+                  <View
+                    style={[
+                      styles.trendBar,
+                      {
+                        height: `${point.heightPct}%`,
+                        backgroundColor: selected ? trendAccent : point.heightPct > 10 ? trendAccent : colors.primaryMuted,
+                        opacity: selected ? 1 : selectedTrendIndex != null ? 0.45 : 1,
+                      },
+                    ]}
+                  />
+                </Pressable>
+              );
+            })}
           </View>
           <View style={styles.trendAxis}>
             {trendData.axis.map((label) => (
@@ -1090,8 +1178,13 @@ const styles = StyleSheet.create({
     gap: 1,
     paddingHorizontal: Spacing.xs,
   },
-  trendBar: {
+  trendBarWrap: {
     flex: 1,
+    height: '100%',
+    justifyContent: 'flex-end',
+  },
+  trendBar: {
+    width: '100%',
     borderTopLeftRadius: Radius.xs,
     borderTopRightRadius: Radius.xs,
     minHeight: 2,

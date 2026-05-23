@@ -8,18 +8,10 @@ import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { listVisions } from '@/lib/repositories/visions/vision';
 import { visionRowToProfileCarouselItem } from '@/lib/repositories/visions/vision-present';
-import {
-  createEmptyUserSkillsSnapshot,
-  loadUserSkills,
-  skillsProfilePreviewSubtitle,
-  type UserSkillsSnapshot,
-} from '@/lib/user-skills';
 import { getHealthRecordsLast7Days } from '@/lib/repositories/health/health';
 import { computeHealthCardPreview, getIntakeTargetsSnapshot } from '@/lib/persona-health-context';
 import { localLogicalTodayYmd } from '@/lib/persona-portrait-sync';
 import { getDefaultUser } from '@/lib/repositories/users/user';
-import { listMemos } from '@/lib/memos';
-import { listUserWeaknesses } from '@/lib/user-weaknesses';
 import type { ProfileVisionCarouselItem } from '@/lib/visions-registry';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -94,8 +86,6 @@ export default function ProfileScreen() {
   const secondary = isDark ? '#34d399' : '#006c49';
   const tertiary = isDark ? '#fbbf24' : '#825100';
   const wishAccent = isDark ? '#f472b6' : '#b42375';
-  const weaknessAccent = isDark ? '#fb923c' : '#c2410c';
-
   const avatarUrl = user?.avatar_uri ? { uri: user.avatar_uri } : require('../../assets/profile/avatar.png');
   const progressBgUrl = require('../../assets/profile/progress.png');
   const visionSectionYear = new Date().getFullYear();
@@ -128,17 +118,6 @@ export default function ProfileScreen() {
   const [weeklyJournalLoading, setWeeklyJournalLoading] = useState(true);
   const [weeklyProfileRangeLabel, setWeeklyProfileRangeLabel] = useState('');
   const [weeklyProfileGate, setWeeklyProfileGate] = useState<'loading' | 'ok' | 'no_setting' | 'wrong_day'>('loading');
-
-  const [userSkills, setUserSkills] = useState<UserSkillsSnapshot | null>(null);
-
-  const loadUserSkillsSnapshot = useCallback(async () => {
-    try {
-      const s = await loadUserSkills();
-      setUserSkills(s);
-    } catch {
-      setUserSkills(createEmptyUserSkillsSnapshot());
-    }
-  }, []);
 
   const loadWeeklyJournal = useCallback(async () => {
     setWeeklyJournalLoading(true);
@@ -184,28 +163,6 @@ export default function ProfileScreen() {
       setWishPreviewRows(sorted.slice(0, WISH_PROFILE_PREVIEW_MAX));
     } catch {
       setWishPreviewRows([]);
-    }
-  }, []);
-
-  const [memoCount, setMemoCount] = useState(0);
-
-  const loadMemoCount = useCallback(async () => {
-    try {
-      const rows = await listMemos();
-      setMemoCount(rows.length);
-    } catch {
-      setMemoCount(0);
-    }
-  }, []);
-
-  const [weaknessCount, setWeaknessCount] = useState(0);
-
-  const loadWeaknessCount = useCallback(async () => {
-    try {
-      const rows = await listUserWeaknesses();
-      setWeaknessCount(rows.length);
-    } catch {
-      setWeaknessCount(0);
     }
   }, []);
 
@@ -304,18 +261,12 @@ export default function ProfileScreen() {
       void loadProfileVisions();
       void loadProfileWishItems();
       void loadWeeklyJournal();
-      void loadUserSkillsSnapshot();
-      void loadMemoCount();
-      void loadWeaknessCount();
     }, [
       loadUser,
       loadHealthCardPreview,
       loadProfileVisions,
       loadProfileWishItems,
       loadWeeklyJournal,
-      loadUserSkillsSnapshot,
-      loadMemoCount,
-      loadWeaknessCount,
     ]),
   );
 
@@ -703,82 +654,6 @@ export default function ProfileScreen() {
 
           <View style={styles.sectionHead}>
             <View>
-              <Text style={[styles.kicker, { color: outline }]}>MEMO</Text>
-              <Text style={[styles.sectionTitle, { color: text }]}>备忘录</Text>
-            </View>
-            <Pressable onPress={() => router.push('/memo-list')} hitSlop={8}>
-              <Text style={[styles.moreText, { color: primary }]}>查看全部</Text>
-            </Pressable>
-          </View>
-
-          <Pressable
-            onPress={() => router.push('/memo-list')}
-            style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
-            <View
-              style={[
-                styles.weeklyEntryCard,
-                {
-                  backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#ffffff',
-                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(130,81,0,0.14)',
-                },
-              ]}>
-              <View style={[styles.weeklyEntryAccent, { backgroundColor: tertiary }]} />
-              <View style={styles.weeklyEntryBody}>
-                <MaterialIcons name="description" size={28} color={tertiary} />
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Text style={[styles.weeklyEntryRange, { color: outline }]}>本地备忘 · 离线保存</Text>
-                  <Text style={[styles.weeklyEntryMeta, { color: text }]}>
-                    {memoCount === 0 ? '暂无备忘，点此添加' : `共 ${memoCount} 条备忘`}
-                  </Text>
-                  <Text style={[styles.weeklyEntryHint, { color: outline }]}>
-                    支持多条备忘、标题与正文；左滑可转待办（转后移除备忘）或删除。
-                  </Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={26} color={outline} />
-              </View>
-            </View>
-          </Pressable>
-
-          <View style={styles.sectionHead}>
-            <View>
-              <Text style={[styles.kicker, { color: outline }]}>SELF-AWARENESS</Text>
-              <Text style={[styles.sectionTitle, { color: text }]}>我的缺点</Text>
-            </View>
-            <Pressable onPress={() => router.push('/weakness-list')} hitSlop={8}>
-              <Text style={[styles.moreText, { color: primary }]}>查看全部</Text>
-            </Pressable>
-          </View>
-
-          <Pressable
-            onPress={() => router.push('/weakness-list')}
-            style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
-            <View
-              style={[
-                styles.weeklyEntryCard,
-                {
-                  backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#ffffff',
-                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,65,12,0.14)',
-                },
-              ]}>
-              <View style={[styles.weeklyEntryAccent, { backgroundColor: weaknessAccent }]} />
-              <View style={styles.weeklyEntryBody}>
-                <MaterialIcons name="psychology-alt" size={28} color={weaknessAccent} />
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Text style={[styles.weeklyEntryRange, { color: outline }]}>自我觉察 · 本机保存</Text>
-                  <Text style={[styles.weeklyEntryMeta, { color: text }]}>
-                    {weaknessCount === 0 ? '尚未记录，点此添加' : `共 ${weaknessCount} 条缺点记录`}
-                  </Text>
-                  <Text style={[styles.weeklyEntryHint, { color: outline }]}>
-                    写下缺点与具体表现并保存后，将自动请求智谱生成分析与建议并保存在本机（需配置 API 密钥）；也可在列表中手动重新生成。
-                  </Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={26} color={outline} />
-              </View>
-            </View>
-          </Pressable>
-
-          <View style={styles.sectionHead}>
-            <View>
               <Text style={[styles.kicker, { color: outline }]}>WEEKLY REVIEW</Text>
               <Text style={[styles.sectionTitle, { color: text }]}>每周复盘</Text>
             </View>
@@ -818,44 +693,6 @@ export default function ProfileScreen() {
                   )}
                   <Text style={[styles.weeklyEntryHint, { color: outline }]}>
                     按五大板块书写复盘，自评执行分后可生成 AI 建议，并记录是否调整任务、存钱与时间分配。
-                  </Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={26} color={outline} />
-              </View>
-            </View>
-          </Pressable>
-
-          <View style={styles.sectionHead}>
-            <View>
-              <Text style={[styles.kicker, { color: outline }]}>SKILLS</Text>
-              <Text style={[styles.sectionTitle, { color: text }]}>我的技能</Text>
-            </View>
-            <Pressable onPress={() => router.push('/my-skills')} hitSlop={8}>
-              <Text style={[styles.moreText, { color: primary }]}>管理</Text>
-            </Pressable>
-          </View>
-
-          <Pressable
-            onPress={() => router.push('/my-skills')}
-            style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
-            <View
-              style={[
-                styles.weeklyEntryCard,
-                {
-                  backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#ffffff',
-                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)',
-                },
-              ]}>
-              <View style={[styles.weeklyEntryAccent, { backgroundColor: secondary }]} />
-              <View style={styles.weeklyEntryBody}>
-                <MaterialIcons name="psychology" size={28} color={secondary} />
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Text style={[styles.weeklyEntryRange, { color: outline }]}>自定义维度 · AI 评估</Text>
-                  <Text style={[styles.weeklyEntryMeta, { color: text }]}>
-                    {userSkills ? skillsProfilePreviewSubtitle(userSkills) : '加载中…'}
-                  </Text>
-                  <Text style={[styles.weeklyEntryHint, { color: outline }]}>
-                    为每个技能写下自我描述后，可一键请求当前选择的 AI 模型（屏幕左缘右滑打开全局设置可切换智谱 / 豆包）给出逐条评估、综合建议与总体能力分析。
                   </Text>
                 </View>
                 <MaterialIcons name="chevron-right" size={26} color={outline} />

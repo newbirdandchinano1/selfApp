@@ -1,17 +1,24 @@
 import type { SheetCategory } from '@/lib/finance-transaction-sheet/helpers';
+import { FINANCE_SHEET_CATEGORY_ICON_OPTIONS } from '@/lib/constants/finance-sheet-category-icons';
 import type { FinanceSheetTransactionType } from '@/lib/repositories/finance/finance-sheet-category';
 import { MaterialIcons } from '@expo/vector-icons';
+
+type MaterialIconName = keyof typeof MaterialIcons.glyphMap;
 import React from 'react';
 import {
   ActivityIndicator,
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+
+const ICON_COLUMNS = 6;
+const ICON_GAP = 8;
 
 export type FinanceCategoryPickerStyles = {
   categoryGrid: object;
@@ -36,6 +43,8 @@ type FinanceCategoryPickerProps = {
   addModalVisible: boolean;
   newCategoryName: string;
   onChangeNewCategoryName: (v: string) => void;
+  newCategoryIcon: MaterialIconName;
+  onChangeNewCategoryIcon: (icon: MaterialIconName) => void;
   isSavingCategory: boolean;
   onCloseAddModal: () => void;
   onSaveNewCategory: () => void;
@@ -57,11 +66,18 @@ export function FinanceCategoryPicker({
   addModalVisible,
   newCategoryName,
   onChangeNewCategoryName,
+  newCategoryIcon,
+  onChangeNewCategoryIcon,
   isSavingCategory,
   onCloseAddModal,
   onSaveNewCategory,
 }: FinanceCategoryPickerProps) {
   const typeLabel = transactionType === 'income' ? '收入' : '支出';
+  const [iconGridWidth, setIconGridWidth] = React.useState(0);
+  const iconTileSize =
+    iconGridWidth > 0
+      ? Math.floor((iconGridWidth - ICON_GAP * (ICON_COLUMNS - 1)) / ICON_COLUMNS)
+      : 0;
 
   return (
     <>
@@ -130,6 +146,41 @@ export function FinanceCategoryPicker({
               autoFocus={Platform.OS !== 'web'}
               style={[modalStyles.input, { color: text, borderColor: outlineVariant }]}
             />
+            <Text style={[modalStyles.iconSectionLabel, { color: text }]}>选择图标</Text>
+            <ScrollView
+              style={modalStyles.iconScroll}
+              contentContainerStyle={modalStyles.iconScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}>
+              <View
+                style={[modalStyles.iconGrid, { gap: ICON_GAP }]}
+                onLayout={(e) => {
+                  const w = e.nativeEvent.layout.width;
+                  if (w > 0 && w !== iconGridWidth) setIconGridWidth(w);
+                }}>
+                {iconTileSize > 0
+                  ? FINANCE_SHEET_CATEGORY_ICON_OPTIONS.map((item) => {
+                      const active = newCategoryIcon === item.icon;
+                      return (
+                        <Pressable
+                          key={item.key}
+                          onPress={() => onChangeNewCategoryIcon(item.icon)}
+                          style={[
+                            modalStyles.iconTile,
+                            {
+                              width: iconTileSize,
+                              height: iconTileSize,
+                              backgroundColor: active ? `${primary}18` : outlineVariant,
+                              borderColor: active ? primary : 'transparent',
+                            },
+                          ]}>
+                          <MaterialIcons name={item.icon} size={22} color={active ? primary : subtle} />
+                        </Pressable>
+                      );
+                    })
+                  : null}
+              </View>
+            </ScrollView>
             <View style={modalStyles.actions}>
               <Pressable
                 onPress={onCloseAddModal}
@@ -166,6 +217,7 @@ const modalStyles = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
     gap: 10,
+    maxHeight: '85%',
   },
   title: { fontSize: 18, fontWeight: '800' },
   hint: { fontSize: 13, lineHeight: 18 },
@@ -176,6 +228,19 @@ const modalStyles = StyleSheet.create({
     paddingVertical: Platform.OS === 'ios' ? 12 : 10,
     fontSize: 16,
     marginTop: 4,
+  },
+  iconSectionLabel: { fontSize: 14, fontWeight: '700', marginTop: 4 },
+  iconScroll: { maxHeight: 168 },
+  iconScrollContent: { paddingBottom: 4 },
+  iconGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  iconTile: {
+    borderRadius: 10,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   actions: {
     flexDirection: 'row',

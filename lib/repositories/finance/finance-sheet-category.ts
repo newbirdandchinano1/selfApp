@@ -1,7 +1,7 @@
 import { getDatabase } from '../../database.native';
 import type { FinanceFlowCategoryRow } from './finance.types';
 import type { SheetCategory } from '@/lib/finance-transaction-sheet/helpers';
-import type { MaterialIcons } from '@expo/vector-icons';
+import { MaterialIcons } from '@expo/vector-icons';
 
 export const FINANCE_SHEET_CATEGORY_ID_PREFIX = 'sheet-cat-';
 
@@ -68,10 +68,15 @@ export async function getFinanceSheetCustomCategories(transactionType: FinanceSh
   });
 }
 
-export async function createFinanceSheetCustomCategory(name: string, transactionType: FinanceSheetTransactionType) {
+export async function createFinanceSheetCustomCategory(
+  name: string,
+  transactionType: FinanceSheetTransactionType,
+  icon: keyof typeof MaterialIcons.glyphMap = 'bookmark',
+) {
   const trimmed = name.trim();
   if (!trimmed) throw new Error('分类名称不能为空');
   if (trimmed.length > 20) throw new Error('分类名称不能超过 20 字');
+  const iconName = isMaterialIconName(icon) ? icon : 'bookmark';
 
   const db = await getDatabase();
   const dup = await db.getFirstAsync<{ id: string }>(
@@ -92,7 +97,7 @@ export async function createFinanceSheetCustomCategory(name: string, transaction
   const extra_data = JSON.stringify({
     sheet: true,
     transaction_type: transactionType,
-    icon: 'bookmark',
+    icon: iconName,
   });
 
   await db.runAsync(

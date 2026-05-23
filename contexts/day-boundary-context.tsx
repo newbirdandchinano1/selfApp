@@ -14,7 +14,6 @@ type DayBoundaryContextValue = {
   logicalTodayYmd: string;
   /** 逻辑「今天」对应的本地日历日（正午），用于 UI 月日/星期 */
   logicalTodayDate: Date;
-  logicalTodayClock: number;
   isReady: boolean;
   setBoundary: (boundary: TasksDayBoundary) => Promise<void>;
 };
@@ -55,9 +54,8 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
   }, []);
 
   useEffect(() => {
-    const tick = () => setLogicalTodayClock((c) => c + 1);
-    const interval = setInterval(tick, 30000);
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    const tick = () => setLogicalTodayClock((c) => c + 1);
     const schedule = () => {
       timeout = setTimeout(() => {
         tick();
@@ -66,7 +64,6 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     };
     schedule();
     return () => {
-      clearInterval(interval);
       if (timeout) clearTimeout(timeout);
     };
   }, [boundary.hour, boundary.minute]);
@@ -89,11 +86,10 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
       boundary,
       logicalTodayYmd,
       logicalTodayDate,
-      logicalTodayClock,
       isReady,
       setBoundary,
     }),
-    [boundary, logicalTodayYmd, logicalTodayDate, logicalTodayClock, isReady, setBoundary],
+    [boundary, logicalTodayYmd, logicalTodayDate, isReady, setBoundary],
   );
 
   return <DayBoundaryContext.Provider value={value}>{children}</DayBoundaryContext.Provider>;
@@ -108,7 +104,6 @@ export function useDayBoundary(): DayBoundaryContextValue {
       boundary,
       logicalTodayYmd,
       logicalTodayDate: logicalYmdToLocalDate(logicalTodayYmd),
-      logicalTodayClock: 0,
       isReady: true,
       setBoundary: async () => {},
     };

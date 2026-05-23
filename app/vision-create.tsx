@@ -107,18 +107,14 @@ export default function VisionCreateScreen() {
   /** 自定义封面相册 URI（与「自定义」槽位 `bgOptions.length - 1` 配套写入 extra.customBgUri） */
   const [customCoverUri, setCustomCoverUri] = useState<string | null>(null);
 
-  // 追踪方式：进度 / 计数 / 倒数日 / 目标
-  const [trackType, setTrackType] = useState<0 | 1 | 2 | 3>(0);
+  // 追踪方式：进度 / 倒数日 / 目标
+  const [trackType, setTrackType] = useState<0 | 1 | 2>(0);
   // 方向：正向增长 / 反向减少
   const [direction, setDirection] = useState<'positive' | 'negative'>('positive');
 
   const [goalTotal, setGoalTotal] = useState('100');
   const [currentAmount, setCurrentAmount] = useState('0');
   const [unit, setUnit] = useState('');
-
-  // 计数配置
-  const [countStep, setCountStep] = useState('1');
-  const [countUnit, setCountUnit] = useState('次');
 
   // 倒数日配置
   const [countdownKind, setCountdownKind] = useState<'countdown' | 'countup'>('countdown');
@@ -217,7 +213,7 @@ export default function VisionCreateScreen() {
   }, [loadGoalDimensions, newDimTitle]);
 
   useEffect(() => {
-    if (trackType !== 2) return;
+    if (trackType !== 1) return;
     setEndDate(prev => clampEndDateToKind(prev, countdownKind));
   }, [trackType, countdownKind]);
 
@@ -284,7 +280,7 @@ export default function VisionCreateScreen() {
       return;
     }
 
-    if (trackType === 3) {
+    if (trackType === 2) {
       const emptyNames = subGoals.some(
         sg => !sg.name.trim() && (sg.description?.trim() || (sg.linkedProjects?.length ?? 0) > 0)
       );
@@ -306,26 +302,23 @@ export default function VisionCreateScreen() {
 
     const id = `vn_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
     const track_kind = visionTrackKindFromCreateTab(trackType);
-    const directionForDb = trackType === 0 || trackType === 3 ? direction : null;
+    const directionForDb = trackType === 0 || trackType === 2 ? direction : null;
 
     const extra: VisionExtraPayload = {
       dimensionId: dimRow.id,
       dimensionName: dimRow.title.trim(),
       goalTotal,
       unit,
-      countFrequency: 'daily',
-      countStep,
-      countUnit,
       countdownKind,
       endDate,
       dateFormat,
       ...(trackType === 0
         ? { currentAmount: progressCurrentStored! }
-        : trackType === 1 || trackType === 3
+        : trackType === 2
           ? { currentAmount: '0' }
           : {}),
     };
-    if (trackType === 3) {
+    if (trackType === 2) {
       const serialized = serializeVisionSubGoalsForExtra(subGoals);
       if (serialized.length > 0) {
         extra.subGoals = serialized;
@@ -562,51 +555,13 @@ export default function VisionCreateScreen() {
             <Text style={[styles.label, { color: outline }]}>追踪方式</Text>
             <View style={styles.trackTabs}>
               <TabButton active={trackType === 0} text="进度" onPress={() => setTrackType(0)} />
-              <TabButton active={trackType === 1} text="计数" onPress={() => setTrackType(1)} />
-              <TabButton active={trackType === 2} text="倒数日" onPress={() => setTrackType(2)} />
-              <TabButton active={trackType === 3} text="目标" onPress={() => setTrackType(3)} />
+              <TabButton active={trackType === 1} text="倒数日" onPress={() => setTrackType(1)} />
+              <TabButton active={trackType === 2} text="目标" onPress={() => setTrackType(2)} />
             </View>
           </View>
 
           {/* 配置区域：仅在对应 tab 展示对应内容 */}
           {trackType === 1 ? (
-            <View
-              style={[
-                styles.panel,
-                {
-                  backgroundColor: isDark ? 'rgba(30,41,59,0.45)' : 'rgba(255,255,255,0.95)',
-                  borderColor: 'rgba(194,198,214,0.35)',
-                },
-              ]}
-            >
-              <View style={{ gap: 14 }}>
-                <Text style={[styles.panelTitle, { color: textColor }]}>计数设置</Text>
-                <View style={styles.grid2}>
-                  <View style={styles.grid2LabelsRow}>
-                    <Text style={[styles.grid2Label, { color: outline }]}>每次增加</Text>
-                    <Text style={[styles.grid2Label, { color: outline }]}>单位</Text>
-                  </View>
-                  <View style={styles.grid2InputsRow}>
-                    <TextInput
-                      value={countStep}
-                      onChangeText={setCountStep}
-                      keyboardType="numeric"
-                      placeholder="1"
-                      placeholderTextColor={placeholderColor}
-                      style={[styles.grid2Input, { color: textColor }]}
-                    />
-                    <TextInput
-                      value={countUnit}
-                      onChangeText={setCountUnit}
-                      placeholder="例如：次"
-                      placeholderTextColor={placeholderColor}
-                      style={[styles.grid2Input, { color: textColor }]}
-                    />
-                  </View>
-                </View>
-              </View>
-            </View>
-          ) : trackType === 2 ? (
             <View
               style={[
                 styles.panel,
@@ -716,7 +671,7 @@ export default function VisionCreateScreen() {
                 </View>
               </View>
             </View>
-          ) : trackType === 3 ? (
+          ) : trackType === 2 ? (
             <View
               style={[
                 styles.panel,

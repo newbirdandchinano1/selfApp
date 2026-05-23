@@ -18,7 +18,11 @@ import {
   updateProjectCategory,
 } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
-import { buildProjectLockMap, sortProjectsForList } from '@/lib/repositories/projects/project-prerequisites';
+import {
+  buildProjectLockMap,
+  sortProjectsForList,
+  type ProjectLockInfo,
+} from '@/lib/repositories/projects/project-prerequisites';
 import {
   getProjectScheduleLabel,
   getProjectScheduleYmdBounds,
@@ -1082,6 +1086,14 @@ function isProjectInboxProgressComplete(project: ProjectRow, nodes: TaskTreeNode
   return areAllTasksInProjectTreeDone(nodes);
 }
 
+function alertProjectTaskLocked(lockInfo: ProjectLockInfo | undefined) {
+  if (lockInfo?.scheduleNotStarted) {
+    Alert.alert('无法操作', '该项目计划尚未开始，到达开始日期前不可完成任务。');
+    return;
+  }
+  Alert.alert('无法操作', '该项目仍被前置项目锁定，请先完成前置项目。');
+}
+
 function showMoveProjectToInboxPrompt(project: ProjectRow, onConfirm: () => void) {
   const dueYmd = getProjectInboxAutoArchiveDueYmd(project);
   const dueHint = dueYmd
@@ -1607,10 +1619,6 @@ export default function TasksScreen() {
   }, [bgFloatAnim]);
 
   React.useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
-
-  React.useEffect(() => {
     let cancelled = false;
     (async () => {
       const stored = await loadExpandedProjectState();
@@ -1625,21 +1633,9 @@ export default function TasksScreen() {
   }, [loadExpandedProjectState]);
 
   React.useEffect(() => {
-    loadTasks();
-  }, [loadTasks]);
-
-  React.useEffect(() => {
     if (Platform.OS === 'web') return;
     void syncScheduledTaskReminders(tasks);
   }, [tasks]);
-
-  React.useEffect(() => {
-    loadProjectTasks(projects);
-  }, [loadProjectTasks, projects]);
-
-  React.useEffect(() => {
-    loadProjectCategories();
-  }, [loadProjectCategories]);
 
   React.useEffect(() => {
     if (!categoryModalVisible) return;
@@ -1654,15 +1650,15 @@ export default function TasksScreen() {
         const storedExpanded = await loadExpandedProjectState();
         const rows = await loadProjects();
         if (cancelled) return;
-        // 首次无存储记录：默认全部展开；有记录则按记录恢复（新项目默认展开）。
+        // 首次无存储记录：默认全部收起；有记录则按记录恢复（新项目默认收起）。
         if (!storedExpanded) {
-          const allExpanded = Object.fromEntries(rows.map((p) => [p.id, true] as const));
-          setExpandedProjectIds(allExpanded);
-          await saveExpandedProjectState(allExpanded);
+          const allCollapsed = Object.fromEntries(rows.map((p) => [p.id, false] as const));
+          setExpandedProjectIds(allCollapsed);
+          await saveExpandedProjectState(allCollapsed);
         } else {
           const merged: Record<string, boolean> = { ...storedExpanded };
           for (const p of rows) {
-            if (typeof merged[p.id] !== 'boolean') merged[p.id] = true;
+            if (typeof merged[p.id] !== 'boolean') merged[p.id] = false;
           }
           setExpandedProjectIds(merged);
           await saveExpandedProjectState(merged);
@@ -1968,6 +1964,11 @@ export default function TasksScreen() {
         tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
+      if (current.project_id && lockedProjectIds.has(current.project_id)) {
+        alertProjectTaskLocked(projectLockMap.get(current.project_id));
+        return;
+      }
+
       const wasDone = current.status === 'done' || current.status === 'cancelled';
       const nextStatus: TaskRow['status'] = wasDone ? 'todo' : 'done';
       const nextCompletedAt = wasDone ? null : new Date().toISOString();
@@ -2074,8 +2075,10 @@ export default function TasksScreen() {
       loadProjectTasks,
       loadProjects,
       loadTasks,
+      lockedProjectIds,
       logicalTodayYmd,
       moveProjectToInboxById,
+      projectLockMap,
       projectTaskTreeMap,
       projects,
       tasks,
@@ -3277,17 +3280,38 @@ export default function TasksScreen() {
                             <Pressable
                               onPress={(e) => {
                                 e.stopPropagation?.();
+                                if (isLocked) {
+                                  alertProjectTaskLocked(lockInfo);
+                                  return;
+                                }
                                 void toggleTaskDone(node.id);
                               }}
                               hitSlop={10}
                               accessibilityRole="button"
-                              accessibilityLabel={isDone ? '标记为未完成' : '标记为已完成'}>
+                              accessibilityLabel={
+                                isLocked
+                                  ? '项目已锁定，暂不可完成任务'
+                                  : isDone
+                                    ? '标记为未完成'
+                                    : '标记为已完成'
+                              }
+                              accessibilityState={{ disabled: isLocked }}>
                               <View
                                 style={[
                                   styles.statusCircle,
-                                  { borderColor: primary, backgroundColor: isDone ? primary : 'transparent' },
+                                  isLocked
+                                    ? {
+                                        borderColor: outline,
+                                        backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(114,119,133,0.08)',
+                                        opacity: 0.72,
+                                      }
+                                    : { borderColor: primary, backgroundColor: isDone ? primary : 'transparent' },
                                 ]}>
-                                {isDone ? <MaterialIcons name="check" size={12} color={colors.onPrimary} /> : null}
+                                {isLocked ? (
+                                  <MaterialIcons name="lock" size={11} color={outline} />
+                                ) : isDone ? (
+                                  <MaterialIcons name="check" size={12} color={colors.onPrimary} />
+                                ) : null}
                               </View>
                             </Pressable>
                             <Pressable

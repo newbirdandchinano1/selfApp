@@ -103,6 +103,8 @@ export function useFinanceTransactionSheetController({
     addModalVisible,
     newCategoryName,
     setNewCategoryName,
+    newCategoryIcon,
+    setNewCategoryIcon,
     isSavingCategory,
     openAddCategoryModal,
     closeAddCategoryModal,
@@ -823,6 +825,8 @@ export function useFinanceTransactionSheetController({
     addModalVisible,
     newCategoryName,
     setNewCategoryName,
+    newCategoryIcon,
+    setNewCategoryIcon,
     isSavingCategory,
   };
 }

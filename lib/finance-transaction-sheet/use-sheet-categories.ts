@@ -4,6 +4,7 @@ import {
   mergeSheetCategories,
   type SheetCategory,
 } from '@/lib/finance-transaction-sheet/helpers';
+import { DEFAULT_FINANCE_SHEET_CATEGORY_ICON } from '@/lib/constants/finance-sheet-category-icons';
 import {
   createFinanceSheetCustomCategory,
   financeSheetCategoryRowToSheetCategory,
@@ -11,6 +12,7 @@ import {
   type FinanceSheetTransactionType,
 } from '@/lib/repositories/finance/finance-sheet-category';
 import { deleteFinanceFlowCategory } from '@/lib/repositories/finance/finance';
+import type { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import { Alert } from 'react-native';
 
@@ -28,6 +30,9 @@ export function useFinanceSheetCategories(colors: FinanceSheetCategoryColors) {
   const [addModalVisible, setAddModalVisible] = React.useState(false);
   const [addModalTransactionType, setAddModalTransactionType] = React.useState<FinanceSheetTransactionType>('expense');
   const [newCategoryName, setNewCategoryName] = React.useState('');
+  const [newCategoryIcon, setNewCategoryIcon] = React.useState<keyof typeof MaterialIcons.glyphMap>(
+    DEFAULT_FINANCE_SHEET_CATEGORY_ICON,
+  );
   const [isSavingCategory, setIsSavingCategory] = React.useState(false);
 
   const reloadCustomCategories = React.useCallback(async () => {
@@ -70,6 +75,7 @@ export function useFinanceSheetCategories(colors: FinanceSheetCategoryColors) {
   const openAddCategoryModal = React.useCallback((transactionType: FinanceSheetTransactionType) => {
     setAddModalTransactionType(transactionType);
     setNewCategoryName('');
+    setNewCategoryIcon(DEFAULT_FINANCE_SHEET_CATEGORY_ICON);
     setAddModalVisible(true);
   }, []);
 
@@ -77,6 +83,7 @@ export function useFinanceSheetCategories(colors: FinanceSheetCategoryColors) {
     if (isSavingCategory) return;
     setAddModalVisible(false);
     setNewCategoryName('');
+    setNewCategoryIcon(DEFAULT_FINANCE_SHEET_CATEGORY_ICON);
   }, [isSavingCategory]);
 
   const saveNewCategory = React.useCallback(
@@ -88,10 +95,11 @@ export function useFinanceSheetCategories(colors: FinanceSheetCategoryColors) {
       }
       setIsSavingCategory(true);
       try {
-        const id = await createFinanceSheetCustomCategory(name, addModalTransactionType);
+        const id = await createFinanceSheetCustomCategory(name, addModalTransactionType, newCategoryIcon);
         await reloadCustomCategories();
         setAddModalVisible(false);
         setNewCategoryName('');
+        setNewCategoryIcon(DEFAULT_FINANCE_SHEET_CATEGORY_ICON);
         onCreated?.(id);
       } catch (err) {
         Alert.alert('添加失败', err instanceof Error ? err.message : '添加分类失败');
@@ -99,7 +107,7 @@ export function useFinanceSheetCategories(colors: FinanceSheetCategoryColors) {
         setIsSavingCategory(false);
       }
     },
-    [addModalTransactionType, newCategoryName, reloadCustomCategories],
+    [addModalTransactionType, newCategoryIcon, newCategoryName, reloadCustomCategories],
   );
 
   const confirmDeleteCustomCategory = React.useCallback(
@@ -135,6 +143,8 @@ export function useFinanceSheetCategories(colors: FinanceSheetCategoryColors) {
     addModalTransactionType,
     newCategoryName,
     setNewCategoryName,
+    newCategoryIcon,
+    setNewCategoryIcon,
     isSavingCategory,
     openAddCategoryModal,
     closeAddCategoryModal,
