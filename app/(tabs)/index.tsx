@@ -610,7 +610,7 @@ export default function HealthScreen() {
   const today = React.useMemo(() => normalizeDate(logicalTodayDate), [logicalTodayDate]);
   const [selectedDate, setSelectedDate] = React.useState(() => normalizeDate(logicalTodayDate));
   const [weekAnchorDate, setWeekAnchorDate] = React.useState(() => normalizeDate(logicalTodayDate));
-  const [quickAddItems, setQuickAddItems] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems().slice(0, 4));
+  const [quickAddItems, setQuickAddItems] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems());
   const [quickAddCatalog, setQuickAddCatalog] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems());
 
   const weekPagerRef = React.useRef<ScrollView>(null);
@@ -627,7 +627,12 @@ export default function HealthScreen() {
   const metricCardAnims = React.useRef(nutrientMetricMeta.map(() => new Animated.Value(0))).current;
   const metricImpactAnims = React.useRef(nutrientMetricMeta.map(() => new Animated.Value(0))).current;
   const wheelImpactAnim = React.useRef(new Animated.Value(0)).current;
-  const quickAddCardAnims = React.useRef([new Animated.Value(0), new Animated.Value(0), new Animated.Value(0), new Animated.Value(0)]).current;
+  const quickAddCardAnimsRef = React.useRef<Animated.Value[]>([
+    new Animated.Value(0),
+    new Animated.Value(0),
+    new Animated.Value(0),
+    new Animated.Value(0),
+  ]);
   const sectionEntranceAnims = React.useRef([
     new Animated.Value(0),
     new Animated.Value(0),
@@ -799,12 +804,12 @@ export default function HealthScreen() {
         try {
           const [selectedItems, catalog] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
           if (!cancelled) {
-            setQuickAddItems(selectedItems.slice(0, 4));
+            setQuickAddItems(selectedItems);
             setQuickAddCatalog(catalog);
           }
         } catch {
           if (!cancelled) {
-            setQuickAddItems(getDefaultQuickAddItems().slice(0, 4));
+            setQuickAddItems(getDefaultQuickAddItems());
             setQuickAddCatalog(getDefaultQuickAddItems());
           }
         }
@@ -1279,8 +1284,15 @@ export default function HealthScreen() {
   }, [weekPagerWidth]);
 
   React.useEffect(() => {
+    const anims = quickAddCardAnimsRef.current;
+    while (anims.length < quickAddItems.length) {
+      anims.push(new Animated.Value(0));
+    }
+  }, [quickAddItems.length]);
+
+  React.useEffect(() => {
     metricCardAnims.forEach((anim) => anim.setValue(0));
-    quickAddCardAnims.forEach((anim) => anim.setValue(0));
+    quickAddCardAnimsRef.current.forEach((anim) => anim.setValue(0));
     sectionEntranceAnims.forEach((anim) => anim.setValue(0));
     fadeAnim.setValue(0);
     translateYAnim.setValue(18);
@@ -1299,7 +1311,7 @@ export default function HealthScreen() {
 
     const quickAddStagger = Animated.stagger(
       80,
-      quickAddCardAnims.map((anim) =>
+      quickAddCardAnimsRef.current.map((anim) =>
         Animated.timing(anim, {
           toValue: 1,
           duration: 460,
@@ -1339,7 +1351,7 @@ export default function HealthScreen() {
       metricStagger,
       Animated.parallel([sectionStagger, quickAddStagger]),
     ]).start();
-  }, [fadeAnim, translateYAnim, metricCardAnims, quickAddCardAnims, sectionEntranceAnims]);
+  }, [fadeAnim, translateYAnim, metricCardAnims, quickAddItems.length, sectionEntranceAnims]);
 
   React.useEffect(() => {
     const pulse = Animated.loop(
@@ -1746,7 +1758,12 @@ export default function HealthScreen() {
         </ScrollView>
       </View>
 
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        directionalLockEnabled
+      >
         <Animated.View
           pointerEvents="none"
           style={[
@@ -2062,14 +2079,19 @@ export default function HealthScreen() {
             </TouchableOpacity>
           </View>
 
-          <View
-            style={[
-              styles.quickAddRow,
-              quickAddItems.length < 4 ? styles.quickAddRowCentered : null,
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            nestedScrollEnabled
+            directionalLockEnabled
+            contentContainerStyle={[
+              styles.quickAddScrollContent,
+              quickAddItems.length <= 4 ? styles.quickAddScrollContentCentered : null,
             ]}
+            style={styles.quickAddScroll}
           >
             {quickAddItems.map((item, index) => {
-              const cardAnim = quickAddCardAnims[index] ?? quickAddCardAnims[quickAddCardAnims.length - 1];
+              const cardAnim = quickAddCardAnimsRef.current[index] ?? quickAddCardAnimsRef.current[quickAddCardAnimsRef.current.length - 1];
               const itemOpacity = cardAnim.interpolate({
                 inputRange: [0, 1],
                 outputRange: [0, 1],
@@ -2105,7 +2127,7 @@ export default function HealthScreen() {
                 </Animated.View>
               );
             })}
-          </View>
+          </ScrollView>
 
         </View>
         </Animated.View>
@@ -2928,13 +2950,17 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.6,
   },
-  quickAddRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 8,
+  quickAddScroll: {
     marginBottom: 20,
+    marginHorizontal: -Spacing['5xl'],
   },
-  quickAddRowCentered: {
+  quickAddScrollContent: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing['5xl'],
+  },
+  quickAddScrollContentCentered: {
+    flexGrow: 1,
     justifyContent: 'center',
   },
   quickAddCard: {

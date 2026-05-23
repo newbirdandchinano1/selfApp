@@ -87,7 +87,44 @@ type WallSection = {
   dimRow?: GoalDimensionRow;
 };
 
-const WALL_SUB_GOALS_MAX_VISIBLE = 4;
+const WALL_SUB_GOALS_MAX_VISIBLE = 5;
+const WALL_SUB_GOALS_ROW_HEIGHT = 26;
+
+function selectWallVisibleSubGoals(subGoals: VisionWallSubGoalItem[]): {
+  visible: { sg: VisionWallSubGoalItem; originalIndex: number }[];
+  hiddenCount: number;
+} {
+  if (subGoals.length === 0) {
+    return { visible: [], hiddenCount: 0 };
+  }
+
+  const withIndex = subGoals.map((sg, originalIndex) => ({ sg, originalIndex }));
+  const incomplete = withIndex.filter(({ sg }) => !isWallSubGoalDone(sg));
+  const complete = withIndex.filter(({ sg }) => isWallSubGoalDone(sg));
+  const visible = [...incomplete, ...complete].slice(0, WALL_SUB_GOALS_MAX_VISIBLE);
+
+  return {
+    visible,
+    hiddenCount: subGoals.length - visible.length,
+  };
+}
+
+function computeTargetCardMinHeight(
+  visibleSubGoalCount: number,
+  showPlanRemain: boolean,
+  hasProgressBar: boolean,
+  hasMoreHint: boolean,
+): number {
+  const padding = 84;
+  const progress = hasProgressBar ? 46 : 0;
+  const planRemain = showPlanRemain ? 26 : 0;
+  const subGoalsHeader = 18;
+  const subGoalRows = visibleSubGoalCount * WALL_SUB_GOALS_ROW_HEIGHT;
+  const rowGaps = Math.max(0, visibleSubGoalCount - 1) * 4;
+  const sectionGaps = 12;
+  const moreHint = hasMoreHint ? 18 : 0;
+  return padding + progress + planRemain + subGoalsHeader + subGoalRows + rowGaps + sectionGaps + moreHint;
+}
 
 type ProgressEditTarget = {
   visionId: string;
@@ -136,20 +173,37 @@ const VisionCard = ({
   togglingSubGoalId: string | null;
 }) => {
   const showCountAdjust = card.kind === 'count' && card.wallAdjust;
-  const targetSubGoals = card.kind === 'target' ? (card.subGoals ?? []) : [];
-  const visibleSubGoals = targetSubGoals.slice(0, WALL_SUB_GOALS_MAX_VISIBLE);
-  const hiddenSubGoalCount = targetSubGoals.length - visibleSubGoals.length;
   const showPlanRemain = planRemainLabel && card.kind !== 'countdown';
+  const isTargetCard = card.kind === 'target';
+  const targetSubGoals = isTargetCard ? (card.subGoals ?? []) : [];
+  const { visible: visibleSubGoalEntries, hiddenCount: hiddenSubGoalCount } = selectWallVisibleSubGoals(
+    targetSubGoals,
+  );
+  const targetCardMinHeight =
+    isTargetCard && visibleSubGoalEntries.length > 0
+      ? computeTargetCardMinHeight(
+          visibleSubGoalEntries.length,
+          !!showPlanRemain,
+          !card.simpleComplete,
+          hiddenSubGoalCount > 0,
+        )
+      : undefined;
 
   return (
-    <View style={styles.card}>
+    <View
+      style={[
+        styles.card,
+        targetCardMinHeight != null ? styles.cardExpandable : null,
+        targetCardMinHeight != null ? { minHeight: targetCardMinHeight } : null,
+      ]}
+    >
       <Image source={card.imageSource} style={styles.cardBgImg} contentFit="cover" transition={120} />
 
       {/* 用半透明遮罩模拟 HTML 里的渐变背景（避免再引入 LinearGradient 依赖） */}
       <View style={styles.cardOverlay} />
 
-      <View style={styles.cardContent} pointerEvents="box-none">
-        {card.kind === 'target' && card.simpleComplete ? (
+      {isTargetCard && card.simpleComplete ? (
+        <View style={styles.cardTitleTop} pointerEvents="box-none">
           <View style={styles.simpleCompleteRow}>
             <Pressable
               onPress={onOpenDetail}
@@ -183,8 +237,28 @@ const VisionCard = ({
               ) : null}
             </Pressable>
           </View>
-        ) : null}
+        </View>
+      ) : null}
 
+      {isTargetCard && !card.simpleComplete ? (
+        <Pressable
+          onPress={onOpenDetail}
+          style={({ pressed }) => [styles.cardTitleTop, { opacity: pressed ? 0.92 : 1 }]}
+        >
+          <Text style={[styles.cardTitle, styles.cardTitlePinned]} numberOfLines={2}>
+            {card.title}
+          </Text>
+        </Pressable>
+      ) : null}
+
+      <View
+        style={[
+          styles.cardContent,
+          isTargetCard ? styles.cardContentWithTopTitle : null,
+          visibleSubGoalEntries.length > 0 ? styles.cardContentCompact : null,
+        ]}
+        pointerEvents="box-none"
+      >
         {!(card.kind === 'target' && card.simpleComplete) ? (
           <Pressable onPress={onOpenDetail} style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
           {card.kind === 'progress' && (
@@ -245,7 +319,6 @@ const VisionCard = ({
 
           {card.kind === 'target' && !card.simpleComplete && (
             <>
-              <Text style={styles.cardTitle}>{card.title}</Text>
               <View style={{ gap: 10 }}>
                 <View style={{ alignItems: 'flex-end' }}>
                   <Text style={styles.cardPercentText}>{card.percentText}</Text>
@@ -313,11 +386,11 @@ const VisionCard = ({
           </View>
         ) : null}
 
-        {card.kind === 'target' && visibleSubGoals.length > 0 ? (
+        {card.kind === 'target' && visibleSubGoalEntries.length > 0 ? (
           <View style={styles.subGoalsBlock}>
             <Text style={styles.subGoalsKicker}>小目标</Text>
             <View style={styles.subGoalsList}>
-              {visibleSubGoals.map((sg, idx) => {
+              {visibleSubGoalEntries.map(({ sg, originalIndex }) => {
                 const unbound = sg.boundProjectCount === 0;
                 const done = isWallSubGoalDone(sg);
                 const isToggling = togglingSubGoalId === `${visionId}:${sg.id}`;
@@ -362,7 +435,7 @@ const VisionCard = ({
                       ]}
                       numberOfLines={1}
                     >
-                      {idx + 1}. {sg.name}
+                      {originalIndex + 1}. {sg.name}
                     </Text>
                     <Text style={[styles.subGoalMeta, done && styles.subGoalMetaDone]}>
                       {subGoalWallMeta(sg)}
@@ -1508,6 +1581,9 @@ const styles = StyleSheet.create({
     aspectRatio: 16 / 10,
     position: 'relative',
   },
+  cardExpandable: {
+    aspectRatio: undefined,
+  },
   cardBgImg: {
     position: 'absolute',
     top: 0,
@@ -1525,12 +1601,27 @@ const styles = StyleSheet.create({
     bottom: 0,
     backgroundColor: 'rgba(19,27,46,0.55)',
   },
+  cardTitleTop: {
+    position: 'absolute',
+    top: 18,
+    left: 18,
+    right: 18,
+    zIndex: 1,
+  },
   cardContent: {
     position: 'absolute',
     left: 18,
     right: 18,
     bottom: 18,
     gap: 10,
+  },
+  cardContentWithTopTitle: {
+    top: 66,
+    justifyContent: 'flex-end',
+    overflow: 'hidden',
+  },
+  cardContentCompact: {
+    gap: 6,
   },
   adjustRow: {
     flexDirection: 'row',
@@ -1571,6 +1662,9 @@ const styles = StyleSheet.create({
     paddingRight: 4,
   },
   simpleCompleteTitle: {
+    marginBottom: 0,
+  },
+  cardTitlePinned: {
     marginBottom: 0,
   },
   cardTitleDone: {
@@ -1661,8 +1755,9 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   subGoalsBlock: {
-    marginTop: 6,
+    marginTop: 2,
     gap: 6,
+    flexShrink: 0,
   },
   subGoalsKicker: {
     color: 'rgba(255,255,255,0.55)',
@@ -1678,6 +1773,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    minHeight: WALL_SUB_GOALS_ROW_HEIGHT,
+    flexShrink: 0,
   },
   subGoalCheckBtn: {
     width: 22,

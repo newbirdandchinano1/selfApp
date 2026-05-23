@@ -2,7 +2,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const SELECTED_STORAGE_KEY = '@quick_add_cards_v1';
 const CUSTOM_ITEMS_STORAGE_KEY = '@quick_add_custom_items_v1';
-const MAX_HOME_ITEMS = 4;
 
 export type QuickAddVolumeUnit = 'ml' | 'g' | 'mg';
 export type QuickAddMetricType = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
@@ -42,7 +41,6 @@ function normalizeKeys(keys: string[], itemMap: Map<string, QuickAddCardItem>): 
     if (!itemMap.has(key)) continue;
     if (uniqueValidKeys.includes(key)) continue;
     uniqueValidKeys.push(key);
-    if (uniqueValidKeys.length >= MAX_HOME_ITEMS) break;
   }
   return uniqueValidKeys;
 }

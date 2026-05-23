@@ -19,8 +19,6 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 type QuickAddItem = QuickAddCardItem & { icon: keyof typeof MaterialIcons.glyphMap };
 
-const MAX_HOME_ITEMS = 4;
-
 const metricMetaMap = {
   hydration: { label: '水分', unit: 'ml' },
   protein: { label: '蛋白质', unit: 'g' },
@@ -150,10 +148,6 @@ export default function QuickAddEditScreen() {
   const onAdd = React.useCallback((item: QuickAddItem) => {
     setHomeItems((prev) => {
       if (prev.some((v) => v.key === item.key)) return prev;
-      if (prev.length >= MAX_HOME_ITEMS) {
-        Alert.alert('最多4个', '首页快捷卡片最多展示 4 个，请先移除一个再添加。');
-        return prev;
-      }
       return [...prev, item];
     });
   }, []);
@@ -185,7 +179,7 @@ export default function QuickAddEditScreen() {
 
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 28 + Math.max(insets.bottom, 12) }]} showsVerticalScrollIndicator={false}>
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: theme.text }]}>首页展示 (最多4个)</Text>
+          <Text style={[styles.sectionTitle, { color: theme.text }]}>首页展示</Text>
           <View style={styles.cardList}>
             {homeItems.map((item) => (
               <Pressable
