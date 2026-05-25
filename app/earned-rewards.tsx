@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { listEarnedRewards, redeemEarnedReward } from '@/lib/repositories/earned-rewards/earned-reward';
+import { listEarnedRewards, redeemEarnedReward, unredeemEarnedReward } from '@/lib/repositories/earned-rewards/earned-reward';
 import type { EarnedRewardRow } from '@/lib/repositories/earned-rewards/earned-reward.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -92,6 +92,31 @@ export default function EarnedRewardsScreen() {
     [reload],
   );
 
+  const confirmUnredeem = useCallback(
+    (row: EarnedRewardRow) => {
+      Alert.alert('取消兑现', `将「${row.label}」恢复为待兑现状态？`, [
+        { text: '保留', style: 'cancel' },
+        {
+          text: '取消兑现',
+          onPress: () => {
+            void (async () => {
+              setRedeemingId(row.id);
+              try {
+                await unredeemEarnedReward(row.id);
+                await reload();
+              } catch (e) {
+                Alert.alert('操作失败', e instanceof Error ? e.message : '请稍后重试');
+              } finally {
+                setRedeemingId(null);
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [reload],
+  );
+
   const renderRow = ({ item }: { item: EarnedRewardRow }) => {
     const isRedeemed = !!item.redeemed_at;
     const busy = redeemingId === item.id;
@@ -131,10 +156,32 @@ export default function EarnedRewardsScreen() {
             )}
           </Pressable>
         ) : (
-          <View style={[styles.redeemedBadge, { backgroundColor: isDark ? 'rgba(52,211,153,0.14)' : 'rgba(0,108,73,0.1)' }]}>
-            <MaterialIcons name="verified" size={16} color={secondary} />
-            <Text style={[styles.redeemedText, { color: secondary }]}>已兑现</Text>
-          </View>
+          <Pressable
+            onPress={() => confirmUnredeem(item)}
+            disabled={!!redeemingId}
+            style={({ pressed }) => [
+              styles.unredeemBtn,
+              {
+                borderColor: isDark ? 'rgba(52,211,153,0.35)' : 'rgba(0,108,73,0.35)',
+                backgroundColor: pressed
+                  ? isDark
+                    ? 'rgba(52,211,153,0.2)'
+                    : 'rgba(0,108,73,0.12)'
+                  : isDark
+                    ? 'rgba(52,211,153,0.14)'
+                    : 'rgba(0,108,73,0.1)',
+                opacity: busy || redeemingId ? 0.7 : 1,
+              },
+            ]}>
+            {busy ? (
+              <ActivityIndicator color={secondary} size="small" />
+            ) : (
+              <>
+                <MaterialIcons name="verified" size={16} color={secondary} />
+                <Text style={[styles.redeemedText, { color: secondary }]}>已兑现 · 点击取消</Text>
+              </>
+            )}
+          </Pressable>
         )}
       </View>
     );
@@ -228,11 +275,12 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   redeemText: { color: '#fff', fontSize: 15, fontWeight: '800' },
-  redeemedBadge: {
+  unredeemBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    borderWidth: 1,
     borderRadius: 12,
     paddingVertical: 10,
   },

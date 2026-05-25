@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { clearFrogAssignedOn, getFrogAssignedOn } from '@/lib/frog-assignment';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { buildProjectLockMap } from '@/lib/repositories/projects/project-prerequisites';
 import { getProjects } from '@/lib/repositories/projects/project';
@@ -256,7 +257,7 @@ function groupTasksToSections(
   todayYmd: string,
   lockedProjectIds: Set<string>,
   projectNameById: Record<string, string>,
-): Section[] {
+): { sections: Section[]; assignedToday: Item[] } {
   const taskTitleById = new Map(rows.map((r) => [r.id, r.title]));
   const soonEndYmd = addDaysToYmd(todayYmd, 3);
   const weekEndYmd = weekEndSundayYmd(now);
@@ -339,13 +340,41 @@ function groupTasksToSections(
   secSeven.sort(sortDated);
   secNodate.sort(sortNodate);
 
-  return [
+  return { sections: [
     { key: 'today', title: '今日', badge: '含已逾期', tone: 'error', items: secToday },
     { key: 'soon', title: '近三天', badge: '截止较近', tone: 'primary', items: secSoon },
     { key: 'week', title: '本周', badge: '本周末前', tone: 'tertiary', items: secWeek },
     { key: 'seven', title: '近七天', badge: '今起7日内', tone: 'outline', items: secSeven },
     { key: 'nodate', title: '无截止日期', badge: '可选', tone: 'outline', items: secNodate },
-  ];
+  ], assignedToday: buildAssignedTodayItems(rows, todayYmd, taskTitleById, projectNameById) };
+}
+
+function buildAssignedTodayItems(
+  rows: TaskRow[],
+  todayYmd: string,
+  taskTitleById: Map<string, string>,
+  projectNameById: Record<string, string>,
+): Item[] {
+  return rows
+    .filter((t) => getFrogAssignedOn(t.extra_data) === todayYmd)
+    .map((t) => {
+      const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
+      const { parentLabel, projectLabel } = getTaskContextLabels(t, taskTitleById, projectNameById);
+      return {
+        id: t.id,
+        title: t.title,
+        parentLabel,
+        projectLabel,
+        subtitle: t.status === 'done' || t.status === 'cancelled' ? '已完成或已取消' : '今日已指派',
+        tone,
+        dueSortKey: null,
+        priority: t.priority,
+      };
+    })
+    .sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return a.id.localeCompare(b.id);
+    });
 }
 
 export default function AddFrogScreen() {
@@ -356,7 +385,10 @@ export default function AddFrogScreen() {
   const isDark = colorScheme === 'dark';
 
   const [sections, setSections] = React.useState<Section[]>(() =>
-    groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {}),
+    groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {}).sections,
+  );
+  const [assignedToday, setAssignedToday] = React.useState<Item[]>(() =>
+    groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {}).assignedToday,
   );
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
   const [loading, setLoading] = React.useState(true);
@@ -385,7 +417,9 @@ export default function AddFrogScreen() {
       setTaskMap(Object.fromEntries(rows.map((r) => [r.id, r])));
       setLockedProjectIds(locked);
       const projectNameById = Object.fromEntries(projectRows.map((p) => [p.id, p.name]));
-      setSections(groupTasksToSections(rows, now, todayYmd, locked, projectNameById));
+      const grouped = groupTasksToSections(rows, now, todayYmd, locked, projectNameById);
+      setSections(grouped.sections);
+      setAssignedToday(grouped.assignedToday);
       setSelected((prev) => {
         const allowed = new Set(rows.filter((r) => !isStandaloneTodoTask(r)).map((r) => r.id));
         const next: Record<string, boolean> = {};
@@ -396,9 +430,9 @@ export default function AddFrogScreen() {
       });
     } catch (e) {
       console.warn('加载青蛙候选任务失败', e);
-      setSections(
-        groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {}),
-      );
+      const empty = groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {});
+      setSections(empty.sections);
+      setAssignedToday(empty.assignedToday);
       setSelected({});
       setTaskMap({});
       setLockedProjectIds(new Set());
@@ -435,6 +469,37 @@ export default function AddFrogScreen() {
 
   const selectedIds = React.useMemo(() => Object.keys(selected).filter((k) => selected[k]), [selected]);
   const hasAnyCandidates = React.useMemo(() => sections.some((s) => s.items.length > 0), [sections]);
+
+  const unassignFrog = React.useCallback(
+    (id: string) => {
+      const row = taskMap[id];
+      const titleLabel = (row?.title ?? '').trim() || '该任务';
+      Alert.alert('取消指派', `确定将「${titleLabel}」从今日青蛙中移除吗？`, [
+        { text: '保留', style: 'cancel' },
+        {
+          text: '取消指派',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              if (!row) return;
+              setSaving(true);
+              try {
+                const nextExtra = clearFrogAssignedOn(row.extra_data);
+                await updateTask(id, { extra_data: nextExtra });
+                await loadEligibleTasks();
+              } catch (e) {
+                console.warn('取消青蛙指派失败', e);
+                Alert.alert('操作失败', '未能取消指派，请稍后重试。');
+              } finally {
+                setSaving(false);
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [loadEligibleTasks, taskMap]
+  );
 
   const assignFrogs = React.useCallback(async () => {
     if (saving || selectedIds.length === 0) return;
@@ -506,6 +571,57 @@ export default function AddFrogScreen() {
         </View>
 
         <View style={styles.sections}>
+          {assignedToday.length > 0 ? (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <View style={styles.sectionHeaderLeft}>
+                  <View style={[styles.sectionBar, { backgroundColor: primary }]} />
+                  <Text style={[styles.sectionTitle, { color: theme.text }]}>今日已指派</Text>
+                </View>
+                <View style={[styles.sectionBadge, { backgroundColor: `${primary}1A` }]}>
+                  <Text style={[styles.sectionBadgeText, { color: primary }]}>{assignedToday.length} 条</Text>
+                </View>
+              </View>
+              <View style={styles.items}>
+                {assignedToday.map((it) => (
+                  <View
+                    key={it.id}
+                    style={[styles.item, { backgroundColor: card, borderColor: outlineVariant }]}>
+                    <View style={styles.itemLeft}>
+                      <Pressable
+                        onPress={() => unassignFrog(it.id)}
+                        hitSlop={8}
+                        disabled={saving}
+                        style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
+                        <View style={[styles.checkbox, { backgroundColor: `${primary}22`, borderColor: primary }]}>
+                          <MaterialIcons name="link-off" size={16} color={primary} />
+                        </View>
+                      </Pressable>
+                      <Pressable
+                        style={({ pressed }) => [styles.itemText, pressed && { opacity: 0.82 }]}
+                        onPress={() => router.push({ pathname: '/task/[id]', params: { id: it.id } })}>
+                        <Text style={[styles.itemTitle, { color: theme.text }]}>{it.title}</Text>
+                        {it.parentLabel ? (
+                          <Text style={[styles.itemContextHint, { color: outline }]} numberOfLines={1}>
+                            {it.parentLabel}
+                          </Text>
+                        ) : null}
+                        {it.projectLabel ? (
+                          <Text style={[styles.itemContextHint, { color: outline }]} numberOfLines={1}>
+                            {it.projectLabel}
+                          </Text>
+                        ) : null}
+                        <Text style={[styles.itemSubtitle, { color: theme.textSecondary }]}>{it.subtitle}</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))}
+              </View>
+              <Text style={[styles.assignedHint, { color: theme.textSecondary }]}>
+                点击左侧图标可取消指派；取消后可重新在下方选择。
+              </Text>
+            </View>
+          ) : null}
           {!hasAnyCandidates ? (
             <View style={[styles.section, { opacity: 0.85 }]}>
               <Text style={[styles.sectionTitle, { color: theme.text }]}>暂无可选青蛙</Text>
@@ -774,6 +890,12 @@ const styles = StyleSheet.create({
   itemSubtitle: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  assignedHint: {
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 6,
+    paddingHorizontal: 2,
   },
   bottomBar: {
     position: 'absolute',

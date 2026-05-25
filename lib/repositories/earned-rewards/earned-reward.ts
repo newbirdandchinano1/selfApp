@@ -106,3 +106,26 @@ export async function redeemEarnedReward(id: string): Promise<void> {
     await setWishItemFulfilled(row.wish_item_id, true);
   }
 }
+
+export async function unredeemEarnedReward(id: string): Promise<void> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<EarnedRewardRow>(
+    'SELECT * FROM earned_rewards WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+    [id],
+  );
+  if (!row || !row.redeemed_at) return;
+
+  await db.runAsync(
+    `UPDATE earned_rewards SET
+      redeemed_at = NULL,
+      updated_at = datetime('now'),
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+      version = version + 1
+    WHERE id = ? AND deleted_at IS NULL`,
+    [id],
+  );
+
+  if (row.wish_item_id) {
+    await setWishItemFulfilled(row.wish_item_id, false);
+  }
+}

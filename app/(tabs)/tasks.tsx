@@ -46,6 +46,7 @@ import {
   insertFrogCompletionEvent,
   type FrogCompletionDayItem,
 } from '@/lib/repositories/tasks/frog-completion-events';
+import { clearFrogAssignedOn } from '@/lib/frog-assignment';
 import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
@@ -1939,6 +1940,43 @@ export default function TasksScreen() {
     [getFrogDoneBounce]
   );
 
+  const unassignFrog = React.useCallback(
+    (taskId: string) => {
+      const frog =
+        tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      if (!frog) return;
+      const titleLabel = (frog.title ?? '').trim() || '该任务';
+      Alert.alert('取消指派', `确定将「${titleLabel}」从今日青蛙中移除吗？`, [
+        { text: '保留', style: 'cancel' },
+        {
+          text: '取消指派',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              const nextExtra = clearFrogAssignedOn(frog.extra_data);
+              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+              setTasks((prev) =>
+                prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtra } : t))
+              );
+              setProjectTaskTreeMap((prev) =>
+                updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtra }))
+              );
+              try {
+                await updateTask(taskId, { extra_data: nextExtra });
+              } catch (err) {
+                console.warn('取消青蛙指派失败', err);
+                Alert.alert('操作失败', '未能取消指派，请稍后重试。');
+                await loadTasks();
+                await loadProjectTasks(projects);
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [loadProjectTasks, loadTasks, projects, projectTaskTreeMap, tasks, updateTaskInProjectTree]
+  );
+
   const moveProjectToInboxById = React.useCallback(async (projectId: string) => {
     try {
       const proj = projects.find((p) => p.id === projectId) ?? (await getProjectById(projectId));
@@ -2678,6 +2716,7 @@ export default function TasksScreen() {
                         <ScalePressable
                           key={frog.id}
                           onPress={() => openTask(frog.id)}
+                          onLongPress={() => unassignFrog(frog.id)}
                           scaleTo={0.985}
                           style={({ pressed }) => [
                             styles.frogCard,
@@ -2698,22 +2737,34 @@ export default function TasksScreen() {
                             <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
                               <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>今日已指派</Text>
                             </View>
-                            <Pressable
-                              onPress={(e) => {
-                                e.stopPropagation?.();
-                                playFrogDoneBounce(frog.id);
-                                void toggleTaskDone(frog.id);
-                              }}
-                              hitSlop={10}
-                              style={({ pressed }) => [styles.inlineDoneBtn, pressed && { opacity: 0.75 }]}>
-                              <Animated.View style={{ transform: [{ scale: getFrogDoneBounce(frog.id) }] }}>
-                                <MaterialIcons
-                                  name={isDone ? 'check-circle' : 'radio-button-unchecked'}
-                                  size={18}
-                                  color={primary}
-                                />
-                              </Animated.View>
-                            </Pressable>
+                            <View style={styles.frogCardActions}>
+                              <Pressable
+                                onPress={(e) => {
+                                  e.stopPropagation?.();
+                                  unassignFrog(frog.id);
+                                }}
+                                hitSlop={10}
+                                accessibilityLabel="取消指派"
+                                style={({ pressed }) => [styles.inlineDoneBtn, pressed && { opacity: 0.75 }]}>
+                                <MaterialIcons name="link-off" size={17} color={outline} />
+                              </Pressable>
+                              <Pressable
+                                onPress={(e) => {
+                                  e.stopPropagation?.();
+                                  playFrogDoneBounce(frog.id);
+                                  void toggleTaskDone(frog.id);
+                                }}
+                                hitSlop={10}
+                                style={({ pressed }) => [styles.inlineDoneBtn, pressed && { opacity: 0.75 }]}>
+                                <Animated.View style={{ transform: [{ scale: getFrogDoneBounce(frog.id) }] }}>
+                                  <MaterialIcons
+                                    name={isDone ? 'check-circle' : 'radio-button-unchecked'}
+                                    size={18}
+                                    color={primary}
+                                  />
+                                </Animated.View>
+                              </Pressable>
+                            </View>
                           </View>
                           {frog.parent_task_id ? (
                             <Text
@@ -4398,6 +4449,7 @@ const styles = StyleSheet.create({
   frogIconBgCompact: { position: 'absolute', right: 6, top: 6 },
   frogTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   frogTopRowCompact: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
+  frogCardActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   inlineDoneBtn: { borderRadius: 10 },
   badge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
   badgeCompact: { paddingHorizontal: 8, paddingVertical: 3 },
