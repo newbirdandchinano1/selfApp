@@ -54,7 +54,7 @@ function appendFinanceMetricsLines(lines: string[], metrics: WeeklyReviewMetrics
   lines.push(
     `记账：收入 ¥${metrics.financeIncome.toLocaleString('zh-CN')}，支出 ¥${metrics.financeExpense.toLocaleString('zh-CN')}，净流约 ¥${financeNet.toLocaleString('zh-CN')}。`,
   );
-  lines.push(`心愿清单更新：${metrics.wishUpdates} 条。`);
+  lines.push(`心愿单更新：${metrics.wishUpdates} 条。`);
 }
 
 export function buildPersonaContextText(

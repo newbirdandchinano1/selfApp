@@ -1,13 +1,18 @@
 import type { WeeklyReviewMetrics } from '@/lib/repositories/insights/weekly-review';
+import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
+import { totalFilledLength } from '@/lib/repositories/insights/review-journal-body';
+import type { ReviewFieldValues } from '@/lib/repositories/insights/review-journal-body';
 import { generateWeeklyReviewCoachingFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
+
+export type WeeklyCoachingSection = {
+  dimensionTitle: string;
+  columns: { title: string; value: string }[];
+};
 
 export type WeeklyCoachingInput = {
   weekRangeLabel: string;
-  section_summary: string;
-  section_plans: string;
-  section_reflect: string;
-  section_learnings: string;
-  section_next_week: string;
+  template: ReviewDimensionTemplate[];
+  fields: ReviewFieldValues;
   executionScore: number;
   metrics: WeeklyReviewMetrics | null;
   /** 近七日每日复盘原文汇编，供周度建议对照 */
@@ -33,19 +38,32 @@ function buildMetricsBlock(m: WeeklyReviewMetrics | null): string {
     `习惯打卡合计: ${m.habitCheckInTotal} 次`,
     `存钱入账: ¥${m.savingsWeekTotal.toLocaleString('zh-CN')}`,
     `记账收入: ¥${m.financeIncome.toLocaleString('zh-CN')}，支出: ¥${m.financeExpense.toLocaleString('zh-CN')}`,
-    `心愿清单更新: ${m.wishUpdates} 条`,
+    `心愿单更新: ${m.wishUpdates} 条`,
   ].join('\n');
+}
+
+function buildSections(input: WeeklyCoachingInput): WeeklyCoachingSection[] {
+  const out: WeeklyCoachingSection[] = [];
+  for (const dim of input.template) {
+    const columns = dim.columns.map(col => ({
+      title: col.title,
+      value: input.fields[col.id] ?? '',
+    }));
+    out.push({ dimensionTitle: dim.title, columns });
+  }
+  return out;
+}
+
+function allUserText(sections: WeeklyCoachingSection[]): string {
+  return sections
+    .flatMap(s => s.columns.map(c => c.value))
+    .join('\n');
 }
 
 function buildLocalCoaching(input: WeeklyCoachingInput): string {
   const score = Math.min(5, Math.max(1, input.executionScore || 3));
-  const all = [
-    input.section_summary,
-    input.section_plans,
-    input.section_reflect,
-    input.section_learnings,
-    input.section_next_week,
-  ].join('\n');
+  const sections = buildSections(input);
+  const all = allUserText(sections);
 
   const lines: string[] = [];
   lines.push(`【总览】\n周期：${input.weekRangeLabel}。你为本周期自评执行分 ${score}/5。`);
@@ -56,16 +74,18 @@ function buildLocalCoaching(input: WeeklyCoachingInput): string {
   }
 
   lines.push('\n【对齐你写下的重点】');
-  if (input.section_summary.trim())
-    lines.push(`· 一周回顾：${compact(input.section_summary, 280)}`);
-  if (input.section_plans.trim())
-    lines.push(`· 计划与交付：${compact(input.section_plans, 280)}`);
-  if (input.section_reflect.trim())
-    lines.push(`· 反思：${compact(input.section_reflect, 220)}`);
-  if (input.section_learnings.trim())
-    lines.push(`· 收获：${compact(input.section_learnings, 220)}`);
-  if (input.section_next_week.trim())
-    lines.push(`· 下周打算：${compact(input.section_next_week, 220)}`);
+  for (const sec of sections) {
+    const filled = sec.columns.filter(c => c.value.trim());
+    if (filled.length === 0) continue;
+  if (filled.length === 1 && sec.columns.length === 1) {
+      lines.push(`· ${sec.dimensionTitle}：${compact(filled[0].value, 280)}`);
+    } else {
+      lines.push(`· ${sec.dimensionTitle}`);
+      for (const c of filled) {
+        lines.push(`  - ${c.title}：${compact(c.value, 220)}`);
+      }
+    }
+  }
 
   lines.push('\n【数据侧参考（可与自述对照）】');
   lines.push(buildMetricsBlock(input.metrics));
@@ -93,13 +113,16 @@ function buildLocalCoaching(input: WeeklyCoachingInput): string {
   if (hasAnyOf(all, ['家庭', '孩子', '伴侣', '父母'])) {
     lines.push('· 家庭相关叙述：下周计划里显式预留「不可压缩时间」，再排工作，会减少内疚与冲突。');
   }
-  if (input.metrics && input.metrics.tasksCompleted === 0 && input.section_plans.includes('完成')) {
+  const plansCol = sections.find(s => s.dimensionTitle.includes('计划'))?.columns[0]?.value ?? '';
+  if (input.metrics && input.metrics.tasksCompleted === 0 && plansCol.includes('完成')) {
     lines.push('· 自述里谈到完成，但系统里本周期完成任务为 0：核对是否忘了在任务里点「完成」，或任务日期不在统计区间内。');
   }
 
   lines.push('\n【下周可做的一件事】');
+  const nextSec = sections.find(s => s.dimensionTitle.includes('下周'));
+  const nextText = nextSec?.columns.map(c => c.value).join('\n').trim() ?? '';
   lines.push(
-    input.section_next_week.trim()
+    nextText
       ? `· 从你「下周计划」里抽出一条，写成「何时、何地、第一步做什么」三要素。`
       : `· 用 10 分钟只写「下周唯一主线」一条，并放进任务列表的置顶。`,
   );
@@ -117,37 +140,32 @@ async function tryZhipuWeeklyCoaching(prompt: string): Promise<string | null> {
 }
 
 function buildPromptForModel(input: WeeklyCoachingInput): string {
-  return [
+  const sections = buildSections(input);
+  const bodyParts: string[] = [
     `复盘周期：${input.weekRangeLabel}`,
     `自评执行分（1-5）：${input.executionScore}`,
     '',
-    '一、汇总本周事件（用户原文）：',
-    input.section_summary || '（未填写）',
-    '',
-    '二、计划完成情况（用户原文）：',
-    input.section_plans || '（未填写）',
-    '',
-    '三、本周反思（用户原文）：',
-    input.section_reflect || '（未填写）',
-    '',
-    '四、复盘收获（用户原文）：',
-    input.section_learnings || '（未填写）',
-    '',
-    '五、下周计划（用户原文）：',
-    input.section_next_week || '（未填写）',
-    '',
-    'App 内本周期统计（供对照，勿与用户原文矛盾时武断否定用户）：',
-    buildMetricsBlock(input.metrics),
-    input.dailyReviewsDigest && input.dailyReviewsDigest.trim().length > 0
-      ? [
-          '',
-          '以下为近七日「每日复盘」用户原文（若有重复或空缺以用户周记为准）：',
-          input.dailyReviewsDigest.trim(),
-        ].join('\n')
-      : '',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  ];
+  let idx = 1;
+  for (const sec of sections) {
+    bodyParts.push(`${idx}、${sec.dimensionTitle}（用户原文）：`);
+    for (const col of sec.columns) {
+      if (sec.columns.length > 1) {
+        bodyParts.push(`【${col.title}】`);
+      }
+      bodyParts.push(col.value.trim() || '（未填写）');
+      bodyParts.push('');
+    }
+    idx += 1;
+  }
+  bodyParts.push('App 内本周期统计（供对照，勿与用户原文矛盾时武断否定用户）：');
+  bodyParts.push(buildMetricsBlock(input.metrics));
+  if (input.dailyReviewsDigest && input.dailyReviewsDigest.trim().length > 0) {
+    bodyParts.push('');
+    bodyParts.push('以下为近七日「每日复盘」用户原文（若有重复或空缺以用户周记为准）：');
+    bodyParts.push(input.dailyReviewsDigest.trim());
+  }
+  return bodyParts.filter(Boolean).join('\n');
 }
 
 export async function generateWeeklyReviewCoaching(input: WeeklyCoachingInput): Promise<string> {
@@ -155,4 +173,9 @@ export async function generateWeeklyReviewCoaching(input: WeeklyCoachingInput): 
   const remote = await tryZhipuWeeklyCoaching(prompt);
   if (remote) return remote;
   return buildLocalCoaching(input);
+}
+
+/** 供 UI 校验最低填写量 */
+export function weeklyReviewHasEnoughText(template: ReviewDimensionTemplate[], fields: ReviewFieldValues): boolean {
+  return totalFilledLength(fields) >= 30;
 }

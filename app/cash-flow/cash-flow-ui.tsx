@@ -555,7 +555,7 @@ function MobileDashboard({
       if (!zhipuReady) {
         setAiAnalysis(null);
         setAiError(
-          '未检测到智谱 API 密钥：请设置 EXPO_PUBLIC_ZHIPU_API_KEY（与记账、心愿清单等能力共用）。',
+          '未检测到智谱 API 密钥：请设置 EXPO_PUBLIC_ZHIPU_API_KEY（与记账、心愿单等能力共用）。',
         );
         setAiLoading(false);
         return;

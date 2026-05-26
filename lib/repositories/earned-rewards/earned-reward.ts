@@ -16,7 +16,7 @@ async function resolveRewardLabel(reward: CompletionReward): Promise<{ label: st
   }
   const wish = await getWishItemById(reward.wish_item_id);
   return {
-    label: wish?.name?.trim() || '欲望清单物品',
+    label: wish?.name?.trim() || '心愿好物',
     wishItemId: reward.wish_item_id,
     kind: 'wish',
   };

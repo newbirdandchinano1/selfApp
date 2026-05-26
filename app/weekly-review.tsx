@@ -1,7 +1,19 @@
 import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { generateWeeklyReviewCoaching } from '@/lib/weekly-review-coaching';
+import { generateWeeklyReviewCoaching, weeklyReviewHasEnoughText } from '@/lib/weekly-review-coaching';
+import {
+  buildDailyDigest,
+  collectColumnIds,
+  emptyFieldValues,
+  parseDailyReviewBody,
+  previewTextFromFields,
+  parseWeeklyReviewFields,
+  serializeReviewBody,
+  type ReviewFieldValues,
+} from '@/lib/repositories/insights/review-journal-body';
+import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
+import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { fetchWeeklyReviewMetrics, getRollingSevenDayRange, getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import {
   getWeeklyReviewConfiguredWeekday,
@@ -50,115 +62,7 @@ function formatRangeLabel(start: Date, end: Date): string {
   return `${start.getMonth() + 1}月${start.getDate()}日 – ${end.getMonth() + 1}月${end.getDate()}日`;
 }
 
-const DAILY_BODY_VERSION = 1 as const;
-
-type DailyFieldKey = 'audit_tasks' | 'audit_issues' | 'insight_high' | 'insight_block' | 'iter_top3' | 'iter_tweak';
-
-type DailyStructured = Record<DailyFieldKey, string>;
-
-function createEmptyDailyFields(): DailyStructured {
-  return {
-    audit_tasks: '',
-    audit_issues: '',
-    insight_high: '',
-    insight_block: '',
-    iter_top3: '',
-    iter_tweak: '',
-  };
-}
-
-function serializeDailyBody(f: DailyStructured): string {
-  return JSON.stringify({
-    v: DAILY_BODY_VERSION,
-    audit_tasks: f.audit_tasks,
-    audit_issues: f.audit_issues,
-    insight_high: f.insight_high,
-    insight_block: f.insight_block,
-    iter_top3: f.iter_top3,
-    iter_tweak: f.iter_tweak,
-  });
-}
-
-function parseDailyBody(raw: string | null | undefined): DailyStructured {
-  const empty = createEmptyDailyFields();
-  if (!raw || !String(raw).trim()) return empty;
-  const s = String(raw).trim();
-  try {
-    const o = JSON.parse(s) as Record<string, unknown>;
-    if (o && typeof o === 'object' && o.v === DAILY_BODY_VERSION) {
-      return {
-        audit_tasks: String(o.audit_tasks ?? ''),
-        audit_issues: String(o.audit_issues ?? ''),
-        insight_high: String(o.insight_high ?? ''),
-        insight_block: String(o.insight_block ?? ''),
-        iter_top3: String(o.iter_top3 ?? ''),
-        iter_tweak: String(o.iter_tweak ?? ''),
-      };
-    }
-  } catch {
-    // 旧版整段文本：落入「完成任务」便于继续编辑
-  }
-  return { ...empty, audit_tasks: s };
-}
-
-const DAILY_FIELD_LABELS: Record<DailyFieldKey, string> = {
-  audit_tasks: '完成任务',
-  audit_issues: '遗留问题',
-  insight_high: '效率高点',
-  insight_block: '障碍点',
-  iter_top3: '明日 Top 3 目标',
-  iter_tweak: '执行微调',
-};
-
-const DAILY_FORM_SECTIONS: {
-  sectionTitle: string;
-  fields: { key: DailyFieldKey; label: string; placeholder: string; minH: number }[];
-}[] = [
-  {
-    sectionTitle: '今日总结 (Audit)',
-    fields: [
-      { key: 'audit_tasks', label: '完成任务', placeholder: '[ ] A, [ ] B…', minH: 72 },
-      { key: 'audit_issues', label: '遗留问题', placeholder: '…', minH: 72 },
-    ],
-  },
-  {
-    sectionTitle: '今日洞察 (Insight)',
-    fields: [
-      { key: 'insight_high', label: '效率高点', placeholder: '例如：上午深度工作 2 小时', minH: 72 },
-      { key: 'insight_block', label: '障碍点', placeholder: '例如：被频繁的消息通知打断', minH: 72 },
-    ],
-  },
-  {
-    sectionTitle: '明日迭代 (Iteration)',
-    fields: [
-      { key: 'iter_top3', label: '明日 Top 3 目标', placeholder: '1. … 2. … 3. …', minH: 88 },
-      { key: 'iter_tweak', label: '执行微调', placeholder: '例如：明天把手机放在客厅再开始工作', minH: 72 },
-    ],
-  },
-];
-
-type DailyEntry = { ymd: string; label: string; fields: DailyStructured };
-
-function dailyEntryPreviewText(fields: DailyStructured): string {
-  const bits = (Object.keys(DAILY_FIELD_LABELS) as DailyFieldKey[])
-    .map(k => fields[k].trim().replace(/\s+/g, ' '))
-    .filter(Boolean);
-  return bits.join(' · ');
-}
-
-function buildDailyReviewsDigest(entries: DailyEntry[]): string {
-  const blocks: string[] = [];
-  for (const e of entries) {
-    const parts: string[] = [];
-    for (const k of Object.keys(DAILY_FIELD_LABELS) as DailyFieldKey[]) {
-      const v = e.fields[k].trim();
-      if (v) parts.push(`${DAILY_FIELD_LABELS[k]}：${v}`);
-    }
-    if (parts.length === 0) continue;
-    blocks.push(`【${e.label}】\n${parts.join('\n')}`);
-  }
-  return blocks.join('\n\n');
-}
+type DailyEntry = { ymd: string; label: string; fields: ReviewFieldValues };
 
 function toYmdLocal(d: Date): string {
   const m = d.getMonth() + 1;
@@ -170,16 +74,6 @@ function toYmdLocal(d: Date): string {
 function isDailyReviewEditableYmd(ymd: string, todayYmd: string): boolean {
   return ymd <= todayYmd;
 }
-
-const PLACEHOLDERS = {
-  summary:
-    '这周发生了什么？完成了哪些计划？有什么收获与结果？遇到什么问题、进展如何？见了哪些重要的人、谈了什么？',
-  plans:
-    '交付了什么成果？还有哪些任务没完成？这一周生活状态、家庭氛围如何？读了什么书、学到了什么？',
-  reflect: '已完成的任务有没有更好的做法？没完成的问题出在哪，打算怎么解决？',
-  learnings: '发现了什么问题？总结出哪些经验？',
-  next: '下周如何安排时间、兼顾生活与工作？有哪些重点想推进？',
-} as const;
 
 export default function WeeklyReviewScreen() {
   const { logicalTodayYmd: todayYmd } = useDayBoundary();
@@ -215,11 +109,9 @@ export default function WeeklyReviewScreen() {
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [metrics, setMetrics] = useState<WeeklyReviewMetrics | null>(null);
 
-  const [sectionSummary, setSectionSummary] = useState('');
-  const [sectionPlans, setSectionPlans] = useState('');
-  const [sectionReflect, setSectionReflect] = useState('');
-  const [sectionLearnings, setSectionLearnings] = useState('');
-  const [sectionNext, setSectionNext] = useState('');
+  const [dailyTemplate, setDailyTemplate] = useState<ReviewDimensionTemplate[]>([]);
+  const [weeklyTemplate, setWeeklyTemplate] = useState<ReviewDimensionTemplate[]>([]);
+  const [weeklyFields, setWeeklyFields] = useState<ReviewFieldValues>({});
   const [executionScore, setExecutionScore] = useState(0);
   const [aiCoaching, setAiCoaching] = useState<string | null>(null);
   const [adjustTasks, setAdjustTasks] = useState(false);
@@ -229,6 +121,15 @@ export default function WeeklyReviewScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      const [dailyTpl, weeklyTpl] = await Promise.all([
+        listReviewTemplate('daily'),
+        listReviewTemplate('weekly'),
+      ]);
+      setDailyTemplate(dailyTpl);
+      setWeeklyTemplate(weeklyTpl);
+      const dColIds = collectColumnIds(dailyTpl);
+      const wColIds = collectColumnIds(weeklyTpl);
+
       const today = new Date();
       const dow = await getWeeklyReviewConfiguredWeekday();
       setConfiguredDow(dow);
@@ -245,7 +146,9 @@ export default function WeeklyReviewScreen() {
       );
 
       const dailyRows = await listDailyReviewsBetween(rolling.startYmd, rolling.endYmd);
-      const byYmd = new Map(dailyRows.map(r => [r.record_date_ymd, parseDailyBody(r.body ?? '')]));
+      const byYmd = new Map(
+        dailyRows.map(r => [r.record_date_ymd, parseDailyReviewBody(r.body ?? '', dColIds)]),
+      );
       const nextDaily: DailyEntry[] = [];
       for (let i = 0; i < 7; i++) {
         const d = new Date(rolling.start);
@@ -254,7 +157,7 @@ export default function WeeklyReviewScreen() {
         nextDaily.push({
           ymd,
           label: `${d.getMonth() + 1}月${d.getDate()}日 ${WEEKLY_REVIEW_WEEKDAY_LABELS[d.getDay()]}`,
-          fields: byYmd.get(ymd) ?? createEmptyDailyFields(),
+          fields: byYmd.get(ymd) ?? emptyFieldValues(dColIds),
         });
       }
       setDailyEntries(nextDaily);
@@ -267,11 +170,7 @@ export default function WeeklyReviewScreen() {
         setPeriodStartYmd('');
         setWeekRangeLabel('');
         setMetrics(null);
-        setSectionSummary('');
-        setSectionPlans('');
-        setSectionReflect('');
-        setSectionLearnings('');
-        setSectionNext('');
+        setWeeklyFields(emptyFieldValues(wColIds));
         setExecutionScore(0);
         setAiCoaching(null);
         setAdjustTasks(false);
@@ -290,22 +189,14 @@ export default function WeeklyReviewScreen() {
       ]);
       setMetrics(m);
       if (row) {
-        setSectionSummary(row.section_summary ?? '');
-        setSectionPlans(row.section_plans ?? '');
-        setSectionReflect(row.section_reflect ?? '');
-        setSectionLearnings(row.section_learnings ?? '');
-        setSectionNext(row.section_next_week ?? '');
+        setWeeklyFields(parseWeeklyReviewFields(row, wColIds));
         setExecutionScore(row.execution_score > 0 ? row.execution_score : 0);
         setAiCoaching(row.ai_coaching);
         setAdjustTasks(row.adjust_tasks === 1);
         setAdjustSavings(row.adjust_savings === 1);
         setAdjustPlans(row.adjust_plans === 1);
       } else {
-        setSectionSummary('');
-        setSectionPlans('');
-        setSectionReflect('');
-        setSectionLearnings('');
-        setSectionNext('');
+        setWeeklyFields(emptyFieldValues(wColIds));
         setExecutionScore(0);
         setAiCoaching(null);
         setAdjustTasks(false);
@@ -332,11 +223,7 @@ export default function WeeklyReviewScreen() {
     try {
       await upsertWeeklyReviewJournal({
         week_start_ymd: periodStartYmd,
-        section_summary: sectionSummary,
-        section_plans: sectionPlans,
-        section_reflect: sectionReflect,
-        section_learnings: sectionLearnings,
-        section_next_week: sectionNext,
+        fields: weeklyFields,
         execution_score: executionScore,
         adjust_tasks: adjustTasks,
         adjust_savings: adjustSavings,
@@ -350,11 +237,7 @@ export default function WeeklyReviewScreen() {
     }
   }, [
     periodStartYmd,
-    sectionSummary,
-    sectionPlans,
-    sectionReflect,
-    sectionLearnings,
-    sectionNext,
+    weeklyFields,
     executionScore,
     adjustTasks,
     adjustSavings,
@@ -379,13 +262,7 @@ export default function WeeklyReviewScreen() {
       Alert.alert('请先自评', '请为「本周期执行结果」选择 1～5 星后再生成建议。');
       return;
     }
-    const totalLen =
-      sectionSummary.length +
-      sectionPlans.length +
-      sectionReflect.length +
-      sectionLearnings.length +
-      sectionNext.length;
-    if (totalLen < 30) {
+    if (!weeklyReviewHasEnoughText(weeklyTemplate, weeklyFields)) {
       Alert.alert('多写一点', '每个板块哪怕几句话，也能让建议更贴近你；当前文字略少。');
       return;
     }
@@ -394,14 +271,11 @@ export default function WeeklyReviewScreen() {
       await persistDraft();
       const coaching = await generateWeeklyReviewCoaching({
         weekRangeLabel: weekRangeLabel,
-        section_summary: sectionSummary,
-        section_plans: sectionPlans,
-        section_reflect: sectionReflect,
-        section_learnings: sectionLearnings,
-        section_next_week: sectionNext,
+        template: weeklyTemplate,
+        fields: weeklyFields,
         executionScore,
         metrics,
-        dailyReviewsDigest: buildDailyReviewsDigest(dailyEntries),
+        dailyReviewsDigest: buildDailyDigest(dailyEntries, dailyTemplate),
       });
       await setWeeklyReviewCoachingText(periodStartYmd, coaching);
       setAiCoaching(coaching);
@@ -413,11 +287,9 @@ export default function WeeklyReviewScreen() {
     }
   }, [
     executionScore,
-    sectionSummary,
-    sectionPlans,
-    sectionReflect,
-    sectionLearnings,
-    sectionNext,
+    weeklyFields,
+    weeklyTemplate,
+    dailyTemplate,
     weekRangeLabel,
     metrics,
     periodStartYmd,
@@ -443,21 +315,25 @@ export default function WeeklyReviewScreen() {
     }
   }, [canEdit, periodStartYmd, adjustTasks, adjustSavings, adjustPlans]);
 
-  const setDailyFieldForYmd = useCallback((ymd: string, key: DailyFieldKey, value: string) => {
+  const setDailyFieldForYmd = useCallback((ymd: string, columnId: string, value: string) => {
     if (!isDailyReviewEditableYmd(ymd, todayYmd)) return;
     setDailyEntries(prev =>
-      prev.map(e => (e.ymd === ymd ? { ...e, fields: { ...e.fields, [key]: value } } : e)),
+      prev.map(e => (e.ymd === ymd ? { ...e, fields: { ...e.fields, [columnId]: value } } : e)),
     );
   }, [todayYmd]);
 
-  const onSaveDaily = useCallback(async (ymd: string, fields: DailyStructured) => {
+  const setWeeklyField = useCallback((columnId: string, value: string) => {
+    setWeeklyFields(prev => ({ ...prev, [columnId]: value }));
+  }, []);
+
+  const onSaveDaily = useCallback(async (ymd: string, fields: ReviewFieldValues) => {
     if (!isDailyReviewEditableYmd(ymd, todayYmd)) {
       Alert.alert('暂不可保存', '每日复盘不可填写未来日期；过去与今天可保存。');
       return;
     }
     setDailySavingYmd(ymd);
     try {
-      await upsertDailyReviewJournal(ymd, serializeDailyBody(fields));
+      await upsertDailyReviewJournal(ymd, serializeReviewBody(fields));
       Alert.alert('已保存', `${ymd} 的每日复盘已写入本地。`);
     } catch (e) {
       console.warn('daily review save', e);
@@ -494,13 +370,22 @@ export default function WeeklyReviewScreen() {
             <MaterialIcons name="arrow-back" size={24} color={primary} />
           </Pressable>
           <Text style={[styles.topTitle, { color: text }]}>每周复盘</Text>
-          <Pressable
-            onPress={() => setPickerOpen(true)}
-            hitSlop={12}
-            accessibilityLabel="设置复盘日"
-            style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1, padding: 4 }]}>
-            <MaterialIcons name="event-available" size={24} color={primary} />
-          </Pressable>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+            <Pressable
+              onPress={() => router.push('/review-template-settings')}
+              hitSlop={12}
+              accessibilityLabel="管理复盘模板"
+              style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1, padding: 4 }]}>
+              <MaterialIcons name="tune" size={24} color={primary} />
+            </Pressable>
+            <Pressable
+              onPress={() => setPickerOpen(true)}
+              hitSlop={12}
+              accessibilityLabel="设置复盘日"
+              style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1, padding: 4 }]}>
+              <MaterialIcons name="event-available" size={24} color={primary} />
+            </Pressable>
+          </View>
         </View>
 
         {loading ? (
@@ -558,7 +443,7 @@ export default function WeeklyReviewScreen() {
             <Text style={[styles.intro, { color: outline }]}>
               {canEdit
                 ? '以下由你亲自书写。保存后可一键生成 AI 建议；在「我的」页选择智谱或豆包；智谱可配 EXPO_PUBLIC_ZHIPU_API_KEY，豆包可配 EXPO_PUBLIC_ARK_API_KEY（未设置环境变量时两者均有应用内置密钥兜底）。均不可用时使用本地规则汇总。'
-                : '到达复盘日后，可基于近七天数据与五大板块完成书写与保存。'}
+                : '到达复盘日后，可基于近七天数据与自定义维度完成书写与保存。'}
             </Text>
 
             <View style={[styles.dailySectionCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
@@ -569,10 +454,20 @@ export default function WeeklyReviewScreen() {
                 <Text style={[styles.dailySectionHint, { color: outline }]}>
                   区间以「下一次每周复盘日」为终点向前 7 天（与周度统计一致）；过去与自然日「今天」可填写与保存，未来日期仅可查看。生成周度 AI 建议时会参考本周期内各日已填内容。
                 </Text>
+                <Pressable
+                  onPress={() => router.push('/review-template-settings?scope=daily')}
+                  style={({ pressed }) => [
+                    styles.templateLinkBtn,
+                    { borderColor: outlineVariant, opacity: pressed ? 0.88 : 1 },
+                  ]}>
+                  <MaterialIcons name="tune" size={18} color={primary} />
+                  <Text style={[styles.templateLinkText, { color: primary }]}>管理日复盘维度与栏目</Text>
+                </Pressable>
                 {dailyEntries.map(entry => {
                   const open = expandedDailyYmd === entry.ymd;
                   const canEditDailyEntry = isDailyReviewEditableYmd(entry.ymd, todayYmd);
-                  const previewRaw = dailyEntryPreviewText(entry.fields);
+                  const allDailyCols = dailyTemplate.flatMap(d => d.columns);
+                  const previewRaw = previewTextFromFields(entry.fields, allDailyCols);
                   const previewShort =
                     previewRaw.length > 48 ? `${previewRaw.slice(0, 48)}…` : previewRaw || '（未填写）';
                   return (
@@ -598,35 +493,41 @@ export default function WeeklyReviewScreen() {
                       </Pressable>
                       {open ? (
                         <View style={[styles.dailyDayBody, { borderTopColor: outlineVariant }]}>
-                          {DAILY_FORM_SECTIONS.map(sec => (
-                            <View key={sec.sectionTitle} style={styles.dailyFormSection}>
-                              <Text style={[styles.dailyFormSectionTitle, { color: text }]}>{sec.sectionTitle}</Text>
-                              {sec.fields.map(f => (
-                                <View key={f.key} style={styles.dailyFieldBlock}>
-                                  <Text style={[styles.dailyFieldLabel, { color: outline }]}>{f.label}</Text>
-                                  <TextInput
-                                    value={entry.fields[f.key]}
-                                    onChangeText={t => setDailyFieldForYmd(entry.ymd, f.key, t)}
-                                    placeholder={f.placeholder}
-                                    placeholderTextColor={outline}
-                                    multiline
-                                    textAlignVertical="top"
-                                    editable={canEditDailyEntry}
-                                    style={[
-                                      styles.dailyFieldInput,
-                                      {
-                                        minHeight: f.minH,
-                                        backgroundColor: inputSurface,
-                                        borderColor: inputBorder,
-                                        color: text,
-                                        opacity: canEditDailyEntry ? 1 : 0.72,
-                                      },
-                                    ]}
-                                  />
-                                </View>
-                              ))}
-                            </View>
-                          ))}
+                          {dailyTemplate.length === 0 ? (
+                            <Text style={[styles.dailySectionHint, { color: outline }]}>
+                              尚未配置日复盘维度，请点上方「管理日复盘维度与栏目」添加。
+                            </Text>
+                          ) : (
+                            dailyTemplate.map(dim => (
+                              <View key={dim.id} style={styles.dailyFormSection}>
+                                <Text style={[styles.dailyFormSectionTitle, { color: text }]}>{dim.title}</Text>
+                                {dim.columns.map(col => (
+                                  <View key={col.id} style={styles.dailyFieldBlock}>
+                                    <Text style={[styles.dailyFieldLabel, { color: outline }]}>{col.title}</Text>
+                                    <TextInput
+                                      value={entry.fields[col.id] ?? ''}
+                                      onChangeText={t => setDailyFieldForYmd(entry.ymd, col.id, t)}
+                                      placeholder={col.placeholder || '…'}
+                                      placeholderTextColor={outline}
+                                      multiline
+                                      textAlignVertical="top"
+                                      editable={canEditDailyEntry}
+                                      style={[
+                                        styles.dailyFieldInput,
+                                        {
+                                          minHeight: 72,
+                                          backgroundColor: inputSurface,
+                                          borderColor: inputBorder,
+                                          color: text,
+                                          opacity: canEditDailyEntry ? 1 : 0.72,
+                                        },
+                                      ]}
+                                    />
+                                  </View>
+                                ))}
+                              </View>
+                            ))
+                          )}
                           {canEditDailyEntry ? (
                             <Pressable
                               onPress={() => void onSaveDaily(entry.ymd, entry.fields)}
@@ -679,65 +580,44 @@ export default function WeeklyReviewScreen() {
 
             {canEdit ? (
               <>
-            <SectionTitle color={text} n="一" title="汇总本周事件" />
-            <Field
-              value={sectionSummary}
-              onChangeText={setSectionSummary}
-              editable={canEdit}
-              placeholder={PLACEHOLDERS.summary}
-              inputSurface={inputSurface}
-              inputBorder={inputBorder}
-              textColor={text}
-              hintColor={outline}
-            />
-
-            <SectionTitle color={text} n="二" title="计划完成情况" />
-            <Field
-              value={sectionPlans}
-              onChangeText={setSectionPlans}
-              editable={canEdit}
-              placeholder={PLACEHOLDERS.plans}
-              inputSurface={inputSurface}
-              inputBorder={inputBorder}
-              textColor={text}
-              hintColor={outline}
-            />
-
-            <SectionTitle color={text} n="三" title="本周反思" />
-            <Field
-              value={sectionReflect}
-              onChangeText={setSectionReflect}
-              editable={canEdit}
-              placeholder={PLACEHOLDERS.reflect}
-              inputSurface={inputSurface}
-              inputBorder={inputBorder}
-              textColor={text}
-              hintColor={outline}
-            />
-
-            <SectionTitle color={text} n="四" title="复盘收获" />
-            <Field
-              value={sectionLearnings}
-              onChangeText={setSectionLearnings}
-              editable={canEdit}
-              placeholder={PLACEHOLDERS.learnings}
-              inputSurface={inputSurface}
-              inputBorder={inputBorder}
-              textColor={text}
-              hintColor={outline}
-            />
-
-            <SectionTitle color={text} n="五" title="下周计划" />
-            <Field
-              value={sectionNext}
-              onChangeText={setSectionNext}
-              editable={canEdit}
-              placeholder={PLACEHOLDERS.next}
-              inputSurface={inputSurface}
-              inputBorder={inputBorder}
-              textColor={text}
-              hintColor={outline}
-            />
+            <Pressable
+              onPress={() => router.push('/review-template-settings?scope=weekly')}
+              style={({ pressed }) => [
+                styles.templateLinkBtn,
+                { borderColor: outlineVariant, marginBottom: 8, opacity: pressed ? 0.88 : 1 },
+              ]}>
+              <MaterialIcons name="tune" size={18} color={primary} />
+              <Text style={[styles.templateLinkText, { color: primary }]}>管理周复盘维度与栏目</Text>
+            </Pressable>
+            {weeklyTemplate.length === 0 ? (
+              <Text style={[styles.intro, { color: outline }]}>尚未配置周复盘维度，请先管理模板。</Text>
+            ) : (
+              weeklyTemplate.map((dim, dimIdx) => {
+                const nLabels = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+                return (
+                  <View key={dim.id}>
+                    <SectionTitle color={text} n={nLabels[dimIdx] ?? String(dimIdx + 1)} title={dim.title} />
+                    {dim.columns.map(col => (
+                      <View key={col.id} style={dim.columns.length > 1 ? { marginBottom: 8 } : undefined}>
+                        {dim.columns.length > 1 ? (
+                          <Text style={[styles.dailyFieldLabel, { color: outline, marginBottom: 6 }]}>{col.title}</Text>
+                        ) : null}
+                        <Field
+                          value={weeklyFields[col.id] ?? ''}
+                          onChangeText={t => setWeeklyField(col.id, t)}
+                          editable={canEdit}
+                          placeholder={col.placeholder || '…'}
+                          inputSurface={inputSurface}
+                          inputBorder={inputBorder}
+                          textColor={text}
+                          hintColor={outline}
+                        />
+                      </View>
+                    ))}
+                  </View>
+                );
+              })
+            )}
 
             <Text style={[styles.scoreTitle, { color: text }]}>本周期执行结果自评</Text>
             <Text style={[styles.scoreHint, { color: outline }]}>1 星偏低，5 星代表整体执行满意</Text>
@@ -1066,7 +946,7 @@ function WeeklyMetricsReferenceCard({
                       <MaterialIcons name="favorite-border" size={20} color={primary} />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={[styles.metricsFullLabel, { color: outline }]}>心愿清单更新</Text>
+                      <Text style={[styles.metricsFullLabel, { color: outline }]}>心愿单更新</Text>
                       <Text style={[styles.metricsFullValue, { color: text }]}>
                         {formatMetricInt(metrics.wishUpdates)}
                         <Text style={[styles.metricsFullUnit, { color: outline }]}> 条</Text>
@@ -1302,6 +1182,18 @@ const styles = StyleSheet.create({
   dailySectionTitle: { fontSize: 17, fontWeight: '900', letterSpacing: -0.2 },
   dailyPeriodLine: { fontSize: 12, fontWeight: '800', lineHeight: 18 },
   dailySectionHint: { fontSize: 12, lineHeight: 18, fontWeight: '600' },
+  templateLinkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginTop: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  templateLinkText: { fontSize: 13, fontWeight: '800' },
   dailyDayCard: {
     borderRadius: 14,
     borderWidth: 1,

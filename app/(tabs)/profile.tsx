@@ -573,8 +573,8 @@ export default function ProfileScreen() {
 
           <View style={styles.sectionHead}>
             <View>
-              <Text style={[styles.kicker, { color: outline }]}>WISHLIST</Text>
-              <Text style={[styles.sectionTitle, { color: text }]}>欲望清单</Text>
+              <Text style={[styles.kicker, { color: outline }]}>WISHES</Text>
+              <Text style={[styles.sectionTitle, { color: text }]}>心愿单</Text>
             </View>
             <Pressable onPress={() => router.push('/wish-list')}>
               <Text style={[styles.moreText, { color: primary }]}>查看全部</Text>
@@ -595,7 +595,7 @@ export default function ProfileScreen() {
               }}
             >
               <Text style={{ color: outline, fontSize: 15, fontWeight: '600', textAlign: 'center', lineHeight: 22 }}>
-                暂无心愿条目，可在欲望清单中添加。
+                暂无心愿条目，可在心愿单中添加。
               </Text>
               <Pressable
                 onPress={() => router.push('/add-wish-item')}

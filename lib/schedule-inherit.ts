@@ -1,4 +1,4 @@
-import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 
 /** 父任务 / 项目 → 子任务的时间继承与 dateLimit 计算 */
 
@@ -11,7 +11,7 @@ export type ScheduleMetaLike = {
   mode?: 'date' | 'time';
   allDay?: boolean;
   hasExactTime?: boolean;
-  reminderOption?: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  reminderOption?: TaskReminderOption;
   reminderHour?: number;
   reminderMinute?: number;
   repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';

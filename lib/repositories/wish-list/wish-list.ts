@@ -57,14 +57,14 @@ function assertWishItemPayload(input: CreateWishItemInput) {
   }
   const lv = Math.round(input.desire_level);
   if (lv < 1 || lv > 5) {
-    throw new Error('欲望等级须在 1～5');
+    throw new Error('心动等级须在 1～5');
   }
 }
 
 export async function createWishItem(input: CreateWishItemInput) {
   assertWishItemPayload(input);
   const db = await getDatabase();
-  const id = createWishItemId();
+  const id = input.id?.trim() || createWishItemId();
   const refUri = await persistWishReferenceImage(input.reference_image_uri);
 
   await db.runAsync(
@@ -129,7 +129,7 @@ export async function updateWishItem(id: string, input: UpdateWishItemInput) {
   const desire_level = input.desire_level ?? current.desire_level;
   const lv = Math.round(desire_level);
   if (lv < 1 || lv > 5) {
-    throw new Error('欲望等级须在 1～5');
+    throw new Error('心动等级须在 1～5');
   }
 
   await db.runAsync(

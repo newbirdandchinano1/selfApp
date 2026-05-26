@@ -7,7 +7,7 @@ import {
 } from '@/lib/schedule-inherit';
 import { tightenAllProjectTasks } from '@/lib/tighten-task-schedules';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
-import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getDatabase } from '@/lib/database.native';
@@ -79,7 +79,7 @@ type SchedulePickerResult = {
   quickChip: string;
   allDay: boolean;
   hasExactTime: boolean;
-  reminderOption: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  reminderOption: TaskReminderOption;
   repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary: string;
   weeklyDays: number[];
@@ -96,7 +96,7 @@ type SchedulePickerInitPayload = {
   quickChip?: string;
   allDay?: boolean;
   hasExactTime?: boolean;
-  reminderOption?: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  reminderOption?: TaskReminderOption;
   repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary?: string;
   weeklyDays?: number[];

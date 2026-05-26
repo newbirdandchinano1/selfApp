@@ -86,6 +86,7 @@ function formatTaskStatus(status: string) {
   if (status === 'done') return '已完成';
   if (status === 'blocked') return '受阻';
   if (status === 'cancelled') return '已取消';
+  if (status === 'shelved') return '暂时搁置';
   return '待办';
 }
 
@@ -293,7 +294,7 @@ function DayDetailSections({
   borderColor: string;
 }) {
   const openTask = (id: string) => router.push(`/task/${id}`);
-  const openHabit = (id: string) => router.push({ pathname: '/habit-detail', params: { id } });
+  const openHabit = (id: string) => router.push({ pathname: '/habit-detail', params: { habitId: id } });
   const openProject = (id: string) => router.push({ pathname: '/edit-project', params: { id } });
 
   const counts = daySummaryCounts(summary);

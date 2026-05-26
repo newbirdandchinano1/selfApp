@@ -1,4 +1,8 @@
 import { getDatabase } from '../../database.native';
+import {
+  legacyWeeklyColumnsFromFields,
+  serializeWeeklyReviewExtraData,
+} from './review-journal-body';
 import type { UpsertWeeklyReviewJournalInput, WeeklyReviewJournalRow } from './weekly-review-journal.types';
 
 function journalIdForWeek(weekStartYmd: string) {
@@ -18,6 +22,8 @@ export async function upsertWeeklyReviewJournal(input: UpsertWeeklyReviewJournal
   const db = await getDatabase();
   if (!db) throw new Error('database not available');
   const id = journalIdForWeek(input.week_start_ymd);
+  const legacy = legacyWeeklyColumnsFromFields(input.fields);
+  const extra_data = serializeWeeklyReviewExtraData(input.fields);
   const adjustTasks = input.adjust_tasks ? 1 : 0;
   const adjustSavings = input.adjust_savings ? 1 : 0;
   const adjustPlans = input.adjust_plans ? 1 : 0;
@@ -42,21 +48,23 @@ export async function upsertWeeklyReviewJournal(input: UpsertWeeklyReviewJournal
            adjust_tasks = ?,
            adjust_savings = ?,
            adjust_plans = ?,
+           extra_data = ?,
            updated_at = datetime('now'),
            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
            version = version + 1
          WHERE id = ?`,
         [
-          input.section_summary || null,
-          input.section_plans || null,
-          input.section_reflect || null,
-          input.section_learnings || null,
-          input.section_next_week || null,
+          legacy.section_summary || null,
+          legacy.section_plans || null,
+          legacy.section_reflect || null,
+          legacy.section_learnings || null,
+          legacy.section_next_week || null,
           input.execution_score,
           input.ai_coaching ?? null,
           adjustTasks,
           adjustSavings,
           adjustPlans,
+          extra_data,
           existing.id,
         ],
       );
@@ -72,20 +80,22 @@ export async function upsertWeeklyReviewJournal(input: UpsertWeeklyReviewJournal
            adjust_tasks = ?,
            adjust_savings = ?,
            adjust_plans = ?,
+           extra_data = ?,
            updated_at = datetime('now'),
            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
            version = version + 1
          WHERE id = ?`,
         [
-          input.section_summary || null,
-          input.section_plans || null,
-          input.section_reflect || null,
-          input.section_learnings || null,
-          input.section_next_week || null,
+          legacy.section_summary || null,
+          legacy.section_plans || null,
+          legacy.section_reflect || null,
+          legacy.section_learnings || null,
+          legacy.section_next_week || null,
           input.execution_score,
           adjustTasks,
           adjustSavings,
           adjustPlans,
+          extra_data,
           existing.id,
         ],
       );
@@ -99,20 +109,21 @@ export async function upsertWeeklyReviewJournal(input: UpsertWeeklyReviewJournal
       section_summary, section_plans, section_reflect, section_learnings, section_next_week,
       execution_score, ai_coaching, adjust_tasks, adjust_savings, adjust_plans,
       created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, NULL)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
     [
       id,
       input.week_start_ymd,
-      input.section_summary || null,
-      input.section_plans || null,
-      input.section_reflect || null,
-      input.section_learnings || null,
-      input.section_next_week || null,
+      legacy.section_summary || null,
+      legacy.section_plans || null,
+      legacy.section_reflect || null,
+      legacy.section_learnings || null,
+      legacy.section_next_week || null,
       input.execution_score,
       input.ai_coaching ?? null,
       adjustTasks,
       adjustSavings,
       adjustPlans,
+      extra_data,
     ],
   );
 }

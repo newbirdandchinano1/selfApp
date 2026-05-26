@@ -2,16 +2,31 @@ import { getDatabase } from '../../database.native';
 import { getSavingsPlanById, SAVINGS_PLAN_MAX_TARGET_AMOUNT } from './savings-plan';
 import type { CreateSavingsPlanDepositInput } from './savings-plan-deposit.types';
 
+export async function getDepositSumForPlanId(planId: string) {
+  const map = await getDepositSumsByActivePlanId();
+  return map[planId] ?? 0;
+}
+
 export async function createSavingsPlanDeposit(input: CreateSavingsPlanDepositInput) {
   const plan = await getSavingsPlanById(input.savings_plan_id);
   if (!plan) {
     throw new Error('savings plan not found');
   }
-  if (input.amount <= 0) {
-    throw new Error('deposit amount must be positive');
+  if (input.amount === 0) {
+    throw new Error('amount cannot be zero');
   }
-  if (input.amount > SAVINGS_PLAN_MAX_TARGET_AMOUNT) {
+  const absAmount = Math.abs(input.amount);
+  if (absAmount > SAVINGS_PLAN_MAX_TARGET_AMOUNT) {
     throw new Error('deposit amount must not exceed 8 digits');
+  }
+  const current = await getDepositSumForPlanId(input.savings_plan_id);
+
+  if (input.amount < 0) {
+    if (current + input.amount < 0) {
+      throw new Error('withdrawal exceeds saved balance');
+    }
+  } else if (plan.target_amount > 0 && current + input.amount > plan.target_amount) {
+    throw new Error('deposit exceeds plan target');
   }
 
   const db = await getDatabase();

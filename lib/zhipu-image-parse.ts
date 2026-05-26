@@ -1206,7 +1206,7 @@ const WISH_LIST_RATIONAL_REVIEW_JSON_HINT = `{"headline":"一句中文概括（�
 
 export type AnalyzeWishListRationalReviewFromTextOptions = {
   apiKey: string;
-  /** 心愿清单与汇总的中文上下文，由调用方从本地数据组装 */
+  /** 心愿单与汇总的中文上下文，由调用方从本地数据组装 */
   contextText: string;
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -1241,7 +1241,7 @@ function normalizeWishListRationalReviewJson(parsed: unknown): { headline: strin
 }
 
 /**
- * 根据本地心愿清单摘要生成「理性消费」中文标题与正文（智谱 glm-4-flash，JSON）。
+ * 根据本地心愿单摘要生成「理性消费」中文标题与正文（智谱 glm-4-flash，JSON）。
  */
 export async function analyzeWishListRationalReviewFromText(
   options: AnalyzeWishListRationalReviewFromTextOptions,
@@ -1257,13 +1257,13 @@ export async function analyzeWishListRationalReviewFromText(
     return { ok: false, error: '清单上下文为空', attempts: 0 };
   }
 
-  const systemContent = `你是个人生活规划应用里的消费顾问。用户会提供本地「欲望/心愿清单」的聚合摘要（中文，已脱敏；含汇总统计、类别分布、条目明细等）。
+  const systemContent = `你是个人生活规划应用里的消费顾问。用户会提供本地「心愿单」的聚合摘要（中文，已脱敏；含汇总统计、类别分布、条目明细等）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含两个字符串字段：
 - headline：用一句话概括当前清单的消费风险或优先级焦点，建议不超过 24 个汉字，语气克制、不羞辱用户。
 - review：正文须达到 300～400 个汉字（含标点；低于 280 字视为不合格）。用 3～5 个自然段或清晰层次展开，口语化、克制、不羞辱用户；不要 markdown；不要逐条复读清单；不要捏造摘要中未出现的商品、金额或类别。建议覆盖：
   1）整体画像：总支出、相对季度目标的占比与预算压力感；
-  2）欲望结构：高/中/低欲望分布，是否存在「高欲望+高价」集中；
+  2）心动结构：高/中/低心动分布，是否存在「高心动+高价」集中；
   3）类别与理由：哪些条目理由充分、哪些显得冲动或信息不足；
   4）优先级：可入手、宜观望延后、可替代或降配的思路（可点名 1～2 个摘要中的典型称谓，勿罗列全部）；
   5）行动收尾：1～2 条可执行的下一步（如冷静期、分拆大额、对齐季度目标等）。
@@ -1274,7 +1274,7 @@ export async function analyzeWishListRationalReviewFromText(
   const lr = await loopTextJsonLlmWithRetries<{ headline: string; review: string }>({
     apiKey: key,
     systemContent,
-    userContent: `以下是心愿清单上下文。请生成 headline 与 review；其中 review 正文须为 300～400 汉字：\n\n${text}`,
+    userContent: `以下是心愿单上下文。请生成 headline 与 review；其中 review 正文须为 300～400 汉字：\n\n${text}`,
     temperature: 0.35,
     maxTokens: 1200,
     maxAttempts,
@@ -1611,7 +1611,7 @@ const WISH_ITEM_AI_COMMENT_JSON_HINT = `{"comment":"2～4句理性消费与必�
 
 export type AnalyzeWishItemAiCommentFromTextOptions = {
   apiKey: string;
-  /** 单条心愿的中文摘要（名称、价格、欲望等级、类别、理由等） */
+  /** 单条心愿的中文摘要（名称、价格、心动等级、类别、理由等） */
   summaryText: string;
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -1631,7 +1631,7 @@ function normalizeWishItemAiCommentJson(parsed: unknown): string {
 }
 
 /**
- * 为单条「欲望/心愿」条目生成理性消费向中文评价（智谱 glm-4-flash，JSON 含 comment 字段）。
+ * 为单条心愿单条目生成理性消费向中文评价（智谱 glm-4-flash，JSON 含 comment 字段）。
  */
 export async function analyzeWishItemAiCommentFromText(
   options: AnalyzeWishItemAiCommentFromTextOptions,
@@ -1647,10 +1647,10 @@ export async function analyzeWishItemAiCommentFromText(
     return { ok: false, error: '摘要为空', attempts: 0 };
   }
 
-  const systemContent = `你是个人生活规划应用里的消费顾问。用户会提供「单条」本地心愿/欲望清单摘要（中文，已脱敏）。
+  const systemContent = `你是个人生活规划应用里的消费顾问。用户会提供「单条」本地心愿单条目摘要（中文，已脱敏）。
 只输出一个标准 JSON 对象，不要 markdown 代码块、不要任何 JSON 以外的文字。
 必须包含字段 comment（字符串）：
-- 用 2～4 句口语化中文，从必要性、预算感、欲望等级与理由是否自洽、可延后或替代思路等角度点评；
+- 用 2～4 句口语化中文，从必要性、预算感、心动等级与理由是否自洽、可延后或替代思路等角度点评；
 - 语气克制、友善，不羞辱用户；不要编造摘要中未出现的商品细节或金额；
 - 总字数建议 80～260 字，不要超过 400 字。
 

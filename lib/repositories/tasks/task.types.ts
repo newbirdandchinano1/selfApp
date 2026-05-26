@@ -1,6 +1,16 @@
 import type { SyncStatus } from '../../database.native';
 
-export type TaskStatus = 'todo' | 'doing' | 'done' | 'blocked' | 'cancelled';
+export type TaskStatus = 'todo' | 'doing' | 'done' | 'blocked' | 'cancelled' | 'shelved';
+
+/** 已完成或已取消，不再出现在活跃待办流中 */
+export function isTaskTerminalStatus(status: TaskStatus | string): boolean {
+  return status === 'done' || status === 'cancelled';
+}
+
+/** 暂时搁置：留在待办栏，不可勾选完成，可随时激活为待办 */
+export function isTaskShelvedStatus(status: TaskStatus | string): boolean {
+  return status === 'shelved';
+}
 export type TaskPriority = 0 | 1 | 2 | 3 | 4;
 
 export type TaskRow = {

@@ -1,8 +1,21 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
-import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import {
+  ComposerEditorialCard,
+  ComposerHero,
+  ComposerMain,
+  ComposerNoteSection,
+  ComposerOptionRow,
+  ComposerScheduleSection,
+  ComposerSection,
+  ComposerCategoryModal,
+  ComposerSectionHead,
+  ComposerTopBar,
+  composerStyles,
+} from '@/components/composer';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
+import { Spacing } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
+import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
+import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
 import {
   mergePrerequisiteIdsIntoExtraData,
@@ -11,16 +24,15 @@ import {
 import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
 import { createProject, getProjectCategories, getProjects, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
-import { MaterialIcons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import React from 'react';
-import { useFocusEffect } from '@react-navigation/native';
-import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
 import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
 import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
 import { mergeCompletionRewardIntoExtraData } from '@/lib/completion-reward/completion-reward-extra';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Subtask = { id: string; title: string; done: boolean };
 
@@ -30,7 +42,9 @@ type SchedulePickerResult = {
   quickChip: string;
   allDay: boolean;
   hasExactTime: boolean;
-  reminderOption: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  reminderOption: TaskReminderOption;
+  reminderHour?: number;
+  reminderMinute?: number;
   repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary: string;
   weeklyDays: number[];
@@ -47,7 +61,7 @@ type SchedulePickerInitPayload = {
   quickChip?: string;
   allDay?: boolean;
   hasExactTime?: boolean;
-  reminderOption?: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  reminderOption?: TaskReminderOption;
   repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary?: string;
   weeklyDays?: number[];
@@ -65,6 +79,8 @@ type ProjectScheduleMeta = Pick<
   | 'allDay'
   | 'hasExactTime'
   | 'reminderOption'
+  | 'reminderHour'
+  | 'reminderMinute'
   | 'repeatOption'
   | 'repeatSummary'
   | 'weeklyDays'
@@ -139,9 +155,7 @@ export default function AddProjectScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ source?: string; categoryId?: string | string[] }>();
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const { colors, isDark } = useAppTheme();
 
   const [title, setTitle] = React.useState('');
   const [notes, setNotes] = React.useState('');
@@ -151,7 +165,6 @@ export default function AddProjectScreen() {
   const [scheduleMeta, setScheduleMeta] = React.useState<ProjectScheduleMeta | null>(null);
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
   const [categories, setCategories] = React.useState<ProjectCategoryRow[]>([]);
-  /** 新建项目不允许选「收集箱」：无其它分类时为 null（未分类），否则默认为第一个非收集箱分类 */
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
@@ -169,13 +182,7 @@ export default function AddProjectScreen() {
     return t;
   }, [params.categoryId]);
 
-  const primary = isDark ? '#60a5fa' : '#0058be';
   const scheduleSource = normalizeRouteParam(params.source as string | string[] | undefined) || 'add-project';
-  const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
-  const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
-  const surfaceLow = isDark ? 'rgba(30,41,59,0.35)' : 'rgba(241,243,255,0.9)';
-  const surfaceLowest = theme.surface;
 
   const readScheduleResult = React.useCallback(() => {
     const picked = consumeSchedulePickerResult(scheduleSource);
@@ -221,7 +228,6 @@ export default function AddProjectScreen() {
       startTime: picked.startTime,
       endTime: picked.endTime,
     });
-
   }, [scheduleSource]);
 
   const openSchedulePicker = React.useCallback(() => {
@@ -261,7 +267,7 @@ export default function AddProjectScreen() {
   useFocusEffect(
     React.useCallback(() => {
       readScheduleResult();
-    }, [readScheduleResult])
+    }, [readScheduleResult]),
   );
 
   React.useEffect(() => {
@@ -303,7 +309,7 @@ export default function AddProjectScreen() {
 
   const selectableProjectCategories = React.useMemo(
     () => categories.filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID),
-    [categories]
+    [categories],
   );
 
   React.useEffect(() => {
@@ -366,234 +372,130 @@ export default function AddProjectScreen() {
     }
   }, [allProjects, completionReward, creating, deadlineText, notes, prerequisiteProjectIds, router, scheduleMeta, selectedCategoryId, title]);
 
+  const handleTitleChange = (text: string) => {
+    setTitle(text.slice(0, TITLE_MAX_LENGTH));
+  };
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
-      <View style={[styles.header, { paddingTop: Math.max(insets.top, 12), backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.82)', borderBottomColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)' }]}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
-          <MaterialIcons name="arrow-back" size={22} color={primary} />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: primary }]}>添加项目</Text>
-        <View style={styles.iconBtn} />
-      </View>
+    <SafeAreaView style={[composerStyles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
+      <ComposerTopBar
+        title="新建项目"
+        subtitle="可设置分类、前置依赖与日程"
+        onBack={() => router.back()}
+        onSubmit={() => void createProjectRecord()}
+        submitting={creating}
+        submitLabel="创建"
+      />
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
-        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 150 + Math.max(insets.bottom, 12) }]} showsVerticalScrollIndicator={false}>
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>基础信息</Text>
-            <TextInput
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={composerStyles.flex}>
+        <ScrollView
+          contentContainerStyle={[
+            composerStyles.content,
+            { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md) },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}>
+          <ComposerMain>
+            <ComposerHero
+              badgeIcon="folder-special"
+              kicker="这次要推进什么项目？"
+              placeholder="写下项目名称…"
               value={title}
-              onChangeText={setTitle}
-              placeholder="项目名称"
-              placeholderTextColor={outlineVariant}
-              multiline
+              onChangeText={handleTitleChange}
               maxLength={TITLE_MAX_LENGTH}
-              style={[styles.titleInput, { color: theme.text }]}
             />
-            <Text style={[styles.charCounter, { color: outline }]}>
-              {title.length}/{TITLE_MAX_LENGTH}
-            </Text>
-          </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>项目分类</Text>
-            <Pressable
-              onPress={() => setCategoryModalVisible(true)}
-              style={({ pressed }) => [
-                styles.categorySelect,
-                { backgroundColor: surfaceLow, borderColor: outlineVariant },
-                pressed && { opacity: 0.8 },
-              ]}>
-              <View style={styles.categoryLeft}>
-                <MaterialIcons name="folder-open" size={18} color={primary} />
-              <Text style={[styles.categoryValue, { color: theme.text }]}>{selectedCategoryName || '未分类'}</Text>
-              </View>
-              <MaterialIcons name="expand-more" size={20} color={outline} />
-            </Pressable>
-          </View>
+            <ComposerSection>
+              <ComposerSectionHead
+                accentColor={colors.tertiary}
+                title="项目分类"
+                description="不可选收集箱；无其它分类时为未分类"
+              />
+              <ComposerOptionRow
+                icon="folder-open"
+                iconBg={colors.capsule}
+                title="当前分类"
+                value={selectedCategoryName || '未分类'}
+                onPress={() => setCategoryModalVisible(true)}
+                accessibilityLabel="选择项目分类"
+              />
+            </ComposerSection>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>前置项目</Text>
-            <PrerequisiteProjectPickerField
-              selectedIds={prerequisiteProjectIds}
-              allProjects={allProjects}
-              loading={projectsLoading}
-              onChange={setPrerequisiteProjectIds}
-              textColor={theme.text}
-              outline={outline}
-              placeholderColor={outlineVariant}
-              primary={primary}
-              surfaceLow={surfaceLow}
-              surfaceLowest={surfaceLowest}
-              isDark={isDark}
+            <ComposerSection>
+              <ComposerSectionHead
+                accentColor={colors.primary}
+                title="前置项目"
+                description="需先完成所选项目后，本项目才可推进"
+                rightIcon="account-tree"
+              />
+              <ComposerEditorialCard>
+                <PrerequisiteProjectPickerField
+                  selectedIds={prerequisiteProjectIds}
+                  allProjects={allProjects}
+                  loading={projectsLoading}
+                  onChange={setPrerequisiteProjectIds}
+                  textColor={colors.text}
+                  outline={colors.textSecondary}
+                  placeholderColor={colors.textMuted}
+                  primary={colors.primary}
+                  surfaceLow={colors.input}
+                  surfaceLowest={colors.surfaceSubtle}
+                  isDark={isDark}
+                />
+              </ComposerEditorialCard>
+            </ComposerSection>
+
+            <ComposerSection>
+              <ComposerScheduleSection
+                deadlineText={deadlineText}
+                reminderText={reminderText}
+                repeatText={repeatText}
+                onPress={openSchedulePicker}
+              />
+            </ComposerSection>
+
+            <ComposerSection>
+              <ComposerSectionHead
+                accentColor={colors.secondary}
+                title="完成奖励"
+                description="项目完成时可领取的小激励"
+                rightIcon="emoji-events"
+              />
+              <ComposerEditorialCard>
+                <CompletionRewardField
+                  value={completionReward}
+                  onChange={setCompletionReward}
+                  textColor={colors.text}
+                  outline={colors.textSecondary}
+                  placeholderColor={colors.textMuted}
+                  primary={colors.primary}
+                  surfaceLow={colors.input}
+                  surfaceLowest={colors.surfaceSubtle}
+                  isDark={isDark}
+                />
+              </ComposerEditorialCard>
+            </ComposerSection>
+
+            <ComposerNoteSection
+              value={notes}
+              onChangeText={setNotes}
+              placeholder="目标、范围、关键干系人…（可选）"
             />
-          </View>
-
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>时间限制</Text>
-            <View style={[styles.deadlineCard, { backgroundColor: surfaceLow }]}>
-              <View style={[styles.deadlineIconWrap, { backgroundColor: surfaceLowest }]}>
-                <MaterialIcons name="event-note" size={22} color={primary} />
-              </View>
-              <View style={styles.deadlineBody}>
-                <Text style={[styles.deadlineKicker, { color: outline }]}>截止日期</Text>
-                <Text style={[styles.deadlineValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
-                {!!(reminderText || repeatText) && (
-                  <View style={styles.tagRow}>
-                    {!!reminderText && (
-                      <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="notifications-active" size={14} color={primary} />
-                        <Text style={[styles.metaTagText, { color: theme.text }]}>{reminderText}</Text>
-                      </View>
-                    )}
-                    {!!repeatText && (
-                      <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="repeat" size={14} color={primary} />
-                        <Text style={[styles.metaTagText, { color: theme.text }]}>{repeatText}</Text>
-                      </View>
-                    )}
-                  </View>
-                )}
-              </View>
-              <Pressable onPress={openSchedulePicker} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
-                <MaterialIcons name="edit-calendar" size={22} color={primary} />
-              </Pressable>
-            </View>
-          </View>
-
-          {/*
-          <View style={styles.section}>
-            <View style={styles.subtaskHeader}>
-              <Text style={[styles.sectionLabel, { color: outline }]}>项目拆解</Text>
-              <Pressable onPress={() => router.push('/add-task')} style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}>
-                <MaterialIcons name="add-circle" size={16} color={primary} />
-                <Text style={[styles.linkBtnText, { color: primary }]}>添加任务</Text>
-              </Pressable>
-            </View>
-            <View style={styles.subtaskList}>
-              {subtasks.map((s) => (
-                <View key={s.id} style={[styles.subtaskRow, { backgroundColor: surfaceLowest }]}>
-                  <View style={[styles.checkbox, { borderColor: outlineVariant, backgroundColor: s.done ? primary : 'transparent' }]} />
-                  <Text style={[styles.subtaskText, { color: theme.text }]} numberOfLines={1}>{s.title}</Text>
-                  <MaterialIcons name="close" size={18} color={outline} />
-                </View>
-              ))}
-            </View>
-          </View>
-          */}
-
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>完成奖励</Text>
-            <CompletionRewardField
-              value={completionReward}
-              onChange={setCompletionReward}
-              textColor={theme.text}
-              outline={outline}
-              placeholderColor={outlineVariant}
-              primary={primary}
-              surfaceLow={surfaceLow}
-              surfaceLowest={surfaceLowest}
-              isDark={isDark}
-            />
-          </View>
-
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>上下文备注</Text>
-            <View style={[styles.notesWrap, { backgroundColor: surfaceLow }]}>
-              <TextInput value={notes} onChangeText={setNotes} placeholder="在此记录更多背景信息..." placeholderTextColor={outline} multiline style={[styles.notesInput, { color: theme.text }]} />
-              <View style={styles.notesIcon} pointerEvents="none"><MaterialIcons name="notes" size={20} color={outlineVariant} /></View>
-            </View>
-          </View>
+          </ComposerMain>
         </ScrollView>
-
-        <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12), backgroundColor: isDark ? 'rgba(15,23,42,0.65)' : 'rgba(250,248,255,0.65)', borderTopColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)' }]}>
-          <View style={styles.bottomInner}>
-            <Pressable
-              onPress={createProjectRecord}
-              disabled={creating}
-              style={({ pressed }) => [
-                styles.createBtn,
-                { backgroundColor: pressed ? primaryContainer : primary, opacity: creating ? 0.7 : 1 },
-                pressed && { transform: [{ scale: 0.98 }] },
-              ]}>
-              <MaterialIcons name="task-alt" size={22} color="#fff" />
-              <Text style={styles.createText}>{creating ? '创建中...' : '创建项目'}</Text>
-            </Pressable>
-          </View>
-        </View>
       </KeyboardAvoidingView>
 
-      <Modal transparent visible={categoryModalVisible} animationType="fade" onRequestClose={() => setCategoryModalVisible(false)}>
-        <Pressable style={styles.modalOverlay} onPress={() => setCategoryModalVisible(false)}>
-          <Pressable onPress={() => {}} style={[styles.modalCard, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>选择项目分类</Text>
-            <Pressable
-              onPress={() => {
-                setSelectedCategoryId(null);
-                setCategoryModalVisible(false);
-              }}
-              style={({ pressed }) => [styles.modalItem, pressed && { opacity: 0.8 }]}>
-              <Text style={[styles.modalItemText, { color: theme.text }]}>未分类</Text>
-              {selectedCategoryId === null ? <MaterialIcons name="check" size={18} color={primary} /> : null}
-            </Pressable>
-            {selectableProjectCategories.map((item) => (
-              <Pressable
-                key={item.id}
-                onPress={() => {
-                  setSelectedCategoryId(item.id);
-                  setCategoryModalVisible(false);
-                }}
-                style={({ pressed }) => [styles.modalItem, pressed && { opacity: 0.8 }]}>
-                <Text style={[styles.modalItemText, { color: theme.text }]}>{item.name}</Text>
-                {selectedCategoryId === item.id ? <MaterialIcons name="check" size={18} color={primary} /> : null}
-              </Pressable>
-            ))}
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <ComposerCategoryModal
+        visible={categoryModalVisible}
+        title="选择项目分类"
+        selectedId={selectedCategoryId}
+        onClose={() => setCategoryModalVisible(false)}
+        onSelect={setSelectedCategoryId}
+        options={[
+          { id: null, name: '未分类' },
+          ...selectableProjectCategories.map((item) => ({ id: item.id, name: item.name })),
+        ]}
+      />
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  flex: { flex: 1 },
-  header: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingBottom: 10, borderBottomWidth: 1 },
-  iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontSize: 24, fontWeight: '800', letterSpacing: -0.4 },
-  content: { paddingTop: 92, paddingHorizontal: 18, gap: 22 },
-  section: { gap: 10 },
-  sectionLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.6, textTransform: 'uppercase', opacity: 0.75 },
-  titleInput: { padding: 0, fontSize: 30, fontWeight: '900', lineHeight: 36 },
-  charCounter: { alignSelf: 'flex-end', fontSize: 12, fontWeight: '600' },
-  categorySelect: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  categoryLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 10 },
-  categoryValue: { fontSize: 14, fontWeight: '700' },
-  deadlineCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16 },
-  deadlineIconWrap: { width: 46, height: 46, borderRadius: 12, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
-  deadlineBody: { flex: 1, gap: 4 },
-  deadlineKicker: { fontSize: 10, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase' },
-  deadlineValue: { fontSize: 16, fontWeight: '800' },
-  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  metaTag: { flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 999, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 4 },
-  metaTagText: { fontSize: 12, fontWeight: '600' },
-  deadlineEdit: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  subtaskHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  linkBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  linkBtnText: { fontSize: 12, fontWeight: '900', letterSpacing: 1.2, textTransform: 'uppercase' },
-  subtaskList: { gap: 10 },
-  subtaskRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 12, borderRadius: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 1 },
-  checkbox: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  subtaskText: { flex: 1, fontSize: 14, fontWeight: '600' },
-  notesWrap: { borderRadius: 16, padding: 14, minHeight: 120 },
-  notesInput: { minHeight: 92, fontSize: 14, fontWeight: '500', lineHeight: 20, paddingRight: 34 },
-  notesIcon: { position: 'absolute', right: 12, bottom: 12 },
-  bottomBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1 },
-  bottomInner: { maxWidth: 520, width: '100%', alignSelf: 'center' },
-  createBtn: { width: '100%', paddingVertical: 16, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.14, shadowRadius: 20, elevation: 8 },
-  createText: { color: '#fff', fontSize: 18, fontWeight: '900', letterSpacing: -0.2 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.38)', justifyContent: 'center', paddingHorizontal: 18 },
-  modalCard: { borderWidth: 1, borderRadius: 16, padding: 14, gap: 8 },
-  modalTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
-  modalItem: { borderRadius: 10, paddingHorizontal: 10, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  modalItemText: { fontSize: 14, fontWeight: '600' },
-});

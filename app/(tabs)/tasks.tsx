@@ -12,6 +12,7 @@ import {
 import {
   createProjectCategory,
   deleteInboxProjectsPastRetentionDays,
+  deleteProject,
   deleteProjectCategory,
   getProjectById,
   getProjectCategories,
@@ -32,6 +33,7 @@ import {
   isProjectScheduleNotYetStarted,
 } from '@/lib/repositories/projects/project-schedule-status';
 import {
+  countIncompleteTasksByProjectId,
   createTask,
   deleteTask,
   getTasks,
@@ -47,8 +49,18 @@ import {
   type FrogCompletionDayItem,
 } from '@/lib/repositories/tasks/frog-completion-events';
 import { clearFrogAssignedOn } from '@/lib/frog-assignment';
-import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
+import {
+  getTaskCompletionCountsByDayRange,
+  getTaskExecutionEventsForLocalDay,
+  insertTaskExecutionEvent,
+  type TaskExecutionEventWithTitle,
+} from '@/lib/repositories/tasks/task-execution-events';
+import {
+  computeMonthlyAverageMap,
+  heatmapLevelFromMonthlyAverage,
+} from '@/lib/tasks-global-heatmap';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import { isTaskShelvedStatus, isTaskTerminalStatus } from '@/lib/repositories/tasks/task.types';
 import {
   parseProjectAiReview,
   type ProjectAiReview,
@@ -471,6 +483,7 @@ function standaloneTodoPassesDayBoundaryFilter(
 
 /** 设置了重复的独立待办：重复日展示；非重复日仅当截止/计划已过期时保留 */
 function standaloneTodoPassesRepeatDayFilter(task: TaskRow, logicalTodayYmd: string): boolean {
+  if (isTaskShelvedStatus(task.status)) return true;
   const schedule = parseTaskRepeatSchedule(task.extra_data);
   if (!schedule) return true;
   if (isTaskRepeatDueOnLogicalDay(logicalTodayYmd, schedule)) return true;
@@ -499,6 +512,7 @@ function isLogicalDayInYmdRange(todayYmd: string, startYmd: string, endYmd: stri
 
 /** 独立待办：计划日/区间内展示；过期未完成仍保留在列表（重复规则由 repeat 过滤器处理） */
 function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalTodayYmd: string): boolean {
+  if (isTaskShelvedStatus(task.status)) return true;
   if (parseTaskRepeatSchedule(task.extra_data)) return true;
 
   const schedule = parseProjectSchedule(task.extra_data);
@@ -616,13 +630,13 @@ function mondayOfWeekContaining(d: Date): Date {
   return addLocalDays(sod, deltaMon);
 }
 
-/** 青蛙完成热力图：列=周（周一至周日自上而下），颜色与完成数挂钩 */
-const FROG_HEATMAP_WEEKS = 15;
-const FROG_HEAT_CELL = 22;
-const FROG_HEAT_GAP = 8;
-const FROG_HEAT_MONTH_ROW_H = 24;
-const FROG_HEAT_LEVEL_COLORS_LIGHT = ['#EAEBEE', '#C1DFCC', '#87C3A0', '#4EA871', '#329258'] as const;
-const FROG_HEAT_LEVEL_COLORS_DARK = [
+/** 完成热力图：列=周（周一至周日自上而下），色阶按当月日均完成量相对映射 */
+const COMPLETION_HEATMAP_WEEKS = 15;
+const COMPLETION_HEAT_CELL = 22;
+const COMPLETION_HEAT_GAP = 8;
+const COMPLETION_HEAT_MONTH_ROW_H = 24;
+const COMPLETION_HEAT_LEVEL_COLORS_LIGHT = ['#EAEBEE', '#C1DFCC', '#87C3A0', '#4EA871', '#329258'] as const;
+const COMPLETION_HEAT_LEVEL_COLORS_DARK = [
   'rgba(51,65,85,0.78)',
   'rgba(193,223,204,0.32)',
   'rgba(135,195,160,0.5)',
@@ -630,13 +644,24 @@ const FROG_HEAT_LEVEL_COLORS_DARK = [
   'rgba(50,146,88,0.85)',
 ] as const;
 
-type FrogHeatCell = { level: number | null; ymd: string | null };
+type CompletionHeatCell = { level: number | null; ymd: string | null; count: number };
 
-function FrogCompletedHeatmap({
+function mergeDailyCountMaps(...maps: Map<string, number>[]): Map<string, number> {
+  const merged = new Map<string, number>();
+  for (const map of maps) {
+    for (const [ymd, count] of map) {
+      merged.set(ymd, (merged.get(ymd) ?? 0) + count);
+    }
+  }
+  return merged;
+}
+
+function TaskCompletionHeatmap({
   logicalTodayYmd,
   textMain,
   textMuted,
   accentColor,
+  todoAccentColor,
   innerCardBg,
   innerBorderColor,
   isDark,
@@ -646,6 +671,7 @@ function FrogCompletedHeatmap({
   textMain: string;
   textMuted: string;
   accentColor: string;
+  todoAccentColor: string;
   innerCardBg: string;
   innerBorderColor: string;
   isDark: boolean;
@@ -654,21 +680,28 @@ function FrogCompletedHeatmap({
 }) {
   const router = useRouter();
   const scrollRef = React.useRef<ScrollView>(null);
-  const colors = isDark ? FROG_HEAT_LEVEL_COLORS_DARK : FROG_HEAT_LEVEL_COLORS_LIGHT;
+  const colors = isDark ? COMPLETION_HEAT_LEVEL_COLORS_DARK : COMPLETION_HEAT_LEVEL_COLORS_LIGHT;
   const [selectedYmd, setSelectedYmd] = React.useState<string | null>(null);
   const [frogCountByYmd, setFrogCountByYmd] = React.useState<Map<string, number>>(new Map());
-  const [selectedDayItems, setSelectedDayItems] = React.useState<FrogCompletionDayItem[]>([]);
+  const [todoCountByYmd, setTodoCountByYmd] = React.useState<Map<string, number>>(new Map());
+  const [selectedFrogItems, setSelectedFrogItems] = React.useState<FrogCompletionDayItem[]>([]);
+  const [selectedTodoItems, setSelectedTodoItems] = React.useState<TaskExecutionEventWithTitle[]>([]);
   const [dayItemsLoading, setDayItemsLoading] = React.useState(false);
   const backfillDoneRef = React.useRef(false);
+
+  const combinedCountByYmd = React.useMemo(
+    () => mergeDailyCountMaps(frogCountByYmd, todoCountByYmd),
+    [frogCountByYmd, todoCountByYmd],
+  );
 
   const heatmapRange = React.useMemo(() => {
     const todayCal = startOfLocalDay(new Date());
     const thisMonday = mondayOfWeekContaining(todayCal);
-    const gridStartMonday = addLocalDays(thisMonday, -(FROG_HEATMAP_WEEKS - 1) * 7);
+    const gridStartMonday = addLocalDays(thisMonday, -(COMPLETION_HEATMAP_WEEKS - 1) * 7);
     return { startYmd: formatLocalYmd(gridStartMonday), endYmd: logicalTodayYmd };
   }, [logicalTodayYmd]);
 
-  const loadFrogHeatmap = React.useCallback(async () => {
+  const loadCompletionHeatmap = React.useCallback(async () => {
     if (!backfillDoneRef.current) {
       backfillDoneRef.current = true;
       try {
@@ -677,8 +710,12 @@ function FrogCompletedHeatmap({
         console.warn('青蛙完成记录回填失败', e);
       }
     }
-    const counts = await getFrogCompletionCountsByDayRange(heatmapRange.startYmd, heatmapRange.endYmd);
-    setFrogCountByYmd(counts);
+    const [frogCounts, todoCounts] = await Promise.all([
+      getFrogCompletionCountsByDayRange(heatmapRange.startYmd, heatmapRange.endYmd),
+      getTaskCompletionCountsByDayRange(heatmapRange.startYmd, heatmapRange.endYmd),
+    ]);
+    setFrogCountByYmd(frogCounts);
+    setTodoCountByYmd(todoCounts);
   }, [heatmapRange.endYmd, heatmapRange.startYmd]);
 
   useFocusEffect(
@@ -686,45 +723,58 @@ function FrogCompletedHeatmap({
       let cancelled = false;
       void (async () => {
         try {
-          await loadFrogHeatmap();
+          await loadCompletionHeatmap();
         } catch (e) {
-          console.warn('加载青蛙热力图失败', e);
-          if (!cancelled) setFrogCountByYmd(new Map());
+          console.warn('加载完成热力图失败', e);
+          if (!cancelled) {
+            setFrogCountByYmd(new Map());
+            setTodoCountByYmd(new Map());
+          }
         }
       })();
       return () => {
         cancelled = true;
       };
-    }, [loadFrogHeatmap])
+    }, [loadCompletionHeatmap])
   );
 
   React.useEffect(() => {
-    void loadFrogHeatmap();
-  }, [loadFrogHeatmap, reloadToken]);
+    void loadCompletionHeatmap();
+  }, [loadCompletionHeatmap, reloadToken]);
 
   const { weekColumns, monthTickColIndexes } = React.useMemo(() => {
     const todayCal = startOfLocalDay(new Date());
     const thisMonday = mondayOfWeekContaining(todayCal);
-    const gridStartMonday = addLocalDays(thisMonday, -(FROG_HEATMAP_WEEKS - 1) * 7);
+    const gridStartMonday = addLocalDays(thisMonday, -(COMPLETION_HEATMAP_WEEKS - 1) * 7);
 
-    type Col = { cells: FrogHeatCell[]; monday: Date };
+    type Col = { cells: CompletionHeatCell[]; monday: Date };
     const weekColumns: Col[] = [];
     const monthTickColIndexes: number[] = [];
+    const validDayYmds: string[] = [];
 
-    for (let c = 0; c < FROG_HEATMAP_WEEKS; c++) {
+    for (let c = 0; c < COMPLETION_HEATMAP_WEEKS; c++) {
       const monday = addLocalDays(gridStartMonday, c * 7);
-      const cells: FrogHeatCell[] = [];
+      const cells: CompletionHeatCell[] = [];
       for (let r = 0; r < 7; r++) {
         const day = addLocalDays(monday, r);
         const ymd = formatLocalYmd(day);
         if (ymd > logicalTodayYmd) {
-          cells.push({ level: null, ymd: null });
+          cells.push({ level: null, ymd: null, count: 0 });
         } else {
-          const n = frogCountByYmd.get(ymd) ?? 0;
-          cells.push({ level: Math.min(4, n), ymd });
+          validDayYmds.push(ymd);
+          const n = combinedCountByYmd.get(ymd) ?? 0;
+          cells.push({ level: 0, ymd, count: n });
         }
       }
       weekColumns.push({ cells, monday });
+    }
+
+    const monthAvgMap = computeMonthlyAverageMap(validDayYmds, combinedCountByYmd);
+    for (const col of weekColumns) {
+      for (const cell of col.cells) {
+        if (!cell.ymd) continue;
+        cell.level = heatmapLevelFromMonthlyAverage(cell.count, cell.ymd.slice(0, 7), monthAvgMap);
+      }
     }
 
     let prevKey = '';
@@ -738,22 +788,32 @@ function FrogCompletedHeatmap({
     }
 
     return { weekColumns, monthTickColIndexes };
-  }, [frogCountByYmd, logicalTodayYmd]);
+  }, [combinedCountByYmd, logicalTodayYmd]);
 
   React.useEffect(() => {
     if (!selectedYmd) {
-      setSelectedDayItems([]);
+      setSelectedFrogItems([]);
+      setSelectedTodoItems([]);
       return;
     }
     let cancelled = false;
     setDayItemsLoading(true);
     void (async () => {
       try {
-        const items = await getFrogCompletionsForAssignedDay(selectedYmd);
-        if (!cancelled) setSelectedDayItems(items);
+        const [frogItems, todoEvents] = await Promise.all([
+          getFrogCompletionsForAssignedDay(selectedYmd),
+          getTaskExecutionEventsForLocalDay(selectedYmd),
+        ]);
+        if (!cancelled) {
+          setSelectedFrogItems(frogItems);
+          setSelectedTodoItems(todoEvents.filter((e) => e.action === 'completed'));
+        }
       } catch (e) {
-        console.warn('加载青蛙完成明细失败', e);
-        if (!cancelled) setSelectedDayItems([]);
+        console.warn('加载完成明细失败', e);
+        if (!cancelled) {
+          setSelectedFrogItems([]);
+          setSelectedTodoItems([]);
+        }
       } finally {
         if (!cancelled) setDayItemsLoading(false);
       }
@@ -763,12 +823,17 @@ function FrogCompletedHeatmap({
     };
   }, [selectedYmd, reloadToken]);
 
-  const onHeatCellPress = React.useCallback((cell: FrogHeatCell) => {
+  const onHeatCellPress = React.useCallback((cell: CompletionHeatCell) => {
     if (!cell.ymd) return;
     setSelectedYmd((prev) => (prev === cell.ymd ? null : cell.ymd));
   }, []);
 
-  const colStride = FROG_HEAT_CELL + FROG_HEAT_GAP;
+  const colStride = COMPLETION_HEAT_CELL + COMPLETION_HEAT_GAP;
+  const selectedFrogCount =
+    selectedYmd == null ? 0 : frogCountByYmd.get(selectedYmd) ?? selectedFrogItems.length;
+  const selectedTodoCount =
+    selectedYmd == null ? 0 : todoCountByYmd.get(selectedYmd) ?? selectedTodoItems.length;
+  const hasSelectedDayItems = selectedFrogItems.length > 0 || selectedTodoItems.length > 0;
 
   React.useEffect(() => {
     const id = requestAnimationFrame(() => {
@@ -782,7 +847,7 @@ function FrogCompletedHeatmap({
   return (
     <View style={styles.frogHeatmapOuter}>
       <View style={styles.frogHeatmapHeading}>
-        <Text style={[styles.frogHeatmapTitle, { color: textMain }]}>已完成青蛙</Text>
+        <Text style={[styles.frogHeatmapTitle, { color: textMain }]}>完成热力图</Text>
         <View style={styles.frogHeatmapLegend}>
           <Text style={[styles.frogHeatmapLegendText, { color: textMuted }]}>少</Text>
           <View style={styles.frogHeatmapLegendSwatches}>
@@ -801,9 +866,9 @@ function FrogCompletedHeatmap({
         ]}>
         <View style={styles.frogHeatmapBodyRow}>
           <View style={styles.frogHeatmapYAxis}>
-            <View style={{ height: FROG_HEAT_MONTH_ROW_H }} />
+            <View style={{ height: COMPLETION_HEAT_MONTH_ROW_H }} />
             {weekdayLeftLabels.map((lb) => (
-              <View key={lb} style={[styles.frogHeatmapYCell, { height: FROG_HEAT_CELL + FROG_HEAT_GAP }]}>
+              <View key={lb} style={[styles.frogHeatmapYCell, { height: COMPLETION_HEAT_CELL + COMPLETION_HEAT_GAP }]}>
                 <Text style={[styles.frogHeatmapYLabel, { color: textMuted }]}>{lb}</Text>
               </View>
             ))}
@@ -817,7 +882,7 @@ function FrogCompletedHeatmap({
             style={{ flex: 1 }}
             onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}>
             <View>
-              <View style={[styles.frogHeatmapMonthRow, { height: FROG_HEAT_MONTH_ROW_H }]}>
+              <View style={[styles.frogHeatmapMonthRow, { height: COMPLETION_HEAT_MONTH_ROW_H }]}>
                 {weekColumns.map((col, c) => {
                   const show = monthTickColIndexes.includes(c);
                   const m = col.monday.getMonth() + 1;
@@ -831,9 +896,9 @@ function FrogCompletedHeatmap({
                 })}
               </View>
 
-              <View style={[styles.frogHeatmapGridRow, { gap: FROG_HEAT_GAP }]}>
+              <View style={[styles.frogHeatmapGridRow, { gap: COMPLETION_HEAT_GAP }]}>
                 {weekColumns.map((col, c) => (
-                  <View key={`w-${c}`} style={{ gap: FROG_HEAT_GAP }}>
+                  <View key={`w-${c}`} style={{ gap: COMPLETION_HEAT_GAP }}>
                     {col.cells.map((cell, r) => {
                       const isFuture = cell.level === null || !cell.ymd;
                       const selected = !isFuture && cell.ymd === selectedYmd;
@@ -851,8 +916,8 @@ function FrogCompletedHeatmap({
                             style={[
                               styles.frogHeatmapDataCell,
                               {
-                                width: FROG_HEAT_CELL,
-                                height: FROG_HEAT_CELL,
+                                width: COMPLETION_HEAT_CELL,
+                                height: COMPLETION_HEAT_CELL,
                                 backgroundColor: isFuture ? 'transparent' : colors[cell.level!],
                                 borderWidth: selected ? 2 : 0,
                                 borderColor: selected ? accentColor : 'transparent',
@@ -880,41 +945,85 @@ function FrogCompletedHeatmap({
                 {formatYmdCN(selectedYmd)}
               </Text>
               <Text style={[styles.frogHeatmapDetailFrogCount, { color: textMain }]}>
-                青蛙✖{frogCountByYmd.get(selectedYmd) ?? selectedDayItems.length}
+                青蛙✖{selectedFrogCount} · 待办✖{selectedTodoCount}
               </Text>
             </View>
             {dayItemsLoading ? (
               <Text style={[styles.frogHeatmapDetailEmpty, { color: textMuted }]}>加载中…</Text>
-            ) : selectedDayItems.length === 0 ? (
+            ) : !hasSelectedDayItems ? (
               <Text style={[styles.frogHeatmapDetailEmpty, { color: textMuted }]}>该日暂无已完成记录</Text>
             ) : (
               <View style={styles.frogHeatmapDetailList}>
-                {selectedDayItems.map((item, idx) => {
-                  const title = (item.task_title ?? '').trim() || '（无标题）';
-                  const canOpen = Boolean(item.task_id?.trim());
-                  return (
-                    <Pressable
-                      key={item.id}
-                      disabled={!canOpen}
-                      onPress={() => {
-                        if (item.task_id) router.push({ pathname: '/task/[id]', params: { id: item.task_id } });
-                      }}
-                      style={({ pressed }) => [
-                        styles.frogHeatmapDetailRow,
-                        {
-                          borderBottomColor: isDark ? 'rgba(148,163,184,0.14)' : 'rgba(148,163,184,0.2)',
-                          opacity: pressed && canOpen ? 0.85 : 1,
-                        },
-                        idx === selectedDayItems.length - 1 && { borderBottomWidth: 0 },
+                {selectedFrogItems.length > 0 ? (
+                  <>
+                    <Text style={[styles.completionHeatmapDetailSectionLabel, { color: textMuted }]}>青蛙</Text>
+                    {selectedFrogItems.map((item, idx) => {
+                      const title = (item.task_title ?? '').trim() || '（无标题）';
+                      const canOpen = Boolean(item.task_id?.trim());
+                      const isLast = idx === selectedFrogItems.length - 1 && selectedTodoItems.length === 0;
+                      return (
+                        <Pressable
+                          key={item.id}
+                          disabled={!canOpen}
+                          onPress={() => {
+                            if (item.task_id) router.push({ pathname: '/task/[id]', params: { id: item.task_id } });
+                          }}
+                          style={({ pressed }) => [
+                            styles.frogHeatmapDetailRow,
+                            {
+                              borderBottomColor: isDark ? 'rgba(148,163,184,0.14)' : 'rgba(148,163,184,0.2)',
+                              opacity: pressed && canOpen ? 0.85 : 1,
+                            },
+                            isLast && { borderBottomWidth: 0 },
+                          ]}>
+                          <MaterialIcons name="eco" size={16} color={accentColor} style={{ marginTop: 1 }} />
+                          <Text style={[styles.frogHeatmapDetailTitle, { color: textMain }]} numberOfLines={2}>
+                            {title}
+                          </Text>
+                          {canOpen ? <MaterialIcons name="chevron-right" size={18} color={textMuted} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </>
+                ) : null}
+                {selectedTodoItems.length > 0 ? (
+                  <>
+                    <Text
+                      style={[
+                        styles.completionHeatmapDetailSectionLabel,
+                        { color: textMuted },
+                        selectedFrogItems.length > 0 && { marginTop: 10 },
                       ]}>
-                      <MaterialIcons name="eco" size={16} color={accentColor} style={{ marginTop: 1 }} />
-                      <Text style={[styles.frogHeatmapDetailTitle, { color: textMain }]} numberOfLines={2}>
-                        {title}
-                      </Text>
-                      {canOpen ? <MaterialIcons name="chevron-right" size={18} color={textMuted} /> : null}
-                    </Pressable>
-                  );
-                })}
+                      待办
+                    </Text>
+                    {selectedTodoItems.map((item, idx) => {
+                      const title = (item.task_title ?? '').trim() || '（无标题）';
+                      const canOpen = Boolean(item.task_id?.trim());
+                      return (
+                        <Pressable
+                          key={item.id}
+                          disabled={!canOpen}
+                          onPress={() => {
+                            if (item.task_id) router.push({ pathname: '/task/[id]', params: { id: item.task_id } });
+                          }}
+                          style={({ pressed }) => [
+                            styles.frogHeatmapDetailRow,
+                            {
+                              borderBottomColor: isDark ? 'rgba(148,163,184,0.14)' : 'rgba(148,163,184,0.2)',
+                              opacity: pressed && canOpen ? 0.85 : 1,
+                            },
+                            idx === selectedTodoItems.length - 1 && { borderBottomWidth: 0 },
+                          ]}>
+                          <MaterialIcons name="check-circle" size={16} color={todoAccentColor} style={{ marginTop: 1 }} />
+                          <Text style={[styles.frogHeatmapDetailTitle, { color: textMain }]} numberOfLines={2}>
+                            {title}
+                          </Text>
+                          {canOpen ? <MaterialIcons name="chevron-right" size={18} color={textMuted} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </>
+                ) : null}
               </View>
             )}
           </View>
@@ -982,7 +1091,7 @@ function isTaskRowOverdue(task: TaskRow, logicalTodayYmd: string): boolean {
 }
 
 function isStandaloneTodoOpen(task: TaskRow): boolean {
-  return task.status !== 'done' && task.status !== 'cancelled';
+  return !isTaskTerminalStatus(task.status);
 }
 
 /** 独立待办：日程日/区间已结束且未完成（非重复任务） */
@@ -1007,6 +1116,7 @@ function isStandaloneTodoScheduleExpired(task: TaskRow, logicalTodayYmd: string)
 
 /** 独立待办在列表中是否算「过期」：截止日已过、计划日/区间已过，或重复日错过未完成 */
 function isStandaloneTodoOverdue(task: TaskRow, logicalTodayYmd: string): boolean {
+  if (isTaskShelvedStatus(task.status)) return false;
   if (!isStandaloneTodoOpen(task)) return false;
   if (isTaskRowOverdue(task, logicalTodayYmd)) return true;
   if (isStandaloneTodoScheduleExpired(task, logicalTodayYmd)) return true;
@@ -1219,7 +1329,7 @@ export default function TasksScreen() {
   const [projects, setProjects] = React.useState<ProjectRow[]>([]);
   const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [tasks, setTasks] = React.useState<TaskRow[]>([]);
-  const [frogHeatmapReloadToken, setFrogHeatmapReloadToken] = React.useState(0);
+  const [completionHeatmapReloadToken, setCompletionHeatmapReloadToken] = React.useState(0);
   const [projectTaskTreeMap, setProjectTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
   const [expandedProjectIds, setExpandedProjectIds] = React.useState<Record<string, boolean>>({});
   const [collapsedTaskIds, setCollapsedTaskIds] = React.useState<Record<string, boolean>>({});
@@ -1349,6 +1459,7 @@ export default function TasksScreen() {
   const projectSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
   const standaloneTodoSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
   const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
+  const [activatingShelvedTodoId, setActivatingShelvedTodoId] = React.useState<string | null>(null);
 
   const triggerProjectAiReview = React.useCallback(
     async (projectId: string) => {
@@ -1753,6 +1864,9 @@ export default function TasksScreen() {
       const da = isDoneRow(a);
       const db = isDoneRow(b);
       if (da !== db) return da ? 1 : -1;
+      const shelvedA = isTaskShelvedStatus(a.status);
+      const shelvedB = isTaskShelvedStatus(b.status);
+      if (shelvedA !== shelvedB) return shelvedA ? 1 : -1;
       const oa = isStandaloneTodoOverdue(a, logicalTodayYmd);
       const ob = isStandaloneTodoOverdue(b, logicalTodayYmd);
       if (oa !== ob) return oa ? -1 : 1;
@@ -2012,18 +2126,105 @@ export default function TasksScreen() {
     [moveProjectToInboxById, projectTaskTreeMap]
   );
 
+  const confirmDeleteInboxProject = React.useCallback(
+    (project: ProjectRow) => {
+      projectSwipeableRefs.current[project.id]?.close();
+      void (async () => {
+        let message = `确定彻底删除「${project.name}」吗？删除后无法在本地找回（含其下全部任务）。`;
+        try {
+          const incomplete = await countIncompleteTasksByProjectId(project.id);
+          if (incomplete > 0) {
+            message = `「${project.name}」下仍有 ${incomplete} 个未完成任务。\n\n确定连同项目与全部任务一并彻底删除吗？删除后无法在本地找回。`;
+          }
+        } catch (err) {
+          console.warn('统计项目未完成任务失败', err);
+        }
+        Alert.alert('删除项目', message, [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '删除',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                await deleteProject(project.id);
+                const rows = await loadProjects();
+                await loadProjectTasks(rows);
+              } catch (err) {
+                console.warn('删除收集箱项目失败', err);
+                Alert.alert('删除失败', '项目删除失败，请稍后重试。');
+                await loadProjects();
+              }
+            },
+          },
+        ]);
+      })();
+    },
+    [loadProjectTasks, loadProjects]
+  );
+
+  const activateShelvedTodo = React.useCallback(
+    async (taskId: string) => {
+      if (activatingShelvedTodoId || upgradingStandaloneTodoId) return;
+      const current = tasks.find((t) => t.id === taskId);
+      if (!current || !isTaskShelvedStatus(current.status)) return;
+
+      standaloneTodoSwipeableRefs.current[taskId]?.close();
+      setActivatingShelvedTodoId(taskId);
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, status: 'todo', completed_at: null } : t))
+      );
+
+      try {
+        await updateTask(taskId, { status: 'todo', completed_at: null });
+        try {
+          await insertTaskExecutionEvent(taskId, 'reopened', current.title ?? null);
+        } catch (logErr) {
+          console.warn('记录待办激活事件失败', logErr);
+        }
+      } catch (err) {
+        console.warn('激活搁置待办失败', err);
+        Alert.alert('激活失败', '请稍后重试。');
+        await loadTasks();
+      } finally {
+        setActivatingShelvedTodoId(null);
+      }
+    },
+    [activatingShelvedTodoId, loadTasks, tasks, upgradingStandaloneTodoId]
+  );
+
+  const confirmActivateShelvedTodo = React.useCallback(
+    (taskId: string, titleLabel: string) => {
+      Alert.alert(
+        '激活待办',
+        `确定将「${titleLabel}」激活为正常待办吗？激活后可安排日程并勾选完成。`,
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '激活',
+            onPress: () => void activateShelvedTodo(taskId),
+          },
+        ]
+      );
+    },
+    [activateShelvedTodo]
+  );
+
   const toggleTaskDone = React.useCallback(
     async (taskId: string) => {
       const current =
         tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
+      if (isTaskShelvedStatus(current.status)) return;
+
       if (current.project_id && lockedProjectIds.has(current.project_id)) {
         alertProjectTaskLocked(projectLockMap.get(current.project_id));
         return;
       }
 
-      const wasDone = current.status === 'done' || current.status === 'cancelled';
+      const wasDone = isTaskTerminalStatus(current.status);
       const nextStatus: TaskRow['status'] = wasDone ? 'todo' : 'done';
       const nextCompletedAt = wasDone ? null : new Date().toISOString();
       let nextExtraData = current.extra_data;
@@ -2084,8 +2285,8 @@ export default function TasksScreen() {
           } catch (frogLogErr) {
             console.warn('记录青蛙完成事件失败', frogLogErr);
           }
-          setFrogHeatmapReloadToken((n) => n + 1);
         }
+        if (!wasDone) setCompletionHeatmapReloadToken((n) => n + 1);
         if (nextStatus === 'done' && current.project_id) {
           const pid = current.project_id;
           const proj = projects.find((p) => p.id === pid);
@@ -2247,7 +2448,7 @@ export default function TasksScreen() {
   );
 
   const openStandaloneTaskComposer = React.useCallback(() => {
-    router.push('/add-standalone-todo');
+    router.push({ pathname: '/add-task', params: { standalone: '1' } });
   }, [router]);
 
   const openCategoryMenu = (_scope: 'task' | 'project', label: string, categoryId: string | null = null) => {
@@ -2389,6 +2590,10 @@ export default function TasksScreen() {
     [colors.outline],
   );
   const emptyCardBg = isDark ? colors.surfaceMuted : colors.surfaceSubtle;
+  /** 过期待办卡片底色（不透明，避免左滑时透出操作条） */
+  const standaloneOverdueCardBg = isDark ? '#2c2326' : '#fff5f5';
+  /** 搁置待办卡片底色（置灰、不透明） */
+  const standaloneShelvedCardBg = isDark ? '#252a34' : '#f0f2f7';
 
   const buildCategoryId = React.useCallback((scope: 'task' | 'project') => {
     const prefix = scope === 'task' ? 'tc' : 'pc';
@@ -2720,22 +2925,23 @@ export default function TasksScreen() {
                           scaleTo={0.985}
                           style={({ pressed }) => [
                             styles.frogCard,
-                            shadows.card,
                             styles.frogCardSlide,
                             { width: frogCarouselCardWidth },
                             {
                               backgroundColor: isDone ? colors.surfaceMuted : card,
-                              borderColor: colors.outline,
-                              borderLeftColor: primary,
-                              opacity: pressed ? 0.9 : 1,
+                              borderColor: isDone ? colors.outline : `${primary}33`,
+                              opacity: pressed ? 0.94 : 1,
                             },
                           ]}>
-                          <View style={styles.frogIconBgCompact} pointerEvents="none">
-                            <MaterialIcons name="eco" size={34} color={colors.primaryMuted} />
-                          </View>
+                          <View style={[styles.frogAccentBar, { backgroundColor: isDone ? success : primary }]} />
                           <View style={styles.frogTopRowCompact}>
-                            <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
-                              <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>今日已指派</Text>
+                            <View style={styles.frogTopLeft}>
+                              <View style={[styles.frogIconBadge, { backgroundColor: colors.primaryMuted }]}>
+                                <MaterialIcons name="eco" size={18} color={primary} />
+                              </View>
+                              <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
+                                <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>今日已指派</Text>
+                              </View>
                             </View>
                             <View style={styles.frogCardActions}>
                               <Pressable
@@ -2792,9 +2998,11 @@ export default function TasksScreen() {
                             numberOfLines={2}>
                             {(frog.note ?? '').trim() || '点击查看详情或继续执行。'}
                           </Text>
-                          <View style={styles.progressMetaCompact}>
+                          <View style={[styles.frogCardFooter, { borderTopColor: colors.outline }]}>
                             <Text style={[styles.progressLabel, { color: outline }]}>状态</Text>
-                            <Text style={[styles.progressLabel, { color: outline }]}>{isDone ? '已完成' : '进行中'}</Text>
+                            <Text style={[styles.progressLabel, { color: isDone ? success : primary }]}>
+                              {isDone ? '已完成' : '进行中'}
+                            </Text>
                           </View>
                         </ScalePressable>
                       );
@@ -2804,21 +3012,21 @@ export default function TasksScreen() {
                   <View
                     style={[
                       styles.frogCard,
-                      shadows.card,
                       styles.frogCardEmpty,
                       {
                         backgroundColor: card,
-                        borderColor: colors.outline,
-                        borderLeftColor: primary,
-                        opacity: 0.9,
+                        borderColor: `${primary}33`,
                       },
                     ]}>
-                    <View style={styles.frogIconBgCompact}>
-                      <MaterialIcons name="eco" size={34} color={colors.primaryMuted} />
-                    </View>
+                    <View style={[styles.frogAccentBar, { backgroundColor: primary }]} />
                     <View style={styles.frogTopRowCompact}>
-                      <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
-                        <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>今日未指派</Text>
+                      <View style={styles.frogTopLeft}>
+                        <View style={[styles.frogIconBadge, { backgroundColor: colors.primaryMuted }]}>
+                          <MaterialIcons name="eco" size={18} color={primary} />
+                        </View>
+                        <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
+                          <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>今日未指派</Text>
+                        </View>
                       </View>
                       <MaterialIcons name="radio-button-unchecked" size={18} color={primary} />
                     </View>
@@ -2829,20 +3037,24 @@ export default function TasksScreen() {
                   </View>
                 )}
               </Animated.View>
+            </View>
+          </View>
 
-              <FrogCompletedHeatmap
+          <View style={stackedSectionStyle}>
+            <View style={sectionCardStyle}>
+              <TaskCompletionHeatmap
                 logicalTodayYmd={logicalTodayYmd}
                 textMain={colors.text}
                 textMuted={outline}
                 accentColor={primary}
+                todoAccentColor={secondary}
                 innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
                 innerBorderColor={colors.outlineStrong}
                 isDark={isDark}
-                reloadToken={frogHeatmapReloadToken}
+                reloadToken={completionHeatmapReloadToken}
               />
             </View>
           </View>
-
 
           <View style={stackedSectionStyle}>
             <View style={sectionCardStyle}>
@@ -2954,7 +3166,8 @@ export default function TasksScreen() {
                   nestedScrollEnabled
                   showsVerticalScrollIndicator={false}>
                   {standaloneTodos.map((t) => {
-                    const isDone = t.status === 'done' || t.status === 'cancelled';
+                    const isDone = isTaskTerminalStatus(t.status);
+                    const isShelved = isTaskShelvedStatus(t.status);
                     const noteText = (t.note ?? '').trim();
                     const meta = parseTaskMeta(t.extra_data);
                     const due = t.due_date?.slice(0, 10) ?? '';
@@ -2965,6 +3178,8 @@ export default function TasksScreen() {
                     const effectivePriority = getEffectiveTaskPriority(t, logicalTodayYmd);
                     const checkColor = getTaskPriorityCheckColor(effectivePriority, isDark);
                     const isUpgrading = upgradingStandaloneTodoId === t.id;
+                    const isActivating = activatingShelvedTodoId === t.id;
+                    const swipeBusy = !!upgradingStandaloneTodoId || !!activatingShelvedTodoId;
                     return (
                       <View key={t.id} style={styles.standaloneTodoSwipeWrap}>
                         <Swipeable
@@ -2975,30 +3190,54 @@ export default function TasksScreen() {
                           friction={2}
                           renderRightActions={() => (
                             <View style={styles.standaloneSwipeActions}>
-                              <Pressable
-                                onPress={() => void handleUpgradeStandaloneTodo(t.id)}
-                                disabled={!!upgradingStandaloneTodoId}
-                                style={({ pressed }) => [
-                                  styles.standaloneSwipeUpgrade,
-                                  {
-                                    backgroundColor: secondary,
-                                    opacity: isUpgrading ? 0.55 : pressed ? 0.9 : 1,
-                                  },
-                                ]}
-                                accessibilityRole="button"
-                                accessibilityLabel={`将 ${t.title} 升级为项目`}>
-                                {isUpgrading ? (
-                                  <ActivityIndicator color="#fff" size="small" />
-                                ) : (
-                                  <MaterialIcons name="upgrade" size={22} color="#fff" />
-                                )}
-                                <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
-                                  升级
-                                </Text>
-                              </Pressable>
+                              {isShelved ? (
+                                <Pressable
+                                  onPress={() => confirmActivateShelvedTodo(t.id, t.title)}
+                                  disabled={swipeBusy}
+                                  style={({ pressed }) => [
+                                    styles.standaloneSwipeUpgrade,
+                                    {
+                                      backgroundColor: primary,
+                                      opacity: isActivating ? 0.55 : pressed ? 0.9 : 1,
+                                    },
+                                  ]}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`激活 ${t.title} 为正常待办`}>
+                                  {isActivating ? (
+                                    <ActivityIndicator color="#fff" size="small" />
+                                  ) : (
+                                    <MaterialIcons name="play-arrow" size={22} color="#fff" />
+                                  )}
+                                  <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
+                                    激活
+                                  </Text>
+                                </Pressable>
+                              ) : (
+                                <Pressable
+                                  onPress={() => void handleUpgradeStandaloneTodo(t.id)}
+                                  disabled={swipeBusy}
+                                  style={({ pressed }) => [
+                                    styles.standaloneSwipeUpgrade,
+                                    {
+                                      backgroundColor: secondary,
+                                      opacity: isUpgrading ? 0.55 : pressed ? 0.9 : 1,
+                                    },
+                                  ]}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`将 ${t.title} 升级为项目`}>
+                                  {isUpgrading ? (
+                                    <ActivityIndicator color="#fff" size="small" />
+                                  ) : (
+                                    <MaterialIcons name="upgrade" size={22} color="#fff" />
+                                  )}
+                                  <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
+                                    升级
+                                  </Text>
+                                </Pressable>
+                              )}
                               <Pressable
                                 onPress={() => confirmDeleteStandaloneTodo(t.id, t.title)}
-                                disabled={!!upgradingStandaloneTodoId}
+                                disabled={swipeBusy}
                                 style={({ pressed }) => [
                                   styles.standaloneSwipeDelete,
                                   { backgroundColor: colors.danger, opacity: pressed ? 0.9 : 1 },
@@ -3016,37 +3255,64 @@ export default function TasksScreen() {
                             style={[
                               styles.standaloneTodoCard,
                               {
-                                backgroundColor: overdue && !isDone ? `${error}0c` : card,
-                                borderColor: overdue && !isDone ? error : outlineVariant,
-                                borderWidth: overdue && !isDone ? 1.5 : StyleSheet.hairlineWidth,
-                                shadowColor: '#000',
+                                backgroundColor: isShelved && !isDone
+                                  ? standaloneShelvedCardBg
+                                  : overdue && !isDone
+                                    ? standaloneOverdueCardBg
+                                    : card,
+                                borderColor:
+                                  isShelved && !isDone
+                                    ? outlineVariant
+                                    : overdue && !isDone
+                                      ? error
+                                      : outlineVariant,
+                                borderWidth: overdue && !isDone && !isShelved ? 1.5 : StyleSheet.hairlineWidth,
+                                ...(isShelved && !isDone ? { shadowOpacity: 0.03, elevation: 0 } : null),
                               },
                             ]}>
+                          {isShelved ? (
+                            <View style={styles.shelvedStatusIcon} accessibilityLabel="暂时搁置">
+                              <MaterialIcons name="inventory-2" size={22} color={colors.textMuted} />
+                            </View>
+                          ) : (
+                            <Pressable
+                              hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                              onPress={() => void toggleTaskDone(t.id)}
+                              accessibilityRole="button"
+                              accessibilityLabel={isDone ? '标记为未完成' : '标记为已完成'}>
+                              <MaterialIcons
+                                name={isDone ? 'check-circle' : 'radio-button-unchecked'}
+                                size={22}
+                                color={checkColor}
+                              />
+                            </Pressable>
+                          )}
                           <Pressable
-                            hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
-                            onPress={() => void toggleTaskDone(t.id)}
-                            accessibilityRole="button"
-                            accessibilityLabel={isDone ? '标记为未完成' : '标记为已完成'}>
-                            <MaterialIcons
-                              name={isDone ? 'check-circle' : 'radio-button-unchecked'}
-                              size={22}
-                              color={checkColor}
-                            />
-                          </Pressable>
-                          <Pressable style={styles.taskBody} onPress={() => openTask(t.id)}>
+                            style={[styles.taskBody, isShelved && !isDone && styles.shelvedTodoBodyMuted]}
+                            onPress={() => openTask(t.id)}>
                             <Text
                               style={[
                                 styles.taskText,
                                 {
-                                  color: overdue ? error : colors.text,
-                                  fontWeight: overdue ? '800' : '600',
+                                  color: isShelved
+                                    ? colors.textSecondary
+                                    : overdue
+                                      ? error
+                                      : colors.text,
+                                  fontWeight: overdue && !isShelved ? '800' : '600',
                                   textDecorationLine: isDone ? 'line-through' : 'none',
-                                  opacity: isDone ? 0.45 : 1,
+                                  opacity: isDone ? 0.45 : isShelved ? 0.82 : 1,
                                 },
                               ]}
                               numberOfLines={2}>
                               {t.title}
                             </Text>
+                            {isShelved ? (
+                              <View style={[styles.shelvedPill, { backgroundColor: `${outline}18` }]}>
+                                <MaterialIcons name="inventory-2" size={12} color={outline} />
+                                <Text style={[styles.shelvedPillText, { color: outline }]}>暂时搁置</Text>
+                              </View>
+                            ) : null}
                             {!!noteText ? (
                               <Text
                                 style={[
@@ -3114,6 +3380,29 @@ export default function TasksScreen() {
                               isDark={isDark}
                             />
                           </Pressable>
+                          {isShelved ? (
+                            <View style={styles.shelvedActivateAside}>
+                              <Pressable
+                                onPress={() => confirmActivateShelvedTodo(t.id, t.title)}
+                                disabled={swipeBusy}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                accessibilityRole="button"
+                                accessibilityLabel={`激活 ${t.title} 为正常待办`}
+                                style={({ pressed }) => [
+                                  styles.shelvedActivateBtn,
+                                  {
+                                    backgroundColor: primary,
+                                    opacity: isActivating ? 0.55 : pressed ? 0.88 : 1,
+                                  },
+                                ]}>
+                                {isActivating ? (
+                                  <ActivityIndicator color={colors.onPrimary} size="small" />
+                                ) : (
+                                  <MaterialIcons name="play-arrow" size={22} color={colors.onPrimary} />
+                                )}
+                              </Pressable>
+                            </View>
+                          ) : null}
                           </View>
                         </Swipeable>
                       </View>
@@ -3121,6 +3410,184 @@ export default function TasksScreen() {
                   })}
                 </ScrollView>
               )}
+            </View>
+          </View>
+
+          <View style={stackedSectionStyle}>
+            <View style={sectionCardStyle}>
+              <View style={styles.habitHeaderRow}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>小习惯</Text>
+                <ScalePressable
+                  onPress={() => router.push('/habit-manage')}
+                  style={({ pressed }) => [
+                    styles.ghostBtn,
+                    { borderColor: `${primary}44` },
+                    pressed && { opacity: 0.8 },
+                  ]}>
+                  <MaterialIcons name="dashboard" size={14} color={primary} />
+                  <Text style={[styles.ghostBtnText, { color: primary }]}>管理习惯</Text>
+                </ScalePressable>
+              </View>
+
+              {habitSections.map((section) => {
+                const isOpen = expandedHabitSections[section.id] ?? true;
+                const visibleHabitItems = section.items.filter(
+                  (it) => !isHabitHiddenByCalendarCycleOnTasks(it.extraData, habitScheduleAnchorDate)
+                );
+                return (
+                  <View key={section.id} style={styles.habitSection}>
+                    <Pressable
+                      onPress={() => toggleHabitSection(section.id)}
+                      style={({ pressed }) => [
+                        styles.habitSectionToggle,
+                        { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : 'rgba(148,163,184,0.14)' },
+                        pressed && { opacity: 0.8 },
+                      ]}>
+                      <Text style={[styles.habitSectionToggleText, { color: outline }]}>
+                        {section.title}・{visibleHabitItems.length}
+                      </Text>
+                      <MaterialIcons name={isOpen ? 'expand-less' : 'expand-more'} size={16} color={outline} />
+                    </Pressable>
+
+                    {isOpen ? (
+                      <View style={styles.habitItemsRow} onLayout={onHabitItemsRowLayout}>
+                        {visibleHabitItems.map((item) => {
+                          const scheduleAllowsToday = isHabitScheduledToday(item.extraData, habitScheduleAnchorDate);
+                          const hasProgress = item.todayCount > 0;
+                          const goalMet =
+                            item.dailyGoalMax != null
+                              ? item.todayCount >= item.dailyGoalMax
+                              : item.todayCount > 0;
+                          const isBreak = item.kind === 'break';
+
+                          const openHabitDetail = () =>
+                            router.push({
+                              pathname: '/habit-detail',
+                              params: { habitId: item.id },
+                            });
+
+                          const partialBorderBuild = isDark ? 'rgba(52,211,153,0.5)' : 'rgba(0,108,73,0.42)';
+                          const partialBorderBreak = isDark ? 'rgba(251,191,36,0.62)' : 'rgba(180,83,9,0.48)';
+                          const partialBorder = isBreak ? partialBorderBreak : partialBorderBuild;
+                          const progressBadgeBg = isBreak
+                            ? isDark
+                              ? 'rgba(234,88,12,0.92)'
+                              : 'rgba(194,65,12,0.9)'
+                            : isDark
+                              ? 'rgba(52,211,153,0.92)'
+                              : 'rgba(0,108,73,0.88)';
+
+                          return (
+                            <View key={item.id} style={[styles.habitItem, { width: habitGridItemWidth }]}>
+                              <Pressable
+                                onPress={() => {
+                                  if (!scheduleAllowsToday) return;
+                                  handleHabitIconPress(item);
+                                }}
+                                onLongPress={openHabitDetail}
+                                delayLongPress={260}
+                                style={({ pressed }) => [
+                                  styles.habitIconPressable,
+                                  pressed && scheduleAllowsToday && { opacity: 0.86 },
+                                ]}>
+                                <View style={styles.habitIconWrap}>
+                                  {isBreak ? (
+                                    <View style={[styles.habitKindBadge, { borderColor: card }]}>
+                                      <Text style={styles.habitKindBadgeText}>戒</Text>
+                                    </View>
+                                  ) : null}
+                                  <View
+                                    style={[
+                                      styles.habitIconCircle,
+                                      {
+                                        borderColor: goalMet
+                                          ? secondary
+                                          : hasProgress
+                                            ? partialBorder
+                                            : isDark
+                                              ? 'rgba(148,163,184,0.42)'
+                                              : 'rgba(148,163,184,0.5)',
+                                        borderStyle: goalMet ? 'solid' : 'dashed',
+                                        backgroundColor: card,
+                                        opacity: scheduleAllowsToday ? 1 : 0.45,
+                                      },
+                                    ]}>
+                                    <Text style={[styles.habitIconText, goalMet && styles.habitIconTextDone]}>
+                                      {item.icon}
+                                    </Text>
+                                    {goalMet ? (
+                                      <View style={styles.habitIconDoneOverlay} pointerEvents="none">
+                                        <MaterialIcons name="check" size={30} color={secondary} />
+                                      </View>
+                                    ) : null}
+                                    {!scheduleAllowsToday ? (
+                                      <View style={styles.habitIconLockOverlay} pointerEvents="none">
+                                        <MaterialIcons name="lock" size={26} color={colors.textSecondary} />
+                                      </View>
+                                    ) : null}
+                                  </View>
+                                  {goalMet ? (
+                                    <View style={[styles.habitTodayBadge, { borderColor: card, backgroundColor: secondary }]}>
+                                      <MaterialIcons name="check" size={11} color="#fff" />
+                                    </View>
+                                  ) : hasProgress ? (
+                                    <View
+                                      style={[
+                                        styles.habitTodayBadge,
+                                        {
+                                          borderColor: card,
+                                          backgroundColor: progressBadgeBg,
+                                        },
+                                      ]}>
+                                      <Text style={styles.habitTodayBadgeCount}>{item.todayCount}</Text>
+                                    </View>
+                                  ) : null}
+                                </View>
+                              </Pressable>
+                              <Pressable
+                                onPress={() => {
+                                  if (!scheduleAllowsToday) return;
+                                  void handleHabitIncrement(item.id, item.dailyGoalMax);
+                                }}
+                                onLongPress={openHabitDetail}
+                                delayLongPress={260}
+                                style={({ pressed }) => [
+                                  styles.habitNamePressable,
+                                  pressed && scheduleAllowsToday && { opacity: 0.86 },
+                                ]}>
+                                <Text
+                                  style={[
+                                    styles.habitItemText,
+                                    { color: colors.text, opacity: scheduleAllowsToday ? 1 : 0.5 },
+                                  ]}
+                                  numberOfLines={2}>
+                                  {item.name}
+                                </Text>
+                              </Pressable>
+                            </View>
+                          );
+                        })}
+                        <Pressable
+                          onPress={() => router.push('/add-habit')}
+                          style={({ pressed }) => [
+                            styles.habitItem,
+                            { width: habitGridItemWidth },
+                            pressed && { opacity: 0.86 },
+                          ]}>
+                          <View
+                            style={[
+                              styles.habitAddCircle,
+                              { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.12)' },
+                            ]}>
+                            <MaterialIcons name="add" size={34} color={colors.textMuted} />
+                          </View>
+                          <Text style={[styles.habitAddText, { color: colors.textMuted }]}>添加打卡</Text>
+                        </Pressable>
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })}
             </View>
           </View>
 
@@ -3235,7 +3702,12 @@ export default function TasksScreen() {
                 <View style={styles.headerRow}>
                   <View style={styles.titleRow}>
                     <Text style={[styles.sectionTitle, { color: colors.text }]}>项目列表</Text>
-                    <Text style={[styles.sectionMeta, { color: outline }]}>共 {projectsShownInList.length} 个活跃项目</Text>
+                    <Text style={[styles.sectionMeta, { color: outline }]}>
+                      共 {projectsShownInList.length} 个活跃项目
+                      {projectTab === INBOX_PROJECT_CATEGORY_ID && projectsShownInList.length > 0
+                        ? ' · 左滑可彻底删除'
+                        : ''}
+                    </Text>
                   </View>
                   <ScalePressable
                     onPress={() =>
@@ -3268,11 +3740,11 @@ export default function TasksScreen() {
                   const projectAccent = isLocked ? outline : isCompleted ? success : primary;
                   const projectCardBg = isLocked
                     ? isDark
-                      ? 'rgba(30,41,59,0.55)'
-                      : 'rgba(241,243,248,0.95)'
+                      ? colors.surfaceMuted
+                      : colors.surfaceSubtle
                     : isCompleted
                       ? projectDoneSurface
-                      : soft;
+                      : card;
                   const doneMuted = colors.textMuted;
                   const schedule = parseProjectSchedule(project.extra_data);
                   const dueDateLabel = getProjectScheduleLabel(project);
@@ -3563,34 +4035,52 @@ export default function TasksScreen() {
                   };
 
                   const hasAnyTasks = taskTree.length > 0;
+                  const isInInbox = isProjectInInboxCategory(project.category_id);
                   const canSwipeArchiveToInbox =
                     project.status !== 'completed' &&
                     project.status !== 'archived' &&
-                    !isProjectInInboxCategory(project.category_id);
+                    !isInInbox;
+                  const canSwipeDeleteFromInbox = isInInbox;
                   return (
                     <View key={project.id} style={styles.projectSwipeWrap}>
                       <Swipeable
                         ref={(r) => {
                           projectSwipeableRefs.current[project.id] = r;
                         }}
-                        enabled={canSwipeArchiveToInbox}
+                        enabled={canSwipeArchiveToInbox || canSwipeDeleteFromInbox}
                         overshootRight={false}
                         friction={2}
                         renderRightActions={() => (
                           <View style={styles.projectSwipeActions}>
-                            <Pressable
-                              onPress={() => void handleProjectSwipeArchive(project)}
-                              style={({ pressed }) => [
-                                styles.projectSwipeArchive,
-                                { opacity: pressed ? 0.9 : 1, backgroundColor: secondary },
-                              ]}
-                              accessibilityRole="button"
-                              accessibilityLabel={`将 ${project.name} 归纳到收集箱`}>
-                              <MaterialIcons name="inventory-2" size={22} color="#fff" />
-                              <Text style={styles.projectSwipeArchiveText} numberOfLines={1}>
-                                收纳
-                              </Text>
-                            </Pressable>
+                            {canSwipeDeleteFromInbox ? (
+                              <Pressable
+                                onPress={() => confirmDeleteInboxProject(project)}
+                                style={({ pressed }) => [
+                                  styles.projectSwipeDelete,
+                                  { opacity: pressed ? 0.9 : 1, backgroundColor: error },
+                                ]}
+                                accessibilityRole="button"
+                                accessibilityLabel={`彻底删除 ${project.name}`}>
+                                <MaterialIcons name="delete-outline" size={22} color="#fff" />
+                                <Text style={styles.projectSwipeDeleteText} numberOfLines={1}>
+                                  删除
+                                </Text>
+                              </Pressable>
+                            ) : canSwipeArchiveToInbox ? (
+                              <Pressable
+                                onPress={() => void handleProjectSwipeArchive(project)}
+                                style={({ pressed }) => [
+                                  styles.projectSwipeArchive,
+                                  { opacity: pressed ? 0.9 : 1, backgroundColor: secondary },
+                                ]}
+                                accessibilityRole="button"
+                                accessibilityLabel={`将 ${project.name} 归纳到收集箱`}>
+                                <MaterialIcons name="inventory-2" size={22} color="#fff" />
+                                <Text style={styles.projectSwipeArchiveText} numberOfLines={1}>
+                                  收纳
+                                </Text>
+                              </Pressable>
+                            ) : null}
                           </View>
                         )}>
                         <View
@@ -3598,16 +4088,17 @@ export default function TasksScreen() {
                             styles.projectCard,
                             {
                               backgroundColor: projectCardBg,
-                              opacity: isLocked ? 0.58 : isCompleted ? 0.92 : 0.86,
                               borderColor: isLocked
                                 ? isDark
-                                  ? 'rgba(148,163,184,0.28)'
-                                  : 'rgba(148,163,184,0.35)'
+                                  ? 'rgba(148,163,184,0.32)'
+                                  : 'rgba(148,163,184,0.38)'
                                 : isCompleted
                                   ? isDark
-                                    ? 'rgba(52, 211, 153, 0.28)'
-                                    : 'rgba(0, 108, 73, 0.22)'
-                                  : 'rgba(148,163,184,0.12)',
+                                    ? 'rgba(52, 211, 153, 0.32)'
+                                    : 'rgba(0, 108, 73, 0.24)'
+                                  : isDark
+                                    ? 'rgba(148,163,184,0.2)'
+                                    : 'rgba(15, 23, 42, 0.08)',
                             },
                           ]}>
                       <ScalePressable
@@ -3615,17 +4106,31 @@ export default function TasksScreen() {
                         hitSlop={6}
                         scaleTo={0.988}
                         style={styles.projectHeadPressable}>
-                      <View
-                        style={[
-                          styles.projectHead,
-                          { borderLeftColor: projectAccent },
-                        ]}>
+                      <View style={styles.projectHead}>
                         <View style={styles.projectHeadLeft}>
-                          <MaterialIcons
-                            name={isLocked ? 'lock' : isCompleted ? 'check-circle' : 'data-usage'}
-                            size={22}
-                            color={projectAccent}
-                          />
+                          <View
+                            style={[
+                              styles.projectIconWrap,
+                              {
+                                backgroundColor: isLocked
+                                  ? isDark
+                                    ? 'rgba(148,163,184,0.14)'
+                                    : 'rgba(114,119,133,0.1)'
+                                  : isCompleted
+                                    ? isDark
+                                      ? 'rgba(52, 211, 153, 0.14)'
+                                      : 'rgba(0, 108, 73, 0.1)'
+                                    : isDark
+                                      ? 'rgba(96,165,250,0.14)'
+                                      : 'rgba(0,88,190,0.08)',
+                              },
+                            ]}>
+                            <MaterialIcons
+                              name={isLocked ? 'lock' : isCompleted ? 'check-circle' : 'data-usage'}
+                              size={20}
+                              color={projectAccent}
+                            />
+                          </View>
                           <View style={styles.projectHeadMainColumn}>
                             <View style={styles.projectTitleRow}>
                               <Text
@@ -3941,7 +4446,14 @@ export default function TasksScreen() {
                       </View>
                       </ScalePressable>
                       {(!hasAnyTasks || isExpanded) && (
-                        <View style={[styles.projectTaskBody, { borderTopColor: outlineVariant }]}>
+                        <View
+                          style={[
+                            styles.projectTaskBody,
+                            {
+                              borderTopColor: outlineVariant,
+                              backgroundColor: isDark ? 'rgba(15,23,42,0.28)' : 'rgba(248,250,252,0.9)',
+                            },
+                          ]}>
                           {!hasAnyTasks ? (
                             <Text style={[styles.projectTaskEmpty, { color: outline }]}>暂无任务</Text>
                           ) : (
@@ -3975,184 +4487,6 @@ export default function TasksScreen() {
               </View>
             </View>
           </Animated.View>
-
-          <View style={stackedSectionStyle}>
-            <View style={sectionCardStyle}>
-              <View style={styles.habitHeaderRow}>
-                <Text style={[styles.sectionTitle, { color: colors.text }]}>小习惯</Text>
-                <ScalePressable
-                  onPress={() => router.push('/habit-manage')}
-                  style={({ pressed }) => [
-                    styles.ghostBtn,
-                    { borderColor: `${primary}44` },
-                    pressed && { opacity: 0.8 },
-                  ]}>
-                  <MaterialIcons name="dashboard" size={14} color={primary} />
-                  <Text style={[styles.ghostBtnText, { color: primary }]}>管理习惯</Text>
-                </ScalePressable>
-              </View>
-
-              {habitSections.map((section) => {
-                const isOpen = expandedHabitSections[section.id] ?? true;
-                const visibleHabitItems = section.items.filter(
-                  (it) => !isHabitHiddenByCalendarCycleOnTasks(it.extraData, habitScheduleAnchorDate)
-                );
-                return (
-                  <View key={section.id} style={styles.habitSection}>
-                    <Pressable
-                      onPress={() => toggleHabitSection(section.id)}
-                      style={({ pressed }) => [
-                        styles.habitSectionToggle,
-                        { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : 'rgba(148,163,184,0.14)' },
-                        pressed && { opacity: 0.8 },
-                      ]}>
-                      <Text style={[styles.habitSectionToggleText, { color: outline }]}>
-                        {section.title}・{visibleHabitItems.length}
-                      </Text>
-                      <MaterialIcons name={isOpen ? 'expand-less' : 'expand-more'} size={16} color={outline} />
-                    </Pressable>
-
-                    {isOpen ? (
-                      <View style={styles.habitItemsRow} onLayout={onHabitItemsRowLayout}>
-                        {visibleHabitItems.map((item) => {
-                          const scheduleAllowsToday = isHabitScheduledToday(item.extraData, habitScheduleAnchorDate);
-                          const hasProgress = item.todayCount > 0;
-                          const goalMet =
-                            item.dailyGoalMax != null
-                              ? item.todayCount >= item.dailyGoalMax
-                              : item.todayCount > 0;
-                          const isBreak = item.kind === 'break';
-
-                          const openHabitDetail = () =>
-                            router.push({
-                              pathname: '/habit-detail',
-                              params: { habitId: item.id },
-                            });
-
-                          const partialBorderBuild = isDark ? 'rgba(52,211,153,0.5)' : 'rgba(0,108,73,0.42)';
-                          const partialBorderBreak = isDark ? 'rgba(251,191,36,0.62)' : 'rgba(180,83,9,0.48)';
-                          const partialBorder = isBreak ? partialBorderBreak : partialBorderBuild;
-                          const progressBadgeBg = isBreak
-                            ? isDark
-                              ? 'rgba(234,88,12,0.92)'
-                              : 'rgba(194,65,12,0.9)'
-                            : isDark
-                              ? 'rgba(52,211,153,0.92)'
-                              : 'rgba(0,108,73,0.88)';
-
-                          return (
-                            <View key={item.id} style={[styles.habitItem, { width: habitGridItemWidth }]}>
-                              <Pressable
-                                onPress={() => {
-                                  if (!scheduleAllowsToday) return;
-                                  handleHabitIconPress(item);
-                                }}
-                                onLongPress={openHabitDetail}
-                                delayLongPress={260}
-                                style={({ pressed }) => [
-                                  styles.habitIconPressable,
-                                  pressed && scheduleAllowsToday && { opacity: 0.86 },
-                                ]}>
-                                <View style={styles.habitIconWrap}>
-                                  {isBreak ? (
-                                    <View style={[styles.habitKindBadge, { borderColor: card }]}>
-                                      <Text style={styles.habitKindBadgeText}>戒</Text>
-                                    </View>
-                                  ) : null}
-                                  <View
-                                    style={[
-                                      styles.habitIconCircle,
-                                      {
-                                        borderColor: goalMet
-                                          ? secondary
-                                          : hasProgress
-                                            ? partialBorder
-                                            : isDark
-                                              ? 'rgba(148,163,184,0.42)'
-                                              : 'rgba(148,163,184,0.5)',
-                                        borderStyle: goalMet ? 'solid' : 'dashed',
-                                        backgroundColor: card,
-                                        opacity: scheduleAllowsToday ? 1 : 0.45,
-                                      },
-                                    ]}>
-                                    <Text style={[styles.habitIconText, goalMet && styles.habitIconTextDone]}>
-                                      {item.icon}
-                                    </Text>
-                                    {goalMet ? (
-                                      <View style={styles.habitIconDoneOverlay} pointerEvents="none">
-                                        <MaterialIcons name="check" size={30} color={secondary} />
-                                      </View>
-                                    ) : null}
-                                    {!scheduleAllowsToday ? (
-                                      <View style={styles.habitIconLockOverlay} pointerEvents="none">
-                                        <MaterialIcons name="lock" size={26} color={colors.textSecondary} />
-                                      </View>
-                                    ) : null}
-                                  </View>
-                                  {goalMet ? (
-                                    <View style={[styles.habitTodayBadge, { borderColor: card, backgroundColor: secondary }]}>
-                                      <MaterialIcons name="check" size={11} color="#fff" />
-                                    </View>
-                                  ) : hasProgress ? (
-                                    <View
-                                      style={[
-                                        styles.habitTodayBadge,
-                                        {
-                                          borderColor: card,
-                                          backgroundColor: progressBadgeBg,
-                                        },
-                                      ]}>
-                                      <Text style={styles.habitTodayBadgeCount}>{item.todayCount}</Text>
-                                    </View>
-                                  ) : null}
-                                </View>
-                              </Pressable>
-                              <Pressable
-                                onPress={() => {
-                                  if (!scheduleAllowsToday) return;
-                                  void handleHabitIncrement(item.id, item.dailyGoalMax);
-                                }}
-                                onLongPress={openHabitDetail}
-                                delayLongPress={260}
-                                style={({ pressed }) => [
-                                  styles.habitNamePressable,
-                                  pressed && scheduleAllowsToday && { opacity: 0.86 },
-                                ]}>
-                                <Text
-                                  style={[
-                                    styles.habitItemText,
-                                    { color: colors.text, opacity: scheduleAllowsToday ? 1 : 0.5 },
-                                  ]}
-                                  numberOfLines={2}>
-                                  {item.name}
-                                </Text>
-                              </Pressable>
-                            </View>
-                          );
-                        })}
-                        <Pressable
-                          onPress={() => router.push('/add-habit')}
-                          style={({ pressed }) => [
-                            styles.habitItem,
-                            { width: habitGridItemWidth },
-                            pressed && { opacity: 0.86 },
-                          ]}>
-                          <View
-                            style={[
-                              styles.habitAddCircle,
-                              { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.12)' },
-                            ]}>
-                            <MaterialIcons name="add" size={34} color={colors.textMuted} />
-                          </View>
-                          <Text style={[styles.habitAddText, { color: colors.textMuted }]}>添加打卡</Text>
-                        </Pressable>
-                      </View>
-                    ) : null}
-                  </View>
-                );
-              })}
-            </View>
-          </View>
 
           {/* 底部留白用实体高度，避免 scrollEnabled 切换时与 paddingBottom 叠加触发布局回弹 */}
           <View style={{ height: 46 + mainScrollKeyboardPad }} />
@@ -4369,6 +4703,7 @@ const styles = StyleSheet.create({
   ghostBtnText: { fontSize: 12, fontWeight: '800' },
 
   frogHeatmapOuter: { marginTop: 2, gap: 10 },
+  completionHeatmapDetailSectionLabel: { fontSize: 12, fontWeight: '800', marginBottom: 4, letterSpacing: 0.2 },
   frogHeatmapHeading: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -4432,23 +4767,48 @@ const styles = StyleSheet.create({
     paddingRight: 4,
   },
   frogCard: {
-    borderRadius: Radius.lg,
-    borderLeftWidth: 4,
-    padding: Spacing.xl,
+    borderRadius: Radius.xl,
+    paddingHorizontal: Spacing['2xl'],
+    paddingTop: Spacing.xl + 4,
+    paddingBottom: Spacing.xl,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
+    ...Shadows.card,
+  },
+  frogAccentBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    borderTopLeftRadius: Radius.xl,
+    borderTopRightRadius: Radius.xl,
   },
   frogCardSlide: {
     flexShrink: 0,
-    marginRight: 10,
+    marginRight: 12,
   },
   frogCardEmpty: {
     alignSelf: 'stretch',
   },
-  frogIconBg: { position: 'absolute', right: 8, top: 8 },
-  frogIconBgCompact: { position: 'absolute', right: 6, top: 6 },
+  frogIconBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  frogTopLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 },
   frogTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  frogTopRowCompact: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
+  frogTopRowCompact: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  frogCardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
   frogCardActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   inlineDoneBtn: { borderRadius: 10 },
   badge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
@@ -4456,11 +4816,10 @@ const styles = StyleSheet.create({
   badgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 1.1, textTransform: 'uppercase' },
   badgeTextCompact: { fontSize: 9, letterSpacing: 0.7 },
   frogTitle: { fontSize: 20, fontWeight: '800', marginBottom: 6, paddingRight: 40 },
-  frogTitleCompact: { fontSize: 15, fontWeight: '800', marginBottom: 4, paddingRight: 36, lineHeight: 20 },
+  frogTitleCompact: { fontSize: 16, fontWeight: '800', marginBottom: 4, lineHeight: 22 },
   frogDesc: { fontSize: 13, lineHeight: 19, marginBottom: 14 },
-  frogDescCompact: { fontSize: 12, lineHeight: 16, marginBottom: 8 },
+  frogDescCompact: { fontSize: 12, lineHeight: 17, marginBottom: 2 },
   progressMeta: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  progressMetaCompact: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2, marginTop: 2 },
   progressLabel: { fontSize: 10, fontWeight: '800' },
   progressTrack: { height: 6, borderRadius: 999, overflow: 'hidden' },
   progressFill: { height: '100%' },
@@ -4562,6 +4921,40 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   overduePillText: { fontSize: 10, fontWeight: '800' },
+  shelvedPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  shelvedPillText: { fontSize: 10, fontWeight: '700' },
+  shelvedStatusIcon: {
+    alignSelf: 'flex-start',
+    marginTop: 1,
+    opacity: 0.72,
+  },
+  shelvedTodoBodyMuted: {
+    opacity: 0.78,
+  },
+  shelvedActivateAside: {
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+    paddingLeft: Spacing.md,
+    flexShrink: 0,
+  },
+  /** 主题色圆形激活钮，与快捷待办发送钮一致 */
+  shelvedActivateBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+  },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   metaText: { fontSize: 12, fontWeight: '700' },
   metaHint: { fontSize: 10, fontWeight: '800' },
@@ -4571,15 +4964,10 @@ const styles = StyleSheet.create({
   pulseCenter: { width: 7, height: 7, borderRadius: 999 },
 
   projectCard: {
-    borderRadius: 14,
+    borderRadius: Radius.xl,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.12)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    ...Shadows.card,
   },
   /** 项目卡片列表：右侧留白，避免卡片与区块右缘贴齐 */
   projectList: {
@@ -4599,11 +4987,28 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     minWidth: 100,
     paddingHorizontal: 16,
-    borderTopRightRadius: 14,
-    borderBottomRightRadius: 14,
+    borderTopRightRadius: Radius.xl,
+    borderBottomRightRadius: Radius.xl,
     gap: 8,
   },
   projectSwipeArchiveText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
+    flexShrink: 0,
+  },
+  projectSwipeDelete: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'stretch',
+    minWidth: 100,
+    paddingHorizontal: 16,
+    borderTopRightRadius: Radius.xl,
+    borderBottomRightRadius: Radius.xl,
+    gap: 8,
+  },
+  projectSwipeDeleteText: {
     color: '#fff',
     fontSize: 15,
     fontWeight: '800',
@@ -4615,10 +5020,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 14,
-    borderLeftWidth: 4,
+    paddingHorizontal: Spacing['2xl'],
+    paddingVertical: Spacing['2xl'],
   },
-  projectHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, paddingRight: 10 },
+  projectIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  projectHeadLeft: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, flex: 1, paddingRight: 10 },
   projectHeadMainColumn: { flex: 1, minWidth: 0 },
   projectHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   projectEditBtn: {
@@ -4709,7 +5122,12 @@ const styles = StyleSheet.create({
   projectCountMain: { fontSize: 12, fontWeight: '900' },
   projectCountSub: { fontSize: 10, fontWeight: '700' },
 
-  projectTaskBody: { borderTopWidth: 1, paddingHorizontal: 10, paddingVertical: 10, gap: 6 },
+  projectTaskBody: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.lg,
+    gap: 6,
+  },
   projectTaskRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, minHeight: 24 },
   projectTaskRowFlat: { gap: 6 },
   taskChildMark: { width: 20, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
@@ -5005,13 +5423,14 @@ const styles = StyleSheet.create({
     ...Shadows.card,
   },
   /**
-   * 与卡片等高；负 margin 让删除条向左压住卡片右缘，避免中间露一条缝。
+   * 与卡片等高；负 margin 让操作条向左压住卡片右缘；内层 overflow 裁切，两钮无缝拼接。
    */
   standaloneSwipeActions: {
     flexDirection: 'row',
     alignItems: 'stretch',
     marginLeft: -10,
-    gap: 6,
+    borderRadius: Radius.xl,
+    overflow: 'hidden',
   },
   standaloneSwipeUpgrade: {
     flexDirection: 'row',
@@ -5020,7 +5439,7 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     minWidth: 96,
     paddingHorizontal: Spacing['2xl'],
-    borderRadius: Radius.xl,
+    borderRadius: 0,
     gap: Spacing.md,
   },
   standaloneSwipeUpgradeText: {
@@ -5040,8 +5459,7 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     minWidth: 96,
     paddingHorizontal: Spacing['2xl'],
-    borderTopRightRadius: Radius.xl,
-    borderBottomRightRadius: Radius.xl,
+    borderRadius: 0,
     gap: Spacing.md,
   },
   standaloneSwipeDeleteText: {

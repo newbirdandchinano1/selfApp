@@ -20,6 +20,8 @@ export type WishItemRow = {
 };
 
 export type CreateWishItemInput = {
+  /** 可选；未传时由仓库自动生成 */
+  id?: string;
   name: string;
   price: number;
   category_id: string | null;

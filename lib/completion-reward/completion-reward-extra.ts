@@ -63,5 +63,5 @@ export function formatCompletionRewardLabel(
   if (reward.kind === 'none') return null;
   if (reward.kind === 'custom') return reward.label;
   const name = wishNameById?.get(reward.wish_item_id)?.trim();
-  return name || '欲望清单物品';
+  return name || '心愿好物';
 }

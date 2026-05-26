@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { clearFrogAssignedOn, getFrogAssignedOn } from '@/lib/frog-assignment';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
+import { isLogicalDayInYmdRange } from '@/lib/repositories/projects/project-schedule-status';
 import { buildProjectLockMap } from '@/lib/repositories/projects/project-prerequisites';
 import { getProjects } from '@/lib/repositories/projects/project';
 import { getTasks, getTasksByProjectId, updateTask, type TaskTreeNode } from '@/lib/repositories/tasks/task';
@@ -25,7 +26,15 @@ type Item = {
   priority: number;
 };
 
-type Section = { key: string; title: string; badge: string; tone: Item['tone']; items: Item[] };
+type Section = {
+  key: string;
+  title: string;
+  badge: string;
+  tone: Item['tone'];
+  items: Item[];
+  /** 过期栏：标题标红加粗 */
+  emphasize?: boolean;
+};
 
 type FrogTaskMeta = {
   frogAssignedOn?: string;
@@ -161,32 +170,69 @@ function getTaskDueDayYmdFromDueDate(t: TaskRow): string | null {
   return formatLocalYmd(parsed.date);
 }
 
-/** 用于青蛙时间线分组：区间任务以结束日（最后一天）为准，与任务 Tab 截止口径一致 */
-function getTaskDueDayYmdForFrog(t: TaskRow): string | null {
+type FrogPlacement = {
+  bucket: TimeBucket;
+  anchorYmd: string | null;
+};
+
+/** 青蛙时间线：截止日期按截止日分组；时段任务在区间内归今日，未开始按开始日，已结束归过期 */
+function getFrogPlacement(t: TaskRow, todayYmd: string): FrogPlacement {
   const schedule = parseTaskSchedule(t.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.end) {
-    const end = formatScheduleDateToYMD(schedule.range.end);
-    if (end) return end;
+
+  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    const startYmd = formatScheduleDateToYMD(schedule.range.start);
+    const endYmd = formatScheduleDateToYMD(schedule.range.end);
+    if (!startYmd || !endYmd) return { bucket: 'nodate', anchorYmd: null };
+
+    if (isLogicalDayInYmdRange(todayYmd, startYmd, endYmd)) {
+      return { bucket: 'today', anchorYmd: todayYmd };
+    }
+    if (todayYmd < startYmd) {
+      return { bucket: 'pending', anchorYmd: startYmd };
+    }
+    return { bucket: 'expired', anchorYmd: endYmd };
   }
-  return getTaskDueDayYmdFromDueDate(t);
+
+  if (schedule?.mode === 'date' && schedule.date) {
+    const dateYmd = formatScheduleDateToYMD(schedule.date);
+    if (!dateYmd) return { bucket: 'nodate', anchorYmd: null };
+    if (todayYmd > dateYmd) return { bucket: 'expired', anchorYmd: dateYmd };
+    return { bucket: 'pending', anchorYmd: dateYmd };
+  }
+
+  const dueYmd = getTaskDueDayYmdFromDueDate(t);
+  if (!dueYmd) return { bucket: 'nodate', anchorYmd: null };
+  if (todayYmd > dueYmd) return { bucket: 'expired', anchorYmd: dueYmd };
+  return { bucket: 'pending', anchorYmd: dueYmd };
+}
+
+function resolveFrogTimeBucket(
+  placement: FrogPlacement,
+  todayYmd: string,
+  soonEndYmd: string,
+  weekEndYmd: string,
+  sevenEndYmd: string,
+): TimeBucket {
+  if (placement.bucket === 'expired' || placement.bucket === 'today' || placement.bucket === 'nodate') {
+    return placement.bucket;
+  }
+  return timeBucketForDueYmd(placement.anchorYmd, todayYmd, soonEndYmd, weekEndYmd, sevenEndYmd);
 }
 
 function taskOverlapsFrogPickWindow(t: TaskRow, todayYmd: string, lastIncludedYmd: string): boolean {
-  const schedule = parseTaskSchedule(t.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.end) {
-    const end = formatScheduleDateToYMD(schedule.range.end);
-    if (end) return end >= todayYmd && end <= lastIncludedYmd;
-  }
-  if (!t.due_date?.trim()) return true;
-  const dueYmd = getTaskDueDayYmdForFrog(t);
-  if (!dueYmd) return true;
-  return dueYmd <= lastIncludedYmd;
+  const placement = getFrogPlacement(t, todayYmd);
+  if (placement.bucket === 'expired') return true;
+  if (placement.bucket === 'nodate') return true;
+  if (placement.bucket === 'today') return true;
+  const anchor = placement.anchorYmd;
+  if (!anchor) return true;
+  return anchor <= lastIncludedYmd;
 }
 
-function getTaskDueSortMsForFrog(t: TaskRow): number | null {
-  const dueYmd = getTaskDueDayYmdForFrog(t);
-  if (dueYmd) {
-    const d = ymdToLocalDate(dueYmd);
+function getTaskDueSortMsForFrog(t: TaskRow, todayYmd: string): number | null {
+  const { anchorYmd } = getFrogPlacement(t, todayYmd);
+  if (anchorYmd) {
+    const d = ymdToLocalDate(anchorYmd);
     if (d) return d.getTime();
   }
   if (!t.due_date?.trim() || !isValidDate(t.due_date)) return null;
@@ -221,7 +267,7 @@ function formatDueCaption(dueDate: string, now: Date): string {
   return `截止 ${dueYmd}`;
 }
 
-type TimeBucket = 'today' | 'soon' | 'week' | 'seven' | 'nodate' | 'exclude';
+type TimeBucket = 'expired' | 'today' | 'soon' | 'week' | 'seven' | 'nodate' | 'exclude' | 'pending';
 
 function timeBucketForDueYmd(
   dueYmd: string | null,
@@ -231,7 +277,8 @@ function timeBucketForDueYmd(
   sevenEndYmd: string,
 ): TimeBucket {
   if (!dueYmd) return 'nodate';
-  if (dueYmd <= todayYmd) return 'today';
+  if (dueYmd < todayYmd) return 'expired';
+  if (dueYmd === todayYmd) return 'today';
   if (dueYmd <= soonEndYmd) return 'soon';
   if (dueYmd <= weekEndYmd) return 'week';
   if (dueYmd <= sevenEndYmd) return 'seven';
@@ -283,6 +330,7 @@ function groupTasksToSections(
     })
     .filter((t) => taskOverlapsFrogPickWindow(t, todayYmd, lastIncludedYmd));
 
+  const secExpired: Item[] = [];
   const secToday: Item[] = [];
   const secSoon: Item[] = [];
   const secWeek: Item[] = [];
@@ -291,15 +339,34 @@ function groupTasksToSections(
 
   eligible.forEach((t) => {
     const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
-    const dueYmd = getTaskDueDayYmdForFrog(t);
-    const bucket = timeBucketForDueYmd(dueYmd, todayYmd, soonEndYmd, weekEndYmd, sevenEndYmd);
+    const placement = getFrogPlacement(t, todayYmd);
+    const bucket = resolveFrogTimeBucket(placement, todayYmd, soonEndYmd, weekEndYmd, sevenEndYmd);
     if (bucket === 'exclude') return;
 
-    const dueSortKey = getTaskDueSortMsForFrog(t);
-    const subtitle =
-      bucket === 'nodate' || !dueYmd
-        ? '未设置截止日期'
-        : formatDueCaption(dueYmd, now);
+    const anchorYmd = placement.anchorYmd;
+    const dueSortKey = getTaskDueSortMsForFrog(t, todayYmd);
+    const schedule = parseTaskSchedule(t.extra_data);
+    const inTimeRangeToday =
+      schedule?.mode === 'time' &&
+      schedule.range?.start &&
+      schedule.range?.end &&
+      bucket === 'today' &&
+      isLogicalDayInYmdRange(
+        todayYmd,
+        formatScheduleDateToYMD(schedule.range.start),
+        formatScheduleDateToYMD(schedule.range.end),
+      );
+
+    let subtitle: string;
+    if (bucket === 'nodate' || !anchorYmd) {
+      subtitle = '未设置截止日期';
+    } else if (inTimeRangeToday && schedule?.range?.start && schedule.range.end) {
+      const startYmd = formatScheduleDateToYMD(schedule.range.start);
+      const endYmd = formatScheduleDateToYMD(schedule.range.end);
+      subtitle = startYmd === endYmd ? `时段 · ${startYmd}` : `时段 · ${startYmd} ~ ${endYmd}`;
+    } else {
+      subtitle = formatDueCaption(anchorYmd, now);
+    }
 
     const { parentLabel, projectLabel } = getTaskContextLabels(t, taskTitleById, projectNameById);
 
@@ -314,7 +381,8 @@ function groupTasksToSections(
       priority: t.priority,
     };
 
-    if (bucket === 'today') secToday.push(item);
+    if (bucket === 'expired') secExpired.push(item);
+    else if (bucket === 'today') secToday.push(item);
     else if (bucket === 'soon') secSoon.push(item);
     else if (bucket === 'week') secWeek.push(item);
     else if (bucket === 'seven') secSeven.push(item);
@@ -334,19 +402,33 @@ function groupTasksToSections(
     return a.id.localeCompare(b.id);
   };
 
+  secExpired.sort(sortDated);
   secToday.sort(sortDated);
   secSoon.sort(sortDated);
   secWeek.sort(sortDated);
   secSeven.sort(sortDated);
   secNodate.sort(sortNodate);
 
-  return { sections: [
-    { key: 'today', title: '今日', badge: '含已逾期', tone: 'error', items: secToday },
+  const sections: Section[] = [];
+  if (secExpired.length > 0) {
+    sections.push({
+      key: 'expired',
+      title: '过期',
+      badge: '需尽快处理',
+      tone: 'error',
+      items: secExpired,
+      emphasize: true,
+    });
+  }
+  sections.push(
+    { key: 'today', title: '今日', badge: '今日到期', tone: 'error', items: secToday },
     { key: 'soon', title: '近三天', badge: '截止较近', tone: 'primary', items: secSoon },
     { key: 'week', title: '本周', badge: '本周末前', tone: 'tertiary', items: secWeek },
     { key: 'seven', title: '近七天', badge: '今起7日内', tone: 'outline', items: secSeven },
     { key: 'nodate', title: '无截止日期', badge: '可选', tone: 'outline', items: secNodate },
-  ], assignedToday: buildAssignedTodayItems(rows, todayYmd, taskTitleById, projectNameById) };
+  );
+
+  return { sections, assignedToday: buildAssignedTodayItems(rows, todayYmd, taskTitleById, projectNameById) };
 }
 
 function buildAssignedTodayItems(
@@ -626,7 +708,7 @@ export default function AddFrogScreen() {
             <View style={[styles.section, { opacity: 0.85 }]}>
               <Text style={[styles.sectionTitle, { color: theme.text }]}>暂无可选青蛙</Text>
               <Text style={[styles.itemSubtitle, { color: theme.textSecondary, marginTop: 8 }]}>
-                可选范围：今日（含已逾期）、今起三天内、本周日内、再往后至「今起第7天」内的任务，或未设置截止日期的任务。请先在任务中设置截止时间，或稍后再试。
+                可选范围：已过期任务、今日到期/时段内、今起三天内、本周日内、再往后至「今起第7天」内的任务，或未设置截止日期的任务。请先在任务中设置截止时间，或稍后再试。
               </Text>
             </View>
           ) : null}
@@ -645,11 +727,19 @@ export default function AddFrogScreen() {
               <View key={sec.key} style={styles.section}>
                 <View style={styles.sectionHeader}>
                   <View style={styles.sectionHeaderLeft}>
-                    <View style={[styles.sectionBar, { backgroundColor: secColor }]} />
+                    <View
+                      style={[
+                        styles.sectionBar,
+                        { backgroundColor: sec.emphasize ? error : secColor },
+                        sec.emphasize && { height: 30 },
+                      ]}
+                    />
                     <Text
                       style={[
                         styles.sectionTitle,
-                        { color: sec.tone === 'outline' && sec.key !== 'nodate' ? theme.textSecondary : theme.text },
+                        sec.emphasize
+                          ? { color: error, fontWeight: '900' }
+                          : { color: sec.tone === 'outline' && sec.key !== 'nodate' ? theme.textSecondary : theme.text },
                       ]}>
                       {sec.title}
                     </Text>
@@ -667,8 +757,10 @@ export default function AddFrogScreen() {
                         <View style={styles.itemText}>
                           <Text style={[styles.itemTitle, { color: theme.textSecondary }]}>暂无任务</Text>
                           <Text style={[styles.itemSubtitle, { color: theme.textSecondary }]}>
-                            {sec.key === 'today'
-                              ? '没有今日或已逾期的待办'
+                            {sec.key === 'expired'
+                              ? '没有已过期的待办'
+                              : sec.key === 'today'
+                              ? '没有今日到期或处于时段内的待办'
                               : sec.key === 'soon'
                                 ? '没有截止日在近三天内的待办'
                                 : sec.key === 'week'

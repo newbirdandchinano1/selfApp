@@ -5,6 +5,7 @@ import {
   setSchedulePickerResult,
   type SchedulePickerResult,
 } from '@/lib/schedule-picker-bridge';
+import { TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -14,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 type TabMode = 'date' | 'time';
 type TimeRangeKey = '本周' | '下周' | '本月' | '下月' | '未来半年';
-type ReminderOption = '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+type ReminderOption = TaskReminderOption;
 type RepeatOption = '不重复' | '每天' | '每周' | '每月' | '每年';
 type SettingPickerType = 'reminder' | 'repeat' | 'timeStart' | 'timeEnd' | null;
 type SettingModalStage = 'options' | 'repeatDetail';
@@ -52,7 +53,7 @@ const lunarLabels = ['十五', '十六', '十七', '十八', '清明', '廿十',
 const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
 const MONTH_PAGE_SPAN = 481;
 const MONTH_PAGE_CENTER_INDEX = Math.floor(MONTH_PAGE_SPAN / 2);
-const REMINDER_OPTIONS: ReminderOption[] = ['不提前', '提前1天', '提前2天', '提前3天', '提前7天'];
+const REMINDER_OPTIONS: ReminderOption[] = TASK_REMINDER_OPTIONS;
 const REPEAT_OPTIONS: RepeatOption[] = ['不重复', '每天', '每周', '每月', '每年'];
 const WEEKDAY_OPTIONS = [
   { label: '周一', value: 1 },
@@ -321,6 +322,7 @@ export default function SchedulePickerScreen() {
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime);
   const [reminderTimePickerVisible, setReminderTimePickerVisible] = React.useState(false);
   const [reminderTimeDraft, setReminderTimeDraft] = React.useState<Date>(() => defaultReminderTime);
+  const reminderTimeUserSetRef = React.useRef(false);
   const [repeatOption, setRepeatOption] = React.useState<RepeatOption>('不重复');
   const [settingModalStage, setSettingModalStage] = React.useState<SettingModalStage>('options');
   const [weeklyDays, setWeeklyDays] = React.useState<number[]>([1]);
@@ -584,6 +586,7 @@ export default function SchedulePickerScreen() {
     setTimePickerVisible(false);
     setSettingPickerType(null);
     setReminderOption('不提前');
+    reminderTimeUserSetRef.current = false;
     setReminderTime(new Date(defaultReminderTime));
     setReminderTimeDraft(new Date(defaultReminderTime));
     setReminderTimePickerVisible(false);
@@ -628,7 +631,7 @@ export default function SchedulePickerScreen() {
       allDay: repeatLocksSchedule ? true : allDay,
       hasExactTime: repeatLocksSchedule ? false : hasExactTime,
       reminderOption,
-      ...(reminderOption !== '不提前'
+      ...(reminderOption !== '不提前' && reminderTimeUserSetRef.current
         ? { reminderHour: reminderTime.getHours(), reminderMinute: reminderTime.getMinutes() }
         : {}),
       repeatOption,
@@ -857,6 +860,9 @@ export default function SchedulePickerScreen() {
         t.setHours(parsed.reminderHour, parsed.reminderMinute, 0, 0);
         setReminderTime(t);
         setReminderTimeDraft(t);
+        reminderTimeUserSetRef.current = true;
+      } else {
+        reminderTimeUserSetRef.current = false;
       }
       const selectedRepeat = parsed.repeatOption;
       if (selectedRepeat && REPEAT_OPTIONS.includes(selectedRepeat)) {
@@ -1437,6 +1443,7 @@ export default function SchedulePickerScreen() {
                   const normalized = new Date(reminderTimeDraft);
                   normalized.setSeconds(0, 0);
                   setReminderTime(normalized);
+                  reminderTimeUserSetRef.current = true;
                   setReminderTimePickerVisible(false);
                 }}
                 style={[styles.pickerBtn, { backgroundColor: colors.primary }]}

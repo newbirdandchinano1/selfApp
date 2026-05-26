@@ -28,7 +28,7 @@ export function buildWishItemAiSummaryText(input: WishItemAiSummaryInput): strin
   const lines = [
     `好物名称：${name}`,
     `预估价格（元）：${price}`,
-    `欲望等级：${input.desire_level}/5（5 为最强）`,
+    `心动等级：${input.desire_level}/5（5 为最强）`,
     `类别：${cat}`,
   ];
   const reason = input.reason?.trim().replace(/\s+/g, ' ');

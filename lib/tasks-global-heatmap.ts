@@ -62,3 +62,39 @@ export function heatmapGridDayRange(numWeeks: number, logicalTodayYmd?: string):
   gridStart.setDate(gridStart.getDate() - (numWeeks - 1) * 7);
   return { startYmd: ymdFromDate(gridStart), endYmd: todayYmd };
 }
+
+/** 按自然月统计有效日内的日均完成次数（有效日 = 热力图范围内且 ≤ 逻辑今日） */
+export function computeMonthlyAverageMap(
+  validDayYmds: string[],
+  countByYmd: Map<string, number>,
+): Map<string, number> {
+  const totals = new Map<string, { sum: number; days: number }>();
+  for (const ymd of validDayYmds) {
+    const monthKey = ymd.slice(0, 7);
+    const prev = totals.get(monthKey) ?? { sum: 0, days: 0 };
+    prev.sum += countByYmd.get(ymd) ?? 0;
+    prev.days += 1;
+    totals.set(monthKey, prev);
+  }
+  const avgMap = new Map<string, number>();
+  for (const [monthKey, { sum, days }] of totals) {
+    avgMap.set(monthKey, days > 0 ? sum / days : 0);
+  }
+  return avgMap;
+}
+
+/** 将当日完成数相对当月日均映射为 0–4 色阶 */
+export function heatmapLevelFromMonthlyAverage(
+  count: number,
+  monthKey: string,
+  monthAvgMap: Map<string, number>,
+): number {
+  if (count <= 0) return 0;
+  const avg = monthAvgMap.get(monthKey) ?? 0;
+  if (avg <= 0) return Math.min(4, count);
+  const ratio = count / avg;
+  if (ratio <= 0.5) return 1;
+  if (ratio <= 1) return 2;
+  if (ratio <= 1.5) return 3;
+  return 4;
+}

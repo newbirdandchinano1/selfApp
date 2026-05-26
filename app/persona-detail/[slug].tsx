@@ -87,7 +87,7 @@ const FALLBACK_PLAN_BULLETS = [
 
 const FALLBACK_SAVINGS_MILESTONES = [
   '应急垫：优先于非必要支出',
-  '心愿单：与欲望清单联动节流',
+  '心愿单：与存钱计划联动节流',
   '定投节律：固定扣款降低决策成本',
 ];
 
@@ -95,7 +95,7 @@ const FALLBACK_SAVINGS_BULLETS = [
   '先看近一周支出结构：标出 1～2 笔最大支出，区分必要、改善与冲动，再决定下周是否设冷静期。',
   '储蓄入账稳定时，把「固定扣款日、先存后花」写下来，复制成功节律比追求单次大额更重要。',
   '支出偏高而储蓄偏少，常见原因是大额集中或分类变化，不必简单归因于自制力。',
-  '心愿清单更新频率反映你是否把欲望转化为计划；可与存钱目标联动做延迟满足练习。',
+  '心愿单更新频率反映你是否把心动转化为计划；可与存钱目标联动做延迟满足练习。',
 ];
 
 const FALLBACK_AI_INSIGHT_BULLETS = [
@@ -616,7 +616,7 @@ export default function PersonaDetailScreen() {
               </View>
             </SectionCard>
             <RelLink label="储蓄计划" onPress={goSavings} primary={tertiary} />
-            <RelLink label="欲望清单" onPress={goWishList} primary={primary} />
+            <RelLink label="心愿单" onPress={goWishList} primary={primary} />
           </>
         );
       }

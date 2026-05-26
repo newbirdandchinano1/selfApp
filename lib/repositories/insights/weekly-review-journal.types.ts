@@ -21,13 +21,11 @@ export type WeeklyReviewJournalRow = {
   extra_data: string | null;
 };
 
+import type { ReviewFieldValues } from './review-journal-body';
+
 export type UpsertWeeklyReviewJournalInput = {
   week_start_ymd: string;
-  section_summary: string;
-  section_plans: string;
-  section_reflect: string;
-  section_learnings: string;
-  section_next_week: string;
+  fields: ReviewFieldValues;
   execution_score: number;
   ai_coaching?: string | null;
   adjust_tasks?: boolean;

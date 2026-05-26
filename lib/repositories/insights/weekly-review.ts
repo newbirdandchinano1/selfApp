@@ -212,7 +212,7 @@ export function buildWeeklyReviewNarrative(m: WeeklyReviewMetrics): string {
   }
 
   if (m.wishUpdates > 0) {
-    sentences.push(`欲望清单有 ${m.wishUpdates} 条更新，愿望也在被认真对待。`);
+    sentences.push(`心愿单有 ${m.wishUpdates} 条更新，愿望也在被认真对待。`);
   }
 
   if (sentences.length === 0) {

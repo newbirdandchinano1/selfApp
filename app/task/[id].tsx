@@ -1,7 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerResult } from '@/lib/schedule-picker-bridge';
-import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import { getTaskById, getTaskTreeByRootTaskId, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
@@ -13,7 +13,7 @@ import React from 'react';
 import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-type ReminderOption = '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+type ReminderOption = TaskReminderOption;
 type RepeatOption = '不重复' | '每天' | '每周' | '每月' | '每年';
 type SettingPickerType = 'reminder' | 'repeat' | null;
 type TaskScheduleMeta = Pick<
@@ -64,6 +64,7 @@ function formatTaskStatus(status: string) {
   if (status === 'done') return '已完成';
   if (status === 'blocked') return '受阻';
   if (status === 'cancelled') return '已取消';
+  if (status === 'shelved') return '暂时搁置';
   return '待办';
 }
 
@@ -137,7 +138,7 @@ function buildScheduleDisplayLabel(schedule: TaskScheduleMeta | null | undefined
   return formatDateTimeCN(dueDate);
 }
 
-const REMINDER_OPTIONS: ReminderOption[] = ['不提前', '提前1天', '提前2天', '提前3天', '提前7天'];
+const REMINDER_OPTIONS: ReminderOption[] = TASK_REMINDER_OPTIONS;
 const REPEAT_OPTIONS: RepeatOption[] = ['不重复', '每天', '每周', '每月', '每年'];
 const WEEKDAY_OPTIONS = [
   { label: '周一', value: 1 },
@@ -399,14 +400,20 @@ export default function TaskDetailScreen() {
       setDueDate(row.due_date ?? null);
       setExtraData(row.extra_data ?? null);
       const parsed = parseTaskMeta(row.extra_data ?? null);
-      const reminder = (typeof parsed.reminder === 'string' ? parsed.reminder : '') as ReminderOption | '';
-      const scheduleReminder = parsed.schedule?.reminderOption;
+      const reminder = typeof parsed.reminder === 'string' ? parsed.reminder.trim() : '';
+      const scheduleReminder = parsed.schedule?.reminderOption?.trim();
+      const reminderFromText = (() => {
+        if (!reminder) return null;
+        if (REMINDER_OPTIONS.includes(reminder as ReminderOption)) return reminder as ReminderOption;
+        if (reminder === '当天' || reminder.startsWith('当天 ')) return '当天' as ReminderOption;
+        const m = /^(提前\d+天)/.exec(reminder);
+        if (m && REMINDER_OPTIONS.includes(m[1] as ReminderOption)) return m[1] as ReminderOption;
+        return null;
+      })();
       setReminderOption(
         scheduleReminder && REMINDER_OPTIONS.includes(scheduleReminder as ReminderOption)
           ? (scheduleReminder as ReminderOption)
-          : reminder && REMINDER_OPTIONS.includes(reminder as ReminderOption)
-            ? (reminder as ReminderOption)
-            : '不提前',
+          : reminderFromText ?? '不提前',
       );
       const repeatSchedule = parseTaskRepeatSchedule(row.extra_data ?? null);
       if (repeatSchedule) {
@@ -710,7 +717,16 @@ export default function TaskDetailScreen() {
                       if (settingPickerType === 'reminder') {
                         const next = option as ReminderOption;
                         setReminderOption(next);
-                        const nextMeta: TaskMetaExtra = { ...currentMeta, reminder: next === '不提前' ? '' : next };
+                        const schedule = { ...(currentMeta.schedule ?? {}), reminderOption: next };
+                        if (next === '不提前') {
+                          delete schedule.reminderHour;
+                          delete schedule.reminderMinute;
+                        }
+                        const nextMeta: TaskMetaExtra = {
+                          ...currentMeta,
+                          reminder: formatTaskReminderLabel(schedule),
+                          schedule,
+                        };
                         setExtraData(JSON.stringify(nextMeta));
                       } else {
                         const next = option as RepeatOption;

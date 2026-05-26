@@ -3,7 +3,7 @@ import { enableGithubSqliteMutationTrackingOnDatabase } from '@/lib/github-sqlit
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 26;
+export const DB_VERSION = 27;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -451,6 +451,34 @@ export async function initDatabase() {
       extra_data TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS review_dimensions (
+      id TEXT PRIMARY KEY NOT NULL,
+      scope TEXT NOT NULL CHECK (scope IN ('daily', 'weekly')),
+      title TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS review_columns (
+      id TEXT PRIMARY KEY NOT NULL,
+      dimension_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      placeholder TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      version INTEGER NOT NULL DEFAULT 1,
+      extra_data TEXT,
+      FOREIGN KEY (dimension_id) REFERENCES review_dimensions(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS weekly_review_journal (
       id TEXT PRIMARY KEY NOT NULL,
       week_start_ymd TEXT NOT NULL UNIQUE,
@@ -757,6 +785,14 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_earned_rewards_redeemed_at ON earned_rewards(redeemed_at);
     CREATE INDEX IF NOT EXISTS idx_earned_rewards_updated_at ON earned_rewards(updated_at);
 
+    CREATE INDEX IF NOT EXISTS idx_review_dimensions_scope ON review_dimensions(scope);
+    CREATE INDEX IF NOT EXISTS idx_review_dimensions_sort_order ON review_dimensions(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_review_dimensions_updated_at ON review_dimensions(updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_review_columns_dimension_id ON review_columns(dimension_id);
+    CREATE INDEX IF NOT EXISTS idx_review_columns_sort_order ON review_columns(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_review_columns_updated_at ON review_columns(updated_at);
+
     CREATE INDEX IF NOT EXISTS idx_weekly_review_journal_week ON weekly_review_journal(week_start_ymd);
     CREATE INDEX IF NOT EXISTS idx_weekly_review_journal_updated ON weekly_review_journal(updated_at);
 
@@ -887,6 +923,9 @@ export async function initDatabase() {
   const { migrateRecipesStorageToSqliteIfNeeded } = await import('@/lib/recipes');
   await migrateRecipesStorageToSqliteIfNeeded(db);
 
+  const { ensureReviewTemplateDefaults } = await import('@/lib/repositories/insights/review-template');
+  await ensureReviewTemplateDefaults();
+
   enableGithubSqliteMutationTrackingOnDatabase(db as never);
 
   return db;
@@ -922,6 +961,10 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS recipe_categories;
     DROP TABLE IF EXISTS earned_rewards;
     DROP TABLE IF EXISTS wish_items;
+    DROP TABLE IF EXISTS review_columns;
+    DROP TABLE IF EXISTS review_dimensions;
+    DROP TABLE IF EXISTS weekly_review_journal;
+    DROP TABLE IF EXISTS daily_review_journal;
     DROP TABLE IF EXISTS goal_dimensions;
     DROP TABLE IF EXISTS visions;
     DROP TABLE IF EXISTS users;

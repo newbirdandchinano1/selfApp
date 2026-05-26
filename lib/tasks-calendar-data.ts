@@ -136,6 +136,7 @@ function isStandaloneTodoScheduleExpired(task: TaskRow, logicalViewYmd: string):
 }
 
 function standaloneTodoPassesRepeatDayFilter(task: TaskRow, logicalViewYmd: string): boolean {
+  if (task.status === 'shelved') return true;
   const schedule = parseTaskRepeatSchedule(task.extra_data);
   if (!schedule) return true;
   if (isTaskRepeatDueOnLogicalDay(logicalViewYmd, schedule)) return true;
@@ -150,6 +151,7 @@ function standaloneTodoPassesRepeatDayFilter(task: TaskRow, logicalViewYmd: stri
 }
 
 function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalViewYmd: string): boolean {
+  if (task.status === 'shelved') return true;
   if (parseTaskRepeatSchedule(task.extra_data)) return true;
   const schedule = parseProjectSchedule(task.extra_data);
   if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {

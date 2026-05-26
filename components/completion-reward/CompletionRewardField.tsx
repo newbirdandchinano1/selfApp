@@ -109,7 +109,7 @@ export function CompletionRewardField({
 
   const modeOptions: Array<{ key: RewardMode; label: string }> = [
     { key: 'none', label: '无' },
-    { key: 'wish', label: '欲望清单' },
+    { key: 'wish', label: '心愿单' },
     { key: 'custom', label: '自定义' },
   ];
 
@@ -151,7 +151,7 @@ export function CompletionRewardField({
             <MaterialIcons name="card-giftcard" size={18} color={primary} />
             <View style={{ flex: 1, gap: 2 }}>
               <Text style={[styles.selectValue, { color: textColor }]} numberOfLines={2}>
-                {value.kind === 'wish' ? summary : '点击选择欲望清单物品'}
+                {value.kind === 'wish' ? summary : '点击选择心愿好物'}
               </Text>
               <Text style={[styles.selectHint, { color: outline }]}>完成时可获得对应奖励</Text>
             </View>
@@ -186,11 +186,11 @@ export function CompletionRewardField({
       <Modal transparent visible={wishModalVisible} animationType="fade" onRequestClose={() => setWishModalVisible(false)}>
         <Pressable style={styles.modalOverlay} onPress={() => setWishModalVisible(false)}>
           <Pressable onPress={() => {}} style={[styles.modalCard, { backgroundColor: surfaceLowest, borderColor: placeholderColor }]}>
-            <Text style={[styles.modalTitle, { color: textColor }]}>选择欲望清单物品</Text>
+            <Text style={[styles.modalTitle, { color: textColor }]}>选择心愿好物</Text>
             {wishLoading ? (
               <ActivityIndicator color={primary} style={{ marginVertical: 24 }} />
             ) : wishItems.length === 0 ? (
-              <Text style={[styles.emptyText, { color: outline }]}>欲望清单暂无物品，请先在欲望清单中添加。</Text>
+              <Text style={[styles.emptyText, { color: outline }]}>心愿单暂无好物，请先在心愿单中添加。</Text>
             ) : (
               <ScrollView style={styles.modalScroll} keyboardShouldPersistTaps="handled">
                 {wishItems.map((item) => {

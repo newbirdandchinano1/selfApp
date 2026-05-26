@@ -15,8 +15,10 @@ const OPEN_THRESHOLD_RATIO = 0.32;
 const OPEN_VELOCITY = 520;
 /** 抽屉右缘拖拽条宽度，便于左滑收起 */
 const DRAWER_RIGHT_DRAG_WIDTH = 28;
-/** 仅在此宽度内（屏幕左缘）起手向右滑才打开抽屉 */
-const LEFT_OPEN_EDGE_WIDTH = Math.min(48, Math.max(32, Math.round(Dimensions.get('window').width * 0.12)));
+/** 仅在此宽度内（屏幕左缘）起手向右滑才打开抽屉；尽量窄以免挡住页面左侧按钮 */
+const LEFT_OPEN_EDGE_WIDTH = 16;
+const OPEN_HORIZONTAL_ACTIVATE_PX = 16;
+const OPEN_VERTICAL_FAIL_PX = 10;
 
 type Props = {
   children: React.ReactNode;
@@ -32,6 +34,7 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
   const { isOpen, initialSection, open, close } = useSettingsDrawer();
+  const screenHeight = Dimensions.get('window').height;
 
   const closedOffset = -drawerWidth;
   const translateX = useSharedValue(closedOffset);
@@ -63,30 +66,74 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
     backdropOpacity.value = 1 + x / drawerWidth;
   };
 
-  /** 向右滑：左侧设置面板跟手滑入（垂直滑动优先，避免与列表滚动冲突） */
-  const panToOpen = Gesture.Pan()
-    .enabled(!isOpen)
-    .activeOffsetX([32, 999])
-    .failOffsetY([-10, 10])
-    .onUpdate(e => {
-      'worklet';
-      if (e.translationX > 0) {
-        translateX.value = Math.min(0, closedOffset + e.translationX);
-        setBackdropFromTranslate(translateX.value);
-      }
-    })
-    .onEnd(e => {
-      'worklet';
-      const shouldOpen = e.translationX > openThreshold || e.velocityX > OPEN_VELOCITY;
-      if (shouldOpen) {
-        translateX.value = 0;
-        backdropOpacity.value = 1;
-        runOnJS(finishOpen)();
-      } else {
-        translateX.value = closedOffset;
-        backdropOpacity.value = 0;
-      }
-    });
+  /** 向右滑：左侧设置面板跟手滑入；手动激活，非左缘点击直接 fail，不挡左侧按钮 */
+  const panToOpen = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(!isOpen)
+        .manualActivation(true)
+        .onTouchesDown((e, state) => {
+          'worklet';
+          const t = e.allTouches[0];
+          if (!t) {
+            state.fail();
+            return;
+          }
+          if (t.absoluteX > LEFT_OPEN_EDGE_WIDTH) {
+            state.fail();
+            return;
+          }
+          if (tabBarHeight > 0 && t.absoluteY >= screenHeight - tabBarHeight) {
+            state.fail();
+            return;
+          }
+          touchStartX.value = t.absoluteX;
+          touchStartY.value = t.absoluteY;
+        })
+        .onTouchesMove((e, state) => {
+          'worklet';
+          const t = e.allTouches[0];
+          if (!t) return;
+          const dx = t.absoluteX - touchStartX.value;
+          const dy = t.absoluteY - touchStartY.value;
+          if (dx > OPEN_HORIZONTAL_ACTIVATE_PX && Math.abs(dx) > Math.abs(dy) * 1.1) {
+            state.activate();
+          } else if (Math.abs(dy) > OPEN_VERTICAL_FAIL_PX && Math.abs(dy) >= Math.abs(dx)) {
+            state.fail();
+          }
+        })
+        .onUpdate(e => {
+          'worklet';
+          if (e.translationX > 0) {
+            translateX.value = Math.min(0, closedOffset + e.translationX);
+            setBackdropFromTranslate(translateX.value);
+          }
+        })
+        .onEnd(e => {
+          'worklet';
+          const shouldOpen = e.translationX > openThreshold || e.velocityX > OPEN_VELOCITY;
+          if (shouldOpen) {
+            translateX.value = 0;
+            backdropOpacity.value = 1;
+            runOnJS(finishOpen)();
+          } else {
+            translateX.value = closedOffset;
+            backdropOpacity.value = 0;
+          }
+        }),
+    [
+      isOpen,
+      tabBarHeight,
+      screenHeight,
+      closedOffset,
+      openThreshold,
+      finishOpen,
+      translateX,
+      backdropOpacity,
+      touchStartX,
+      touchStartY,
+    ],
+  );
 
   const handleBackdropPress = useCallback(() => {
     close();
@@ -140,22 +187,11 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
 
   return (
     <View style={styles.host}>
-      <View style={styles.content} pointerEvents={isOpen ? 'none' : 'auto'}>
-        {children}
-      </View>
-
-      {!isOpen ? (
-        <GestureDetector gesture={panToOpen}>
-          <View
-            style={[
-              styles.leftOpenEdge,
-              { width: LEFT_OPEN_EDGE_WIDTH, bottom: Math.max(0, tabBarHeight) },
-            ]}
-            pointerEvents="box-only"
-            accessibilityLabel="打开全局设置"
-          />
-        </GestureDetector>
-      ) : null}
+      <GestureDetector gesture={panToOpen}>
+        <View style={styles.content} pointerEvents={isOpen ? 'none' : 'auto'} accessibilityLabel="打开全局设置">
+          {children}
+        </View>
+      </GestureDetector>
 
       {/* 跟手滑动时的半透明层（不拦截点击） */}
       {!isOpen ? <Animated.View pointerEvents="none" style={[styles.backdrop, backdropStyle]} /> : null}
@@ -216,13 +252,6 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
 const styles = StyleSheet.create({
   host: { flex: 1 },
   content: { flex: 1 },
-  leftOpenEdge: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    zIndex: 25,
-  },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.42)',

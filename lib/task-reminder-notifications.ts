@@ -2,6 +2,7 @@ import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
   buildTaskReminderFireAt,
   isTaskReminderConfigured,
+  parseTaskReminderAdvanceDays,
 } from '@/lib/task-reminder-schedule';
 import { Platform } from 'react-native';
 
@@ -50,19 +51,12 @@ function getAnchorYmd(task: TaskRow, schedule: TaskExtraSchedule | null | undefi
   return extractYmd(task.due_date);
 }
 
-function parseAdvanceDays(reminderOption: string): number {
-  const t = reminderOption.trim();
-  if (!t || t === '不提前') return 0;
-  const m = /^提前(\d+)天/.exec(t);
-  if (m) return Math.min(30, Math.max(0, parseInt(m[1], 10) || 0));
-  return 0;
-}
-
 function resolveReminderOption(extra: ReturnType<typeof parseTaskExtra>): string {
   const fromSchedule = extra.schedule?.reminderOption?.trim();
   if (fromSchedule) return fromSchedule;
   const fromReminder = extra.reminder?.trim();
   if (fromReminder) {
+    if (fromReminder === '当天' || fromReminder.startsWith('当天 ')) return '当天';
     const m = /^(提前\d+天)/.exec(fromReminder);
     if (m) return m[1];
   }
@@ -91,7 +85,7 @@ async function cancelAllTaskReminderNotifications() {
 }
 
 /**
- * 根据当前任务列表重新登记本地通知：未完成、有截止日且用户配置了提前提醒的任务各最多一条。
+ * 根据当前任务列表重新登记本地通知：未完成、有截止日且用户配置了提醒（当天或提前）的任务各最多一条。
  */
 export async function syncScheduledTaskReminders(tasks: TaskRow[]): Promise<void> {
   if (Platform.OS === 'web') return;
@@ -122,7 +116,7 @@ export async function syncScheduledTaskReminders(tasks: TaskRow[]): Promise<void
   const SchedulableTriggerInputTypes = Notifications.SchedulableTriggerInputTypes;
 
   for (const task of tasks) {
-    if (task.status === 'done' || task.status === 'cancelled') continue;
+    if (task.status === 'done' || task.status === 'cancelled' || task.status === 'shelved') continue;
 
     const extra = parseTaskExtra(task.extra_data);
     const reminderOpt = resolveReminderOption(extra);
@@ -130,7 +124,7 @@ export async function syncScheduledTaskReminders(tasks: TaskRow[]): Promise<void
       continue;
     }
 
-    const advance = parseAdvanceDays(reminderOpt);
+    const advance = parseTaskReminderAdvanceDays(reminderOpt);
     const ymd = getAnchorYmd(task, extra.schedule);
     if (!ymd) continue;
 

@@ -2084,10 +2084,7 @@ export default function HealthScreen() {
             showsHorizontalScrollIndicator={false}
             nestedScrollEnabled
             directionalLockEnabled
-            contentContainerStyle={[
-              styles.quickAddScrollContent,
-              quickAddItems.length <= 4 ? styles.quickAddScrollContentCentered : null,
-            ]}
+            contentContainerStyle={styles.quickAddScrollContent}
             style={styles.quickAddScroll}
           >
             {quickAddItems.map((item, index) => {
@@ -2958,10 +2955,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: Spacing.md,
     paddingHorizontal: Spacing['5xl'],
-  },
-  quickAddScrollContentCentered: {
-    flexGrow: 1,
-    justifyContent: 'center',
   },
   quickAddCard: {
     borderRadius: Radius['2xl'],

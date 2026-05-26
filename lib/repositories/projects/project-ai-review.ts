@@ -29,6 +29,7 @@ const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   done: '已完成',
   blocked: '阻塞',
   cancelled: '已取消',
+  shelved: '暂时搁置',
 };
 
 const TASK_PRIORITY_LABEL: Record<number, string> = {

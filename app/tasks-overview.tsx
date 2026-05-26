@@ -70,6 +70,7 @@ function formatTaskStatus(status: string) {
   if (status === 'done') return '已完成';
   if (status === 'blocked') return '受阻';
   if (status === 'cancelled') return '已取消';
+  if (status === 'shelved') return '暂时搁置';
   return '待办';
 }
 

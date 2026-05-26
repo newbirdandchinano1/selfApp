@@ -1,6 +1,8 @@
 /** 日程选择器回传：用模块内 pending 传递，避免 globalThis 在路由切换时丢失 */
 
-export type SchedulePickerReminderOption = '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+import type { TaskReminderOption } from '@/lib/task-reminder-schedule';
+
+export type SchedulePickerReminderOption = TaskReminderOption;
 export type SchedulePickerRepeatOption = '不重复' | '每天' | '每周' | '每月' | '每年';
 
 export type SchedulePickerResult = {

@@ -1,27 +1,55 @@
+import { WishSavingsCoreForm } from '@/components/wish-savings/wish-savings-core-form';
+import {
+  defaultWishExtrasFormValue,
+  wishExtrasFromRow,
+  wishExtrasToSavePayload,
+  WishSavingsWishExtrasFields,
+  type WishExtrasFormValue,
+} from '@/components/wish-savings/wish-savings-wish-extras-fields';
 import { AppCard, ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import {
+  addCalendarDays,
+  formatChineseDate,
+  parseIsoDateLocal,
+  toIsoDate,
+  validateWishSavingsForm,
+} from '@/lib/wish-savings-form-utils';
+import { consumeSavingsPlanLaunchIntent } from '@/lib/savings-plan-launch-intent';
+import {
+  createSavingsPlanWithLinkedWish,
+  deleteLinkedWishForPlan,
+  loadWishItemsByPlanId,
+  repairWishSavingsLinks,
+  updateSavingsPlanWithLinkedWish,
+} from '@/lib/wish-savings-link';
+import {
+  clampWishDesireLevel,
+  formatWishCategoryLabel,
+  formatWishDesireLevelShort,
+  wishReasonPreviewOrNull,
+} from '@/lib/wish-list-present';
+import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
+import {
+  loadSavingsOverviewSettings,
+  saveSavingsOverviewSettings,
+  type SavingsOverviewSettings,
+} from '@/lib/savings-overview-settings';
 import {
   createSavingsPlanDeposit,
   getDepositSumsByActivePlanId,
   getTotalDepositsForActivePlans,
 } from '@/lib/repositories/savings-plan/savings-plan-deposit';
 import {
-  createSavingsPlan,
   deleteSavingsPlan,
   getSavingsPlans,
   SAVINGS_PLAN_MAX_TARGET_AMOUNT,
-  updateSavingsPlan,
 } from '@/lib/repositories/savings-plan/savings-plan';
-import type {
-  CreateSavingsPlanInput,
-  SavingsPlanRow,
-  UpdateSavingsPlanInput,
-} from '@/lib/repositories/savings-plan/savings-plan.types';
+import type { SavingsPlanRow } from '@/lib/repositories/savings-plan/savings-plan.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import type { DimensionValue } from 'react-native';
@@ -42,40 +70,6 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
 import Svg, { Circle, Path } from 'react-native-svg';
-
-function formatChineseDate(d: Date) {
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
-}
-
-function toIsoDate(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-/** 本地日历解析 YYYY-MM-DD，避免 UTC 偏移导致日期错一天 */
-function parseIsoDateLocal(iso: string) {
-  const parts = iso.split('-').map((x) => parseInt(x, 10));
-  const y = parts[0];
-  const m = parts[1];
-  const d = parts[2];
-  if (!y || !m || !d) return new Date();
-  return new Date(y, m - 1, d);
-}
-
-function addCalendarDays(d: Date, days: number) {
-  const x = new Date(d.getTime());
-  x.setDate(x.getDate() + days);
-  return x;
-}
-
-function daysBetweenIso(startIso: string, endIso: string) {
-  const s = parseIsoDateLocal(startIso);
-  const e = parseIsoDateLocal(endIso);
-  const ms = e.getTime() - s.getTime();
-  return Math.max(0, Math.round(ms / 86400000));
-}
 
 /** 表内存 ISO 日期（YYYY-MM-DD）展示为「YYYY年M月D日」；omitYearIf 与年份一致时省略年（用于同年区间后半段） */
 function formatIsoDateChinese(iso: string, ctx?: { omitYearIf?: number }) {
@@ -109,6 +103,80 @@ function formatIntAmount(value: number) {
   return Math.round(Math.abs(value)).toLocaleString('zh-CN');
 }
 
+/** 顶部截止时间紧凑展示，避免换行 */
+function formatIsoDateCompact(iso: string) {
+  const parts = iso.split('-').map((x) => parseInt(x, 10));
+  const y = parts[0];
+  const m = parts[1];
+  const d = parts[2];
+  if (!y || !m || !d) return '—';
+  const yearNow = new Date().getFullYear();
+  if (y === yearNow) return `${m}月${d}日`;
+  return `${String(y).slice(2)}年${m}月${d}日`;
+}
+
+function progressPercent(numerator: number, denominator: number) {
+  if (denominator <= 0) return 0;
+  return Math.min(100, Math.round((numerator / denominator) * 100));
+}
+
+type TopOverviewProgressMode = 'total' | 'deposit';
+
+function ProgressStrip({
+  title,
+  hint,
+  percent,
+  trackColor,
+  fillColor,
+  labelColor,
+  onPress,
+  style,
+}: {
+  title: string;
+  hint: string;
+  percent: number;
+  trackColor: string;
+  fillColor: string;
+  labelColor: string;
+  onPress?: () => void;
+  style?: object;
+}) {
+  const body = (
+    <>
+      <View style={styles.progressStripHead}>
+        <Text style={[Typography.caption, { color: labelColor }]}>{title}</Text>
+        <Text style={[Typography.caption, { color: labelColor }]}>{percent}%</Text>
+      </View>
+      <Text style={[Typography.caption, styles.progressStripHint, { color: labelColor }]} numberOfLines={1}>
+        {hint}
+      </Text>
+      <View style={[styles.overallTrack, { backgroundColor: trackColor }]}>
+        <View
+          style={[styles.overallFill, { width: `${percent}%` as DimensionValue, backgroundColor: fillColor }]}
+        />
+      </View>
+      {onPress ? (
+        <Text style={[Typography.caption, styles.progressTapHint, { color: labelColor }]}>点击切换进度视图</Text>
+      ) : null}
+    </>
+  );
+
+  if (!onPress) {
+    return <View style={[styles.progressStrip, style]}>{body}</View>;
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.progressStrip, style, pressed && { opacity: 0.92 }]}
+      accessibilityRole="button"
+      accessibilityLabel="切换进度条视图"
+      accessibilityHint="在总进度与存款进度之间切换">
+      {body}
+    </Pressable>
+  );
+}
+
 type PlanItem = {
   id: string;
   title: string;
@@ -133,6 +201,28 @@ function savingsPlanRowToPlanItem(row: SavingsPlanRow, savedTotal: number): Plan
   };
 }
 
+function OverviewMetricColumn({
+  label,
+  showLeftBorder,
+  borderColor,
+  children,
+}: {
+  label: string;
+  showLeftBorder?: boolean;
+  borderColor: string;
+  children: React.ReactNode;
+}) {
+  const { colors } = useAppTheme();
+  return (
+    <View style={[styles.overviewCol, showLeftBorder && { borderLeftWidth: 1, borderLeftColor: borderColor }]}>
+      <Text style={[Typography.caption, styles.overviewLabel, { color: colors.textSecondary }]} numberOfLines={1}>
+        {label}
+      </Text>
+      <View style={[styles.overviewValueWrap, { minHeight: 28 }]}>{children}</View>
+    </View>
+  );
+}
+
 function AmountColumn({
   label,
   amount,
@@ -146,14 +236,241 @@ function AmountColumn({
   showLeftBorder?: boolean;
   borderColor: string;
 }) {
-  const { colors } = useAppTheme();
   return (
-    <View style={[styles.overviewCol, showLeftBorder && { borderLeftWidth: 1, borderLeftColor: borderColor }]}>
-      <Text style={[Typography.caption, { color: colors.textSecondary }]}>{label}</Text>
+    <OverviewMetricColumn label={label} showLeftBorder={showLeftBorder} borderColor={borderColor}>
       <View style={styles.amountBaseline}>
         <Text style={[styles.currencySymbol, { color }]}>¥</Text>
-        <Text style={[Typography.h3, { color }]}>{formatIntAmount(amount)}</Text>
+        <Text style={[Typography.h3, styles.overviewAmount, { color }]} numberOfLines={1}>
+          {formatIntAmount(amount)}
+        </Text>
       </View>
+    </OverviewMetricColumn>
+  );
+}
+
+function DeadlineColumn({
+  label,
+  dateLabel,
+  color,
+  showLeftBorder,
+  borderColor,
+}: {
+  label: string;
+  dateLabel: string;
+  color: string;
+  showLeftBorder?: boolean;
+  borderColor: string;
+}) {
+  return (
+    <OverviewMetricColumn label={label} showLeftBorder={showLeftBorder} borderColor={borderColor}>
+      <Text style={[Typography.bodyStrong, styles.deadlineValue, { color }]} numberOfLines={1}>
+        {dateLabel}
+      </Text>
+    </OverviewMetricColumn>
+  );
+}
+
+function OverviewEditSheet({
+  visible,
+  onClose,
+  insetsBottom,
+  savedAmount,
+  targetAmount,
+  endDateIso,
+  onSave,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  insetsBottom: number;
+  savedAmount: number;
+  targetAmount: number;
+  endDateIso: string | null;
+  onSave: (payload: { savedAmount: number; targetAmount: number; endDateIso: string }) => Promise<void>;
+}) {
+  const { colors, isDark } = useAppTheme();
+  const [savedText, setSavedText] = React.useState('');
+  const [targetText, setTargetText] = React.useState('');
+  const [endDate, setEndDate] = React.useState(() => new Date());
+  const [showEndDatePicker, setShowEndDatePicker] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!visible) return;
+    setSavedText(String(Math.max(0, Math.round(savedAmount))));
+    setTargetText(String(Math.max(0, Math.round(targetAmount))));
+    setEndDate(endDateIso ? parseIsoDateLocal(endDateIso) : addCalendarDays(new Date(), 90));
+    setShowEndDatePicker(false);
+  }, [visible, savedAmount, targetAmount, endDateIso]);
+
+  const handleEndDateChange = (event: DateTimePickerEvent, date?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowEndDatePicker(false);
+    }
+    if (event.type === 'dismissed') return;
+    if (date) setEndDate(date);
+  };
+
+  const handleConfirm = async () => {
+    const saved = parseInt(savedText.replace(/\D/g, ''), 10) || 0;
+    const target = parseInt(targetText.replace(/\D/g, ''), 10) || 0;
+    if (target > SAVINGS_PLAN_MAX_TARGET_AMOUNT) {
+      Alert.alert('无法保存', `目标存款不得超过 ${SAVINGS_PLAN_MAX_TARGET_AMOUNT.toLocaleString('zh-CN')}。`);
+      return;
+    }
+    if (saved > SAVINGS_PLAN_MAX_TARGET_AMOUNT) {
+      Alert.alert('无法保存', `现有存款不得超过 ${SAVINGS_PLAN_MAX_TARGET_AMOUNT.toLocaleString('zh-CN')}。`);
+      return;
+    }
+    try {
+      await onSave({ savedAmount: saved, targetAmount: target, endDateIso: toIsoDate(endDate) });
+      onClose();
+    } catch (e) {
+      Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后再试');
+    }
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView style={sheetStyles.kav} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={[sheetStyles.overlay, { backgroundColor: colors.overlay }]}>
+          <Pressable
+            style={sheetStyles.backdrop}
+            onPress={() => {
+              Keyboard.dismiss();
+              onClose();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="关闭"
+          />
+          <View
+            style={[
+              sheetStyles.card,
+              { backgroundColor: colors.surface, paddingBottom: Math.max(Spacing['7xl'], insetsBottom + 88) },
+            ]}>
+            <Text style={[Typography.h3, { color: colors.text }]}>编辑总览</Text>
+            <Text style={[Typography.caption, { color: colors.textSecondary, marginTop: Spacing.sm }]}>
+              总览数据独立于下方「我的计划」，修改不会影响各计划条目
+            </Text>
+
+            <View style={[sheetStyles.inputRow, sheetStyles.amountRow, { marginTop: Spacing['3xl'], backgroundColor: colors.input }]}>
+              <Text style={[Typography.body, { color: colors.textSecondary }]}>现有存款</Text>
+              <Text style={[sheetStyles.amountYuan, { color: colors.text }]}>¥</Text>
+              <TextInput
+                style={[sheetStyles.amountInput, { color: colors.text }]}
+                value={savedText}
+                onChangeText={(t) => setSavedText(t.replace(/\D/g, '').slice(0, 8))}
+                placeholder="0"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="number-pad"
+              />
+            </View>
+
+            <View style={[sheetStyles.inputRow, sheetStyles.amountRow, { backgroundColor: colors.input }]}>
+              <Text style={[Typography.body, { color: colors.textSecondary }]}>目标存款</Text>
+              <Text style={[sheetStyles.amountYuan, { color: colors.text }]}>¥</Text>
+              <TextInput
+                style={[sheetStyles.amountInput, { color: colors.text }]}
+                value={targetText}
+                onChangeText={(t) => setTargetText(t.replace(/\D/g, '').slice(0, 8))}
+                placeholder="0"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="number-pad"
+              />
+            </View>
+
+            <Pressable
+              style={({ pressed }) => [
+                sheetStyles.inputRow,
+                sheetStyles.inputRowPress,
+                { backgroundColor: colors.input },
+                pressed && { opacity: 0.92 },
+              ]}
+              onPress={() => {
+                Keyboard.dismiss();
+                setShowEndDatePicker((v) => !v);
+              }}>
+              <Text style={[Typography.body, { color: colors.text }]}>截止时间</Text>
+              <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatChineseDate(endDate)}</Text>
+            </Pressable>
+
+            <Pressable
+              style={[
+                sheetStyles.fab,
+                { backgroundColor: colors.primary, bottom: Math.max(Spacing['5xl'], insetsBottom + Spacing.md) },
+              ]}
+              onPress={() => void handleConfirm()}
+              accessibilityRole="button"
+              accessibilityLabel="保存总览">
+              <MaterialIcons name="check" size={26} color={colors.onPrimary} />
+            </Pressable>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+
+      {visible && showEndDatePicker &&
+        (Platform.OS === 'ios' ? (
+          <View style={[StyleSheet.absoluteFill, { zIndex: 999, elevation: 99 }]} pointerEvents="box-none">
+            <View style={sheetStyles.dateIosOverlay}>
+              <Pressable
+                style={[sheetStyles.dateIosScrim, { backgroundColor: colors.overlay }]}
+                onPress={() => setShowEndDatePicker(false)}
+                accessibilityLabel="关闭日期选择"
+              />
+              <View
+                style={[
+                  sheetStyles.dateIosSheet,
+                  { backgroundColor: colors.surface, paddingBottom: Math.max(Spacing['3xl'], insetsBottom + Spacing.md) },
+                ]}>
+                <View style={[sheetStyles.dateIosHeader, { borderBottomColor: colors.outline }]}>
+                  <Text style={[Typography.title, { color: colors.text }]}>选择截止时间</Text>
+                  <Pressable onPress={() => setShowEndDatePicker(false)} hitSlop={12}>
+                    <Text style={[Typography.title, { color: colors.primary }]}>完成</Text>
+                  </Pressable>
+                </View>
+                <DateTimePicker
+                  value={endDate}
+                  mode="date"
+                  display="spinner"
+                  themeVariant={isDark ? 'dark' : 'light'}
+                  locale="zh_CN"
+                  minimumDate={new Date()}
+                  onChange={handleEndDateChange}
+                />
+              </View>
+            </View>
+          </View>
+        ) : (
+          <DateTimePicker
+            value={endDate}
+            mode="date"
+            display="default"
+            minimumDate={new Date()}
+            onChange={handleEndDateChange}
+          />
+        ))}
+    </Modal>
+  );
+}
+
+function PlanDesireStars({
+  level,
+  activeColor,
+  inactiveColor,
+}: {
+  level: number;
+  activeColor: string;
+  inactiveColor: string;
+}) {
+  const lv = clampWishDesireLevel(level);
+  return (
+    <View style={styles.planDesireStars} accessibilityLabel={`心动等级 ${lv} / 5`}>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <MaterialIcons
+          key={i}
+          name={i <= lv ? 'star' : 'star-border'}
+          size={13}
+          color={i <= lv ? activeColor : inactiveColor}
+        />
+      ))}
     </View>
   );
 }
@@ -161,15 +478,17 @@ function AmountColumn({
 function PlanCard({
   row,
   savedTotal,
+  linkedWish,
   onPress,
-  onAddDeposit,
+  onEditDeposit,
   onCompleteGoal,
 }: {
   row: SavingsPlanRow;
   savedTotal: number;
+  linkedWish?: WishItemRow | null;
   onPress: () => void;
-  onAddDeposit: () => void;
-  /** 长按加号：一次性补足差额以达成目标 */
+  onEditDeposit: () => void;
+  /** 长按编辑：一次性补足差额以达成目标 */
   onCompleteGoal: () => void;
 }) {
   const { colors, isDark } = useAppTheme();
@@ -180,12 +499,20 @@ function PlanCard({
 
   const doneMuted = colors.textMuted;
   const goalDoneSurface = isDark ? colors.surfaceMuted : colors.capsule;
+  const metaMuted = goalCompleted ? doneMuted : colors.textSecondary;
+  const metaAccent = goalCompleted ? doneMuted : colors.primary;
+  const starInactive = goalCompleted ? doneMuted : isDark ? 'rgba(148,163,184,0.35)' : 'rgba(148,163,184,0.55)';
+  const categoryText = formatWishCategoryLabel(linkedWish?.category_label);
+  const desireLevel = linkedWish ? linkedWish.desire_level : 3;
+  const reasonPreview = wishReasonPreviewOrNull(linkedWish?.reason);
+  const desireHighlight = !goalCompleted && clampWishDesireLevel(desireLevel) >= 4;
 
   return (
     <AppCard
       padded={false}
       style={[
         styles.planCard,
+        desireHighlight && !goalCompleted && { borderLeftWidth: 3, borderLeftColor: colors.primary },
         goalCompleted && { backgroundColor: goalDoneSurface, opacity: 0.88, borderColor: colors.outline },
       ]}>
       <Pressable
@@ -197,28 +524,54 @@ function PlanCard({
           <Image source={{ uri: item.imageUri }} style={styles.planThumb} resizeMode="cover" />
         </View>
         <View style={styles.planBody}>
-          <View style={styles.planHeaderBlock}>
-            <Text
-              style={[
-                Typography.title,
-                { color: goalCompleted ? doneMuted : colors.text },
-                goalCompleted && styles.planTitleGoalDone,
-                goalCompleted && Platform.OS === 'android' ? styles.planTitleGoalDoneAndroid : null,
-              ]}
-              numberOfLines={2}>
-              {item.title}
+          <Text
+            style={[
+              Typography.title,
+              styles.planTitle,
+              { color: goalCompleted ? doneMuted : colors.text },
+              goalCompleted && styles.planTitleGoalDone,
+              goalCompleted && Platform.OS === 'android' ? styles.planTitleGoalDoneAndroid : null,
+            ]}
+            numberOfLines={2}>
+            {item.title}
+          </Text>
+
+          <View style={styles.planDateRow}>
+            <MaterialIcons name="event" size={13} color={metaMuted} />
+            <Text style={[Typography.caption, styles.planDateText, { color: metaMuted }]} numberOfLines={1}>
+              {item.category}
             </Text>
-            <View
-              style={[
-                styles.categoryPill,
-                styles.planDatePill,
-                { backgroundColor: goalCompleted ? goalDoneSurface : colors.capsule },
-              ]}>
-              <Text style={[Typography.caption, { color: goalCompleted ? doneMuted : colors.textSecondary }]}>
-                {item.category}
+          </View>
+
+          <View
+            style={[
+              styles.planWishStrip,
+              {
+                backgroundColor: goalCompleted ? goalDoneSurface : isDark ? 'rgba(30,41,59,0.45)' : 'rgba(99,102,241,0.06)',
+                borderColor: goalCompleted ? colors.outline : isDark ? 'rgba(148,163,184,0.12)' : 'rgba(99,102,241,0.12)',
+              },
+            ]}>
+            <View style={styles.planWishStripMain}>
+              <Text style={[styles.planWishCategory, { color: metaMuted }]} numberOfLines={1}>
+                {categoryText}
+              </Text>
+              <View style={styles.planWishDot} />
+              <PlanDesireStars level={desireLevel} activeColor={metaAccent} inactiveColor={starInactive} />
+              <Text style={[styles.planWishLevelHint, { color: metaMuted }]}>
+                {formatWishDesireLevelShort(desireLevel)}
               </Text>
             </View>
+            {reasonPreview ? (
+              <Text style={[styles.planWishReason, { color: metaMuted }]} numberOfLines={1}>
+                {reasonPreview}
+              </Text>
+            ) : (
+              <Text style={[styles.planWishReasonEmpty, { color: metaMuted }]} numberOfLines={1}>
+                暂未填写心动理由
+              </Text>
+            )}
           </View>
+
           <View style={styles.planAmountRow}>
             <Text style={[Typography.caption, { color: goalCompleted ? doneMuted : colors.primary }]}>
               ¥{formatIntAmount(item.saved)}
@@ -245,47 +598,65 @@ function PlanCard({
         </View>
       </Pressable>
       <Pressable
-        disabled={goalCompleted}
-        onPress={onAddDeposit}
-        onLongPress={onCompleteGoal}
+        onPress={onEditDeposit}
+        onLongPress={goalCompleted ? undefined : onCompleteGoal}
         delayLongPress={450}
         style={({ pressed }) => [
-          styles.planAddDepositBtn,
-          { backgroundColor: goalCompleted ? goalDoneSurface : colors.capsule },
-          !goalCompleted && pressed && { opacity: 0.85 },
+          styles.planEditDepositBtn,
+          { backgroundColor: colors.capsule, borderColor: colors.outline },
+          pressed && { opacity: 0.88 },
         ]}
         accessibilityRole="button"
-        accessibilityLabel={`向 ${item.title} 存入一笔`}
-        accessibilityHint={goalCompleted ? '计划已完成，无法继续存入' : '长按可一次性补足差额达成目标'}
-        accessibilityState={{ disabled: goalCompleted }}
-      >
-        <MaterialIcons name="add" size={24} color={goalCompleted ? doneMuted : colors.success} />
+        accessibilityLabel={`编辑 ${item.title} 已存金额`}
+        accessibilityHint={
+          goalCompleted
+            ? '可调整已存金额；长按不可用'
+            : '点按调整存入或取出；长按可一次性补足差额达成目标'
+        }>
+        <MaterialIcons name="edit" size={22} color={colors.primary} />
       </Pressable>
     </AppCard>
   );
 }
 
-function AddDepositSheet({
+type PlanDepositSheetMode = 'deposit' | 'withdraw';
+
+function PlanDepositSheet({
   visible,
   plan,
+  savedTotal,
+  targetAmount,
+  goalCompleted,
   onClose,
   insetsBottom,
   onSubmit,
 }: {
   visible: boolean;
   plan: SavingsPlanRow | null;
+  savedTotal: number;
+  targetAmount: number;
+  goalCompleted: boolean;
   onClose: () => void;
   insetsBottom: number;
-  onSubmit: (planId: string, amount: number) => Promise<void>;
+  /** 存入为正数，取出为负数 */
+  onSubmit: (planId: string, signedAmount: number) => Promise<void>;
 }) {
   const { colors } = useAppTheme();
   const [amountText, setAmountText] = React.useState('');
+  const [mode, setMode] = React.useState<PlanDepositSheetMode>('deposit');
+  const isWithdraw = mode === 'withdraw';
+  const maxDepositAllowed =
+    targetAmount > 0 ? Math.max(0, Math.round(targetAmount) - savedTotal) : SAVINGS_PLAN_MAX_TARGET_AMOUNT;
 
   React.useEffect(() => {
-    if (visible) {
-      setAmountText('');
+    if (!visible) return;
+    setAmountText('');
+    if (goalCompleted && savedTotal > 0) {
+      setMode('withdraw');
+    } else {
+      setMode('deposit');
     }
-  }, [visible, plan?.id]);
+  }, [visible, plan?.id, goalCompleted, savedTotal]);
 
   const handleConfirm = async () => {
     if (!plan) return;
@@ -297,21 +668,42 @@ function AddDepositSheet({
     if (n > SAVINGS_PLAN_MAX_TARGET_AMOUNT) {
       Alert.alert(
         '提示',
-        `单笔存入不得超过 ${SAVINGS_PLAN_MAX_TARGET_AMOUNT.toLocaleString('zh-CN')}（8 位数字）。`,
+        `单笔金额不得超过 ${SAVINGS_PLAN_MAX_TARGET_AMOUNT.toLocaleString('zh-CN')}（8 位数字）。`,
       );
       return;
     }
+    if (isWithdraw && n > savedTotal) {
+      Alert.alert('提示', `取出金额不能超过当前已存 ¥${formatIntAmount(savedTotal)}`);
+      return;
+    }
+    if (!isWithdraw && targetAmount > 0 && n > maxDepositAllowed) {
+      Alert.alert(
+        '提示',
+        maxDepositAllowed <= 0
+          ? `已达到目标 ¥${formatIntAmount(targetAmount)}，无法继续存入`
+          : `存入后不能超过目标 ¥${formatIntAmount(targetAmount)}，最多可再存 ¥${formatIntAmount(maxDepositAllowed)}`,
+      );
+      return;
+    }
+    const signed = isWithdraw ? -n : n;
     try {
-      await onSubmit(plan.id, n);
+      await onSubmit(plan.id, signed);
       onClose();
     } catch (e) {
-      console.warn('AddDepositSheet: submit failed', e);
+      console.warn('PlanDepositSheet: submit failed', e);
       const raw = e instanceof Error ? e.message : '';
-      const msg =
-        raw.includes('8 digit') || raw.includes('8 digits')
-          ? `单笔存入不得超过 ${SAVINGS_PLAN_MAX_TARGET_AMOUNT.toLocaleString('zh-CN')}。`
-          : raw || '请稍后再试';
-      Alert.alert('存入失败', msg);
+      let msg = raw || '请稍后再试';
+      if (raw.includes('8 digit') || raw.includes('8 digits')) {
+        msg = `单笔金额不得超过 ${SAVINGS_PLAN_MAX_TARGET_AMOUNT.toLocaleString('zh-CN')}。`;
+      } else if (raw.includes('withdrawal exceeds') || raw.includes('exceeds saved')) {
+        msg = '取出金额不能超过当前已存金额';
+      } else if (raw.includes('deposit exceeds plan target')) {
+        msg =
+          targetAmount > 0
+            ? `存入后不能超过目标 ¥${formatIntAmount(targetAmount)}`
+            : '存入金额超过计划目标';
+      }
+      Alert.alert(isWithdraw ? '取出失败' : '存入失败', msg);
     }
   };
 
@@ -335,24 +727,76 @@ function AddDepositSheet({
               sheetStyles.card,
               { backgroundColor: colors.surface, paddingBottom: Math.max(Spacing['7xl'], insetsBottom + 88) },
             ]}>
-            <Text style={[Typography.h3, { color: colors.text }]}>存入一笔</Text>
+            <Text style={[Typography.h3, { color: colors.text }]}>调整已存</Text>
             <Text style={[Typography.body, { color: colors.textSecondary, marginTop: Spacing.sm }]} numberOfLines={2}>
               {plan?.name ?? ''}
             </Text>
+            <Text style={[Typography.caption, { color: colors.textMuted, marginTop: Spacing.sm }]}>
+              当前已存 ¥{formatIntAmount(savedTotal)}
+              {targetAmount > 0 ? ` / 目标 ¥${formatIntAmount(targetAmount)}` : ''}
+            </Text>
+            {!isWithdraw && targetAmount > 0 && maxDepositAllowed > 0 ? (
+              <Text style={[Typography.caption, { color: colors.primary, marginTop: 4 }]}>
+                最多可再存 ¥{formatIntAmount(maxDepositAllowed)}
+              </Text>
+            ) : null}
+
+            <View
+              style={[
+                sheetStyles.depositModeRow,
+                { backgroundColor: colors.input, borderColor: colors.outline },
+              ]}>
+              <Pressable
+                disabled={goalCompleted || maxDepositAllowed <= 0}
+                onPress={() => setMode('deposit')}
+                style={[
+                  sheetStyles.depositModeChip,
+                  mode === 'deposit' && { backgroundColor: colors.primary },
+                  (goalCompleted || maxDepositAllowed <= 0) && { opacity: 0.45 },
+                ]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: mode === 'deposit' }}>
+                <Text
+                  style={[
+                    Typography.bodyStrong,
+                    { color: mode === 'deposit' ? colors.onPrimary : colors.text },
+                  ]}>
+                  存入
+                </Text>
+              </Pressable>
+              <Pressable
+                disabled={savedTotal <= 0}
+                onPress={() => setMode('withdraw')}
+                style={[
+                  sheetStyles.depositModeChip,
+                  mode === 'withdraw' && { backgroundColor: colors.danger },
+                  savedTotal <= 0 && { opacity: 0.45 },
+                ]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: mode === 'withdraw' }}>
+                <Text
+                  style={[
+                    Typography.bodyStrong,
+                    { color: mode === 'withdraw' ? colors.onPrimary : colors.text },
+                  ]}>
+                  取出
+                </Text>
+              </Pressable>
+            </View>
             <View
               style={[
                 sheetStyles.inputRow,
                 sheetStyles.amountRow,
                 { marginTop: Spacing['3xl'], backgroundColor: colors.input },
               ]}>
-              <Text style={[sheetStyles.amountYuan, { color: colors.text }]}>¥</Text>
+              <Text style={[sheetStyles.amountYuan, { color: isWithdraw ? colors.danger : colors.text }]}>¥</Text>
               <TextInput
                 style={[sheetStyles.amountInput, { color: colors.text }]}
                 value={amountText}
                 onChangeText={(t) => setAmountText(t.replace(/\D/g, '').slice(0, 8))}
                 placeholder="金额"
                 placeholderTextColor={colors.textMuted}
-                keyboardType="default"
+                keyboardType="number-pad"
                 autoCorrect={false}
                 autoCapitalize="none"
               />
@@ -360,11 +804,14 @@ function AddDepositSheet({
             <Pressable
               style={[
                 sheetStyles.fab,
-                { backgroundColor: colors.primary, bottom: Math.max(Spacing['5xl'], insetsBottom + Spacing.md) },
+                {
+                  backgroundColor: isWithdraw ? colors.danger : colors.primary,
+                  bottom: Math.max(Spacing['5xl'], insetsBottom + Spacing.md),
+                },
               ]}
               onPress={handleConfirm}
               accessibilityRole="button"
-              accessibilityLabel="确认存入">
+              accessibilityLabel={isWithdraw ? '确认取出' : '确认存入'}>
               <MaterialIcons name="check" size={26} color={colors.onPrimary} />
             </Pressable>
           </View>
@@ -374,92 +821,31 @@ function AddDepositSheet({
   );
 }
 
-function DefaultPlanIconSvg() {
-  const { colors } = useAppTheme();
-  return (
-    <Svg width={52} height={52} viewBox="0 0 56 56">
-      <Path
-        d="M14 22h28c2 0 4 2 4 4v18c0 3-2 5-5 5H15c-3 0-5-2-5-5V26c0-2 2-4 4-4z"
-        fill={colors.primary}
-      />
-      <Path d="M22 22 V14 a6 6 0 0 1 12 0v8" fill={colors.primarySoft} />
-      <Circle cx={42} cy={14} r={5.5} fill={colors.primaryRing} />
-      <Circle cx={46} cy={20} r={4} fill={colors.primaryMuted} />
-    </Svg>
-  );
-}
-
-function PlanIconButton({
-  uri,
-  onPickImage,
-}: {
-  uri: string | null;
-  onPickImage: () => void;
-}) {
-  const { colors } = useAppTheme();
-  return (
-    <Pressable
-      onPress={onPickImage}
-      style={({ pressed }) => [
-        sheetStyles.iconBlock,
-        { backgroundColor: colors.surfaceMuted },
-        pressed && { opacity: 0.88 },
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel="上传计划图标">
-      {uri ? <Image source={{ uri }} style={sheetStyles.iconImage} resizeMode="cover" /> : <DefaultPlanIconSvg />}
-      <View style={sheetStyles.iconCameraBadge} pointerEvents="none">
-        <MaterialIcons name="photo-camera" size={14} color="#fff" />
-      </View>
-    </Pressable>
-  );
-}
-
 function PlanFormSheet({
   visible,
   onClose,
   insetsBottom,
   initialPlan,
-  onCreate,
-  onUpdate,
+  initialLinkedWish,
+  onSaved,
 }: {
   visible: boolean;
   onClose: () => void;
   insetsBottom: number;
-  /** 非 null 时为编辑模式，表单从该记录初始化 */
   initialPlan: SavingsPlanRow | null;
-  onCreate: (input: CreateSavingsPlanInput) => Promise<void>;
-  onUpdate: (id: string, input: UpdateSavingsPlanInput) => Promise<void>;
+  initialLinkedWish?: WishItemRow | null;
+  onSaved: () => Promise<void>;
 }) {
-  const { colors, isDark } = useAppTheme();
+  const { colors } = useAppTheme();
   const [planName, setPlanName] = React.useState('');
   const [startDate, setStartDate] = React.useState(() => new Date());
   const [endDate, setEndDate] = React.useState(() => addCalendarDays(new Date(), 1));
   const [targetAmount, setTargetAmount] = React.useState('5000');
-  const [showStartDatePicker, setShowStartDatePicker] = React.useState(false);
-  const [showEndDatePicker, setShowEndDatePicker] = React.useState(false);
   const [planIconUri, setPlanIconUri] = React.useState<string | null>(null);
-
-  const minEndDateForPicker = React.useMemo(() => addCalendarDays(startDate, 1), [startDate]);
+  const [wishExtras, setWishExtras] = React.useState<WishExtrasFormValue>(defaultWishExtrasFormValue);
+  const initialIconUriRef = React.useRef<string | null | undefined>(undefined);
 
   const isEdit = initialPlan != null;
-
-  const pickPlanIcon = React.useCallback(async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('权限不足', '需要相册权限才能选择图片作为图标');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.9,
-    });
-    if (!result.canceled && result.assets[0]?.uri) {
-      setPlanIconUri(result.assets[0].uri);
-    }
-  }, []);
 
   React.useEffect(() => {
     if (!visible) return;
@@ -472,91 +858,56 @@ function PlanFormSheet({
       setEndDate(e0.getTime() < minEnd0.getTime() ? minEnd0 : e0);
       setTargetAmount(String(Math.max(0, Math.round(initialPlan.target_amount))));
       setPlanIconUri(initialPlan.avatar_uri);
-      setShowStartDatePicker(false);
-      setShowEndDatePicker(false);
+      initialIconUriRef.current = initialPlan.avatar_uri;
     } else {
       const s = new Date();
       setPlanName('');
       setStartDate(s);
       setEndDate(addCalendarDays(s, 1));
       setTargetAmount('5000');
-      setShowStartDatePicker(false);
-      setShowEndDatePicker(false);
       setPlanIconUri(null);
+      initialIconUriRef.current = undefined;
     }
-  }, [visible, initialPlan]);
-
-  React.useEffect(() => {
-    if (!visible) {
-      setShowStartDatePicker(false);
-      setShowEndDatePicker(false);
-    }
-  }, [visible]);
-
-  const closeDatePickerOverlay = React.useCallback(() => {
-    setShowStartDatePicker(false);
-    setShowEndDatePicker(false);
-  }, []);
-
-  const handleStartDateChange = (event: DateTimePickerEvent, date?: Date) => {
-    if (Platform.OS === 'android') {
-      setShowStartDatePicker(false);
-    }
-    if (event.type === 'dismissed') return;
-    if (!date) return;
-    setStartDate(date);
-    setEndDate((prev) => {
-      const minEnd = addCalendarDays(date, 1);
-      return prev.getTime() < minEnd.getTime() ? minEnd : prev;
-    });
-  };
-
-  const handleEndDateChange = (event: DateTimePickerEvent, date?: Date) => {
-    if (Platform.OS === 'android') {
-      setShowEndDatePicker(false);
-    }
-    if (event.type === 'dismissed') return;
-    if (date) setEndDate(date);
-  };
+    setWishExtras(initialLinkedWish ? wishExtrasFromRow(initialLinkedWish) : defaultWishExtrasFormValue());
+  }, [visible, initialPlan, initialLinkedWish]);
 
   const handleConfirm = async () => {
-    const name = planName.trim() || '存钱计划';
-    const amount = parseInt(targetAmount.replace(/\D/g, ''), 10) || 0;
-
-    const start_iso = toIsoDate(startDate);
-    const end_iso = toIsoDate(endDate);
-
-    if (daysBetweenIso(start_iso, end_iso) < 1) {
-      Alert.alert(
-        '无法保存',
-        '日期跨度至少为 1 天：请选择结束日期，且结束日须晚于起始日。',
-      );
+    const validated = validateWishSavingsForm(planName, startDate, endDate, targetAmount);
+    if (!validated.ok) {
+      Alert.alert('无法保存', validated.message);
       return;
     }
-    if (amount > SAVINGS_PLAN_MAX_TARGET_AMOUNT) {
-      Alert.alert('无法保存', `目标金额不得超过 8 位数（最大 ${SAVINGS_PLAN_MAX_TARGET_AMOUNT.toLocaleString('zh-CN')}）。`);
-      return;
-    }
+
+    const { name, start_date, end_date, target_amount } = validated.value;
+    const wishPayload = wishExtrasToSavePayload(wishExtras);
+    const linkedInput = {
+      name,
+      start_date,
+      end_date,
+      target_amount,
+      avatar_uri: planIconUri,
+      ...wishPayload,
+    };
 
     try {
       if (initialPlan) {
-        await onUpdate(initialPlan.id, {
-          name,
-          start_date: start_iso,
-          end_date: end_iso,
-          target_amount: amount,
-          avatar_uri: planIconUri,
+        await updateSavingsPlanWithLinkedWish(initialPlan.id, linkedInput, {
+          avatarChanged: planIconUri !== initialIconUriRef.current,
         });
       } else {
-        await onCreate({
-          id: `ssp_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-          name,
-          start_date: start_iso,
-          end_date: end_iso,
-          target_amount: amount,
-          avatar_uri: planIconUri,
-        });
+        await createSavingsPlanWithLinkedWish(
+          {
+            id: `ssp_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            name,
+            start_date,
+            end_date,
+            target_amount,
+            avatar_uri: planIconUri,
+          },
+          wishPayload,
+        );
       }
+      await onSaved();
       onClose();
     } catch (e) {
       console.warn('PlanFormSheet: submit failed', e);
@@ -570,8 +921,6 @@ function PlanFormSheet({
       Alert.alert(isEdit ? '保存失败' : '创建失败', msg);
     }
   };
-
-  const datePickerOverlayOpen = visible && (showStartDatePicker || showEndDatePicker);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -596,86 +945,27 @@ function PlanFormSheet({
               keyboardDismissMode="on-drag"
               showsVerticalScrollIndicator={false}
               contentContainerStyle={sheetStyles.cardScroll}>
-              <View style={sheetStyles.sheetHead}>
-                <PlanIconButton uri={planIconUri} onPickImage={pickPlanIcon} />
-                <View style={sheetStyles.sheetTitleWrap}>
-                  <Text style={[Typography.h3, { color: colors.text, textAlign: 'center' }]}>
-                    {isEdit ? '编辑存钱计划' : '自由存钱计划'}
-                  </Text>
-                </View>
-                <View style={sheetStyles.sheetHeadSpacer} />
-              </View>
-
-              <View style={[sheetStyles.inputRow, { backgroundColor: colors.input }]}>
-                <TextInput
-                  style={[sheetStyles.rowInput, { color: colors.text }]}
-                  placeholder="输入你的存钱计划"
-                  placeholderTextColor={colors.textMuted}
-                  value={planName}
-                  onChangeText={setPlanName}
-                />
-                <Pressable
-                  style={({ pressed }) => [
-                    sheetStyles.vaultBtn,
-                    { backgroundColor: colors.surface, borderColor: colors.outline },
-                    pressed && { opacity: 0.85 },
-                  ]}>
-                  <Text style={[Typography.caption, { color: colors.text }]}>存钱库</Text>
-                </Pressable>
-              </View>
-
-              <Pressable
-                style={({ pressed }) => [
-                  sheetStyles.inputRow,
-                  sheetStyles.inputRowPress,
-                  { backgroundColor: colors.input },
-                  pressed && { opacity: 0.92 },
-                ]}
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setShowEndDatePicker(false);
-                  setShowStartDatePicker((v) => !v);
-                }}>
-                <Text style={[Typography.body, { color: colors.text }]}>起始日期</Text>
-                <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatChineseDate(startDate)}</Text>
-              </Pressable>
-
-              <Pressable
-                style={({ pressed }) => [
-                  sheetStyles.inputRow,
-                  sheetStyles.inputRowPress,
-                  { backgroundColor: colors.input },
-                  pressed && { opacity: 0.92 },
-                ]}
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setShowStartDatePicker(false);
-                  setShowEndDatePicker((v) => !v);
-                }}>
-                <Text style={[Typography.body, { color: colors.text }]}>结束日期</Text>
-                <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatChineseDate(endDate)}</Text>
-              </Pressable>
-
-              <View style={[sheetStyles.inputRow, sheetStyles.amountRow, { backgroundColor: colors.input }]}>
-                <Text style={[sheetStyles.amountYuan, { color: colors.text }]}>¥</Text>
-                <TextInput
-                  style={[sheetStyles.amountInput, { color: colors.text }]}
-                  value={targetAmount}
-                  onChangeText={(t) => setTargetAmount(t.replace(/\D/g, '').slice(0, 8))}
-                  placeholder="5000"
-                  placeholderTextColor={colors.textMuted}
-                  keyboardType="number-pad"
-                  maxLength={8}
-                />
-                <Pressable
-                  style={({ pressed }) => [
-                    sheetStyles.tagBtn,
-                    { backgroundColor: colors.surface, borderColor: colors.outline },
-                    pressed && { opacity: 0.88 },
-                  ]}>
-                  <Text style={[Typography.caption, { color: colors.textMuted }]}>目标金额</Text>
-                </Pressable>
-              </View>
+              <WishSavingsCoreForm
+                formTitle={isEdit ? '编辑存钱计划' : '自由存钱计划'}
+                name={planName}
+                onNameChange={setPlanName}
+                namePlaceholder="输入你的存钱计划"
+                startDate={startDate}
+                endDate={endDate}
+                onStartDateChange={setStartDate}
+                onEndDateChange={setEndDate}
+                targetAmount={targetAmount}
+                onTargetAmountChange={setTargetAmount}
+                iconUri={planIconUri}
+                onIconUriChange={setPlanIconUri}
+                insetsBottom={insetsBottom}
+              />
+              <WishSavingsWishExtrasFields
+                value={wishExtras}
+                onChange={setWishExtras}
+                collapsible={false}
+                sectionTitle="心愿信息"
+              />
             </ScrollView>
 
             <Pressable
@@ -691,51 +981,6 @@ function PlanFormSheet({
           </View>
         </View>
       </KeyboardAvoidingView>
-
-      {datePickerOverlayOpen &&
-        (Platform.OS === 'ios' ? (
-          <View style={[StyleSheet.absoluteFill, { zIndex: 999, elevation: 99 }]} pointerEvents="box-none">
-            <View style={sheetStyles.dateIosOverlay}>
-              <Pressable
-                style={[sheetStyles.dateIosScrim, { backgroundColor: colors.overlay }]}
-                onPress={closeDatePickerOverlay}
-                accessibilityLabel="关闭日期选择"
-              />
-              <View
-                style={[
-                  sheetStyles.dateIosSheet,
-                  { backgroundColor: colors.surface, paddingBottom: Math.max(Spacing['3xl'], insetsBottom + Spacing.md) },
-                ]}>
-                <View style={[sheetStyles.dateIosHeader, { borderBottomColor: colors.outline }]}>
-                  <Text style={[Typography.title, { color: colors.text }]}>
-                    {showStartDatePicker ? '选择起始日期' : '选择结束日期'}
-                  </Text>
-                  <Pressable onPress={closeDatePickerOverlay} hitSlop={12}>
-                    <Text style={[Typography.title, { color: colors.primary }]}>完成</Text>
-                  </Pressable>
-                </View>
-                <DateTimePicker
-                  value={showStartDatePicker ? startDate : endDate}
-                  mode="date"
-                  display="spinner"
-                  themeVariant={isDark ? 'dark' : 'light'}
-                  locale="zh_CN"
-                  minimumDate={showEndDatePicker ? minEndDateForPicker : undefined}
-                  onChange={showStartDatePicker ? handleStartDateChange : handleEndDateChange}
-                />
-              </View>
-            </View>
-          </View>
-        ) : (
-          <DateTimePicker
-            key={showStartDatePicker ? 'plan-date-start' : 'plan-date-end'}
-            value={showStartDatePicker ? startDate : endDate}
-            mode="date"
-            display="default"
-            minimumDate={showEndDatePicker ? minEndDateForPicker : undefined}
-            onChange={showStartDatePicker ? handleStartDateChange : handleEndDateChange}
-          />
-        ))}
     </Modal>
   );
 }
@@ -747,25 +992,37 @@ export default function SavingsPlanScreen() {
 
   const [planRows, setPlanRows] = React.useState<SavingsPlanRow[]>([]);
   const [depositByPlanId, setDepositByPlanId] = React.useState<Record<string, number>>({});
+  const [wishByPlanId, setWishByPlanId] = React.useState<Record<string, WishItemRow>>({});
   const [totalDeposits, setTotalDeposits] = React.useState(0);
   const [planFormVisible, setPlanFormVisible] = React.useState(false);
   const [planFormInitial, setPlanFormInitial] = React.useState<SavingsPlanRow | null>(null);
   const [depositSheetPlan, setDepositSheetPlan] = React.useState<SavingsPlanRow | null>(null);
+  const [overviewSettings, setOverviewSettings] = React.useState<SavingsOverviewSettings>({
+    savedAmount: null,
+    targetAmount: null,
+    endDate: null,
+  });
+  const [overviewEditVisible, setOverviewEditVisible] = React.useState(false);
+  const [topProgressMode, setTopProgressMode] = React.useState<TopOverviewProgressMode>('total');
 
   const refreshPlansAndDeposits = React.useCallback(async () => {
     try {
-      const rows = await getSavingsPlans();
+      const [rows, settings] = await Promise.all([getSavingsPlans(), loadSavingsOverviewSettings()]);
       setPlanRows(rows);
-      const [sums, total] = await Promise.all([
+      setOverviewSettings(settings);
+      const [sums, total, wishesByPlan] = await Promise.all([
         getDepositSumsByActivePlanId(),
         getTotalDepositsForActivePlans(),
+        loadWishItemsByPlanId(),
       ]);
       setDepositByPlanId(sums);
       setTotalDeposits(total);
+      setWishByPlanId(wishesByPlan);
     } catch (e) {
       console.warn('SavingsPlan: refresh plans/deposits failed', e);
       setPlanRows([]);
       setDepositByPlanId({});
+      setWishByPlanId({});
       setTotalDeposits(0);
     }
   }, []);
@@ -776,19 +1033,51 @@ export default function SavingsPlanScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      void refreshPlansAndDeposits();
+      void (async () => {
+        await repairWishSavingsLinks();
+        await refreshPlansAndDeposits();
+      })();
+      const intent = consumeSavingsPlanLaunchIntent();
+      if (intent?.openAddPlan) {
+        setPlanFormInitial(null);
+        setPlanFormVisible(true);
+      }
     }, [refreshPlansAndDeposits]),
   );
 
   /** 与 savings_plans 表一致：所有计划目标金额之和 */
-  const totalGoal = React.useMemo(
+  const plansTargetTotal = React.useMemo(
     () => planRows.reduce((sum, r) => sum + Math.max(0, r.target_amount), 0),
     [planRows],
   );
-  /** 所有未删除计划下的存入汇总（savings_plan_deposits） */
-  const savedAmount = Math.max(0, totalDeposits);
-  const remaining = Math.max(0, totalGoal - savedAmount);
-  const progressPct = totalGoal > 0 ? Math.min(100, Math.round((savedAmount / totalGoal) * 100)) : 0;
+  /** 顶部总览存款/目标，与各计划数据隔离 */
+  const overviewSaved = Math.max(0, overviewSettings.savedAmount ?? 0);
+  const overviewTarget = Math.max(0, overviewSettings.targetAmount ?? 0);
+  /** 各计划存入与目标之和 */
+  const planSavedTotal = Math.max(0, totalDeposits);
+  const planTargetTotal = plansTargetTotal;
+
+  const displayEndDateIso = overviewSettings.endDate;
+  const displayEndDateLabel = displayEndDateIso ? formatIsoDateCompact(displayEndDateIso) : '未设置';
+
+  /** 总进度：已存 = 现有存款 + 计划已存；目标 = 目标存款 + 计划目标之和 */
+  const combinedSavedTotal = overviewSaved + planSavedTotal;
+  const combinedSavingsGoal = overviewTarget + planTargetTotal;
+
+  const totalProgressPct = progressPercent(combinedSavedTotal, combinedSavingsGoal);
+  const depositProgressPct = progressPercent(overviewSaved, overviewTarget);
+  const plansProgressPct = progressPercent(planSavedTotal, planTargetTotal);
+
+  const topProgressTitle = topProgressMode === 'total' ? '总进度' : '存款进度';
+  const topProgressHint =
+    topProgressMode === 'total'
+      ? `已存 ¥${formatIntAmount(combinedSavedTotal)} / 总目标 ¥${formatIntAmount(combinedSavingsGoal)}`
+      : `现有存款 ¥${formatIntAmount(overviewSaved)} / 目标存款 ¥${formatIntAmount(overviewTarget)}`;
+  const topProgressPct = topProgressMode === 'total' ? totalProgressPct : depositProgressPct;
+
+  const toggleTopProgressMode = () => {
+    setTopProgressMode((m) => (m === 'total' ? 'deposit' : 'total'));
+  };
 
   /** 未完成在前、已完成置底；组内均按截止时间 end_date 升序（最近截止的在前） */
   const sortedPlanRowsForList = React.useMemo(() => {
@@ -814,6 +1103,21 @@ export default function SavingsPlanScreen() {
     setPlanFormInitial(null);
     setPlanFormVisible(true);
   };
+
+  const openOverviewEdit = () => setOverviewEditVisible(true);
+
+  const saveOverviewEdits = React.useCallback(
+    async (payload: { savedAmount: number; targetAmount: number; endDateIso: string }) => {
+      const nextSettings: SavingsOverviewSettings = {
+        savedAmount: payload.savedAmount,
+        targetAmount: payload.targetAmount,
+        endDate: payload.endDateIso,
+      };
+      await saveSavingsOverviewSettings(nextSettings);
+      setOverviewSettings(nextSettings);
+    },
+    [],
+  );
 
   const closePlanForm = () => {
     setPlanFormVisible(false);
@@ -861,6 +1165,7 @@ export default function SavingsPlanScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              await deleteLinkedWishForPlan(row);
               await deleteSavingsPlan(row.id);
               if (planFormInitial?.id === row.id) {
                 closePlanForm();
@@ -908,86 +1213,123 @@ export default function SavingsPlanScreen() {
               </Svg>
             </View>
 
+            <View style={styles.overviewCardHead}>
+              <Text style={[Typography.caption, { color: colors.textSecondary }]}>存款总览</Text>
+              <Pressable
+                onPress={openOverviewEdit}
+                style={({ pressed }) => [
+                  styles.overviewEditChip,
+                  { backgroundColor: colors.capsule, borderColor: colors.outline },
+                  pressed && { opacity: 0.88 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="编辑存款总览">
+                <MaterialIcons name="edit" size={15} color={colors.primary} />
+                <Text style={[Typography.caption, { color: colors.primary, fontWeight: '700' }]}>编辑</Text>
+              </Pressable>
+            </View>
+
             <View style={styles.overviewRow}>
               <AmountColumn
-                label="总目标"
-                amount={totalGoal}
-                color={colors.primary}
+                label="现有存款"
+                amount={overviewSaved}
+                color={colors.success}
                 borderColor={colors.outline}
               />
               <AmountColumn
-                label="已存款"
-                amount={savedAmount}
-                color={colors.success}
+                label="目标存款"
+                amount={overviewTarget}
+                color={colors.primary}
                 showLeftBorder
                 borderColor={colors.outline}
               />
-              <AmountColumn
-                label="剩余"
-                amount={remaining}
+              <DeadlineColumn
+                label="截止"
+                dateLabel={displayEndDateLabel}
                 color={colors.danger}
                 showLeftBorder
                 borderColor={colors.outline}
               />
             </View>
 
-            <View style={styles.overallProgress}>
-              <View style={styles.overallProgressLabels}>
-                <Text style={[Typography.caption, { color: colors.textSecondary }]}>总进度</Text>
-                <Text style={[Typography.caption, { color: colors.textSecondary }]}>{progressPct}%</Text>
-              </View>
-              <View style={[styles.overallTrack, { backgroundColor: colors.progressTrack }]}>
-                <View
-                  style={[
-                    styles.overallFill,
-                    { width: `${progressPct}%` as DimensionValue, backgroundColor: colors.primary },
-                  ]}
-                />
-              </View>
-            </View>
+            <ProgressStrip
+              title={topProgressTitle}
+              hint={topProgressHint}
+              percent={topProgressPct}
+              trackColor={colors.progressTrack}
+              fillColor={colors.primary}
+              labelColor={colors.textSecondary}
+              onPress={toggleTopProgressMode}
+            />
           </AppCard>
         </View>
 
-        <View style={styles.plansSection}>
-          <View style={styles.plansHeader}>
-            <Text style={[Typography.h3, { color: colors.text }]}>我的计划</Text>
-          </View>
+        <View style={styles.plansSectionWrap}>
+          <AppCard style={[shadows.card, styles.plansCard]}>
+            <View style={styles.plansCardHeader}>
+              <View style={[styles.plansSectionAccent, { backgroundColor: colors.primary }]} />
+              <View style={styles.plansTitleBlock}>
+                <Text style={[Typography.h3, { color: colors.text }]}>我的计划</Text>
+                <Text style={[Typography.caption, { color: colors.textSecondary, marginTop: 4 }]}>
+                  {planRows.length > 0
+                    ? `共 ${planRows.length} 项 · 与心愿单目标好物一一对应`
+                    : '添加具体目标并跟踪存入，同步至「我的」心愿单'}
+                </Text>
+              </View>
+            </View>
 
-          <View style={styles.planList}>
-            {planRows.length === 0 ? (
-              <Text style={[Typography.body, styles.emptyPlansHint, { color: colors.textSecondary }]}>
-                暂无计划，点击右上角添加
-              </Text>
-            ) : (
-              sortedPlanRowsForList.map((row) => (
-                <Swipeable
-                  key={row.id}
-                  overshootRight={false}
-                  rightThreshold={44}
-                  renderRightActions={() => (
-                    <Pressable
-                      onPress={() => confirmDeletePlan(row)}
-                      style={[styles.swipeDeleteAction, { backgroundColor: colors.danger }]}
-                      accessibilityRole="button"
-                      accessibilityLabel={`删除计划 ${row.name}`}>
-                      <MaterialIcons name="delete" size={22} color={colors.onPrimary} />
-                      <Text style={[styles.swipeDeleteText, { color: colors.onPrimary }]}>删除</Text>
-                    </Pressable>
-                  )}>
-                  <PlanCard
-                    row={row}
-                    savedTotal={depositByPlanId[row.id] ?? 0}
-                    onPress={() => {
-                      setPlanFormInitial(row);
-                      setPlanFormVisible(true);
-                    }}
-                    onAddDeposit={() => setDepositSheetPlan(row)}
+            <View style={[styles.plansCardDivider, { backgroundColor: colors.outline }]} />
+
+            <ProgressStrip
+              title="计划进度"
+              hint={`计划已存 ¥${formatIntAmount(planSavedTotal)} / 计划目标 ¥${formatIntAmount(planTargetTotal)}`}
+              percent={plansProgressPct}
+              trackColor={colors.progressTrack}
+              fillColor={colors.success}
+              labelColor={colors.textSecondary}
+              style={styles.plansProgressStrip}
+            />
+
+            <View style={styles.planList}>
+              {planRows.length === 0 ? (
+                <View style={[styles.emptyPlansBox, { backgroundColor: colors.surfaceMuted, borderColor: colors.outline }]}>
+                  <MaterialIcons name="playlist-add" size={32} color={colors.textMuted} />
+                  <Text style={[Typography.body, styles.emptyPlansHint, { color: colors.textSecondary }]}>
+                    暂无计划，点击右上角添加
+                  </Text>
+                </View>
+              ) : (
+                sortedPlanRowsForList.map((row) => (
+                  <Swipeable
+                    key={row.id}
+                    overshootRight={false}
+                    rightThreshold={44}
+                    renderRightActions={() => (
+                      <Pressable
+                        onPress={() => confirmDeletePlan(row)}
+                        style={[styles.swipeDeleteAction, { backgroundColor: colors.danger }]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`删除计划 ${row.name}`}>
+                        <MaterialIcons name="delete" size={22} color={colors.onPrimary} />
+                        <Text style={[styles.swipeDeleteText, { color: colors.onPrimary }]}>删除</Text>
+                      </Pressable>
+                    )}>
+                    <PlanCard
+                      row={row}
+                      savedTotal={depositByPlanId[row.id] ?? 0}
+                      linkedWish={wishByPlanId[row.id] ?? null}
+                      onPress={() => {
+                        setPlanFormInitial(row);
+                        setPlanFormVisible(true);
+                      }}
+                    onEditDeposit={() => setDepositSheetPlan(row)}
                     onCompleteGoal={() => void completePlanGoal(row)}
-                  />
-                </Swipeable>
-              ))
-            )}
-          </View>
+                    />
+                  </Swipeable>
+                ))
+              )}
+            </View>
+          </AppCard>
         </View>
       </ScrollView>
 
@@ -996,29 +1338,42 @@ export default function SavingsPlanScreen() {
         onClose={closePlanForm}
         insetsBottom={insets.bottom}
         initialPlan={planFormInitial}
-        onCreate={async (input) => {
-          await createSavingsPlan(input);
-          await refreshPlansAndDeposits();
-        }}
-        onUpdate={async (id, input) => {
-          await updateSavingsPlan(id, input);
+        initialLinkedWish={planFormInitial ? (wishByPlanId[planFormInitial.id] ?? null) : null}
+        onSaved={refreshPlansAndDeposits}
+      />
+
+      <PlanDepositSheet
+        visible={depositSheetPlan != null}
+        plan={depositSheetPlan}
+        savedTotal={depositSheetPlan ? (depositByPlanId[depositSheetPlan.id] ?? 0) : 0}
+        targetAmount={depositSheetPlan?.target_amount ?? 0}
+        goalCompleted={
+          depositSheetPlan
+            ? depositSheetPlan.target_amount > 0 &&
+              (depositByPlanId[depositSheetPlan.id] ?? 0) >= depositSheetPlan.target_amount
+            : false
+        }
+        onClose={() => setDepositSheetPlan(null)}
+        insetsBottom={insets.bottom}
+        onSubmit={async (planId, signedAmount) => {
+          await createSavingsPlanDeposit({
+            id: `ssd_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            savings_plan_id: planId,
+            amount: signedAmount,
+            note: signedAmount < 0 ? '取出' : null,
+          });
           await refreshPlansAndDeposits();
         }}
       />
 
-      <AddDepositSheet
-        visible={depositSheetPlan != null}
-        plan={depositSheetPlan}
-        onClose={() => setDepositSheetPlan(null)}
+      <OverviewEditSheet
+        visible={overviewEditVisible}
+        onClose={() => setOverviewEditVisible(false)}
         insetsBottom={insets.bottom}
-        onSubmit={async (planId, amount) => {
-          await createSavingsPlanDeposit({
-            id: `ssd_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-            savings_plan_id: planId,
-            amount,
-          });
-          await refreshPlansAndDeposits();
-        }}
+        savedAmount={overviewSaved}
+        targetAmount={overviewTarget}
+        endDateIso={displayEndDateIso}
+        onSave={saveOverviewEdits}
       />
     </SafeAreaView>
   );
@@ -1141,6 +1496,22 @@ const sheetStyles = StyleSheet.create({
     paddingVertical: Spacing.xl,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
+  depositModeRow: {
+    flexDirection: 'row',
+    marginTop: Spacing['3xl'],
+    marginBottom: Spacing.xl,
+    padding: 4,
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 4,
+  },
+  depositModeChip: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.pill,
+  },
   amountRow: {
     alignItems: 'center',
   },
@@ -1189,9 +1560,27 @@ const styles = StyleSheet.create({
   sectionPad: {
     paddingHorizontal: Spacing['5xl'],
     paddingTop: Spacing['5xl'],
+    paddingBottom: Spacing.md,
   },
   overviewCard: {
     overflow: 'hidden',
+  },
+  overviewCardHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing['3xl'],
+    position: 'relative',
+    zIndex: 10,
+  },
+  overviewEditChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 6,
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   overviewRow: {
     flexDirection: 'row',
@@ -1214,15 +1603,43 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  overallProgress: {
+  overviewLabel: {
+    textAlign: 'center',
+  },
+  overviewValueWrap: {
+    marginTop: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  overviewAmount: {
+    flexShrink: 1,
+    maxWidth: '100%',
+  },
+  deadlineValue: {
+    textAlign: 'center',
+    fontSize: 16,
+    lineHeight: 20,
+    width: '100%',
+  },
+  progressStrip: {
     marginTop: Spacing['5xl'],
     position: 'relative',
     zIndex: 10,
   },
-  overallProgressLabels: {
+  progressStripHead: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  progressStripHint: {
     marginBottom: 8,
+    opacity: 0.92,
+  },
+  progressTapHint: {
+    marginTop: 6,
+    textAlign: 'center',
+    opacity: 0.75,
   },
   overallTrack: {
     height: 6,
@@ -1233,23 +1650,52 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: Radius.pill,
   },
-  plansSection: {
+  plansSectionWrap: {
     paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing['4xl'],
     paddingBottom: Spacing['5xl'],
-    paddingTop: Spacing.xs,
   },
-  plansHeader: {
+  plansCard: {
+    overflow: 'hidden',
+  },
+  plansCardHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  plansSectionAccent: {
+    width: 3,
+    height: 24,
+    borderRadius: Radius.sm,
+    marginRight: Spacing.lg,
+    marginTop: 4,
+  },
+  plansTitleBlock: {
+    flex: 1,
+  },
+  plansCardDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginTop: Spacing['3xl'],
     marginBottom: Spacing['3xl'],
+    opacity: 0.65,
+  },
+  plansProgressStrip: {
+    marginTop: 0,
+    marginBottom: Spacing['4xl'],
   },
   planList: {
     gap: Spacing['3xl'],
   },
+  emptyPlansBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.lg,
+    paddingVertical: Spacing['5xl'],
+    paddingHorizontal: Spacing['3xl'],
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   emptyPlansHint: {
     textAlign: 'center',
-    paddingVertical: Spacing['5xl'],
   },
   swipeDeleteAction: {
     width: 86,
@@ -1265,12 +1711,12 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   planCard: {
-    paddingVertical: Spacing.xl,
+    paddingVertical: Spacing.lg,
     paddingLeft: Spacing['3xl'],
     paddingRight: Spacing.lg,
     flexDirection: 'row',
     gap: Spacing.lg,
-    alignItems: 'center',
+    alignItems: 'stretch',
   },
   planTitleGoalDone: {
     textDecorationLine: 'line-through',
@@ -1285,25 +1731,29 @@ const styles = StyleSheet.create({
   planCardTap: {
     flex: 1,
     flexDirection: 'row',
-    gap: 16,
-    alignItems: 'center',
+    gap: Spacing.lg,
+    alignItems: 'flex-start',
     minWidth: 0,
   },
   planCardPressed: {
     opacity: 0.92,
   },
-  planAddDepositBtn: {
+  planEditDepositBtn: {
     width: 44,
     height: 44,
     borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    marginLeft: Spacing.sm,
+    alignSelf: 'center',
   },
   planThumbWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: Radius.md,
+    width: 72,
+    height: 72,
+    borderRadius: Radius.lg,
     overflow: 'hidden',
+    marginTop: 2,
   },
   planThumb: {
     width: '100%',
@@ -1312,27 +1762,71 @@ const styles = StyleSheet.create({
   planBody: {
     flex: 1,
     minWidth: 0,
+    gap: 6,
   },
-  planHeaderBlock: {
-    marginBottom: 4,
+  planTitle: {
+    lineHeight: 22,
   },
-  categoryPill: {
+  planDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  planDateText: {
+    flex: 1,
+    fontSize: 11,
+  },
+  planWishStrip: {
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: Spacing.md,
-    paddingVertical: 3,
-    borderRadius: Radius.pill,
+    paddingVertical: Spacing.sm,
+    gap: 4,
+    marginTop: 2,
   },
-  planDatePill: {
-    marginTop: 6,
-    alignSelf: 'flex-start',
-    maxWidth: '100%',
-    borderRadius: 12,
-    paddingVertical: 4,
+  planWishStripMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  },
+  planWishCategory: {
+    fontSize: 11,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  planWishDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: 'rgba(148,163,184,0.55)',
+  },
+  planDesireStars: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 1,
+  },
+  planWishLevelHint: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  planWishReason: {
+    fontSize: 11,
+    lineHeight: 16,
+    fontStyle: 'italic',
+  },
+  planWishReasonEmpty: {
+    fontSize: 10,
+    lineHeight: 14,
+    opacity: 0.75,
   },
   planAmountRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
     gap: 4,
-    marginBottom: 8,
+    marginTop: 4,
+    marginBottom: 6,
   },
   planTargetHint: {
     fontSize: 10,

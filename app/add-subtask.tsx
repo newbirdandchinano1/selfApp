@@ -8,7 +8,7 @@ import {
   type ScheduleMetaLike,
 } from '@/lib/schedule-inherit';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
-import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -38,7 +38,7 @@ type SchedulePickerResult = {
   quickChip: string;
   allDay: boolean;
   hasExactTime: boolean;
-  reminderOption: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  reminderOption: TaskReminderOption;
   repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary: string;
   weeklyDays: number[];
@@ -55,7 +55,7 @@ type SchedulePickerInitPayload = {
   quickChip?: string;
   allDay?: boolean;
   hasExactTime?: boolean;
-  reminderOption?: '不提前' | '提前1天' | '提前2天' | '提前3天' | '提前7天';
+  reminderOption?: TaskReminderOption;
   repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
   repeatSummary?: string;
   weeklyDays?: number[];
