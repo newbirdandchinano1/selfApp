@@ -48,6 +48,7 @@ import {
   mergeCompletionRewardIntoExtraData,
   parseCompletionRewardFromExtraData,
 } from '@/lib/completion-reward/completion-reward-extra';
+import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 
 type PriorityKey =
   | 'urgent-important'
@@ -567,6 +568,10 @@ export default function EditTaskScreen() {
       if (!task) {
         Alert.alert('任务不存在', '未找到对应任务，可能已被删除。');
         router.back();
+        return;
+      }
+      if (isStandaloneTodoTask(task)) {
+        router.replace(standaloneTodoEditorHref(taskId));
         return;
       }
       setTaskSnapshot(task);

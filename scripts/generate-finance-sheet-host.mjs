@@ -59,7 +59,6 @@ export function FinanceTransactionSheetView({ c }: FinanceTransactionSheetViewPr
     selectedCategoryKey,
     setSelectedCategoryKey,
     zhipuTxnReady,
-    aiLlmProviderLabel,
     sheetSentence,
     setSheetSentence,
     sentenceLedgerPreview,

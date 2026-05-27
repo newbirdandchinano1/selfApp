@@ -4,6 +4,7 @@ import { consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerRe
 import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import { getTaskById, getTaskTreeByRootTaskId, updateTask } from '@/lib/repositories/tasks/task';
+import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -391,6 +392,10 @@ export default function TaskDetailScreen() {
   const loadTaskDetail = React.useCallback(async () => {
     if (!taskId) return;
     const row = await getTaskById(taskId);
+    if (row && isStandaloneTodoTask(row)) {
+      router.replace(standaloneTodoEditorHref(taskId));
+      return;
+    }
     if (row) {
       setTaskLoaded(true);
       setTitle(row.title);

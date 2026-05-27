@@ -67,7 +67,6 @@ const destructureList = `
     selectedCategoryKey,
     setSelectedCategoryKey,
     zhipuTxnReady,
-    aiLlmProviderLabel,
     sheetSentence,
     setSheetSentence,
     sentenceLedgerPreview,

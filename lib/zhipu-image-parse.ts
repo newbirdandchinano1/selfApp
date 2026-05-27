@@ -1,26 +1,9 @@
 /**
  * 智谱 GLM 视觉模型：图片 → JSON（chat/completions）
  * 默认密钥内置在应用中；若设置了 EXPO_PUBLIC_ZHIPU_API_KEY 则优先使用该环境变量（便于轮换而无需改代码）。
- *
- * 另支持豆包（火山方舟 Responses）：在「我的」页切换提供商。密钥优先读 EXPO_PUBLIC_ARK_API_KEY，其次 EXPO_PUBLIC_GEMINI_API_KEY（兼容旧名）；未设置时使用应用内置 Ark 密钥。
  */
 
-import {
-  getPreferredAiLlmProviderSync,
-  type AiLlmProviderId,
-} from '@/lib/ai-llm-provider-preference';
-import {
-  GEMINI_TEXT_MODEL_DEFAULT,
-  GEMINI_VISION_MODEL_DEFAULT,
-  geminiGenerateContentWithRetries,
-  type GeminiInlineUserPart,
-} from '@/lib/gemini-generative';
-
 const ZHIPU_EMBEDDED_API_KEY = 'd0ab5a5e402040d291d9b77f58996d32.nL1sXtGfaUMXzW7W';
-
-/** 内置 Ark 密钥（环境变量 EXPO_PUBLIC_ARK_API_KEY / EXPO_PUBLIC_GEMINI_API_KEY 优先） */
-const GEMINI_EMBEDDED_API_KEY =
-  'ark-7000f340-7c9e-4c84-8661-c6998ee2aa5f-61452';
 
 const ZHIPU_CHAT_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 
@@ -99,7 +82,7 @@ export async function parseImageToJson(options: ParseImageToJsonOptions): Promis
 ${jsonTemplate}`;
 
   try {
-    const dr = await dispatchZhipuOrGeminiVisionChat({
+    const dr = await dispatchZhipuVisionChat({
       apiKey: key,
       systemContent,
       userText: question,
@@ -146,16 +129,6 @@ export function getZhipuApiKey(): string {
   return getZhipuApiKeyFromEnv() || ZHIPU_EMBEDDED_API_KEY;
 }
 
-export function getGeminiApiKeyFromEnv(): string {
-  if (typeof process === 'undefined') return '';
-  return (process.env.EXPO_PUBLIC_ARK_API_KEY ?? process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '').trim();
-}
-
-/** 环境变量优先，否则使用应用内置密钥 */
-export function getGeminiApiKey(): string {
-  return getGeminiApiKeyFromEnv() || GEMINI_EMBEDDED_API_KEY;
-}
-
 export type ZhipuConnectivityProbeResult = {
   httpStatus: number;
   httpOk: boolean;
@@ -200,20 +173,14 @@ export async function probeZhipuTextConnectivity(apiKey: string): Promise<ZhipuC
   }
 }
 
-/** 按当前用户选择的提供商返回对应 API Key（智谱 / 豆包·Ark）。 */
+/** 当前 AI 引擎（智谱）API Key。 */
 export function getActiveAiLlmApiKey(): string {
-  return getPreferredAiLlmProviderSync() === 'gemini' ? getGeminiApiKey() : getZhipuApiKey();
+  return getZhipuApiKey();
 }
 
 export function isActiveAiLlmConfigured(): boolean {
   return Boolean(getActiveAiLlmApiKey().trim());
 }
-
-export function getActiveAiLlmProviderLabel(): '智谱' | '豆包' {
-  return getPreferredAiLlmProviderSync() === 'gemini' ? '豆包' : '智谱';
-}
-
-export type { AiLlmProviderId };
 
 type DispatchTextChatOk = { ok: true; text: string; attempts: number; httpStatus: number };
 type DispatchTextChatFail = {
@@ -225,11 +192,8 @@ type DispatchTextChatFail = {
 };
 type DispatchTextChatResult = DispatchTextChatOk | DispatchTextChatFail;
 
-/**
- * 文本 chat：按用户偏好走智谱 glm-4-flash 或豆包（方舟 Responses）。
- * `forceJsonObject`：智谱侧加 `response_format`；豆包侧在系统提示中附加 JSON 输出约束。
- */
-async function dispatchZhipuOrGeminiTextChat(options: {
+/** 文本 chat：智谱 glm-4-flash；`forceJsonObject` 时加 `response_format`。 */
+async function dispatchZhipuTextChat(options: {
   apiKey: string;
   systemContent: string;
   userContent: string;
@@ -242,30 +206,6 @@ async function dispatchZhipuOrGeminiTextChat(options: {
   const key = options.apiKey.trim();
   if (!key) {
     return { ok: false, error: '未配置 API 密钥', attempts: 0 };
-  }
-
-  if (getPreferredAiLlmProviderSync() === 'gemini') {
-    const gr = await geminiGenerateContentWithRetries({
-      apiKey: key,
-      model: GEMINI_TEXT_MODEL_DEFAULT,
-      systemInstruction: options.systemContent,
-      userParts: [{ kind: 'text', text: options.userContent }],
-      temperature: options.temperature,
-      maxOutputTokens: options.maxTokens,
-      responseMimeType: options.forceJsonObject ? 'application/json' : undefined,
-      maxAttempts: options.maxAttempts,
-      retryDelayMs: options.retryDelayMs,
-    });
-    if (!gr.ok) {
-      return {
-        ok: false,
-        error: gr.error,
-        attempts: gr.attempts,
-        httpStatus: gr.httpStatus,
-        details: gr.details,
-      };
-    }
-    return { ok: true, text: gr.text, attempts: gr.attempts, httpStatus: gr.httpStatus };
   }
 
   const payloadObj: Record<string, unknown> = {
@@ -365,8 +305,8 @@ type DispatchVisionChatFail = {
 };
 type DispatchVisionChatResult = DispatchVisionChatOk | DispatchVisionChatFail;
 
-/** 视觉：智谱 glm-4.6v-flash 或豆包多模态（识图）。 */
-async function dispatchZhipuOrGeminiVisionChat(options: {
+/** 视觉：智谱 glm-4.6v-flash（识图）。 */
+async function dispatchZhipuVisionChat(options: {
   apiKey: string;
   systemContent: string;
   userText: string;
@@ -388,34 +328,6 @@ async function dispatchZhipuOrGeminiVisionChat(options: {
   const rawB64 = options.imageBase64?.trim() ?? '';
   if (!rawB64) {
     return { ok: false, error: '图片数据为空', attempts: 0 };
-  }
-
-  if (getPreferredAiLlmProviderSync() === 'gemini') {
-    const userParts: GeminiInlineUserPart[] = [
-      { kind: 'text', text: options.userText },
-      { kind: 'image', mimeType: mime, base64: rawB64 },
-    ];
-    const gr = await geminiGenerateContentWithRetries({
-      apiKey: key,
-      model: GEMINI_VISION_MODEL_DEFAULT,
-      systemInstruction: options.systemContent,
-      userParts,
-      temperature: options.temperature,
-      maxOutputTokens: options.maxTokens,
-      responseMimeType: options.forceJsonObject ? 'application/json' : undefined,
-      maxAttempts: options.maxAttempts,
-      retryDelayMs: options.retryDelayMs,
-    });
-    if (!gr.ok) {
-      return {
-        ok: false,
-        error: gr.error,
-        attempts: gr.attempts,
-        httpStatus: gr.httpStatus,
-        details: gr.details,
-      };
-    }
-    return { ok: true, text: gr.text, attempts: gr.attempts, httpStatus: gr.httpStatus };
   }
 
   const dataUrl = mime.includes('/') ? `data:${mime};base64,${rawB64}` : `data:image/jpeg;base64,${rawB64}`;
@@ -518,7 +430,7 @@ type LoopTextJsonFinish<T> =
   | { ok: false; error: string; details?: unknown };
 
 /**
- * 文本 JSON：外层重试（智谱 1305 / 豆包 429、503 与 JSON 解析失败），每次请求内为单轮 dispatch。
+ * 文本 JSON：外层重试（智谱 1305 与 JSON 解析失败），每次请求内为单轮 dispatch。
  */
 async function loopTextJsonLlmWithRetries<T>(options: {
   apiKey: string;
@@ -536,7 +448,7 @@ async function loopTextJsonLlmWithRetries<T>(options: {
   let lastError = '未知错误';
   let lastHttp = 0;
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
-    const dr = await dispatchZhipuOrGeminiTextChat({
+    const dr = await dispatchZhipuTextChat({
       apiKey: options.apiKey,
       systemContent: options.systemContent,
       userContent: options.userContent,
@@ -549,10 +461,7 @@ async function loopTextJsonLlmWithRetries<T>(options: {
     if (!dr.ok) {
       lastError = dr.error;
       lastHttp = dr.httpStatus ?? 0;
-      const p = getPreferredAiLlmProviderSync();
-      const retryable =
-        (p === 'zhipu' && bodyIndicatesZhipu1305(dr.details)) ||
-        (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503));
+      const retryable = bodyIndicatesZhipu1305(dr.details);
       if (retryable && attempt < options.maxAttempts) {
         await sleep(options.retryDelayMs);
         continue;
@@ -614,7 +523,7 @@ async function loopVisionJsonLlmWithRetries<T>(options: {
   let lastError = '未知错误';
   let lastHttp = 0;
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
-    const dr = await dispatchZhipuOrGeminiVisionChat({
+    const dr = await dispatchZhipuVisionChat({
       apiKey: options.apiKey,
       systemContent: options.systemContent,
       userText: options.userText,
@@ -630,10 +539,7 @@ async function loopVisionJsonLlmWithRetries<T>(options: {
     if (!dr.ok) {
       lastError = dr.error;
       lastHttp = dr.httpStatus ?? 0;
-      const p = getPreferredAiLlmProviderSync();
-      const retryable =
-        (p === 'zhipu' && bodyIndicatesZhipu1305(dr.details)) ||
-        (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503));
+      const retryable = bodyIndicatesZhipu1305(dr.details);
       if (retryable && attempt < options.maxAttempts) {
         await sleep(options.retryDelayMs);
         continue;
@@ -687,7 +593,7 @@ async function loopPlainTextLlmWithRetries(options: {
   let lastError = '未知错误';
   let lastHttp = 0;
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
-    const dr = await dispatchZhipuOrGeminiTextChat({
+    const dr = await dispatchZhipuTextChat({
       apiKey: options.apiKey,
       systemContent: options.systemContent,
       userContent: options.userContent,
@@ -700,10 +606,7 @@ async function loopPlainTextLlmWithRetries(options: {
     if (!dr.ok) {
       lastError = dr.error;
       lastHttp = dr.httpStatus ?? 0;
-      const p = getPreferredAiLlmProviderSync();
-      const retryable =
-        (p === 'zhipu' && bodyIndicatesZhipu1305(dr.details)) ||
-        (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503));
+      const retryable = bodyIndicatesZhipu1305(dr.details);
       if (retryable && attempt < options.maxAttempts) {
         await sleep(options.retryDelayMs);
         continue;
@@ -846,7 +749,7 @@ ${FOOD_TEXT_INTAKE_JSON_TEMPLATE}`;
   let lastHttp = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const dr = await dispatchZhipuOrGeminiTextChat({
+    const dr = await dispatchZhipuTextChat({
       apiKey: key,
       systemContent,
       userContent: `${question}：${text}`,
@@ -860,10 +763,7 @@ ${FOOD_TEXT_INTAKE_JSON_TEMPLATE}`;
     if (!dr.ok) {
       lastError = dr.error;
       lastHttp = dr.httpStatus ?? 0;
-      const p = getPreferredAiLlmProviderSync();
-      const retryable =
-        (p === 'zhipu' && bodyIndicatesZhipu1305(dr.details)) ||
-        (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503));
+      const retryable = bodyIndicatesZhipu1305(dr.details);
       if (retryable && attempt < maxAttempts) {
         await sleep(retryDelayMs);
         continue;
@@ -993,7 +893,7 @@ export async function estimateDailyIntakeTargetsFromContext(
   let lastHttp = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const dr = await dispatchZhipuOrGeminiTextChat({
+    const dr = await dispatchZhipuTextChat({
       apiKey: key,
       systemContent,
       userContent: `请根据以下上下文生成 hydration_ml、protein_g、carbohydrate_g、sodium_mg 与 rationale_zh：\n\n${context}`,
@@ -1007,10 +907,7 @@ export async function estimateDailyIntakeTargetsFromContext(
     if (!dr.ok) {
       lastError = dr.error;
       lastHttp = dr.httpStatus ?? 0;
-      const p = getPreferredAiLlmProviderSync();
-      const retryable =
-        (p === 'zhipu' && bodyIndicatesZhipu1305(dr.details)) ||
-        (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503));
+      const retryable = bodyIndicatesZhipu1305(dr.details);
       if (retryable && attempt < maxAttempts) {
         await sleep(retryDelayMs);
         continue;
@@ -1588,7 +1485,7 @@ export async function analyzeFinanceTxnCommentFromText(
     systemContent,
     userContent: `以下是单条记账摘要，请生成 comment 字段：\n\n${text}`,
     temperature: 0.35,
-    /** 豆包 seed 等模型可能在 JSON 前消耗较多输出额度；200 易截断导致解析失败，智谱侧略放宽无妨。 */
+    /** 部分模型可能在 JSON 前消耗较多输出额度；200 易截断导致解析失败，略放宽 max_tokens。 */
     maxTokens: 1024,
     maxAttempts,
     retryDelayMs,
@@ -2190,7 +2087,7 @@ function normalizeVisionWallAiAssessmentJson(
 }
 
 /**
- * 总目标墙：根据各计划进度、截止日与剩余完成时间，生成可行性评估与优化建议（智谱/豆包 JSON，格式化 sections）。
+ * 总目标墙：根据各计划进度、截止日与剩余完成时间，生成可行性评估与优化建议（智谱 JSON，格式化 sections）。
  */
 export async function analyzeVisionWallGoalsFromText(
   options: AnalyzeVisionWallGoalsFromTextOptions,
@@ -2902,7 +2799,7 @@ export async function zhipuVisionChatRaw(options: ZhipuVisionChatRawOptions): Pr
   let lastBody: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const dr = await dispatchZhipuOrGeminiVisionChat({
+    const dr = await dispatchZhipuVisionChat({
       apiKey: key,
       systemContent:
         '用户会发图片。请用自然、口语化的中文像朋友一样分享你看到的内容和联想，不必遵守固定输出格式，不要用 JSON。',
@@ -2929,13 +2826,10 @@ export async function zhipuVisionChatRaw(options: ZhipuVisionChatRawOptions): Pr
     }
 
     lastHttpStatus = dr.httpStatus ?? lastHttpStatus;
-    const p = getPreferredAiLlmProviderSync();
     const outboundDetails = dr.ok ? undefined : dr.details;
     const retryable =
       (dr.ok && !dr.text.trim() && attempt < maxAttempts) ||
-      (!dr.ok &&
-        ((p === 'zhipu' && bodyIndicatesZhipu1305(outboundDetails)) ||
-          (p === 'gemini' && (dr.httpStatus === 429 || dr.httpStatus === 503))));
+      (!dr.ok && bodyIndicatesZhipu1305(outboundDetails));
     if (retryable && attempt < maxAttempts) {
       await sleep(retryDelayMs);
       continue;

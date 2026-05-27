@@ -16,7 +16,6 @@ import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/financ
 import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
 import {
   getActiveAiLlmApiKey,
-  getActiveAiLlmProviderLabel,
   isActiveAiLlmConfigured,
   parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
@@ -113,7 +112,6 @@ export function useFinanceTransactionSheetController({
   } = sheetCategories;
 
   const zhipuTxnReady = isActiveAiLlmConfigured();
-  const aiLlmProviderLabel = getActiveAiLlmProviderLabel();
 
   const manualSheetMaxHeight = React.useMemo(
     () => Dimensions.get('window').height - insets.top - 10,
@@ -793,7 +791,6 @@ export function useFinanceTransactionSheetController({
     selectedCategoryKey,
     setSelectedCategoryKey,
     zhipuTxnReady,
-    aiLlmProviderLabel,
     sheetSentence,
     setSheetSentence,
     sentenceLedgerPreview,

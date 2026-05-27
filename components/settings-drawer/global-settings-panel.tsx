@@ -2,16 +2,7 @@ import { AppInput } from '@/components/ui/app-input';
 import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
-import type { AiLlmProviderId } from '@/lib/ai-llm-provider-preference';
-import {
-  getPreferredAiLlmProviderSync,
-  loadAiLlmProviderPreference,
-  setPreferredAiLlmProvider,
-} from '@/lib/ai-llm-provider-preference';
-import {
-  probeGeminiTextAndVisionConnectivity,
-  type GeminiConnectivityProbeRow,
-} from '@/lib/gemini-generative';
+import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import {
   DEFAULT_GITHUB_FULL_BACKUP_ROOT,
   DEFAULT_KV_API_URL,
@@ -34,7 +25,12 @@ import {
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import type { ThemePreference } from '@/lib/theme-preference';
-import { getGeminiApiKey, getGeminiApiKeyFromEnv, getZhipuApiKeyFromEnv } from '@/lib/zhipu-image-parse';
+import {
+  getZhipuApiKey,
+  getZhipuApiKeyFromEnv,
+  probeZhipuTextConnectivity,
+  type ZhipuConnectivityProbeResult,
+} from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
@@ -113,10 +109,9 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [draftBoundary, setDraftBoundary] = useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
   const [dayBoundaryPickerVisible, setDayBoundaryPickerVisible] = useState(false);
 
-  const [aiLlmProvider, setAiLlmProvider] = useState<AiLlmProviderId>(() => getPreferredAiLlmProviderSync());
-  const [geminiProbeLoading, setGeminiProbeLoading] = useState(false);
-  const [geminiProbeRows, setGeminiProbeRows] = useState<GeminiConnectivityProbeRow[] | null>(null);
-  const [geminiProbeError, setGeminiProbeError] = useState<string | null>(null);
+  const [zhipuProbeLoading, setZhipuProbeLoading] = useState(false);
+  const [zhipuProbeResult, setZhipuProbeResult] = useState<ZhipuConnectivityProbeResult | null>(null);
+  const [zhipuProbeError, setZhipuProbeError] = useState<string | null>(null);
 
   const [githubTokenDraft, setGithubTokenDraft] = useState('');
   const [githubTokenConfigured, setGithubTokenConfigured] = useState(() => hasGithubUserTokenSync());
@@ -161,7 +156,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
   useEffect(() => {
     void loadLastFullGithubBackupMeta();
-    void loadAiLlmProviderPreference().then(() => setAiLlmProvider(getPreferredAiLlmProviderSync()));
+    void loadAiLlmProviderPreference();
     void refreshGithubTokenFromStorage();
   }, [loadLastFullGithubBackupMeta, refreshGithubTokenFromStorage]);
 
@@ -315,7 +310,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
       const r = await triggerGithubCloudRestoreFromFullBackup({ signal: ac.signal });
       if (r.ok) {
         setLastFullGithubBackupAtIso(r.cloudLastUpdated);
-        void loadAiLlmProviderPreference().then(() => setAiLlmProvider(getPreferredAiLlmProviderSync()));
+        void loadAiLlmProviderPreference();
         const kvLine = r.kvKeys.length > 0 ? `\n已恢复 KV：${r.kvKeys.join('、')}` : '';
         const warnBlock =
           r.warnings.length > 0 ? `\n\n注意：\n${r.warnings.map(w => `· ${w}`).join('\n')}` : '';
@@ -359,17 +354,17 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     );
   }, [githubCloudOpBusy, runCloudRestore]);
 
-  const runGeminiConnectivityProbe = useCallback(async () => {
-    setGeminiProbeLoading(true);
-    setGeminiProbeError(null);
-    setGeminiProbeRows(null);
+  const runZhipuConnectivityProbe = useCallback(async () => {
+    setZhipuProbeLoading(true);
+    setZhipuProbeError(null);
+    setZhipuProbeResult(null);
     try {
-      const rows = await probeGeminiTextAndVisionConnectivity(getGeminiApiKey());
-      setGeminiProbeRows(rows);
+      const row = await probeZhipuTextConnectivity(getZhipuApiKey());
+      setZhipuProbeResult(row);
     } catch (e) {
-      setGeminiProbeError(e instanceof Error ? e.message : String(e));
+      setZhipuProbeError(e instanceof Error ? e.message : String(e));
     } finally {
-      setGeminiProbeLoading(false);
+      setZhipuProbeLoading(false);
     }
   }, []);
 
@@ -707,79 +702,39 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           {renderSectionHead('AI', '文本与识图引擎')}
           <View style={[styles.card, { backgroundColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(0,88,190,0.04)', borderColor: cardBorder, gap: 10 }]}>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 19 }]}>
-              记账、备忘、心愿、饮食识图等共用同一引擎。智谱可用 EXPO_PUBLIC_ZHIPU_API_KEY；豆包可用
-              EXPO_PUBLIC_ARK_API_KEY。
+              记账、备忘、心愿、饮食识图等共用智谱 GLM。可用 EXPO_PUBLIC_ZHIPU_API_KEY 覆盖内置密钥。
             </Text>
-            <View style={{ flexDirection: 'row', gap: 10 }}>
-              <Pressable
-                onPress={() => void setPreferredAiLlmProvider('zhipu').then(() => setAiLlmProvider('zhipu'))}
-                style={({ pressed }) => [
-                  styles.aiProviderBtn,
-                  {
-                    borderColor: aiLlmProvider === 'zhipu' ? primary : outlineVariant,
-                    backgroundColor:
-                      aiLlmProvider === 'zhipu'
-                        ? isDark
-                          ? 'rgba(96,165,250,0.15)'
-                          : 'rgba(0,88,190,0.08)'
-                        : 'transparent',
-                    opacity: pressed ? 0.85 : 1,
-                  },
-                ]}>
-                <Text style={[styles.rowTitle, { color: text, fontSize: 14 }]}>智谱 GLM</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4, textAlign: 'center', fontSize: 11 }]}>
-                  {getZhipuApiKeyFromEnv() ? '已设置环境变量' : '未设置时走内置'}
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => void setPreferredAiLlmProvider('gemini').then(() => setAiLlmProvider('gemini'))}
-                style={({ pressed }) => [
-                  styles.aiProviderBtn,
-                  {
-                    borderColor: aiLlmProvider === 'gemini' ? primary : outlineVariant,
-                    backgroundColor:
-                      aiLlmProvider === 'gemini'
-                        ? isDark
-                          ? 'rgba(96,165,250,0.15)'
-                          : 'rgba(0,88,190,0.08)'
-                        : 'transparent',
-                    opacity: pressed ? 0.85 : 1,
-                  },
-                ]}>
-                <Text style={[styles.rowTitle, { color: text, fontSize: 14 }]}>豆包</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4, textAlign: 'center', fontSize: 11 }]}>
-                  {getGeminiApiKeyFromEnv() ? '已设置 ARK 变量' : '内置密钥可覆盖'}
-                </Text>
-              </Pressable>
-            </View>
+            <Text style={[styles.rowHint, { color: outline, fontSize: 11 }]}>
+              {getZhipuApiKeyFromEnv() ? '已设置 EXPO_PUBLIC_ZHIPU_API_KEY' : '未设置环境变量时使用应用内置密钥'}
+            </Text>
 
             <Pressable
-              onPress={() => void runGeminiConnectivityProbe()}
-              disabled={geminiProbeLoading}
+              onPress={() => void runZhipuConnectivityProbe()}
+              disabled={zhipuProbeLoading}
               style={({ pressed }) => [
                 styles.probeBtn,
-                { borderColor: cardBorder, opacity: pressed || geminiProbeLoading ? 0.75 : 1 },
+                { borderColor: cardBorder, opacity: pressed || zhipuProbeLoading ? 0.75 : 1 },
               ]}>
-              {geminiProbeLoading ? (
+              {zhipuProbeLoading ? (
                 <ActivityIndicator size="small" color={primary} />
               ) : (
                 <MaterialIcons name="cloud-done" size={20} color={primary} />
               )}
               <Text style={[styles.rowTitle, { color: text, fontSize: 14 }]}>
-                {geminiProbeLoading ? '正在测试豆包…' : '测试豆包连通性'}
+                {zhipuProbeLoading ? '正在测试智谱…' : '测试智谱连通性'}
               </Text>
             </Pressable>
 
-            {geminiProbeError ? (
+            {zhipuProbeError ? (
               <Text selectable style={{ fontSize: 12, color: '#b91c1c', fontFamily: 'monospace' }}>
-                {geminiProbeError}
+                {zhipuProbeError}
               </Text>
             ) : null}
 
-            {geminiProbeRows && geminiProbeRows.length > 0 ? (
+            {zhipuProbeResult ? (
               <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled>
                 <Text selectable style={{ fontSize: 11, color: text, fontFamily: 'monospace' }}>
-                  {JSON.stringify(geminiProbeRows, null, 2)}
+                  {JSON.stringify(zhipuProbeResult, null, 2)}
                 </Text>
               </ScrollView>
             ) : null}
@@ -882,13 +837,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 10,
     borderWidth: 1,
-  },
-  aiProviderBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    borderWidth: 2,
   },
   probeBtn: {
     flexDirection: 'row',

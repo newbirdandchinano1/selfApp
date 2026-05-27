@@ -58,7 +58,6 @@ import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/financ
 import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
 import {
   getActiveAiLlmApiKey,
-  getActiveAiLlmProviderLabel,
   isActiveAiLlmConfigured,
   parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';

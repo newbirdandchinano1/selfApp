@@ -54,7 +54,6 @@ import { consumeShortcutImageHandoffExpected } from '@/lib/shortcut-auto-ledger-
 import { getShortcutHandoffKey } from '@/lib/shortcut-auto-ledger-handoff';
 import {
   getActiveAiLlmApiKey,
-  getActiveAiLlmProviderLabel,
   parseFinanceOneLinerFromImage,
 } from '@/lib/zhipu-image-parse';
 import { Alert } from 'react-native';
@@ -198,12 +197,7 @@ export async function processAutoLedgerFromImage(
   try {
     const key = getActiveAiLlmApiKey().trim();
     if (!key) {
-      const prov = getActiveAiLlmProviderLabel();
-      const env =
-        prov === '豆包'
-          ? 'EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）'
-          : 'EXPO_PUBLIC_ZHIPU_API_KEY';
-      const msg = `未配置 ${prov} 密钥（${env}）。`;
+      const msg = '未配置智谱密钥（EXPO_PUBLIC_ZHIPU_API_KEY）。';
       reportAutoLedgerError(msg, opts);
       return;
     }

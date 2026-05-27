@@ -25,13 +25,26 @@ import {
 } from '@/lib/schedule-inherit';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
-import { createTask } from '@/lib/repositories/tasks/task';
-import type { TaskPriority } from '@/lib/repositories/tasks/task.types';
+import { createTask, getTaskById, updateTask } from '@/lib/repositories/tasks/task';
+import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
+import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
 import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
@@ -182,6 +195,31 @@ function isDueYmdToday(dueYmd: string | null): boolean {
   return dueYmd === getLogicalLocalYmd(new Date(), getDayBoundarySync());
 }
 
+function taskPriorityToKey(priority: number): TaskPriorityKey {
+  if (priority >= 4) return 'urgent-important';
+  if (priority === 3) return 'urgent-not-important';
+  if (priority === 2) return 'not-urgent-important';
+  return 'not-urgent-not-important';
+}
+
+function parseStandaloneTaskScheduleMeta(extraData: string | null): TaskScheduleMeta | null {
+  if (!extraData) return null;
+  try {
+    const parsed = JSON.parse(extraData) as { schedule?: TaskScheduleMeta };
+    return parsed?.schedule ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveStandaloneStatusOnSave(previous: string, intent: 'active' | 'shelved'): string {
+  if (intent === 'shelved') return 'shelved';
+  if (previous === 'done' || previous === 'cancelled' || previous === 'doing' || previous === 'blocked') {
+    return previous;
+  }
+  return 'todo';
+}
+
 export default function AddTaskScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
@@ -191,6 +229,7 @@ export default function AddTaskScreen() {
     projectId?: string;
     categoryId?: string;
     standalone?: string;
+    id?: string;
   }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
@@ -211,18 +250,24 @@ export default function AddTaskScreen() {
   const [projectName, setProjectName] = React.useState<string | null>(null);
   /** 独立待办：正常待办 vs 暂时搁置（时间未定，不可直接完成） */
   const [standaloneIntent, setStandaloneIntent] = React.useState<'active' | 'shelved'>('active');
+  const [loadingEdit, setLoadingEdit] = React.useState(false);
+  const editTaskStatusRef = React.useRef<string>('todo');
 
   const isStandalone =
     firstRouteParam(params.standalone) === '1' || firstRouteParam(params.standalone).toLowerCase() === 'true';
+  const editTaskId = isStandalone ? firstRouteParam(params.id) : '';
+  const isEditStandalone = isStandalone && !!editTaskId;
   const titleMaxLength = isStandalone ? MAX_STANDALONE_TODO_TITLE_LENGTH : MAX_PROJECT_TASK_TITLE_LENGTH;
 
   const quickProjectId = isStandalone ? '' : firstRouteParam(params.projectId);
   const quickCategoryRaw = firstRouteParam(params.categoryId);
   const quickTaskCategoryId =
     !quickCategoryRaw || quickCategoryRaw === INBOX_PROJECT_CATEGORY_ID ? null : quickCategoryRaw;
-  const scheduleSource = isStandalone
-    ? STANDALONE_SCHEDULE_SOURCE
-    : normalizeRouteParam(params.source as string | string[] | undefined) || 'add-task';
+  const scheduleSource = isEditStandalone
+    ? `edit-standalone-todo-${editTaskId}`
+    : isStandalone
+      ? STANDALONE_SCHEDULE_SOURCE
+      : normalizeRouteParam(params.source as string | string[] | undefined) || 'add-task';
   const dateLimit = React.useMemo(
     () => parseDateLimitParam(typeof params.dateLimit === 'string' ? params.dateLimit : undefined),
     [params.dateLimit],
@@ -274,6 +319,75 @@ export default function AddTaskScreen() {
   }, [params.dateLimit, params.defaultSchedule, quickProjectId, scheduleMeta]);
 
   const priorityLabel = taskPriorityLabel(priority);
+
+  const applyLoadedStandaloneTask = React.useCallback((task: TaskRow) => {
+    setTitle(task.title ?? '');
+    setNotes(task.note ?? '');
+    setPriority(taskPriorityToKey(task.priority ?? 0));
+    editTaskStatusRef.current = task.status;
+    const shelved = task.status === 'shelved';
+    setStandaloneIntent(shelved ? 'shelved' : 'active');
+    if (shelved) {
+      setDeadlineText('');
+      setReminderText('');
+      setRepeatText('');
+      setScheduleMeta(null);
+      return;
+    }
+    const loadedSchedule = parseStandaloneTaskScheduleMeta(task.extra_data);
+    if (loadedSchedule) {
+      const applied = applyScheduleMetaToLabels(loadedSchedule);
+      setDeadlineText(applied.deadlineText);
+      setReminderText(applied.reminderText);
+      setRepeatText(applied.repeatText);
+      setScheduleMeta(applied.scheduleMeta as TaskScheduleMeta);
+      return;
+    }
+    let reminder = '';
+    let repeat = '';
+    if (task.extra_data) {
+      try {
+        const parsed = JSON.parse(task.extra_data) as { reminder?: string; repeat?: string };
+        reminder = typeof parsed.reminder === 'string' ? parsed.reminder : '';
+        repeat = typeof parsed.repeat === 'string' ? parsed.repeat : '';
+      } catch {
+        /* ignore */
+      }
+    }
+    setDeadlineText(task.due_date ? formatDate(task.due_date) : '');
+    setReminderText(reminder);
+    setRepeatText(repeat);
+    setScheduleMeta(null);
+  }, []);
+
+  React.useEffect(() => {
+    if (!isEditStandalone || !editTaskId) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingEdit(true);
+      try {
+        const task = await getTaskById(editTaskId);
+        if (cancelled) return;
+        if (!task || !isStandaloneTodoTask(task)) {
+          Alert.alert('待办不存在', '未找到对应待办，可能已被删除。');
+          router.back();
+          return;
+        }
+        applyLoadedStandaloneTask(task);
+      } catch (error) {
+        console.warn('加载待办失败', error);
+        if (!cancelled) {
+          Alert.alert('加载失败', '无法读取待办，请稍后重试。');
+          router.back();
+        }
+      } finally {
+        if (!cancelled) setLoadingEdit(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyLoadedStandaloneTask, editTaskId, isEditStandalone, router]);
 
   React.useEffect(() => {
     if (!quickProjectId) {
@@ -408,26 +522,38 @@ export default function AddTaskScreen() {
     if (isStandalone) {
       try {
         setIsSubmitting(true);
-        const id = `tsk_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         const shelved = standaloneIntent === 'shelved';
-        await createTask({
-          id,
-          project_id: null,
-          category_id: null,
-          parent_task_id: null,
-          title: trimmedTitle,
-          note: notes.trim() || null,
-          status: shelved ? 'shelved' : 'todo',
-          priority: labelToTaskPriority(priorityLabel),
-          due_date: shelved ? null : extractDueDateFromDeadlineText(deadlineText) ?? null,
-          extra_data: shelved
-            ? JSON.stringify({ reminder: '', repeat: '', schedule: null })
-            : JSON.stringify({
-                reminder: reminderText || '',
-                repeat: repeatText || '',
-                schedule: scheduleMeta,
-              }),
-        });
+        const extraPayload = shelved
+          ? JSON.stringify({ reminder: '', repeat: '', schedule: null })
+          : JSON.stringify({
+              reminder: reminderText || '',
+              repeat: repeatText || '',
+              schedule: scheduleMeta,
+            });
+        if (isEditStandalone) {
+          await updateTask(editTaskId, {
+            title: trimmedTitle,
+            note: notes.trim() || null,
+            status: resolveStandaloneStatusOnSave(editTaskStatusRef.current, standaloneIntent),
+            priority: labelToTaskPriority(priorityLabel),
+            due_date: shelved ? null : extractDueDateFromDeadlineText(deadlineText) ?? null,
+            extra_data: extraPayload,
+          });
+        } else {
+          const id = `tsk_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+          await createTask({
+            id,
+            project_id: null,
+            category_id: null,
+            parent_task_id: null,
+            title: trimmedTitle,
+            note: notes.trim() || null,
+            status: shelved ? 'shelved' : 'todo',
+            priority: labelToTaskPriority(priorityLabel),
+            due_date: shelved ? null : extractDueDateFromDeadlineText(deadlineText) ?? null,
+            extra_data: extraPayload,
+          });
+        }
         router.back();
       } catch (error) {
         console.warn('保存待办失败', error);
@@ -495,15 +621,17 @@ export default function AddTaskScreen() {
     : projectName
       ? `归属 · ${projectName}`
       : undefined;
+  const screenTitle = isEditStandalone ? '编辑待办' : isStandalone ? '新建待办' : '新建任务';
+  const formBusy = isSubmitting || loadingEdit;
 
   return (
     <SafeAreaView style={[composerStyles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
       <ComposerTopBar
-        title={isStandalone ? '新建待办' : '新建任务'}
+        title={screenTitle}
         subtitle={topSubtitle}
         onBack={() => router.back()}
         onSubmit={() => void handleCreateTask()}
-        submitting={isSubmitting}
+        submitting={formBusy}
         submitLabel={isStandalone ? '保存' : '创建'}
       />
 
@@ -515,6 +643,12 @@ export default function AddTaskScreen() {
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
+          {loadingEdit ? (
+            <View style={styles.editLoading}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={[Typography.caption, { color: colors.textSecondary }]}>加载待办…</Text>
+            </View>
+          ) : (
           <ComposerMain>
             <ComposerHero
               badgeIcon="task-alt"
@@ -629,6 +763,7 @@ export default function AddTaskScreen() {
               placeholder="背景信息、协作人、链接…（可选）"
             />
           </ComposerMain>
+          )}
         </ScrollView>
 
         <Modal transparent visible={mainTaskOpen} animationType="fade" onRequestClose={() => setMainTaskOpen(false)}>
@@ -709,6 +844,11 @@ export default function AddTaskScreen() {
 }
 
 const styles = StyleSheet.create({
+  editLoading: {
+    paddingVertical: Spacing['6xl'],
+    alignItems: 'center',
+    gap: Spacing.xl,
+  },
   standaloneIntentRow: {
     flexDirection: 'row',
     gap: Spacing.md,

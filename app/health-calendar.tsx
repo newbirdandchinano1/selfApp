@@ -1,6 +1,5 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { resetDatabase } from '@/lib/database.native';
 import {
   getHealthIntakeTotalsForUserOnDate,
   getHealthRecordsByUserId,
@@ -10,7 +9,7 @@ import { getDefaultUser } from '@/lib/repositories/users/user';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, FlatList, ListRenderItemInfo, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, ListRenderItemInfo, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 
@@ -128,7 +127,6 @@ export default function HealthCalendarScreen() {
   const [selectedMetrics, setSelectedMetrics] = React.useState<SelectedDayMetrics | null>(null);
   const [showBackToTop, setShowBackToTop] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
-  const [isResetting, setIsResetting] = React.useState(false);
   const listRef = React.useRef<FlatList<TimelineItem>>(null);
 
   useFocusEffect(
@@ -317,31 +315,6 @@ export default function HealthCalendarScreen() {
     );
   };
 
-  const handleResetDatabase = React.useCallback(() => {
-    Alert.alert('清库确认', '这会删除本地所有数据并重新建表，是否继续？', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '清库重建',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            setIsResetting(true);
-            await resetDatabase();
-            const fallback = buildTimelineData(today, addDays(today, -29), new Set<string>(), new Map());
-            setTimelineData(fallback);
-            setSelectedKey(null);
-            setSelectedMetrics(null);
-            Alert.alert('完成', '本地数据库已清空并重建。');
-          } catch {
-            Alert.alert('失败', '清库失败，请稍后重试。');
-          } finally {
-            setIsResetting(false);
-          }
-        },
-      },
-    ]);
-  }, [today]);
-
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top', 'left', 'right']}>
       <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15,23,42,0.95)' : 'rgba(248,250,252,0.95)' }]}>
@@ -352,13 +325,7 @@ export default function HealthCalendarScreen() {
           <Text style={[styles.headerTitle, { color: theme.text }]}>健康日历脉络</Text>
           <Text style={styles.headerSub}>{currentMonthLabel}</Text>
         </View>
-        <TouchableOpacity
-          style={[styles.iconBtn, { backgroundColor: theme.surface }]}
-          onPress={handleResetDatabase}
-          disabled={isResetting}
-        >
-          <MaterialIcons name="refresh" size={20} color={isResetting ? '#94a3b8' : theme.text} />
-        </TouchableOpacity>
+        <View style={styles.headerSpacer} />
       </View>
 
       <View style={styles.timelineContainer}>
@@ -512,6 +479,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  headerSpacer: { width: 40, height: 40 },
   headerCenter: { alignItems: 'center' },
   headerTitle: { fontSize: 18, fontWeight: '700' },
   headerSub: { marginTop: 2, fontSize: 10, letterSpacing: 1.1, fontWeight: '800', color: '#10b981' },

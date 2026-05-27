@@ -14,6 +14,7 @@ import {
   getTaskGlobalInsightCounts,
   type TaskExecutionEventWithTitle,
 } from '@/lib/repositories/tasks/task-execution-events';
+import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { buildGlobalTaskHeatmapGrid, heatmapGridDayRange, type HeatmapCell } from '@/lib/tasks-global-heatmap';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -640,7 +641,11 @@ export default function TasksOverviewScreen() {
                 statTasks.map((t, idx) => (
                   <Pressable
                     key={t.id}
-                    onPress={() => router.push({ pathname: '/task/[id]', params: { id: t.id } })}
+                    onPress={() =>
+                      router.push(
+                        isStandaloneTodoTask(t) ? standaloneTodoEditorHref(t.id) : { pathname: '/task/[id]', params: { id: t.id } },
+                      )
+                    }
                     style={({ pressed }) => [
                       styles.histRow,
                       { borderBottomColor: border, opacity: pressed ? 0.86 : 1 },

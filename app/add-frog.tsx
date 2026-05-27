@@ -7,6 +7,7 @@ import { buildProjectLockMap } from '@/lib/repositories/projects/project-prerequ
 import { getProjects } from '@/lib/repositories/projects/project';
 import { getTasks, getTasksByProjectId, updateTask, type TaskTreeNode } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import { standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -681,7 +682,13 @@ export default function AddFrogScreen() {
                       </Pressable>
                       <Pressable
                         style={({ pressed }) => [styles.itemText, pressed && { opacity: 0.82 }]}
-                        onPress={() => router.push({ pathname: '/task/[id]', params: { id: it.id } })}>
+                        onPress={() =>
+                          router.push(
+                            !it.parentLabel && !it.projectLabel
+                              ? standaloneTodoEditorHref(it.id)
+                              : { pathname: '/task/[id]', params: { id: it.id } },
+                          )
+                        }>
                         <Text style={[styles.itemTitle, { color: theme.text }]}>{it.title}</Text>
                         {it.parentLabel ? (
                           <Text style={[styles.itemContextHint, { color: outline }]} numberOfLines={1}>
@@ -797,7 +804,13 @@ export default function AddFrogScreen() {
                           </Pressable>
                           <Pressable
                             style={({ pressed }) => [styles.itemText, pressed && { opacity: 0.82 }]}
-                            onPress={() => router.push({ pathname: '/task/[id]', params: { id: it.id } })}>
+                            onPress={() =>
+                              router.push(
+                                !it.parentLabel && !it.projectLabel
+                                  ? standaloneTodoEditorHref(it.id)
+                                  : { pathname: '/task/[id]', params: { id: it.id } },
+                              )
+                            }>
                             <Text style={[styles.itemTitle, { color: checked ? hoverColor : titleColor }]}>{it.title}</Text>
                             {it.parentLabel ? (
                               <Text style={[styles.itemContextHint, { color: outline }]} numberOfLines={1}>

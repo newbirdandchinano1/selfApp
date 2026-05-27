@@ -2615,7 +2615,7 @@ export default function HealthScreen() {
             ) : null}
             {!dailyAiLoading && !dailyAiTargets && isActiveAiLlmConfigured() === false ? (
               <Text style={[styles.suggestAiHint, { color: colors.textSecondary }]}>
-                未配置 AI 密钥时「今日最佳」使用本地公式；可在「我的」中配置智谱或豆包后获得每日 AI 目标。
+                未配置 AI 密钥时「今日最佳」使用本地公式；可在「我的」中配置智谱后获得每日 AI 目标。
               </Text>
             ) : null}
 

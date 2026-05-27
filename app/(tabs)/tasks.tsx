@@ -89,6 +89,7 @@ import {
   taskHasRepeatingSchedule,
 } from '@/lib/task-repeat-rollover';
 import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
+import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
 import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -124,6 +125,15 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Swipeable } from 'react-native-gesture-handler';
 
 const PROJECT_EXPANDED_STORAGE_KEY = '@tasks_project_expanded_v1';
+const HIDE_COMPLETED_PROJECT_TASKS_STORAGE_KEY = '@tasks_hide_completed_project_tasks_v1';
+const TASKS_MAIN_LIST_VIEW_STORAGE_KEY = '@tasks_main_list_view_v1';
+
+type TasksMainListView = 'projects' | 'tasks';
+
+const MAIN_LIST_VIEW_TABS: Array<{ key: TasksMainListView; label: string }> = [
+  { key: 'projects', label: '项目列表' },
+  { key: 'tasks', label: '任务列表' },
+];
 
 /** Tasks「小习惯」网格：固定每行列数，单元宽度按行宽均分 */
 const HABIT_GRID_GAP = 16;
@@ -237,6 +247,104 @@ function SegmentTabs({
         );
       })}
     </ScrollView>
+  );
+}
+
+/** 任务页主列表：项目列表 / 任务列表二选一展示 */
+function MainListViewSwitcher({
+  value,
+  onChange,
+  primary,
+  muted,
+  onPrimary,
+  trackBg,
+}: {
+  value: TasksMainListView;
+  onChange: (next: TasksMainListView) => void;
+  primary: string;
+  muted: string;
+  onPrimary: string;
+  trackBg: string;
+}) {
+  return (
+    <View
+      style={[styles.mainListViewTrack, { backgroundColor: trackBg }]}
+      accessibilityRole="tablist">
+      {MAIN_LIST_VIEW_TABS.map((tab) => {
+        const active = tab.key === value;
+        return (
+          <Pressable
+            key={tab.key}
+            onPress={() => onChange(tab.key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+            style={({ pressed }) => [
+              styles.mainListViewBtn,
+              active && { backgroundColor: primary },
+              pressed && { opacity: 0.9 },
+            ]}>
+            <Text
+              style={[
+                styles.mainListViewBtnText,
+                { color: active ? onPrimary : muted, fontWeight: active ? '800' : '600' },
+              ]}>
+              {tab.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/** 项目列表：筛选是否隐藏已完成任务（样式与 ghost 按钮一致） */
+function ProjectListTaskFilterChip({
+  active,
+  onPress,
+  primary,
+  outline,
+  onPrimary,
+  isDark,
+}: {
+  active: boolean;
+  onPress: () => void;
+  primary: string;
+  outline: string;
+  onPrimary: string;
+  isDark: boolean;
+}) {
+  return (
+    <ScalePressable
+      onPress={onPress}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: active }}
+      accessibilityLabel="隐藏已完成任务"
+      style={({ pressed }) => [
+        styles.projectFilterChip,
+        {
+          borderColor: active ? `${primary}55` : isDark ? 'rgba(148,163,184,0.28)' : 'rgba(194,198,214,0.8)',
+          backgroundColor: active
+            ? isDark
+              ? 'rgba(96,165,250,0.16)'
+              : 'rgba(0,88,190,0.08)'
+            : isDark
+              ? 'rgba(15,23,42,0.45)'
+              : 'rgba(248,250,252,0.95)',
+        },
+        pressed && { opacity: 0.88 },
+      ]}>
+      <View
+        style={[
+          styles.projectFilterChipMark,
+          {
+            borderColor: active ? primary : outline,
+            backgroundColor: active ? primary : 'transparent',
+          },
+        ]}>
+        {active ? <MaterialIcons name="check" size={11} color={onPrimary} /> : null}
+      </View>
+      <Text style={[styles.projectFilterChipText, { color: active ? primary : outline }]}>隐藏已完成任务</Text>
+    </ScalePressable>
   );
 }
 
@@ -1193,6 +1301,23 @@ function isProjectListProgressComplete(nodes: TaskTreeNode[]): boolean {
   return nodes.every((n) => n.status === 'done' || n.status === 'cancelled');
 }
 
+function isTaskNodeDoneOrCancelled(node: TaskTreeNode): boolean {
+  return node.status === 'done' || node.status === 'cancelled';
+}
+
+/** 项目列表展开区：隐藏已完成/已取消任务（保留仍有未完成子节点的父任务） */
+function filterProjectListTaskTree(nodes: TaskTreeNode[], hideCompleted: boolean): TaskTreeNode[] {
+  if (!hideCompleted) return nodes;
+  const result: TaskTreeNode[] = [];
+  for (const node of nodes) {
+    const children = Array.isArray(node.children) ? node.children : [];
+    const filteredChildren = filterProjectListTaskTree(children, true);
+    if (isTaskNodeDoneOrCancelled(node) && filteredChildren.length === 0) continue;
+    result.push({ ...node, children: filteredChildren });
+  }
+  return result;
+}
+
 /** 是否达到可询问归纳收集箱的完成度：有截止日期对齐列表进度，否则需整棵树完成 */
 function isProjectInboxProgressComplete(project: ProjectRow, nodes: TaskTreeNode[]): boolean {
   if (nodes.length === 0) return false;
@@ -1326,12 +1451,14 @@ export default function TasksScreen() {
 
   const [taskTab, setTaskTab] = React.useState<string>('all');
   const [projectTab, setProjectTab] = React.useState<string>('all');
+  const [mainListView, setMainListView] = React.useState<TasksMainListView>('projects');
   const [projects, setProjects] = React.useState<ProjectRow[]>([]);
   const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [tasks, setTasks] = React.useState<TaskRow[]>([]);
   const [completionHeatmapReloadToken, setCompletionHeatmapReloadToken] = React.useState(0);
   const [projectTaskTreeMap, setProjectTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
   const [expandedProjectIds, setExpandedProjectIds] = React.useState<Record<string, boolean>>({});
+  const [hideCompletedProjectTasks, setHideCompletedProjectTasks] = React.useState(false);
   const [collapsedTaskIds, setCollapsedTaskIds] = React.useState<Record<string, boolean>>({});
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
   const [categoryEditorVisible, setCategoryEditorVisible] = React.useState(false);
@@ -1525,6 +1652,61 @@ export default function TasksScreen() {
     }
   }, []);
 
+  const loadHideCompletedProjectTasks = React.useCallback(async (): Promise<boolean | null> => {
+    try {
+      const raw = await AsyncStorage.getItem(HIDE_COMPLETED_PROJECT_TASKS_STORAGE_KEY);
+      if (raw === '1') return true;
+      if (raw === '0') return false;
+      return null;
+    } catch (err) {
+      console.warn('读取隐藏已完成项目任务偏好失败', err);
+      return null;
+    }
+  }, []);
+
+  const saveHideCompletedProjectTasks = React.useCallback(async (hide: boolean) => {
+    try {
+      await AsyncStorage.setItem(HIDE_COMPLETED_PROJECT_TASKS_STORAGE_KEY, hide ? '1' : '0');
+    } catch (err) {
+      console.warn('保存隐藏已完成项目任务偏好失败', err);
+    }
+  }, []);
+
+  const onHideCompletedProjectTasksChange = React.useCallback(
+    (hide: boolean) => {
+      setHideCompletedProjectTasks(hide);
+      void saveHideCompletedProjectTasks(hide);
+    },
+    [saveHideCompletedProjectTasks],
+  );
+
+  const loadMainListView = React.useCallback(async (): Promise<TasksMainListView | null> => {
+    try {
+      const raw = await AsyncStorage.getItem(TASKS_MAIN_LIST_VIEW_STORAGE_KEY);
+      if (raw === 'projects' || raw === 'tasks') return raw;
+      return null;
+    } catch (err) {
+      console.warn('读取主列表视图偏好失败', err);
+      return null;
+    }
+  }, []);
+
+  const saveMainListView = React.useCallback(async (view: TasksMainListView) => {
+    try {
+      await AsyncStorage.setItem(TASKS_MAIN_LIST_VIEW_STORAGE_KEY, view);
+    } catch (err) {
+      console.warn('保存主列表视图偏好失败', err);
+    }
+  }, []);
+
+  const onMainListViewChange = React.useCallback(
+    (view: TasksMainListView) => {
+      setMainListView(view);
+      void saveMainListView(view);
+    },
+    [saveMainListView],
+  );
+
   const loadProjectCategories = React.useCallback(async (): Promise<ProjectCategoryRow[]> => {
     try {
       const rows = await getProjectCategories();
@@ -1695,6 +1877,19 @@ export default function TasksScreen() {
   }, [projectAnim, projectTab]);
 
   React.useEffect(() => {
+    const anim = mainListView === 'tasks' ? matrixAnim : projectAnim;
+    anim.stopAnimation(() => {
+      anim.setValue(0.9);
+      Animated.spring(anim, {
+        toValue: 1,
+        speed: 18,
+        bounciness: 7,
+        useNativeDriver: true,
+      }).start();
+    });
+  }, [mainListView, matrixAnim, projectAnim]);
+
+  React.useEffect(() => {
     frogCardAnim.stopAnimation(() => {
       frogCardAnim.setValue(0.92);
       Animated.spring(frogCardAnim, {
@@ -1737,16 +1932,26 @@ export default function TasksScreen() {
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
-      const stored = await loadExpandedProjectState();
+      const [storedExpanded, storedHideCompleted, storedMainListView] = await Promise.all([
+        loadExpandedProjectState(),
+        loadHideCompletedProjectTasks(),
+        loadMainListView(),
+      ]);
       if (cancelled) return;
-      if (stored) {
-        setExpandedProjectIds(stored);
+      if (storedExpanded) {
+        setExpandedProjectIds(storedExpanded);
+      }
+      if (storedHideCompleted != null) {
+        setHideCompletedProjectTasks(storedHideCompleted);
+      }
+      if (storedMainListView != null) {
+        setMainListView(storedMainListView);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [loadExpandedProjectState]);
+  }, [loadExpandedProjectState, loadHideCompletedProjectTasks, loadMainListView]);
 
   React.useEffect(() => {
     if (Platform.OS === 'web') return;
@@ -1972,6 +2177,11 @@ export default function TasksScreen() {
   }, [projectCategories]);
 
   const openTask = (id: string) => {
+    const row = tasks.find((t) => t.id === id);
+    if (row && isStandaloneTodoTask(row)) {
+      router.push(standaloneTodoEditorHref(id));
+      return;
+    }
     router.push({ pathname: '/task/[id]', params: { id } });
   };
 
@@ -3592,7 +3802,18 @@ export default function TasksScreen() {
           </View>
 
           <View style={stackedSectionStyle}>
-            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: Spacing.md }]}>任务列表</Text>
+            <MainListViewSwitcher
+              value={mainListView}
+              onChange={onMainListViewChange}
+              primary={primary}
+              muted={outline}
+              onPrimary={colors.onPrimary}
+              trackBg={isDark ? 'rgba(148,163,184,0.12)' : 'rgba(148,163,184,0.16)'}
+            />
+
+            {mainListView === 'tasks' ? (
+              <>
+            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: Spacing.md, marginTop: Spacing.md }]}>任务列表</Text>
             <SegmentTabs
               tabs={taskTabs}
               active={taskTab}
@@ -3694,15 +3915,14 @@ export default function TasksScreen() {
                 </View>
               </View>
             </Animated.View>
-          </View>
-
+              </>
+            ) : (
           <Animated.View style={{ opacity: projectAnim, transform: [{ translateY: projectAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
-            <View style={stackedSectionStyle}>
-              <View style={sectionCardStyle}>
+              <View style={[sectionCardStyle, { marginTop: Spacing.md }]}>
                 <View style={styles.headerRow}>
-                  <View style={styles.titleRow}>
+                  <View style={styles.projectListTitleCol}>
                     <Text style={[styles.sectionTitle, { color: colors.text }]}>项目列表</Text>
-                    <Text style={[styles.sectionMeta, { color: outline }]}>
+                    <Text style={[styles.sectionMeta, { color: outline }]} numberOfLines={2}>
                       共 {projectsShownInList.length} 个活跃项目
                       {projectTab === INBOX_PROJECT_CATEGORY_ID && projectsShownInList.length > 0
                         ? ' · 左滑可彻底删除'
@@ -3730,6 +3950,16 @@ export default function TasksScreen() {
                   color={primary}
                   muted={outline}
                 />
+                <View style={styles.projectListFilterRow}>
+                  <ProjectListTaskFilterChip
+                    active={hideCompletedProjectTasks}
+                    onPress={() => onHideCompletedProjectTasksChange(!hideCompletedProjectTasks)}
+                    primary={primary}
+                    outline={outline}
+                    onPrimary={colors.onPrimary}
+                    isDark={isDark}
+                  />
+                </View>
                 <View style={styles.projectList}>
                 {projectsShownInList.map((project) => {
                   const lockInfo = projectLockMap.get(project.id);
@@ -3759,6 +3989,7 @@ export default function TasksScreen() {
                   const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
                   const hasRepeat = !!schedule?.repeatOption && schedule.repeatOption !== '不重复';
                   const taskTree = sortTaskTree(projectTaskTreeMap[project.id] ?? []);
+                  const displayTaskTree = filterProjectListTaskTree(taskTree, hideCompletedProjectTasks);
                   const isExpanded = !!expandedProjectIds[project.id];
                   const progress = (() => {
                     // 只统计项目的直接子任务（第一层），不递归统计更深层级
@@ -4456,9 +4687,13 @@ export default function TasksScreen() {
                           ]}>
                           {!hasAnyTasks ? (
                             <Text style={[styles.projectTaskEmpty, { color: outline }]}>暂无任务</Text>
+                          ) : displayTaskTree.length === 0 ? (
+                            <Text style={[styles.projectTaskEmpty, { color: outline }]}>
+                              已完成任务已隐藏，取消勾选「隐藏已完成任务」可查看
+                            </Text>
                           ) : (
                             <>
-                              {renderTaskLevel(taskTree, 1)}
+                              {renderTaskLevel(displayTaskTree, 1)}
                             </>
                           )}
                         </View>
@@ -4485,8 +4720,9 @@ export default function TasksScreen() {
                 )}
                 </View>
               </View>
-            </View>
           </Animated.View>
+            )}
+          </View>
 
           {/* 底部留白用实体高度，避免 scrollEnabled 切换时与 paddingBottom 叠加触发布局回弹 */}
           <View style={{ height: 46 + mainScrollKeyboardPad }} />
@@ -4687,7 +4923,28 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     gap: Spacing.xl,
   },
-  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.md },
+  projectListTitleCol: { flex: 1, minWidth: 0, gap: Spacing.xs },
+  projectListFilterRow: { paddingTop: Spacing.lg, paddingBottom: Spacing.xs },
+  projectFilterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: Spacing.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing['2xl'],
+    paddingVertical: Spacing.md,
+  },
+  projectFilterChipMark: {
+    width: 16,
+    height: 16,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  projectFilterChipText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flexShrink: 1 },
   sectionTitle: { ...Typography.h2 },
   sectionMeta: { ...Typography.caption },
@@ -4832,6 +5089,24 @@ const styles = StyleSheet.create({
   frogDoneRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8, gap: 10 },
   frogDoneTitle: { fontSize: 17, fontWeight: '800', textDecorationLine: 'line-through', opacity: 0.45, flex: 1 },
 
+  mainListViewTrack: {
+    flexDirection: 'row',
+    borderRadius: Radius.lg,
+    padding: 4,
+    gap: 4,
+  },
+  mainListViewBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.md,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+  },
+  mainListViewBtnText: {
+    fontSize: 14,
+    letterSpacing: 0.2,
+  },
   segmentRow: {
     flexDirection: 'row',
     alignItems: 'center',

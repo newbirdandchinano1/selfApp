@@ -74,7 +74,6 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
     setNewCategoryIcon,
     isSavingCategory,
     zhipuTxnReady,
-    aiLlmProviderLabel,
     sheetSentence,
     setSheetSentence,
     sentenceLedgerPreview,
@@ -385,12 +384,8 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                         ]}
                         numberOfLines={2}>
                         {zhipuTxnReady
-                          ? aiLlmProviderLabel === '豆包'
-                            ? '已配置豆包密钥：一句话将优先由 AI 解析，失败时回退本地规则。'
-                            : '已配置智谱密钥：一句话将优先由 AI（glm-4-flash）解析，失败时回退本地规则。'
-                          : aiLlmProviderLabel === '豆包'
-                            ? '未检测到豆包密钥：仅能用本地规则（需句中含阿拉伯数字金额）。在「我的」配置 EXPO_PUBLIC_ARK_API_KEY（或兼容旧名 EXPO_PUBLIC_GEMINI_API_KEY）后启用 AI。'
-                            : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
+                          ? '已配置智谱密钥：一句话将优先由 AI（glm-4-flash）解析，失败时回退本地规则。'
+                          : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
                       </Text>
                     </View>
                     <Pressable

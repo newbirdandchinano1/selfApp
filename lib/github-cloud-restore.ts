@@ -21,7 +21,7 @@ import {
   clearWeeklyReviewConfiguredWeekday,
   setWeeklyReviewConfiguredWeekday,
 } from '@/lib/weekly-review-settings';
-import { setPreferredAiLlmProvider, type AiLlmProviderId } from '@/lib/ai-llm-provider-preference';
+import { setPreferredAiLlmProvider } from '@/lib/ai-llm-provider-preference';
 import { setLastFullGithubBackupAtIso } from '@/lib/github-full-backup-local-meta';
 import { sleep, throwIfAborted, isAbortError } from '@/lib/github-fetch-retry';
 import { parseGithubAppBackupManifestV1, type AppBackupManifestV1, type ManifestFileEntry } from '@/lib/github-app-backup-manifest';
@@ -249,9 +249,7 @@ async function applyKvFromDump(key: string, payload: unknown): Promise<void> {
       break;
     }
     case 'ai_llm_provider': {
-      const id = (payload as { providerId?: unknown } | null)?.providerId;
-      const normalized: AiLlmProviderId = id === 'gemini' ? 'gemini' : 'zhipu';
-      await setPreferredAiLlmProvider(normalized);
+      await setPreferredAiLlmProvider('zhipu');
       break;
     }
     default:

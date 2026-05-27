@@ -442,7 +442,7 @@ export default function WeeklyReviewScreen() {
 
             <Text style={[styles.intro, { color: outline }]}>
               {canEdit
-                ? '以下由你亲自书写。保存后可一键生成 AI 建议；在「我的」页选择智谱或豆包；智谱可配 EXPO_PUBLIC_ZHIPU_API_KEY，豆包可配 EXPO_PUBLIC_ARK_API_KEY（未设置环境变量时两者均有应用内置密钥兜底）。均不可用时使用本地规则汇总。'
+                ? '以下由你亲自书写。保存后可一键生成 AI 建议；智谱可配 EXPO_PUBLIC_ZHIPU_API_KEY（未设置环境变量时使用应用内置密钥兜底）。不可用时使用本地规则汇总。'
                 : '到达复盘日后，可基于近七天数据与自定义维度完成书写与保存。'}
             </Text>
 
