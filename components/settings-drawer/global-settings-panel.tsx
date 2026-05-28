@@ -314,11 +314,18 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         setLastFullGithubBackupAtIso(r.cloudLastUpdated);
         void loadAiLlmProviderPreference();
         const kvLine = r.kvKeys.length > 0 ? `\n已恢复 KV：${r.kvKeys.join('、')}` : '';
+        const financeLine = r.financeSingleFile.applied
+          ? `\n账单单文件：流水 ${r.financeSingleFile.bills ?? 0}、账户 ${r.financeSingleFile.accounts ?? 0}、分类 ${r.financeSingleFile.flowCategories ?? 0}${
+              r.financeSingleFile.lastUpdated
+                ? `（${formatZhFullBackupTime(r.financeSingleFile.lastUpdated)}）`
+                : ''
+            }`
+          : '';
         const warnBlock =
           r.warnings.length > 0 ? `\n\n注意：\n${r.warnings.map(w => `· ${w}`).join('\n')}` : '';
         Alert.alert(
           '从云同步完成',
-          `已用云端快照覆盖本地。\nSQLite：${r.sqliteTables} 张表，共 ${r.sqliteRows} 行。${kvLine}\n\n云端时间：${formatZhFullBackupTime(r.cloudLastUpdated)}${warnBlock}`,
+          `已用云端快照覆盖本地。\nSQLite：${r.sqliteTables} 张表，共 ${r.sqliteRows} 行。${kvLine}${financeLine}\n\nmanifest 时间：${formatZhFullBackupTime(r.cloudLastUpdated)}${warnBlock}`,
         );
       } else if (r.reason === 'aborted') {
         Alert.alert('从云同步已中止', r.message);

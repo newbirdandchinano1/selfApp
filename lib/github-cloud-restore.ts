@@ -30,6 +30,7 @@ import {
   endGithubSqliteDirtyIgnoreBatch,
 } from '@/lib/github-sqlite-dirty-track';
 import { setSilentGithubCloudRestoreInFlight } from '@/lib/github-cloud-sync-flags';
+import { downloadAndApplyFinanceSingleFileBackup } from '@/lib/github-finance-single-file-restore';
 
 class GithubRestoreAbortError extends Error {
   readonly diagnosticText: string;
@@ -55,6 +56,14 @@ export type GithubCloudRestoreResult =
       warnings: string[];
       /** 本机存在但未出现在本次 manifest 的 SQLite 表（未覆盖，仍保留旧数据） */
       tablesNotInBackup: string[];
+      /** `backups/user_data.json` 账单单文件恢复结果（与 manifest 内财务表互补，通常为更近的自动备份） */
+      financeSingleFile: {
+        applied: boolean;
+        lastUpdated?: string;
+        bills?: number;
+        accounts?: number;
+        flowCategories?: number;
+      };
     }
   | {
       ok: false;
@@ -582,17 +591,62 @@ export async function triggerGithubCloudRestoreFromFullBackup(opts?: {
     };
   }
 
+  const financeSingleFile: {
+    applied: boolean;
+    lastUpdated?: string;
+    bills?: number;
+    accounts?: number;
+    flowCategories?: number;
+  } = { applied: false };
+
+  try {
+    throwIfAborted(signal);
+    const financeRestore = await downloadAndApplyFinanceSingleFileBackup(cfg, db, { signal });
+    if (financeRestore.ok) {
+      financeSingleFile.applied = true;
+      financeSingleFile.lastUpdated = financeRestore.lastUpdated;
+      financeSingleFile.bills = financeRestore.bills;
+      financeSingleFile.accounts = financeRestore.accounts;
+      financeSingleFile.flowCategories = financeRestore.flowCategories;
+      const manifestMs = Date.parse(cloudLastUpdated);
+      const financeMs = Date.parse(financeRestore.lastUpdated);
+      if (
+        Number.isFinite(manifestMs) &&
+        Number.isFinite(financeMs) &&
+        financeMs > manifestMs
+      ) {
+        warnings.push(
+          `已用较新的账单单文件（${financeRestore.lastUpdated}）覆盖 manifest 中的财务流水/账户/分类。`,
+        );
+      } else {
+        warnings.push(
+          `已应用账单单文件：流水 ${financeRestore.bills} 条、账户 ${financeRestore.accounts} 个、分类 ${financeRestore.flowCategories} 个。`,
+        );
+      }
+    } else if (financeRestore.reason === 'not_found') {
+      warnings.push(`云端无 ${financeRestore.message}，财务数据仅来自 manifest 中的 SQLite 快照。`);
+    } else {
+      warnings.push(`账单单文件恢复未成功：${financeRestore.message}`);
+    }
+  } catch (e) {
+    if (isAbortError(e) || signal?.aborted) {
+      return {
+        ok: false,
+        reason: 'aborted',
+        message: '恢复在账单单文件阶段已中止',
+        diagnosticText: [e instanceof Error ? e.message : String(e), '', serializeErrorForDiagnostic(e)].join('\n'),
+      };
+    }
+    warnings.push(
+      `账单单文件恢复异常：${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
   try {
     await setLastFullGithubBackupAtIso(cloudLastUpdated);
   } catch {
     /* 非致命 */
   }
-
-  void import('@/lib/github-cloud-sync')
-    .then(m => m.triggerGithubFinanceCloudSync())
-    .catch(() => {
-      /* 账单单文件同步失败不阻恢复结论 */
-    });
 
   return {
     ok: true,
@@ -602,6 +656,7 @@ export async function triggerGithubCloudRestoreFromFullBackup(opts?: {
     kvKeys,
     warnings,
     tablesNotInBackup,
+    financeSingleFile,
   };
   } finally {
     endGithubSqliteDirtyIgnoreBatch();
