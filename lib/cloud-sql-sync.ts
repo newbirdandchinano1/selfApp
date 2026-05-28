@@ -469,127 +469,94 @@ async function trySetCloudForeignKeys(enabled: boolean, signal?: AbortSignal): P
   await executeCloudSql(sql, undefined, { signal });
 }
 
-async function dropCloudTablesBestEffort(
-  tables: string[],
-  deleteOrder: string[],
+/** 云端无表时按本地结构建表；已有表则不动结构 */
+async function ensureCloudTableExists(
+  table: string,
+  localCreateSql: string,
   signal?: AbortSignal,
-  onProgress?: (p: CloudSyncProgress) => void,
 ): Promise<void> {
+  if (await cloudTableExists(table, signal)) return;
+
   await trySetCloudForeignKeys(false, signal);
-
-  const droppableTables = tables.filter(isAppSyncTableName);
-  const graph = await buildLocalForeignKeyGraph();
-  const maxPasses = Math.min(Math.max(droppableTables.length + 2, 4), 16);
-
-  for (let pass = 0; pass < maxPasses; pass++) {
-    const remaining: string[] = [];
-    for (const t of droppableTables) {
-      if (await cloudTableExists(t, signal)) remaining.push(t);
-    }
-    if (remaining.length === 0) break;
-
-    const order =
-      pass === 0
-        ? deleteOrder.filter(t => remaining.includes(t))
-        : sortTablesForCloudDelete(sortTablesForCloudInsert(remaining, graph));
-
-    let droppedAny = false;
-    for (const table of order) {
-      if (!(await cloudTableExists(table, signal))) continue;
-      throwIfAborted(signal);
-      onProgress?.({
-        phase: 'cloud_schema',
-        tableIndex: droppableTables.length - remaining.length + 1,
-        tableCount: droppableTables.length,
-        tableLabel: `删除 ${table}`,
-      });
-      await yieldToUi();
-      const r = await executeCloudSql(`DROP TABLE IF EXISTS ${quoteIdent(table)}`, undefined, { signal });
-      if (r.ok && !(await cloudTableExists(table, signal))) {
-        droppedAny = true;
-      }
-    }
-
-    if (!droppedAny) break;
-  }
-
-  await trySetCloudForeignKeys(true, signal);
-
-  const stillThere: string[] = [];
-  for (const t of droppableTables) {
-    if (await cloudTableExists(t, signal)) stillThere.push(t);
-  }
-  if (stillThere.length > 0) {
-    throw new Error(`云端删表失败，仍剩余：${stillThere.sort().join('、')}`);
-  }
-}
-
-/** 按子→父 DROP、父→子 CREATE（无外键），清理云端旧表结构 */
-async function recreateCloudTablesFromLocal(
-  insertOrder: string[],
-  signal?: AbortSignal,
-  onProgress?: (p: CloudSyncProgress) => void,
-): Promise<void> {
-  let cloudTables: string[] = [];
   try {
-    onProgress?.({ phase: 'cloud_schema', tableLabel: '读取云端表列表' });
-    await yieldToUi();
-    cloudTables = await listCloudUserTables(signal);
-  } catch {
-    cloudTables = [];
-  }
-  const tablesToDrop = [...new Set([...cloudTables, ...insertOrder])].filter(isAppSyncTableName);
-  const graph = await buildLocalForeignKeyGraph();
-  const fullDeleteOrder = sortTablesForCloudDelete(sortTablesForCloudInsert(tablesToDrop, graph));
-
-  await dropCloudTablesBestEffort(tablesToDrop, fullDeleteOrder, signal, onProgress);
-
-  for (let i = 0; i < insertOrder.length; i++) {
-    const table = insertOrder[i]!;
-    throwIfAborted(signal);
-    onProgress?.({
-      phase: 'cloud_schema',
-      tableIndex: i + 1,
-      tableCount: insertOrder.length,
-      tableLabel: `建表 ${table}`,
-    });
-    await yieldToUi();
-    const createSql = await getLocalCreateTableSql(table);
-    if (!createSql) throw new Error(`本地不存在表 ${table} 的建表语句`);
-    await ensureCloudTableReadyForData(table, createSql, signal);
+    const createSql = toCloudMirrorCreateSql(localCreateSql);
+    const create = await executeCloudSql(createSql, undefined, { signal });
+    if (!create.ok) {
+      throw new Error(`云端建表 ${table} 失败：${create.message}`);
+    }
+  } finally {
+    await trySetCloudForeignKeys(true, signal);
   }
 }
 
-/**
- * 准备云端空表：IF NOT EXISTS 建表（永不报 already exists）+ 清空数据。
- * 删表阶段已尽量 DROP；若因历史 FK 删不掉，也靠 DELETE 覆盖数据。
- */
-async function ensureCloudTableReadyForData(
+/** 仅重建单张云端表（DROP + CREATE），用于常规同步失败后的兜底 */
+async function recreateSingleCloudTableFromLocal(
   table: string,
   localCreateSql: string,
   signal?: AbortSignal,
 ): Promise<void> {
   await trySetCloudForeignKeys(false, signal);
   try {
-    if (await cloudTableExists(table, signal)) {
-      const drop = await executeCloudSql(`DROP TABLE IF EXISTS ${quoteIdent(table)}`, undefined, { signal });
-      if (!drop.ok && !/no such table/i.test(drop.message)) {
-        throw new Error(`云端删表 ${table} 失败：${drop.message}`);
-      }
+    const drop = await executeCloudSql(`DROP TABLE IF EXISTS ${quoteIdent(table)}`, undefined, { signal });
+    if (!drop.ok && !/no such table/i.test(drop.message)) {
+      throw new Error(`云端删表 ${table} 失败：${drop.message}`);
     }
-
     const createSql = toCloudMirrorCreateSql(localCreateSql);
     const create = await executeCloudSql(createSql, undefined, { signal });
     if (!create.ok) {
       throw new Error(`云端建表 ${table} 失败：${create.message}`);
     }
-
-    const del = await executeCloudSql(`DELETE FROM ${quoteIdent(table)}`, undefined, { signal });
-    if (!del.ok && !/no such table/i.test(del.message)) {
-      throw new Error(`云端清空表 ${table} 失败：${del.message}`);
-    }
   } finally {
     await trySetCloudForeignKeys(true, signal);
+  }
+}
+
+/**
+ * 将单张本地表推送到云端：先确保表存在 → 清空并写入；
+ * 任一步失败则仅对该表 DROP 重建后再推送一次。
+ */
+async function pushLocalTableRowsToCloud(
+  table: string,
+  rows: Record<string, unknown>[],
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+  signal?: AbortSignal,
+): Promise<number> {
+  const createSql = await getLocalCreateTableSql(table);
+  if (!createSql) throw new Error(`本地不存在表 ${table} 的建表语句`);
+
+  const uploadRows = async (): Promise<number> => {
+    const prepared = await prepareRowsForCloudInsert(table, rows, rowsByTable);
+    const dbForPk = await getDatabase();
+    const pkCols = await readTablePrimaryKeyColumns(dbForPk, table);
+    const deduped = dedupeRowsByPrimaryKey(prepared, pkCols);
+    return insertCloudTableRows(table, deduped, signal);
+  };
+
+  const syncUsingExistingOrNewTable = async (): Promise<number> => {
+    await ensureCloudTableExists(table, createSql, signal);
+    await trySetCloudForeignKeys(false, signal);
+    try {
+      const del = await executeCloudSql(`DELETE FROM ${quoteIdent(table)}`, undefined, { signal });
+      if (!del.ok && !/no such table/i.test(del.message)) {
+        throw new Error(`云端清空表 ${table} 失败：${del.message}`);
+      }
+      return await uploadRows();
+    } finally {
+      await trySetCloudForeignKeys(true, signal);
+    }
+  };
+
+  try {
+    return await syncUsingExistingOrNewTable();
+  } catch (firstError) {
+    if (__DEV__) {
+      console.warn(
+        `[cloud] 表 ${table} 常规同步失败，将删表重建后重试`,
+        firstError instanceof Error ? firstError.message : firstError,
+      );
+    }
+    await recreateSingleCloudTableFromLocal(table, createSql, signal);
+    return await uploadRows();
   }
 }
 
@@ -718,8 +685,6 @@ async function pushLocalTablesToCloudBatch(
   }
   mergeProjectCategoriesIntoTaskCategoriesForCloud(rowsByTable);
 
-  await recreateCloudTablesFromLocal(insertOrder, opts?.signal, report);
-
   let rowCount = 0;
   for (let i = 0; i < insertOrder.length; i++) {
     const table = insertOrder[i]!;
@@ -732,11 +697,7 @@ async function pushLocalTablesToCloudBatch(
     });
     await yieldToUi();
     const rawRows = rowsByTable.get(table) ?? [];
-    const prepared = await prepareRowsForCloudInsert(table, rawRows, rowsByTable);
-    const dbForPk = await getDatabase();
-    const pkCols = await readTablePrimaryKeyColumns(dbForPk, table);
-    const deduped = dedupeRowsByPrimaryKey(prepared, pkCols);
-    rowCount += await insertCloudTableRows(table, deduped, opts?.signal);
+    rowCount += await pushLocalTableRowsToCloud(table, rawRows, rowsByTable, opts?.signal);
   }
 
   return rowCount;
@@ -1044,6 +1005,7 @@ export async function triggerCloudFullRestore(opts?: {
     const cloudLastUpdated = new Date().toISOString();
     await setLastFullCloudBackupAtIso(cloudLastUpdated);
     await setLastCloudAlignAtIso(cloudLastUpdated);
+    clearAllCloudSqliteDirtyTables();
 
     return {
       ok: true,
