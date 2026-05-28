@@ -10,7 +10,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
 import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { initDatabase } from '@/lib/database';
+import { initDatabase, repairLocalDatabase } from '@/lib/database';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { loadGithubBackupTokenCache } from '@/lib/github-backup-user-config';
@@ -43,6 +43,7 @@ function RootLayoutInner() {
   const colorScheme = useColorScheme();
   const [isDbReady, setIsDbReady] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [dbRepairBusy, setDbRepairBusy] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -107,44 +108,96 @@ function RootLayoutInner() {
             {dbError ? (
               <View style={{ marginTop: 14, alignItems: 'center', paddingHorizontal: 24 }}>
                 <Text style={{ fontSize: 14, fontWeight: '700', opacity: 0.8 }}>{dbError}</Text>
-                <Pressable
-                  onPress={async () => {
-                    setDbError(null);
-                    try {
-                      await initDatabase();
-                      await hydrateGithubCloudDirtyFromStorage();
-                      setIsDbReady(true);
-                      InteractionManager.runAfterInteractions(() => {
-                        void loadPersistedIntakeTargets();
-                        void loadThemePreference();
-                        void loadAiLlmProviderPreference();
-                        void loadGithubBackupTokenCache();
-                        if (Platform.OS !== 'web') {
-                          void runSilentGithubCloudSyncIfRemoteNewer();
-                          void ensurePersonaPortraitsForTodayInBackground();
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                  <Pressable
+                    onPress={async () => {
+                      setDbError(null);
+                      try {
+                        await initDatabase();
+                        await hydrateGithubCloudDirtyFromStorage();
+                        setIsDbReady(true);
+                        InteractionManager.runAfterInteractions(() => {
+                          void loadPersistedIntakeTargets();
+                          void loadThemePreference();
+                          void loadAiLlmProviderPreference();
+                          void loadGithubBackupTokenCache();
+                          if (Platform.OS !== 'web') {
+                            void runSilentGithubCloudSyncIfRemoteNewer();
+                            void ensurePersonaPortraitsForTodayInBackground();
+                          }
+                        });
+                      } catch (e) {
+                        const detail = e instanceof Error ? e.message : String(e);
+                        console.warn('数据库初始化失败', detail, e);
+                        setDbError(
+                          __DEV__ && detail.trim()
+                            ? `数据库初始化失败，请重试。\n${detail}`
+                            : '数据库初始化失败，请重试。',
+                        );
+                      }
+                    }}
+                    disabled={dbRepairBusy}
+                    style={({ pressed }) => ({
+                      paddingHorizontal: 14,
+                      paddingVertical: 10,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      opacity: dbRepairBusy ? 0.5 : pressed ? 0.8 : 1,
+                    })}
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: '800' }}>重试</Text>
+                  </Pressable>
+                  {Platform.OS !== 'web' ? (
+                    <Pressable
+                      onPress={async () => {
+                        if (dbRepairBusy) return;
+                        setDbRepairBusy(true);
+                        setDbError(null);
+                        try {
+                          const repair = await repairLocalDatabase();
+                          await initDatabase();
+                          await hydrateGithubCloudDirtyFromStorage();
+                          setIsDbReady(true);
+                          InteractionManager.runAfterInteractions(() => {
+                            void loadPersistedIntakeTargets();
+                            void loadThemePreference();
+                            void loadAiLlmProviderPreference();
+                            void loadGithubBackupTokenCache();
+                            void runSilentGithubCloudSyncIfRemoteNewer();
+                            void ensurePersonaPortraitsForTodayInBackground();
+                          });
+                          if (repair.remainingFkIssues > 0) {
+                            console.warn(
+                              `本地库修复后仍有 ${repair.remainingFkIssues} 条外键异常`,
+                            );
+                          }
+                        } catch (e) {
+                          const detail = e instanceof Error ? e.message : String(e);
+                          console.warn('数据库修复失败', detail, e);
+                          setDbError(
+                            __DEV__ && detail.trim()
+                              ? `修复后仍无法启动。\n${detail}`
+                              : '修复后仍无法启动，请到设置中尝试「从云同步到本机」。',
+                          );
+                        } finally {
+                          setDbRepairBusy(false);
                         }
-                      });
-                    } catch (e) {
-                      const detail = e instanceof Error ? e.message : String(e);
-                      console.warn('数据库初始化失败', detail, e);
-                      setDbError(
-                        __DEV__ && detail.trim()
-                          ? `数据库初始化失败，请重试。\n${detail}`
-                          : '数据库初始化失败，请重试。',
-                      );
-                    }
-                  }}
-                  style={({ pressed }) => ({
-                    marginTop: 12,
-                    paddingHorizontal: 14,
-                    paddingVertical: 10,
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    opacity: pressed ? 0.8 : 1,
-                  })}
-                >
-                  <Text style={{ fontSize: 14, fontWeight: '800' }}>重试</Text>
-                </Pressable>
+                      }}
+                      disabled={dbRepairBusy}
+                      style={({ pressed }) => ({
+                        paddingHorizontal: 14,
+                        paddingVertical: 10,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        opacity: dbRepairBusy ? 0.5 : pressed ? 0.8 : 1,
+                      })}
+                    >
+                      <Text style={{ fontSize: 14, fontWeight: '800' }}>
+                        {dbRepairBusy ? '修复中…' : '修复数据库'}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               </View>
             ) : null}
           </View>

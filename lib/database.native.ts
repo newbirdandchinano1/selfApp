@@ -33,6 +33,134 @@ async function ensureColumn(db: SQLite.SQLiteDatabase, table: string, column: st
   }
 }
 
+/**
+ * 云恢复或历史数据漂移后，清理无法满足外键的孤儿行/字段。
+ * 调用方应已 `PRAGMA foreign_keys = OFF`。
+ */
+async function repairDatabaseReferentialIntegrity(db: SQLite.SQLiteDatabase): Promise<void> {
+  const inbox = INBOX_PROJECT_CATEGORY_ID;
+
+  await db.runAsync(
+    `INSERT OR IGNORE INTO project_categories (
+      id, name, created_at, updated_at, deleted_at, sync_status, version, extra_data
+    ) VALUES (?, ?, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL)`,
+    [inbox, INBOX_PROJECT_CATEGORY_NAME],
+  );
+
+  try {
+    await db.execAsync(`
+      INSERT OR REPLACE INTO task_categories (
+        id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+      )
+      SELECT
+        id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+      FROM project_categories;
+    `);
+  } catch {
+    /* 镜像失败不阻断启动 */
+  }
+
+  await db.runAsync(
+    `UPDATE projects
+     SET category_id = ?, updated_at = datetime('now')
+     WHERE deleted_at IS NULL
+       AND (category_id IS NULL OR category_id NOT IN (SELECT id FROM project_categories))`,
+    [inbox],
+  );
+
+  await db.runAsync(
+    `UPDATE tasks
+     SET category_id = NULL, updated_at = datetime('now')
+     WHERE deleted_at IS NULL
+       AND category_id IS NOT NULL
+       AND category_id NOT IN (SELECT id FROM task_categories)`,
+  );
+
+  await db.runAsync(
+    `UPDATE tasks
+     SET project_id = NULL, updated_at = datetime('now')
+     WHERE deleted_at IS NULL
+       AND project_id IS NOT NULL
+       AND project_id NOT IN (SELECT id FROM projects)`,
+  );
+
+  await db.runAsync(
+    `UPDATE tasks
+     SET parent_task_id = NULL, updated_at = datetime('now')
+     WHERE deleted_at IS NULL
+       AND parent_task_id IS NOT NULL
+       AND parent_task_id NOT IN (SELECT id FROM tasks)`,
+  );
+
+  await db.runAsync(`DELETE FROM task_items WHERE task_id NOT IN (SELECT id FROM tasks)`);
+  await db.runAsync(
+    `DELETE FROM task_execution_events WHERE task_id IS NOT NULL AND task_id NOT IN (SELECT id FROM tasks)`,
+  );
+  await db.runAsync(
+    `DELETE FROM frog_completion_events WHERE task_id IS NOT NULL AND task_id NOT IN (SELECT id FROM tasks)`,
+  );
+  await db.runAsync(`DELETE FROM habit_check_ins WHERE habit_id NOT IN (SELECT id FROM habits)`);
+
+  await db.runAsync(
+    'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
+    ['default'],
+  );
+  await db.runAsync(`DELETE FROM health_records WHERE user_id NOT IN (SELECT id FROM users)`);
+
+  await db.runAsync(
+    `UPDATE finance_flow_categories SET parent_id = NULL
+     WHERE parent_id IS NOT NULL
+       AND parent_id NOT IN (SELECT id FROM finance_flow_categories)`,
+  );
+  await db.runAsync(
+    `UPDATE finance_transactions SET flow_category_id = NULL
+     WHERE flow_category_id IS NOT NULL
+       AND flow_category_id NOT IN (SELECT id FROM finance_flow_categories)`,
+  );
+  await db.runAsync(
+    `DELETE FROM finance_transactions WHERE account_id NOT IN (SELECT id FROM finance_accounts)`,
+  );
+  await db.runAsync(
+    `DELETE FROM savings_plan_deposits WHERE savings_plan_id NOT IN (SELECT id FROM savings_plans)`,
+  );
+  await db.runAsync(
+    `DELETE FROM review_columns WHERE dimension_id NOT IN (SELECT id FROM review_dimensions)`,
+  );
+  await db.runAsync(`DELETE FROM recipe_items WHERE category_id NOT IN (SELECT id FROM recipe_categories)`);
+  await db.runAsync(
+    `UPDATE earned_rewards SET wish_item_id = NULL
+     WHERE wish_item_id IS NOT NULL
+       AND wish_item_id NOT IN (SELECT id FROM wish_items)`,
+  );
+  await db.runAsync(`DELETE FROM account_transactions WHERE account_id NOT IN (SELECT id FROM accounts)`);
+}
+
+export type RepairLocalDatabaseResult = {
+  ok: true;
+  /** `PRAGMA foreign_key_check` 仍存在的违规条数，0 表示已通过 */
+  remainingFkIssues: number;
+};
+
+/** 手动修复本地 SQLite 孤儿外键（设置页「修复本地数据库」） */
+export async function repairLocalDatabase(): Promise<RepairLocalDatabaseResult> {
+  const db = await getDatabase();
+  await db.execAsync('PRAGMA foreign_keys = OFF');
+  await repairDatabaseReferentialIntegrity(db);
+  await db.execAsync('PRAGMA foreign_keys = ON');
+
+  let remainingFkIssues = 0;
+  try {
+    const fkViolations = await db.getAllAsync<{ table: string; rowid: number; parent: string }>(
+      'PRAGMA foreign_key_check',
+    );
+    remainingFkIssues = fkViolations.length;
+  } catch {
+    /* ignore */
+  }
+
+  return { ok: true, remainingFkIssues };
+}
+
 export async function initDatabase() {
   const db = await getDatabase();
 
@@ -599,6 +727,10 @@ export async function initDatabase() {
       ('睡前', '睡前', 60, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
       ('全天', '全天', 70, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL);
   `);
+
+  // 数据迁移/回填可能遇到云恢复后的孤儿外键；先关 FK，末尾 repair 后再打开。
+  await db.execAsync('PRAGMA foreign_keys = OFF');
+
   await ensureColumn(db, 'users', 'avatar_uri', 'TEXT');
   await ensureColumn(db, 'users', 'gender', 'TEXT');
   await ensureColumn(db, 'users', 'lifestyle', 'TEXT');
@@ -631,27 +763,38 @@ export async function initDatabase() {
   await db.runAsync(
     `UPDATE tasks SET sort_order = 1000 WHERE deleted_at IS NULL AND sort_order IS NULL`
   );
-  // 项目任务 category_id 为空时，与所属项目分类对齐（任务列表四象限按分类筛选）
-  await db.runAsync(
-    `UPDATE tasks
-     SET category_id = (
-       SELECT p.category_id FROM projects p
-       WHERE p.id = tasks.project_id AND p.deleted_at IS NULL
-     ),
-     updated_at = datetime('now')
-     WHERE deleted_at IS NULL
-       AND project_id IS NOT NULL
-       AND TRIM(project_id) != ''
-       AND category_id IS NULL
-       AND EXISTS (
-         SELECT 1 FROM projects p
-         WHERE p.id = tasks.project_id
-           AND p.deleted_at IS NULL
-           AND p.category_id IS NOT NULL
-           AND p.category_id != ?
-       )`,
-    [INBOX_PROJECT_CATEGORY_ID],
-  );
+  // 项目任务 category_id 为空时，与所属项目分类对齐（须同时存在于 task_categories 镜像表）
+  try {
+    await db.runAsync(
+      `UPDATE tasks
+       SET category_id = (
+         SELECT p.category_id FROM projects p
+         WHERE p.id = tasks.project_id AND p.deleted_at IS NULL
+       ),
+       updated_at = datetime('now')
+       WHERE deleted_at IS NULL
+         AND project_id IS NOT NULL
+         AND TRIM(project_id) != ''
+         AND category_id IS NULL
+         AND EXISTS (
+           SELECT 1 FROM projects p
+           WHERE p.id = tasks.project_id
+             AND p.deleted_at IS NULL
+             AND p.category_id IS NOT NULL
+             AND p.category_id != ?
+         )
+         AND EXISTS (
+           SELECT 1 FROM task_categories tc
+           WHERE tc.id = (
+             SELECT p.category_id FROM projects p
+             WHERE p.id = tasks.project_id AND p.deleted_at IS NULL
+           )
+         )`,
+      [INBOX_PROJECT_CATEGORY_ID],
+    );
+  } catch (e) {
+    console.warn('tasks.category_id 与项目分类对齐失败', e);
+  }
   await ensureColumn(db, 'habits', 'note', 'TEXT');
   await ensureColumn(db, 'finance_accounts', 'account_no', 'TEXT');
   await ensureColumn(db, 'finance_accounts', 'account_type', 'TEXT');
@@ -950,6 +1093,11 @@ export async function initDatabase() {
 
   const { ensureReviewTemplateDefaults } = await import('@/lib/repositories/insights/review-template');
   await ensureReviewTemplateDefaults();
+
+  const repairResult = await repairLocalDatabase();
+  if (__DEV__ && repairResult.remainingFkIssues > 0) {
+    console.warn(`数据库外键检查仍有 ${repairResult.remainingFkIssues} 条异常（已尝试修复）`);
+  }
 
   enableGithubSqliteMutationTrackingOnDatabase(db as never);
 

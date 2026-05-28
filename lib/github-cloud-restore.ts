@@ -298,19 +298,6 @@ export async function triggerGithubCloudRestoreFromFullBackup(opts?: {
     return { ok: false, reason: 'unsupported_platform', message, diagnosticText: message };
   }
 
-  try {
-    await initDatabase();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    const message = `恢复前本地数据库初始化失败：${msg}`;
-    return {
-      ok: false,
-      reason: 'apply_failed',
-      message,
-      diagnosticText: [message, '', serializeErrorForDiagnostic(e)].join('\n'),
-    };
-  }
-
   setSilentGithubCloudRestoreInFlight(true);
   beginGithubSqliteDirtyIgnoreBatch();
   try {

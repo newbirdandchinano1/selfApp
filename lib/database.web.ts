@@ -39,3 +39,12 @@ export async function initDatabase() {
 export async function getSchemaVersion() {
   return null;
 }
+
+export type RepairLocalDatabaseResult = {
+  ok: true;
+  remainingFkIssues: number;
+};
+
+export async function repairLocalDatabase(): Promise<RepairLocalDatabaseResult> {
+  throw new Error('当前环境无本地 SQLite，无法修复数据库');
+}

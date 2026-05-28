@@ -13,6 +13,7 @@ import {
   loadGithubBackupTokenCache,
   setGithubUserToken,
 } from '@/lib/github-backup-user-config';
+import { repairLocalDatabase } from '@/lib/database';
 import { triggerGithubCloudRestoreFromFullBackup } from '@/lib/github-cloud-restore';
 import {
   triggerGithubCloudSync,
@@ -120,12 +121,13 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [cloudBackupBusy, setCloudBackupBusy] = useState(false);
   const [cloudBackupProgress, setCloudBackupProgress] = useState<GithubCloudSyncProgress | null>(null);
   const [cloudRestoreBusy, setCloudRestoreBusy] = useState(false);
+  const [localDbRepairBusy, setLocalDbRepairBusy] = useState(false);
   const githubCloudOpAbortRef = useRef<AbortController | null>(null);
   /** 同步标记：备份/同步进行中（不依赖 setState，避免连点竞态） */
   const githubCloudOpInFlightRef = useRef(false);
   const lastCloudBackupPressAtRef = useRef(0);
 
-  const githubCloudOpBusy = cloudBackupBusy || cloudRestoreBusy;
+  const githubCloudOpBusy = cloudBackupBusy || cloudRestoreBusy || localDbRepairBusy;
   const [lastFullGithubBackupAtIso, setLastFullGithubBackupAtIso] = useState<string | null>(null);
   const [githubDiagModal, setGithubDiagModal] = useState<{
     visible: boolean;
@@ -353,6 +355,48 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
       ],
     );
   }, [githubCloudOpBusy, runCloudRestore]);
+
+  const runLocalDatabaseRepair = useCallback(async () => {
+    if (Platform.OS === 'web') {
+      Alert.alert('不可用', 'Web 环境无本地 SQLite，请在手机或模拟器上使用。');
+      return;
+    }
+    if (githubCloudOpInFlightRef.current || localDbRepairBusy) return;
+    githubCloudOpInFlightRef.current = true;
+    setLocalDbRepairBusy(true);
+    try {
+      const result = await repairLocalDatabase();
+      if (result.remainingFkIssues === 0) {
+        Alert.alert(
+          '修复完成',
+          '已清理孤儿外键并同步任务分类镜像。请完全退出应用后重新打开；若仍无法进入，可再试「从云同步到本机」。',
+        );
+      } else {
+        Alert.alert(
+          '部分修复',
+          `仍有 ${result.remainingFkIssues} 处外键异常未能自动处理。建议先「一键全量备份」后执行「从云同步到本机」；若无效请反馈具体报错。`,
+        );
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      Alert.alert('修复失败', msg);
+    } finally {
+      setLocalDbRepairBusy(false);
+      githubCloudOpInFlightRef.current = false;
+    }
+  }, [localDbRepairBusy]);
+
+  const requestLocalDatabaseRepair = useCallback(() => {
+    if (githubCloudOpInFlightRef.current || githubCloudOpBusy) return;
+    Alert.alert(
+      '修复本地数据库',
+      '将清理云同步后可能产生的孤儿外键（如任务分类不一致），不会删除你的业务数据。完成后建议重启应用。确定继续？',
+      [
+        { text: '取消', style: 'cancel' },
+        { text: '开始修复', onPress: () => void runLocalDatabaseRepair() },
+      ],
+    );
+  }, [githubCloudOpBusy, runLocalDatabaseRepair]);
 
   const runZhipuConnectivityProbe = useCallback(async () => {
     setZhipuProbeLoading(true);
@@ -696,6 +740,39 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               <MaterialIcons name="chevron-right" size={22} color={outline} />
             </View>
           </Pressable>
+
+          {Platform.OS !== 'web' ? (
+            <Pressable
+              onPress={requestLocalDatabaseRepair}
+              disabled={githubCloudOpBusy}
+              pointerEvents={githubCloudOpBusy ? 'none' : 'auto'}
+              style={({ pressed }) => [
+                { opacity: githubCloudOpBusy ? 0.55 : pressed ? 0.88 : 1, marginTop: 10 },
+              ]}>
+              <View
+                style={[
+                  styles.card,
+                  styles.actionCard,
+                  {
+                    backgroundColor: cardBg,
+                    borderColor: isDark ? 'rgba(251,191,36,0.35)' : 'rgba(180,83,9,0.22)',
+                  },
+                ]}>
+                {localDbRepairBusy ? (
+                  <ActivityIndicator size="small" color={isDark ? '#fbbf24' : '#b45309'} />
+                ) : (
+                  <MaterialIcons name="healing" size={26} color={isDark ? '#fbbf24' : '#b45309'} />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.rowTitle, { color: text }]}>修复本地数据库</Text>
+                  <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                    启动失败或外键报错时使用：清理孤儿引用并同步分类表，不覆盖云端数据。
+                  </Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={22} color={outline} />
+              </View>
+            </Pressable>
+          ) : null}
         </View>
 
         <View onLayout={ev => onSectionLayout('ai', ev.nativeEvent.layout.y)} style={styles.section}>
