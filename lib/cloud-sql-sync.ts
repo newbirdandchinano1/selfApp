@@ -13,7 +13,16 @@ import { isSilentCloudRestoreInFlight, setSilentCloudRestoreInFlight } from '@/l
 import { getDatabase, initDatabase } from '@/lib/database';
 import { throwIfAborted, isAbortError } from '@/lib/cloud-fetch-retry';
 
-const INSERT_BATCH_SIZE = 40;
+/**
+ * Cloudflare D1 单条语句绑定变量硬上限约为 999，实测批量 INSERT 在 ~504 即报错（offset 503）。
+ * 留足余量，按「列数 × 行数」限制每批行数；必要时降为单行插入。
+ */
+const D1_MAX_SQL_VARIABLES = 96;
+
+function insertBatchRowCount(columnCount: number): number {
+  if (columnCount <= 0) return 1;
+  return Math.max(1, Math.floor(D1_MAX_SQL_VARIABLES / columnCount));
+}
 
 export function serializeErrorForDiagnostic(err: unknown): string {
   if (err instanceof Error) {
@@ -31,11 +40,21 @@ export function serializeErrorForDiagnostic(err: unknown): string {
 }
 
 export type CloudSyncProgress = {
-  phase: 'preparing' | 'collecting' | 'uploading' | 'downloading' | 'applying';
+  phase:
+    | 'preparing'
+    | 'collecting'
+    | 'cloud_schema'
+    | 'uploading'
+    | 'downloading'
+    | 'applying';
   tableIndex?: number;
   tableCount?: number;
   tableLabel?: string;
 };
+
+async function yieldToUi(): Promise<void> {
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+}
 
 export type CloudSyncResult =
   | {
@@ -71,6 +90,21 @@ function isSafeSqliteTableName(name: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
 }
 
+/** Cloudflare D1 内置表（如 _cf_KV），不可 DROP，也不参与应用备份同步 */
+function isCloudManagedTableName(name: string): boolean {
+  const n = name.trim();
+  if (!n) return true;
+  const lower = n.toLowerCase();
+  if (lower.startsWith('sqlite_')) return true;
+  if (lower.startsWith('_cf_')) return true;
+  return false;
+}
+
+/** 本应用可同步的用户业务表 */
+function isAppSyncTableName(name: string): boolean {
+  return isSafeSqliteTableName(name) && !isCloudManagedTableName(name);
+}
+
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
@@ -78,6 +112,23 @@ function quoteIdent(name: string): string {
 function toCreateTableIfNotExists(sql: string): string {
   if (/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS/i.test(sql)) return sql;
   return sql.replace(/^CREATE\s+TABLE\s+/i, 'CREATE TABLE IF NOT EXISTS ');
+}
+
+/** 云端镜像库不启用外键，避免 D1 批量同步时顺序/历史表结构导致 CONSTRAINT 失败 */
+function stripForeignKeysFromCreateTableSql(sql: string): string {
+  let s = sql;
+  s = s.replace(
+    /,?\s*FOREIGN\s+KEY\s*\([^)]*\)\s*REFERENCES\s+(?:[`"]?\w+[`"]?\.)?[`"]?\w+[`"]?\s*\([^)]*\)(?:\s+ON\s+(?:DELETE|UPDATE)\s+(?:SET\s+NULL|SET\s+DEFAULT|CASCADE|RESTRICT|NO\s+ACTION))*/gi,
+    '',
+  );
+  s = s.replace(/,(\s*,)+/g, ',');
+  s = s.replace(/,(\s*\))/g, '$1');
+  return s;
+}
+
+function toCreateTableForCloudRecreate(localCreateSql: string): string {
+  const stripped = stripForeignKeysFromCreateTableSql(localCreateSql);
+  return stripped.replace(/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS/i, 'CREATE TABLE');
 }
 
 function sqliteBindingFromJson(v: unknown): string | number | null {
@@ -100,7 +151,7 @@ async function listLocalUserTables(): Promise<string[]> {
   const meta = await db.getAllAsync<{ name: string }>(
     `SELECT name FROM sqlite_master WHERE type='table' AND substr(name,1,7) != 'sqlite_' ORDER BY name`,
   );
-  return meta.map(r => r.name).filter(n => isSafeSqliteTableName(n));
+  return meta.map(r => r.name).filter(n => isAppSyncTableName(n));
 }
 
 async function listCloudUserTables(signal?: AbortSignal): Promise<string[]> {
@@ -110,7 +161,7 @@ async function listCloudUserTables(signal?: AbortSignal): Promise<string[]> {
     { signal },
   );
   if (!r.ok) throw new Error(r.message);
-  return r.data.map(row => row.name).filter(n => isSafeSqliteTableName(n));
+  return r.data.map(row => row.name).filter(n => isAppSyncTableName(n));
 }
 
 async function getLocalCreateTableSql(table: string): Promise<string | null> {
@@ -132,11 +183,459 @@ async function getCloudCreateTableSql(table: string, signal?: AbortSignal): Prom
   return r.data[0]?.sql ?? null;
 }
 
-async function ensureCloudTableFromLocal(table: string, signal?: AbortSignal): Promise<void> {
+type LocalForeignKeyGraph = {
+  tables: string[];
+  parents: Map<string, string[]>;
+  children: Map<string, string[]>;
+};
+
+let localForeignKeyGraphCache: LocalForeignKeyGraph | null = null;
+
+type ForeignKeyRef = {
+  parentTable: string;
+  fromColumn: string;
+  toColumn: string;
+};
+
+async function readLocalForeignKeyRefs(table: string): Promise<ForeignKeyRef[]> {
+  const db = await getDatabase();
+  const safe = quoteIdent(table);
+  const fks = await db.getAllAsync<{ table: string; from: string; to: string }>(
+    `PRAGMA foreign_key_list(${safe})`,
+  );
+  return fks
+    .filter(fk => fk.table && isSafeSqliteTableName(fk.table) && fk.from && fk.to)
+    .map(fk => ({ parentTable: fk.table, fromColumn: fk.from, toColumn: fk.to }));
+}
+
+async function readLocalForeignKeyParents(table: string): Promise<string[]> {
+  const refs = await readLocalForeignKeyRefs(table);
+  return [...new Set(refs.map(r => r.parentTable))];
+}
+
+function sortRowsBySelfForeignKey(
+  rows: Record<string, unknown>[],
+  idColumn: string,
+  parentColumn: string,
+): Record<string, unknown>[] {
+  const byId = new Map<string, Record<string, unknown>>();
+  const noId: Record<string, unknown>[] = [];
+
+  for (const row of rows) {
+    const id = row[idColumn];
+    if (id == null || id === '') {
+      noId.push(row);
+      continue;
+    }
+    byId.set(String(id), row);
+  }
+
+  const sorted: Record<string, unknown>[] = [];
+  const done = new Set<string>();
+  const visiting = new Set<string>();
+
+  const visit = (id: string): void => {
+    if (done.has(id)) return;
+    if (visiting.has(id)) return;
+    visiting.add(id);
+    const row = byId.get(id);
+    if (!row) {
+      visiting.delete(id);
+      return;
+    }
+    const parentId = row[parentColumn];
+    if (parentId != null && parentId !== '') {
+      const pid = String(parentId);
+      if (byId.has(pid)) visit(pid);
+    }
+    visiting.delete(id);
+    if (!done.has(id)) {
+      done.add(id);
+      sorted.push(row);
+    }
+  };
+
+  for (const id of byId.keys()) visit(id);
+  return [...sorted, ...noId];
+}
+
+/** 打断自引用环，避免插入时 FK 失败 */
+function breakSelfForeignKeyCycles(
+  rows: Record<string, unknown>[],
+  idColumn: string,
+  parentColumn: string,
+): Record<string, unknown>[] {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    const id = row[idColumn];
+    if (id != null && id !== '') byId.set(String(id), row);
+  }
+
+  const visiting = new Set<string>();
+  const breakParent = (id: string): void => {
+    if (visiting.has(id)) return;
+    visiting.add(id);
+    const row = byId.get(id);
+    if (!row) {
+      visiting.delete(id);
+      return;
+    }
+    const parentId = row[parentColumn];
+    if (parentId != null && parentId !== '') {
+      const pid = String(parentId);
+      if (visiting.has(pid)) {
+        row[parentColumn] = null;
+      } else if (byId.has(pid)) {
+        breakParent(pid);
+      }
+    }
+    visiting.delete(id);
+  };
+
+  for (const id of byId.keys()) breakParent(id);
+  return rows;
+}
+
+async function prepareRowsForCloudInsert(
+  table: string,
+  rows: Record<string, unknown>[],
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+): Promise<Record<string, unknown>[]> {
+  const fks = await readLocalForeignKeyRefs(table);
+  let prepared = rows.map(r => ({ ...r }));
+
+  for (const fk of fks) {
+    if (fk.parentTable === table) continue;
+    const parentRows = rowsByTable.get(fk.parentTable) ?? [];
+    const parentIds = new Set<string>();
+    for (const pr of parentRows) {
+      const pid = pr[fk.toColumn];
+      if (pid != null && pid !== '') parentIds.add(String(pid));
+    }
+    for (const row of prepared) {
+      const val = row[fk.fromColumn];
+      if (val == null || val === '') continue;
+      if (!parentIds.has(String(val))) {
+        row[fk.fromColumn] = null;
+      }
+    }
+  }
+
+  for (const fk of fks.filter(f => f.parentTable === table)) {
+    const ids = new Set<string>();
+    for (const row of prepared) {
+      const id = row[fk.toColumn];
+      if (id != null && id !== '') ids.add(String(id));
+    }
+    for (const row of prepared) {
+      const parentId = row[fk.fromColumn];
+      if (parentId == null || parentId === '') continue;
+      if (!ids.has(String(parentId))) {
+        row[fk.fromColumn] = null;
+      }
+    }
+    prepared = breakSelfForeignKeyCycles(prepared, fk.toColumn, fk.fromColumn);
+    prepared = sortRowsBySelfForeignKey(prepared, fk.toColumn, fk.fromColumn);
+  }
+
+  return prepared;
+}
+
+async function buildLocalForeignKeyGraph(): Promise<LocalForeignKeyGraph> {
+  if (localForeignKeyGraphCache) return localForeignKeyGraphCache;
+
+  const tables = await listLocalUserTables();
+  const parents = new Map<string, string[]>();
+  const children = new Map<string, string[]>();
+  const tableSet = new Set(tables);
+
+  for (const t of tables) {
+    parents.set(t, []);
+    children.set(t, []);
+  }
+
+  for (const t of tables) {
+    const ps = (await readLocalForeignKeyParents(t)).filter(p => tableSet.has(p));
+    parents.set(t, ps);
+    for (const p of ps) {
+      children.get(p)!.push(t);
+    }
+  }
+
+  localForeignKeyGraphCache = { tables, parents, children };
+  return localForeignKeyGraphCache;
+}
+
+export function invalidateLocalForeignKeyGraphCache(): void {
+  localForeignKeyGraphCache = null;
+}
+
+/** 上传前扩展：包含所有外键父表 + 子表（避免只同步父表时云端 DELETE 被子表 FK 拦住） */
+function expandTablesForCloudUpload(seedTables: string[], graph: LocalForeignKeyGraph): string[] {
+  const allSet = new Set(graph.tables);
+  const set = new Set<string>();
+  for (const t of seedTables) {
+    if (allSet.has(t) && isSafeSqliteTableName(t)) set.add(t);
+  }
+  const queue = [...set];
+  while (queue.length > 0) {
+    const t = queue.shift()!;
+    for (const p of graph.parents.get(t) ?? []) {
+      if (!set.has(p)) {
+        set.add(p);
+        queue.push(p);
+      }
+    }
+    for (const c of graph.children.get(t) ?? []) {
+      if (!set.has(c)) {
+        set.add(c);
+        queue.push(c);
+      }
+    }
+  }
+  return graph.tables.filter(t => set.has(t));
+}
+
+/** 从云写入本机时扩展：仅补全外键父表（不主动清空未下载的子表） */
+function expandTablesForCloudApply(seedTables: string[], graph: LocalForeignKeyGraph): string[] {
+  const allSet = new Set(graph.tables);
+  const set = new Set<string>();
+  for (const t of seedTables) {
+    if (allSet.has(t) && isSafeSqliteTableName(t)) set.add(t);
+  }
+  const queue = [...set];
+  while (queue.length > 0) {
+    const t = queue.shift()!;
+    for (const p of graph.parents.get(t) ?? []) {
+      if (!set.has(p)) {
+        set.add(p);
+        queue.push(p);
+      }
+    }
+  }
+  return graph.tables.filter(t => set.has(t));
+}
+
+/** 父表在前、子表在后 */
+function sortTablesForCloudInsert(tables: string[], graph: LocalForeignKeyGraph): string[] {
+  const tableSet = new Set(tables);
+  const sorted: string[] = [];
+  const visited = new Set<string>();
+  const visiting = new Set<string>();
+
+  const visit = (table: string): void => {
+    if (visited.has(table) || !tableSet.has(table)) return;
+    if (visiting.has(table)) {
+      sorted.push(table);
+      visited.add(table);
+      return;
+    }
+    visiting.add(table);
+    for (const parent of graph.parents.get(table) ?? []) {
+      if (tableSet.has(parent)) visit(parent);
+    }
+    visiting.delete(table);
+    if (!visited.has(table)) {
+      visited.add(table);
+      sorted.push(table);
+    }
+  };
+
+  for (const table of tables) visit(table);
+  return sorted;
+}
+
+function sortTablesForCloudDelete(insertOrder: string[]): string[] {
+  return [...insertOrder].reverse();
+}
+
+async function trySetCloudForeignKeys(enabled: boolean, signal?: AbortSignal): Promise<void> {
+  const sql = enabled ? 'PRAGMA foreign_keys = ON' : 'PRAGMA foreign_keys = OFF';
+  await executeCloudSql(sql, undefined, { signal });
+}
+
+/** 云端缺表时先建无外键占位表，避免删旧表时 FK 指向不存在的 main.xxx */
+async function ensureCloudTableStrippedIfNotExists(table: string, signal?: AbortSignal): Promise<void> {
   const createSql = await getLocalCreateTableSql(table);
   if (!createSql) throw new Error(`本地不存在表 ${table} 的建表语句`);
-  const r = await executeCloudSql(toCreateTableIfNotExists(createSql), undefined, { signal });
-  if (!r.ok) throw new Error(`云端建表 ${table} 失败：${r.message}`);
+  const sql = toCreateTableIfNotExists(stripForeignKeysFromCreateTableSql(createSql));
+  const r = await executeCloudSql(sql, undefined, { signal });
+  if (!r.ok) throw new Error(`云端预建表 ${table} 失败：${r.message}`);
+}
+
+async function dropCloudTablesBestEffort(
+  tables: string[],
+  deleteOrder: string[],
+  insertOrder: string[],
+  signal?: AbortSignal,
+  onProgress?: (p: CloudSyncProgress) => void,
+): Promise<void> {
+  await trySetCloudForeignKeys(false, signal);
+
+  const droppableTables = tables.filter(isAppSyncTableName);
+  const pending = new Set(droppableTables);
+  const graph = await buildLocalForeignKeyGraph();
+  const maxPasses = Math.min(Math.max(droppableTables.length + 2, 4), 12);
+
+  for (let pass = 0; pass < maxPasses && pending.size > 0; pass++) {
+    const order =
+      pass === 0
+        ? deleteOrder.filter(t => pending.has(t))
+        : sortTablesForCloudDelete(sortTablesForCloudInsert([...pending], graph));
+
+    let droppedAny = false;
+    for (let di = 0; di < order.length; di++) {
+      const table = order[di]!;
+      if (!pending.has(table)) continue;
+      throwIfAborted(signal);
+      onProgress?.({
+        phase: 'cloud_schema',
+        tableIndex: droppableTables.length - pending.size + 1,
+        tableCount: droppableTables.length,
+        tableLabel: `删除 ${table}`,
+      });
+      await yieldToUi();
+      const r = await executeCloudSql(`DROP TABLE IF EXISTS ${quoteIdent(table)}`, undefined, { signal });
+      if (r.ok) {
+        pending.delete(table);
+        droppedAny = true;
+        continue;
+      }
+
+      const missing = r.message.match(/no such table:\s*main\.([A-Za-z_][A-Za-z0-9_]*)/i)?.[1];
+      if (missing && isSafeSqliteTableName(missing) && insertOrder.includes(missing)) {
+        await ensureCloudTableStrippedIfNotExists(missing, signal);
+      }
+    }
+
+    if (!droppedAny) {
+      for (const table of [...pending]) {
+        throwIfAborted(signal);
+        const r = await executeCloudSql(`DROP TABLE IF EXISTS ${quoteIdent(table)}`, undefined, { signal });
+        if (r.ok) {
+          pending.delete(table);
+          droppedAny = true;
+        }
+      }
+    }
+  }
+
+  await trySetCloudForeignKeys(true, signal);
+
+  if (pending.size > 0) {
+    throw new Error(`云端删表失败，仍剩余：${[...pending].sort().join('、')}`);
+  }
+}
+
+/** 按子→父 DROP、父→子 CREATE（无外键），清理云端旧表结构 */
+async function recreateCloudTablesFromLocal(
+  insertOrder: string[],
+  signal?: AbortSignal,
+  onProgress?: (p: CloudSyncProgress) => void,
+): Promise<void> {
+  let cloudTables: string[] = [];
+  try {
+    onProgress?.({ phase: 'cloud_schema', tableLabel: '读取云端表列表' });
+    await yieldToUi();
+    cloudTables = await listCloudUserTables(signal);
+  } catch {
+    cloudTables = [];
+  }
+  const tablesToDrop = [...new Set([...cloudTables, ...insertOrder])].filter(isAppSyncTableName);
+  const graph = await buildLocalForeignKeyGraph();
+  const fullDeleteOrder = sortTablesForCloudDelete(sortTablesForCloudInsert(tablesToDrop, graph));
+
+  await dropCloudTablesBestEffort(tablesToDrop, fullDeleteOrder, insertOrder, signal, onProgress);
+
+  for (let i = 0; i < insertOrder.length; i++) {
+    const table = insertOrder[i]!;
+    throwIfAborted(signal);
+    onProgress?.({
+      phase: 'cloud_schema',
+      tableIndex: i + 1,
+      tableCount: insertOrder.length,
+      tableLabel: `建表 ${table}`,
+    });
+    await yieldToUi();
+    const createSql = await getLocalCreateTableSql(table);
+    if (!createSql) throw new Error(`本地不存在表 ${table} 的建表语句`);
+    const r = await executeCloudSql(toCreateTableForCloudRecreate(createSql), undefined, { signal });
+    if (!r.ok) throw new Error(`云端建表 ${table} 失败：${r.message}`);
+  }
+}
+
+/** 任务 category_id 引用 task_categories；将 project_categories 镜像并入待上传的 task_categories */
+function mergeProjectCategoriesIntoTaskCategoriesForCloud(
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+): void {
+  const projectCategories = rowsByTable.get('project_categories');
+  if (!projectCategories?.length) return;
+
+  const existing = rowsByTable.get('task_categories') ?? [];
+  const ids = new Set(
+    existing.map(r => r.id).filter(v => v != null && v !== '').map(v => String(v)),
+  );
+  const merged = [...existing];
+  for (const row of projectCategories) {
+    const id = row.id;
+    if (id == null || id === '') continue;
+    const sid = String(id);
+    if (ids.has(sid)) continue;
+    ids.add(sid);
+    merged.push({ ...row });
+  }
+  rowsByTable.set('task_categories', merged);
+}
+
+function isTooManySqlVariablesError(message: string): boolean {
+  return /too many sql variables/i.test(message);
+}
+
+async function insertCloudTableRows(
+  table: string,
+  rows: Record<string, unknown>[],
+  signal?: AbortSignal,
+  opts?: { singleRowOnly?: boolean },
+): Promise<number> {
+  if (rows.length === 0) return 0;
+
+  const colNames = await readLocalTableColumns(table);
+  if (colNames.length === 0) return 0;
+
+  const qCols = colNames.map(c => quoteIdent(c)).join(', ');
+  const rowPlaceholder = `(${colNames.map(() => '?').join(', ')})`;
+  let batchSize = opts?.singleRowOnly ? 1 : insertBatchRowCount(colNames.length);
+  let inserted = 0;
+
+  for (let i = 0; i < rows.length; ) {
+    throwIfAborted(signal);
+    const batch = rows.slice(i, i + batchSize);
+    const params: (string | number | null)[] = [];
+    for (const row of batch) {
+      for (const col of colNames) {
+        params.push(sqliteBindingFromJson(row[col]));
+      }
+    }
+
+    const sql =
+      batch.length === 1
+        ? `INSERT INTO ${quoteIdent(table)} (${qCols}) VALUES ${rowPlaceholder}`
+        : `INSERT INTO ${quoteIdent(table)} (${qCols}) VALUES ${batch.map(() => rowPlaceholder).join(', ')}`;
+
+    const ins = await executeCloudSql(sql, params, { signal });
+    if (!ins.ok) {
+      if (batchSize > 1 && isTooManySqlVariablesError(ins.message)) {
+        batchSize = Math.max(1, Math.floor(batchSize / 2));
+        continue;
+      }
+      throw new Error(`写入云端表 ${table} 失败：${ins.message}`);
+    }
+
+    inserted += batch.length;
+    i += batch.length;
+  }
+
+  return inserted;
 }
 
 async function readLocalTableRows(table: string): Promise<Record<string, unknown>[]> {
@@ -153,47 +652,66 @@ async function readLocalTableColumns(table: string): Promise<string[]> {
   return cols.map(c => c.name).filter(Boolean);
 }
 
-async function replaceCloudTableData(
-  table: string,
-  rows: Record<string, unknown>[],
-  signal?: AbortSignal,
+async function pushLocalTablesToCloudBatch(
+  seedTables: string[],
+  opts?: {
+    signal?: AbortSignal;
+    onProgress?: (p: CloudSyncProgress) => void;
+  },
 ): Promise<number> {
-  await ensureCloudTableFromLocal(table, signal);
+  if (seedTables.length === 0) return 0;
 
-  const del = await executeCloudSql(`DELETE FROM ${quoteIdent(table)}`, undefined, { signal });
-  if (!del.ok) throw new Error(`清空云端表 ${table} 失败：${del.message}`);
-  if (rows.length === 0) return 0;
+  const report = (p: CloudSyncProgress) => opts?.onProgress?.(p);
 
-  const colNames = await readLocalTableColumns(table);
-  if (colNames.length === 0) return 0;
+  report({ phase: 'collecting', tableLabel: '分析表依赖' });
+  await yieldToUi();
+  const graph = await buildLocalForeignKeyGraph();
+  const tables = expandTablesForCloudUpload(seedTables, graph);
+  if (tables.length === 0) return 0;
 
-  const qCols = colNames.map(c => quoteIdent(c)).join(', ');
-  let inserted = 0;
+  const insertOrder = sortTablesForCloudInsert(tables, graph);
+  const total = insertOrder.length;
 
-  for (let i = 0; i < rows.length; i += INSERT_BATCH_SIZE) {
-    throwIfAborted(signal);
-    const batch = rows.slice(i, i + INSERT_BATCH_SIZE);
-    const placeholders = batch.map(() => `(${colNames.map(() => '?').join(', ')})`).join(', ');
-    const params: (string | number | null)[] = [];
-    for (const row of batch) {
-      for (const col of colNames) {
-        params.push(sqliteBindingFromJson(row[col]));
-      }
-    }
-    const sql = `INSERT INTO ${quoteIdent(table)} (${qCols}) VALUES ${placeholders}`;
-    const ins = await executeCloudSql(sql, params, { signal });
-    if (!ins.ok) throw new Error(`写入云端表 ${table} 失败：${ins.message}`);
-    inserted += batch.length;
+  const rowsByTable = new Map<string, Record<string, unknown>[]>();
+  for (let i = 0; i < insertOrder.length; i++) {
+    const table = insertOrder[i]!;
+    throwIfAborted(opts?.signal);
+    report({
+      phase: 'collecting',
+      tableIndex: i + 1,
+      tableCount: total,
+      tableLabel: table,
+    });
+    await yieldToUi();
+    rowsByTable.set(table, await readLocalTableRows(table));
+  }
+  mergeProjectCategoriesIntoTaskCategoriesForCloud(rowsByTable);
+
+  await recreateCloudTablesFromLocal(insertOrder, opts?.signal, report);
+
+  let rowCount = 0;
+  for (let i = 0; i < insertOrder.length; i++) {
+    const table = insertOrder[i]!;
+    throwIfAborted(opts?.signal);
+    report({
+      phase: 'uploading',
+      tableIndex: i + 1,
+      tableCount: total,
+      tableLabel: table,
+    });
+    await yieldToUi();
+    const rawRows = rowsByTable.get(table) ?? [];
+    const prepared = await prepareRowsForCloudInsert(table, rawRows, rowsByTable);
+    rowCount += await insertCloudTableRows(table, prepared, opts?.signal);
   }
 
-  return inserted;
+  return rowCount;
 }
 
-/** 将单张本地表全量推送到云端（建表 + 覆盖数据） */
+/** 将单张本地表及其外键关联表一并推送到云端 */
 export async function pushLocalTableToCloud(table: string, opts?: { signal?: AbortSignal }): Promise<number> {
   if (!isSafeSqliteTableName(table)) throw new Error(`非法表名：${table}`);
-  const rows = await readLocalTableRows(table);
-  return replaceCloudTableData(table, rows, opts?.signal);
+  return pushLocalTablesToCloudBatch([table], opts);
 }
 
 /** 一键全量备份：本地所有 SQLite 表 → 云端 */
@@ -238,17 +756,10 @@ export async function triggerCloudFullBackup(opts?: {
   let rowCount = 0;
 
   try {
-    for (let i = 0; i < tables.length; i++) {
-      throwIfAborted(opts?.signal);
-      const table = tables[i]!;
-      report({
-        phase: 'uploading',
-        tableIndex: i + 1,
-        tableCount: tables.length,
-        tableLabel: table,
-      });
-      rowCount += await pushLocalTableToCloud(table, { signal: opts?.signal });
-    }
+    rowCount = await pushLocalTablesToCloudBatch(tables, {
+      signal: opts?.signal,
+      onProgress: report,
+    });
   } catch (e) {
     if (isAbortError(e) || opts?.signal?.aborted) {
       const message = '全量备份已中止';
@@ -269,14 +780,17 @@ export async function triggerCloudFullBackup(opts?: {
   return { ok: true, tableCount: tables.length, rowCount, lastUpdated };
 }
 
-async function applyCloudRowsToLocalTable(table: string, rows: unknown[], signal?: AbortSignal): Promise<number> {
+async function applyCloudRowsToLocalTableWithoutDelete(
+  table: string,
+  rows: unknown[],
+  signal?: AbortSignal,
+): Promise<number> {
   const db = await getDatabase();
   const safe = quoteIdent(table);
   const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${safe})`);
   const colNames = cols.map(c => c.name).filter(Boolean);
   if (colNames.length === 0) throw new Error(`本机不存在表 ${table}`);
 
-  await db.runAsync(`DELETE FROM ${safe}`);
   let count = 0;
   for (const row of rows) {
     throwIfAborted(signal);
@@ -378,26 +892,49 @@ export async function triggerCloudFullRestore(opts?: {
     let sqliteRows = 0;
     let sqliteTables = 0;
 
+    const graph = await buildLocalForeignKeyGraph();
+    const snapshotTables = snapshots.map(s => s.table);
+    const schemaTables = expandTablesForCloudApply(snapshotTables, graph);
+    const applyOrder = sortTablesForCloudInsert(schemaTables, graph);
+    const snapshotByTable = new Map(snapshots.map(s => [s.table, s]));
+
     report({ phase: 'applying' });
     try {
       throwIfAborted(opts?.signal);
       await db.execAsync('PRAGMA foreign_keys = OFF');
       await db.execAsync('BEGIN IMMEDIATE');
       try {
-        for (const snap of snapshots) {
+        for (const table of applyOrder) {
           throwIfAborted(opts?.signal);
-          if (!localSet.has(snap.table)) {
+          if (!localSet.has(table)) {
             const createSql =
-              (await getLocalCreateTableSql(snap.table)) ??
-              (await getCloudCreateTableSql(snap.table, opts?.signal));
+              (await getLocalCreateTableSql(table)) ?? (await getCloudCreateTableSql(table, opts?.signal));
             if (!createSql) {
-              warnings.push(`云端表 ${snap.table} 在本机无法建表，已跳过`);
+              if (snapshotByTable.has(table)) {
+                warnings.push(`云端表 ${table} 在本机无法建表，已跳过`);
+              }
               continue;
             }
             await db.execAsync(createSql);
-            localSet.add(snap.table);
+            localSet.add(table);
           }
-          sqliteRows += await applyCloudRowsToLocalTable(snap.table, snap.rows, opts?.signal);
+        }
+
+        const tablesToClear = new Set(snapshotTables);
+        const clearOrder = sortTablesForCloudDelete(
+          sortTablesForCloudInsert([...tablesToClear], graph),
+        );
+        for (const table of clearOrder) {
+          throwIfAborted(opts?.signal);
+          if (!tablesToClear.has(table)) continue;
+          await db.runAsync(`DELETE FROM ${quoteIdent(table)}`);
+        }
+
+        for (const table of applyOrder) {
+          throwIfAborted(opts?.signal);
+          const snap = snapshotByTable.get(table);
+          if (!snap) continue;
+          sqliteRows += await applyCloudRowsToLocalTableWithoutDelete(snap.table, snap.rows, opts?.signal);
           sqliteTables += 1;
         }
         const fkViolations = await db.getAllAsync<{ table: string; rowid: number }>(
@@ -485,20 +1022,12 @@ export async function pushCloudDirtyTablesIfNeeded(): Promise<void> {
   const db = await getDatabase();
   if (!db) return;
 
-  const pushed = new Set<string>();
-  for (const table of dirtyList) {
-    try {
-      await pushLocalTableToCloud(table);
-      pushed.add(table);
-    } catch (e) {
-      if (__DEV__) console.warn(`[cloud incremental] 表 ${table} 推送失败`, e);
-    }
-  }
-
-  if (pushed.size > 0) {
-    clearCloudSqliteDirtyTables(pushed);
+  try {
+    await pushLocalTablesToCloudBatch(dirtyList);
+    clearCloudSqliteDirtyTables(dirtyList);
     await setLastCloudAlignAtIso(new Date().toISOString());
-  } else {
+  } catch (e) {
+    if (__DEV__) console.warn('[cloud incremental] 批量推送失败', e);
     scheduleCloudTablePushDebounced();
   }
 }
@@ -515,10 +1044,7 @@ export async function alignAllLocalTablesToCloud(opts?: { signal?: AbortSignal }
 
   try {
     const tables = await listLocalUserTables();
-    for (const table of tables) {
-      throwIfAborted(opts?.signal);
-      await pushLocalTableToCloud(table, { signal: opts?.signal });
-    }
+    await pushLocalTablesToCloudBatch(tables, { signal: opts?.signal });
     const iso = new Date().toISOString();
     await setLastCloudAlignAtIso(iso);
     clearAllCloudSqliteDirtyTables();

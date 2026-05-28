@@ -62,7 +62,21 @@ const CLOUD_BACKUP_PRESS_DEBOUNCE_MS = 1200;
 function formatCloudBackupProgressLine(p: CloudSyncProgress | null): string | null {
   if (!p) return null;
   if (p.phase === 'preparing') return '正在准备全量备份…';
-  if (p.phase === 'collecting') return '正在读取本地 SQLite 表…';
+  if (p.phase === 'collecting') {
+    const idx = p.tableIndex ?? 0;
+    const total = p.tableCount ?? 0;
+    const label = p.tableLabel ?? '表';
+    if (label === '分析表依赖') return '正在分析本地表依赖…';
+    return total > 0
+      ? `正在读取本地数据 ${Math.min(idx, total)}/${total}：${label}`
+      : '正在读取本地 SQLite…';
+  }
+  if (p.phase === 'cloud_schema') {
+    const idx = p.tableIndex ?? 0;
+    const total = p.tableCount ?? 0;
+    const label = p.tableLabel ?? '云端表结构';
+    return total > 0 ? `正在同步云端结构 ${Math.min(idx, total)}/${total}：${label}` : label;
+  }
   if (p.phase === 'uploading' || p.phase === 'downloading') {
     const idx = p.tableIndex ?? 0;
     const total = p.tableCount ?? 0;

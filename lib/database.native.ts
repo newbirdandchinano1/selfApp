@@ -1187,6 +1187,10 @@ export async function initDatabase() {
 
   enableCloudSqliteMutationTrackingOnDatabase(db as never);
 
+  void import('@/lib/cloud-sql-sync').then(m => {
+    m.invalidateLocalForeignKeyGraphCache();
+  });
+
   return db;
 }
 
