@@ -4,83 +4,78 @@ import { Layout, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { notifyAutoLedgerFailure, notifyAutoLedgerHint } from '@/lib/auto-ledger-notify';
+import {
+    AUTO_LEDGER_HANDOFF_SPLASH_MS,
+    AUTO_LEDGER_MAX_ATTEMPTS,
+    AUTO_LEDGER_RETRY_DELAY_MS,
+    sleepMs,
+} from '@/lib/auto-ledger-retry';
+import {
+    enterAutoLedgerSession,
+    leaveAutoLedgerSession,
+    runInAutoLedgerSession,
+} from '@/lib/auto-ledger-session';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
+import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import {
-  budgetDaysLeftIncludingToday,
-  budgetPeriodLengthDays,
-  clampBudgetRefreshDay,
-  DEFAULT_BUDGET_REFRESH_DAY,
-  getBudgetMonthKeyForDate,
-  getBudgetPeriodStartForDate,
-  getNextBudgetPeriodStart,
-  getPreviousBudgetPeriodStart,
-  loadBudgetRefreshDay,
-  loadMonthBudgetSettings,
-  persistBudgetRefreshDay,
-  persistMonthBudgetSettings,
-  sumBudgetFixedExpenses,
-  type BudgetFixedExpense,
-  type MonthBudgetSetting,
+    loadFinanceDefaultAccounts,
+    sanitizeFinanceDefaultAccounts,
+    type FinanceDefaultAccounts,
+} from '@/lib/finance-default-accounts';
+import {
+    budgetDaysLeftIncludingToday,
+    budgetPeriodLengthDays,
+    clampBudgetRefreshDay,
+    DEFAULT_BUDGET_REFRESH_DAY,
+    getBudgetMonthKeyForDate,
+    getBudgetPeriodStartForDate,
+    getNextBudgetPeriodStart,
+    getPreviousBudgetPeriodStart,
+    loadBudgetRefreshDay,
+    loadMonthBudgetSettings,
+    persistBudgetRefreshDay,
+    persistMonthBudgetSettings,
+    sumBudgetFixedExpenses,
+    type BudgetFixedExpense,
+    type MonthBudgetSetting,
 } from '@/lib/finance-monthly-budget';
+import { setFinanceSheetBridge } from '@/lib/finance-sheet-bridge';
+import { consumeFinanceSheetLaunchIntent, type FinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
+import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
 import {
-  addDaysToLogicalYmd,
-  getLogicalLocalYmd,
-  logicalYmdToLocalDate,
-} from '@/lib/tasks-logical-day';
-import {
-  createFinanceTransaction,
-  deleteFinanceTransaction,
-  getFinanceAccountsWithBalance,
-  getFinanceFlowCategories,
-  getFinanceTransactions,
-  validateFinanceLedgerBalanceAfterChange,
+    createFinanceTransaction,
+    deleteFinanceTransaction,
+    getFinanceAccountsWithBalance,
+    getFinanceFlowCategories,
+    getFinanceTransactions,
+    validateFinanceLedgerBalanceAfterChange,
 } from '@/lib/repositories/finance/finance';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import {
-  getBudgetFixedExpenseIdFromTxnExtra,
-  isFinanceTransactionExcludedFromBudget,
+    getBudgetFixedExpenseIdFromTxnExtra,
+    isFinanceTransactionExcludedFromBudget,
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
-import { notifyAutoLedgerFailure, notifyAutoLedgerHint } from '@/lib/auto-ledger-notify';
-
-const AUTO_LEDGER_NOT_BILL_MESSAGE =
-  '这不是账单或支付凭证截图，请换一张支付成功页、账单详情或小票等图片。';
 import {
-  AUTO_LEDGER_HANDOFF_SPLASH_MS,
-  AUTO_LEDGER_MAX_ATTEMPTS,
-  AUTO_LEDGER_RETRY_DELAY_MS,
-  sleepMs,
-} from '@/lib/auto-ledger-retry';
-import {
-  loadFinanceDefaultAccounts,
-  sanitizeFinanceDefaultAccounts,
-  type FinanceDefaultAccounts,
-} from '@/lib/finance-default-accounts';
-import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
-import { setFinanceSheetBridge } from '@/lib/finance-sheet-bridge';
-import { consumeFinanceSheetLaunchIntent, type FinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
-import {
-  consumeShortcutAutoLedgerImageDataUri,
-  hasShortcutAutoLedgerPending,
+    consumeShortcutAutoLedgerImageDataUri,
+    hasShortcutAutoLedgerPending,
 } from '@/lib/shortcut-auto-ledger-pending';
 import {
-  consumeShortcutImageHandoffExpected,
-  subscribeShortcutHandoffConsume,
+    consumeShortcutImageHandoffExpected,
+    subscribeShortcutHandoffConsume,
 } from '@/lib/shortcut-auto-ledger-route-bridge';
-import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
 import {
-  enterAutoLedgerSession,
-  leaveAutoLedgerSession,
-  runInAutoLedgerSession,
-} from '@/lib/auto-ledger-session';
-import { moveAppToBackground } from 'zheng-background';
-import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
+    addDaysToLogicalYmd,
+    getLogicalLocalYmd,
+    logicalYmdToLocalDate,
+} from '@/lib/tasks-logical-day';
 import {
-  getActiveAiLlmApiKey,
-  isActiveAiLlmConfigured,
-  parseFinanceOneLinerFromImage,
-  parseFinanceOneLinerFromText,
+    getActiveAiLlmApiKey,
+    isActiveAiLlmConfigured,
+    parseFinanceOneLinerFromImage,
+    parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -90,32 +85,36 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Animated,
-  Dimensions,
-  Easing,
-  Image,
-  Keyboard,
-  KeyboardAvoidingView,
-  Modal,
-  PanResponder,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleProp,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  View,
-  ViewStyle,
-  type GestureResponderEvent,
-  type KeyboardEvent,
+    ActivityIndicator,
+    Alert,
+    Animated,
+    Dimensions,
+    Easing,
+    Image,
+    Keyboard,
+    KeyboardAvoidingView,
+    Modal,
+    PanResponder,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleProp,
+    StyleSheet,
+    Switch,
+    Text,
+    TextInput,
+    View,
+    ViewStyle,
+    type GestureResponderEvent,
+    type KeyboardEvent,
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, LinearGradient, Path, Stop } from 'react-native-svg';
+import { moveAppToBackground } from 'zheng-background';
+
+const AUTO_LEDGER_NOT_BILL_MESSAGE =
+  '这不是账单或支付凭证截图，请换一张支付成功页、账单详情或小票等图片。';
 
 type Txn = {
   id: string;
@@ -628,7 +627,6 @@ export default function FinanceScreen() {
             try {
               await deleteFinanceTransaction(txnId);
               await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-              scheduleGithubFinanceCloudSyncDebounced();
             } catch (error) {
               console.warn('Failed to delete finance transaction:', error);
               Alert.alert('删除失败', '请稍后重试。');
@@ -1821,7 +1819,6 @@ export default function FinanceScreen() {
               }),
             });
             await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-            scheduleGithubFinanceCloudSyncDebounced();
             return;
           } catch (error) {
             lastError =
@@ -2285,7 +2282,6 @@ export default function FinanceScreen() {
             const last = netTrendPointCountRef.current - 1;
             return last >= 0 ? last : prev;
           });
-          scheduleGithubFinanceCloudSyncDebounced();
         } catch (error) {
           console.warn(isUndo ? 'Failed to undo fixed expense quick pay:' : 'Failed to quick-pay fixed expense:', error);
           Alert.alert(
@@ -2663,7 +2659,6 @@ export default function FinanceScreen() {
         setIsSheetVisible(false);
         resetSheetForm('sentence');
         await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-        scheduleGithubFinanceCloudSyncDebounced();
       } catch (error) {
         console.warn('Failed to create transfer transactions:', error);
         Alert.alert(
@@ -2758,7 +2753,6 @@ export default function FinanceScreen() {
               }),
             });
             await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-            scheduleGithubFinanceCloudSyncDebounced();
           } catch (error) {
             console.warn('Failed to create finance transaction:', error);
             Alert.alert(
@@ -2820,7 +2814,6 @@ export default function FinanceScreen() {
       setIsSheetVisible(false);
       resetSheetForm('sentence');
       await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-      scheduleGithubFinanceCloudSyncDebounced();
     } catch (error) {
       console.warn('Failed to create finance transaction:', error);
       Alert.alert(

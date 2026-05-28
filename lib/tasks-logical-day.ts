@@ -1,4 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppSettingKey, getAppSetting, setAppSetting } from '@/lib/app-settings-store';
 
 /** 全应用「日界」：新一天的统计从该时刻起算（默认 0:00 即自然日） */
 export type TasksDayBoundary = { hour: number; minute: number };
@@ -7,8 +7,6 @@ export type TasksDayBoundary = { hour: number; minute: number };
 export type AppDayBoundary = TasksDayBoundary;
 
 export const DEFAULT_TASKS_DAY_BOUNDARY: TasksDayBoundary = { hour: 0, minute: 0 };
-
-const STORAGE_KEY = '@tasks_completion_day_start_v1';
 
 let cachedBoundary: TasksDayBoundary | null = null;
 const listeners = new Set<() => void>();
@@ -92,12 +90,11 @@ export function getLogicalDayKeyFromDate(at: Date, boundary?: TasksDayBoundary):
 
 export async function loadTasksDayBoundary(): Promise<TasksDayBoundary> {
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) {
+    const parsed = await getAppSetting<unknown>(AppSettingKey.tasksCompletionDayStart);
+    if (parsed == null) {
       cachedBoundary = { ...DEFAULT_TASKS_DAY_BOUNDARY };
       return { ...DEFAULT_TASKS_DAY_BOUNDARY };
     }
-    const parsed: unknown = JSON.parse(raw);
     const b = normalizeTasksDayBoundary(parsed);
     cachedBoundary = b;
     return b;
@@ -113,7 +110,7 @@ export const loadAppDayBoundary = loadTasksDayBoundary;
 export async function saveTasksDayBoundary(boundary: TasksDayBoundary): Promise<void> {
   const x = normalizeTasksDayBoundary(boundary);
   cachedBoundary = x;
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(x));
+  await setAppSetting(AppSettingKey.tasksCompletionDayStart, x);
   notifyDayBoundaryListeners();
 }
 

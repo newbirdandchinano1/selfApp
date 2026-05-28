@@ -1,8 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const LEGACY_OVERRIDE_KEY = '@finance_monthly_budget_override_v1';
-const STORAGE_KEY_V2 = '@finance_monthly_budget_settings_v2';
-const BUDGET_REFRESH_DAY_KEY = '@finance_budget_refresh_day_v1';
+import { AppSettingKey, getAppSetting, getAppSettingRaw, setAppSetting } from '@/lib/app-settings-store';
 
 /** 每月预算重新起算日（1–31），默认 1 日即自然月。 */
 export const DEFAULT_BUDGET_REFRESH_DAY = 1;
@@ -92,9 +88,8 @@ export function budgetDaysLeftIncludingToday(today: Date, periodEndExclusive: Da
 
 export async function loadBudgetRefreshDay(): Promise<number> {
   try {
-    const raw = await AsyncStorage.getItem(BUDGET_REFRESH_DAY_KEY);
-    if (raw == null) return DEFAULT_BUDGET_REFRESH_DAY;
-    const parsed = JSON.parse(raw) as unknown;
+    const parsed = await getAppSetting<unknown>(AppSettingKey.financeBudgetRefreshDay);
+    if (parsed == null) return DEFAULT_BUDGET_REFRESH_DAY;
     return clampBudgetRefreshDay(parsed);
   } catch {
     return DEFAULT_BUDGET_REFRESH_DAY;
@@ -102,7 +97,7 @@ export async function loadBudgetRefreshDay(): Promise<number> {
 }
 
 export async function persistBudgetRefreshDay(day: number): Promise<void> {
-  await AsyncStorage.setItem(BUDGET_REFRESH_DAY_KEY, JSON.stringify(clampBudgetRefreshDay(day)));
+  await setAppSetting(AppSettingKey.financeBudgetRefreshDay, clampBudgetRefreshDay(day));
 }
 
 /** 每月固定支出项（从可支配预算中预先扣除）。 */
@@ -165,30 +160,25 @@ function normalizeSettings(parsed: unknown): Record<string, MonthBudgetSetting> 
 
 /** 读取按月预算设置；会自动迁移旧版「仅总额数字」存储。 */
 export async function loadMonthBudgetSettings(): Promise<Record<string, MonthBudgetSetting>> {
-  const raw = await AsyncStorage.getItem(STORAGE_KEY_V2);
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      const normalized = normalizeSettings(parsed);
-      if (Object.keys(normalized).length > 0) return normalized;
-    } catch {
-      /* fallthrough */
-    }
+  const parsed = await getAppSetting<unknown>(AppSettingKey.financeMonthlyBudget);
+  if (parsed) {
+    const normalized = normalizeSettings(parsed);
+    if (Object.keys(normalized).length > 0) return normalized;
   }
 
-  const legacyRaw = await AsyncStorage.getItem(LEGACY_OVERRIDE_KEY);
+  const legacyRaw = await getAppSettingRaw(AppSettingKey.financeMonthlyBudgetLegacy);
   if (!legacyRaw) return {};
   try {
-    const parsed = JSON.parse(legacyRaw) as unknown;
-    if (!parsed || typeof parsed !== 'object') return {};
+    const legacyParsed = JSON.parse(legacyRaw) as unknown;
+    if (!legacyParsed || typeof legacyParsed !== 'object') return {};
     const out: Record<string, MonthBudgetSetting> = {};
-    for (const [k, v] of Object.entries(parsed)) {
+    for (const [k, v] of Object.entries(legacyParsed)) {
       if (typeof v === 'number' && Number.isFinite(v) && v >= 0) {
         out[k] = { baseAmount: v, includeLastBalance: false };
       }
     }
     if (Object.keys(out).length > 0) {
-      await AsyncStorage.setItem(STORAGE_KEY_V2, JSON.stringify(out));
+      await setAppSetting(AppSettingKey.financeMonthlyBudget, out);
     }
     return out;
   } catch {
@@ -197,5 +187,5 @@ export async function loadMonthBudgetSettings(): Promise<Record<string, MonthBud
 }
 
 export async function persistMonthBudgetSettings(map: Record<string, MonthBudgetSetting>): Promise<void> {
-  await AsyncStorage.setItem(STORAGE_KEY_V2, JSON.stringify(map));
+  await setAppSetting(AppSettingKey.financeMonthlyBudget, map);
 }

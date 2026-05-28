@@ -1,9 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { markGithubKvSliceDirty } from '@/lib/github-sqlite-dirty-track';
+import type * as SQLite from 'expo-sqlite';
+import { getDatabase } from '@/lib/database';
+import {
+  beginCloudSqliteDirtyIgnoreBatch,
+  endCloudSqliteDirtyIgnoreBatch,
+  markCloudSqliteTableDirty,
+} from '@/lib/cloud-sql-dirty-track';
 
-/** 旧版个人页单条备忘，首次读取时迁移为一条列表项 */
+/** 旧版个人页单条备忘，迁移用 */
 const LEGACY_SINGLE_MEMO_KEY = 'profile_screen_memo_v1';
 const MEMO_LIST_KEY = 'memo_list_v2';
+const MEMOS_ASYNC_MIGRATED_KEY = 'memos_async_migrated_v1';
 
 export const MEMO_TITLE_MAX = 120;
 export const MEMO_BODY_MAX = 8000;
@@ -14,14 +21,22 @@ export type MemoItem = {
   body: string;
   created_at: string;
   updated_at: string;
-  /** 智谱 AI 对备忘内容的简要评价 */
   ai_evaluation?: string;
-  /** 智谱 AI 给出的可执行建议 */
   ai_suggestions?: string;
-  /** 最近一次生成 AI 评价的时间 ISO */
   ai_review_at?: string;
-  /** 由该备忘左滑「转待办」生成的独立待办 id（可重复再转，仅记录最近一次） */
   linked_task_id?: string;
+};
+
+type MemoRow = {
+  id: string;
+  title: string;
+  body: string;
+  ai_evaluation: string | null;
+  ai_suggestions: string | null;
+  ai_review_at: string | null;
+  linked_task_id: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 function newId(): string {
@@ -29,16 +44,28 @@ function newId(): string {
 }
 
 function clampTitle(t: string): string {
-  const s = t.length > MEMO_TITLE_MAX ? t.slice(0, MEMO_TITLE_MAX) : t;
-  return s;
+  return t.length > MEMO_TITLE_MAX ? t.slice(0, MEMO_TITLE_MAX) : t;
 }
 
 function clampBody(t: string): string {
-  const s = t.length > MEMO_BODY_MAX ? t.slice(0, MEMO_BODY_MAX) : t;
-  return s;
+  return t.length > MEMO_BODY_MAX ? t.slice(0, MEMO_BODY_MAX) : t;
 }
 
-function parseList(raw: string | null): MemoItem[] {
+function rowToMemo(row: MemoRow): MemoItem {
+  return {
+    id: row.id,
+    title: row.title,
+    body: row.body,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    ...(row.ai_evaluation?.trim() ? { ai_evaluation: row.ai_evaluation.trim() } : {}),
+    ...(row.ai_suggestions?.trim() ? { ai_suggestions: row.ai_suggestions.trim() } : {}),
+    ...(row.ai_review_at?.trim() ? { ai_review_at: row.ai_review_at.trim() } : {}),
+    ...(row.linked_task_id?.trim() ? { linked_task_id: row.linked_task_id.trim() } : {}),
+  };
+}
+
+export function parseMemoItemsFromJson(raw: string | null): MemoItem[] {
   if (raw == null || raw === '') return [];
   try {
     const x = JSON.parse(raw) as unknown;
@@ -75,56 +102,138 @@ function parseList(raw: string | null): MemoItem[] {
   }
 }
 
-async function readListAfterMigration(): Promise<MemoItem[]> {
+function markMemosDirty(): void {
+  markCloudSqliteTableDirty('memos');
+}
+
+async function readAsyncStorageMemosForMigration(): Promise<MemoItem[]> {
   const raw = await AsyncStorage.getItem(MEMO_LIST_KEY);
   if (raw != null && raw !== '') {
-    return parseList(raw);
+    return parseMemoItemsFromJson(raw);
   }
   const legacy = await AsyncStorage.getItem(LEGACY_SINGLE_MEMO_KEY);
   if (legacy?.trim()) {
     const now = new Date().toISOString();
-    const one: MemoItem = {
-      id: newId(),
-      title: '备忘录',
-      body: legacy.trim(),
-      created_at: now,
-      updated_at: now,
-    };
-    await AsyncStorage.setItem(MEMO_LIST_KEY, JSON.stringify([one]));
-    markGithubKvSliceDirty('memos');
-    await AsyncStorage.removeItem(LEGACY_SINGLE_MEMO_KEY);
-    return [one];
+    return [
+      {
+        id: newId(),
+        title: '备忘录',
+        body: legacy.trim(),
+        created_at: now,
+        updated_at: now,
+      },
+    ];
   }
   return [];
 }
 
-/** 从云备份 kv payload 解析备忘列表（与 `listMemos` 存盘格式一致）。 */
+async function importMemosToDb(db: SQLite.SQLiteDatabase, items: MemoItem[]): Promise<void> {
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.execAsync('BEGIN IMMEDIATE');
+    await db.runAsync('DELETE FROM memos');
+    for (const item of items) {
+      await db.runAsync(
+        `INSERT INTO memos (
+          id, title, body, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
+          created_at, updated_at, deleted_at, sync_status, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+        [
+          item.id,
+          clampTitle(item.title),
+          clampBody(item.body),
+          item.ai_evaluation?.trim() || null,
+          item.ai_suggestions?.trim() || null,
+          item.ai_review_at?.trim() || null,
+          item.linked_task_id?.trim() || null,
+          item.created_at,
+          item.updated_at,
+        ],
+      );
+    }
+    await db.execAsync('COMMIT');
+  } catch (e) {
+    try {
+      await db.execAsync('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw e;
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+  markMemosDirty();
+}
+
+/** 启动时：将 AsyncStorage 中的备忘一次性迁入 SQLite */
+export async function migrateMemosStorageToSqliteIfNeeded(db?: SQLite.SQLiteDatabase): Promise<void> {
+  const database = db ?? (await getDatabase());
+  const flag = await database.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    [MEMOS_ASYNC_MIGRATED_KEY],
+  );
+  if (flag?.value === '1') return;
+
+  const count = await database.getFirstAsync<{ c: number }>(
+    'SELECT COUNT(1) AS c FROM memos WHERE deleted_at IS NULL',
+  );
+  const hasSqliteData = Number(count?.c ?? 0) > 0;
+
+  if (!hasSqliteData) {
+    const asyncItems = await readAsyncStorageMemosForMigration();
+    if (asyncItems.length > 0) {
+      await importMemosToDb(database, asyncItems);
+    }
+  }
+
+  await AsyncStorage.multiRemove([MEMO_LIST_KEY, LEGACY_SINGLE_MEMO_KEY]);
+  await database.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    MEMOS_ASYNC_MIGRATED_KEY,
+    '1',
+  ]);
+}
+
+async function listMemosFromDb(db: SQLite.SQLiteDatabase): Promise<MemoItem[]> {
+  const rows = await db.getAllAsync<MemoRow>(
+    `SELECT id, title, body, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id, created_at, updated_at
+     FROM memos WHERE deleted_at IS NULL ORDER BY updated_at DESC`,
+  );
+  return rows.map(rowToMemo);
+}
+
+/** 从云备份 kv payload 解析备忘列表。 */
 export function memoItemsFromBackupPayload(payload: unknown): MemoItem[] {
   if (!Array.isArray(payload)) return [];
-  return parseList(JSON.stringify(payload));
+  return parseMemoItemsFromJson(JSON.stringify(payload));
 }
 
-async function writeList(items: MemoItem[]): Promise<void> {
-  await AsyncStorage.setItem(MEMO_LIST_KEY, JSON.stringify(items));
-  markGithubKvSliceDirty('memos');
-}
-
-/** 云恢复：用备份中的备忘列表整表覆盖本地（不经由单条编辑 API）。 */
+/** 云恢复：用备份中的备忘列表整表覆盖本地。 */
 export async function replaceMemosFromCloudRestore(items: MemoItem[]): Promise<void> {
-  await writeList(items);
+  const db = await getDatabase();
+  await migrateMemosStorageToSqliteIfNeeded(db);
+  await importMemosToDb(db, items);
 }
 
 export async function listMemos(): Promise<MemoItem[]> {
-  const arr = await readListAfterMigration();
-  return [...arr].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  const db = await getDatabase();
+  await migrateMemosStorageToSqliteIfNeeded(db);
+  return listMemosFromDb(db);
 }
 
 export async function getMemo(id: string): Promise<MemoItem | null> {
-  const arr = await readListAfterMigration();
-  return arr.find(m => m.id === id) ?? null;
+  const db = await getDatabase();
+  await migrateMemosStorageToSqliteIfNeeded(db);
+  const row = await db.getFirstAsync<MemoRow>(
+    `SELECT id, title, body, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id, created_at, updated_at
+     FROM memos WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    [id],
+  );
+  return row ? rowToMemo(row) : null;
 }
 
 export async function createMemo(input: { title: string; body: string }): Promise<MemoItem> {
+  const db = await getDatabase();
+  await migrateMemosStorageToSqliteIfNeeded(db);
   const now = new Date().toISOString();
   const item: MemoItem = {
     id: newId(),
@@ -133,9 +242,14 @@ export async function createMemo(input: { title: string; body: string }): Promis
     created_at: now,
     updated_at: now,
   };
-  const arr = await readListAfterMigration();
-  arr.push(item);
-  await writeList(arr);
+  await db.runAsync(
+    `INSERT INTO memos (
+      id, title, body, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
+      created_at, updated_at, deleted_at, sync_status, version
+    ) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL, 'synced', 1)`,
+    [item.id, item.title, item.body, item.created_at, item.updated_at],
+  );
+  markMemosDirty();
   return item;
 }
 
@@ -143,29 +257,42 @@ export async function updateMemo(
   id: string,
   patch: { title?: string; body?: string },
 ): Promise<MemoItem | null> {
-  const arr = await readListAfterMigration();
-  const idx = arr.findIndex(m => m.id === id);
-  if (idx < 0) return null;
-  const prev = arr[idx]!;
+  const prev = await getMemo(id);
+  if (!prev) return null;
   const nextTitle = patch.title !== undefined ? clampTitle(patch.title) : prev.title;
   const nextBody = patch.body !== undefined ? clampBody(patch.body) : prev.body;
   const contentChanged =
     (patch.title !== undefined && nextTitle !== prev.title) ||
     (patch.body !== undefined && nextBody !== prev.body);
-
+  const updated_at = new Date().toISOString();
+  const db = await getDatabase();
+  if (contentChanged) {
+    await db.runAsync(
+      `UPDATE memos SET title = ?, body = ?, ai_evaluation = NULL, ai_suggestions = NULL, ai_review_at = NULL,
+        updated_at = ?, sync_status = 'synced', version = version + 1 WHERE id = ? AND deleted_at IS NULL`,
+      [nextTitle, nextBody, updated_at, id],
+    );
+  } else {
+    await db.runAsync(
+      `UPDATE memos SET title = ?, body = ?, updated_at = ?, sync_status = 'synced', version = version + 1
+       WHERE id = ? AND deleted_at IS NULL`,
+      [nextTitle, nextBody, updated_at, id],
+    );
+  }
+  markMemosDirty();
   const next: MemoItem = {
-    ...prev,
+    id: prev.id,
     title: nextTitle,
     body: nextBody,
-    updated_at: new Date().toISOString(),
+    created_at: prev.created_at,
+    updated_at,
   };
-  if (contentChanged) {
-    next.ai_evaluation = undefined;
-    next.ai_suggestions = undefined;
-    next.ai_review_at = undefined;
+  if (!contentChanged) {
+    if (prev.ai_evaluation) next.ai_evaluation = prev.ai_evaluation;
+    if (prev.ai_suggestions) next.ai_suggestions = prev.ai_suggestions;
+    if (prev.ai_review_at) next.ai_review_at = prev.ai_review_at;
+    if (prev.linked_task_id) next.linked_task_id = prev.linked_task_id;
   }
-  arr[idx] = next;
-  await writeList(arr);
   return next;
 }
 
@@ -173,31 +300,34 @@ export async function setMemoAiReview(
   id: string,
   payload: { evaluation: string; suggestions: string },
 ): Promise<MemoItem | null> {
-  const arr = await readListAfterMigration();
-  const idx = arr.findIndex(m => m.id === id);
-  if (idx < 0) return null;
-  const prev = arr[idx]!;
+  const prev = await getMemo(id);
+  if (!prev) return null;
   const now = new Date().toISOString();
-  const next: MemoItem = {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE memos SET ai_evaluation = ?, ai_suggestions = ?, ai_review_at = ?, updated_at = ?,
+      sync_status = 'synced', version = version + 1 WHERE id = ? AND deleted_at IS NULL`,
+    [payload.evaluation.trim(), payload.suggestions.trim(), now, now, id],
+  );
+  markMemosDirty();
+  return {
     ...prev,
     ai_evaluation: payload.evaluation.trim(),
     ai_suggestions: payload.suggestions.trim(),
     ai_review_at: now,
+    updated_at: now,
   };
-  arr[idx] = next;
-  await writeList(arr);
-  return next;
 }
 
 export async function deleteMemo(id: string): Promise<boolean> {
-  const arr = await readListAfterMigration();
-  const next = arr.filter(m => m.id !== id);
-  if (next.length === arr.length) return false;
-  await writeList(next);
+  const db = await getDatabase();
+  await migrateMemosStorageToSqliteIfNeeded(db);
+  const result = await db.runAsync('DELETE FROM memos WHERE id = ?', [id]);
+  if ((result.changes ?? 0) < 1) return false;
+  markMemosDirty();
   return true;
 }
 
-/** 列表预览用：无标题时取正文首行 */
 export function memoListPreviewTitle(row: MemoItem): string {
   const t = row.title.trim();
   if (t) return t;
@@ -213,7 +343,6 @@ export function memoListPreviewBody(row: MemoItem): string {
   return one.length > 80 ? `${one.slice(0, 80)}…` : one;
 }
 
-/** 供智谱 AI 使用的备忘全文（标题 + 正文 + 元信息） */
 export function memoContextForAiReview(row: MemoItem): string {
   const title = row.title.trim();
   const body = row.body.trim();

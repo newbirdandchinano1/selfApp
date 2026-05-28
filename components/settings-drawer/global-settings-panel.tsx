@@ -3,50 +3,49 @@ import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
-import {
-  DEFAULT_GITHUB_FULL_BACKUP_ROOT,
-  DEFAULT_KV_API_URL,
-  DEFAULT_KV_AUTH_TOKEN,
-  clearGithubUserToken,
-  getGithubUserCustomToken,
-  hasGithubUserTokenSync,
-  loadGithubBackupTokenCache,
-  setGithubUserToken,
-} from '@/lib/github-backup-user-config';
 import { repairLocalDatabase } from '@/lib/database';
-import { triggerGithubCloudRestoreFromFullBackup } from '@/lib/github-cloud-restore';
 import {
-  triggerGithubCloudSync,
-  type GithubCloudSyncProgress,
-} from '@/lib/github-cloud-sync';
-import { getLastFullGithubBackupAtIso } from '@/lib/github-full-backup-local-meta';
+    DEFAULT_CLOUD_AUTH_TOKEN,
+    DEFAULT_CLOUD_SQL_API_URL,
+    clearCloudUserToken,
+    getCloudUserCustomToken,
+    hasCloudUserTokenSync,
+    loadCloudBackupTokenCache,
+    setCloudUserToken,
+} from '@/lib/cloud-backup-config';
+import { getLastFullCloudBackupAtIso } from '@/lib/cloud-backup-meta';
 import {
-  DEFAULT_TASKS_DAY_BOUNDARY,
-  formatTasksDayBoundaryLabel,
-  type TasksDayBoundary,
+    triggerCloudFullBackup,
+    triggerCloudFullRestore,
+    type CloudSyncProgress,
+} from '@/lib/cloud-sql-sync';
+import {
+    DEFAULT_TASKS_DAY_BOUNDARY,
+    formatTasksDayBoundaryLabel,
+    type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import type { ThemePreference } from '@/lib/theme-preference';
 import {
-  getZhipuApiKey,
-  getZhipuApiKeyFromEnv,
-  probeZhipuTextConnectivity,
-  type ZhipuConnectivityProbeResult,
+    getZhipuApiKey,
+    getZhipuApiKeyFromEnv,
+    probeZhipuTextConnectivity,
+    type ZhipuConnectivityProbeResult,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  AppState,
-  Modal,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Switch,
-  Text,
-  View,
+    ActivityIndicator,
+    Alert,
+    AppState,
+    Modal,
+    Platform,
+    Pressable,
+    StyleSheet,
+    Switch,
+    Text,
+    View,
 } from 'react-native';
 import { Gesture, GestureDetector, ScrollView, type PanGesture } from 'react-native-gesture-handler';
 import type { SettingsSection } from './settings-drawer-context';
@@ -60,22 +59,18 @@ function formatZhFullBackupTime(iso: string): string {
 
 const CLOUD_BACKUP_PRESS_DEBOUNCE_MS = 1200;
 
-function formatCloudBackupProgressLine(p: GithubCloudSyncProgress | null): string | null {
+function formatCloudBackupProgressLine(p: CloudSyncProgress | null): string | null {
   if (!p) return null;
   if (p.phase === 'preparing') return '正在准备全量备份…';
-  if (p.phase === 'collecting') return '正在读取本地 SQLite 与 KV 数据…';
-  if (p.phase === 'uploading') {
-    const idx = p.fileIndex ?? 0;
-    const total = p.fileCount ?? 0;
-    const label = p.fileLabel ?? '文件';
-    const progress =
-      total > 0 ? `正在上传 ${Math.min(idx, total)}/${total}` : '正在上传';
-    const retry =
-      p.attempt != null && p.maxAttempts != null && p.attempt > 1
-        ? `（第 ${p.attempt}/${p.maxAttempts} 次重试）`
-        : '';
-    return `${progress}：${label}${retry}`;
+  if (p.phase === 'collecting') return '正在读取本地 SQLite 表…';
+  if (p.phase === 'uploading' || p.phase === 'downloading') {
+    const idx = p.tableIndex ?? 0;
+    const total = p.tableCount ?? 0;
+    const label = p.tableLabel ?? '表';
+    const verb = p.phase === 'downloading' ? '拉取' : '上传';
+    return total > 0 ? `正在${verb} ${Math.min(idx, total)}/${total}：${label}` : `正在${verb}…`;
   }
+  if (p.phase === 'applying') return '正在写入本地数据库…';
   return null;
 }
 
@@ -114,34 +109,34 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [zhipuProbeResult, setZhipuProbeResult] = useState<ZhipuConnectivityProbeResult | null>(null);
   const [zhipuProbeError, setZhipuProbeError] = useState<string | null>(null);
 
-  const [githubTokenDraft, setGithubTokenDraft] = useState('');
-  const [githubTokenConfigured, setGithubTokenConfigured] = useState(() => hasGithubUserTokenSync());
-  const [githubTokenSaving, setGithubTokenSaving] = useState(false);
+  const [cloudTokenDraft, setCloudTokenDraft] = useState('');
+  const [cloudTokenConfigured, setCloudTokenConfigured] = useState(() => hasCloudUserTokenSync());
+  const [cloudTokenSaving, setCloudTokenSaving] = useState(false);
 
   const [cloudBackupBusy, setCloudBackupBusy] = useState(false);
-  const [cloudBackupProgress, setCloudBackupProgress] = useState<GithubCloudSyncProgress | null>(null);
+  const [cloudBackupProgress, setCloudBackupProgress] = useState<CloudSyncProgress | null>(null);
   const [cloudRestoreBusy, setCloudRestoreBusy] = useState(false);
   const [localDbRepairBusy, setLocalDbRepairBusy] = useState(false);
-  const githubCloudOpAbortRef = useRef<AbortController | null>(null);
+  const cloudOpAbortRef = useRef<AbortController | null>(null);
   /** 同步标记：备份/同步进行中（不依赖 setState，避免连点竞态） */
-  const githubCloudOpInFlightRef = useRef(false);
+  const cloudOpInFlightRef = useRef(false);
   const lastCloudBackupPressAtRef = useRef(0);
 
-  const githubCloudOpBusy = cloudBackupBusy || cloudRestoreBusy || localDbRepairBusy;
-  const [lastFullGithubBackupAtIso, setLastFullGithubBackupAtIso] = useState<string | null>(null);
-  const [githubDiagModal, setGithubDiagModal] = useState<{
+  const cloudOpBusy = cloudBackupBusy || cloudRestoreBusy || localDbRepairBusy;
+  const [lastFullCloudBackupAtIso, setLastFullCloudBackupAtIso] = useState<string | null>(null);
+  const [cloudDiagModal, setCloudDiagModal] = useState<{
     visible: boolean;
     title: string;
     subtitle: string;
     body: string;
   }>({ visible: false, title: '', subtitle: '', body: '' });
 
-  const loadLastFullGithubBackupMeta = useCallback(async () => {
+  const loadLastFullCloudBackupMeta = useCallback(async () => {
     try {
-      const iso = await getLastFullGithubBackupAtIso();
-      setLastFullGithubBackupAtIso(iso);
+      const iso = await getLastFullCloudBackupAtIso();
+      setLastFullCloudBackupAtIso(iso);
     } catch {
-      setLastFullGithubBackupAtIso(null);
+      setLastFullCloudBackupAtIso(null);
     }
   }, []);
 
@@ -149,39 +144,39 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     setDraftBoundary(dayBoundary);
   }, [dayBoundary]);
 
-  const refreshGithubTokenFromStorage = useCallback(async () => {
-    await loadGithubBackupTokenCache();
-    const custom = await getGithubUserCustomToken();
-    setGithubTokenConfigured(hasGithubUserTokenSync());
-    setGithubTokenDraft(custom ?? '');
+  const refreshCloudTokenFromStorage = useCallback(async () => {
+    await loadCloudBackupTokenCache();
+    const custom = await getCloudUserCustomToken();
+    setCloudTokenConfigured(hasCloudUserTokenSync());
+    setCloudTokenDraft(custom ?? '');
   }, []);
 
   useEffect(() => {
-    void loadLastFullGithubBackupMeta();
+    void loadLastFullCloudBackupMeta();
     void loadAiLlmProviderPreference();
-    void refreshGithubTokenFromStorage();
-  }, [loadLastFullGithubBackupMeta, refreshGithubTokenFromStorage]);
+    void refreshCloudTokenFromStorage();
+  }, [loadLastFullCloudBackupMeta, refreshCloudTokenFromStorage]);
 
-  const saveGithubToken = useCallback(async () => {
-    setGithubTokenSaving(true);
+  const saveCloudToken = useCallback(async () => {
+    setCloudTokenSaving(true);
     try {
-      if (githubTokenDraft.length === 0) {
-        await clearGithubUserToken();
-        setGithubTokenConfigured(true);
-        Alert.alert('已恢复默认', '将使用应用内置 Cloudflare KV 访问密钥。');
+      if (cloudTokenDraft.length === 0) {
+        await clearCloudUserToken();
+        setCloudTokenConfigured(true);
+        Alert.alert('已恢复默认', '将使用应用内置云端访问密钥。');
         return;
       }
-      await setGithubUserToken(githubTokenDraft);
-      setGithubTokenConfigured(true);
+      await setCloudUserToken(cloudTokenDraft);
+      setCloudTokenConfigured(true);
       Alert.alert('已保存', '自定义密钥已写入本机，重启应用后仍有效。');
     } catch (e) {
       Alert.alert('保存失败', e instanceof Error ? e.message : String(e));
     } finally {
-      setGithubTokenSaving(false);
+      setCloudTokenSaving(false);
     }
-  }, [githubTokenDraft]);
+  }, [cloudTokenDraft]);
 
-  const clearGithubToken = useCallback(() => {
+  const clearCloudToken = useCallback(() => {
     Alert.alert('清除自定义密钥', '清除后将使用应用内置默认密钥；也可重新填写自定义密钥。', [
       { text: '取消', style: 'cancel' },
       {
@@ -189,9 +184,9 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         style: 'destructive',
         onPress: () => {
           void (async () => {
-            await clearGithubUserToken();
-            setGithubTokenConfigured(false);
-            setGithubTokenDraft('');
+            await clearCloudUserToken();
+            setCloudTokenConfigured(false);
+            setCloudTokenDraft('');
           })();
         },
       },
@@ -200,7 +195,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', next => {
-      if (next === 'background') githubCloudOpAbortRef.current?.abort();
+      if (next === 'background') cloudOpAbortRef.current?.abort();
     });
     return () => sub.remove();
   }, []);
@@ -232,49 +227,41 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     [scrollToPendingSection],
   );
 
-  const startGithubCloudOp = useCallback(() => {
-    githubCloudOpAbortRef.current?.abort();
+  const startCloudOp = useCallback(() => {
+    cloudOpAbortRef.current?.abort();
     const ac = new AbortController();
-    githubCloudOpAbortRef.current = ac;
+    cloudOpAbortRef.current = ac;
     return ac;
   }, []);
 
-  const endGithubCloudOp = useCallback((ac: AbortController) => {
-    if (githubCloudOpAbortRef.current === ac) githubCloudOpAbortRef.current = null;
+  const endCloudOp = useCallback((ac: AbortController) => {
+    if (cloudOpAbortRef.current === ac) cloudOpAbortRef.current = null;
   }, []);
 
   const runCloudBackup = useCallback(async () => {
-    if (githubCloudOpInFlightRef.current) return;
-    githubCloudOpInFlightRef.current = true;
+    if (cloudOpInFlightRef.current) return;
+    cloudOpInFlightRef.current = true;
 
-    const ac = startGithubCloudOp();
+    const ac = startCloudOp();
     setCloudBackupBusy(true);
     setCloudBackupProgress({ phase: 'preparing' });
     try {
-      const r = await triggerGithubCloudSync({
+      const r = await triggerCloudFullBackup({
         signal: ac.signal,
         onProgress: setCloudBackupProgress,
       });
       if (r.ok) {
-        const iso = r.lastFullBackupAt ?? null;
-        if (iso) setLastFullGithubBackupAtIso(iso);
-        else void loadLastFullGithubBackupMeta();
-        const timeLine =
-          iso != null
-            ? `\n\n本次备份时间：${formatZhFullBackupTime(iso)}`
-            : '';
-        const sub = r.upload.commitUrl ? `\n\nmanifest 提交：${r.upload.commitUrl}` : '';
-        const multi =
-          r.multiFileBackup != null
-            ? `\n\n已上传 ${r.multiFileBackup.fileCount} 个 JSON 文件到「${r.multiFileBackup.root}/」。`
-            : '';
-        Alert.alert('云备份', `各表与本地数据已写入 Cloudflare KV。${multi}${timeLine}${sub}`);
+        setLastFullCloudBackupAtIso(r.lastUpdated);
+        Alert.alert(
+          '云备份',
+          `已将本地 ${r.tableCount} 张表、共 ${r.rowCount} 行写入云端 D1。\n\n备份时间：${formatZhFullBackupTime(r.lastUpdated)}`,
+        );
       } else if (r.reason === 'aborted') {
         Alert.alert('云备份已中止', r.message);
       } else if (r.reason === 'unsupported_platform') {
         Alert.alert('云备份不可用', r.message);
       } else {
-        setGithubDiagModal({
+        setCloudDiagModal({
           visible: true,
           title: '云备份失败',
           subtitle: r.message,
@@ -282,55 +269,50 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         });
       }
     } finally {
-      endGithubCloudOp(ac);
+      endCloudOp(ac);
       setCloudBackupBusy(false);
       setCloudBackupProgress(null);
-      githubCloudOpInFlightRef.current = false;
+      cloudOpInFlightRef.current = false;
     }
-  }, [endGithubCloudOp, loadLastFullGithubBackupMeta, startGithubCloudOp]);
+  }, [endCloudOp, startCloudOp]);
 
   const requestCloudBackup = useCallback(() => {
     const now = Date.now();
     if (
-      githubCloudOpInFlightRef.current ||
-      githubCloudOpBusy ||
+      cloudOpInFlightRef.current ||
+      cloudOpBusy ||
       now - lastCloudBackupPressAtRef.current < CLOUD_BACKUP_PRESS_DEBOUNCE_MS
     ) {
       return;
     }
     lastCloudBackupPressAtRef.current = now;
     void runCloudBackup();
-  }, [githubCloudOpBusy, runCloudBackup]);
+  }, [cloudOpBusy, runCloudBackup]);
 
   const runCloudRestore = useCallback(async () => {
-    if (githubCloudOpInFlightRef.current) return;
-    githubCloudOpInFlightRef.current = true;
+    if (cloudOpInFlightRef.current) return;
+    cloudOpInFlightRef.current = true;
 
-    const ac = startGithubCloudOp();
+    const ac = startCloudOp();
     setCloudRestoreBusy(true);
     try {
-      const r = await triggerGithubCloudRestoreFromFullBackup({ signal: ac.signal });
+      const r = await triggerCloudFullRestore({
+        signal: ac.signal,
+        onProgress: setCloudBackupProgress,
+      });
       if (r.ok) {
-        setLastFullGithubBackupAtIso(r.cloudLastUpdated);
+        setLastFullCloudBackupAtIso(r.cloudLastUpdated);
         void loadAiLlmProviderPreference();
-        const kvLine = r.kvKeys.length > 0 ? `\n已恢复 KV：${r.kvKeys.join('、')}` : '';
-        const financeLine = r.financeSingleFile.applied
-          ? `\n账单单文件：流水 ${r.financeSingleFile.bills ?? 0}、账户 ${r.financeSingleFile.accounts ?? 0}、分类 ${r.financeSingleFile.flowCategories ?? 0}${
-              r.financeSingleFile.lastUpdated
-                ? `（${formatZhFullBackupTime(r.financeSingleFile.lastUpdated)}）`
-                : ''
-            }`
-          : '';
         const warnBlock =
           r.warnings.length > 0 ? `\n\n注意：\n${r.warnings.map(w => `· ${w}`).join('\n')}` : '';
         Alert.alert(
           '从云同步完成',
-          `已用云端快照覆盖本地。\nSQLite：${r.sqliteTables} 张表，共 ${r.sqliteRows} 行。${kvLine}${financeLine}\n\nmanifest 时间：${formatZhFullBackupTime(r.cloudLastUpdated)}${warnBlock}`,
+          `已用云端数据覆盖本地。\nSQLite：${r.sqliteTables} 张表，共 ${r.sqliteRows} 行。\n\n同步时间：${formatZhFullBackupTime(r.cloudLastUpdated)}${warnBlock}`,
         );
       } else if (r.reason === 'aborted') {
         Alert.alert('从云同步已中止', r.message);
       } else {
-        setGithubDiagModal({
+        setCloudDiagModal({
           visible: true,
           title: '从云同步失败',
           subtitle: r.message,
@@ -338,38 +320,38 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         });
       }
     } finally {
-      endGithubCloudOp(ac);
+      endCloudOp(ac);
       setCloudRestoreBusy(false);
-      githubCloudOpInFlightRef.current = false;
+      cloudOpInFlightRef.current = false;
     }
-  }, [endGithubCloudOp]);
+  }, [endCloudOp]);
 
   const requestCloudRestore = useCallback(() => {
-    if (githubCloudOpInFlightRef.current || githubCloudOpBusy) return;
+    if (cloudOpInFlightRef.current || cloudOpBusy) return;
     Alert.alert(
       '从云同步',
-      '将按云端 manifest.json 所列 key，用全量备份覆盖本机数据。未备份的本地改动将丢失。确定继续？',
+      '将用云端 D1 数据库中的全部表数据覆盖本机 SQLite。未备份的本地改动将丢失。确定继续？',
       [
         { text: '取消', style: 'cancel' },
         {
           text: '确定覆盖并同步',
           style: 'destructive',
           onPress: () => {
-            if (githubCloudOpInFlightRef.current || githubCloudOpBusy) return;
+            if (cloudOpInFlightRef.current || cloudOpBusy) return;
             void runCloudRestore();
           },
         },
       ],
     );
-  }, [githubCloudOpBusy, runCloudRestore]);
+  }, [cloudOpBusy, runCloudRestore]);
 
   const runLocalDatabaseRepair = useCallback(async () => {
     if (Platform.OS === 'web') {
       Alert.alert('不可用', 'Web 环境无本地 SQLite，请在手机或模拟器上使用。');
       return;
     }
-    if (githubCloudOpInFlightRef.current || localDbRepairBusy) return;
-    githubCloudOpInFlightRef.current = true;
+    if (cloudOpInFlightRef.current || localDbRepairBusy) return;
+    cloudOpInFlightRef.current = true;
     setLocalDbRepairBusy(true);
     try {
       const result = await repairLocalDatabase();
@@ -389,12 +371,12 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
       Alert.alert('修复失败', msg);
     } finally {
       setLocalDbRepairBusy(false);
-      githubCloudOpInFlightRef.current = false;
+      cloudOpInFlightRef.current = false;
     }
-  }, [localDbRepairBusy]);
+  }, [localDbRepairBusy, cloudOpBusy]);
 
   const requestLocalDatabaseRepair = useCallback(() => {
-    if (githubCloudOpInFlightRef.current || githubCloudOpBusy) return;
+    if (cloudOpInFlightRef.current || cloudOpBusy) return;
     Alert.alert(
       '修复本地数据库',
       '将清理云同步后可能产生的孤儿外键（如任务分类不一致），不会删除你的业务数据。完成后建议重启应用。确定继续？',
@@ -403,7 +385,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         { text: '开始修复', onPress: () => void runLocalDatabaseRepair() },
       ],
     );
-  }, [githubCloudOpBusy, runLocalDatabaseRepair]);
+  }, [cloudOpBusy, runLocalDatabaseRepair]);
 
   const runZhipuConnectivityProbe = useCallback(async () => {
     setZhipuProbeLoading(true);
@@ -634,43 +616,43 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           style={styles.section}>
           {renderSectionHead('BACKUP', '云备份与同步')}
           <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 12 }]}>
-            <Text style={[styles.rowTitle, { color: text }]}>Cloudflare KV 访问密钥</Text>
+            <Text style={[styles.rowTitle, { color: text }]}>云端 SQL 访问密钥</Text>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 18 }]}>
-              接口：{DEFAULT_KV_API_URL}，备份前缀 {DEFAULT_GITHUB_FULL_BACKUP_ROOT}/。留空保存则使用内置默认密钥；自定义密钥仅存本机。
+              接口：{DEFAULT_CLOUD_SQL_API_URL}。本地表变更会自动增量同步；每 4 小时自动全表对齐。留空保存则使用内置默认密钥。
             </Text>
-            <Text style={[styles.rowHint, { color: githubTokenConfigured ? primary : outline, fontWeight: '700' }]}>
-              {githubTokenConfigured ? '已就绪，可使用下方备份与同步' : '将使用内置默认密钥'}
+            <Text style={[styles.rowHint, { color: cloudTokenConfigured ? primary : outline, fontWeight: '700' }]}>
+              {cloudTokenConfigured ? '已就绪，可使用下方备份与同步' : '将使用内置默认密钥'}
             </Text>
             <AppInput
-              value={githubTokenDraft}
-              onChangeText={setGithubTokenDraft}
-              placeholder={`留空则用内置密钥；默认 ${DEFAULT_KV_AUTH_TOKEN.slice(0, 4)}…`}
+              value={cloudTokenDraft}
+              onChangeText={setCloudTokenDraft}
+              placeholder={`留空则用内置密钥；默认 ${DEFAULT_CLOUD_AUTH_TOKEN.slice(0, 4)}…`}
               autoCapitalize="none"
               autoCorrect={false}
               spellCheck={false}
             />
             <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'flex-end' }}>
-              {githubTokenConfigured ? (
+              {cloudTokenConfigured ? (
                 <Pressable
-                  onPress={clearGithubToken}
-                  disabled={githubTokenSaving}
-                  style={({ pressed }) => [{ opacity: pressed || githubTokenSaving ? 0.7 : 1, paddingVertical: 8, paddingHorizontal: 4 }]}>
+                  onPress={clearCloudToken}
+                  disabled={cloudTokenSaving}
+                  style={({ pressed }) => [{ opacity: pressed || cloudTokenSaving ? 0.7 : 1, paddingVertical: 8, paddingHorizontal: 4 }]}>
                   <Text style={{ color: isDark ? '#f87171' : '#b91c1c', fontWeight: '700' }}>清除</Text>
                 </Pressable>
               ) : null}
               <Pressable
-                onPress={() => void saveGithubToken()}
-                disabled={githubTokenSaving}
+                onPress={() => void saveCloudToken()}
+                disabled={cloudTokenSaving}
                 style={({ pressed }) => [
                   styles.probeBtn,
                   {
                     borderColor: cardBorder,
-                    opacity: pressed || githubTokenSaving ? 0.75 : 1,
+                    opacity: pressed || cloudTokenSaving ? 0.75 : 1,
                     paddingHorizontal: 16,
                     flex: 0,
                   },
                 ]}>
-                {githubTokenSaving ? (
+                {cloudTokenSaving ? (
                   <ActivityIndicator size="small" color={primary} />
                 ) : (
                   <Text style={[styles.rowTitle, { color: primary, fontSize: 14 }]}>保存密钥</Text>
@@ -680,10 +662,10 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           </View>
           <Pressable
             onPress={requestCloudBackup}
-            disabled={githubCloudOpBusy}
-            pointerEvents={githubCloudOpBusy ? 'none' : 'auto'}
+            disabled={cloudOpBusy}
+            pointerEvents={cloudOpBusy ? 'none' : 'auto'}
             style={({ pressed }) => [
-              { opacity: githubCloudOpBusy ? 0.55 : pressed ? 0.88 : 1 },
+              { opacity: cloudOpBusy ? 0.55 : pressed ? 0.88 : 1 },
             ]}>
             <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
               {cloudBackupBusy ? (
@@ -694,7 +676,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               <View style={{ flex: 1 }}>
                 <Text style={[styles.rowTitle, { color: text }]}>一键全量备份到云端</Text>
                 <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  SQLite 各表与备忘、技能等数据写入 Cloudflare KV，并更新 manifest。
+                  将本机全部 SQLite 表上传至 Cloudflare D1（无表则先建表）。
                 </Text>
                 {cloudBackupBusy
                   ? (() => {
@@ -707,8 +689,8 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                     })()
                   : null}
                 <Text style={[styles.rowHint, { color: outline, marginTop: 6, fontSize: 11 }]}>
-                  {lastFullGithubBackupAtIso
-                    ? `上次全量备份：${formatZhFullBackupTime(lastFullGithubBackupAtIso)}`
+                  {lastFullCloudBackupAtIso
+                    ? `上次全量备份：${formatZhFullBackupTime(lastFullCloudBackupAtIso)}`
                     : '尚未在本机记录全量备份时间。'}
                 </Text>
               </View>
@@ -718,10 +700,10 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
           <Pressable
             onPress={requestCloudRestore}
-            disabled={githubCloudOpBusy}
-            pointerEvents={githubCloudOpBusy ? 'none' : 'auto'}
+            disabled={cloudOpBusy}
+            pointerEvents={cloudOpBusy ? 'none' : 'auto'}
             style={({ pressed }) => [
-              { opacity: githubCloudOpBusy ? 0.55 : pressed ? 0.88 : 1 },
+              { opacity: cloudOpBusy ? 0.55 : pressed ? 0.88 : 1 },
             ]}>
             <View
               style={[
@@ -741,7 +723,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               <View style={{ flex: 1 }}>
                 <Text style={[styles.rowTitle, { color: text }]}>从云同步到本机</Text>
                 <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  从云端 KV 读取 manifest.json，用快照覆盖本机 SQLite 与本地 KV 数据。
+                  从云端 D1 拉取全部表数据，覆盖本机 SQLite。
                 </Text>
               </View>
               <MaterialIcons name="chevron-right" size={22} color={outline} />
@@ -751,10 +733,10 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           {Platform.OS !== 'web' ? (
             <Pressable
               onPress={requestLocalDatabaseRepair}
-              disabled={githubCloudOpBusy}
-              pointerEvents={githubCloudOpBusy ? 'none' : 'auto'}
+              disabled={cloudOpBusy}
+              pointerEvents={cloudOpBusy ? 'none' : 'auto'}
               style={({ pressed }) => [
-                { opacity: githubCloudOpBusy ? 0.55 : pressed ? 0.88 : 1, marginTop: 10 },
+                { opacity: cloudOpBusy ? 0.55 : pressed ? 0.88 : 1, marginTop: 10 },
               ]}>
               <View
                 style={[
@@ -871,18 +853,18 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         </View>
       </Modal>
 
-      <Modal visible={githubDiagModal.visible} transparent animationType="fade" onRequestClose={() => setGithubDiagModal(m => ({ ...m, visible: false }))}>
+      <Modal visible={cloudDiagModal.visible} transparent animationType="fade" onRequestClose={() => setCloudDiagModal(m => ({ ...m, visible: false }))}>
         <View style={styles.modalRoot}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setGithubDiagModal(m => ({ ...m, visible: false }))} />
+          <Pressable style={styles.modalBackdrop} onPress={() => setCloudDiagModal(m => ({ ...m, visible: false }))} />
           <View style={[styles.modalCard, { backgroundColor: cardBg, maxHeight: '80%' }]}>
-            <Text style={[styles.sectionTitle, { color: text }]}>{githubDiagModal.title}</Text>
-            <Text style={{ color: outline, marginTop: 6 }}>{githubDiagModal.subtitle}</Text>
+            <Text style={[styles.sectionTitle, { color: text }]}>{cloudDiagModal.title}</Text>
+            <Text style={{ color: outline, marginTop: 6 }}>{cloudDiagModal.subtitle}</Text>
             <ScrollView style={{ marginTop: 12, maxHeight: 320 }}>
               <Text selectable style={{ fontSize: 11, fontFamily: 'monospace', color: text }}>
-                {githubDiagModal.body}
+                {cloudDiagModal.body}
               </Text>
             </ScrollView>
-            <Pressable onPress={() => setGithubDiagModal(m => ({ ...m, visible: false }))} style={{ marginTop: 16, alignSelf: 'flex-end' }}>
+            <Pressable onPress={() => setCloudDiagModal(m => ({ ...m, visible: false }))} style={{ marginTop: 16, alignSelf: 'flex-end' }}>
               <Text style={{ color: primary, fontWeight: '800' }}>关闭</Text>
             </Pressable>
           </View>

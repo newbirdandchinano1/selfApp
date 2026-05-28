@@ -1,7 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const SELECTED_STORAGE_KEY = '@quick_add_cards_v1';
-const CUSTOM_ITEMS_STORAGE_KEY = '@quick_add_custom_items_v1';
+import { AppSettingKey, getAppSettingRaw, setAppSetting } from '@/lib/app-settings-store';
 
 export type QuickAddVolumeUnit = 'ml' | 'g' | 'mg';
 export type QuickAddMetricType = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
@@ -121,7 +118,7 @@ function sanitizeCustomItem(raw: unknown): QuickAddCardItem | null {
 }
 
 export async function loadCustomQuickAddItems(): Promise<QuickAddCardItem[]> {
-  const stored = await AsyncStorage.getItem(CUSTOM_ITEMS_STORAGE_KEY);
+  const stored = await getAppSettingRaw(AppSettingKey.quickAddCustomItems);
   if (!stored) return [];
   let parsed: unknown;
   try {
@@ -140,7 +137,7 @@ export async function loadCustomQuickAddItems(): Promise<QuickAddCardItem[]> {
 }
 
 async function saveCustomQuickAddItems(items: QuickAddCardItem[]): Promise<void> {
-  await AsyncStorage.setItem(CUSTOM_ITEMS_STORAGE_KEY, JSON.stringify(items));
+  await setAppSetting(AppSettingKey.quickAddCustomItems, items);
 }
 
 export async function loadAllQuickAddItems(): Promise<QuickAddCardItem[]> {
@@ -163,7 +160,7 @@ export function getDefaultQuickAddItems(): QuickAddCardItem[] {
 export async function loadSelectedQuickAddItems(): Promise<QuickAddCardItem[]> {
   const allItems = await loadAllQuickAddItems();
   const itemMap = createQuickAddItemMap(allItems);
-  const stored = await AsyncStorage.getItem(SELECTED_STORAGE_KEY);
+  const stored = await getAppSettingRaw(AppSettingKey.quickAddSelected);
   return keysToItems(parseStoredKeys(stored, itemMap), itemMap);
 }
 
@@ -171,7 +168,7 @@ export async function saveSelectedQuickAddKeys(keys: string[]): Promise<void> {
   const allItems = await loadAllQuickAddItems();
   const itemMap = createQuickAddItemMap(allItems);
   const normalized = normalizeKeys(keys, itemMap);
-  await AsyncStorage.setItem(SELECTED_STORAGE_KEY, JSON.stringify(normalized));
+  await setAppSetting(AppSettingKey.quickAddSelected, normalized);
 }
 
 export async function addCustomQuickAddItem(input: {
@@ -269,7 +266,7 @@ export async function deleteCustomQuickAddItem(key: string): Promise<void> {
 
   const allItems = [...ALL_QUICK_ADD_ITEMS, ...nextCustomItems];
   const itemMap = createQuickAddItemMap(allItems);
-  const stored = await AsyncStorage.getItem(SELECTED_STORAGE_KEY);
+  const stored = await getAppSettingRaw(AppSettingKey.quickAddSelected);
   const normalized = normalizeKeys(parseStoredKeys(stored, itemMap), itemMap);
-  await AsyncStorage.setItem(SELECTED_STORAGE_KEY, JSON.stringify(normalized));
+  await setAppSetting(AppSettingKey.quickAddSelected, normalized);
 }

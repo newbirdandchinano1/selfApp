@@ -1,7 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { markGithubKvSliceDirty } from '@/lib/github-sqlite-dirty-track';
-
-const STORAGE_KEY = '@selfapp/ai_llm_provider_id';
+import { AppSettingKey, getAppSettingRaw, setAppSetting } from '@/lib/app-settings-store';
 
 export type AiLlmProviderId = 'zhipu';
 
@@ -14,11 +11,10 @@ export function getPreferredAiLlmProviderSync(): AiLlmProviderId {
 
 export async function loadAiLlmProviderPreference(): Promise<AiLlmProviderId> {
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    const raw = await getAppSettingRaw(AppSettingKey.aiLlmProvider);
     if (raw === 'gemini') {
       cachedProvider = 'zhipu';
-      await AsyncStorage.setItem(STORAGE_KEY, 'zhipu');
-      markGithubKvSliceDirty('ai_llm_provider');
+      await setAppSetting(AppSettingKey.aiLlmProvider, 'zhipu');
     } else {
       cachedProvider = 'zhipu';
     }
@@ -31,9 +27,8 @@ export async function loadAiLlmProviderPreference(): Promise<AiLlmProviderId> {
 export async function setPreferredAiLlmProvider(_id: AiLlmProviderId = 'zhipu'): Promise<void> {
   cachedProvider = 'zhipu';
   try {
-    await AsyncStorage.setItem(STORAGE_KEY, 'zhipu');
+    await setAppSetting(AppSettingKey.aiLlmProvider, 'zhipu');
   } catch {
     return;
   }
-  markGithubKvSliceDirty('ai_llm_provider');
 }

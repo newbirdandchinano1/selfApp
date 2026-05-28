@@ -96,7 +96,15 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  loadTasksHideCompletedProjectTasks,
+  loadTasksMainListView,
+  loadTasksProjectExpandedState,
+  saveTasksHideCompletedProjectTasks,
+  saveTasksMainListView,
+  saveTasksProjectExpandedState,
+  type TasksMainListView,
+} from '@/lib/tasks-ui-settings';
 import {
   getLogicalLocalYmd,
   type TasksDayBoundary,
@@ -123,12 +131,6 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
-
-const PROJECT_EXPANDED_STORAGE_KEY = '@tasks_project_expanded_v1';
-const HIDE_COMPLETED_PROJECT_TASKS_STORAGE_KEY = '@tasks_hide_completed_project_tasks_v1';
-const TASKS_MAIN_LIST_VIEW_STORAGE_KEY = '@tasks_main_list_view_v1';
-
-type TasksMainListView = 'projects' | 'tasks';
 
 const MAIN_LIST_VIEW_TABS: Array<{ key: TasksMainListView; label: string }> = [
   { key: 'projects', label: '项目列表' },
@@ -1678,17 +1680,7 @@ export default function TasksScreen() {
 
   const loadExpandedProjectState = React.useCallback(async () => {
     try {
-      const raw = await AsyncStorage.getItem(PROJECT_EXPANDED_STORAGE_KEY);
-      if (!raw) return null;
-      const parsed: unknown = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-      const map: Record<string, boolean> = {};
-      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-        if (typeof k !== 'string') continue;
-        if (typeof v !== 'boolean') continue;
-        map[k] = v;
-      }
-      return map;
+      return await loadTasksProjectExpandedState();
     } catch (err) {
       console.warn('读取项目展开状态失败', err);
       return null;
@@ -1697,7 +1689,7 @@ export default function TasksScreen() {
 
   const saveExpandedProjectState = React.useCallback(async (next: Record<string, boolean>) => {
     try {
-      await AsyncStorage.setItem(PROJECT_EXPANDED_STORAGE_KEY, JSON.stringify(next));
+      await saveTasksProjectExpandedState(next);
     } catch (err) {
       console.warn('保存项目展开状态失败', err);
     }
@@ -1705,19 +1697,16 @@ export default function TasksScreen() {
 
   const loadHideCompletedProjectTasks = React.useCallback(async (): Promise<boolean | null> => {
     try {
-      const raw = await AsyncStorage.getItem(HIDE_COMPLETED_PROJECT_TASKS_STORAGE_KEY);
-      if (raw === '1') return true;
-      if (raw === '0') return false;
-      return null;
+      return await loadTasksHideCompletedProjectTasks();
     } catch (err) {
       console.warn('读取隐藏已完成项目任务偏好失败', err);
       return null;
     }
   }, []);
 
-  const saveHideCompletedProjectTasks = React.useCallback(async (hide: boolean) => {
+  const saveHideCompletedProjectTasksPref = React.useCallback(async (hide: boolean) => {
     try {
-      await AsyncStorage.setItem(HIDE_COMPLETED_PROJECT_TASKS_STORAGE_KEY, hide ? '1' : '0');
+      await saveTasksHideCompletedProjectTasks(hide);
     } catch (err) {
       console.warn('保存隐藏已完成项目任务偏好失败', err);
     }
@@ -1726,16 +1715,14 @@ export default function TasksScreen() {
   const onHideCompletedProjectTasksChange = React.useCallback(
     (hide: boolean) => {
       setHideCompletedProjectTasks(hide);
-      void saveHideCompletedProjectTasks(hide);
+      void saveHideCompletedProjectTasksPref(hide);
     },
-    [saveHideCompletedProjectTasks],
+    [saveHideCompletedProjectTasksPref],
   );
 
   const loadMainListView = React.useCallback(async (): Promise<TasksMainListView | null> => {
     try {
-      const raw = await AsyncStorage.getItem(TASKS_MAIN_LIST_VIEW_STORAGE_KEY);
-      if (raw === 'projects' || raw === 'tasks') return raw;
-      return null;
+      return await loadTasksMainListView();
     } catch (err) {
       console.warn('读取主列表视图偏好失败', err);
       return null;
@@ -1744,7 +1731,7 @@ export default function TasksScreen() {
 
   const saveMainListView = React.useCallback(async (view: TasksMainListView) => {
     try {
-      await AsyncStorage.setItem(TASKS_MAIN_LIST_VIEW_STORAGE_KEY, view);
+      await saveTasksMainListView(view);
     } catch (err) {
       console.warn('保存主列表视图偏好失败', err);
     }

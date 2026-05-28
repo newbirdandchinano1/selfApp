@@ -1,5 +1,5 @@
 /**
- * GitHub API 调用的网络层：超时、指数退避重试、AbortSignal（进入后台中止）。
+ * Cloud API 调用的网络层：超时、指数退避重试、AbortSignal（进入后台中止）。
  */
 
 const DEFAULT_MAX_ATTEMPTS = 4;
@@ -75,7 +75,7 @@ function isTransientNetworkFailure(e: unknown): boolean {
   return false;
 }
 
-export type GithubFetchRetryOptions = {
+export type CloudFetchRetryOptions = {
   signal?: AbortSignal;
   maxAttempts?: number;
   baseDelayMs?: number;
@@ -90,7 +90,7 @@ export type GithubFetchRetryOptions = {
 export async function fetchWithTimeoutAndRetry(
   url: string,
   init: RequestInit,
-  options: GithubFetchRetryOptions = {},
+  options: CloudFetchRetryOptions = {},
 ): Promise<Response> {
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const baseDelayMs = options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;

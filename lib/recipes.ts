@@ -1,12 +1,12 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import type * as SQLite from 'expo-sqlite';
 import { getDatabase } from '@/lib/database';
 import {
-  beginGithubSqliteDirtyIgnoreBatch,
-  endGithubSqliteDirtyIgnoreBatch,
-  markGithubSqliteTableDirty,
-} from '@/lib/github-sqlite-dirty-track';
+    beginCloudSqliteDirtyIgnoreBatch,
+    endCloudSqliteDirtyIgnoreBatch,
+    markCloudSqliteTableDirty,
+} from '@/lib/cloud-sql-dirty-track';
 import { persistRecipeFinishedImage } from '@/lib/recipe-finished-image';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import type * as SQLite from 'expo-sqlite';
 
 const RECIPE_STORE_KEY = 'recipe_store_v2';
 const LEGACY_RECIPE_LIST_KEY = 'recipe_list_v1';
@@ -132,8 +132,8 @@ function rowToRecipe(row: RecipeRow): RecipeItem {
 }
 
 function markRecipesDirty(): void {
-  markGithubSqliteTableDirty('recipe_categories');
-  markGithubSqliteTableDirty('recipe_items');
+  markCloudSqliteTableDirty('recipe_categories');
+  markCloudSqliteTableDirty('recipe_items');
 }
 
 async function loadStoreFromDb(db: SQLite.SQLiteDatabase): Promise<RecipeStore> {
@@ -238,7 +238,7 @@ async function readAsyncStorageStore(): Promise<RecipeStore | null> {
 }
 
 async function importStoreToDb(db: SQLite.SQLiteDatabase, store: RecipeStore): Promise<void> {
-  beginGithubSqliteDirtyIgnoreBatch();
+  beginCloudSqliteDirtyIgnoreBatch();
   try {
     await db.execAsync('BEGIN IMMEDIATE');
     await db.runAsync('DELETE FROM recipe_items');
@@ -281,7 +281,7 @@ async function importStoreToDb(db: SQLite.SQLiteDatabase, store: RecipeStore): P
     }
     throw e;
   } finally {
-    endGithubSqliteDirtyIgnoreBatch();
+    endCloudSqliteDirtyIgnoreBatch();
   }
 }
 

@@ -55,7 +55,6 @@ import {
   validateFinanceLedgerBalanceAfterChange,
 } from '@/lib/repositories/finance/finance';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
-import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
 import {
   getActiveAiLlmApiKey,
   isActiveAiLlmConfigured,

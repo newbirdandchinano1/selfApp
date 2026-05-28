@@ -1,28 +1,55 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { markGithubKvSliceDirty } from '@/lib/github-sqlite-dirty-track';
+import type * as SQLite from 'expo-sqlite';
+import { getDatabase } from '@/lib/database';
+import {
+  beginCloudSqliteDirtyIgnoreBatch,
+  endCloudSqliteDirtyIgnoreBatch,
+  markCloudSqliteTableDirty,
+} from '@/lib/cloud-sql-dirty-track';
 
 const STORAGE_KEY = 'user_skills_portfolio_v1';
+const USER_SKILLS_ASYNC_MIGRATED_KEY = 'user_skills_async_migrated_v1';
+const SKILLS_META_ID = 'default';
 
 export type UserSkillItem = {
   id: string;
   name: string;
   description: string;
-  /** 最近一次 AI 评估摘要 */
   last_evaluation?: string;
-  /** 最近一次 AI 对该技能的建议 */
   last_suggestions?: string;
 };
 
 export type DesiredSkillItem = {
   id: string;
   name: string;
-  /** 期望达到的水平 */
   target_level: string;
 };
 
 export type UserSkillsSnapshot = {
   skills: UserSkillItem[];
   desired_skills: DesiredSkillItem[];
+  last_ai_at: string | null;
+  last_overall_suggestions: string | null;
+  last_profile_analysis: string | null;
+};
+
+type SkillRow = {
+  id: string;
+  name: string;
+  description: string;
+  last_evaluation: string | null;
+  last_suggestions: string | null;
+  sort_order: number | null;
+};
+
+type DesiredRow = {
+  id: string;
+  name: string;
+  target_level: string;
+  sort_order: number | null;
+};
+
+type MetaRow = {
   last_ai_at: string | null;
   last_overall_suggestions: string | null;
   last_profile_analysis: string | null;
@@ -133,21 +160,175 @@ export function ensureUserSkillsSnapshot(input: unknown): UserSkillsSnapshot {
   return normalizeUserSkillsSnapshot(input);
 }
 
-export async function loadUserSkills(): Promise<UserSkillsSnapshot> {
+function rowToSkill(row: SkillRow): UserSkillItem {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    ...(row.last_evaluation?.trim() ? { last_evaluation: row.last_evaluation.trim() } : {}),
+    ...(row.last_suggestions?.trim() ? { last_suggestions: row.last_suggestions.trim() } : {}),
+  };
+}
+
+function rowToDesired(row: DesiredRow): DesiredSkillItem {
+  return {
+    id: row.id,
+    name: row.name,
+    target_level: row.target_level,
+  };
+}
+
+function markUserSkillsDirty(): void {
+  markCloudSqliteTableDirty('user_skill_items');
+  markCloudSqliteTableDirty('user_desired_skills');
+  markCloudSqliteTableDirty('user_skills_meta');
+}
+
+async function loadSnapshotFromDb(db: SQLite.SQLiteDatabase): Promise<UserSkillsSnapshot> {
+  const skillRows = await db.getAllAsync<SkillRow>(
+    `SELECT id, name, description, last_evaluation, last_suggestions, sort_order
+     FROM user_skill_items WHERE deleted_at IS NULL
+     ORDER BY COALESCE(sort_order, 999999), datetime(updated_at) DESC`,
+  );
+  const desiredRows = await db.getAllAsync<DesiredRow>(
+    `SELECT id, name, target_level, sort_order
+     FROM user_desired_skills WHERE deleted_at IS NULL
+     ORDER BY COALESCE(sort_order, 999999), datetime(updated_at) DESC`,
+  );
+  const meta = await db.getFirstAsync<MetaRow>(
+    `SELECT last_ai_at, last_overall_suggestions, last_profile_analysis
+     FROM user_skills_meta WHERE id = ? LIMIT 1`,
+    [SKILLS_META_ID],
+  );
+  return {
+    skills: skillRows.map(rowToSkill),
+    desired_skills: desiredRows.map(rowToDesired),
+    last_ai_at: meta?.last_ai_at?.trim() || null,
+    last_overall_suggestions: meta?.last_overall_suggestions?.trim() || null,
+    last_profile_analysis: meta?.last_profile_analysis?.trim() || null,
+  };
+}
+
+async function importSnapshotToDb(db: SQLite.SQLiteDatabase, snapshot: UserSkillsSnapshot): Promise<void> {
+  const normalized = ensureUserSkillsSnapshot(snapshot);
+  const now = new Date().toISOString();
+  beginCloudSqliteDirtyIgnoreBatch();
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw?.trim()) return createEmptyUserSkillsSnapshot();
-    const parsed = JSON.parse(raw) as unknown;
-    return normalizeUserSkillsSnapshot(parsed);
-  } catch {
-    return createEmptyUserSkillsSnapshot();
+    await db.execAsync('BEGIN IMMEDIATE');
+    await db.runAsync('DELETE FROM user_skill_items');
+    await db.runAsync('DELETE FROM user_desired_skills');
+    let sort = 0;
+    for (const skill of normalized.skills) {
+      await db.runAsync(
+        `INSERT INTO user_skill_items (
+          id, name, description, last_evaluation, last_suggestions, sort_order,
+          created_at, updated_at, deleted_at, sync_status, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+        [
+          skill.id,
+          skill.name,
+          skill.description,
+          skill.last_evaluation?.trim() || null,
+          skill.last_suggestions?.trim() || null,
+          sort,
+          now,
+          now,
+        ],
+      );
+      sort += 1;
+    }
+    sort = 0;
+    for (const desired of normalized.desired_skills) {
+      await db.runAsync(
+        `INSERT INTO user_desired_skills (
+          id, name, target_level, sort_order,
+          created_at, updated_at, deleted_at, sync_status, version
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+        [desired.id, desired.name, desired.target_level, sort, now, now],
+      );
+      sort += 1;
+    }
+    await db.runAsync(
+      `INSERT OR REPLACE INTO user_skills_meta (
+        id, last_ai_at, last_overall_suggestions, last_profile_analysis, updated_at
+      ) VALUES (?, ?, ?, ?, ?)`,
+      [
+        SKILLS_META_ID,
+        normalized.last_ai_at,
+        normalized.last_overall_suggestions,
+        normalized.last_profile_analysis,
+        now,
+      ],
+    );
+    await db.execAsync('COMMIT');
+  } catch (e) {
+    try {
+      await db.execAsync('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw e;
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
   }
+  markUserSkillsDirty();
+}
+
+/** 启动时：将 AsyncStorage 中的技能组合一次性迁入 SQLite */
+export async function migrateUserSkillsStorageToSqliteIfNeeded(db?: SQLite.SQLiteDatabase): Promise<void> {
+  const database = db ?? (await getDatabase());
+  const flag = await database.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    [USER_SKILLS_ASYNC_MIGRATED_KEY],
+  );
+  if (flag?.value === '1') return;
+
+  const skillCount = await database.getFirstAsync<{ c: number }>(
+    'SELECT COUNT(1) AS c FROM user_skill_items WHERE deleted_at IS NULL',
+  );
+  const desiredCount = await database.getFirstAsync<{ c: number }>(
+    'SELECT COUNT(1) AS c FROM user_desired_skills WHERE deleted_at IS NULL',
+  );
+  const hasSqliteData = Number(skillCount?.c ?? 0) > 0 || Number(desiredCount?.c ?? 0) > 0;
+
+  if (!hasSqliteData) {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      if (raw?.trim()) {
+        const parsed = JSON.parse(raw) as unknown;
+        const snapshot = normalizeUserSkillsSnapshot(parsed);
+        const hasContent =
+          snapshot.skills.length > 0 ||
+          snapshot.desired_skills.length > 0 ||
+          snapshot.last_ai_at != null ||
+          snapshot.last_overall_suggestions != null ||
+          snapshot.last_profile_analysis != null;
+        if (hasContent) {
+          await importSnapshotToDb(database, snapshot);
+        }
+      }
+    } catch {
+      /* ignore corrupt legacy */
+    }
+  }
+
+  await AsyncStorage.removeItem(STORAGE_KEY);
+  await database.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    USER_SKILLS_ASYNC_MIGRATED_KEY,
+    '1',
+  ]);
+}
+
+export async function loadUserSkills(): Promise<UserSkillsSnapshot> {
+  const db = await getDatabase();
+  await migrateUserSkillsStorageToSqliteIfNeeded(db);
+  return loadSnapshotFromDb(db);
 }
 
 export async function saveUserSkills(snapshot: UserSkillsSnapshot): Promise<void> {
-  const normalized = ensureUserSkillsSnapshot(snapshot);
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-  markGithubKvSliceDirty('user_skills');
+  const db = await getDatabase();
+  await migrateUserSkillsStorageToSqliteIfNeeded(db);
+  await importSnapshotToDb(db, snapshot);
 }
 
 export function countSkillsInSnapshot(s: UserSkillsSnapshot): number {

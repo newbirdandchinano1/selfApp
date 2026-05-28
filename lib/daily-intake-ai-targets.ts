@@ -1,4 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppSettingKey, getAppSettingRaw, removeAppSetting, setAppSetting } from '@/lib/app-settings-store';
 
 import {
   adjustNutritionMetricsForDaySchedule,
@@ -17,8 +17,6 @@ import { getHealthRecordsLast7Days } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 import { estimateDailyIntakeTargetsFromContext, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
-
-const STORAGE_KEY = '@daily_intake_ai_targets_v1';
 
 export type DailyAiIntakeTargetsRow = {
   dateYmd: string;
@@ -127,7 +125,7 @@ function buildContextBlock(params: {
 }
 
 async function readCache(): Promise<DailyAiIntakeTargetsRow | null> {
-  const raw = await AsyncStorage.getItem(STORAGE_KEY);
+  const raw = await getAppSettingRaw(AppSettingKey.dailyIntakeAiTargets);
   if (!raw) return null;
   try {
     const o = JSON.parse(raw) as Record<string, unknown>;
@@ -158,12 +156,12 @@ async function readCache(): Promise<DailyAiIntakeTargetsRow | null> {
 }
 
 async function writeCache(row: DailyAiIntakeTargetsRow): Promise<void> {
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(row));
+  await setAppSetting(AppSettingKey.dailyIntakeAiTargets, row);
 }
 
 /** 个人资料变更后调用，使下次进入首页重新请求 AI */
 export async function invalidateDailyIntakeAiTargetsCache(): Promise<void> {
-  await AsyncStorage.removeItem(STORAGE_KEY);
+  await removeAppSetting(AppSettingKey.dailyIntakeAiTargets);
 }
 
 export type EnsureDailyAiIntakeTargetsResult =
@@ -173,7 +171,7 @@ export type EnsureDailyAiIntakeTargetsResult =
   | { status: 'failed'; error: string };
 
 /**
- * 每个自然日、每位用户档案指纹最多请求一次模型；成功则写入 AsyncStorage。
+ * 每个自然日、每位用户档案指纹最多请求一次模型；成功则写入 app_settings。
  */
 export async function ensureDailyAiIntakeTargetsForToday(params: {
   user: UserRow;

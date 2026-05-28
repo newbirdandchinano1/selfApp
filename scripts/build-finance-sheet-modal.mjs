@@ -41,7 +41,6 @@ import {
   getFinanceFlowCategories,
   validateFinanceLedgerBalanceAfterChange,
 } from '@/lib/repositories/finance/finance';
-import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
 import {
   getActiveAiLlmApiKey,
   isActiveAiLlmConfigured,

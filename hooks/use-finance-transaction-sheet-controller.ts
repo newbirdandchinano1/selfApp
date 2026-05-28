@@ -1,42 +1,40 @@
+import { Colors } from '@/constants/theme';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
-import {
-  loadFinanceDefaultAccounts,
-  sanitizeFinanceDefaultAccounts,
-  type FinanceDefaultAccounts,
-} from '@/lib/finance-default-accounts';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
+import {
+    loadFinanceDefaultAccounts,
+    sanitizeFinanceDefaultAccounts,
+    type FinanceDefaultAccounts,
+} from '@/lib/finance-default-accounts';
 import { notifyFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import type { FinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import {
-  createFinanceTransaction,
-  getFinanceAccountsWithBalance,
-  validateFinanceLedgerBalanceAfterChange,
+    parseFinanceSentenceLocal,
+    pickSheetCategoryForParsed,
+    type AccountPickerTarget,
+    type ParsedOneLiner,
+    type SentenceLedgerPreviewState,
+    type SentenceResolveResult,
+    type SheetTab,
+} from '@/lib/finance-transaction-sheet/helpers';
+import { financeTransactionSheetStyles } from '@/lib/finance-transaction-sheet/styles';
+import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
+import {
+    createFinanceTransaction,
+    getFinanceAccountsWithBalance,
+    validateFinanceLedgerBalanceAfterChange,
 } from '@/lib/repositories/finance/finance';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
-import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
 import {
-  getActiveAiLlmApiKey,
-  isActiveAiLlmConfigured,
-  parseFinanceOneLinerFromText,
+    getActiveAiLlmApiKey,
+    isActiveAiLlmConfigured,
+    parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
-import {
-  parseFinanceSentenceLocal,
-  pickSheetCategoryForParsed,
-  type AccountPickerTarget,
-  type ParsedOneLiner,
-  type SentenceLedgerPreviewState,
-  type SentenceResolveResult,
-  type SheetTab,
-} from '@/lib/finance-transaction-sheet/helpers';
-import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Dimensions, Platform, type KeyboardEvent } from 'react-native';
+import { Alert, Dimensions, Keyboard, Platform, type KeyboardEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Colors } from '@/constants/theme';
-import { Keyboard } from 'react-native';
-import { financeTransactionSheetStyles } from '@/lib/finance-transaction-sheet/styles';
 
 export type FinanceTransactionSheetControllerOptions = {
   visible: boolean;
@@ -502,7 +500,6 @@ export function useFinanceTransactionSheetController({
 
   const finishSaved = React.useCallback(async () => {
     await loadFinanceAccounts();
-    scheduleGithubFinanceCloudSyncDebounced();
     notifyFinanceSheetSaved();
     onSaved?.();
     resetSheetForm('sentence');
@@ -679,7 +676,6 @@ export function useFinanceTransactionSheetController({
             }),
           });
           await loadFinanceAccounts();
-          scheduleGithubFinanceCloudSyncDebounced();
           notifyFinanceSheetSaved();
           onSaved?.();
         } catch (error) {

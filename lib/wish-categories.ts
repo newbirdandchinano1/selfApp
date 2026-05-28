@@ -1,9 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const STORAGE_KEY = '@wish_custom_categories_v1';
-const DEFAULT_PRIORITY_OVERRIDES_KEY = '@wish_default_category_priorities_v1';
-const DEFAULT_NAME_OVERRIDES_KEY = '@wish_default_category_names_v1';
-const HIDDEN_DEFAULT_IDS_KEY = '@wish_hidden_default_category_ids_v1';
+import { AppSettingKey, getAppSettingRaw, setAppSetting } from '@/lib/app-settings-store';
 
 export type WishCategoryDef = {
   id: string;
@@ -87,16 +82,16 @@ function parseStoredList(raw: string | null): WishCategoryDef[] {
 }
 
 export async function loadCustomWishCategories(): Promise<WishCategoryDef[]> {
-  const raw = await AsyncStorage.getItem(STORAGE_KEY);
+  const raw = await getAppSettingRaw(AppSettingKey.wishCustomCategories);
   return parseStoredList(raw);
 }
 
 export async function saveCustomWishCategories(categories: WishCategoryDef[]): Promise<void> {
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(categories));
+  await setAppSetting(AppSettingKey.wishCustomCategories, categories);
 }
 
 export async function loadDefaultPriorityOverrides(): Promise<Record<string, number>> {
-  const raw = await AsyncStorage.getItem(DEFAULT_PRIORITY_OVERRIDES_KEY);
+  const raw = await getAppSettingRaw(AppSettingKey.wishDefaultCategoryPriorities);
   if (!raw) return {};
   let parsed: unknown;
   try {
@@ -115,11 +110,11 @@ export async function loadDefaultPriorityOverrides(): Promise<Record<string, num
 }
 
 export async function saveDefaultPriorityOverrides(overrides: Record<string, number>): Promise<void> {
-  await AsyncStorage.setItem(DEFAULT_PRIORITY_OVERRIDES_KEY, JSON.stringify(overrides));
+  await setAppSetting(AppSettingKey.wishDefaultCategoryPriorities, overrides);
 }
 
 export async function loadDefaultNameOverrides(): Promise<Record<string, string>> {
-  const raw = await AsyncStorage.getItem(DEFAULT_NAME_OVERRIDES_KEY);
+  const raw = await getAppSettingRaw(AppSettingKey.wishDefaultCategoryNames);
   if (!raw) return {};
   let parsed: unknown;
   try {
@@ -139,11 +134,11 @@ export async function loadDefaultNameOverrides(): Promise<Record<string, string>
 }
 
 export async function saveDefaultNameOverrides(overrides: Record<string, string>): Promise<void> {
-  await AsyncStorage.setItem(DEFAULT_NAME_OVERRIDES_KEY, JSON.stringify(overrides));
+  await setAppSetting(AppSettingKey.wishDefaultCategoryNames, overrides);
 }
 
 export async function loadHiddenDefaultCategoryIds(): Promise<string[]> {
-  const raw = await AsyncStorage.getItem(HIDDEN_DEFAULT_IDS_KEY);
+  const raw = await getAppSettingRaw(AppSettingKey.wishHiddenDefaultCategoryIds);
   if (!raw) return [];
   let parsed: unknown;
   try {
@@ -161,7 +156,7 @@ export async function loadHiddenDefaultCategoryIds(): Promise<string[]> {
 
 export async function saveHiddenDefaultCategoryIds(ids: string[]): Promise<void> {
   const unique = [...new Set(ids.filter(id => BUILTIN_ID_SET.has(id)))].sort();
-  await AsyncStorage.setItem(HIDDEN_DEFAULT_IDS_KEY, JSON.stringify(unique));
+  await setAppSetting(AppSettingKey.wishHiddenDefaultCategoryIds, unique);
 }
 
 export function createCustomCategoryId(): string {

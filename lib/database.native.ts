@@ -1,9 +1,9 @@
 import * as SQLite from 'expo-sqlite';
-import { enableGithubSqliteMutationTrackingOnDatabase } from '@/lib/github-sqlite-dirty-track';
+import { enableCloudSqliteMutationTrackingOnDatabase } from '@/lib/cloud-sql-dirty-track';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 27;
+export const DB_VERSION = 29;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -691,7 +691,84 @@ export async function initDatabase() {
       extra_data TEXT,
       FOREIGN KEY (wish_item_id) REFERENCES wish_items(id) ON DELETE SET NULL
     );
+
+    CREATE TABLE IF NOT EXISTS memos (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL DEFAULT '',
+      ai_evaluation TEXT,
+      ai_suggestions TEXT,
+      ai_review_at TEXT,
+      linked_task_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      version INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS user_weaknesses (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      detail TEXT NOT NULL DEFAULT '',
+      ai_evaluation TEXT,
+      ai_suggestions TEXT,
+      ai_review_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      version INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS user_skill_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      last_evaluation TEXT,
+      last_suggestions TEXT,
+      sort_order INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      version INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS user_desired_skills (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      target_level TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      version INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS user_skills_meta (
+      id TEXT PRIMARY KEY NOT NULL,
+      last_ai_at TEXT,
+      last_overall_suggestions TEXT,
+      last_profile_analysis TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY NOT NULL,
+      value_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
+
+  await db.runAsync(
+    `INSERT OR IGNORE INTO user_skills_meta (id, last_ai_at, last_overall_suggestions, last_profile_analysis, updated_at)
+     VALUES ('default', NULL, NULL, NULL, datetime('now'))`,
+  );
+
+  const { migrateAppSettingsFromAsyncStorageIfNeeded } = await import('@/lib/app-settings-store');
+  await migrateAppSettingsFromAsyncStorageIfNeeded();
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
   await db.runAsync(
@@ -1091,6 +1168,15 @@ export async function initDatabase() {
   const { migrateRecipesStorageToSqliteIfNeeded } = await import('@/lib/recipes');
   await migrateRecipesStorageToSqliteIfNeeded(db);
 
+  const { migrateMemosStorageToSqliteIfNeeded } = await import('@/lib/memos');
+  await migrateMemosStorageToSqliteIfNeeded(db);
+
+  const { migrateUserWeaknessesStorageToSqliteIfNeeded } = await import('@/lib/user-weaknesses');
+  await migrateUserWeaknessesStorageToSqliteIfNeeded(db);
+
+  const { migrateUserSkillsStorageToSqliteIfNeeded } = await import('@/lib/user-skills');
+  await migrateUserSkillsStorageToSqliteIfNeeded(db);
+
   const { ensureReviewTemplateDefaults } = await import('@/lib/repositories/insights/review-template');
   await ensureReviewTemplateDefaults();
 
@@ -1099,7 +1185,7 @@ export async function initDatabase() {
     console.warn(`数据库外键检查仍有 ${repairResult.remainingFkIssues} 条异常（已尝试修复）`);
   }
 
-  enableGithubSqliteMutationTrackingOnDatabase(db as never);
+  enableCloudSqliteMutationTrackingOnDatabase(db as never);
 
   return db;
 }
@@ -1130,6 +1216,12 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS cash_flow_incomes;
     DROP TABLE IF EXISTS cash_flow_holdings;
     DROP TABLE IF EXISTS cash_flow_profile;
+    DROP TABLE IF EXISTS app_settings;
+    DROP TABLE IF EXISTS user_desired_skills;
+    DROP TABLE IF EXISTS user_skill_items;
+    DROP TABLE IF EXISTS user_skills_meta;
+    DROP TABLE IF EXISTS user_weaknesses;
+    DROP TABLE IF EXISTS memos;
     DROP TABLE IF EXISTS recipe_items;
     DROP TABLE IF EXISTS recipe_categories;
     DROP TABLE IF EXISTS earned_rewards;

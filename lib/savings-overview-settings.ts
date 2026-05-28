@@ -1,13 +1,8 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const STORAGE_KEY = '@selfapp/savings_overview_settings_v2';
+import { AppSettingKey, getAppSetting, getAppSettingRaw, setAppSetting } from '@/lib/app-settings-store';
 
 export type SavingsOverviewSettings = {
-  /** 顶部「现有存款」，与各计划存入独立 */
   savedAmount: number | null;
-  /** 顶部「目标存款」，与各计划目标之和独立 */
   targetAmount: number | null;
-  /** 顶部截止时间 YYYY-MM-DD */
   endDate: string | null;
 };
 
@@ -35,12 +30,13 @@ function normalizeSettings(raw: unknown): SavingsOverviewSettings {
 
 export async function loadSavingsOverviewSettings(): Promise<SavingsOverviewSettings> {
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (raw) return normalizeSettings(JSON.parse(raw));
-    const legacyRaw = await AsyncStorage.getItem('@selfapp/savings_overview_settings_v1');
+    const parsed = await getAppSetting<unknown>(AppSettingKey.savingsOverview);
+    if (parsed) return normalizeSettings(parsed);
+
+    const legacyRaw = await getAppSettingRaw(AppSettingKey.savingsOverviewLegacy);
     if (legacyRaw) {
       const legacy = normalizeSettings(JSON.parse(legacyRaw));
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(legacy));
+      await setAppSetting(AppSettingKey.savingsOverview, legacy);
       return legacy;
     }
     return { ...DEFAULT_SETTINGS };
@@ -51,5 +47,5 @@ export async function loadSavingsOverviewSettings(): Promise<SavingsOverviewSett
 
 export async function saveSavingsOverviewSettings(settings: SavingsOverviewSettings): Promise<void> {
   const normalized = normalizeSettings(settings);
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+  await setAppSetting(AppSettingKey.savingsOverview, normalized);
 }

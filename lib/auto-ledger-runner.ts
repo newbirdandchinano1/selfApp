@@ -1,60 +1,59 @@
-import { enterAutoLedgerSession, leaveAutoLedgerSession } from '@/lib/auto-ledger-session';
 import { readClipboardImageForAutoLedger } from '@/lib/auto-ledger-clipboard';
 import {
-  getAutoLedgerPendingRows,
-  hideAutoLedgerToast,
-  notifyAutoLedgerCompleted,
-  patchAutoLedgerPendingRow,
-  removeAutoLedgerPendingRow,
-  setAutoLedgerPendingRows,
-  showAutoLedgerToast,
-  type AutoLedgerPendingRow,
+    getAutoLedgerPendingRows,
+    hideAutoLedgerToast,
+    notifyAutoLedgerCompleted,
+    patchAutoLedgerPendingRow,
+    removeAutoLedgerPendingRow,
+    setAutoLedgerPendingRows,
+    showAutoLedgerToast,
+    type AutoLedgerPendingRow,
 } from '@/lib/auto-ledger-events';
 import { notifyAutoLedgerFailure, notifyAutoLedgerHint } from '@/lib/auto-ledger-notify';
 import {
-  AUTO_LEDGER_HANDOFF_SPLASH_MS,
-  AUTO_LEDGER_MAX_ATTEMPTS,
-  AUTO_LEDGER_RETRY_DELAY_MS,
-  sleepMs,
+    AUTO_LEDGER_HANDOFF_SPLASH_MS,
+    AUTO_LEDGER_MAX_ATTEMPTS,
+    AUTO_LEDGER_RETRY_DELAY_MS,
+    sleepMs,
 } from '@/lib/auto-ledger-retry';
+import { enterAutoLedgerSession, leaveAutoLedgerSession } from '@/lib/auto-ledger-session';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import {
-  loadFinanceDefaultAccounts,
-  sanitizeFinanceDefaultAccounts,
-  type FinanceDefaultAccounts,
+    loadFinanceDefaultAccounts,
+    sanitizeFinanceDefaultAccounts,
+    type FinanceDefaultAccounts,
 } from '@/lib/finance-default-accounts';
 import {
-  buildExpenseCategories,
-  buildIncomeCategories,
-  mergeSheetCategories,
-  pickSheetCategoryForParsed,
-  type ParsedOneLiner,
-  type SheetCategory,
+    consumeFinanceSheetLaunchIntent,
+    type FinanceSheetLaunchIntent,
+} from '@/lib/finance-sheet-launch-intent';
+import {
+    buildExpenseCategories,
+    buildIncomeCategories,
+    mergeSheetCategories,
+    pickSheetCategoryForParsed,
+    type ParsedOneLiner,
+    type SheetCategory,
 } from '@/lib/finance-transaction-sheet/helpers';
 import {
-  consumeFinanceSheetLaunchIntent,
-  type FinanceSheetLaunchIntent,
-} from '@/lib/finance-sheet-launch-intent';
-import { scheduleGithubFinanceCloudSyncDebounced } from '@/lib/github-cloud-sync';
-import {
-  createFinanceTransaction,
-  getFinanceAccountsWithBalance,
-  validateFinanceLedgerBalanceAfterChange,
+    createFinanceTransaction,
+    getFinanceAccountsWithBalance,
+    validateFinanceLedgerBalanceAfterChange,
 } from '@/lib/repositories/finance/finance';
 import {
-  financeSheetCategoryRowToSheetCategory,
-  getFinanceSheetCustomCategories,
+    financeSheetCategoryRowToSheetCategory,
+    getFinanceSheetCustomCategories,
 } from '@/lib/repositories/finance/finance-sheet-category';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
-import {
-  consumeShortcutAutoLedgerImageDataUri,
-  hasShortcutAutoLedgerPending,
-} from '@/lib/shortcut-auto-ledger-pending';
-import { consumeShortcutImageHandoffExpected } from '@/lib/shortcut-auto-ledger-route-bridge';
 import { getShortcutHandoffKey } from '@/lib/shortcut-auto-ledger-handoff';
 import {
-  getActiveAiLlmApiKey,
-  parseFinanceOneLinerFromImage,
+    consumeShortcutAutoLedgerImageDataUri,
+    hasShortcutAutoLedgerPending,
+} from '@/lib/shortcut-auto-ledger-pending';
+import { consumeShortcutImageHandoffExpected } from '@/lib/shortcut-auto-ledger-route-bridge';
+import {
+    getActiveAiLlmApiKey,
+    parseFinanceOneLinerFromImage,
 } from '@/lib/zhipu-image-parse';
 import { Alert } from 'react-native';
 import { moveAppToBackground } from 'zheng-background';
@@ -330,7 +329,6 @@ export async function processAutoLedgerFromImage(
               attachments: [{ type: 'image', uri: imageDataUri }],
             }),
           });
-          scheduleGithubFinanceCloudSyncDebounced();
           notifyAutoLedgerCompleted();
           return;
         } catch (error) {

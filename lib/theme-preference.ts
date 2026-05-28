@@ -1,9 +1,8 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Appearance } from 'react-native';
 
-export type ThemePreference = 'light' | 'dark' | 'system';
+import { AppSettingKey, getAppSettingRaw, setAppSetting } from '@/lib/app-settings-store';
 
-const STORAGE_KEY = '@selfapp/theme_preference_v1';
+export type ThemePreference = 'light' | 'dark' | 'system';
 
 let cachedPreference: ThemePreference | null = null;
 const listeners = new Set<() => void>();
@@ -35,7 +34,7 @@ function notifyListeners() {
 
 export async function loadThemePreference(): Promise<ThemePreference> {
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    const raw = await getAppSettingRaw(AppSettingKey.theme);
     const pref = raw ? normalizePreference(raw) : 'system';
     cachedPreference = pref;
     return pref;
@@ -48,6 +47,6 @@ export async function loadThemePreference(): Promise<ThemePreference> {
 export async function saveThemePreference(preference: ThemePreference): Promise<void> {
   const pref = normalizePreference(preference);
   cachedPreference = pref;
-  await AsyncStorage.setItem(STORAGE_KEY, pref);
+  await setAppSetting(AppSettingKey.theme, pref);
   notifyListeners();
 }

@@ -1,6 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const STORAGE_KEY = '@global_intake_targets_v1';
+import { AppSettingKey, getAppSetting, setAppSetting } from '@/lib/app-settings-store';
 
 type PersistedShape = {
   hydrationMl: number;
@@ -17,7 +15,7 @@ export const DEFAULT_SODIUM_TARGET_MG = 2000;
 
 /**
  * 当前用户在应用内设定的摄入目标（模块级共享）。
- * 单位：水分 ml、蛋白质 g、钠 mg。会通过 AsyncStorage 在重启后恢复。
+ * 单位：水分 ml、蛋白质 g、钠 mg。会通过 app_settings 在重启后恢复。
  *
  * 其他模块请通过 setGlobal* 写入；在 React 中更新后需 bump 本地 tick 触发重渲染（见首页）。
  */
@@ -33,7 +31,7 @@ async function persistToDisk() {
     carbohydrateG: globalCarbohydrateTargetG,
     sodiumMg: globalSodiumTargetMg,
   };
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  await setAppSetting(AppSettingKey.globalIntakeTargets, payload);
 }
 
 function assignIfValid(raw: unknown, apply: (n: number) => void) {
@@ -43,16 +41,9 @@ function assignIfValid(raw: unknown, apply: (n: number) => void) {
 
 /** 从本地存储恢复；应在首屏前与数据库初始化一并 await。 */
 export async function loadPersistedIntakeTargets(): Promise<void> {
-  const stored = await AsyncStorage.getItem(STORAGE_KEY);
-  if (!stored) return;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stored);
-  } catch {
-    return;
-  }
+  const parsed = await getAppSetting<Record<string, unknown>>(AppSettingKey.globalIntakeTargets);
   if (!parsed || typeof parsed !== 'object') return;
-  const o = parsed as Record<string, unknown>;
+  const o = parsed;
   assignIfValid(o.hydrationMl, (n) => {
     globalHydrationTargetMl = n;
   });

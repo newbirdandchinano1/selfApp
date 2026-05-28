@@ -1,28 +1,28 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import * as Notifications from 'expo-notifications';
 import { ActivityIndicator, InteractionManager, Platform, Pressable, Text, View } from 'react-native';
-import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import 'react-native-reanimated';
 
-import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
-import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { initDatabase, repairLocalDatabase } from '@/lib/database';
-import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
-import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
-import { loadGithubBackupTokenCache } from '@/lib/github-backup-user-config';
-import { loadThemePreference } from '@/lib/theme-preference';
-import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
-import { hydrateGithubCloudDirtyFromStorage } from '@/lib/github-sqlite-dirty-track';
-import { runSilentGithubCloudSyncIfRemoteNewer } from '@/lib/github-cloud-launch';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
 import { TaskReminderNotificationListener } from '@/components/task-reminder-notification-listener';
+import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
+import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
+import { initDatabase, repairLocalDatabase } from '@/lib/database';
+import { loadCloudBackupTokenCache } from '@/lib/cloud-backup-config';
+import { hydrateCloudDirtyFromStorage } from '@/lib/cloud-sql-dirty-track';
+import { startCloudPeriodicAlignScheduler } from '@/lib/cloud-sync-scheduler';
+import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
+import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
+import { loadThemePreference } from '@/lib/theme-preference';
 
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
@@ -53,9 +53,9 @@ function RootLayoutInner() {
           await loadPersistedIntakeTargets();
           await loadThemePreference();
           await loadAiLlmProviderPreference();
-          await loadGithubBackupTokenCache();
+          await loadCloudBackupTokenCache();
           if (Platform.OS !== 'web') {
-            void runSilentGithubCloudSyncIfRemoteNewer();
+            startCloudPeriodicAlignScheduler();
             void ensurePersonaPortraitsForTodayInBackground();
           }
         } catch (e) {
@@ -67,7 +67,7 @@ function RootLayoutInner() {
     const run = async () => {
       try {
         await initDatabase();
-        await hydrateGithubCloudDirtyFromStorage();
+        await hydrateCloudDirtyFromStorage();
         if (mounted) {
           setDbError(null);
           setIsDbReady(true);
@@ -114,15 +114,15 @@ function RootLayoutInner() {
                       setDbError(null);
                       try {
                         await initDatabase();
-                        await hydrateGithubCloudDirtyFromStorage();
+                        await hydrateCloudDirtyFromStorage();
                         setIsDbReady(true);
                         InteractionManager.runAfterInteractions(() => {
                           void loadPersistedIntakeTargets();
                           void loadThemePreference();
                           void loadAiLlmProviderPreference();
-                          void loadGithubBackupTokenCache();
+                          void loadCloudBackupTokenCache();
                           if (Platform.OS !== 'web') {
-                            void runSilentGithubCloudSyncIfRemoteNewer();
+                            startCloudPeriodicAlignScheduler();
                             void ensurePersonaPortraitsForTodayInBackground();
                           }
                         });
@@ -156,14 +156,16 @@ function RootLayoutInner() {
                         try {
                           const repair = await repairLocalDatabase();
                           await initDatabase();
-                          await hydrateGithubCloudDirtyFromStorage();
+                          await hydrateCloudDirtyFromStorage();
                           setIsDbReady(true);
                           InteractionManager.runAfterInteractions(() => {
                             void loadPersistedIntakeTargets();
                             void loadThemePreference();
                             void loadAiLlmProviderPreference();
-                            void loadGithubBackupTokenCache();
-                            void runSilentGithubCloudSyncIfRemoteNewer();
+                            void loadCloudBackupTokenCache();
+                            if (Platform.OS !== 'web') {
+                              startCloudPeriodicAlignScheduler();
+                            }
                             void ensurePersonaPortraitsForTodayInBackground();
                           });
                           if (repair.remainingFkIssues > 0) {

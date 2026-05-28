@@ -1,6 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const STORAGE_KEY = '@finance_default_accounts_v1';
+import { AppSettingKey, getAppSetting, setAppSetting } from '@/lib/app-settings-store';
 
 export type FinanceDefaultAccounts = {
   defaultPaymentAccountId: string | null;
@@ -14,11 +12,9 @@ const EMPTY_DEFAULTS: FinanceDefaultAccounts = {
 
 export async function loadFinanceDefaultAccounts(): Promise<FinanceDefaultAccounts> {
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...EMPTY_DEFAULTS };
-    const parsed = JSON.parse(raw) as unknown;
+    const parsed = await getAppSetting<Record<string, unknown>>(AppSettingKey.financeDefaultAccounts);
     if (!parsed || typeof parsed !== 'object') return { ...EMPTY_DEFAULTS };
-    const o = parsed as Record<string, unknown>;
+    const o = parsed;
     return {
       defaultPaymentAccountId:
         typeof o.defaultPaymentAccountId === 'string' && o.defaultPaymentAccountId.trim()
@@ -35,7 +31,7 @@ export async function loadFinanceDefaultAccounts(): Promise<FinanceDefaultAccoun
 }
 
 export async function persistFinanceDefaultAccounts(settings: FinanceDefaultAccounts): Promise<void> {
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  await setAppSetting(AppSettingKey.financeDefaultAccounts, settings);
 }
 
 /** 仅保留仍存在的资产类账户 ID */
