@@ -208,27 +208,94 @@ export async function deleteReviewColumn(id: string): Promise<void> {
   );
 }
 
-/** 各 scope 无维度时写入内置模板（一次性，按 scope 判断） */
+async function getReviewDimensionRowAny(id: string): Promise<ReviewDimensionRow | null> {
+  const db = await getDatabase();
+  if (!db) return null;
+  return db.getFirstAsync<ReviewDimensionRow>(`SELECT * FROM review_dimensions WHERE id = ? LIMIT 1`, [id]);
+}
+
+async function getReviewColumnRowAny(id: string): Promise<ReviewColumnRow | null> {
+  const db = await getDatabase();
+  if (!db) return null;
+  return db.getFirstAsync<ReviewColumnRow>(`SELECT * FROM review_columns WHERE id = ? LIMIT 1`, [id]);
+}
+
+async function ensureDefaultReviewDimension(
+  scope: ReviewTemplateScope,
+  dim: (typeof REVIEW_TEMPLATE_DEFAULTS)['daily'][number],
+): Promise<void> {
+  const db = await getDatabase();
+  if (!db) throw new Error('database not available');
+  const existing = await getReviewDimensionRowAny(dim.id);
+  if (!existing) {
+    await createReviewDimension({
+      id: dim.id,
+      scope,
+      title: dim.title,
+      sort_order: dim.sort_order,
+    });
+    return;
+  }
+  if (existing.deleted_at != null) {
+    await db.runAsync(
+      `UPDATE review_dimensions SET
+         scope = ?,
+         title = ?,
+         sort_order = ?,
+         deleted_at = NULL,
+         updated_at = datetime('now'),
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+         version = version + 1
+       WHERE id = ?`,
+      [scope, dim.title.trim(), dim.sort_order ?? 1000, dim.id],
+    );
+  }
+}
+
+async function ensureDefaultReviewColumn(
+  dim: (typeof REVIEW_TEMPLATE_DEFAULTS)['daily'][number],
+  col: (typeof REVIEW_TEMPLATE_DEFAULTS)['daily'][number]['columns'][number],
+): Promise<void> {
+  const db = await getDatabase();
+  if (!db) throw new Error('database not available');
+  const existing = await getReviewColumnRowAny(col.id);
+  if (!existing) {
+    await createReviewColumn({
+      id: col.id,
+      dimension_id: dim.id,
+      title: col.title,
+      placeholder: col.placeholder,
+      sort_order: col.sort_order,
+    });
+    return;
+  }
+  if (existing.deleted_at != null) {
+    await db.runAsync(
+      `UPDATE review_columns SET
+         dimension_id = ?,
+         title = ?,
+         placeholder = ?,
+         sort_order = ?,
+         deleted_at = NULL,
+         updated_at = datetime('now'),
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
+         version = version + 1
+       WHERE id = ?`,
+      [dim.id, col.title.trim(), col.placeholder ?? '', col.sort_order ?? 1000, col.id],
+    );
+  }
+}
+
+/** 各 scope 无活跃维度时写入内置模板（含云恢复后仅软删除占位行的场景） */
 export async function ensureReviewTemplateDefaults(): Promise<void> {
   for (const scope of ['daily', 'weekly'] as const) {
     const count = await countReviewDimensions(scope);
     if (count > 0) continue;
     const defs = REVIEW_TEMPLATE_DEFAULTS[scope];
     for (const dim of defs) {
-      await createReviewDimension({
-        id: dim.id,
-        scope,
-        title: dim.title,
-        sort_order: dim.sort_order,
-      });
+      await ensureDefaultReviewDimension(scope, dim);
       for (const col of dim.columns) {
-        await createReviewColumn({
-          id: col.id,
-          dimension_id: dim.id,
-          title: col.title,
-          placeholder: col.placeholder,
-          sort_order: col.sort_order,
-        });
+        await ensureDefaultReviewColumn(dim, col);
       }
     }
   }

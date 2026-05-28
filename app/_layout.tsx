@@ -73,9 +73,14 @@ function RootLayoutInner() {
         }
         InteractionManager.runAfterInteractions(runDeferredBootstrap);
       } catch (e) {
-        console.warn('数据库初始化失败', e);
+        const detail = e instanceof Error ? e.message : String(e);
+        console.warn('数据库初始化失败', detail, e);
         if (mounted) {
-          setDbError('数据库初始化失败，请重试。');
+          setDbError(
+            __DEV__ && detail.trim()
+              ? `数据库初始化失败，请重试。\n${detail}`
+              : '数据库初始化失败，请重试。',
+          );
           setIsDbReady(false);
         }
       }
@@ -120,8 +125,13 @@ function RootLayoutInner() {
                         }
                       });
                     } catch (e) {
-                      console.warn('数据库初始化失败', e);
-                      setDbError('数据库初始化失败，请重试。');
+                      const detail = e instanceof Error ? e.message : String(e);
+                      console.warn('数据库初始化失败', detail, e);
+                      setDbError(
+                        __DEV__ && detail.trim()
+                          ? `数据库初始化失败，请重试。\n${detail}`
+                          : '数据库初始化失败，请重试。',
+                      );
                     }
                   }}
                   style={({ pressed }) => ({

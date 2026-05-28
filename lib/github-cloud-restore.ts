@@ -7,7 +7,7 @@ import {
   GITHUB_BACKUP_NOT_CONFIGURED_MSG,
   getGitHubBackupConfig,
 } from '@/lib/github-backup-user-config';
-import { DB_VERSION, getDatabase } from '@/lib/database';
+import { DB_VERSION, getDatabase, initDatabase } from '@/lib/database';
 import { serializeErrorForDiagnostic } from '@/lib/github-cloud-sync';
 import { parseSqliteBackupRepoPath } from '@/lib/github-sqlite-backup-chunk';
 import { memoItemsFromBackupPayload, replaceMemosFromCloudRestore } from '@/lib/memos';
@@ -298,6 +298,19 @@ export async function triggerGithubCloudRestoreFromFullBackup(opts?: {
     return { ok: false, reason: 'unsupported_platform', message, diagnosticText: message };
   }
 
+  try {
+    await initDatabase();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const message = `恢复前本地数据库初始化失败：${msg}`;
+    return {
+      ok: false,
+      reason: 'apply_failed',
+      message,
+      diagnosticText: [message, '', serializeErrorForDiagnostic(e)].join('\n'),
+    };
+  }
+
   setSilentGithubCloudRestoreInFlight(true);
   beginGithubSqliteDirtyIgnoreBatch();
   try {
@@ -542,6 +555,19 @@ export async function triggerGithubCloudRestoreFromFullBackup(opts?: {
     } catch {
       /* ignore */
     }
+  }
+
+  try {
+    await initDatabase();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const message = `恢复快照后数据库迁移失败：${msg}`;
+    return {
+      ok: false,
+      reason: 'apply_failed',
+      message,
+      diagnosticText: [message, '', serializeErrorForDiagnostic(e)].join('\n'),
+    };
   }
 
   const kvKeys: string[] = [];
