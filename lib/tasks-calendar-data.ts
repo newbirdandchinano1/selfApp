@@ -4,7 +4,7 @@ import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
-import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import { isTaskActiveStatus, type TaskRow } from '@/lib/repositories/tasks/task.types';
 
 export type TasksCalendarTaskItem = {
   id: string;
@@ -116,7 +116,7 @@ function standaloneTodoPassesDayBoundaryFilter(
 }
 
 function isStandaloneTodoOpen(task: TaskRow): boolean {
-  return task.status !== 'done' && task.status !== 'cancelled';
+  return isTaskActiveStatus(task.status);
 }
 
 function isStandaloneTodoScheduleExpired(task: TaskRow, logicalViewYmd: string): boolean {
@@ -225,10 +225,10 @@ function emptyDay(ymd: string): TasksCalendarDaySummary {
 export function getTasksCalendarCellLevel(summary: TasksCalendarDaySummary | undefined): 0 | 1 | 2 | 3 | 4 {
   if (!summary) return 0;
   const openTasks =
-    summary.frogs.filter((t) => t.status !== 'done' && t.status !== 'cancelled').length +
-    summary.standaloneTodos.filter((t) => t.status !== 'done' && t.status !== 'cancelled').length +
-    summary.matrixTasks.filter((t) => t.status !== 'done' && t.status !== 'cancelled').length;
-  const dueOpen = summary.dueTasks.filter((t) => t.status !== 'done' && t.status !== 'cancelled').length;
+    summary.frogs.filter((t) => isTaskActiveStatus(t.status)).length +
+    summary.standaloneTodos.filter((t) => isTaskActiveStatus(t.status)).length +
+    summary.matrixTasks.filter((t) => isTaskActiveStatus(t.status)).length;
+  const dueOpen = summary.dueTasks.filter((t) => isTaskActiveStatus(t.status)).length;
   const habitDue = summary.habits.length;
   const habitDone = summary.habits.filter((h) => h.todayCount > 0).length;
   const frogDone = summary.frogs.filter((t) => t.status === 'done').length;

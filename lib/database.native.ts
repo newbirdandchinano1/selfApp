@@ -137,6 +137,8 @@ async function repairDatabaseReferentialIntegrity(db: SQLite.SQLiteDatabase): Pr
 
 export type RepairLocalDatabaseResult = {
   ok: true;
+  /** 已清理主键重复行的表名 */
+  dedupedTables: string[];
   /** `PRAGMA foreign_key_check` 仍存在的违规条数，0 表示已通过 */
   remainingFkIssues: number;
 };
@@ -144,6 +146,10 @@ export type RepairLocalDatabaseResult = {
 /** 手动修复本地 SQLite 孤儿外键（设置页「修复本地数据库」） */
 export async function repairLocalDatabase(): Promise<RepairLocalDatabaseResult> {
   const db = await getDatabase();
+  const { dedupeAllLocalUserTablesByPrimaryKeyIfNeeded } = await import(
+    '@/lib/sqlite-primary-key-dedupe'
+  );
+  const dedupedTables = await dedupeAllLocalUserTablesByPrimaryKeyIfNeeded();
   await db.execAsync('PRAGMA foreign_keys = OFF');
   await repairDatabaseReferentialIntegrity(db);
   await db.execAsync('PRAGMA foreign_keys = ON');
@@ -158,7 +164,7 @@ export async function repairLocalDatabase(): Promise<RepairLocalDatabaseResult> 
     /* ignore */
   }
 
-  return { ok: true, remainingFkIssues };
+  return { ok: true, dedupedTables, remainingFkIssues };
 }
 
 export async function initDatabase() {
@@ -1181,8 +1187,13 @@ export async function initDatabase() {
   await ensureReviewTemplateDefaults();
 
   const repairResult = await repairLocalDatabase();
-  if (__DEV__ && repairResult.remainingFkIssues > 0) {
-    console.warn(`数据库外键检查仍有 ${repairResult.remainingFkIssues} 条异常（已尝试修复）`);
+  if (__DEV__) {
+    if (repairResult.dedupedTables.length > 0) {
+      console.warn(`已清理主键重复行：${repairResult.dedupedTables.join('、')}`);
+    }
+    if (repairResult.remainingFkIssues > 0) {
+      console.warn(`数据库外键检查仍有 ${repairResult.remainingFkIssues} 条异常（已尝试修复）`);
+    }
   }
 
   enableCloudSqliteMutationTrackingOnDatabase(db as never);

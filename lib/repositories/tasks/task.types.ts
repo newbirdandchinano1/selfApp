@@ -11,6 +11,11 @@ export function isTaskTerminalStatus(status: TaskStatus | string): boolean {
 export function isTaskShelvedStatus(status: TaskStatus | string): boolean {
   return status === 'shelved';
 }
+
+/** 进行中：非终态且非搁置（统计、日历热力等活跃待办口径） */
+export function isTaskActiveStatus(status: TaskStatus | string): boolean {
+  return !isTaskTerminalStatus(status) && !isTaskShelvedStatus(status);
+}
 export type TaskPriority = 0 | 1 | 2 | 3 | 4;
 
 export type TaskRow = {

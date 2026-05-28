@@ -60,7 +60,11 @@ import {
   heatmapLevelFromMonthlyAverage,
 } from '@/lib/tasks-global-heatmap';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
-import { isTaskShelvedStatus, isTaskTerminalStatus } from '@/lib/repositories/tasks/task.types';
+import {
+  isTaskActiveStatus,
+  isTaskShelvedStatus,
+  isTaskTerminalStatus,
+} from '@/lib/repositories/tasks/task.types';
 import {
   parseProjectAiReview,
   type ProjectAiReview,
@@ -1201,7 +1205,7 @@ function isTaskRowOverdue(task: TaskRow, logicalTodayYmd: string): boolean {
 }
 
 function isStandaloneTodoOpen(task: TaskRow): boolean {
-  return !isTaskTerminalStatus(task.status);
+  return isTaskActiveStatus(task.status);
 }
 
 /** 独立待办：日程日/区间已结束且未完成（非重复任务） */
@@ -2139,7 +2143,7 @@ export default function TasksScreen() {
   }, [tasks, dayBoundary, logicalTodayYmd]);
 
   const standaloneTodoOpenCount = React.useMemo(
-    () => standaloneTodos.filter((t) => t.status !== 'done' && t.status !== 'cancelled').length,
+    () => standaloneTodos.filter((t) => isStandaloneTodoOpen(t)).length,
     [standaloneTodos]
   );
 

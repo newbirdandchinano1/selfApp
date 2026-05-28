@@ -6,6 +6,7 @@ import { getHabitCheckInCountsByDateRange } from '@/lib/repositories/habits/habi
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getProjects } from '@/lib/repositories/projects/project';
 import { getTasks } from '@/lib/repositories/tasks/task';
+import { isTaskActiveStatus } from '@/lib/repositories/tasks/task.types';
 import {
   buildTasksCalendarSummaries,
   getTasksCalendarCellLevel,
@@ -584,8 +585,8 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
             const frogN = summary?.frogs.length ?? 0;
             const habitN = summary?.habits.length ?? 0;
             const openN =
-              (summary?.standaloneTodos.filter((t) => t.status !== 'done' && t.status !== 'cancelled').length ?? 0) +
-              (summary?.matrixTasks.filter((t) => t.status !== 'done' && t.status !== 'cancelled').length ?? 0);
+              (summary?.standaloneTodos.filter((t) => isTaskActiveStatus(t.status)).length ?? 0) +
+              (summary?.matrixTasks.filter((t) => isTaskActiveStatus(t.status)).length ?? 0);
 
             return (
               <Pressable

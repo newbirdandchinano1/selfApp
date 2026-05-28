@@ -78,7 +78,7 @@ export async function migrateAppSettingsFromAsyncStorageIfNeeded(): Promise<void
       if (raw == null || raw === '') continue;
 
       await db.runAsync(
-        'INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)',
+        'INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)',
         [key, raw, now],
       );
     }

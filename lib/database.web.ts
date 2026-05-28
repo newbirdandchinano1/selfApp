@@ -42,6 +42,7 @@ export async function getSchemaVersion() {
 
 export type RepairLocalDatabaseResult = {
   ok: true;
+  dedupedTables: string[];
   remainingFkIssues: number;
 };
 

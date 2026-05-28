@@ -12,6 +12,11 @@ import {
 import { isSilentCloudRestoreInFlight, setSilentCloudRestoreInFlight } from '@/lib/cloud-sync-flags';
 import { getDatabase, initDatabase } from '@/lib/database';
 import { throwIfAborted, isAbortError } from '@/lib/cloud-fetch-retry';
+import {
+  dedupeLocalTablesByPrimaryKeyIfNeeded,
+  dedupeRowsByPrimaryKey,
+  readTablePrimaryKeyColumns,
+} from '@/lib/sqlite-primary-key-dedupe';
 
 /**
  * Cloudflare D1 单条语句绑定变量硬上限约为 999，实测批量 INSERT 在 ~504 即报错（offset 503）。
@@ -643,8 +648,8 @@ async function insertCloudTableRows(
 
     const sql =
       batch.length === 1
-        ? `INSERT INTO ${quoteIdent(table)} (${qCols}) VALUES ${rowPlaceholder}`
-        : `INSERT INTO ${quoteIdent(table)} (${qCols}) VALUES ${batch.map(() => rowPlaceholder).join(', ')}`;
+        ? `INSERT OR REPLACE INTO ${quoteIdent(table)} (${qCols}) VALUES ${rowPlaceholder}`
+        : `INSERT OR REPLACE INTO ${quoteIdent(table)} (${qCols}) VALUES ${batch.map(() => rowPlaceholder).join(', ')}`;
 
     const ins = await executeCloudSql(sql, params, { signal });
     if (!ins.ok) {
@@ -696,6 +701,8 @@ async function pushLocalTablesToCloudBatch(
   const insertOrder = sortTablesForCloudInsert(tables, graph);
   const total = insertOrder.length;
 
+  await dedupeLocalTablesByPrimaryKeyIfNeeded(insertOrder, { markDirty: false });
+
   const rowsByTable = new Map<string, Record<string, unknown>[]>();
   for (let i = 0; i < insertOrder.length; i++) {
     const table = insertOrder[i]!;
@@ -726,7 +733,10 @@ async function pushLocalTablesToCloudBatch(
     await yieldToUi();
     const rawRows = rowsByTable.get(table) ?? [];
     const prepared = await prepareRowsForCloudInsert(table, rawRows, rowsByTable);
-    rowCount += await insertCloudTableRows(table, prepared, opts?.signal);
+    const dbForPk = await getDatabase();
+    const pkCols = await readTablePrimaryKeyColumns(dbForPk, table);
+    const deduped = dedupeRowsByPrimaryKey(prepared, pkCols);
+    rowCount += await insertCloudTableRows(table, deduped, opts?.signal);
   }
 
   return rowCount;
@@ -815,17 +825,23 @@ async function applyCloudRowsToLocalTableWithoutDelete(
   const colNames = cols.map(c => c.name).filter(Boolean);
   if (colNames.length === 0) throw new Error(`本机不存在表 ${table}`);
 
-  let count = 0;
+  const pkCols = await readTablePrimaryKeyColumns(db, table);
+  const normalized: Record<string, unknown>[] = [];
   for (const row of rows) {
-    throwIfAborted(signal);
     if (row === null || typeof row !== 'object' || Array.isArray(row)) continue;
-    const obj = row as Record<string, unknown>;
+    normalized.push(row as Record<string, unknown>);
+  }
+  const deduped = dedupeRowsByPrimaryKey(normalized, pkCols);
+
+  let count = 0;
+  for (const obj of deduped) {
+    throwIfAborted(signal);
     const keys = colNames.filter(c => Object.prototype.hasOwnProperty.call(obj, c));
     if (keys.length === 0) continue;
     const qCols = keys.map(c => quoteIdent(c)).join(', ');
     const placeholders = keys.map(() => '?').join(', ');
     const vals = keys.map(k => sqliteBindingFromJson(obj[k]));
-    await db.runAsync(`INSERT INTO ${safe} (${qCols}) VALUES (${placeholders})`, vals);
+    await db.runAsync(`INSERT OR REPLACE INTO ${safe} (${qCols}) VALUES (${placeholders})`, vals);
     count += 1;
   }
   return count;
@@ -889,6 +905,7 @@ export async function triggerCloudFullRestore(opts?: {
           tableCount: cloudTables.length,
           tableLabel: table,
         });
+        await yieldToUi();
         const r = await executeCloudSql(`SELECT * FROM ${quoteIdent(table)}`, undefined, {
           signal: opts?.signal,
         });
@@ -922,7 +939,11 @@ export async function triggerCloudFullRestore(opts?: {
     const applyOrder = sortTablesForCloudInsert(schemaTables, graph);
     const snapshotByTable = new Map(snapshots.map(s => [s.table, s]));
 
-    report({ phase: 'applying' });
+    const applyTotal = applyOrder.filter(t => snapshotByTable.has(t)).length;
+    let applyIndex = 0;
+
+    report({ phase: 'applying', tableCount: applyTotal, tableIndex: 0, tableLabel: '准备事务' });
+    await yieldToUi();
     try {
       throwIfAborted(opts?.signal);
       await db.execAsync('PRAGMA foreign_keys = OFF');
@@ -958,6 +979,14 @@ export async function triggerCloudFullRestore(opts?: {
           throwIfAborted(opts?.signal);
           const snap = snapshotByTable.get(table);
           if (!snap) continue;
+          applyIndex += 1;
+          report({
+            phase: 'applying',
+            tableIndex: applyIndex,
+            tableCount: applyTotal,
+            tableLabel: table,
+          });
+          await yieldToUi();
           sqliteRows += await applyCloudRowsToLocalTableWithoutDelete(snap.table, snap.rows, opts?.signal);
           sqliteTables += 1;
         }

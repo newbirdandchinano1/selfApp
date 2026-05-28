@@ -61,7 +61,7 @@ const CLOUD_BACKUP_PRESS_DEBOUNCE_MS = 1200;
 
 function formatCloudBackupProgressLine(p: CloudSyncProgress | null): string | null {
   if (!p) return null;
-  if (p.phase === 'preparing') return '正在准备全量备份…';
+  if (p.phase === 'preparing') return '正在准备…';
   if (p.phase === 'collecting') {
     const idx = p.tableIndex ?? 0;
     const total = p.tableCount ?? 0;
@@ -84,7 +84,15 @@ function formatCloudBackupProgressLine(p: CloudSyncProgress | null): string | nu
     const verb = p.phase === 'downloading' ? '拉取' : '上传';
     return total > 0 ? `正在${verb} ${Math.min(idx, total)}/${total}：${label}` : `正在${verb}…`;
   }
-  if (p.phase === 'applying') return '正在写入本地数据库…';
+  if (p.phase === 'applying') {
+    const idx = p.tableIndex ?? 0;
+    const total = p.tableCount ?? 0;
+    const label = p.tableLabel ?? '表';
+    if (label === '准备事务') return '正在准备写入本地数据库…';
+    return total > 0
+      ? `正在写入本地 ${Math.min(idx, total)}/${total}：${label}`
+      : '正在写入本地数据库…';
+  }
   return null;
 }
 
@@ -309,6 +317,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
     const ac = startCloudOp();
     setCloudRestoreBusy(true);
+    setCloudBackupProgress({ phase: 'preparing' });
     try {
       const r = await triggerCloudFullRestore({
         signal: ac.signal,
@@ -336,9 +345,10 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     } finally {
       endCloudOp(ac);
       setCloudRestoreBusy(false);
+      setCloudBackupProgress(null);
       cloudOpInFlightRef.current = false;
     }
-  }, [endCloudOp]);
+  }, [endCloudOp, startCloudOp]);
 
   const requestCloudRestore = useCallback(() => {
     if (cloudOpInFlightRef.current || cloudOpBusy) return;
@@ -739,6 +749,16 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                 <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
                   从云端 D1 拉取全部表数据，覆盖本机 SQLite。
                 </Text>
+                {cloudRestoreBusy
+                  ? (() => {
+                      const line = formatCloudBackupProgressLine(cloudBackupProgress);
+                      return line ? (
+                        <Text style={[styles.rowHint, { color: isDark ? '#f87171' : '#b91c1c', marginTop: 6, fontWeight: '700' }]}>
+                          {line}
+                        </Text>
+                      ) : null;
+                    })()
+                  : null}
               </View>
               <MaterialIcons name="chevron-right" size={22} color={outline} />
             </View>
