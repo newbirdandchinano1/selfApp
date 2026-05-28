@@ -1318,6 +1318,57 @@ function filterProjectListTaskTree(nodes: TaskTreeNode[], hideCompleted: boolean
   return result;
 }
 
+/** 展平任务树为 id -> 节点；隐藏已完成时列表用过滤树展示，进度仍按完整子任务统计 */
+function buildProjectTaskNodeById(nodes: TaskTreeNode[]): Map<string, TaskTreeNode> {
+  const map = new Map<string, TaskTreeNode>();
+  const walk = (list: TaskTreeNode[]) => {
+    for (const n of list) {
+      map.set(n.id, n);
+      const ch = Array.isArray(n.children) ? n.children : [];
+      if (ch.length > 0) walk(ch);
+    }
+  };
+  walk(nodes);
+  return map;
+}
+
+/** 四象限任务列表：仅含挂项目或带子任务层级的行（与顶部「待办」区数据源分离） */
+function isMatrixScopeTask(task: TaskRow): boolean {
+  return !!task.project_id || !!task.parent_task_id;
+}
+
+/**
+ * 任务列表分类 Tab 与项目列表对齐：任务行未写 category_id 时回落到所属项目（或父任务链）分类。
+ */
+function resolveTaskListCategoryId(
+  task: TaskRow,
+  projectById: Map<string, ProjectRow>,
+  taskById: Map<string, TaskRow>,
+): string {
+  if (task.category_id) return task.category_id;
+  if (task.project_id) {
+    const project = projectById.get(task.project_id);
+    if (project?.category_id) return project.category_id;
+    return INBOX_PROJECT_CATEGORY_ID;
+  }
+  if (task.parent_task_id) {
+    const parent = taskById.get(task.parent_task_id);
+    if (parent) return resolveTaskListCategoryId(parent, projectById, taskById);
+  }
+  return INBOX_PROJECT_CATEGORY_ID;
+}
+
+/** 直接子任务完成进度（与项目列表父任务进度条一致） */
+function getDirectChildTaskProgress(children: TaskTreeNode[]): { total: number; done: number; ratio: number } {
+  const total = children.length;
+  if (total <= 0) return { total: 0, done: 0, ratio: 0 };
+  const done = children.reduce((acc, child) => {
+    if (child.status === 'done' || child.status === 'cancelled') return acc + 1;
+    return acc;
+  }, 0);
+  return { total, done, ratio: done / total };
+}
+
 /** 是否达到可询问归纳收集箱的完成度：有截止日期对齐列表进度，否则需整棵树完成 */
 function isProjectInboxProgressComplete(project: ProjectRow, nodes: TaskTreeNode[]): boolean {
   if (nodes.length === 0) return false;
@@ -2040,12 +2091,29 @@ export default function TasksScreen() {
     return map;
   }, [tasks]);
 
+  const projectById = React.useMemo(() => {
+    const map = new Map<string, ProjectRow>();
+    projects.forEach((p) => map.set(p.id, p));
+    return map;
+  }, [projects]);
+
+  const taskById = React.useMemo(() => {
+    const map = new Map<string, TaskRow>();
+    tasks.forEach((t) => map.set(t.id, t));
+    return map;
+  }, [tasks]);
+
   const filteredTasks = React.useMemo(() => {
+    const matrixScoped = tasks.filter(isMatrixScopeTask);
     if (taskTab === 'all') {
-      return tasks.filter((t) => !!t.category_id && t.category_id !== INBOX_PROJECT_CATEGORY_ID);
+      return matrixScoped.filter(
+        (t) => !isProjectInInboxCategory(resolveTaskListCategoryId(t, projectById, taskById)),
+      );
     }
-    return tasks.filter((t) => t.category_id === taskTab);
-  }, [taskTab, tasks]);
+    return matrixScoped.filter(
+      (t) => resolveTaskListCategoryId(t, projectById, taskById) === taskTab,
+    );
+  }, [taskTab, tasks, projectById, taskById]);
 
   /**
    * 架构意图：「待办」区块只展示未挂 `project_id` 的顶层任务；「任务列表」四象限只展示挂项目或带父任务的行，
@@ -3990,6 +4058,7 @@ export default function TasksScreen() {
                   const hasRepeat = !!schedule?.repeatOption && schedule.repeatOption !== '不重复';
                   const taskTree = sortTaskTree(projectTaskTreeMap[project.id] ?? []);
                   const displayTaskTree = filterProjectListTaskTree(taskTree, hideCompletedProjectTasks);
+                  const taskNodeById = buildProjectTaskNodeById(taskTree);
                   const isExpanded = !!expandedProjectIds[project.id];
                   const progress = (() => {
                     // 只统计项目的直接子任务（第一层），不递归统计更深层级
@@ -4012,10 +4081,12 @@ export default function TasksScreen() {
                     const hairlineColor = isDark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(203,213,225,0.9)';
                     return nodes.map((node) => {
                       const isDone = node.status === 'done' || node.status === 'cancelled';
-                      const childrenAll = Array.isArray(node.children) ? node.children : [];
-                      const children = level < 3 ? childrenAll : [];
+                      const fullNode = taskNodeById.get(node.id) ?? node;
+                      const childrenAll = Array.isArray(fullNode.children) ? fullNode.children : [];
+                      const displayChildren =
+                        level < 3 ? (Array.isArray(node.children) ? node.children : []) : [];
                       const hasAnyChildren = childrenAll.length > 0;
-                      const hasChildrenToRender = children.length > 0;
+                      const hasChildrenToRender = displayChildren.length > 0;
                       const hasDeeperLevels = level === 3 && hasAnyChildren;
                       const canToggleCollapse = hasAnyChildren;
                       const isCollapsed = canToggleCollapse ? !!collapsedTaskIds[node.id] : false;
@@ -4197,13 +4268,9 @@ export default function TasksScreen() {
                                 );
                               })()}
                               {hasAnyChildren ? (() => {
-                                const directTotal = childrenAll.length;
+                                const { total: directTotal, done: directDone, ratio } =
+                                  getDirectChildTaskProgress(childrenAll);
                                 if (directTotal <= 0) return null;
-                                const directDone = childrenAll.reduce((acc, child) => {
-                                  if (child.status === 'done' || child.status === 'cancelled') return acc + 1;
-                                  return acc;
-                                }, 0);
-                                const ratio = directDone / directTotal;
                                 return (
                                   <>
                                     <View style={styles.projectTaskProgressRow}>
@@ -4247,7 +4314,7 @@ export default function TasksScreen() {
                             </View>
                             </Pressable>
                           </View>
-                          {hasChildrenToRender && isExpandedTask ? renderTaskLevel(children, level + 1) : null}
+                          {hasChildrenToRender && isExpandedTask ? renderTaskLevel(displayChildren, level + 1) : null}
                           {hasDeeperLevels && isExpandedTask ? (
                             <Text
                               style={[

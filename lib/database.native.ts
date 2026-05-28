@@ -631,6 +631,27 @@ export async function initDatabase() {
   await db.runAsync(
     `UPDATE tasks SET sort_order = 1000 WHERE deleted_at IS NULL AND sort_order IS NULL`
   );
+  // 项目任务 category_id 为空时，与所属项目分类对齐（任务列表四象限按分类筛选）
+  await db.runAsync(
+    `UPDATE tasks
+     SET category_id = (
+       SELECT p.category_id FROM projects p
+       WHERE p.id = tasks.project_id AND p.deleted_at IS NULL
+     ),
+     updated_at = datetime('now')
+     WHERE deleted_at IS NULL
+       AND project_id IS NOT NULL
+       AND TRIM(project_id) != ''
+       AND category_id IS NULL
+       AND EXISTS (
+         SELECT 1 FROM projects p
+         WHERE p.id = tasks.project_id
+           AND p.deleted_at IS NULL
+           AND p.category_id IS NOT NULL
+           AND p.category_id != ?
+       )`,
+    [INBOX_PROJECT_CATEGORY_ID],
+  );
   await ensureColumn(db, 'habits', 'note', 'TEXT');
   await ensureColumn(db, 'finance_accounts', 'account_no', 'TEXT');
   await ensureColumn(db, 'finance_accounts', 'account_type', 'TEXT');
