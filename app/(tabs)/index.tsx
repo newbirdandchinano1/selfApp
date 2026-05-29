@@ -28,6 +28,12 @@ import {
   setGlobalProteinTargetG,
   setGlobalSodiumTargetMg,
 } from '@/lib/global-intake-targets';
+import {
+  getIntakeAssistantSelection,
+  setIntakeAssistantSelection,
+  type IntakeAssistantSuggestKind,
+  type IntakeAssistantUiTab,
+} from '@/lib/intake-assistant-selection';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { ensureDailyAiIntakeTargetsForToday, type DailyAiIntakeTargetsRow } from '@/lib/daily-intake-ai-targets';
 import {
@@ -437,10 +443,6 @@ function sanitizeAssistantManualGoalInput(raw: string): string {
   return String(raw).replace(/\D/g, '').slice(0, 4);
 }
 
-function goalMatchesSuggestion(goal: number, suggestion: number) {
-  return Math.round(goal) === Math.round(suggestion);
-}
-
 function dailyAiTargetForTab(row: DailyAiIntakeTargetsRow, tab: '水分' | '蛋白质' | '碳水' | '钠'): number {
   if (tab === '水分') return row.hydration_ml;
   if (tab === '蛋白质') return row.protein_g;
@@ -448,7 +450,26 @@ function dailyAiTargetForTab(row: DailyAiIntakeTargetsRow, tab: '水分' | '蛋�
   return row.sodium_mg;
 }
 
-type AssistantSuggestKind = 'best' | 'avg' | 'community';
+type AssistantSuggestKind = IntakeAssistantSuggestKind;
+
+function globalIntakeTargetForTab(tab: IntakeAssistantUiTab): number {
+  if (tab === '水分') return globalHydrationTargetMl;
+  if (tab === '蛋白质') return globalProteinTargetG;
+  if (tab === '碳水') return globalCarbohydrateTargetG;
+  return globalSodiumTargetMg;
+}
+
+function resolveManualGoalForSelection(
+  tab: IntakeAssistantUiTab,
+  selection: ReturnType<typeof getIntakeAssistantSelection>,
+  suggestNumeric: { best: number; community: number },
+): string {
+  if (selection.kind === 'manual') {
+    const fallback = selection.manualValue ?? globalIntakeTargetForTab(tab);
+    return sanitizeAssistantManualGoalInput(String(fallback));
+  }
+  return sanitizeAssistantManualGoalInput(String(suggestNumeric[selection.kind]));
+}
 
 function addDays(d: Date, days: number) {
   const next = new Date(d);
@@ -602,8 +623,8 @@ export default function HealthScreen() {
   const [manualGoal, setManualGoal] = React.useState(() =>
     sanitizeAssistantManualGoalInput(String(globalHydrationTargetMl))
   );
-  /** 智能建议中选中的推荐项；与 manualGoal 一致时有值，手动输入不匹配任一项时为 null */
-  const [assistantSuggestSelection, setAssistantSuggestSelection] = React.useState<AssistantSuggestKind | null>(null);
+  /** 智能建议中选中的推荐项；持久化于 app_settings */
+  const [assistantSuggestSelection, setAssistantSuggestSelection] = React.useState<AssistantSuggestKind>('best');
   /** 每日至多一次 AI 估算的四项目标（本地缓存），用于「今日最佳」行 */
   const [dailyAiTargets, setDailyAiTargets] = React.useState<DailyAiIntakeTargetsRow | null>(null);
   const [dailyAiLoading, setDailyAiLoading] = React.useState(false);
@@ -1452,7 +1473,6 @@ export default function HealthScreen() {
       unit: 'ml',
       placeholder: '2500',
       best: '2,850',
-      avg: '2,400',
       community: '2,200',
     },
     蛋白质: {
@@ -1460,7 +1480,6 @@ export default function HealthScreen() {
       unit: 'g',
       placeholder: '80',
       best: '75',
-      avg: '68',
       community: '70',
     },
     碳水: {
@@ -1468,7 +1487,6 @@ export default function HealthScreen() {
       unit: 'g',
       placeholder: '260',
       best: '280',
-      avg: '250',
       community: '260',
     },
     钠: {
@@ -1476,7 +1494,6 @@ export default function HealthScreen() {
       unit: 'mg',
       placeholder: '2000',
       best: '2,000',
-      avg: '2,150',
       community: '2,000',
     },
   } as const;
@@ -1509,24 +1526,6 @@ export default function HealthScreen() {
     return metrics.Sodium_mg;
   }, [assistantTab, user, selectedDayIntakeTotals?.sodium, logicalTodayYmd]);
 
-
-  const avgValue = React.useMemo(() => {
-    if (!healthRecords.length) return 0;
-
-    if (assistantTab === '水分') {
-      return healthRecords.reduce((acc, curr) => acc + curr.hydration, 0) / healthRecords.length;
-    }
-    if (assistantTab === '蛋白质') {
-
-      return healthRecords.reduce((acc, curr) => acc + curr.protein, 0) / healthRecords.length;
-    }
-    if (assistantTab === '碳水') {
-      return healthRecords.reduce((acc, curr) => acc + curr.carbohydrate, 0) / healthRecords.length;
-    }
-    if (assistantTab === '钠') {
-      return healthRecords.reduce((acc, curr) => acc + curr.sodium, 0) / healthRecords.length;
-    }
-  }, [assistantTab, healthRecords]);
 
   const bestValue = React.useMemo(() => {
     if (!healthRecords.length || !user) {
@@ -1570,10 +1569,9 @@ export default function HealthScreen() {
     const best = ai != null && ai > 0 ? ai : fallbackBest;
     return {
       best,
-      avg: Math.round(Number(avgValue) || 0),
       community: Math.round(Number(communityValue) || 0),
     };
-  }, [assistantTab, bestValue, avgValue, communityValue, dailyAiTargets, dailyAiLoading]);
+  }, [assistantTab, bestValue, communityValue, dailyAiTargets, dailyAiLoading]);
 
   const todayScheduleLabel = React.useMemo(() => {
     if (!user) return null;
@@ -1595,42 +1593,85 @@ export default function HealthScreen() {
               ? `今日最佳(今日${todayScheduleLabel}，基于档案与活动指标)`
               : '今日最佳(基于你的活动和身体指标计算)',
         },
-        { kind: 'avg' as const, tag: '上周平均(基于您的日常活动指标计算)' },
         {
           kind: 'community' as const,
           tag: todayScheduleLabel
             ? `社群达标(今日${todayScheduleLabel}，基于身体指标与周计划)`
             : '社群达标(基于您的身体指标计算)',
         },
+        { kind: 'manual' as const, tag: '手动调整精确值' },
       ] as const,
     [dailyAiTargets, todayScheduleLabel]
   );
 
-  /** 输入框与推荐行双向同步：多行数值相同时保留当前选中项，避免被固定写成「总是 best」 */
+  const applyAssistantSelectionForTab = React.useCallback(
+    (tab: IntakeAssistantUiTab) => {
+      const selection = getIntakeAssistantSelection(tab);
+      setAssistantSuggestSelection(selection.kind);
+      setManualGoal(resolveManualGoalForSelection(tab, selection, suggestNumeric));
+    },
+    [suggestNumeric],
+  );
+
   React.useEffect(() => {
     if (!assistantOpen) return;
-    const g = parseGoalInput(manualGoal);
-    if (g === null) {
-      setAssistantSuggestSelection(null);
-      return;
+    applyAssistantSelectionForTab(assistantTab);
+  }, [assistantOpen, assistantTab, applyAssistantSelectionForTab]);
+
+  const selectAssistantSuggestKind = React.useCallback(
+    (kind: AssistantSuggestKind) => {
+      setAssistantSuggestSelection(kind);
+      if (kind === 'manual') {
+        const existing = getIntakeAssistantSelection(assistantTab);
+        const fallback =
+          existing.kind === 'manual' && existing.manualValue != null
+            ? existing.manualValue
+            : globalIntakeTargetForTab(assistantTab);
+        const sanitized = sanitizeAssistantManualGoalInput(String(fallback));
+        setManualGoal(sanitized);
+        const n = parseGoalInput(sanitized);
+        setIntakeAssistantSelection(assistantTab, {
+          kind: 'manual',
+          manualValue: n ?? fallback,
+        });
+        return;
+      }
+      const value = suggestNumeric[kind];
+      setManualGoal(sanitizeAssistantManualGoalInput(String(value)));
+      setIntakeAssistantSelection(assistantTab, { kind });
+    },
+    [assistantTab, suggestNumeric],
+  );
+
+  const onAssistantManualGoalChange = React.useCallback(
+    (text: string) => {
+      const sanitized = sanitizeAssistantManualGoalInput(text);
+      setManualGoal(sanitized);
+      setAssistantSuggestSelection('manual');
+      const n = parseGoalInput(sanitized);
+      setIntakeAssistantSelection(assistantTab, {
+        kind: 'manual',
+        manualValue: n ?? undefined,
+      });
+    },
+    [assistantTab],
+  );
+
+  const closeAssistantModal = React.useCallback(() => {
+    const n = parseGoalInput(manualGoal);
+    if (n !== null) {
+      const rounded = Math.round(n);
+      if (assistantTab === '水分') setGlobalHydrationTargetMl(rounded);
+      if (assistantTab === '蛋白质') setGlobalProteinTargetG(rounded);
+      if (assistantTab === '碳水') setGlobalCarbohydrateTargetG(rounded);
+      if (assistantTab === '钠') setGlobalSodiumTargetMg(rounded);
+      if (assistantSuggestSelection === 'manual') {
+        setIntakeAssistantSelection(assistantTab, { kind: 'manual', manualValue: rounded });
+      }
+      setIntakeTargetTick((t) => t + 1);
     }
-    const kinds: AssistantSuggestKind[] = ['best', 'avg', 'community'];
-    const matches = kinds.filter((k) => goalMatchesSuggestion(g, suggestNumeric[k]));
-    if (matches.length === 0) {
-      setAssistantSuggestSelection(null);
-      return;
-    }
-    if (matches.length === 1) {
-      setAssistantSuggestSelection(matches[0]);
-      return;
-    }
-    setAssistantSuggestSelection((prev) => (prev && matches.includes(prev) ? prev : matches[0]));
-  }, [
-    assistantOpen,
-    assistantTab,
-    manualGoal,
-    suggestNumeric,
-  ]);
+    setAssistantOpen(false);
+  }, [assistantSuggestSelection, assistantTab, manualGoal]);
 
   const onWeekPagerEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;
@@ -1828,22 +1869,18 @@ export default function HealthScreen() {
             const openAssistantByCard = () => {
               if (item.key === 'hydration') {
                 setAssistantTab('水分');
-                setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.hydrationMl)));
                 setAssistantOpen(true);
               }
               if (item.key === 'protein') {
                 setAssistantTab('蛋白质');
-                setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.proteinG)));
                 setAssistantOpen(true);
               }
               if (item.key === 'sodium') {
                 setAssistantTab('钠');
-                setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.sodiumMg)));
                 setAssistantOpen(true);
               }
               if (item.key === 'carbohydrate') {
                 setAssistantTab('碳水');
-                setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.carbohydrateG)));
                 setAssistantOpen(true);
               }
             };
@@ -2543,9 +2580,9 @@ export default function HealthScreen() {
         visible={assistantOpen}
         transparent
         animationType="fade"
-        onRequestClose={() => setAssistantOpen(false)}
+        onRequestClose={closeAssistantModal}
       >
-        <Pressable style={[styles.assistantOverlay, { backgroundColor: colors.overlay }]} onPress={() => setAssistantOpen(false)}>
+        <Pressable style={[styles.assistantOverlay, { backgroundColor: colors.overlay }]} onPress={closeAssistantModal}>
           <Pressable
             style={[styles.assistantCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}
             onPress={() => {}}
@@ -2558,7 +2595,7 @@ export default function HealthScreen() {
               </View>
               <TouchableOpacity
                 style={[styles.assistantCloseBtn, { backgroundColor: isDark ? colors.input : colors.capsule }]}
-                onPress={() => setAssistantOpen(false)}
+                onPress={closeAssistantModal}
               >
                 <MaterialIcons name="close" size={18} color={colors.textSecondary} />
               </TouchableOpacity>
@@ -2570,17 +2607,7 @@ export default function HealthScreen() {
                 return (
                   <TouchableOpacity
                     key={tab}
-                    onPress={() => {
-                      setAssistantTab(tab);
-                      if (tab === '水分')
-                        setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.hydrationMl)));
-                      if (tab === '蛋白质')
-                        setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.proteinG)));
-                      if (tab === '碳水')
-                        setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.carbohydrateG)));
-                      if (tab === '钠')
-                        setManualGoal(sanitizeAssistantManualGoalInput(String(intakeTargetsSnapshot.sodiumMg)));
-                    }}
+                    onPress={() => setAssistantTab(tab)}
                     style={[
                       styles.assistantTabBtn,
                       active && {
@@ -2621,8 +2648,11 @@ export default function HealthScreen() {
 
             <View style={styles.suggestList}>
               {assistantSuggestRows.map((row) => {
-                const value = suggestNumeric[row.kind];
                 const selected = assistantSuggestSelection === row.kind;
+                const isManual = row.kind === 'manual';
+                const manualStoredValue =
+                  getIntakeAssistantSelection(assistantTab).manualValue ?? globalIntakeTargetForTab(assistantTab);
+                const presetValue = isManual ? manualStoredValue : suggestNumeric[row.kind];
                 const itemSurface = selected
                   ? {
                       backgroundColor: isDark ? `${currentAssistant.accent}1F` : colors.capsule,
@@ -2635,23 +2665,32 @@ export default function HealthScreen() {
                 const tagColor = selected ? currentAssistant.accent : colors.textSecondary;
                 const valueStyle = selected ? styles.suggestValue : styles.suggestValueAlt;
                 const valueColor = selected ? currentAssistant.accent : colors.text;
-                return (
-                  <TouchableOpacity
-                    key={row.kind}
-                    activeOpacity={0.82}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                    onPress={() => {
-                      setAssistantSuggestSelection(row.kind);
-                      setManualGoal(sanitizeAssistantManualGoalInput(String(value)));
-                    }}
-                    style={[styles.suggestItem, itemSurface]}
-                  >
-                    <View>
+                const body = (
+                  <>
+                    <View style={styles.suggestItemBody}>
                       <Text style={[styles.suggestTag, { color: tagColor }]}>{row.tag}</Text>
-                      <Text style={[valueStyle, { color: valueColor }]}>
-                        {value.toLocaleString()} <Text style={styles.suggestValueUnit}>{currentAssistant.unit}</Text>
-                      </Text>
+                      {isManual && selected ? (
+                        <View style={[styles.suggestManualInputWrap, { backgroundColor: colors.input }]}>
+                          <TextInput
+                            value={manualGoal}
+                            onChangeText={onAssistantManualGoalChange}
+                            keyboardType="number-pad"
+                            autoCorrect={false}
+                            autoCapitalize="none"
+                            placeholder={currentAssistant.placeholder}
+                            placeholderTextColor={colors.textSecondary}
+                            style={[styles.suggestManualInput, { color: colors.text }]}
+                          />
+                          <Text style={[styles.suggestManualUnit, { color: colors.textSecondary }]}>
+                            {currentAssistant.unit.toUpperCase()}
+                          </Text>
+                        </View>
+                      ) : (
+                        <Text style={[valueStyle, { color: valueColor }]}>
+                          {presetValue.toLocaleString()}{' '}
+                          <Text style={styles.suggestValueUnit}>{currentAssistant.unit}</Text>
+                        </Text>
+                      )}
                     </View>
                     {selected ? (
                       <View style={[styles.suggestDone, { backgroundColor: currentAssistant.accent }]}>
@@ -2660,44 +2699,31 @@ export default function HealthScreen() {
                     ) : (
                       <MaterialIcons name="chevron-right" size={18} color={colors.textSecondary} />
                     )}
+                  </>
+                );
+                if (isManual && selected) {
+                  return (
+                    <View
+                      key={row.kind}
+                      style={[styles.suggestItem, styles.suggestItemManual, itemSurface]}
+                    >
+                      {body}
+                    </View>
+                  );
+                }
+                return (
+                  <TouchableOpacity
+                    key={row.kind}
+                    activeOpacity={0.82}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    onPress={() => selectAssistantSuggestKind(row.kind)}
+                    style={[styles.suggestItem, itemSurface]}
+                  >
+                    {body}
                   </TouchableOpacity>
                 );
               })}
-            </View>
-
-            <View style={[styles.manualWrap, { borderTopColor: colors.outline }]}> 
-              <Text style={[styles.manualLabel, { color: colors.textSecondary }]}>手动调整精确值</Text>
-              <View style={styles.manualRow}>
-                <View style={[styles.manualInputWrap, { backgroundColor: colors.input }]}> 
-                  <TextInput
-                    value={manualGoal}
-                    onChangeText={(text) => setManualGoal(sanitizeAssistantManualGoalInput(text))}
-                    keyboardType="default"
-                    autoCorrect={false}
-                    autoCapitalize="none"
-                    placeholder={currentAssistant.placeholder}
-                    placeholderTextColor={colors.textSecondary}
-                    style={[styles.manualInput, { color: colors.text }]}
-                  />
-                  <Text style={[styles.manualUnit, { color: colors.textSecondary }]}>{currentAssistant.unit.toUpperCase()}</Text>
-                </View>
-                <TouchableOpacity
-                  style={[styles.sendBtn, { backgroundColor: colors.primary }]}
-                  onPress={() => {
-                    const n = Number(String(manualGoal).replace(/,/g, '').trim());
-                    if (!Number.isFinite(n) || n < 0) return;
-                    const rounded = Math.round(n);
-                    if (assistantTab === '水分') setGlobalHydrationTargetMl(rounded);
-                    if (assistantTab === '蛋白质') setGlobalProteinTargetG(rounded);
-                    if (assistantTab === '碳水') setGlobalCarbohydrateTargetG(rounded);
-                    if (assistantTab === '钠') setGlobalSodiumTargetMg(rounded);
-                    setIntakeTargetTick((t) => t + 1);
-                    setAssistantOpen(false);
-                  }}
-                >
-                  <MaterialIcons name="send" size={18} color={colors.onPrimary} />
-                </TouchableOpacity>
-              </View>
             </View>
           </Pressable>
         </Pressable>
@@ -3322,6 +3348,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  suggestItemManual: {
+    alignItems: 'flex-start',
+  },
+  suggestItemBody: {
+    flex: 1,
+    marginRight: 10,
+  },
   suggestTag: {
     fontSize: 10,
     fontWeight: '700',
@@ -3347,44 +3380,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  manualWrap: {
-    borderTopWidth: 1,
-    paddingTop: 14,
-  },
-  manualLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1,
-    marginBottom: 10,
-  },
-  manualRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  manualInputWrap: {
-    flex: 1,
+  suggestManualInputWrap: {
+    marginTop: 4,
     borderRadius: Radius.lg,
     paddingHorizontal: Spacing['2xl'],
-    height: 54,
+    height: 48,
     flexDirection: 'row',
     alignItems: 'center',
   },
-  manualInput: {
+  suggestManualInput: {
     flex: 1,
     fontSize: 20,
     fontWeight: '700',
   },
-  manualUnit: {
+  suggestManualUnit: {
     fontSize: 12,
     fontWeight: '700',
     marginLeft: 8,
-  },
-  sendBtn: {
-    width: 54,
-    height: 54,
-    borderRadius: Radius.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
 });

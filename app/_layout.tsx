@@ -21,6 +21,7 @@ import { loadCloudBackupTokenCache } from '@/lib/cloud-backup-config';
 import { hydrateCloudDirtyFromStorage } from '@/lib/cloud-sql-dirty-track';
 import { startCloudPeriodicAlignScheduler } from '@/lib/cloud-sync-scheduler';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
+import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-selection';
 import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
 import { loadThemePreference } from '@/lib/theme-preference';
 
@@ -51,6 +52,7 @@ function RootLayoutInner() {
       void (async () => {
         try {
           await loadPersistedIntakeTargets();
+          await loadPersistedIntakeAssistantSelections();
           await loadThemePreference();
           await loadAiLlmProviderPreference();
           await loadCloudBackupTokenCache();

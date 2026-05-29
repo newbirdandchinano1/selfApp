@@ -24,6 +24,10 @@ export function setFinanceSheetLaunchIntent(intent: FinanceSheetLaunchIntent) {
   pending = intent;
 }
 
+export function peekFinanceSheetLaunchIntent(): FinanceSheetLaunchIntent | null {
+  return pending;
+}
+
 export function consumeFinanceSheetLaunchIntent(): FinanceSheetLaunchIntent | null {
   const next = pending;
   pending = null;

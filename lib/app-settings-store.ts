@@ -22,6 +22,7 @@ export const AppSettingKey = {
   savingsOverviewLegacy: '@selfapp/savings_overview_settings_v1',
   globalIntakeTargets: '@global_intake_targets_v1',
   dailyIntakeAiTargets: '@daily_intake_ai_targets_v1',
+  intakeAssistantSelection: '@intake_assistant_selection_v1',
   tasksCompletionDayStart: '@tasks_completion_day_start_v1',
   aiLlmProvider: '@selfapp/ai_llm_provider_id',
   weeklyReviewWeekday: 'weekly_review_weekday_dow',

@@ -21,6 +21,8 @@ export type VisionWallCardModel =
   | {
       kind: 'progress';
       title: string;
+      percentText: string;
+      percent: number;
       leftKicker: string;
       leftValue: string;
       rightKicker: string;
@@ -69,6 +71,8 @@ export type VisionWallFields =
   | {
       kind: 'progress';
       title: string;
+      percentText: string;
+      percent: number;
       leftKicker: string;
       leftValue: string;
       rightKicker: string;
@@ -142,6 +146,8 @@ const visions: VisionRecord[] = [
     wall: {
       kind: 'progress',
       title: '西藏骑行之旅',
+      percentText: '65%',
+      percent: 0.65,
       leftKicker: '本周进度',
       leftValue: '本周 85 km',
       rightKicker: '当前总量',
@@ -239,6 +245,8 @@ const visions: VisionRecord[] = [
     wall: {
       kind: 'progress',
       title: '累计跑步 600 公里',
+      percentText: '33%',
+      percent: 0.33,
       leftKicker: '本周进度',
       leftValue: '本周 12 km',
       rightKicker: '当前总量',
@@ -267,6 +275,8 @@ const visions: VisionRecord[] = [
     wall: {
       kind: 'progress',
       title: '打卡 12 座城市',
+      percentText: '33%',
+      percent: 0.33,
       leftKicker: '本周进度',
       leftValue: '本周 1 座',
       rightKicker: '当前总量',

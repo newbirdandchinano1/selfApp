@@ -1,3 +1,4 @@
+import { shouldSkipDuplicateAutoLedgerImage } from '@/lib/auto-ledger-dedupe';
 import { readClipboardImageForAutoLedger } from '@/lib/auto-ledger-clipboard';
 import {
     getAutoLedgerPendingRows,
@@ -25,6 +26,7 @@ import {
 } from '@/lib/finance-default-accounts';
 import {
     consumeFinanceSheetLaunchIntent,
+    peekFinanceSheetLaunchIntent,
     type FinanceSheetLaunchIntent,
 } from '@/lib/finance-sheet-launch-intent';
 import {
@@ -188,6 +190,10 @@ export async function processAutoLedgerFromImage(
   ledgerSource: AutoLedgerPendingRow['source'],
   opts?: ProcessAutoLedgerOptions,
 ): Promise<void> {
+  if (shouldSkipDuplicateAutoLedgerImage(imageDataUri)) {
+    return;
+  }
+
   const handoff = opts?.handoff === true;
 
   if (!handoffSessionHeld) {
@@ -426,37 +432,45 @@ export type ConsumeAutoLedgerTrigger = 'bootstrap' | 'handoff' | 'active' | 'foc
 /**
  * 在根布局挂载后消费待处理截图/剪贴板 intent，不依赖财务 Tab 聚焦或前台停留。
  */
+function buildConsumeScopeKey(
+  handoffKey: string | null,
+  intent: FinanceSheetLaunchIntent | null,
+): string | null {
+  if (handoffKey) {
+    return handoffKey;
+  }
+  if (intent?.kind === 'auto_ledger_clipboard_image') {
+    return `intent:image:${intent.imageDataUri.length}`;
+  }
+  if (intent?.kind === 'auto_ledger_clipboard_pending') {
+    return 'intent:clipboard_pending';
+  }
+  return null;
+}
+
 export function scheduleConsumeAutoLedger(trigger: ConsumeAutoLedgerTrigger): void {
   consumeChain = consumeChain
     .then(async () => {
       const handoffKey = getShortcutHandoffKey();
-      const intent = consumeFinanceSheetLaunchIntent();
-      const hasWork = handoffKey != null || intent != null;
+      const peekedIntent = peekFinanceSheetLaunchIntent();
+      const scopeKey = buildConsumeScopeKey(handoffKey, peekedIntent);
+      const hasWork = scopeKey != null;
 
       if (!hasWork) {
         return;
       }
 
-      const dedupeKey =
-        handoffKey ??
-        (intent?.kind === 'auto_ledger_clipboard_image'
-          ? `intent:image:${intent.imageDataUri.length}`
-          : intent?.kind === 'auto_ledger_clipboard_pending'
-            ? 'intent:clipboard_pending'
-            : null);
-
-      if (dedupeKey && dedupeKey === lastConsumedHandoffKey) {
+      if (scopeKey === lastConsumedHandoffKey) {
         return;
       }
 
+      const intent = consumeFinanceSheetLaunchIntent();
       const job = await resolvePendingJob(intent);
       if (!job) {
         return;
       }
 
-      if (dedupeKey) {
-        lastConsumedHandoffKey = dedupeKey;
-      }
+      lastConsumedHandoffKey = scopeKey;
 
       await runPendingJob(job);
     })

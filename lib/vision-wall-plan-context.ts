@@ -96,7 +96,7 @@ const TRACK_KIND_ZH: Record<VisionTrackKind, string> = {
 function summarizeVisionCard(row: VisionRow, card: VisionWallCardModel, extra: NonNullable<ReturnType<typeof parseVisionExtra>>): string {
   switch (card.kind) {
     case 'progress':
-      return `${card.leftKicker} ${card.leftValue}；${card.rightKicker} ${card.rightValue}`;
+      return `完成度 ${card.percentText}（${card.rightValue}）`;
     case 'count':
       return `${card.leftKicker} ${card.leftValue}；${card.rightKicker} ${card.rightValue}`;
     case 'target':

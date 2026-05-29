@@ -264,38 +264,51 @@ const VisionCard = ({
           {card.kind === 'progress' && (
             <>
               <Text style={styles.cardTitle}>{card.title}</Text>
-              <View style={styles.countRow}>
-                {card.wallAdjust ? (
-                  <Pressable
-                    onPress={() =>
-                      onOpenProgressEdit({
-                        visionId,
-                        title: card.title,
-                        current: card.wallAdjust!.current,
-                        unit: card.wallAdjust!.unit,
-                      })
-                    }
-                    style={({ pressed }) => [styles.progressValueTap, pressed && { opacity: 0.88 }]}
-                    accessibilityRole="button"
-                    accessibilityLabel="更新当前完成值"
-                  >
+              <View style={{ gap: 10 }}>
+                <View style={styles.progressPercentRow}>
+                  <Text style={styles.cardPercentText}>{card.percentText}</Text>
+                </View>
+                <View style={styles.progressTrack}>
+                  <View
+                    style={[
+                      styles.progressFill,
+                      { width: `${Math.round(card.percent * 100)}%` },
+                    ]}
+                  />
+                </View>
+                <View style={styles.countRow}>
+                  {card.wallAdjust ? (
+                    <Pressable
+                      onPress={() =>
+                        onOpenProgressEdit({
+                          visionId,
+                          title: card.title,
+                          current: card.wallAdjust!.current,
+                          unit: card.wallAdjust!.unit,
+                        })
+                      }
+                      style={({ pressed }) => [styles.progressValueTap, pressed && { opacity: 0.88 }]}
+                      accessibilityRole="button"
+                      accessibilityLabel="更新当前完成值"
+                    >
+                      <View style={{ gap: 4 }}>
+                        <Text style={styles.countKicker}>{card.leftKicker}</Text>
+                        <View style={styles.progressValueRow}>
+                          <Text style={styles.countValue}>{card.leftValue}</Text>
+                          <MaterialIcons name="edit" size={14} color="rgba(255,255,255,0.55)" />
+                        </View>
+                      </View>
+                    </Pressable>
+                  ) : (
                     <View style={{ gap: 4 }}>
                       <Text style={styles.countKicker}>{card.leftKicker}</Text>
-                      <View style={styles.progressValueRow}>
-                        <Text style={styles.countValue}>{card.leftValue}</Text>
-                        <MaterialIcons name="edit" size={15} color="rgba(255,255,255,0.55)" />
-                      </View>
+                      <Text style={styles.countValue}>{card.leftValue}</Text>
                     </View>
-                  </Pressable>
-                ) : (
-                  <View style={{ gap: 4 }}>
-                    <Text style={styles.countKicker}>{card.leftKicker}</Text>
-                    <Text style={styles.countValue}>{card.leftValue}</Text>
+                  )}
+                  <View style={{ alignItems: 'flex-end', gap: 4, flex: 1 }}>
+                    <Text style={styles.countKicker}>{card.rightKicker}</Text>
+                    <Text style={styles.countValue}>{card.rightValue}</Text>
                   </View>
-                )}
-                <View style={{ alignItems: 'flex-end', gap: 4, flex: 1 }}>
-                  <Text style={styles.countKicker}>{card.rightKicker}</Text>
-                  <Text style={styles.countValue}>{card.rightValue}</Text>
                 </View>
               </View>
             </>
@@ -1718,6 +1731,12 @@ const styles = StyleSheet.create({
   completeTogglePressed: {
     transform: [{ scale: 0.92 }],
     opacity: 0.92,
+  },
+  progressPercentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
   },
   progressValueTap: {
     flexShrink: 1,

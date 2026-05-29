@@ -19,14 +19,9 @@ export type QuickAddCardItem = {
 
 export const ALL_QUICK_ADD_ITEMS: QuickAddCardItem[] = [
   { key: 'water', label: '水', displayAmount: 250, displayUnit: 'ml', hydrationMl: 250, icon: 'local-drink' },
-  { key: 'coffee', label: '咖啡', displayAmount: 150, displayUnit: 'ml', hydrationMl: 150, icon: 'local-cafe' },
-  { key: 'milk', label: '牛奶', displayAmount: 200, displayUnit: 'ml', hydrationMl: 200, icon: 'emoji-food-beverage' },
-  { key: 'black-tea', label: '红茶', displayAmount: 200, displayUnit: 'ml', hydrationMl: 200, icon: 'emoji-food-beverage' },
-  { key: 'juice', label: '果汁', displayAmount: 300, displayUnit: 'ml', hydrationMl: 300, icon: 'local-drink' },
-  { key: 'green-tea', label: '绿茶', displayAmount: 250, displayUnit: 'ml', hydrationMl: 250, icon: 'spa' },
 ];
 
-const DEFAULT_HOME_KEYS = ['water', 'coffee', 'milk'];
+const DEFAULT_HOME_KEYS = ['water'];
 
 export function createQuickAddItemMap(items: QuickAddCardItem[]) {
   return new Map(items.map((item) => [item.key, item]));

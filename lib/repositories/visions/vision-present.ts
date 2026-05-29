@@ -265,6 +265,7 @@ function wallFieldsFromRow(
       const goal = Number(extra.goalTotal);
       const safeGoal = Number.isFinite(goal) && goal > 0 ? goal : 100;
       const cur = Math.max(0, Number(extra.currentAmount ?? 0) || 0);
+      const pct = Math.min(1, safeGoal > 0 ? cur / safeGoal : 0);
       const isNeg = row.direction === 'negative';
       const rightMain = isNeg
         ? `剩余 ${formatVisionAmount(Math.max(0, safeGoal - cur))} / ${formatVisionAmount(safeGoal)}${unitSuffix}`
@@ -273,6 +274,8 @@ function wallFieldsFromRow(
       return {
         kind: 'progress',
         title: row.title,
+        percentText: `${Math.round(pct * 100)}%`,
+        percent: pct,
         leftKicker: '当前完成',
         leftValue: `${formatVisionAmount(cur)}${unitSuffix}`.trim(),
         rightKicker: '当前总量',
@@ -334,6 +337,8 @@ function wallFieldsFromRow(
       return {
         kind: 'progress',
         title: row.title,
+        percentText: '—',
+        percent: 0,
         leftKicker: '本周进度',
         leftValue: '—',
         rightKicker: '当前总量',
