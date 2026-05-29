@@ -648,14 +648,22 @@ async function readLocalTableColumns(table: string): Promise<string[]> {
   return cols.map(c => c.name).filter(Boolean);
 }
 
-async function pushLocalTablesToCloudBatch(
+export type LocalTableUploadBundle = {
+  insertOrder: string[];
+  rowsByTable: Map<string, Record<string, unknown>[]>;
+};
+
+/** 按外键依赖收集本地表数据，供 D1 备份与 REST 上传复用 */
+export async function collectLocalTablesDataForUpload(
   seedTables: string[],
   opts?: {
     signal?: AbortSignal;
     onProgress?: (p: CloudSyncProgress) => void;
   },
-): Promise<number> {
-  if (seedTables.length === 0) return 0;
+): Promise<LocalTableUploadBundle> {
+  if (seedTables.length === 0) {
+    return { insertOrder: [], rowsByTable: new Map() };
+  }
 
   const report = (p: CloudSyncProgress) => opts?.onProgress?.(p);
 
@@ -663,7 +671,9 @@ async function pushLocalTablesToCloudBatch(
   await yieldToUi();
   const graph = await buildLocalForeignKeyGraph();
   const tables = expandTablesForCloudUpload(seedTables, graph);
-  if (tables.length === 0) return 0;
+  if (tables.length === 0) {
+    return { insertOrder: [], rowsByTable: new Map() };
+  }
 
   const insertOrder = sortTablesForCloudInsert(tables, graph);
   const total = insertOrder.length;
@@ -684,6 +694,36 @@ async function pushLocalTablesToCloudBatch(
     rowsByTable.set(table, await readLocalTableRows(table));
   }
   mergeProjectCategoriesIntoTaskCategoriesForCloud(rowsByTable);
+
+  return { insertOrder, rowsByTable };
+}
+
+export async function prepareLocalRowsForUpload(
+  table: string,
+  rows: Record<string, unknown>[],
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+): Promise<Record<string, unknown>[]> {
+  return prepareRowsForCloudInsert(table, rows, rowsByTable);
+}
+
+async function listLocalUserTablesForUpload(): Promise<string[]> {
+  return listLocalUserTables();
+}
+
+export { listLocalUserTablesForUpload as listLocalUserTablesForApiUpload };
+
+async function pushLocalTablesToCloudBatch(
+  seedTables: string[],
+  opts?: {
+    signal?: AbortSignal;
+    onProgress?: (p: CloudSyncProgress) => void;
+  },
+): Promise<number> {
+  const { insertOrder, rowsByTable } = await collectLocalTablesDataForUpload(seedTables, opts);
+  if (insertOrder.length === 0) return 0;
+
+  const report = (p: CloudSyncProgress) => opts?.onProgress?.(p);
+  const total = insertOrder.length;
 
   let rowCount = 0;
   for (let i = 0; i < insertOrder.length; i++) {

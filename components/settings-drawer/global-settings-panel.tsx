@@ -13,6 +13,17 @@ import {
     loadCloudBackupTokenCache,
     setCloudUserToken,
 } from '@/lib/cloud-backup-config';
+import { getLastApiFullUploadAtIso } from '@/lib/api-backup-meta';
+import {
+    DEFAULT_API_BASE_URL,
+    DEFAULT_API_USERNAME,
+    clearApiAuthToken,
+    clearApiCredentials,
+    getApiUsername,
+    hasCustomApiCredentials,
+    setApiCredentials,
+} from '@/lib/api-config';
+import { triggerApiFullUpload } from '@/lib/api-migration';
 import { getLastFullCloudBackupAtIso } from '@/lib/cloud-backup-meta';
 import {
     triggerCloudFullBackup,
@@ -139,13 +150,19 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [cloudBackupProgress, setCloudBackupProgress] = useState<CloudSyncProgress | null>(null);
   const [cloudRestoreBusy, setCloudRestoreBusy] = useState(false);
   const [localDbRepairBusy, setLocalDbRepairBusy] = useState(false);
+  const [apiUploadBusy, setApiUploadBusy] = useState(false);
+  const [apiUsernameDraft, setApiUsernameDraft] = useState(DEFAULT_API_USERNAME);
+  const [apiPasswordDraft, setApiPasswordDraft] = useState('');
+  const [apiCredentialsConfigured, setApiCredentialsConfigured] = useState(false);
+  const [apiCredentialsSaving, setApiCredentialsSaving] = useState(false);
   const cloudOpAbortRef = useRef<AbortController | null>(null);
   /** 同步标记：备份/同步进行中（不依赖 setState，避免连点竞态） */
   const cloudOpInFlightRef = useRef(false);
   const lastCloudBackupPressAtRef = useRef(0);
 
-  const cloudOpBusy = cloudBackupBusy || cloudRestoreBusy || localDbRepairBusy;
+  const cloudOpBusy = cloudBackupBusy || cloudRestoreBusy || localDbRepairBusy || apiUploadBusy;
   const [lastFullCloudBackupAtIso, setLastFullCloudBackupAtIso] = useState<string | null>(null);
+  const [lastApiUploadAtIso, setLastApiUploadAtIso] = useState<string | null>(null);
   const [cloudDiagModal, setCloudDiagModal] = useState<{
     visible: boolean;
     title: string;
@@ -162,6 +179,15 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     }
   }, []);
 
+  const loadLastApiUploadMeta = useCallback(async () => {
+    try {
+      const iso = await getLastApiFullUploadAtIso();
+      setLastApiUploadAtIso(iso);
+    } catch {
+      setLastApiUploadAtIso(null);
+    }
+  }, []);
+
   useEffect(() => {
     setDraftBoundary(dayBoundary);
   }, [dayBoundary]);
@@ -173,11 +199,21 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     setCloudTokenDraft(custom ?? '');
   }, []);
 
+  const refreshApiCredentialsFromStorage = useCallback(async () => {
+    const username = await getApiUsername();
+    const hasCustom = await hasCustomApiCredentials();
+    setApiCredentialsConfigured(hasCustom);
+    setApiUsernameDraft(username);
+    if (!hasCustom) setApiPasswordDraft('');
+  }, []);
+
   useEffect(() => {
     void loadLastFullCloudBackupMeta();
+    void loadLastApiUploadMeta();
     void loadAiLlmProviderPreference();
     void refreshCloudTokenFromStorage();
-  }, [loadLastFullCloudBackupMeta, refreshCloudTokenFromStorage]);
+    void refreshApiCredentialsFromStorage();
+  }, [loadLastApiUploadMeta, loadLastFullCloudBackupMeta, refreshApiCredentialsFromStorage, refreshCloudTokenFromStorage]);
 
   const saveCloudToken = useCallback(async () => {
     setCloudTokenSaving(true);
@@ -209,6 +245,148 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
             await clearCloudUserToken();
             setCloudTokenConfigured(false);
             setCloudTokenDraft('');
+          })();
+        },
+      },
+    ]);
+  }, []);
+
+  const saveApiCredentials = useCallback(async () => {
+    setApiCredentialsSaving(true);
+    try {
+      const username = apiUsernameDraft.trim() || DEFAULT_API_USERNAME;
+      if (!apiPasswordDraft.trim()) {
+        await clearApiCredentials();
+        await clearApiAuthToken();
+        setApiCredentialsConfigured(false);
+        setApiUsernameDraft(DEFAULT_API_USERNAME);
+        Alert.alert('已恢复默认', '将使用应用内置服务器账号。');
+        return;
+      }
+      await setApiCredentials(username, apiPasswordDraft);
+      await clearApiAuthToken();
+      setApiCredentialsConfigured(true);
+      Alert.alert('已保存', '服务器账号已写入本机，下次上传时将使用新账号登录。');
+    } catch (e) {
+      Alert.alert('保存失败', e instanceof Error ? e.message : String(e));
+    } finally {
+      setApiCredentialsSaving(false);
+    }
+  }, [apiPasswordDraft, apiUsernameDraft]);
+
+  const clearApiCredentialsUi = useCallback(() => {
+    Alert.alert('恢复默认账号', '清除后将使用应用内置服务器账号与密码。', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '清除',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            await clearApiCredentials();
+            await clearApiAuthToken();
+            setApiCredentialsConfigured(false);
+            setApiUsernameDraft(DEFAULT_API_USERNAME);
+            setApiPasswordDraft('');
+          })();
+        },
+      },
+    ]);
+  }, []);
+
+  const runApiUpload = useCallback(async () => {
+    if (cloudOpInFlightRef.current) return;
+    cloudOpInFlightRef.current = true;
+
+    const ac = startCloudOp();
+    setApiUploadBusy(true);
+    setCloudBackupProgress({ phase: 'preparing' });
+    try {
+      const r = await triggerApiFullUpload({
+        signal: ac.signal,
+        onProgress: setCloudBackupProgress,
+      });
+      if (r.ok) {
+        setLastApiUploadAtIso(r.lastUpdated);
+        Alert.alert(
+          '服务器上传完成',
+          `已将本地 ${r.tableCount} 张表、共 ${r.rowCount} 行写入服务器。\n新增 ${r.createdCount} 条，更新 ${r.updatedCount} 条。\n\n上传时间：${formatZhFullBackupTime(r.lastUpdated)}`,
+        );
+      } else if (r.reason === 'aborted') {
+        Alert.alert('服务器上传已中止', r.message);
+      } else if (r.reason === 'unsupported_platform') {
+        Alert.alert('服务器上传不可用', r.message);
+      } else {
+        setCloudDiagModal({
+          visible: true,
+          title: '服务器上传失败',
+          subtitle: r.message,
+          body: r.diagnosticText,
+        });
+      }
+    } finally {
+      endCloudOp(ac);
+      setApiUploadBusy(false);
+      setCloudBackupProgress(null);
+      cloudOpInFlightRef.current = false;
+    }
+  }, [endCloudOp, startCloudOp]);
+
+  const requestApiUpload = useCallback(() => {
+    const now = Date.now();
+    if (
+      cloudOpInFlightRef.current ||
+      cloudOpBusy ||
+      now - lastCloudBackupPressAtRef.current < CLOUD_BACKUP_PRESS_DEBOUNCE_MS
+    ) {
+      return;
+    }
+    lastCloudBackupPressAtRef.current = now;
+    Alert.alert(
+      '上传到服务器',
+      `将把本机全部 SQLite 数据上传到 ${DEFAULT_API_BASE_URL}。\n\n若服务器已有相同 id 的记录，将自动改为更新。`,
+      [
+        { text: '取消', style: 'cancel' },
+        { text: '开始上传', onPress: () => void runApiUpload() },
+      ],
+    );
+  }, [cloudOpBusy, runApiUpload]);
+
+  const saveApiCredentials = useCallback(async () => {
+    setApiCredentialsSaving(true);
+    try {
+      const username = apiUsernameDraft.trim() || DEFAULT_API_USERNAME;
+      if (!apiPasswordDraft.trim()) {
+        await clearApiCredentials();
+        await clearApiAuthToken();
+        setApiCredentialsConfigured(false);
+        setApiUsernameDraft(DEFAULT_API_USERNAME);
+        Alert.alert('已恢复默认', '将使用应用内置服务器账号。');
+        return;
+      }
+      await setApiCredentials(username, apiPasswordDraft);
+      await clearApiAuthToken();
+      setApiCredentialsConfigured(true);
+      Alert.alert('已保存', '服务器账号已写入本机，下次上传时将使用新账号登录。');
+    } catch (e) {
+      Alert.alert('保存失败', e instanceof Error ? e.message : String(e));
+    } finally {
+      setApiCredentialsSaving(false);
+    }
+  }, [apiPasswordDraft, apiUsernameDraft]);
+
+  const clearApiCredentialsUi = useCallback(() => {
+    Alert.alert('清除自定义账号', '清除后将使用应用内置默认账号密码。', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '清除',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            await clearApiCredentials();
+            await clearApiAuthToken();
+            setApiCredentialsConfigured(false);
+            setApiUsernameDraft(DEFAULT_API_USERNAME);
+            setApiPasswordDraft('');
           })();
         },
       },
@@ -310,6 +488,64 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     lastCloudBackupPressAtRef.current = now;
     void runCloudBackup();
   }, [cloudOpBusy, runCloudBackup]);
+
+  const runApiUpload = useCallback(async () => {
+    if (cloudOpInFlightRef.current) return;
+    cloudOpInFlightRef.current = true;
+
+    const ac = startCloudOp();
+    setApiUploadBusy(true);
+    setCloudBackupProgress({ phase: 'preparing' });
+    try {
+      const r = await triggerApiFullUpload({
+        signal: ac.signal,
+        onProgress: setCloudBackupProgress,
+      });
+      if (r.ok) {
+        setLastApiUploadAtIso(r.lastUpdated);
+        Alert.alert(
+          '服务器上传完成',
+          `已将本地 ${r.tableCount} 张表、共 ${r.rowCount} 行写入服务器。\n新增 ${r.createdCount} 条，更新 ${r.updatedCount} 条。\n\n上传时间：${formatZhFullBackupTime(r.lastUpdated)}`,
+        );
+      } else if (r.reason === 'aborted') {
+        Alert.alert('服务器上传已中止', r.message);
+      } else if (r.reason === 'unsupported_platform') {
+        Alert.alert('服务器上传不可用', r.message);
+      } else {
+        setCloudDiagModal({
+          visible: true,
+          title: '服务器上传失败',
+          subtitle: r.message,
+          body: r.diagnosticText,
+        });
+      }
+    } finally {
+      endCloudOp(ac);
+      setApiUploadBusy(false);
+      setCloudBackupProgress(null);
+      cloudOpInFlightRef.current = false;
+    }
+  }, [endCloudOp, startCloudOp]);
+
+  const requestApiUpload = useCallback(() => {
+    const now = Date.now();
+    if (
+      cloudOpInFlightRef.current ||
+      cloudOpBusy ||
+      now - lastCloudBackupPressAtRef.current < CLOUD_BACKUP_PRESS_DEBOUNCE_MS
+    ) {
+      return;
+    }
+    lastCloudBackupPressAtRef.current = now;
+    Alert.alert(
+      '上传到服务器',
+      `将把本机全部 SQLite 数据上传到 ${DEFAULT_API_BASE_URL}。\n\n若服务器已有相同 id 的记录，将自动改为更新。是否继续？`,
+      [
+        { text: '取消', style: 'cancel' },
+        { text: '上传', onPress: () => void runApiUpload() },
+      ],
+    );
+  }, [cloudOpBusy, runApiUpload]);
 
   const runCloudRestore = useCallback(async () => {
     if (cloudOpInFlightRef.current) return;
@@ -790,6 +1026,101 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                   <Text style={[styles.rowTitle, { color: text }]}>修复本地数据库</Text>
                   <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
                     启动失败或外键报错时使用：清理孤儿引用并同步分类表，不覆盖云端数据。
+                  </Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={22} color={outline} />
+              </View>
+            </Pressable>
+          ) : null}
+
+          <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 12, marginTop: 14 }]}>
+            <Text style={[styles.rowTitle, { color: text }]}>REST 服务器同步</Text>
+            <Text style={[styles.rowHint, { color: outline, lineHeight: 18 }]}>
+              服务器：{DEFAULT_API_BASE_URL}。将本机 SQLite 全量上传到后端 MySQL（保留本地 id 与外键）。
+            </Text>
+            <Text style={[styles.rowHint, { color: apiCredentialsConfigured ? primary : outline, fontWeight: '700' }]}>
+              {apiCredentialsConfigured ? '已使用自定义服务器账号' : '将使用内置默认账号'}
+            </Text>
+            <AppInput
+              value={apiUsernameDraft}
+              onChangeText={setApiUsernameDraft}
+              placeholder={`账号，默认 ${DEFAULT_API_USERNAME}`}
+              autoCapitalize="none"
+              autoCorrect={false}
+              spellCheck={false}
+            />
+            <AppInput
+              value={apiPasswordDraft}
+              onChangeText={setApiPasswordDraft}
+              placeholder="密码，留空则使用内置默认"
+              autoCapitalize="none"
+              autoCorrect={false}
+              spellCheck={false}
+              secureTextEntry
+            />
+            <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'flex-end' }}>
+              {apiCredentialsConfigured ? (
+                <Pressable
+                  onPress={clearApiCredentialsUi}
+                  disabled={apiCredentialsSaving}
+                  style={({ pressed }) => [{ opacity: pressed || apiCredentialsSaving ? 0.7 : 1, paddingVertical: 8, paddingHorizontal: 4 }]}>
+                  <Text style={{ color: isDark ? '#f87171' : '#b91c1c', fontWeight: '700' }}>恢复默认</Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                onPress={() => void saveApiCredentials()}
+                disabled={apiCredentialsSaving}
+                style={({ pressed }) => [
+                  styles.probeBtn,
+                  {
+                    borderColor: cardBorder,
+                    opacity: pressed || apiCredentialsSaving ? 0.75 : 1,
+                    paddingHorizontal: 16,
+                    flex: 0,
+                  },
+                ]}>
+                {apiCredentialsSaving ? (
+                  <ActivityIndicator size="small" color={primary} />
+                ) : (
+                  <Text style={[styles.rowTitle, { color: primary, fontSize: 14 }]}>保存账号</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+
+          {Platform.OS !== 'web' ? (
+            <Pressable
+              onPress={requestApiUpload}
+              disabled={cloudOpBusy}
+              pointerEvents={cloudOpBusy ? 'none' : 'auto'}
+              style={({ pressed }) => [
+                { opacity: cloudOpBusy ? 0.55 : pressed ? 0.88 : 1, marginTop: 10 },
+              ]}>
+              <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+                {apiUploadBusy ? (
+                  <ActivityIndicator size="small" color={primary} />
+                ) : (
+                  <MaterialIcons name="dns" size={26} color={primary} />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.rowTitle, { color: text }]}>上传到服务器数据库</Text>
+                  <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                    一次性将本机全部数据写入 {DEFAULT_API_BASE_URL}。
+                  </Text>
+                  {apiUploadBusy
+                    ? (() => {
+                        const line = formatCloudBackupProgressLine(cloudBackupProgress);
+                        return line ? (
+                          <Text style={[styles.rowHint, { color: primary, marginTop: 6, fontWeight: '700' }]}>
+                            {line}
+                          </Text>
+                        ) : null;
+                      })()
+                    : null}
+                  <Text style={[styles.rowHint, { color: outline, marginTop: 6, fontSize: 11 }]}>
+                    {lastApiUploadAtIso
+                      ? `上次上传：${formatZhFullBackupTime(lastApiUploadAtIso)}`
+                      : '尚未在本机记录服务器上传时间。'}
                   </Text>
                 </View>
                 <MaterialIcons name="chevron-right" size={22} color={outline} />
