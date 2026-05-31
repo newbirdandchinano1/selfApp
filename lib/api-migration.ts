@@ -1,5 +1,6 @@
 import { setLastApiFullUploadAtIso } from '@/lib/api-backup-meta';
 import { apiCreateRecord, apiLogin, apiUpdateRecord, ApiRequestError } from '@/lib/api-client';
+import { getApiBaseUrl } from '@/lib/api-config';
 import {
   beginCloudSqliteDirtyIgnoreBatch,
   endCloudSqliteDirtyIgnoreBatch,
@@ -118,6 +119,15 @@ async function yieldToUi(): Promise<void> {
   await new Promise<void>(resolve => setTimeout(resolve, 0));
 }
 
+function enrichLoginNetworkErrorMessage(msg: string, baseUrl: string): string {
+  if (!/network request failed|failed to fetch/i.test(msg)) return msg;
+  const hints: string[] = ['请确认手机能访问互联网且服务器地址正确'];
+  if (/^http:\/\//i.test(baseUrl)) {
+    hints.push('当前为 HTTP 地址：若刚更新应用，需重新安装/构建原生包以启用明文网络');
+  }
+  return `${msg}（${hints.join('；')}）`;
+}
+
 /** 将本地 SQLite 全量上传到 REST 后端（保留本地 id 与外键关系） */
 export async function triggerApiFullUpload(opts?: {
   signal?: AbortSignal;
@@ -136,13 +146,15 @@ export async function triggerApiFullUpload(opts?: {
   try {
     await apiLogin({ signal: opts?.signal });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const baseUrl = await getApiBaseUrl();
+    const raw = e instanceof Error ? e.message : String(e);
+    const msg = enrichLoginNetworkErrorMessage(raw, baseUrl);
     const message = `登录服务器失败：${msg}`;
     return {
       ok: false,
       reason: 'login_failed',
       message,
-      diagnosticText: [message, '', serializeErrorForDiagnostic(e)].join('\n'),
+      diagnosticText: [message, `服务器：${baseUrl}`, '', serializeErrorForDiagnostic(e)].join('\n'),
     };
   }
 
