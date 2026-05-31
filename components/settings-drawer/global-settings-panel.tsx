@@ -293,64 +293,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     ]);
   }, []);
 
-  const runApiUpload = useCallback(async () => {
-    if (cloudOpInFlightRef.current) return;
-    cloudOpInFlightRef.current = true;
-
-    const ac = startCloudOp();
-    setApiUploadBusy(true);
-    setCloudBackupProgress({ phase: 'preparing' });
-    try {
-      const r = await triggerApiFullUpload({
-        signal: ac.signal,
-        onProgress: setCloudBackupProgress,
-      });
-      if (r.ok) {
-        setLastApiUploadAtIso(r.lastUpdated);
-        Alert.alert(
-          '服务器上传完成',
-          `已将本地 ${r.tableCount} 张表、共 ${r.rowCount} 行写入服务器。\n新增 ${r.createdCount} 条，更新 ${r.updatedCount} 条。\n\n上传时间：${formatZhFullBackupTime(r.lastUpdated)}`,
-        );
-      } else if (r.reason === 'aborted') {
-        Alert.alert('服务器上传已中止', r.message);
-      } else if (r.reason === 'unsupported_platform') {
-        Alert.alert('服务器上传不可用', r.message);
-      } else {
-        setCloudDiagModal({
-          visible: true,
-          title: '服务器上传失败',
-          subtitle: r.message,
-          body: r.diagnosticText,
-        });
-      }
-    } finally {
-      endCloudOp(ac);
-      setApiUploadBusy(false);
-      setCloudBackupProgress(null);
-      cloudOpInFlightRef.current = false;
-    }
-  }, [endCloudOp, startCloudOp]);
-
-  const requestApiUpload = useCallback(() => {
-    const now = Date.now();
-    if (
-      cloudOpInFlightRef.current ||
-      cloudOpBusy ||
-      now - lastCloudBackupPressAtRef.current < CLOUD_BACKUP_PRESS_DEBOUNCE_MS
-    ) {
-      return;
-    }
-    lastCloudBackupPressAtRef.current = now;
-    Alert.alert(
-      '上传到服务器',
-      `将把本机全部 SQLite 数据上传到 ${DEFAULT_API_BASE_URL}。\n\n若服务器已有相同 id 的记录，将自动改为更新。`,
-      [
-        { text: '取消', style: 'cancel' },
-        { text: '开始上传', onPress: () => void runApiUpload() },
-      ],
-    );
-  }, [cloudOpBusy, runApiUpload]);
-
   useEffect(() => {
     const sub = AppState.addEventListener('change', next => {
       if (next === 'background') cloudOpAbortRef.current?.abort();
