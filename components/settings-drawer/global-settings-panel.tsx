@@ -351,48 +351,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     );
   }, [cloudOpBusy, runApiUpload]);
 
-  const saveApiCredentials = useCallback(async () => {
-    setApiCredentialsSaving(true);
-    try {
-      const username = apiUsernameDraft.trim() || DEFAULT_API_USERNAME;
-      if (!apiPasswordDraft.trim()) {
-        await clearApiCredentials();
-        await clearApiAuthToken();
-        setApiCredentialsConfigured(false);
-        setApiUsernameDraft(DEFAULT_API_USERNAME);
-        Alert.alert('已恢复默认', '将使用应用内置服务器账号。');
-        return;
-      }
-      await setApiCredentials(username, apiPasswordDraft);
-      await clearApiAuthToken();
-      setApiCredentialsConfigured(true);
-      Alert.alert('已保存', '服务器账号已写入本机，下次上传时将使用新账号登录。');
-    } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : String(e));
-    } finally {
-      setApiCredentialsSaving(false);
-    }
-  }, [apiPasswordDraft, apiUsernameDraft]);
-
-  const clearApiCredentialsUi = useCallback(() => {
-    Alert.alert('清除自定义账号', '清除后将使用应用内置默认账号密码。', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '清除',
-        style: 'destructive',
-        onPress: () => {
-          void (async () => {
-            await clearApiCredentials();
-            await clearApiAuthToken();
-            setApiCredentialsConfigured(false);
-            setApiUsernameDraft(DEFAULT_API_USERNAME);
-            setApiPasswordDraft('');
-          })();
-        },
-      },
-    ]);
-  }, []);
-
   useEffect(() => {
     const sub = AppState.addEventListener('change', next => {
       if (next === 'background') cloudOpAbortRef.current?.abort();
