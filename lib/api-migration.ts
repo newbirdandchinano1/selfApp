@@ -22,15 +22,6 @@ function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-function rowToApiPayload(row: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(row)) {
-    if (value === undefined) continue;
-    out[key] = value;
-  }
-  return out;
-}
-
 function rowPrimaryKeyValue(row: Record<string, unknown>, pkCols: string[]): string | null {
   if (pkCols.length === 0) {
     const id = row.id;
@@ -77,16 +68,15 @@ async function upsertRowToApi(
   pkCols: string[],
   signal?: AbortSignal,
 ): Promise<'created' | 'updated'> {
-  const payload = rowToApiPayload(row);
   const pk = rowPrimaryKeyValue(row, pkCols);
 
   try {
-    await apiCreateRecord(table, payload, { signal });
+    await apiCreateRecord(table, row, { signal });
     return 'created';
   } catch (e) {
     if (e instanceof ApiRequestError && (e.httpStatus === 409 || /已存在|duplicate|冲突/i.test(e.message))) {
       if (!pk) throw e;
-      await apiUpdateRecord(table, pk, payload, { signal });
+      await apiUpdateRecord(table, pk, row, { signal });
       return 'updated';
     }
     throw e;

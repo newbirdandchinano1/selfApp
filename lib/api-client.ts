@@ -6,6 +6,7 @@ import {
   getApiUsername,
   setApiAuthToken,
 } from '@/lib/api-config';
+import { normalizeRecordForMysqlApi } from '@/lib/api-mysql-datetime';
 import { fetchWithTimeoutAndRetry, isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 
 type ApiEnvelope<T> = {
@@ -203,7 +204,7 @@ export async function apiCreateRecord<T = unknown>(
 ): Promise<T> {
   return apiRequest<T>(`/api/data/${encodeURIComponent(table)}`, {
     method: 'POST',
-    body: row,
+    body: normalizeRecordForMysqlApi(row),
     signal: opts?.signal,
   });
 }
@@ -216,7 +217,7 @@ export async function apiUpdateRecord<T = unknown>(
 ): Promise<T> {
   return apiRequest<T>(`/api/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    body: row,
+    body: normalizeRecordForMysqlApi(row),
     signal: opts?.signal,
   });
 }
