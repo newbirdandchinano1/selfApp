@@ -7,7 +7,25 @@ import {
   setApiAuthToken,
 } from '@/lib/api-config';
 import { normalizeRecordForMysqlApi } from '@/lib/api-mysql-datetime';
+import {
+  type ApiUploadSlimOptions,
+  slimRecordForMysqlApi,
+} from '@/lib/api-mysql-payload';
 import { fetchWithTimeoutAndRetry, isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
+
+export function prepareRowBodyForApi(
+  row: Record<string, unknown>,
+  opts?: ApiUploadSlimOptions,
+): Record<string, unknown> {
+  return slimRecordForMysqlApi(normalizeRecordForMysqlApi(row), opts);
+}
+
+function isEntityTooLargeError(err: unknown): boolean {
+  return (
+    err instanceof ApiRequestError &&
+    (err.httpStatus === 413 || /entity too large/i.test(err.message))
+  );
+}
 
 type ApiEnvelope<T> = {
   code: number;
@@ -160,6 +178,14 @@ export async function apiRequest<T = unknown>(
     }
 
     const envelope = extractEnvelope(parsed);
+    if (res.status === 413 || /entity too large/i.test(text)) {
+      throw new ApiRequestError(
+        envelope?.message?.trim() || 'request entity too large',
+        413,
+        envelope?.code ?? -1,
+      );
+    }
+
     if (!envelope) {
       throw new ApiRequestError(
         `接口响应格式异常：HTTP ${res.status}`,
@@ -202,11 +228,26 @@ export async function apiCreateRecord<T = unknown>(
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
-  return apiRequest<T>(`/api/data/${encodeURIComponent(table)}`, {
-    method: 'POST',
-    body: normalizeRecordForMysqlApi(row),
-    signal: opts?.signal,
-  });
+  const bodies = [
+    prepareRowBodyForApi(row),
+    prepareRowBodyForApi(row, { aggressive: true, maxBytes: 24_000 }),
+  ];
+
+  let lastError: unknown;
+  for (let i = 0; i < bodies.length; i++) {
+    try {
+      return await apiRequest<T>(`/api/data/${encodeURIComponent(table)}`, {
+        method: 'POST',
+        body: bodies[i],
+        signal: opts?.signal,
+      });
+    } catch (e) {
+      lastError = e;
+      if (i === 0 && isEntityTooLargeError(e)) continue;
+      throw e;
+    }
+  }
+  throw lastError;
 }
 
 export async function apiUpdateRecord<T = unknown>(
@@ -215,11 +256,26 @@ export async function apiUpdateRecord<T = unknown>(
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
-  return apiRequest<T>(`/api/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
-    method: 'PUT',
-    body: normalizeRecordForMysqlApi(row),
-    signal: opts?.signal,
-  });
+  const bodies = [
+    prepareRowBodyForApi(row),
+    prepareRowBodyForApi(row, { aggressive: true, maxBytes: 24_000 }),
+  ];
+
+  let lastError: unknown;
+  for (let i = 0; i < bodies.length; i++) {
+    try {
+      return await apiRequest<T>(`/api/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: bodies[i],
+        signal: opts?.signal,
+      });
+    } catch (e) {
+      lastError = e;
+      if (i === 0 && isEntityTooLargeError(e)) continue;
+      throw e;
+    }
+  }
+  throw lastError;
 }
 
 export async function apiHealthCheck(opts?: { signal?: AbortSignal }): Promise<boolean> {

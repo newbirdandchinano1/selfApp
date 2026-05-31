@@ -20,7 +20,11 @@ import {
 import { getDatabase } from '@/lib/database';
 import { dedupeRowsByPrimaryKey, readTablePrimaryKeyColumns } from '@/lib/sqlite-primary-key-dedupe';
 
-const REST_SKIP_TABLES = new Set(['admin_users']);
+const REST_SKIP_TABLES = new Set([
+  'admin_users',
+  /** AI 画像缓存，体积大且可重新生成 */
+  'persona_portrait_cache',
+]);
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
@@ -82,6 +86,14 @@ async function upsertRowToApi(
       if (!pk) throw e;
       await apiUpdateRecord(table, pk, row, { signal });
       return 'updated';
+    }
+    if (e instanceof ApiRequestError && (e.httpStatus === 413 || /entity too large/i.test(e.message))) {
+      const idHint = pk ? `（id: ${pk}）` : '';
+      throw new ApiRequestError(
+        `表 ${table} 单行数据过大，无法上传${idHint}。图片与超长文本已自动裁剪；若仍失败请更新应用后重试，或联系管理员调大服务器请求体限制。`,
+        e.httpStatus,
+        e.apiCode,
+      );
     }
     throw e;
   }
