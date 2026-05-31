@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import type { FinanceFlowCategoryRow } from './finance.types';
 import type { SheetCategory } from '@/lib/finance-transaction-sheet/helpers';
@@ -93,7 +94,7 @@ export async function createFinanceSheetCustomCategory(
     [`${FINANCE_SHEET_CATEGORY_ID_PREFIX}%`],
   );
   const nextSort = (maxRow?.max_sort ?? 1000) + 10;
-  const id = `${FINANCE_SHEET_CATEGORY_ID_PREFIX}${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const id = makeTimestampEntityId(FINANCE_SHEET_CATEGORY_ID_PREFIX, 6);
   const extra_data = JSON.stringify({
     sheet: true,
     transaction_type: transactionType,

@@ -1,6 +1,7 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import { Platform } from 'react-native';
 
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import {
   parseWishItemExtra,
@@ -10,7 +11,7 @@ import {
 import type { CreateWishItemInput, UpdateWishItemInput, WishItemRow } from './wish-list.types';
 
 export function createWishItemId(): string {
-  return `wish:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 11)}`;
+  return makeTimestampEntityId('wish:', 9);
 }
 
 /** 将相册临时文件复制到应用文档目录，避免系统清理后丢失（expo-file-system 新版 API） */

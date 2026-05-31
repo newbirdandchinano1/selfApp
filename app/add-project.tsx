@@ -14,6 +14,7 @@ import {
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
@@ -114,7 +115,7 @@ function formatTime(value: string): string {
 }
 
 function buildProjectId() {
-  return `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  return makeTimestampEntityId('p_', 8);
 }
 
 function extractDueDate(deadlineText: string) {

@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { shouldSkipDuplicateAutoLedgerImage } from '@/lib/auto-ledger-dedupe';
 import { readClipboardImageForAutoLedger } from '@/lib/auto-ledger-clipboard';
 import {
@@ -212,7 +213,7 @@ export async function processAutoLedgerFromImage(
       return;
     }
 
-    const pendingId = `pending_auto_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const pendingId = makeTimestampEntityId('pal_', 8);
     const maxAttempts = AUTO_LEDGER_MAX_ATTEMPTS;
     cancelledIds.delete(pendingId);
     setAutoLedgerPendingRows([
@@ -304,7 +305,7 @@ export async function processAutoLedgerFromImage(
             return;
           }
 
-          const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+          const txnId = makeTimestampEntityId('ft_', 8);
           const happenedAtIso = new Date().toISOString();
           const noteLine =
             ledgerSource === 'shortcut_intent'

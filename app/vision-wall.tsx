@@ -1,6 +1,7 @@
 import { GoalDimensionFormFields } from '@/components/goal-dimension/GoalDimensionFormFields';
 import { VisionWallAiAssessmentSection } from '@/components/vision-wall/VisionWallAiAssessmentSection';
 import { Colors } from '@/constants/theme';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { getDefaultUser } from '@/lib/repositories/users/user';
 import {
@@ -792,7 +793,7 @@ export default function VisionWallScreen() {
     const noteTrim = newDimNote.trim();
     setNewDimBusy(true);
     try {
-      const id = `gd_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      const id = makeTimestampEntityId('gd_', 8);
       await createGoalDimension({
         id,
         title: t,

@@ -1,8 +1,10 @@
+import { makeCompositeEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '../../tasks-logical-day';
 
+/** 打卡行 id：用 habitId 摘要避免 hci_{完整habitId}_{日期} 超过 MySQL VARCHAR(36) */
 export function habitCheckInRowId(habitId: string, recordDateYmd: string): string {
-  return `hci_${habitId}_${recordDateYmd.replace(/-/g, '')}`;
+  return makeCompositeEntityId('hci_', habitId, recordDateYmd.replace(/-/g, ''));
 }
 
 /** 当前习惯所有有效打卡日 → YYYY-MM-DD → 次数（不含已软删） */

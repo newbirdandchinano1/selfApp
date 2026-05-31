@@ -9,6 +9,7 @@ import {
 import { AppCard, ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import {
   addCalendarDays,
   formatChineseDate,
@@ -897,7 +898,7 @@ function PlanFormSheet({
       } else {
         await createSavingsPlanWithLinkedWish(
           {
-            id: `ssp_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            id: makeTimestampEntityId('ssp_', 8),
             name,
             start_date,
             end_date,
@@ -1143,7 +1144,7 @@ export default function SavingsPlanScreen() {
       }
       try {
         await createSavingsPlanDeposit({
-          id: `ssd_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          id: makeTimestampEntityId('ssd_', 8),
           savings_plan_id: row.id,
           amount: gap,
         });
@@ -1357,7 +1358,7 @@ export default function SavingsPlanScreen() {
         insetsBottom={insets.bottom}
         onSubmit={async (planId, signedAmount) => {
           await createSavingsPlanDeposit({
-            id: `ssd_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            id: makeTimestampEntityId('ssd_', 8),
             savings_plan_id: planId,
             amount: signedAmount,
             note: signedAmount < 0 ? '取出' : null,

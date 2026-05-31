@@ -3,7 +3,7 @@ import { enableCloudSqliteMutationTrackingOnDatabase } from '@/lib/cloud-sql-dir
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 29;
+export const DB_VERSION = 30;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -1097,7 +1097,8 @@ export async function initDatabase() {
             if (typeof v === 'number' && Number.isFinite(v)) cnt = Math.max(0, Math.floor(v));
             else if (v === true) cnt = 1;
             if (cnt < 1) continue;
-            const rid = `hci_${h.id}_${ymd.replace(/-/g, '')}`;
+            const { habitCheckInRowId } = await import('@/lib/repositories/habits/habit-check-in');
+            const rid = habitCheckInRowId(h.id, ymd);
             await db.runAsync(
               `INSERT INTO habit_check_ins (
                 id, habit_id, record_date, count,
@@ -1185,6 +1186,9 @@ export async function initDatabase() {
 
   const { ensureReviewTemplateDefaults } = await import('@/lib/repositories/insights/review-template');
   await ensureReviewTemplateDefaults();
+
+  const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
+  await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);
 
   const repairResult = await repairLocalDatabase();
   if (__DEV__) {

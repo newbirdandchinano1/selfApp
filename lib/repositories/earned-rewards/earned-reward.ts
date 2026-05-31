@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
 import { parseCompletionRewardFromExtraData } from '@/lib/completion-reward/completion-reward-extra';
@@ -6,7 +7,7 @@ import { setWishItemFulfilled } from '../wish-list/wish-list';
 import type { EarnedRewardRow } from './earned-reward.types';
 
 export function createEarnedRewardId(): string {
-  return `erwd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  return makeTimestampEntityId('erwd_', 8);
 }
 
 async function resolveRewardLabel(reward: CompletionReward): Promise<{ label: string; wishItemId: string | null; kind: 'wish' | 'custom' } | null> {

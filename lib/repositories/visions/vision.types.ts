@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import type { SyncStatus } from '../../database.native';
 
 /** 与创建页「追踪方式」一致 */
@@ -49,7 +50,7 @@ export type VisionExtraPayload = {
 };
 
 export function newVisionSubGoalId(): string {
-  return `vsg_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+  return makeTimestampEntityId('vsg_', 8);
 }
 
 function normalizeLinkedProjectRef(raw: unknown): VisionLinkedProjectRef | undefined {

@@ -13,6 +13,10 @@ import {
   serializeErrorForDiagnostic,
   type CloudSyncProgress,
 } from '@/lib/cloud-sql-sync';
+import {
+  applyMysqlIdRemapToUploadBundle,
+  buildMysqlIdRemapForUpload,
+} from '@/lib/api-mysql-id';
 import { getDatabase } from '@/lib/database';
 import { dedupeRowsByPrimaryKey, readTablePrimaryKeyColumns } from '@/lib/sqlite-primary-key-dedupe';
 
@@ -176,6 +180,13 @@ export async function triggerApiFullUpload(opts?: {
     return { ok: false, reason: 'unsupported_platform', message, diagnosticText: message };
   }
 
+  const pkColsByTable = new Map<string, string[]>();
+  for (const table of insertOrder) {
+    pkColsByTable.set(table, await readTablePrimaryKeyColumns(db, table));
+  }
+  const idRemap = buildMysqlIdRemapForUpload(rowsByTable, pkColsByTable);
+  applyMysqlIdRemapToUploadBundle(rowsByTable, idRemap);
+
   let rowCount = 0;
   let createdCount = 0;
   let updatedCount = 0;
@@ -195,7 +206,7 @@ export async function triggerApiFullUpload(opts?: {
 
       const rawRows = rowsByTable.get(table) ?? [];
       const prepared = await prepareLocalRowsForUpload(table, rawRows, rowsByTable);
-      const pkCols = await readTablePrimaryKeyColumns(db, table);
+      const pkCols = pkColsByTable.get(table) ?? (await readTablePrimaryKeyColumns(db, table));
       const rows = dedupeRowsByPrimaryKey(prepared, pkCols);
       const uploadedRows: Record<string, unknown>[] = [];
 

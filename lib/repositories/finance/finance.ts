@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import type {
   CreateFinanceAccountInput,
@@ -232,7 +233,7 @@ export async function upsertFinanceAccountType(input: UpsertFinanceAccountTypeIn
     return existing.id;
   }
 
-  const id = `fat_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const id = makeTimestampEntityId('fat_', 8);
   const sortRow = await db.getFirstAsync<{ max_sort: number | null }>(
     `SELECT MAX(sort_order) AS max_sort FROM finance_account_types WHERE deleted_at IS NULL`
   );
@@ -421,7 +422,7 @@ export async function applyFinanceAccountBalanceCorrection(input: {
   const delta = target - current;
   if (Math.abs(delta) < FINANCE_BALANCE_ADJUST_EPS) return;
 
-  const id = `ft_badj_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const id = makeTimestampEntityId('ft_badj_', 6);
   const happened_at = new Date().toISOString();
   const extra = JSON.stringify({ reason: 'balance_correction' });
   const note = input.note ?? null;

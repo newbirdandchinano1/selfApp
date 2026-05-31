@@ -3,6 +3,7 @@ import { CompletionRewardBadge } from '@/components/completion-reward/Completion
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import {
   INBOX_PROJECT_CATEGORY_ID,
   INBOX_PROJECT_CATEGORY_NAME,
@@ -2627,7 +2628,7 @@ export default function TasksScreen() {
     if (quickTodoSaving) return;
     setQuickTodoSaving(true);
     try {
-      const id = `tsk_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const id = makeTimestampEntityId('tsk_', 8);
       await createTask({
         id,
         project_id: null,
@@ -2865,8 +2866,8 @@ export default function TasksScreen() {
   const standaloneShelvedCardBg = isDark ? '#252a34' : '#f0f2f7';
 
   const buildCategoryId = React.useCallback((scope: 'task' | 'project') => {
-    const prefix = scope === 'task' ? 'tc' : 'pc';
-    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const prefix = scope === 'task' ? 'tc_' : 'pc_';
+    return makeTimestampEntityId(prefix, 8);
   }, []);
 
   const scopedCategories = projectCategories;

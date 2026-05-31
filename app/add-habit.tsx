@@ -1,6 +1,7 @@
 import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
 import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
@@ -404,7 +405,7 @@ export default function AddHabitScreen() {
       });
       savedHabitId = habitId;
     } else {
-      const id = `hb_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      const id = makeTimestampEntityId('hb_', 8);
       await createHabit({
         id,
         context,

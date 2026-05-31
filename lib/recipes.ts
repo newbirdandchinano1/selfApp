@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '@/lib/database';
 import {
     beginCloudSqliteDirtyIgnoreBatch,
@@ -59,7 +60,7 @@ type RecipeRow = {
 };
 
 function newId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+  return makeTimestampEntityId(`${prefix}_`, 9);
 }
 
 function clampTitle(t: string): string {

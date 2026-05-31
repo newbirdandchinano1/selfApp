@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { createWishItem, getWishItemById, updateWishItem } from '@/lib/repositories/wish-list/wish-list';
 import {
   getWishSavingsPlanIdFromExtra,
@@ -34,7 +35,7 @@ function clampTargetAmount(value: number) {
 }
 
 function createSavingsPlanId() {
-  return `ssp_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return makeTimestampEntityId('ssp_', 8);
 }
 
 function toIsoDate(d: Date) {
@@ -86,7 +87,7 @@ export async function createLinkedSavingsPlanForWish(wish: WishItemRow): Promise
   }
 
   const dates = defaultSavingsPlanDates();
-  const planId = `ssp_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const planId = createSavingsPlanId();
   const target = Math.min(
     Math.max(0, Math.round(Number.isFinite(wish.price) ? wish.price : 0)),
     99_999_999,

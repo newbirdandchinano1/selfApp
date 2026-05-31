@@ -1,4 +1,5 @@
 import { Colors } from '@/constants/theme';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
@@ -659,7 +660,7 @@ export function useFinanceTransactionSheetController({
           const amountAbs = parsed.amount;
           const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
           await createFinanceTransaction({
-            id: `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            id: makeTimestampEntityId('ft_', 8),
             name: parsed.name,
             happened_at: happenedAtIso,
             account_id: account.id,
@@ -695,7 +696,7 @@ export function useFinanceTransactionSheetController({
     try {
       setIsSavingTransaction(true);
       await createFinanceTransaction({
-        id: `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        id: makeTimestampEntityId('ft_', 8),
         name: title,
         happened_at: selectedHappenedAt.toISOString(),
         account_id: selectedAccount.id,

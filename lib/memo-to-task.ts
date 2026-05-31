@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { deleteMemo, memoListPreviewTitle, type MemoItem } from '@/lib/memos';
 import { createTask } from '@/lib/repositories/tasks/task';
 
@@ -10,7 +11,7 @@ export type MemoToStandaloneTodoResult = {
 };
 
 function newTaskId(): string {
-  return `tsk_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return makeTimestampEntityId('tsk_', 8);
 }
 
 export function buildTodoTitleFromMemo(row: MemoItem): string {

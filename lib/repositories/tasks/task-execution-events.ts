@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import { TASK_OVERVIEW_EVENT_SCOPE_WHERE, TASK_OVERVIEW_SCOPE_WHERE } from './task-overview-scope';
 
@@ -9,7 +10,7 @@ export async function insertTaskExecutionEvent(
   taskTitle: string | null
 ): Promise<void> {
   const db = await getDatabase();
-  const id = `tevt_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const id = makeTimestampEntityId('tevt_', 8);
   await db.runAsync(
     `INSERT INTO task_execution_events (id, task_id, action, created_at, task_title) VALUES (?, ?, ?, datetime('now'), ?)`,
     [id, taskId, action, taskTitle?.trim() || null]

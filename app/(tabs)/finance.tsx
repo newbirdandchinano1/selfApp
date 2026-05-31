@@ -1,4 +1,5 @@
 import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { AppIconButton } from '@/components/ui';
 import { Layout, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
@@ -1691,7 +1692,7 @@ export default function FinanceScreen() {
         return;
       }
 
-      const pendingId = `pending_auto_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const pendingId = makeTimestampEntityId('pal_', 8);
       const maxAttempts = AUTO_LEDGER_MAX_ATTEMPTS;
       cancelledAutoLedgerIdsRef.current.delete(pendingId);
       setPendingAutoLedgers((prev) => [
@@ -1793,7 +1794,7 @@ export default function FinanceScreen() {
               return;
             }
 
-            const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+            const txnId = makeTimestampEntityId('ft_', 8);
             const happenedAtIso = new Date().toISOString();
             const noteLine =
               ledgerSource === 'shortcut_intent'
@@ -2064,7 +2065,7 @@ export default function FinanceScreen() {
   }, []);
 
   const newBudgetFixedExpenseId = React.useCallback(
-    () => `mfe_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    () => makeTimestampEntityId('mfe_', 8),
     [],
   );
 
@@ -2151,7 +2152,7 @@ export default function FinanceScreen() {
             }
           } else {
             const cat = expenseCategories[0];
-            const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+            const txnId = makeTimestampEntityId('ft_', 8);
             const amountAbs = item.amount;
             const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
             await createFinanceTransaction({
@@ -2629,7 +2630,7 @@ export default function FinanceScreen() {
           }
 
           try {
-            const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+            const txnId = makeTimestampEntityId('ft_', 8);
             await createFinanceTransaction({
               id: txnId,
               name: parsed.name,
@@ -2690,7 +2691,7 @@ export default function FinanceScreen() {
 
     try {
       setIsSavingTransaction(true);
-      const txnId = `ft_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const txnId = makeTimestampEntityId('ft_', 8);
       await createFinanceTransaction({
         id: txnId,
         name: title,

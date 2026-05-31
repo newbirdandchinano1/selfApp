@@ -1,4 +1,5 @@
 import { Colors } from '@/constants/theme';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { VisionSubGoalsSection } from '@/components/vision-sub-goals/VisionSubGoalsSection';
 import { createGoalDimension, listGoalDimensions } from '@/lib/repositories/goal-dimensions/goal-dimension';
@@ -198,7 +199,7 @@ export default function VisionCreateScreen() {
     }
     setNewDimBusy(true);
     try {
-      const id = `gd_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      const id = makeTimestampEntityId('gd_', 8);
       await createGoalDimension({ id, title: t });
       await loadGoalDimensions();
       setSelectedDimensionId(id);
@@ -300,7 +301,7 @@ export default function VisionCreateScreen() {
       progressCurrentStored = formatVisionAmountStored(parsed);
     }
 
-    const id = `vn_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+    const id = makeTimestampEntityId('vn_', 8);
     const track_kind = visionTrackKindFromCreateTab(trackType);
     const directionForDb = trackType === 0 || trackType === 2 ? direction : null;
 

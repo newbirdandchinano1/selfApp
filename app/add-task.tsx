@@ -14,6 +14,7 @@ import {
 } from '@/components/composer';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
@@ -540,7 +541,7 @@ export default function AddTaskScreen() {
             extra_data: extraPayload,
           });
         } else {
-          const id = `tsk_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+          const id = makeTimestampEntityId('tsk_', 8);
           await createTask({
             id,
             project_id: null,
@@ -566,7 +567,7 @@ export default function AddTaskScreen() {
     if (quickProjectId) {
       try {
         setIsSubmitting(true);
-        const id = `tsk_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        const id = makeTimestampEntityId('tsk_', 8);
         await createTask({
           id,
           project_id: quickProjectId,

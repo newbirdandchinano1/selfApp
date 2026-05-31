@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import { REVIEW_TEMPLATE_DEFAULTS } from './review-template-defaults';
 import type {
@@ -12,7 +13,7 @@ import type {
 } from './review-template.types';
 
 function newReviewId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  return makeTimestampEntityId(`${prefix}_`, 7);
 }
 
 export function createReviewDimensionId(): string {

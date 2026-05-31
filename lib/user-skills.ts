@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type * as SQLite from 'expo-sqlite';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '@/lib/database';
 import {
   beginCloudSqliteDirtyIgnoreBatch,
@@ -56,7 +57,7 @@ type MetaRow = {
 };
 
 function newId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  return makeTimestampEntityId('', 9).replace('_', '-');
 }
 
 export function createEmptyUserSkillsSnapshot(): UserSkillsSnapshot {

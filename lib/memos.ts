@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type * as SQLite from 'expo-sqlite';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '@/lib/database';
 import {
   beginCloudSqliteDirtyIgnoreBatch,
@@ -40,7 +41,7 @@ type MemoRow = {
 };
 
 function newId(): string {
-  return `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+  return makeTimestampEntityId('', 9);
 }
 
 function clampTitle(t: string): string {

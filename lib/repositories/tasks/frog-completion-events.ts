@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 
 export type FrogCompletionEventAction = 'completed' | 'reopened';
@@ -18,7 +19,7 @@ export async function insertFrogCompletionEvent(
   const ymd = assignedYmd.trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return;
   const db = await getDatabase();
-  const id = `fevt_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const id = makeTimestampEntityId('fevt_', 8);
   await db.runAsync(
     `INSERT INTO frog_completion_events (id, task_id, assigned_ymd, action, created_at, task_title)
      VALUES (?, ?, ?, ?, datetime('now'), ?)`,

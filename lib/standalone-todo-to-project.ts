@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { createProject, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
 import { assignProjectIdToTaskSubtree, getTaskById } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
@@ -13,7 +14,7 @@ export type UpgradeStandaloneTodoResult =
   | { ok: false; code: UpgradeStandaloneTodoErrorCode; message: string };
 
 function buildProjectId(): string {
-  return `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  return makeTimestampEntityId('p_', 8);
 }
 
 function buildProjectExtraDataFromTask(task: TaskRow): string | null {

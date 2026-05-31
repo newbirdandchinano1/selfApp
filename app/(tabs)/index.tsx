@@ -7,6 +7,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Directory, File, Paths } from 'expo-file-system';
 import React from 'react';
 
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 
@@ -415,7 +416,7 @@ async function appendManualIntakeToDay(params: {
 }): Promise<void> {
   const { userId, recordDateYmd, type, amount, quickAddKey, targetHydrationMl, targetProteinG, targetCarbohydrateG, targetSodiumMg } = params;
   if (!Number.isFinite(amount) || amount <= 0) return;
-  const id = `h_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  const id = makeTimestampEntityId('h_', 8);
   await createHealthRecord({
     id,
     user_id: userId,
@@ -1025,7 +1026,7 @@ export default function HealthScreen() {
       if (p + c + s <= 0) return false;
       const ymd = formatLocalYmd(selectedDate);
       try {
-        const id = `h_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        const id = makeTimestampEntityId('h_', 8);
         const storedImageUri = await copyIntakePhotoToDocuments(id, sourceImageUri);
         await createHealthRecord({
           id,
@@ -1074,7 +1075,7 @@ export default function HealthScreen() {
       if (h + p + c + s <= 0) return false;
       const ymd = formatLocalYmd(selectedDate);
       try {
-        const id = `h_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        const id = makeTimestampEntityId('h_', 8);
         await createHealthRecord({
           id,
           user_id: user.id,
@@ -1168,7 +1169,7 @@ export default function HealthScreen() {
         return;
       }
       setSheetOpen(false);
-      const pendingId = `pending_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+      const pendingId = makeTimestampEntityId('pending_', 7);
       if (payload.mode === 'ai') {
         const text = payload.text.trim();
         if (!text) return;

@@ -1,3 +1,4 @@
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import { CASH_FLOW_EMPTY_STATE } from './cash-flow.defaults';
 import type {
@@ -209,13 +210,13 @@ export async function persistCashFlowState(state: CashFlowState) {
 }
 
 export function newCashFlowIncomeId() {
-  return `cfi_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return makeTimestampEntityId('cfi_', 8);
 }
 
 export function newCashFlowHoldingId() {
-  return `cfh_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return makeTimestampEntityId('cfh_', 8);
 }
 
 export function newExpenseFlowLineId() {
-  return `cfe_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return makeTimestampEntityId('cfe_', 8);
 }

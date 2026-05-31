@@ -1,4 +1,5 @@
 import { AppSettingKey, getAppSettingRaw, setAppSetting } from '@/lib/app-settings-store';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 
 export type WishCategoryDef = {
   id: string;
@@ -160,7 +161,7 @@ export async function saveHiddenDefaultCategoryIds(ids: string[]): Promise<void>
 }
 
 export function createCustomCategoryId(): string {
-  return `custom:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 9)}`;
+  return makeTimestampEntityId('custom:', 7);
 }
 
 /** 与内置或其它自定义重名时返回提示文案，否则 null */
