@@ -33,26 +33,17 @@ export async function getProjects() {
 }
 
 export async function isProjectNameDuplicate(name: string, excludeId?: string) {
-  const db = await getDatabase();
-  const normalizedName = name.trim();
+  const normalizedName = name.trim().toLowerCase();
   if (!normalizedName) return false;
 
-  const row = excludeId
-    ? await db.getFirstAsync<{ id: string }>(
-        `SELECT id FROM projects
-         WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
-           AND id != ?
-         LIMIT 1`,
-        [normalizedName, excludeId]
-      )
-    : await db.getFirstAsync<{ id: string }>(
-        `SELECT id FROM projects
-         WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
-         LIMIT 1`,
-        [normalizedName]
-      );
-
-  return !!row;
+  const rows = await readApiTable<ProjectRow>('projects', { offlineFallback: false });
+  return rows.some(
+    p =>
+      p.id !== excludeId &&
+      String(p.name ?? '')
+        .trim()
+        .toLowerCase() === normalizedName,
+  );
 }
 
 export async function updateProject(id: string, input: UpdateProjectInput) {

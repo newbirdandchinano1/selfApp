@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { VisionSubGoalsSection } from '@/components/vision-sub-goals/VisionSubGoalsSection';
 import { createGoalDimension, listGoalDimensions } from '@/lib/repositories/goal-dimensions/goal-dimension';
 import type { GoalDimensionRow } from '@/lib/repositories/goal-dimensions/goal-dimension.types';
@@ -86,7 +87,10 @@ type BackgroundOption =
     }
   | { kind: 'custom' };
 
+const PAGE_API_KEY = 'vision-create';
+
 export default function VisionCreateScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const params = useLocalSearchParams<{ dimensionId?: string }>();
   const dimensionIdFromRoute =
@@ -150,13 +154,15 @@ export default function VisionCreateScreen() {
   const [newDimBusy, setNewDimBusy] = useState(false);
 
   const loadGoalDimensions = useCallback(async () => {
-    try {
-      const rows = await listGoalDimensions();
-      setGoalDimensions(rows);
-    } catch {
-      setGoalDimensions([]);
-    }
-  }, []);
+    await wrapLoad(async () => {
+      try {
+        const rows = await listGoalDimensions();
+        setGoalDimensions(rows);
+      } catch {
+        setGoalDimensions([]);
+      }
+    });
+  }, [wrapLoad]);
 
   useFocusEffect(
     useCallback(() => {

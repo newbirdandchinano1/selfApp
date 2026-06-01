@@ -50,6 +50,7 @@ import {
 import type { SavingsPlanRow } from '@/lib/repositories/savings-plan/savings-plan.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
@@ -986,10 +987,13 @@ function PlanFormSheet({
   );
 }
 
+const PAGE_API_KEY = 'savings-plan';
+
 export default function SavingsPlanScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, shadows } = useAppTheme();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
 
   const [planRows, setPlanRows] = React.useState<SavingsPlanRow[]>([]);
   const [depositByPlanId, setDepositByPlanId] = React.useState<Record<string, number>>({});
@@ -1007,6 +1011,7 @@ export default function SavingsPlanScreen() {
   const [topProgressMode, setTopProgressMode] = React.useState<TopOverviewProgressMode>('total');
 
   const refreshPlansAndDeposits = React.useCallback(async () => {
+    await wrapLoad(async () => {
     try {
       const [rows, settings] = await Promise.all([getSavingsPlans(), loadSavingsOverviewSettings()]);
       setPlanRows(rows);
@@ -1026,7 +1031,8 @@ export default function SavingsPlanScreen() {
       setWishByPlanId({});
       setTotalDeposits(0);
     }
-  }, []);
+    });
+  }, [wrapLoad]);
 
   React.useEffect(() => {
     void refreshPlansAndDeposits();
@@ -1159,7 +1165,7 @@ export default function SavingsPlanScreen() {
 
   const confirmDeletePlan = React.useCallback(
     (row: SavingsPlanRow) => {
-      Alert.alert('删除计划', `确定删除「${row.name}」吗？删除后无法恢复。`, [
+      Alert.alert('删除计划', `确定删除「${row.name}」？关联的心愿条目将一并删除，删除后无法恢复。`, [
         { text: '取消', style: 'cancel' },
         {
           text: '删除',

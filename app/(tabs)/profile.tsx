@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { getRollingSevenDayRange } from '@/lib/repositories/insights/weekly-review';
 import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
 import { getWeeklyReviewConfiguredWeekday, WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/lib/weekly-review-settings';
@@ -68,9 +69,12 @@ function wishListIconForRow(row: WishItemRow): ComponentProps<typeof MaterialIco
   return 'card-giftcard';
 }
 
+const PAGE_API_KEY = 'tabs/profile';
+
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const colorScheme = useColorScheme();
   const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
   const theme = Colors[scheme];
@@ -256,12 +260,15 @@ export default function ProfileScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      loadUser();
-      void loadHealthCardPreview();
-      void loadProfileVisions();
-      void loadProfileWishItems();
-      void loadWeeklyJournal();
+      void wrapLoad(async () => {
+        loadUser();
+        await loadHealthCardPreview();
+        await loadProfileVisions();
+        await loadProfileWishItems();
+        await loadWeeklyJournal();
+      });
     }, [
+      wrapLoad,
       loadUser,
       loadHealthCardPreview,
       loadProfileVisions,

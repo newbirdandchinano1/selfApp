@@ -1,9 +1,9 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
-  getHealthIntakeTotalsForUserOnDate,
-  getHealthRecordsByUserId,
-  getLatestHealthRecordForUserOnDate,
+  buildUserHealthCalendarSnapshot,
+  getHealthDayMetricsForUser,
 } from '@/lib/repositories/health/health';
 import { getDefaultUser } from '@/lib/repositories/users/user';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -63,27 +63,6 @@ function addDays(base: Date, delta: number) {
   return normalizeDate(next);
 }
 
-function getDayCompletionLevel(params: {
-  hydration: number;
-  hydrationTarget: number;
-  protein: number;
-  proteinTarget: number;
-  carbohydrate: number;
-  carbohydrateTarget: number;
-  sodium: number;
-  sodiumTarget: number;
-}): 'full' | 'partial' | 'empty' {
-  const hMet = params.hydrationTarget > 0 ? params.hydration >= params.hydrationTarget : false;
-  const pMet = params.proteinTarget > 0 ? params.protein >= params.proteinTarget : false;
-  const cMet = params.carbohydrateTarget > 0 ? params.carbohydrate >= params.carbohydrateTarget : false;
-  // 钠是上限指标：小于等于目标即达标，超出目标为未达标。
-  const sMet = params.sodiumTarget > 0 ? params.sodium <= params.sodiumTarget : false;
-  const metCount = [hMet, pMet, cMet, sMet].filter(Boolean).length;
-  if (metCount >= 4) return 'full';
-  if (metCount > 0 || params.hydration > 0 || params.protein > 0 || params.carbohydrate > 0 || params.sodium > 0) return 'partial';
-  return 'empty';
-}
-
 function buildTimelineData(
   today: Date,
   startDate: Date,
@@ -115,7 +94,10 @@ function buildTimelineData(
   return items;
 }
 
+const PAGE_API_KEY = 'health-calendar';
+
 export default function HealthCalendarScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const scheme = useColorScheme();
   const theme = Colors[scheme ?? 'light'];
@@ -129,62 +111,42 @@ export default function HealthCalendarScreen() {
   const [loading, setLoading] = React.useState(true);
   const listRef = React.useRef<FlatList<TimelineItem>>(null);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      let cancelled = false;
-      const load = async () => {
+  const reloadCalendar = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
         setLoading(true);
-        const user = await getDefaultUser();
-        if (!user?.id) {
-          if (!cancelled) {
+        try {
+          const user = await getDefaultUser();
+          if (!user?.id) {
             const fallback = buildTimelineData(today, addDays(today, -29), new Set<string>(), new Map());
             setTimelineData(fallback);
             setSelectedKey(null);
             setSelectedMetrics(null);
-            setLoading(false);
+            return false;
           }
-          return;
-        }
 
-        const records = await getHealthRecordsByUserId(user.id);
-        const hasRecordDateSet = new Set(records.map((r) => r.record_date));
-        const uniqueDates = Array.from(hasRecordDateSet);
-        const completionEntries = await Promise.all(
-          uniqueDates.map(async (ymd) => {
-            const [totals, latest] = await Promise.all([
-              getHealthIntakeTotalsForUserOnDate(user.id, ymd),
-              getLatestHealthRecordForUserOnDate(user.id, ymd),
-            ]);
-            if (!totals || !latest) return [ymd, 'partial'] as const;
-            const level = getDayCompletionLevel({
-              hydration: totals.hydration,
-              hydrationTarget: latest.target_hydration,
-              protein: totals.protein,
-              proteinTarget: latest.target_protein,
-              carbohydrate: totals.carbohydrate,
-              carbohydrateTarget: latest.target_carbohydrate,
-              sodium: totals.sodium,
-              sodiumTarget: latest.target_sodium,
-            });
-            return [ymd, level === 'full' ? 'full' : 'partial'] as const;
-          })
-        );
-        const completionMap = new Map<string, 'full' | 'partial'>(completionEntries);
-        const earliestDate = records.length > 0 ? normalizeDate(new Date(records[records.length - 1].record_date)) : addDays(today, -29);
-        const startDate = earliestDate > today ? today : earliestDate;
-        const nextTimeline = buildTimelineData(today, startDate, hasRecordDateSet, completionMap);
+          const applySnapshot = async (opts?: { localOnly?: boolean }) => {
+            const { records, completionMap, startDate } = await buildUserHealthCalendarSnapshot(user.id, today, opts);
+            const hasRecordDateSet = new Set(records.map((r) => r.record_date));
+            const nextTimeline = buildTimelineData(today, startDate, hasRecordDateSet, completionMap);
+            setTimelineData(nextTimeline);
+            setSelectedKey((prev) => prev ?? formatLocalYmd(today));
+          };
 
-        if (!cancelled) {
-          setTimelineData(nextTimeline);
-          setSelectedKey((prev) => prev ?? formatLocalYmd(today));
+          await applySnapshot();
+          return true;
+        } finally {
           setLoading(false);
         }
-      };
-      void load();
-      return () => {
-        cancelled = true;
-      };
-    }, [today])
+      }, forceApi);
+    },
+    [today, wrapLoad],
+  );
+
+  useFocusEffect(
+    React.useCallback(() => {
+      void reloadCalendar().catch((e) => console.warn('刷新健康日历失败', e));
+    }, [reloadCalendar]),
   );
 
   React.useEffect(() => {
@@ -199,25 +161,28 @@ export default function HealthCalendarScreen() {
         if (!cancelled) setSelectedMetrics(null);
         return;
       }
-      const [totals, latest] = await Promise.all([
-        getHealthIntakeTotalsForUserOnDate(user.id, selectedKey),
-        getLatestHealthRecordForUserOnDate(user.id, selectedKey),
-      ]);
-      if (cancelled) return;
-      if (!totals) {
-        setSelectedMetrics(null);
-        return;
+      try {
+        const metrics = await getHealthDayMetricsForUser(user.id, selectedKey);
+        if (cancelled) return;
+        if (!metrics) {
+          setSelectedMetrics(null);
+          return;
+        }
+        const { totals, latest } = metrics;
+        setSelectedMetrics({
+          hydration: totals.hydration,
+          protein: totals.protein,
+          carbohydrate: totals.carbohydrate,
+          sodium: totals.sodium,
+          hydrationTarget: Math.max(0, latest.target_hydration ?? 0),
+          proteinTarget: Math.max(0, latest.target_protein ?? 0),
+          carbohydrateTarget: Math.max(0, latest.target_carbohydrate ?? 0),
+          sodiumTarget: Math.max(0, latest.target_sodium ?? 0),
+        });
+      } catch (error) {
+        console.warn('加载选中日指标失败', error);
+        if (!cancelled) setSelectedMetrics(null);
       }
-      setSelectedMetrics({
-        hydration: totals.hydration,
-        protein: totals.protein,
-        carbohydrate: totals.carbohydrate,
-        sodium: totals.sodium,
-        hydrationTarget: Math.max(0, latest?.target_hydration ?? 0),
-        proteinTarget: Math.max(0, latest?.target_protein ?? 0),
-        carbohydrateTarget: Math.max(0, latest?.target_carbohydrate ?? 0),
-        sodiumTarget: Math.max(0, latest?.target_sodium ?? 0),
-      });
     };
     void loadSelectedMetrics();
     return () => {

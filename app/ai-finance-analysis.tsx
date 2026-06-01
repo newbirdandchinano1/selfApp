@@ -1,4 +1,5 @@
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { buildCashFlowAiSummaryText, calculateCashFlowMetrics } from '@/lib/cash-flow/cash-flow-metrics';
 import { loadCashFlowState } from '@/lib/repositories/cash-flow/cash-flow';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
@@ -28,10 +29,13 @@ const AI_PAGE_FALLBACK_INSIGHTS: AiFinanceDashboardPayload['insights'] = [
   },
 ];
 
+const PAGE_API_KEY = 'ai-finance-analysis';
+
 export default function AiFinanceAnalysisScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
 
   const bg = colors.background;
   const surface = colors.surface;
@@ -89,6 +93,8 @@ export default function AiFinanceAnalysisScreen() {
   const loadMonthlyOverview = React.useCallback(async () => {
     setBootReady(false);
     try {
+      await wrapLoad(async () => {
+      try {
       const [transactions, categories] = await Promise.all([getFinanceTransactions(), getFinanceFlowCategories()]);
       const now = new Date();
       const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -217,10 +223,12 @@ export default function AiFinanceAnalysisScreen() {
       setSelectedSurplusForecastIndex(5);
       setSelectedIncomeForecastIndex(5);
       setCashFlowAiBlock(null);
+    }
+      });
     } finally {
       setBootReady(true);
     }
-  }, []);
+  }, [wrapLoad]);
 
   const savingsForecastChart = React.useMemo(() => {
     const points = savingsForecastSeries.length ? savingsForecastSeries : Array(12).fill(0);

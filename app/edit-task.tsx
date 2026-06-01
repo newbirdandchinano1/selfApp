@@ -316,7 +316,10 @@ function formSnapshotsEqual(a: EditTaskFormSnapshot, b: EditTaskFormSnapshot): b
 
 const TITLE_MAX_LENGTH = 30;
 
+const PAGE_API_KEY = 'edit-task';
+
 export default function EditTaskScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const navigation = useNavigation();
   const isFocused = useIsFocused();
@@ -427,14 +430,16 @@ export default function EditTaskScreen() {
   const loadSubtasks = React.useCallback(async () => {
     if (!taskId) return;
     try {
-      const nodes = await getChildTasksByParentTaskId(taskId);
-      const rows = nodes.map((n) => n as unknown as TaskRow);
-      setSubtasks(rows.map(mapTaskRowToSubtask));
+      await wrapLoad(async () => {
+        const nodes = await getChildTasksByParentTaskId(taskId);
+        const rows = nodes.map((n) => n as unknown as TaskRow);
+        setSubtasks(rows.map(mapTaskRowToSubtask));
+      });
     } catch (error) {
       console.warn('加载子任务失败', error);
       setSubtasks([]);
     }
-  }, [taskId]);
+  }, [taskId, wrapLoad]);
 
   const readScheduleResult = React.useCallback(() => {
     const picked = consumeSchedulePickerResult(scheduleSource);

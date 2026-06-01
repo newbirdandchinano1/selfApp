@@ -6,16 +6,25 @@ import {
   ApiRowUploadSkippedError,
   rowPrimaryKeyValue,
   upsertProjectCategoriesReferencedByProjects,
+  upsertFinanceAccountsReferencedByTransactions,
+  upsertMemoDimensionsReferencedByMemos,
+  upsertHabitsReferencedByCheckIns,
   upsertProjectsReferencedByTasks,
   upsertRowToApi,
   upsertTaskCategoriesReferencedByTasks,
 } from '@/lib/api-row-upsert';
+import {
+  applyMysqlIdRemapToUploadBundle,
+  buildMysqlIdRemapForUpload,
+} from '@/lib/api-mysql-id';
 import {
   beginCloudSqliteDirtyIgnoreBatch,
   endCloudSqliteDirtyIgnoreBatch,
 } from '@/lib/cloud-sql-dirty-track';
 import {
   ensureProjectCategoryRefsForApiUpload,
+  ensureFinanceAccountRefsForApiUpload,
+  ensureMemoDimensionRefsForApiUpload,
   ensureTaskCategoryMirrorForApiUpload,
   prepareLocalRowsForUpload,
   readLocalForeignKeyRefs,
@@ -43,8 +52,12 @@ let apiPersistTimer: ReturnType<typeof setTimeout> | null = null;
 let apiPushDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let apiPushInFlight = false;
 
+const SQLITE_RESERVED_TABLE_NAMES = new Set(['on', 'off', 'begin', 'end', 'commit', 'rollback']);
+
 function isSafeTableName(name: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false;
+  if (SQLITE_RESERVED_TABLE_NAMES.has(name.toLowerCase())) return false;
+  return true;
 }
 
 function quoteIdent(name: string): string {
@@ -95,6 +108,8 @@ export async function hydrateApiDirtyFromStorage(): Promise<void> {
         }
       }
     }
+    apiDirtyTables.delete('ON');
+    apiDirtyTables.delete('on');
     if (apiDirtyTables.size > 0) scheduleApiPushDebounced();
   } catch {
     /* ignore */
@@ -108,6 +123,20 @@ export function peekApiDirtyTables(): string[] {
 export function clearApiDirtyTables(tables: Iterable<string>): void {
   for (const t of tables) apiDirtyTables.delete(t);
   void persistApiDirtyNow();
+}
+
+/** 仅清除已无待同步行的脏表标记 */
+async function clearApiDirtyTablesWithoutPending(tables: Iterable<string>): Promise<void> {
+  const toClear: string[] = [];
+  for (const table of tables) {
+    if (REST_SKIP_TABLES.has(table)) {
+      toClear.push(table);
+      continue;
+    }
+    const pending = await readPendingRowsForTable(table);
+    if (pending.length === 0) toClear.push(table);
+  }
+  if (toClear.length > 0) clearApiDirtyTables(toClear);
 }
 
 async function tableHasSyncStatusColumn(table: string): Promise<boolean> {
@@ -180,7 +209,6 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
     return { insertOrder: [], rowsByTable: new Map() };
   }
 
-  const insertOrder = await resolveApiPushInsertOrder(filtered);
   const rowsByTable = new Map<string, Record<string, unknown>[]>();
   const db = await getDatabase();
 
@@ -216,8 +244,20 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
 
   ensureProjectCategoryRefsForApiUpload(rowsByTable);
   ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+  await ensureFinanceAccountRefsForApiUpload(rowsByTable);
+  await ensureMemoDimensionRefsForApiUpload(rowsByTable);
 
-  const effectiveOrder = insertOrder.filter(t => (rowsByTable.get(t)?.length ?? 0) > 0);
+  const seedWithRefs = [...filtered];
+  if ((rowsByTable.get('finance_accounts')?.length ?? 0) > 0 && !seedWithRefs.includes('finance_accounts')) {
+    seedWithRefs.push('finance_accounts');
+  }
+  if ((rowsByTable.get('memo_dimensions')?.length ?? 0) > 0 && !seedWithRefs.includes('memo_dimensions')) {
+    seedWithRefs.push('memo_dimensions');
+  }
+
+  const effectiveOrder = (await resolveApiPushInsertOrder(seedWithRefs)).filter(
+    t => (rowsByTable.get(t)?.length ?? 0) > 0,
+  );
   return { insertOrder: effectiveOrder, rowsByTable };
 }
 
@@ -227,6 +267,21 @@ export function scheduleApiPushDebounced(): void {
     apiPushDebounceTimer = null;
     void pushApiDirtyTablesIfNeeded();
   }, INCREMENTAL_PUSH_DELAY_MS);
+}
+
+/** 取消 debounce 并立即推送脏表（财务记账等需即时入库后端的场景） */
+export async function flushApiDirtyTablesNow(opts?: { rethrow?: boolean }): Promise<void> {
+  if (apiPushDebounceTimer) {
+    clearTimeout(apiPushDebounceTimer);
+    apiPushDebounceTimer = null;
+  }
+  const maxWaitMs = 30000;
+  const start = Date.now();
+  while (apiPushInFlight) {
+    if (Date.now() - start > maxWaitMs) break;
+    await new Promise<void>(resolve => setTimeout(resolve, 50));
+  }
+  await pushApiDirtyTablesIfNeeded(opts);
 }
 
 /** 启动时扫描仍有待同步行的表并标记脏表 */
@@ -245,7 +300,7 @@ export async function markAllPendingTablesDirty(): Promise<void> {
 }
 
 /** 脏表增量：将本地待同步行推送到 REST 后端 */
-export async function pushApiDirtyTablesIfNeeded(): Promise<void> {
+export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): Promise<void> {
   if (apiPushInFlight) return;
   if (isSilentCloudRestoreInFlight()) {
     scheduleApiPushDebounced();
@@ -262,6 +317,7 @@ export async function pushApiDirtyTablesIfNeeded(): Promise<void> {
     await ensureApiLoggedIn();
   } catch (e) {
     if (__DEV__) console.warn('[api incremental] 登录失败', e);
+    if (opts?.rethrow) throw e;
     scheduleApiPushDebounced();
     return;
   }
@@ -270,13 +326,20 @@ export async function pushApiDirtyTablesIfNeeded(): Promise<void> {
   try {
     const { insertOrder, rowsByTable } = await collectPendingDataForApiPush(dirtyList);
     if (insertOrder.length === 0) {
-      clearApiDirtyTables(dirtyList);
+      await clearApiDirtyTablesWithoutPending(dirtyList);
       return;
     }
 
     const pkColsByTable = new Map<string, string[]>();
     for (const table of insertOrder) {
       pkColsByTable.set(table, await readTablePrimaryKeyColumns(db, table));
+    }
+
+    const idRemap = buildMysqlIdRemapForUpload(rowsByTable, pkColsByTable);
+    applyMysqlIdRemapToUploadBundle(rowsByTable, idRemap);
+    if (idRemap.size > 0) {
+      const { applyEntityIdRemapToLocalDatabase } = await import('@/lib/entity-id-migrate');
+      await applyEntityIdRemapToLocalDatabase(idRemap);
     }
 
     const uploadedPkByTable = new Map<string, Set<string>>();
@@ -310,6 +373,26 @@ export async function pushApiDirtyTablesIfNeeded(): Promise<void> {
         );
       }
 
+      if (table === 'memos') {
+        await upsertMemoDimensionsReferencedByMemos(
+          rows,
+          rowsByTable,
+          pkColsByTable,
+          uploadedPkByTable,
+          fkRefsByTable,
+        );
+      }
+
+      if (table === 'finance_transactions') {
+        await upsertFinanceAccountsReferencedByTransactions(
+          rows,
+          rowsByTable,
+          pkColsByTable,
+          uploadedPkByTable,
+          fkRefsByTable,
+        );
+      }
+
       if (table === 'tasks') {
         await upsertTaskCategoriesReferencedByTasks(
           rows,
@@ -319,6 +402,16 @@ export async function pushApiDirtyTablesIfNeeded(): Promise<void> {
           fkRefsByTable,
         );
         await upsertProjectsReferencedByTasks(
+          rows,
+          rowsByTable,
+          pkColsByTable,
+          uploadedPkByTable,
+          fkRefsByTable,
+        );
+      }
+
+      if (table === 'habit_check_ins') {
+        await upsertHabitsReferencedByCheckIns(
           rows,
           rowsByTable,
           pkColsByTable,
@@ -352,10 +445,11 @@ export async function pushApiDirtyTablesIfNeeded(): Promise<void> {
       await markLocalRowsSynced(table, pkCols, uploadedRows);
     }
 
-    clearApiDirtyTables(dirtyList);
+    await clearApiDirtyTablesWithoutPending(dirtyList);
     await setLastApiIncrementalSyncAtIso(new Date().toISOString());
   } catch (e) {
     if (__DEV__) console.warn('[api incremental] 推送失败', e);
+    if (opts?.rethrow) throw e;
     scheduleApiPushDebounced();
   } finally {
     apiPushInFlight = false;

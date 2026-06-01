@@ -25,6 +25,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   ActivityIndicator,
   Alert,
@@ -43,6 +44,7 @@ import { draftFromRow, validateAndBuildVisionUpdate, type VisionEditDraft } from
 import { VisionDetailEditor } from './vision-detail-editor';
 
 const visionPrimary = '#0058be';
+const PAGE_API_KEY = 'vision-detail';
 
 function KindBadge({ kind, isDark }: { kind: VisionKind; isDark: boolean }) {
   const label: Record<VisionKind, string> = {
@@ -182,6 +184,7 @@ export default function VisionDetailScreen() {
   const [editDraft, setEditDraft] = useState<VisionEditDraft | null>(null);
   const [saveBusy, setSaveBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
 
   const exitEditMode = useCallback(() => {
     setIsEditing(false);
@@ -214,7 +217,7 @@ export default function VisionDetailScreen() {
       }
       setRecord(undefined);
       setDbRow(null);
-      void (async () => {
+      void wrapLoad(async () => {
         try {
           const row = await getVisionRowById(id);
           if (!alive) return;
@@ -231,7 +234,7 @@ export default function VisionDetailScreen() {
             setDbRow(null);
           }
         }
-      })();
+      });
       return () => {
         alive = false;
       };

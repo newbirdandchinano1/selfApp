@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerResult } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
@@ -310,9 +311,12 @@ function TaskTreeCard({
   );
 }
 
+const PAGE_API_KEY = 'task-detail';
+
 export default function TaskDetailScreen() {
   const { id: idParam } = useLocalSearchParams<{ id?: string | string[] }>();
   const taskId = normalizeRouteParam(idParam);
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const navigation = useNavigation();
   const isFocused = useIsFocused();
@@ -441,11 +445,16 @@ export default function TaskDetailScreen() {
     }
     const t = await getTaskTreeByRootTaskId(taskId);
     setTree(t);
-  }, [taskId]);
+  }, [router, taskId]);
 
-  React.useEffect(() => {
-    loadTaskDetail().catch((e) => console.warn('加载任务详情失败', e));
-  }, [loadTaskDetail]);
+  const reloadTaskDetail = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
+        await loadTaskDetail();
+      }, forceApi);
+    },
+    [loadTaskDetail, wrapLoad],
+  );
 
   React.useEffect(() => {
     readScheduleResult();
@@ -454,7 +463,8 @@ export default function TaskDetailScreen() {
   useFocusEffect(
     React.useCallback(() => {
       readScheduleResult();
-    }, [readScheduleResult])
+      void reloadTaskDetail().catch((e) => console.warn('加载任务详情失败', e));
+    }, [readScheduleResult, reloadTaskDetail]),
   );
 
   const persistTaskDetail = React.useCallback(async (): Promise<boolean> => {

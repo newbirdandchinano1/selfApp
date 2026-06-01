@@ -115,6 +115,12 @@ export async function clearApiAuthToken(): Promise<void> {
   } catch {
     /* ignore */
   }
+  try {
+    const { resetPageApiSession } = await import('@/lib/page-api-session');
+    resetPageApiSession();
+  } catch {
+    /* ignore */
+  }
 }
 
 export async function hasCustomApiCredentials(): Promise<boolean> {

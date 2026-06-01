@@ -1,6 +1,7 @@
 import { AppCard, ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import {
   loadFinanceDefaultAccounts,
@@ -19,8 +20,11 @@ import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-nati
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle } from 'react-native-svg';
 
+const PAGE_API_KEY = 'assets';
+
 export default function AssetsScreen() {
   const router = useRouter();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const insets = useSafeAreaInsets();
   const { colors, isDark, shadows } = useAppTheme();
 
@@ -64,21 +68,23 @@ export default function AssetsScreen() {
   );
 
   const loadAccounts = React.useCallback(async () => {
-    try {
-      const [rows, typeRows, rawDefaults] = await Promise.all([
-        getFinanceAccountsWithBalance(),
-        getFinanceAccountTypes(),
-        loadFinanceDefaultAccounts(),
-      ]);
-      setAccounts(rows);
-      setAccountTypes(typeRows);
-      setDefaultAccounts(sanitizeFinanceDefaultAccounts(rawDefaults, rows));
-    } catch (e) {
-      console.warn('Failed to load finance accounts:', e);
-      setAccounts([]);
-      setAccountTypes([]);
-    }
-  }, []);
+    await wrapLoad(async () => {
+      try {
+        const [rows, typeRows, rawDefaults] = await Promise.all([
+          getFinanceAccountsWithBalance(),
+          getFinanceAccountTypes(),
+          loadFinanceDefaultAccounts(),
+        ]);
+        setAccounts(rows);
+        setAccountTypes(typeRows);
+        setDefaultAccounts(sanitizeFinanceDefaultAccounts(rawDefaults, rows));
+      } catch (e) {
+        console.warn('Failed to load finance accounts:', e);
+        setAccounts([]);
+        setAccountTypes([]);
+      }
+    });
+  }, [wrapLoad]);
 
   const saveDefaultAccount = React.useCallback(
     async (target: 'payment' | 'income', accountId: string | null) => {

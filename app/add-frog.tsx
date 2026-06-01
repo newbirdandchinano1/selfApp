@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { clearFrogAssignedOn, getFrogAssignedOn } from '@/lib/frog-assignment';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { isLogicalDayInYmdRange } from '@/lib/repositories/projects/project-schedule-status';
@@ -460,7 +461,10 @@ function buildAssignedTodayItems(
     });
 }
 
+const PAGE_API_KEY = 'add-frog';
+
 export default function AddFrogScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
@@ -482,7 +486,9 @@ export default function AddFrogScreen() {
   const loadEligibleTasks = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [rows, projectRows] = await Promise.all([getTasks(), getProjects()]);
+      await wrapLoad(async () => {
+        try {
+          const [rows, projectRows] = await Promise.all([getTasks(), getProjects()]);
       const treeMap: Record<string, TaskTreeNode[]> = {};
       await Promise.all(
         projectRows.map(async (p) => {
@@ -511,18 +517,20 @@ export default function AddFrogScreen() {
         });
         return next;
       });
-    } catch (e) {
-      console.warn('加载青蛙候选任务失败', e);
-      const empty = groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {});
-      setSections(empty.sections);
-      setAssignedToday(empty.assignedToday);
-      setSelected({});
-      setTaskMap({});
-      setLockedProjectIds(new Set());
+        } catch (e) {
+          console.warn('加载青蛙候选任务失败', e);
+          const empty = groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {});
+          setSections(empty.sections);
+          setAssignedToday(empty.assignedToday);
+          setSelected({});
+          setTaskMap({});
+          setLockedProjectIds(new Set());
+        }
+      });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [wrapLoad]);
 
   useFocusEffect(
     React.useCallback(() => {

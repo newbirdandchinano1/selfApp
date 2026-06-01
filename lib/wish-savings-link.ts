@@ -10,6 +10,7 @@ import {
   deleteSavingsPlan,
   getSavingsPlanById,
   getSavingsPlans,
+  SAVINGS_PLAN_MAX_TARGET_AMOUNT,
   updateSavingsPlan,
 } from '@/lib/repositories/savings-plan/savings-plan';
 import {
@@ -51,6 +52,17 @@ function addCalendarDays(d: Date, days: number) {
   return x;
 }
 
+function isSavingsPlanDateSpanValid(startIso: string, endIso: string): boolean {
+  if (endIso < startIso) return false;
+  const [ys, ms, ds] = startIso.split('-').map(x => parseInt(x, 10));
+  const [ye, me, de] = endIso.split('-').map(x => parseInt(x, 10));
+  if (!ys || !ms || !ds || !ye || !me || !de) return false;
+  const spanDays = Math.round(
+    (new Date(ye, me - 1, de).getTime() - new Date(ys, ms - 1, ds).getTime()) / 86400000,
+  );
+  return spanDays >= 1;
+}
+
 export function defaultSavingsPlanDates() {
   const start = new Date();
   const end = addCalendarDays(start, 90);
@@ -76,6 +88,35 @@ async function linkWishAndPlan(wishId: string, planId: string) {
   await updateSavingsPlan(planId, {
     extra_data: setSavingsWishItemIdInExtra(plan.extra_data, wishId),
   });
+}
+
+/** 解析计划关联的心愿 id（读 plan.extra，或反向查心愿上的 savings_plan_id） */
+export async function resolveLinkedWishIdForPlan(
+  plan: Pick<SavingsPlanRow, 'id' | 'extra_data'>,
+): Promise<string | null> {
+  const fromPlan = getLinkedWishItemId(plan);
+  if (fromPlan) return fromPlan;
+
+  const { listWishItems } = await import('@/lib/repositories/wish-list/wish-list');
+  const wishes = await listWishItems();
+  for (const w of wishes) {
+    if (getLinkedSavingsPlanId(w) === plan.id) return w.id;
+  }
+  return null;
+}
+
+/** 解析心愿关联的计划 id（读 wish.extra，或反向查计划上的 wish_item_id） */
+export async function resolveLinkedPlanIdForWish(
+  wish: Pick<WishItemRow, 'id' | 'extra_data'>,
+): Promise<string | null> {
+  const fromWish = getLinkedSavingsPlanId(wish);
+  if (fromWish) return fromWish;
+
+  const plans = await getSavingsPlans();
+  for (const p of plans) {
+    if (getLinkedWishItemId(p) === wish.id) return p.id;
+  }
+  return null;
 }
 
 /** 为心愿创建关联存钱计划（名称、目标金额、头像与心愿对齐） */
@@ -339,24 +380,21 @@ export async function onSavingsPlanUpdated(planId: string) {
   await syncWishItemFromSavingsPlan(planId);
 }
 
-/** 删除存钱计划时一并软删关联心愿（调用方需已删除或即将删除计划） */
+/** 删除存钱计划时一并软删关联心愿 */
 export async function deleteLinkedWishForPlan(plan: SavingsPlanRow | null) {
   if (!plan) return;
-  const wishId = getLinkedWishItemId(plan);
+  const wishId = await resolveLinkedWishIdForPlan(plan);
   if (!wishId) return;
   const { deleteWishItem } = await import('@/lib/repositories/wish-list/wish-list');
   await deleteWishItem(wishId);
 }
 
-/** 删除心愿时一并软删关联存钱计划（调用方需已删除或即将删除心愿） */
+/** 删除心愿时一并软删关联存钱计划 */
 export async function deleteLinkedPlanForWish(wish: WishItemRow | null) {
   if (!wish) return;
-  const planId = getLinkedSavingsPlanId(wish);
+  const planId = await resolveLinkedPlanIdForWish(wish);
   if (!planId) return;
-  const plan = await getSavingsPlanById(planId);
-  if (plan) {
-    await deleteSavingsPlan(planId);
-  }
+  await deleteSavingsPlan(planId);
 }
 
 /** 按计划 id 索引关联的心愿单条目（用于存钱计划卡片展示） */
@@ -377,7 +415,7 @@ export async function loadWishItemsByPlanId(): Promise<Record<string, WishItemRo
 }
 
 /**
- * 启动时修复未关联条目：每个心愿补计划、每个计划补心愿（不合并已有数据）。
+ * 修复心愿与存钱计划的双向关联（不自动为「从未关联」的计划批量新建心愿）。
  */
 export async function repairWishSavingsLinks() {
   const [wishes, plans] = await Promise.all([
@@ -390,16 +428,29 @@ export async function repairWishSavingsLinks() {
 
   for (const wish of wishes) {
     const planId = getLinkedSavingsPlanId(wish);
-    if (planId && planById.has(planId)) continue;
+    if (planId && planById.has(planId)) {
+      if (getLinkedWishItemId(planById.get(planId)!) !== wish.id) {
+        await linkWishAndPlan(wish.id, planId);
+      }
+      continue;
+    }
     await createLinkedSavingsPlanForWish(wish);
   }
 
-  const plansAfter = await getSavingsPlans();
-  for (const plan of plansAfter) {
-    const wishId = getLinkedWishItemId(plan);
-    if (wishId && wishById.has(wishId)) continue;
-    const freshWish = await getWishItemById(wishId ?? '');
-    if (freshWish) continue;
-    await createLinkedWishForSavingsPlan(plan);
+  for (const plan of plans) {
+    if (!isSavingsPlanDateSpanValid(plan.start_date, plan.end_date)) continue;
+    if (plan.target_amount < 0 || plan.target_amount > SAVINGS_PLAN_MAX_TARGET_AMOUNT) continue;
+
+    const explicitWishId = getLinkedWishItemId(plan);
+    if (explicitWishId) {
+      if (wishById.has(explicitWishId) && getLinkedSavingsPlanId(wishById.get(explicitWishId)!) !== plan.id) {
+        await linkWishAndPlan(explicitWishId, plan.id);
+        continue;
+      }
+      if (wishById.has(explicitWishId)) continue;
+      const freshWish = await getWishItemById(explicitWishId);
+      if (freshWish) continue;
+      await createLinkedWishForSavingsPlan(plan);
+    }
   }
 }

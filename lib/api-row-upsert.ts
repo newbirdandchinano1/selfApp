@@ -1,4 +1,10 @@
-import { apiCreateRecord, apiDeleteRecord, apiUpdateRecord, ApiRequestError } from '@/lib/api-client';
+import {
+  apiCreateRecord,
+  apiDeleteRecord,
+  apiListRecords,
+  apiUpdateRecord,
+  ApiRequestError,
+} from '@/lib/api-client';
 import {
   ensureProjectCategoryRefsForApiUpload,
   ensureTaskCategoryMirrorForApiUpload,
@@ -29,12 +35,109 @@ function isMissingParentRecordApiError(err: unknown): boolean {
     err instanceof ApiRequestError &&
     (/请先同步\s*projects/i.test(err.message) ||
       /请先同步\s*project_categories/i.test(err.message) ||
+      /请先同步\s*habits/i.test(err.message) ||
       /请先.*task_categories/i.test(err.message) ||
       /任务分类.*不存在/i.test(err.message) ||
       /项目分类.*不存在/i.test(err.message) ||
+      /习惯.*不存在/i.test(err.message) ||
       /引用的\s*项目[\s（(]*projects/i.test(err.message) ||
       /projects[\s）)]*不存在/i.test(err.message))
   );
+}
+
+function isDuplicateRecordApiError(err: unknown): boolean {
+  return (
+    err instanceof ApiRequestError &&
+    (err.httpStatus === 409 || /已存在|duplicate|冲突|unique/i.test(err.message))
+  );
+}
+
+function normalizeHabitCheckInRecordDate(value: unknown): string | null {
+  if (value == null || value === '') return null;
+  const raw = String(value).trim();
+  const ymd = raw.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd : null;
+}
+
+async function findApiHabitCheckInIdByNaturalKey(
+  habitId: string,
+  recordDateYmd: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  let page = 1;
+  while (page <= 50) {
+    const { list, pagination } = await apiListRecords<{ id?: string; habit_id?: string; record_date?: string }>(
+      'habit_check_ins',
+      { page, limit: 200, signal },
+    );
+    for (const row of list) {
+      if (String(row.habit_id ?? '') !== habitId) continue;
+      if (normalizeHabitCheckInRecordDate(row.record_date) !== recordDateYmd) continue;
+      if (row.id) return String(row.id);
+    }
+    if (page >= pagination.totalPages || list.length === 0) break;
+    page += 1;
+  }
+  return null;
+}
+
+async function realignLocalHabitCheckInId(localId: string, serverId: string): Promise<void> {
+  if (!localId || !serverId || localId === serverId) return;
+  const { getDatabase } = await import('@/lib/database');
+  const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+    '@/lib/cloud-sql-dirty-track'
+  );
+  const db = await getDatabase();
+  if (!db) return;
+
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    const existingServerRow = await db.getFirstAsync<{ id: string }>(
+      `SELECT id FROM habit_check_ins WHERE id = ? LIMIT 1`,
+      [serverId],
+    );
+    if (existingServerRow) {
+      await db.runAsync(`DELETE FROM habit_check_ins WHERE id = ?`, [localId]);
+      return;
+    }
+    await db.runAsync(`UPDATE habit_check_ins SET id = ? WHERE id = ?`, [serverId, localId]);
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+}
+
+async function upsertHabitCheckInRowToApi(
+  payload: Record<string, unknown>,
+  localPk: string | null,
+  signal?: AbortSignal,
+): Promise<'created' | 'updated'> {
+  try {
+    await apiCreateRecord('habit_check_ins', payload, { signal });
+    return 'created';
+  } catch (createErr) {
+    if (!isDuplicateRecordApiError(createErr)) throw createErr;
+    if (!localPk) throw createErr;
+
+    try {
+      await apiUpdateRecord('habit_check_ins', localPk, payload, { signal });
+      return 'updated';
+    } catch (updateErr) {
+      if (!(updateErr instanceof ApiRequestError) || updateErr.httpStatus !== 404) {
+        throw updateErr;
+      }
+    }
+
+    const habitId = payload.habit_id == null || payload.habit_id === '' ? null : String(payload.habit_id);
+    const recordDateYmd = normalizeHabitCheckInRecordDate(payload.record_date);
+    if (!habitId || !recordDateYmd) throw createErr;
+
+    const serverId = await findApiHabitCheckInIdByNaturalKey(habitId, recordDateYmd, signal);
+    if (!serverId) throw createErr;
+
+    await apiUpdateRecord('habit_check_ins', serverId, payload, { signal });
+    await realignLocalHabitCheckInId(localPk, serverId);
+    return 'updated';
+  }
 }
 
 /** 单行上传失败可跳过（继续后续行） */
@@ -124,11 +227,14 @@ export async function upsertRowToApi(
   }
 
   const runUpsert = async (payload: Record<string, unknown>): Promise<'created' | 'updated'> => {
+    if (table === 'habit_check_ins') {
+      return upsertHabitCheckInRowToApi(payload, pk, opts?.signal);
+    }
     try {
       await apiCreateRecord(table, payload, { signal: opts?.signal });
       return 'created';
     } catch (e) {
-      if (e instanceof ApiRequestError && (e.httpStatus === 409 || /已存在|duplicate|冲突/i.test(e.message))) {
+      if (isDuplicateRecordApiError(e)) {
         if (!pk) throw e;
         await apiUpdateRecord(table, pk, payload, { signal: opts?.signal });
         return 'updated';
@@ -179,6 +285,27 @@ export async function upsertRowToApi(
     opts.uploadedPkByTable?.get('project_categories')?.add(cid);
   };
 
+  const tryUpsertReferencedHabit = async (payload: Record<string, unknown>): Promise<void> => {
+    if (table !== 'habit_check_ins' || !opts?.rowsByTable) return;
+    const habitId = payload.habit_id;
+    if (habitId == null || habitId === '') return;
+
+    const hid = String(habitId);
+    const habitRow = (opts.rowsByTable.get('habits') ?? []).find(h => String(h.id) === hid);
+    if (!habitRow) return;
+
+    const habitPkCols = opts.pkColsByTable?.get('habits') ?? ['id'];
+    await upsertRowToApi('habits', habitRow, habitPkCols, {
+      signal: opts?.signal,
+      uploadedPkByTable: opts.uploadedPkByTable,
+      fkRefs: opts.fkRefsByTable?.get('habits') ?? [],
+      rowsByTable: opts.rowsByTable,
+      pkColsByTable: opts.pkColsByTable,
+      fkRefsByTable: opts.fkRefsByTable,
+    });
+    opts.uploadedPkByTable?.get('habits')?.add(hid);
+  };
+
   const tryUpsertReferencedTaskCategory = async (payload: Record<string, unknown>): Promise<void> => {
     if (table !== 'tasks' || !opts?.rowsByTable) return;
     const categoryId = payload.category_id;
@@ -216,6 +343,9 @@ export async function upsertRowToApi(
     }
     if (isRecoverableParentReferenceError(e)) {
       try {
+        if (table === 'habit_check_ins') {
+          await tryUpsertReferencedHabit(body);
+        }
         if (table === 'tasks') {
           await tryUpsertReferencedTaskCategory(body);
           await tryUpsertReferencedProject(body);
@@ -327,6 +457,128 @@ export async function upsertTaskCategoriesReferencedByTasks(
     } catch (e) {
       if (e instanceof ApiRowUploadSkippedError) {
         if (__DEV__) console.warn('[api-sync] 预上传 task_categories 跳过', cid, e.message);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+export async function upsertFinanceAccountsReferencedByTransactions(
+  txnRows: Record<string, unknown>[],
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+  pkColsByTable: Map<string, string[]>,
+  uploadedPkByTable: UploadedPkRegistry,
+  fkRefsByTable: Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const accountIds = new Set<string>();
+  for (const txn of txnRows) {
+    const aid = txn.account_id;
+    if (aid != null && aid !== '') accountIds.add(String(aid));
+  }
+  if (accountIds.size === 0) return;
+
+  const accountRows = rowsByTable.get('finance_accounts') ?? [];
+  const accountPkCols = pkColsByTable.get('finance_accounts') ?? ['id'];
+  const uploadedAccounts = uploadedPkByTable.get('finance_accounts') ?? new Set<string>();
+  uploadedPkByTable.set('finance_accounts', uploadedAccounts);
+
+  for (const aid of accountIds) {
+    if (uploadedAccounts.has(aid)) continue;
+    const accountRow = accountRows.find(a => String(a.id) === aid);
+    if (!accountRow) continue;
+    try {
+      await upsertRowToApi('finance_accounts', accountRow, accountPkCols, {
+        signal,
+        uploadedPkByTable,
+        fkRefs: fkRefsByTable.get('finance_accounts') ?? [],
+        rowsByTable,
+        pkColsByTable,
+        fkRefsByTable,
+      });
+      uploadedAccounts.add(aid);
+    } catch (e) {
+      if (e instanceof ApiRowUploadSkippedError) {
+        if (__DEV__) console.warn('[api-sync] 预上传 finance_accounts 跳过', aid, e.message);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+export async function upsertMemoDimensionsReferencedByMemos(
+  memoRows: Record<string, unknown>[],
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+  pkColsByTable: Map<string, string[]>,
+  uploadedPkByTable: UploadedPkRegistry,
+  fkRefsByTable: Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const dimensionIds = new Set<string>();
+  for (const memo of memoRows) {
+    const did = memo.dimension_id;
+    if (did != null && did !== '') dimensionIds.add(String(did));
+  }
+  if (dimensionIds.size === 0) return;
+
+  const dimensionRows = rowsByTable.get('memo_dimensions') ?? [];
+  const dimensionPkCols = pkColsByTable.get('memo_dimensions') ?? ['id'];
+  const uploadedDimensions = uploadedPkByTable.get('memo_dimensions') ?? new Set<string>();
+  uploadedPkByTable.set('memo_dimensions', uploadedDimensions);
+
+  for (const did of dimensionIds) {
+    const dimensionRow = dimensionRows.find(d => String(d.id) === did);
+    if (!dimensionRow) continue;
+    await upsertRowToApi('memo_dimensions', dimensionRow, dimensionPkCols, {
+      signal,
+      uploadedPkByTable,
+      fkRefs: fkRefsByTable.get('memo_dimensions') ?? [],
+      rowsByTable,
+      pkColsByTable,
+      fkRefsByTable,
+    });
+    uploadedDimensions.add(did);
+  }
+}
+
+export async function upsertHabitsReferencedByCheckIns(
+  checkInRows: Record<string, unknown>[],
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+  pkColsByTable: Map<string, string[]>,
+  uploadedPkByTable: UploadedPkRegistry,
+  fkRefsByTable: Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const habitIds = new Set<string>();
+  for (const row of checkInRows) {
+    const hid = row.habit_id;
+    if (hid != null && hid !== '') habitIds.add(String(hid));
+  }
+  if (habitIds.size === 0) return;
+
+  const habitRows = rowsByTable.get('habits') ?? [];
+  const habitPkCols = pkColsByTable.get('habits') ?? ['id'];
+  const uploadedHabits = uploadedPkByTable.get('habits') ?? new Set<string>();
+  uploadedPkByTable.set('habits', uploadedHabits);
+
+  for (const hid of habitIds) {
+    const habitRow = habitRows.find(h => String(h.id) === hid);
+    if (!habitRow) continue;
+    try {
+      await upsertRowToApi('habits', habitRow, habitPkCols, {
+        signal,
+        uploadedPkByTable,
+        fkRefs: fkRefsByTable.get('habits') ?? [],
+        rowsByTable,
+        pkColsByTable,
+        fkRefsByTable,
+      });
+      uploadedHabits.add(hid);
+    } catch (e) {
+      if (e instanceof ApiRowUploadSkippedError) {
+        if (__DEV__) console.warn('[api-sync] 预上传 habits 跳过', hid, e.message);
         continue;
       }
       throw e;

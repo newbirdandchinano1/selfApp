@@ -23,8 +23,12 @@ const dirtyTables = new Set<string>();
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let pushDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+const SQLITE_RESERVED_TABLE_NAMES = new Set(['on', 'off', 'begin', 'end', 'commit', 'rollback']);
+
 function isSafeTableName(name: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false;
+  if (SQLITE_RESERVED_TABLE_NAMES.has(name.toLowerCase())) return false;
+  return true;
 }
 
 export function markCloudSqliteTableDirty(table: string): void {
@@ -74,6 +78,8 @@ export async function hydrateCloudDirtyFromStorage(): Promise<void> {
             if (typeof x === 'string' && isSafeTableName(x)) dirtyTables.add(x);
           }
         }
+        dirtyTables.delete('ON');
+        dirtyTables.delete('on');
       }
     } else {
       for (const legacyKey of [LEGACY_GITHUB_DIRTY_KEY, LEGACY_SQLITE_DIRTY_KEY]) {
@@ -145,7 +151,7 @@ function extractMutationTablesFromSql(sql: string): string[] {
   const norm = sql.replace(/\s+/g, ' ').trim();
   if (!norm) return [];
   if (
-    /^(pragma|begin|commit|rollback|savepoint|release|vacuum|analyze|reindex|attach|detach|create\s+table|create\s+index|create\s+unique\s+index|drop\s+table|drop\s+index|alter\s+table)/i.test(
+    /^(pragma|begin|commit|rollback|savepoint|release|vacuum|analyze|reindex|attach|detach|create\s+(?:unique\s+)?(?:table|index|trigger)|drop\s+(?:table|index|trigger)|alter\s+table|after\s+(?:insert|update|delete))/i.test(
       norm,
     )
   ) {
@@ -154,7 +160,7 @@ function extractMutationTablesFromSql(sql: string): string[] {
   const tables = new Set<string>();
   const patterns: RegExp[] = [
     /\b(?:insert\s+or\s+\w+\s+into|insert\s+into|replace\s+into)\s+[`"]?([A-Za-z_][A-Za-z0-9_]*)[`"]?/gi,
-    /\bupdate\s+[`"]?([A-Za-z_][A-Za-z0-9_]*)[`"]?/gi,
+    /\bupdate\s+[`"]?([A-Za-z_][A-Za-z0-9_]*)[`"]?\s+set\b/gi,
     /\bdelete\s+from\s+[`"]?([A-Za-z_][A-Za-z0-9_]*)[`"]?/gi,
   ];
   for (const re of patterns) {

@@ -1,6 +1,7 @@
 import { AppButton, AppIconButton } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { runPageApiLoad } from '@/lib/page-api-session';
 import { getFinanceDailySummariesByDateRange, getFinanceTransactionsByYmd } from '@/lib/repositories/finance/finance';
 import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -194,7 +195,7 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
   const [dailyMap, setDailyMap] = React.useState<Map<string, FinanceDailySummaryRow>>(() => new Map());
   React.useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void runPageApiLoad('finance-calendar', async () => {
       try {
         const rows = await getFinanceDailySummariesByDateRange(formatYMD(gridStart), formatYMD(gridEnd));
         if (cancelled) return;
@@ -208,7 +209,7 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
         if (cancelled) return;
         setDailyMap(new Map());
       }
-    })();
+    });
     return () => {
       cancelled = true;
     };

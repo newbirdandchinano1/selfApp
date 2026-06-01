@@ -46,9 +46,16 @@ export async function getHealthRecordsByUserId(userId: string) {
   return sortByUpdatedDesc(rows.filter(r => r.user_id === userId));
 }
 
-export async function getHealthRecordsLast7Days(userId: string, endDate: string = new Date().toISOString().slice(0, 10)) {
+export async function getHealthRecordsLast7Days(
+  userId: string,
+  endDate: string = new Date().toISOString().slice(0, 10),
+  opts?: { localOnly?: boolean },
+) {
   const startDate = addDaysToYmd(endDate, -6);
-  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  const rows = await readApiTable<HealthRecordRow>('health_records', {
+    offlineFallback: true,
+    localOnly: opts?.localOnly,
+  });
   return rows
     .filter(r => r.user_id === userId && isYmdInRange(r.record_date, startDate, endDate))
     .sort((a, b) => {
@@ -72,13 +79,22 @@ export async function getHealthRecordsForUserOnDate(userId: string, recordDateYm
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
 }
 
-export async function getHealthIntakeTotalsForUserOnDate(
+export async function getHealthDayMetricsForUser(
   userId: string,
-  recordDateYmd: string
-): Promise<HealthIntakeDayTotals | null> {
-  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  recordDateYmd: string,
+  opts?: { localOnly?: boolean },
+): Promise<{ totals: HealthIntakeDayTotals; latest: HealthRecordRow } | null> {
+  const rows = await readApiTable<HealthRecordRow>('health_records', {
+    offlineFallback: true,
+    localOnly: opts?.localOnly,
+  });
   const dayRows = rows.filter(r => r.user_id === userId && r.record_date === recordDateYmd);
   if (dayRows.length === 0) return null;
+  const latest = [...dayRows].sort((a, b) => compareDatetimeDesc(a.updated_at, b.updated_at))[0]!;
+  return { totals: sumHealthIntakeDayTotals(dayRows), latest };
+}
+
+function sumHealthIntakeDayTotals(dayRows: HealthRecordRow[]): HealthIntakeDayTotals {
   let hydration = 0;
   let protein = 0;
   let carbohydrate = 0;
@@ -90,6 +106,129 @@ export async function getHealthIntakeTotalsForUserOnDate(
     sodium += Number(r.sodium ?? 0);
   }
   return { hydration, protein, carbohydrate, sodium };
+}
+
+export async function getHealthIntakeTotalsForUserOnDate(
+  userId: string,
+  recordDateYmd: string
+): Promise<HealthIntakeDayTotals | null> {
+  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  const dayRows = rows.filter(r => r.user_id === userId && r.record_date === recordDateYmd);
+  if (dayRows.length === 0) return null;
+  return sumHealthIntakeDayTotals(dayRows);
+}
+
+export type HomeHealthSlice = {
+  week: HealthRecordRow[];
+  prevWeek: HealthRecordRow[];
+  dayTotals: HealthIntakeDayTotals | null;
+  dayRecords: HealthRecordRow[];
+};
+
+/** 单次读表，避免首页并行多次 readApiTable 互相抢占读库上下文 */
+export async function fetchUserHomeHealthSlice(
+  userId: string,
+  weekAnchorEndYmd: string,
+  selectedYmd: string,
+  opts?: { localOnly?: boolean },
+): Promise<HomeHealthSlice> {
+  const prevEndYmd = addDaysToYmd(weekAnchorEndYmd, -7);
+  const weekStart = addDaysToYmd(weekAnchorEndYmd, -6);
+  const prevWeekStart = addDaysToYmd(prevEndYmd, -6);
+
+  const allRows = await readApiTable<HealthRecordRow>('health_records', {
+    offlineFallback: true,
+    localOnly: opts?.localOnly,
+  });
+  const userRows = allRows.filter(r => r.user_id === userId);
+
+  const sortWeekRows = (a: HealthRecordRow, b: HealthRecordRow) => {
+    const d = a.record_date.localeCompare(b.record_date);
+    if (d !== 0) return d;
+    return compareDatetimeDesc(a.updated_at, b.updated_at) * -1;
+  };
+
+  const week = userRows
+    .filter(r => isYmdInRange(r.record_date, weekStart, weekAnchorEndYmd))
+    .sort(sortWeekRows);
+  const prevWeek = userRows
+    .filter(r => isYmdInRange(r.record_date, prevWeekStart, prevEndYmd))
+    .sort(sortWeekRows);
+  const dayRecords = userRows
+    .filter(r => r.record_date === selectedYmd)
+    .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
+  const dayRows = userRows.filter(r => r.record_date === selectedYmd);
+  const dayTotals = dayRows.length > 0 ? sumHealthIntakeDayTotals(dayRows) : null;
+
+  return { week, prevWeek, dayTotals, dayRecords };
+}
+
+/** 健康日历：单次读表后计算时间轴与完成度 */
+export async function buildUserHealthCalendarSnapshot(
+  userId: string,
+  today: Date,
+  opts?: { localOnly?: boolean },
+): Promise<{
+  records: HealthRecordRow[];
+  completionMap: Map<string, 'full' | 'partial'>;
+  startDate: Date;
+}> {
+  const allRows = await readApiTable<HealthRecordRow>('health_records', {
+    offlineFallback: true,
+    localOnly: opts?.localOnly,
+  });
+  const records = sortByUpdatedDesc(allRows.filter(r => r.user_id === userId));
+  const completionMap = new Map<string, 'full' | 'partial'>();
+  const datesByDay = new Map<string, HealthRecordRow[]>();
+
+  for (const row of records) {
+    const bucket = datesByDay.get(row.record_date);
+    if (bucket) bucket.push(row);
+    else datesByDay.set(row.record_date, [row]);
+  }
+
+  for (const [ymd, dayRows] of datesByDay) {
+    const totals = sumHealthIntakeDayTotals(dayRows);
+    const latest = [...dayRows].sort((a, b) => compareDatetimeDesc(a.updated_at, b.updated_at))[0] ?? null;
+    if (!latest) continue;
+    const level = getDayCompletionLevelFromTotals(totals, latest);
+    completionMap.set(ymd, level === 'full' ? 'full' : 'partial');
+  }
+
+  const earliestYmd =
+    records.length > 0
+      ? records.reduce((min, row) => (row.record_date < min ? row.record_date : min), records[0].record_date)
+      : addDaysToYmd(formatHealthCalendarYmd(today), -29);
+  const earliestDate = normalizeHealthCalendarDate(new Date(earliestYmd));
+  const startDate = earliestDate > today ? today : earliestDate;
+  return { records, completionMap, startDate };
+}
+
+function formatHealthCalendarYmd(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function normalizeHealthCalendarDate(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function getDayCompletionLevelFromTotals(
+  totals: HealthIntakeDayTotals,
+  latest: HealthRecordRow,
+): 'full' | 'partial' | 'empty' {
+  const hMet = latest.target_hydration > 0 ? totals.hydration >= latest.target_hydration : false;
+  const pMet = latest.target_protein > 0 ? totals.protein >= latest.target_protein : false;
+  const cMet = latest.target_carbohydrate > 0 ? totals.carbohydrate >= latest.target_carbohydrate : false;
+  const sMet = latest.target_sodium > 0 ? totals.sodium <= latest.target_sodium : false;
+  const metCount = [hMet, pMet, cMet, sMet].filter(Boolean).length;
+  if (metCount >= 4) return 'full';
+  if (metCount > 0 || totals.hydration > 0 || totals.protein > 0 || totals.carbohydrate > 0 || totals.sodium > 0) {
+    return 'partial';
+  }
+  return 'empty';
 }
 
 export async function updateHealthRecord(id: string, input: UpdateHealthRecordInput) {

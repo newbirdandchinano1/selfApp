@@ -17,6 +17,7 @@ import {
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { buildGlobalTaskHeatmapGrid, heatmapGridDayRange, type HeatmapCell } from '@/lib/tasks-global-heatmap';
 import { MaterialIcons } from '@expo/vector-icons';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 import { ActivityIndicator, Dimensions, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -189,7 +190,10 @@ function GlobalHeatmap({
   );
 }
 
+const PAGE_API_KEY = 'tasks-overview';
+
 export default function TasksOverviewScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme === 'dark' ? 'dark' : 'light'];
@@ -318,18 +322,18 @@ export default function TasksOverviewScreen() {
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
-      (async () => {
+      void wrapLoad(async () => {
         try {
           await Promise.all([loadOverview(heatLayout.weeks), loadEventsFirstPage()]);
         } catch (e) {
           console.warn('加载待办总览失败', e);
         }
         if (cancelled) return;
-      })();
+      });
       return () => {
         cancelled = true;
       };
-    }, [heatLayout.weeks, loadEventsFirstPage, loadOverview])
+    }, [heatLayout.weeks, loadEventsFirstPage, loadOverview, wrapLoad])
   );
 
   const handleMainScroll = React.useCallback(

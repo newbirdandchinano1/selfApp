@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   deleteUserWeakness,
   listUserWeaknesses,
@@ -32,6 +33,8 @@ import {
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+const PAGE_API_KEY = 'weakness-list';
+
 export default function WeaknessListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -60,10 +63,12 @@ export default function WeaknessListScreen() {
   const [modalAiFirstError, setModalAiFirstError] = useState<string | null>(null);
   const modalAutoRanRef = useRef(false);
   const [pendingAnalysisIds, setPendingAnalysisIds] = useState<ReadonlySet<string>>(() => new Set());
+  const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (forceApi = false) => {
     setError(null);
     try {
+      await wrapLoad(async () => {
       const rows = await listUserWeaknesses();
       setItems(prev => {
         const prevAi = new Map(
@@ -84,13 +89,14 @@ export default function WeaknessListScreen() {
           return keep ? { ...r, ...keep } : r;
         });
       });
+      }, forceApi);
     } catch {
       setError('加载失败，请重试');
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [wrapLoad]);
 
   useFocusEffect(
     useCallback(() => {
@@ -330,7 +336,12 @@ export default function WeaknessListScreen() {
       </View>
 
       {error ? (
-        <Pressable onPress={() => void reload()} style={[styles.errorBanner, { borderColor: borderSoft }]}>
+        <Pressable
+          onPress={() => {
+            resetSync();
+            void reload(true);
+          }}
+          style={[styles.errorBanner, { borderColor: borderSoft }]}>
           <Text style={[styles.errorText, { color: text }]}>{error}</Text>
           <Text style={[styles.errorRetry, { color: primary }]}>点击重试</Text>
         </Pressable>

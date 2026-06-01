@@ -14,6 +14,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   ActivityIndicator,
   Alert,
@@ -154,10 +155,12 @@ function needsLightTextOnBlue(fill: string): boolean {
 const TOP_BAR_BODY_H = 58;
 
 const SCREEN_TITLE = '习惯详情';
+const PAGE_API_KEY = 'habit-detail';
 
 export default function HabitDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const scrollTopPad = insets.top + TOP_BAR_BODY_H;
   const params = useLocalSearchParams<{ habitId?: string }>();
   const habitId = pickParam(params.habitId);
@@ -187,36 +190,41 @@ export default function HabitDetailScreen() {
 
   const focusYmd = React.useMemo(() => toYMD(focusDate), [focusDate]);
 
-  const reload = React.useCallback(async () => {
-    if (!habitId) {
-      setHabit(null);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      const boundary = await loadTasksDayBoundary();
-      setLogicalTodayYmd(getLogicalLocalYmd(new Date(), boundary));
-      const row = await getHabitById(habitId);
-      setHabit(row ?? null);
-      if (!row) {
-        setCheckIns({});
-      } else {
-        const fromDb = await getCheckInsMapByHabitId(row.id);
-        const merged = { ...fromDb };
-        const legacy = normalizeCheckIns(parseExtra(row.extra_data).checkIns);
-        for (const [k, v] of Object.entries(legacy)) {
-          if (merged[k] === undefined) merged[k] = v;
+  const reload = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
+        if (!habitId) {
+          setHabit(null);
+          setLoading(false);
+          return;
         }
-        setCheckIns(merged);
-      }
-    } catch (e) {
-      console.warn('加载习惯详情失败', e);
-      setHabit(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [habitId]);
+        setLoading(true);
+        try {
+          const boundary = await loadTasksDayBoundary();
+          setLogicalTodayYmd(getLogicalLocalYmd(new Date(), boundary));
+          const row = await getHabitById(habitId);
+          setHabit(row ?? null);
+          if (!row) {
+            setCheckIns({});
+          } else {
+            const fromDb = await getCheckInsMapByHabitId(row.id);
+            const merged = { ...fromDb };
+            const legacy = normalizeCheckIns(parseExtra(row.extra_data).checkIns);
+            for (const [k, v] of Object.entries(legacy)) {
+              if (merged[k] === undefined) merged[k] = v;
+            }
+            setCheckIns(merged);
+          }
+        } catch (e) {
+          console.warn('加载习惯详情失败', e);
+          setHabit(null);
+        } finally {
+          setLoading(false);
+        }
+      }, forceApi);
+    },
+    [habitId, wrapLoad],
+  );
 
   useFocusEffect(
     React.useCallback(() => {

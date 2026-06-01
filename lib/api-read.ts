@@ -8,13 +8,20 @@ import {
   applyApiRecordMissingToLocal,
   syncApiReadResultToLocal,
 } from '@/lib/api-read-local-sync';
+import { isApiOnlyReads } from '@/lib/api-data-mode';
 import { getDatabase } from '@/lib/database';
+import { resolveReadLocalOnly } from '@/lib/page-api-session';
 
 export type ApiListOptions = {
   page?: number;
   limit?: number;
   includeDeleted?: boolean;
   signal?: AbortSignal;
+  /** 强制从 REST 全量拉取（与默认行为相同，供显式刷新使用） */
+  forceRefresh?: boolean;
+  /** @deprecated API_ONLY_READS 下无效，始终走 REST */
+  localOnly?: boolean;
+  offlineFallback?: boolean;
 };
 
 export type ApiTableMeta = {
@@ -26,6 +33,9 @@ export type ApiTableMeta = {
 
 const tableMetaCache = new Map<string, ApiTableMeta>();
 let allTablesMetaCache: ApiTableMeta[] | null = null;
+
+/** 同表并发全量拉取去重，避免 reconcileSnapshot 竞态 */
+const inflightTableFetchAll = new Map<string, Promise<Record<string, unknown>[]>>();
 
 function assertApiReadable(table: string): void {
   if (!isApiReadableTable(table)) {
@@ -83,27 +93,45 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
   opts?: Omit<ApiListOptions, 'page'> & { maxPages?: number },
 ): Promise<T[]> {
   assertApiReadable(table);
-  const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 200);
-  const maxPages = opts?.maxPages ?? 500;
-  const all: T[] = [];
-  let page = 1;
-
-  while (page <= maxPages) {
-    const { list, pagination } = await fetchApiTablePage<T>(table, {
-      ...opts,
-      page,
-      limit,
-    });
-    all.push(...list);
-    if (page >= pagination.totalPages || list.length === 0) break;
-    page += 1;
+  if (!opts?.forceRefresh) {
+    const inflight = inflightTableFetchAll.get(table);
+    if (inflight) return inflight as Promise<T[]>;
   }
 
-  await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
-    reconcileSnapshot: true,
-  });
+  const fetchPromise = (async (): Promise<T[]> => {
+    const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 200);
+    const maxPages = opts?.maxPages ?? 500;
+    const all: T[] = [];
+    let page = 1;
 
-  return all;
+    while (page <= maxPages) {
+      const { list, pagination } = await fetchApiTablePage<T>(table, {
+        ...opts,
+        page,
+        limit,
+      });
+      all.push(...list);
+      if (page >= pagination.totalPages || list.length === 0) break;
+      page += 1;
+    }
+
+    if (!isApiOnlyReads()) {
+      await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
+        reconcileSnapshot: true,
+      });
+    }
+
+    return all;
+  })();
+
+  inflightTableFetchAll.set(table, fetchPromise as Promise<Record<string, unknown>[]>);
+  try {
+    return await fetchPromise;
+  } finally {
+    if (inflightTableFetchAll.get(table) === fetchPromise) {
+      inflightTableFetchAll.delete(table);
+    }
+  }
 }
 
 /** 按主键读单条（404 返回 null） */
@@ -116,11 +144,15 @@ export async function fetchApiRecordByPk<T extends Record<string, unknown>>(
   if (!pkValue.trim()) return null;
   try {
     const row = await apiGetRecord<T>(table, pkValue, opts);
-    await syncApiReadResultToLocal(table, row as Record<string, unknown>);
+    if (!isApiOnlyReads()) {
+      await syncApiReadResultToLocal(table, row as Record<string, unknown>);
+    }
     return row;
   } catch (e) {
     if (e instanceof Error && /404|不存在|not found/i.test(e.message)) {
-      await applyApiRecordMissingToLocal(table, pkValue);
+      if (!isApiOnlyReads()) {
+        await applyApiRecordMissingToLocal(table, pkValue);
+      }
       return null;
     }
     throw e;
@@ -128,44 +160,77 @@ export async function fetchApiRecordByPk<T extends Record<string, unknown>>(
 }
 
 /**
- * 统一读表：优先 REST；本地只读表（app_meta）回退 SQLite。
- * 网络失败时可选回退本地缓存（offline fallback）。
+ * 统一读表：API_ONLY_READS 时直接返回 REST 全量结果；
+ * 否则先拉 REST 写入 SQLite 再读本地（兼容旧模式）。
  */
 export async function readApiTable<T extends Record<string, unknown>>(
   table: string,
-  opts?: ApiListOptions & { offlineFallback?: boolean },
+  opts?: ApiListOptions,
 ): Promise<T[]> {
   if (!isApiReadableTable(table)) {
+    if (isApiOnlyReads()) return [];
     return readLocalTableAll<T>(table);
   }
-  try {
-    await withApiLoading(() => fetchApiTableAll<T>(table, opts));
-  } catch (e) {
-    if (opts?.offlineFallback) {
-      if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, e);
-      return readLocalTableVisible<T>(table);
+
+  const skipNetwork = resolveReadLocalOnly(opts);
+  if (!skipNetwork) {
+    try {
+      const rows = await withApiLoading(() => fetchApiTableAll<T>(table, opts));
+      if (isApiOnlyReads()) return rows;
+    } catch (e) {
+      if (opts?.offlineFallback && !isApiOnlyReads()) {
+        if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, e);
+        return readLocalTableVisible<T>(table);
+      }
+      throw e;
     }
-    throw e;
+  }
+
+  if (isApiOnlyReads()) {
+    throw new Error(`[api-read] 表「${table}」在仅接口模式下必须请求 REST`);
   }
   return readLocalTableVisible<T>(table);
+}
+
+/** 强制从 REST 全量拉取 */
+export async function refreshApiTable<T extends Record<string, unknown>>(
+  table: string,
+  opts?: Omit<ApiListOptions, 'forceRefresh' | 'localOnly'>,
+): Promise<T[]> {
+  return readApiTable<T>(table, { ...opts, forceRefresh: true, localOnly: false });
 }
 
 export async function readApiRecord<T extends Record<string, unknown>>(
   table: string,
   pkValue: string,
-  opts?: { signal?: AbortSignal; offlineFallback?: boolean },
+  opts?: {
+    signal?: AbortSignal;
+    offlineFallback?: boolean;
+    forceRefresh?: boolean;
+    localOnly?: boolean;
+  },
 ): Promise<T | null> {
   if (!isApiReadableTable(table)) {
+    if (isApiOnlyReads()) return null;
     return readLocalRecordVisible<T>(table, pkValue);
   }
-  try {
-    await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
-  } catch (e) {
-    if (opts?.offlineFallback) {
-      if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, pkValue, e);
-      return readLocalRecordVisible<T>(table, pkValue);
+
+  const skipNetwork = resolveReadLocalOnly(opts);
+  if (!skipNetwork) {
+    try {
+      const row = await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
+      if (isApiOnlyReads()) return row;
+    } catch (e) {
+      if (opts?.offlineFallback && !isApiOnlyReads()) {
+        if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, pkValue, e);
+        return readLocalRecordVisible<T>(table, pkValue);
+      }
+      throw e;
     }
-    throw e;
+  }
+
+  if (isApiOnlyReads()) {
+    throw new Error(`[api-read] 表「${table}」记录在仅接口模式下必须请求 REST`);
   }
   return readLocalRecordVisible<T>(table, pkValue);
 }

@@ -104,6 +104,27 @@ async function collectLongIdRemap(db: SQLite.SQLiteDatabase): Promise<Map<string
   return remap;
 }
 
+/** 将 id 映射写回本地 SQLite（上传缩短 id 后须调用，避免流水与账户外键脱节）。 */
+export async function applyEntityIdRemapToLocalDatabase(remap: Map<string, string>): Promise<void> {
+  if (remap.size === 0) return;
+  const { getDatabase } = await import('@/lib/database');
+  const db = await getDatabase();
+  if (!db) return;
+
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.execAsync('PRAGMA foreign_keys = OFF');
+    await applyRemapToSqliteDb(db, remap);
+  } finally {
+    try {
+      await db.execAsync('PRAGMA foreign_keys = ON');
+    } catch {
+      /* ignore */
+    }
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+}
+
 async function applyRemapToSqliteDb(db: SQLite.SQLiteDatabase, remap: Map<string, string>): Promise<void> {
   if (remap.size === 0) return;
   const tables = await listUserTables(db);

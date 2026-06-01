@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { createHabitContext, deleteHabitContexts, getHabitContexts, updateHabitContextsSortOrder } from '@/lib/repositories/habits/habit-context';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -12,8 +13,11 @@ import DraggableFlatList, { type RenderItemParams } from 'react-native-draggable
 
 type ContextRow = { id: string; name: string; count: number | null; isDefault?: boolean };
 
+const PAGE_API_KEY = 'habit-context';
+
 export default function HabitContextScreen() {
   const router = useRouter();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const scheme = (colorScheme ?? 'light') as keyof typeof Colors;
@@ -32,6 +36,7 @@ export default function HabitContextScreen() {
   const [newContextName, setNewContextName] = React.useState('');
 
   const loadContextCounts = React.useCallback(async () => {
+    await wrapLoad(async () => {
     try {
       const [contexts, habits] = await Promise.all([getHabitContexts(), getHabits()]);
       const countByContext = new Map<string, number>();
@@ -56,7 +61,8 @@ export default function HabitContextScreen() {
       console.warn('加载习惯情境失败', err);
       setContextData((prev) => prev);
     }
-  }, []);
+    });
+  }, [wrapLoad]);
 
   useFocusEffect(
     React.useCallback(() => {

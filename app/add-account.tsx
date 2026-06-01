@@ -1,6 +1,7 @@
 import { AppButton, AppCard, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import {
   applyFinanceAccountBalanceCorrection,
@@ -57,7 +58,10 @@ function SectionLabel({ children }: { children: string }) {
   );
 }
 
+const PAGE_API_KEY = 'add-account';
+
 export default function AddAccountScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const params = useLocalSearchParams<{ editAccountId?: string }>();
   const editAccountId = typeof params.editAccountId === 'string' ? params.editAccountId.trim() : '';
@@ -94,6 +98,7 @@ export default function AddAccountScreen() {
   const isSelectedLiability = accountType === 'liability' || (accountType === 'custom' && customIsLiability);
 
   const loadCustomTypeOptions = React.useCallback(async () => {
+    await wrapLoad(async () => {
     try {
       const rows = await getFinanceAccountTypes();
       setCustomTypeOptions(
@@ -107,14 +112,15 @@ export default function AddAccountScreen() {
       console.warn('Failed to load custom account types:', e);
       setCustomTypeOptions(getCustomAccountTypeOptions());
     }
-  }, []);
+    });
+  }, [wrapLoad]);
 
   useFocusEffect(
     React.useCallback(() => {
       if (isEditMode) {
         let alive = true;
         setEditSheetReady(false);
-        void (async () => {
+        void wrapLoad(async () => {
           try {
             const rows = await getFinanceAccountsWithBalance();
             if (!alive) return;
@@ -160,7 +166,7 @@ export default function AddAccountScreen() {
               Alert.alert('加载失败', '请稍后重试。', [{ text: '确定', onPress: () => router.back() }]);
             }
           }
-        })();
+        });
         return () => {
           alive = false;
         };
@@ -175,7 +181,7 @@ export default function AddAccountScreen() {
       if (accountType === 'custom' && draft.iconKey) {
         setIconKey(draft.iconKey);
       }
-    }, [accountType, editAccountId, isEditMode, loadCustomTypeOptions, router]),
+    }, [accountType, editAccountId, isEditMode, loadCustomTypeOptions, router, wrapLoad]),
   );
 
   const onSave = React.useCallback(async () => {

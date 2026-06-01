@@ -51,6 +51,7 @@ import {
     type MonthBudgetSetting,
 } from '@/lib/finance-monthly-budget';
 import { setFinanceSheetBridge } from '@/lib/finance-sheet-bridge';
+import { notifyFinanceSheetSaved, subscribeFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import {
     consumeFinanceSheetLaunchIntent,
     peekFinanceSheetLaunchIntent,
@@ -60,10 +61,12 @@ import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-s
 import {
     createFinanceTransaction,
     deleteFinanceTransaction,
+    financeSignedAmountForSave,
     getFinanceAccountsWithBalance,
     getFinanceFlowCategories,
     getFinanceTransactions,
-    validateFinanceLedgerBalanceAfterChange,
+    normalizeFinanceSignRule,
+    validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import {
@@ -89,6 +92,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React from 'react';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
     ActivityIndicator,
     Alert,
@@ -120,6 +124,7 @@ import { moveAppToBackground } from 'zheng-background';
 
 const AUTO_LEDGER_NOT_BILL_MESSAGE =
   '这不是账单或支付凭证截图，请换一张支付成功页、账单详情或小票等图片。';
+const PAGE_API_KEY = 'tabs/finance';
 
 type Txn = {
   id: string;
@@ -436,6 +441,7 @@ const TxnItem = React.memo(TxnItemInner);
 export default function FinanceScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
   const colorScheme = useColorScheme();
   const themeKey: keyof typeof Colors = colorScheme === 'dark' ? 'dark' : 'light';
   const baseTheme = Colors[themeKey];
@@ -582,7 +588,10 @@ export default function FinanceScreen() {
 
   const loadFinanceTransactions = React.useCallback(async () => {
     try {
-      const [rows, categories] = await Promise.all([getFinanceTransactions(), getFinanceFlowCategories()]);
+      const [rows, categories] = await Promise.all([
+        getFinanceTransactions(),
+        getFinanceFlowCategories(),
+      ]);
       txnAiSkippedIdsRef.current.clear();
       flowCategoryNamesRef.current = Object.fromEntries(categories.map((c) => [c.id, c.name]));
       financeTransactionsRef.current = rows;
@@ -599,6 +608,15 @@ export default function FinanceScreen() {
     }
   }, []);
 
+  const reloadFinanceTransactions = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
+        await loadFinanceTransactions();
+      }, forceApi);
+    },
+    [loadFinanceTransactions, wrapLoad],
+  );
+
   const loadFinanceAccounts = React.useCallback(async () => {
     try {
       const rows = await getFinanceAccountsWithBalance();
@@ -611,6 +629,15 @@ export default function FinanceScreen() {
     }
   }, []);
 
+  const reloadFinanceAccounts = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
+        await loadFinanceAccounts();
+      }, forceApi);
+    },
+    [loadFinanceAccounts, wrapLoad],
+  );
+
   React.useEffect(() => {
     return subscribeAutoLedgerUiState((state) => {
       setPendingAutoLedgers(state.pending);
@@ -621,6 +648,13 @@ export default function FinanceScreen() {
 
   React.useEffect(() => {
     return subscribeAutoLedgerCompleted(() => {
+      void reloadFinanceTransactions();
+      void reloadFinanceAccounts();
+    });
+  }, [reloadFinanceAccounts, reloadFinanceTransactions]);
+
+  React.useEffect(() => {
+    return subscribeFinanceSheetSaved(() => {
       void loadFinanceTransactions();
       void loadFinanceAccounts();
     });
@@ -637,7 +671,7 @@ export default function FinanceScreen() {
           onPress: async () => {
             try {
               await deleteFinanceTransaction(txnId);
-              await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+              await Promise.all([reloadFinanceTransactions(), reloadFinanceAccounts()]);
             } catch (error) {
               console.warn('Failed to delete finance transaction:', error);
               Alert.alert('删除失败', '请稍后重试。');
@@ -1542,7 +1576,8 @@ export default function FinanceScreen() {
   const formatCurrencyBalanceForAccount = React.useCallback(
     (acc: FinanceAccountBalanceRow) => {
       if (!showNetAmounts) return hiddenAmountText;
-      const v = acc.sign_rule < 0 ? Math.min(0, acc.balance ?? 0) : Math.max(0, acc.balance ?? 0);
+      const rule = normalizeFinanceSignRule(acc.sign_rule, acc.account_type);
+      const v = rule < 0 ? Math.min(0, acc.balance ?? 0) : Math.max(0, acc.balance ?? 0);
       return formatCurrencyBalance(v);
     },
     [formatCurrencyBalance, showNetAmounts]
@@ -1783,14 +1818,15 @@ export default function FinanceScreen() {
             );
             const transactionType = parsed.transaction_type;
             const amountAbs = parsed.amount;
-            const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
-            const boundsErr = validateFinanceLedgerBalanceAfterChange(
-              account.sign_rule,
-              account.balance ?? 0,
+            const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, amountAbs);
+            const boundsErr = await validateFinanceTransactionBeforeSave({
+              accountId: account.id,
               transactionType,
-              signedAmount,
-              null,
-            );
+              amount: signedAmount,
+              extraData: null,
+              accountName: account.name,
+              uiLedgerBalance: account.balance,
+            });
             if (boundsErr) {
               if (handoff) {
                 void notifyAutoLedgerFailure(boundsErr);
@@ -1831,7 +1867,7 @@ export default function FinanceScreen() {
                 attachments: [{ type: 'image', uri: imageDataUri }],
               }),
             });
-            await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+            await Promise.all([reloadFinanceTransactions(), reloadFinanceAccounts()]);
             return;
           } catch (error) {
             lastError =
@@ -2012,7 +2048,7 @@ export default function FinanceScreen() {
     React.useCallback(() => {
       setFinanceSheetBridge({
         open: (intent) => {
-          void loadFinanceAccounts().then(() => applyManualOrTransferSheetIntent(intent));
+          void reloadFinanceAccounts().then(() => applyManualOrTransferSheetIntent(intent));
         },
       });
       return () => setFinanceSheetBridge(null);
@@ -2022,7 +2058,7 @@ export default function FinanceScreen() {
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
-      void (async () => {
+      void wrapLoad(async () => {
         try {
           await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
           if (cancelled) return;
@@ -2050,11 +2086,11 @@ export default function FinanceScreen() {
         } catch (e) {
           console.warn('Finance tab focus refresh failed:', e);
         }
-      })();
+      }, true);
       return () => {
         cancelled = true;
       };
-    }, [loadFinanceAccounts, loadFinanceTransactions, applyManualOrTransferSheetIntent])
+    }, [applyManualOrTransferSheetIntent, loadFinanceAccounts, loadFinanceTransactions, wrapLoad])
   );
 
   const closeSheet = React.useCallback(() => {
@@ -2131,27 +2167,27 @@ export default function FinanceScreen() {
       const existingTxnIds = budgetFixedExpenseTxnIdsByFixedId.get(item.id) ?? [];
       const isUndo = existingTxnIds.length > 0;
 
-      if (!isUndo) {
-        const amountAbs = item.amount;
-        const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
-        const boundsErr = validateFinanceLedgerBalanceAfterChange(
-          account.sign_rule,
-          account.balance ?? 0,
-          'expense',
-          signedAmount,
-          null,
-        );
-        if (boundsErr) {
-          Alert.alert('无法记账', boundsErr);
-          return;
-        }
-      }
-
       fixedExpenseQuickPayLockRef.current.add(item.id);
       setPayingFixedExpenseId(item.id);
 
       void (async () => {
         try {
+          if (!isUndo) {
+            const amountAbs = item.amount;
+            const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, amountAbs);
+            const boundsErr = await validateFinanceTransactionBeforeSave({
+              accountId: account.id,
+              transactionType: 'expense',
+              amount: signedAmount,
+              extraData: null,
+              accountName: account.name,
+              uiLedgerBalance: account.balance,
+            });
+            if (boundsErr) {
+              Alert.alert('无法记账', boundsErr);
+              return;
+            }
+          }
           if (isUndo) {
             for (const txnId of existingTxnIds) {
               await deleteFinanceTransaction(txnId);
@@ -2160,7 +2196,7 @@ export default function FinanceScreen() {
             const cat = expenseCategories[0];
             const txnId = makeTimestampEntityId('ft_', 8);
             const amountAbs = item.amount;
-            const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
+            const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, amountAbs);
             await createFinanceTransaction({
               id: txnId,
               name: title,
@@ -2518,20 +2554,22 @@ export default function FinanceScreen() {
         counterparty_account_id: transferFromAccount.id,
         counterparty_account_name: fromName,
       });
-      const errFrom = validateFinanceLedgerBalanceAfterChange(
-        transferFromAccount.sign_rule,
-        transferFromAccount.balance ?? 0,
-        'transfer',
-        absAmount,
-        extraOut
-      );
-      const errTo = validateFinanceLedgerBalanceAfterChange(
-        transferToAccount.sign_rule,
-        transferToAccount.balance ?? 0,
-        'transfer',
-        absAmount,
-        extraIn
-      );
+      const errFrom = await validateFinanceTransactionBeforeSave({
+        accountId: transferFromAccount.id,
+        transactionType: 'transfer',
+        amount: absAmount,
+        extraData: extraOut,
+        accountName: transferFromAccount.name,
+        uiLedgerBalance: transferFromAccount.balance,
+      });
+      const errTo = await validateFinanceTransactionBeforeSave({
+        accountId: transferToAccount.id,
+        transactionType: 'transfer',
+        amount: absAmount,
+        extraData: extraIn,
+        accountName: transferToAccount.name,
+        uiLedgerBalance: transferToAccount.balance,
+      });
       if (errFrom || errTo) {
         Alert.alert('无法转账', errFrom ?? errTo ?? '转出或转入后账户余额不符合类型约束。');
         return;
@@ -2539,29 +2577,35 @@ export default function FinanceScreen() {
 
       try {
         setIsSavingTransaction(true);
-        await createFinanceTransaction({
-          id: idOut,
-          name: titleOut,
-          happened_at: happenedAt,
-          account_id: transferFromAccount.id,
-          transaction_type: 'transfer',
-          amount: absAmount,
-          note: noteTrim,
-          extra_data: extraOut,
-        });
-        await createFinanceTransaction({
-          id: idIn,
-          name: titleIn,
-          happened_at: happenedAt,
-          account_id: transferToAccount.id,
-          transaction_type: 'transfer',
-          amount: absAmount,
-          note: noteTrim,
-          extra_data: extraIn,
-        });
+        await createFinanceTransaction(
+          {
+            id: idOut,
+            name: titleOut,
+            happened_at: happenedAt,
+            account_id: transferFromAccount.id,
+            transaction_type: 'transfer',
+            amount: absAmount,
+            note: noteTrim,
+            extra_data: extraOut,
+          },
+          { skipBalanceRecheck: true },
+        );
+        await createFinanceTransaction(
+          {
+            id: idIn,
+            name: titleIn,
+            happened_at: happenedAt,
+            account_id: transferToAccount.id,
+            transaction_type: 'transfer',
+            amount: absAmount,
+            note: noteTrim,
+            extra_data: extraIn,
+          },
+          { skipBalanceRecheck: true },
+        );
         setIsSheetVisible(false);
         resetSheetForm('sentence');
-        await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+        notifyFinanceSheetSaved();
       } catch (error) {
         console.warn('Failed to create transfer transactions:', error);
         Alert.alert(
@@ -2590,88 +2634,87 @@ export default function FinanceScreen() {
       const includeInBudget = sheetIncludeInBudget;
       const manualAccount = selectedAccount;
 
-      setIsSheetVisible(false);
-      resetSheetForm('sentence');
-
-      void (async () => {
-        try {
-          const resolved = await resolveFinanceSentenceLine(line);
-          if (!resolved.ok) {
-            Alert.alert('无法识别', resolved.error);
-            return;
-          }
-          const parsed = resolved.parsed;
-          const defaults = sanitizeFinanceDefaultAccounts(
-            defaultAccountsRef.current,
-            financeAccountsRef.current,
-          );
-          const account =
-            resolved.source === 'ai'
-              ? pickAccountForAutoLedger(financeAccountsRef.current, parsed, defaults) ?? manualAccount
-              : manualAccount;
-          if (!account) {
-            Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
-            return;
-          }
-
-          const cat = pickSheetCategoryForParsed(
-            parsed.transaction_type,
-            parsed.category_label,
-            expenseCategories,
-            incomeCategories,
-          );
-          const transactionType = parsed.transaction_type;
-          const amountAbs = parsed.amount;
-          const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
-          const boundsErr = validateFinanceLedgerBalanceAfterChange(
-            account.sign_rule,
-            account.balance ?? 0,
-            transactionType,
-            signedAmount,
-            null,
-          );
-          if (boundsErr) {
-            Alert.alert('无法记账', boundsErr);
-            return;
-          }
-
-          try {
-            const txnId = makeTimestampEntityId('ft_', 8);
-            await createFinanceTransaction({
-              id: txnId,
-              name: parsed.name,
-              happened_at: happenedAtIso,
-              account_id: account.id,
-              transaction_type: transactionType,
-              amount: signedAmount,
-              note: line,
-              extra_data: JSON.stringify({
-                manual: true,
-                sentence: true,
-                parse_source: resolved.source,
-                category_key: cat.key,
-                category_label: cat.label,
-                attachments: null,
-                ...(transactionType === 'expense' && !includeInBudget ? { exclude_from_budget: true } : {}),
-              }),
-            });
-            await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-          } catch (error) {
-            console.warn('Failed to create finance transaction:', error);
-            Alert.alert(
-              '保存失败',
-              error instanceof Error && error.message.trim() ? error.message : '手动记账保存失败，请稍后重试。',
-            );
-          }
-        } catch (error) {
-          console.warn('Sentence ledger pipeline failed:', error);
-          Alert.alert(
-            '保存失败',
-            error instanceof Error && error.message.trim() ? error.message : '一句话记账处理失败，请稍后重试。',
-          );
+      setIsParsingSentence(true);
+      try {
+        const resolved = await resolveFinanceSentenceLine(line);
+        if (!resolved.ok) {
+          Alert.alert('无法识别', resolved.error);
+          return;
         }
-      })();
+        const parsed = resolved.parsed;
+        const defaults = sanitizeFinanceDefaultAccounts(
+          defaultAccountsRef.current,
+          financeAccountsRef.current,
+        );
+        const account = manualAccount;
+        const aiSuggestedAccount =
+          resolved.source === 'ai'
+            ? pickAccountForAutoLedger(financeAccountsRef.current, parsed, defaults)
+            : null;
+        if (!account) {
+          Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
+          return;
+        }
 
+        const cat = pickSheetCategoryForParsed(
+          parsed.transaction_type,
+          parsed.category_label,
+          expenseCategories,
+          incomeCategories,
+        );
+        const transactionType = parsed.transaction_type;
+        const amountAbs = parsed.amount;
+        const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, amountAbs);
+        const boundsErr = await validateFinanceTransactionBeforeSave({
+          accountId: account.id,
+          transactionType,
+          amount: signedAmount,
+          extraData: null,
+          accountName: account.name,
+          uiLedgerBalance: account.balance,
+        });
+        if (boundsErr) {
+          Alert.alert('无法记账', boundsErr);
+          return;
+        }
+
+        const txnId = makeTimestampEntityId('ft_', 8);
+        await createFinanceTransaction(
+          {
+            id: txnId,
+            name: parsed.name,
+            happened_at: happenedAtIso,
+            account_id: account.id,
+            transaction_type: transactionType,
+            amount: signedAmount,
+            note: line,
+            extra_data: JSON.stringify({
+              manual: true,
+              sentence: true,
+              parse_source: resolved.source,
+              category_key: cat.key,
+              category_label: cat.label,
+              attachments: null,
+              ...(aiSuggestedAccount && aiSuggestedAccount.id !== account.id
+                ? { ai_suggested_account_id: aiSuggestedAccount.id, ai_suggested_account_name: aiSuggestedAccount.name }
+                : {}),
+              ...(transactionType === 'expense' && !includeInBudget ? { exclude_from_budget: true } : {}),
+            }),
+          },
+          { skipBalanceRecheck: true },
+        );
+        setIsSheetVisible(false);
+        resetSheetForm('sentence');
+        notifyFinanceSheetSaved();
+      } catch (error) {
+        console.warn('Sentence ledger pipeline failed:', error);
+        Alert.alert(
+          '保存失败',
+          error instanceof Error && error.message.trim() ? error.message : '一句话记账处理失败，请稍后重试。',
+        );
+      } finally {
+        setIsParsingSentence(false);
+      }
       return;
     }
 
@@ -2680,14 +2723,19 @@ export default function FinanceScreen() {
       return;
     }
     const transactionType = activeSheetTab;
-    const signedAmount = selectedAccount.sign_rule > 0 ? amountNumber : -amountNumber;
-    const manualBoundsErr = validateFinanceLedgerBalanceAfterChange(
+    const signedAmount = financeSignedAmountForSave(
       selectedAccount.sign_rule,
-      selectedAccount.balance ?? 0,
-      transactionType,
-      signedAmount,
-      null
+      selectedAccount.account_type,
+      amountNumber,
     );
+    const manualBoundsErr = await validateFinanceTransactionBeforeSave({
+      accountId: selectedAccount.id,
+      transactionType,
+      amount: signedAmount,
+      extraData: null,
+      accountName: selectedAccount.name,
+      uiLedgerBalance: selectedAccount.balance,
+    });
     if (manualBoundsErr) {
       Alert.alert('无法记账', manualBoundsErr);
       return;
@@ -2698,25 +2746,28 @@ export default function FinanceScreen() {
     try {
       setIsSavingTransaction(true);
       const txnId = makeTimestampEntityId('ft_', 8);
-      await createFinanceTransaction({
-        id: txnId,
-        name: title,
-        happened_at: selectedHappenedAt.toISOString(),
-        account_id: selectedAccount.id,
-        transaction_type: transactionType,
-        amount: signedAmount,
-        note: sheetNote.trim() || null,
-        extra_data: JSON.stringify({
-          manual: true,
-          category_key: selectedCategory?.key ?? null,
-          category_label: selectedCategory?.label ?? null,
-          attachments: sheetImageUris.length ? sheetImageUris.map((uri) => ({ type: 'image', uri })) : null,
-          ...(transactionType === 'expense' && !sheetIncludeInBudget ? { exclude_from_budget: true } : {}),
-        }),
-      });
+      await createFinanceTransaction(
+        {
+          id: txnId,
+          name: title,
+          happened_at: selectedHappenedAt.toISOString(),
+          account_id: selectedAccount.id,
+          transaction_type: transactionType,
+          amount: signedAmount,
+          note: sheetNote.trim() || null,
+          extra_data: JSON.stringify({
+            manual: true,
+            category_key: selectedCategory?.key ?? null,
+            category_label: selectedCategory?.label ?? null,
+            attachments: sheetImageUris.length ? sheetImageUris.map((uri) => ({ type: 'image', uri })) : null,
+            ...(transactionType === 'expense' && !sheetIncludeInBudget ? { exclude_from_budget: true } : {}),
+          }),
+        },
+        { skipBalanceRecheck: true },
+      );
       setIsSheetVisible(false);
       resetSheetForm('sentence');
-      await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+      notifyFinanceSheetSaved();
     } catch (error) {
       console.warn('Failed to create finance transaction:', error);
       Alert.alert(

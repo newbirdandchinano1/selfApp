@@ -55,6 +55,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
@@ -468,7 +469,10 @@ const VisionCard = ({
   );
 };
 
+const PAGE_API_KEY = 'vision-wall';
+
 export default function VisionWallScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const colorScheme = useColorScheme();
   const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
@@ -501,6 +505,7 @@ export default function VisionWallScreen() {
   }, []);
 
   const loadWallEntries = useCallback(async () => {
+    await wrapLoad(async () => {
     try {
       const year = new Date().getFullYear();
       const [rows, dims, ctx, cached, user] = await Promise.all([
@@ -549,7 +554,8 @@ export default function VisionWallScreen() {
       setGoalDimensions([]);
       setPlanContext(null);
     }
-  }, []);
+    });
+  }, [wrapLoad]);
 
   const aiStale = useMemo(() => {
     if (!planContext || !aiAssessment || !aiCacheFingerprint) return false;

@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { createQuickAddItemMap, loadAllQuickAddItems, type QuickAddCardItem } from '@/lib/quick-add-cards';
 import { deleteHealthRecord, getHealthRecordById } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
@@ -136,7 +137,10 @@ function sourceLabel(row: HealthRecordRow, catalog: QuickAddCardItem[]): string 
   return map.get(row.quick_add_key)?.label ?? `快捷项 ${row.quick_add_key}`;
 }
 
+const PAGE_API_KEY = 'intake-record-detail';
+
 export default function IntakeRecordDetailScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -167,31 +171,32 @@ export default function IntakeRecordDetailScreen() {
     }
     setLoading(true);
     try {
-      const [user, items, rec] = await Promise.all([
-        getDefaultUser(),
-        loadAllQuickAddItems(),
-        getHealthRecordById(recordId.trim()),
-      ]);
-      setCatalog(items);
-      if (!rec || !user?.id || rec.user_id !== user.id) {
-        setRow(null);
-        setForbidden(Boolean(rec && user?.id && rec.user_id !== user.id));
-        setLoading(false);
-        return;
-      }
-      if (dateYmd && rec.record_date !== dateYmd) {
-        /* 仍展示记录，仅日期 param 用于返回上下文 */
-      }
-      setRow(rec);
-      setFocusMetric(resolveFocusMetric(rec, parseMetricParam(metricParam)));
-      setImageLoadError(false);
+      await wrapLoad(async () => {
+        const [user, items, rec] = await Promise.all([
+          getDefaultUser(),
+          loadAllQuickAddItems(),
+          getHealthRecordById(recordId.trim()),
+        ]);
+        setCatalog(items);
+        if (!rec || !user?.id || rec.user_id !== user.id) {
+          setRow(null);
+          setForbidden(Boolean(rec && user?.id && rec.user_id !== user.id));
+          return;
+        }
+        if (dateYmd && rec.record_date !== dateYmd) {
+          /* 仍展示记录，仅日期 param 用于返回上下文 */
+        }
+        setRow(rec);
+        setFocusMetric(resolveFocusMetric(rec, parseMetricParam(metricParam)));
+        setImageLoadError(false);
+      });
     } catch {
       setRow(null);
       setForbidden(false);
     } finally {
       setLoading(false);
     }
-  }, [recordId, dateYmd, metricParam]);
+  }, [recordId, dateYmd, metricParam, wrapLoad]);
 
   useFocusEffect(
     React.useCallback(() => {

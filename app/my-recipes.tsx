@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   createRecipeCategory,
   deleteRecipe,
@@ -45,8 +46,11 @@ function formatRelativeTime(iso: string): string {
   return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
 }
 
+const PAGE_API_KEY = 'my-recipes';
+
 export default function MyRecipesScreen() {
   const router = useRouter();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
@@ -76,15 +80,17 @@ export default function MyRecipesScreen() {
 
   const reload = useCallback(async () => {
     try {
-      const s = await loadRecipeStore();
-      setStore(s);
+      await wrapLoad(async () => {
+        const s = await loadRecipeStore();
+        setStore(s);
+      });
     } catch {
       Alert.alert('加载失败', '请稍后重试');
       setStore({ version: 2, categories: [], recipes: [] });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [wrapLoad]);
 
   useFocusEffect(
     useCallback(() => {

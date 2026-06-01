@@ -12,6 +12,12 @@ import {
 
   upsertProjectCategoriesReferencedByProjects,
 
+  upsertFinanceAccountsReferencedByTransactions,
+
+  upsertMemoDimensionsReferencedByMemos,
+
+  upsertHabitsReferencedByCheckIns,
+
   upsertProjectsReferencedByTasks,
 
   upsertRowToApi,
@@ -37,6 +43,10 @@ import {
   collectLocalTablesDataForUpload,
 
   ensureProjectCategoryRefsForApiUpload,
+
+  ensureFinanceAccountRefsForApiUpload,
+
+  ensureMemoDimensionRefsForApiUpload,
 
   ensureTaskCategoryMirrorForApiUpload,
 
@@ -335,10 +345,18 @@ export async function triggerApiFullUpload(opts?: {
   const idRemap = buildMysqlIdRemapForUpload(rowsByTable, pkColsByTable);
 
   applyMysqlIdRemapToUploadBundle(rowsByTable, idRemap);
+  if (idRemap.size > 0) {
+    const { applyEntityIdRemapToLocalDatabase } = await import('@/lib/entity-id-migrate');
+    await applyEntityIdRemapToLocalDatabase(idRemap);
+  }
 
   ensureProjectCategoryRefsForApiUpload(rowsByTable);
 
   ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+
+  await ensureFinanceAccountRefsForApiUpload(rowsByTable);
+
+  await ensureMemoDimensionRefsForApiUpload(rowsByTable);
 
 
 
@@ -436,6 +454,50 @@ export async function triggerApiFullUpload(opts?: {
 
 
 
+      if (table === 'memos') {
+
+        await upsertMemoDimensionsReferencedByMemos(
+
+          rows,
+
+          rowsByTable,
+
+          pkColsByTable,
+
+          uploadedPkByTable,
+
+          fkRefsByTable,
+
+          opts?.signal,
+
+        );
+
+      }
+
+
+
+      if (table === 'finance_transactions') {
+
+        await upsertFinanceAccountsReferencedByTransactions(
+
+          rows,
+
+          rowsByTable,
+
+          pkColsByTable,
+
+          uploadedPkByTable,
+
+          fkRefsByTable,
+
+          opts?.signal,
+
+        );
+
+      }
+
+
+
       if (table === 'tasks') {
 
         await upsertTaskCategoriesReferencedByTasks(
@@ -455,6 +517,28 @@ export async function triggerApiFullUpload(opts?: {
         );
 
         await upsertProjectsReferencedByTasks(
+
+          rows,
+
+          rowsByTable,
+
+          pkColsByTable,
+
+          uploadedPkByTable,
+
+          fkRefsByTable,
+
+          opts?.signal,
+
+        );
+
+      }
+
+
+
+      if (table === 'habit_check_ins') {
+
+        await upsertHabitsReferencedByCheckIns(
 
           rows,
 

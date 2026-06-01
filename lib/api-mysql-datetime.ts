@@ -52,6 +52,9 @@ export function normalizeDeepForMysqlApi(value: unknown, fieldKey?: string): unk
       }
     }
     if (shouldNormalizeDateTimeString(value, fieldKey)) {
+      const trimmed = value.trim();
+      /** MySQL DATE 列：纯 YYYY-MM-DD 保持原样，勿追加时间 */
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
       return normalizeDateTimeStringForMysql(value);
     }
     return value;

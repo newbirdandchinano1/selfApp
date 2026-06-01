@@ -40,8 +40,9 @@ import {
 } from '@/lib/finance-transaction-sheet/helpers';
 import {
     createFinanceTransaction,
+    financeSignedAmountForSave,
     getFinanceAccountsWithBalance,
-    validateFinanceLedgerBalanceAfterChange,
+    validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
 import {
     financeSheetCategoryRowToSheetCategory,
@@ -292,14 +293,15 @@ export async function processAutoLedgerFromImage(
           );
           const transactionType = parsed.transaction_type;
           const amountAbs = parsed.amount;
-          const signedAmount = account.sign_rule > 0 ? amountAbs : -amountAbs;
-          const boundsErr = validateFinanceLedgerBalanceAfterChange(
-            account.sign_rule,
-            account.balance ?? 0,
+          const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, amountAbs);
+          const boundsErr = await validateFinanceTransactionBeforeSave({
+            accountId: account.id,
             transactionType,
-            signedAmount,
-            null,
-          );
+            amount: signedAmount,
+            extraData: null,
+            accountName: account.name,
+            uiLedgerBalance: account.balance,
+          });
           if (boundsErr) {
             reportAutoLedgerError(boundsErr, opts);
             return;

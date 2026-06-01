@@ -1,6 +1,7 @@
 import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui/screen-header';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { getHabitCheckInListStats } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
@@ -29,10 +30,13 @@ type HabitGroup = {
 
 type ContextTab = { id: string; name: string; count: number };
 
+const PAGE_API_KEY = 'habit-manage';
+
 export default function HabitManageScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, isDark, shadows } = useAppTheme();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
 
   const [habitData, setHabitData] = React.useState<HabitGroup[]>([]);
   const [contextTabs, setContextTabs] = React.useState<ContextTab[]>([]);
@@ -42,6 +46,7 @@ export default function HabitManageScreen() {
   const [menuTarget, setMenuTarget] = React.useState<{ groupCategory: string; item: HabitItem } | null>(null);
 
   const loadHabits = React.useCallback(async () => {
+    await wrapLoad(async () => {
     try {
       const [rows, checkStats] = await Promise.all([getHabits(), getHabitCheckInListStats()]);
       const byCtx = new Map<string, HabitItem[]>();
@@ -88,7 +93,8 @@ export default function HabitManageScreen() {
       setHabitData([]);
       setContextTabs([]);
     }
-  }, []);
+    });
+  }, [wrapLoad]);
 
   useFocusEffect(
     React.useCallback(() => {

@@ -57,7 +57,12 @@ export async function getDefaultUser() {
   const computed = computeAgeFromBirthdayIso(row.birthday);
   if (row.age !== computed) {
     const db = await getDatabase();
-    await db.runAsync(`UPDATE users SET age = ?, updated_at = datetime('now') WHERE id = ?`, [computed, 'default']);
+    await db.runAsync(
+      `UPDATE users SET age = ?, updated_at = datetime('now'),
+       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+       WHERE id = ?`,
+      [computed, 'default'],
+    );
     notifyDefaultUserUpdated();
     return { ...row, age: computed };
   }
@@ -114,7 +119,11 @@ export async function updateDefaultUser(input: UpdateDefaultUserInput) {
   }
   if (columnSet.has('birthday')) updatable.push({ sql: 'birthday = ?', value: input.birthday ?? null });
 
-  const assignments = [...updatable.map((f) => f.sql), "updated_at = datetime('now')"].join(', ');
+  const assignments = [
+    ...updatable.map((f) => f.sql),
+    "updated_at = datetime('now')",
+    "sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END",
+  ].join(', ');
   const values = [...updatable.map((f) => f.value), 'default'];
   await db.runAsync(
     `UPDATE users

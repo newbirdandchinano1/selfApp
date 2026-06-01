@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { listEarnedRewards, redeemEarnedReward, unredeemEarnedReward } from '@/lib/repositories/earned-rewards/earned-reward';
 import type { EarnedRewardRow } from '@/lib/repositories/earned-rewards/earned-reward.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -26,6 +27,8 @@ function sourceTypeLabel(type: EarnedRewardRow['source_type']): string {
   return type === 'project' ? '项目' : '任务';
 }
 
+const PAGE_API_KEY = 'earned-rewards';
+
 export default function EarnedRewardsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -46,17 +49,20 @@ export default function EarnedRewardsScreen() {
   const [items, setItems] = useState<EarnedRewardRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [redeemingId, setRedeemingId] = useState<string | null>(null);
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
 
   const reload = useCallback(async () => {
     try {
-      const rows = await listEarnedRewards();
-      setItems(rows);
+      await wrapLoad(async () => {
+        const rows = await listEarnedRewards();
+        setItems(rows);
+      });
     } catch {
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [wrapLoad]);
 
   useFocusEffect(
     useCallback(() => {

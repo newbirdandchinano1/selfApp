@@ -9,6 +9,7 @@ import { type HabitKind, parseHabitKind } from '@/lib/repositories/habits/habit-
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -138,7 +139,10 @@ function NumberControl({
   );
 }
 
+const PAGE_API_KEY = 'add-habit';
+
 export default function AddHabitScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const params = useLocalSearchParams<{
     mode?: string;
@@ -185,6 +189,7 @@ export default function AddHabitScreen() {
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
 
   const loadContexts = React.useCallback(async () => {
+    await wrapLoad(async () => {
     try {
       const rows = await getHabitContexts();
       const names = rows.map((r) => r.name);
@@ -202,7 +207,8 @@ export default function AddHabitScreen() {
     } catch (err) {
       console.warn('加载情境分类失败', err);
     }
-  }, [isEditMode]);
+    });
+  }, [isEditMode, wrapLoad]);
 
   useFocusEffect(
     React.useCallback(() => {

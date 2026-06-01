@@ -5,6 +5,7 @@ import { isWishItemFulfilled } from '@/lib/repositories/wish-list/wish-list-extr
 import { getDepositSumsByActivePlanId } from '@/lib/repositories/savings-plan/savings-plan-deposit';
 import { deleteWishItem, listWishItems, setWishItemFulfilled } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   deleteLinkedPlanForWish,
   getLinkedSavingsPlanId,
@@ -28,6 +29,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 
 const quarterTarget = 120_000;
+const WISH_LIST_PAGE_KEY = 'wish-list';
 
 function formatCny(value: number): string {
   return `¥ ${value.toLocaleString('zh-CN')}`;
@@ -140,22 +142,36 @@ export default function WishListScreen() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const rationalRunRef = useRef(0);
+  const savingsLinksRepairedRef = useRef(false);
+  const { wrapLoad, resetSync } = usePageApiSync(WISH_LIST_PAGE_KEY);
 
-  const reload = useCallback(async () => {
-    setLoadError(null);
-    try {
-      await repairWishSavingsLinks();
-      const [rows, deposits] = await Promise.all([listWishItems(), getDepositSumsByActivePlanId()]);
-      setItems(rows);
-      setDepositByPlanId(deposits);
-    } catch {
-      setLoadError('加载失败，请点击重试');
-      setItems([]);
-      setDepositByPlanId({});
-    } finally {
-      setInitialLoading(false);
-    }
-  }, []);
+  const reload = useCallback(
+    async (forceApi = false) => {
+      setLoadError(null);
+      try {
+        await wrapLoad(async () => {
+          if (!savingsLinksRepairedRef.current) {
+            try {
+              await repairWishSavingsLinks();
+              savingsLinksRepairedRef.current = true;
+            } catch (e) {
+              if (__DEV__) console.warn('[wish-list] repairWishSavingsLinks failed', e);
+            }
+          }
+          const [rows, deposits] = await Promise.all([listWishItems(), getDepositSumsByActivePlanId()]);
+          setItems(rows);
+          setDepositByPlanId(deposits);
+        }, forceApi);
+      } catch {
+        setLoadError('加载失败，请点击重试');
+        setItems([]);
+        setDepositByPlanId({});
+      } finally {
+        setInitialLoading(false);
+      }
+    },
+    [wrapLoad],
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -288,7 +304,7 @@ export default function WishListScreen() {
   }, []);
 
   const requestDeleteWish = useCallback((row: WishItemRow) => {
-    Alert.alert('删除心愿', `确定删除「${row.name}」？此操作不可恢复。`, [
+    Alert.alert('删除心愿', `确定删除「${row.name}」？关联的存钱计划将一并删除，此操作不可恢复。`, [
       { text: '取消', style: 'cancel' },
       {
         text: '删除',
@@ -333,7 +349,13 @@ export default function WishListScreen() {
       ) : null}
 
       {loadError ? (
-        <Pressable onPress={() => void reload()} style={[styles.errorBanner, { borderColor: colors.outline }]}>
+        <Pressable
+          onPress={() => {
+            resetSync();
+            savingsLinksRepairedRef.current = false;
+            void reload(true);
+          }}
+          style={[styles.errorBanner, { borderColor: colors.outline }]}>
           <Text style={[Typography.bodyStrong, { color: colors.text }]}>{loadError}</Text>
           <Text style={[Typography.caption, { color: colors.primary }]}>点击重试</Text>
         </Pressable>

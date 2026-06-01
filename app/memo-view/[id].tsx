@@ -1,6 +1,7 @@
 import { MemoFormattedBody } from '@/components/memo/memo-formatted-body';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { memoHasAiReview } from '@/lib/memo-format';
 import {
     getMemo,
@@ -28,7 +29,10 @@ function normalizeId(raw: string | string[] | undefined): string {
   return '';
 }
 
+const PAGE_API_KEY = 'memo-view';
+
 export default function MemoViewScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { id: idParam } = useLocalSearchParams<{ id: string }>();
@@ -58,6 +62,7 @@ export default function MemoViewScreen() {
       return;
     }
     try {
+      await wrapLoad(async () => {
       const item = await getMemo(id);
       if (!item) {
         Alert.alert('未找到', '该备忘可能已删除', [{ text: '确定', onPress: () => router.back() }]);
@@ -65,12 +70,13 @@ export default function MemoViewScreen() {
         return;
       }
       setRow(item);
+      });
     } catch {
       Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
     } finally {
       setLoading(false);
     }
-  }, [id, router]);
+  }, [id, router, wrapLoad]);
 
   useFocusEffect(
     useCallback(() => {

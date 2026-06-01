@@ -13,6 +13,7 @@ import {
 } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate, ReviewTemplateScope } from '@/lib/repositories/insights/review-template.types';
 import { MaterialIcons } from '@expo/vector-icons';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useFocusEffect } from '@react-navigation/native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -50,7 +51,10 @@ type EditorState = {
   placeholder: string;
 };
 
+const PAGE_API_KEY = 'review-template-settings';
+
 export default function ReviewTemplateSettingsScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { scope: scopeParam } = useLocalSearchParams<{ scope?: string }>();
@@ -94,18 +98,20 @@ export default function ReviewTemplateSettingsScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const rows = await listReviewTemplate(scope);
-      setTemplate(rows);
-      setExpandedDimId(prev => {
-        if (prev && rows.some(d => d.id === prev)) return prev;
-        return rows.length > 0 ? rows[0].id : null;
+      await wrapLoad(async () => {
+        const rows = await listReviewTemplate(scope);
+        setTemplate(rows);
+        setExpandedDimId(prev => {
+          if (prev && rows.some(d => d.id === prev)) return prev;
+          return rows.length > 0 ? rows[0].id : null;
+        });
       });
     } catch {
       Alert.alert('加载失败', '请稍后重试');
     } finally {
       setLoading(false);
     }
-  }, [scope]);
+  }, [scope, wrapLoad]);
 
   useEffect(() => {
     void load();

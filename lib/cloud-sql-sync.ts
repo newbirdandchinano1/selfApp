@@ -661,6 +661,88 @@ export function ensureProjectCategoryRefsForApiUpload(
   rowsByTable.set('project_categories', merged);
 }
 
+/** 财务流水 account_id 引用 finance_accounts；补全待上传 bundle 中的账户行（含已 synced 但服务端缺失的账户） */
+export async function ensureFinanceAccountRefsForApiUpload(
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+): Promise<void> {
+  const txnRows = rowsByTable.get('finance_transactions') ?? [];
+  if (txnRows.length === 0) return;
+
+  const neededIds = new Set<string>();
+  for (const row of txnRows) {
+    const aid = row.account_id;
+    if (aid != null && aid !== '') neededIds.add(String(aid));
+  }
+  if (neededIds.size === 0) return;
+
+  const existing = rowsByTable.get('finance_accounts') ?? [];
+  const byId = new Map(
+    existing
+      .filter(r => r.id != null && r.id !== '')
+      .map(r => [String(r.id), r]),
+  );
+
+  const db = await getDatabase();
+  if (!db) return;
+
+  for (const id of neededIds) {
+    if (byId.has(id)) continue;
+    const row = await db.getFirstAsync<Record<string, unknown>>(
+      'SELECT * FROM finance_accounts WHERE id = ? LIMIT 1',
+      [id],
+    );
+    if (row) {
+      existing.push(row);
+      byId.set(id, row);
+    }
+  }
+
+  if (existing.length > 0) {
+    rowsByTable.set('finance_accounts', existing);
+  }
+}
+
+/** 备忘 dimension_id 引用 memo_dimensions；补全待上传 bundle 中的维度行 */
+export async function ensureMemoDimensionRefsForApiUpload(
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+): Promise<void> {
+  const memoRows = rowsByTable.get('memos') ?? [];
+  if (memoRows.length === 0) return;
+
+  const neededIds = new Set<string>();
+  for (const row of memoRows) {
+    const did = row.dimension_id;
+    if (did != null && did !== '') neededIds.add(String(did));
+  }
+  if (neededIds.size === 0) return;
+
+  const existing = rowsByTable.get('memo_dimensions') ?? [];
+  const byId = new Map(
+    existing
+      .filter(r => r.id != null && r.id !== '')
+      .map(r => [String(r.id), r]),
+  );
+
+  const db = await getDatabase();
+  if (!db) return;
+
+  for (const id of neededIds) {
+    if (byId.has(id)) continue;
+    const row = await db.getFirstAsync<Record<string, unknown>>(
+      'SELECT * FROM memo_dimensions WHERE id = ? LIMIT 1',
+      [id],
+    );
+    if (row) {
+      existing.push(row);
+      byId.set(id, row);
+    }
+  }
+
+  if (existing.length > 0) {
+    rowsByTable.set('memo_dimensions', existing);
+  }
+}
+
 /** 内置收集箱优先，供 REST 上传 project_categories 时使用 */
 export function sortProjectCategoriesForApiUpload(
   rows: Record<string, unknown>[],
@@ -1216,6 +1298,9 @@ export async function triggerCloudFullRestore(opts?: {
     await setLastFullCloudBackupAtIso(cloudLastUpdated);
     await setLastCloudAlignAtIso(cloudLastUpdated);
     clearAllCloudSqliteDirtyTables();
+
+    const { resetPageApiSession } = await import('@/lib/page-api-session');
+    resetPageApiSession();
 
     return {
       ok: true,

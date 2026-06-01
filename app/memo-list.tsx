@@ -19,6 +19,7 @@ import {
 } from '@/lib/memos';
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
@@ -35,6 +36,8 @@ import {
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+const MEMO_LIST_PAGE_KEY = 'memo-list';
 
 function sortByOrderThenTime<T extends { sort_order: number; updated_at: string }>(items: T[]): T[] {
   return [...items].sort((a, b) => a.sort_order - b.sort_order || b.updated_at.localeCompare(a.updated_at));
@@ -77,24 +80,33 @@ export default function MemoListScreen() {
   const [convertingMemoId, setConvertingMemoId] = useState<string | null>(null);
 
   const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
+  const { wrapLoad, resetSync } = usePageApiSync(MEMO_LIST_PAGE_KEY);
 
-  const reload = useCallback(async () => {
-    setError(null);
-    try {
-      const dims = sortByOrderThenTime(await listMemoDimensions());
-      setDimensions(dims);
-      const activeId = selectedDimensionId && dims.some(d => d.id === selectedDimensionId) ? selectedDimensionId : dims[0]?.id ?? null;
-      if (activeId !== selectedDimensionId) setSelectedDimensionId(activeId);
-      setItems(activeId ? await listMemos(activeId) : []);
-    } catch {
-      setError('加载失败，请重试');
-      setDimensions([]);
-      setItems([]);
-      setSelectedDimensionId(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedDimensionId]);
+  const reload = useCallback(
+    async (forceApi = false) => {
+      setError(null);
+      try {
+        await wrapLoad(async () => {
+          const dims = sortByOrderThenTime(await listMemoDimensions());
+          setDimensions(dims);
+          const activeId =
+            selectedDimensionId && dims.some(d => d.id === selectedDimensionId)
+              ? selectedDimensionId
+              : dims[0]?.id ?? null;
+          if (activeId !== selectedDimensionId) setSelectedDimensionId(activeId);
+          setItems(activeId ? await listMemos(activeId) : []);
+        }, forceApi);
+      } catch {
+        setError('加载失败，请重试');
+        setDimensions([]);
+        setItems([]);
+        setSelectedDimensionId(null);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [wrapLoad, selectedDimensionId],
+  );
 
   useFocusEffect(useCallback(() => {
     void reload();
@@ -151,27 +163,55 @@ export default function MemoListScreen() {
     }
   }, [closeDimensionModal, dimensionName, editingDimension]);
 
+  const performDeleteDimension = useCallback(async (dimension: MemoDimension) => {
+    setDimensionSaving(true);
+    try {
+      const ok = await deleteMemoDimension(dimension.id);
+      if (!ok) {
+        Alert.alert('删除失败', '该维度可能已删除');
+        return;
+      }
+      const nextDims = dimensions.filter(d => d.id !== dimension.id);
+      setDimensions(nextDims);
+      if (selectedDimensionId === dimension.id) {
+        const nextId = nextDims[0]?.id ?? null;
+        setSelectedDimensionId(nextId);
+        setItems(nextId ? await listMemos(nextId) : []);
+      } else {
+        setItems(prev => prev.filter(m => m.dimension_id !== dimension.id));
+      }
+      if (editingDimension?.id === dimension.id) {
+        closeDimensionModal();
+      }
+    } catch {
+      Alert.alert('删除失败', '请稍后重试');
+    } finally {
+      setDimensionSaving(false);
+    }
+  }, [closeDimensionModal, dimensions, editingDimension, selectedDimensionId]);
+
   const requestDeleteDimension = useCallback((dimension: MemoDimension) => {
-    Alert.alert('删除维度', `确定删除维度「${dimension.name}」吗？该维度下的所有备忘也会一起删除。`, [
+    const label = dimension.name.trim() || '未命名维度';
+    Alert.alert('删除维度', `确定删除维度「${label}」吗？该维度下的所有备忘也会一起删除。`, [
       { text: '取消', style: 'cancel' },
       {
         text: '删除',
         style: 'destructive',
         onPress: () => {
-          void (async () => {
-            try {
-              await deleteMemoDimension(dimension.id);
-              setDimensions(prev => prev.filter(d => d.id !== dimension.id));
-              setItems(prev => prev.filter(m => m.dimension_id !== dimension.id));
-              setSelectedDimensionId(prev => (prev === dimension.id ? null : prev));
-            } catch {
-              Alert.alert('删除失败', '请稍后重试');
-            }
-          })();
+          void performDeleteDimension(dimension);
         },
       },
     ]);
-  }, []);
+  }, [performDeleteDimension]);
+
+  const openDimensionActions = useCallback((dimension: MemoDimension) => {
+    const label = dimension.name.trim() || '未命名维度';
+    Alert.alert(label, '管理该维度', [
+      { text: '编辑名称', onPress: () => openEditDimension(dimension) },
+      { text: '删除维度', style: 'destructive', onPress: () => requestDeleteDimension(dimension) },
+      { text: '取消', style: 'cancel' },
+    ]);
+  }, [openEditDimension, requestDeleteDimension]);
 
   const runAiForMemo = useCallback(async (row: MemoItem): Promise<{ ok: true } | { ok: false; error: string }> => {
     const key = getActiveAiLlmApiKey().trim();
@@ -257,6 +297,8 @@ export default function MemoListScreen() {
             <Pressable
               key={d.id}
               onPress={() => setSelectedDimensionId(d.id)}
+              onLongPress={() => openDimensionActions(d)}
+              delayLongPress={380}
               style={({ pressed }) => [
                 styles.dimensionPill,
                 {
@@ -268,7 +310,7 @@ export default function MemoListScreen() {
             >
               <MaterialIcons name="folder-special" size={16} color={active ? primary : outline} />
               <Text style={[styles.dimensionPillText, { color: active ? primary : text }]} numberOfLines={1}>
-                {d.name}
+                {d.name.trim() || '未命名维度'}
               </Text>
             </Pressable>
           );
@@ -281,9 +323,9 @@ export default function MemoListScreen() {
           <Text style={[styles.dimensionPillText, { color: primary }]}>新建维度</Text>
         </Pressable>
       </ScrollView>
-      <Text style={[styles.pageHint, { color: outline }]}>顶部可筛选维度；右上角在当前维度下新建备忘，或在未选中时新建维度。</Text>
+      <Text style={[styles.pageHint, { color: outline }]}>点击切换维度；长按维度可编辑或删除。右上角在当前维度下新建备忘。</Text>
     </View>
-  ), [borderSoft, cardBg, dimensions, isDark, openCreateDimension, outline, primary, selectedDimensionId, text]);
+  ), [borderSoft, cardBg, dimensions, isDark, openCreateDimension, openDimensionActions, outline, primary, selectedDimensionId, text]);
 
   const renderItem = useCallback(({ item }: { item: MemoItem }) => {
     const isConverting = convertingMemoId === item.id;
@@ -330,7 +372,7 @@ export default function MemoListScreen() {
     );
   }, [borderSoft, cardBg, convertingMemoId, onDeleteMemo, openAiModal, performConvertToTodo, outline, primary, router, secondary, tertiary, text]);
 
-  const currentDimensionLabel = selectedDimension?.name ?? '备忘录';
+  const currentDimensionLabel = selectedDimension?.name.trim() || '备忘录';
 
   return (
     <View style={[styles.container, { backgroundColor: bg }]}>
@@ -348,7 +390,13 @@ export default function MemoListScreen() {
           <Pressable style={styles.roundIconBtn} onPress={() => router.back()}>
             <MaterialIcons name="arrow-back-ios-new" size={20} color={primary} />
           </Pressable>
-          <Text style={[styles.topBarTitle, { color: text }]} numberOfLines={1}>{currentDimensionLabel}</Text>
+          <Pressable
+            style={styles.topBarTitleWrap}
+            onLongPress={selectedDimension ? () => openDimensionActions(selectedDimension) : undefined}
+            delayLongPress={380}
+          >
+            <Text style={[styles.topBarTitle, { color: text }]} numberOfLines={1}>{currentDimensionLabel}</Text>
+          </Pressable>
           <Pressable style={styles.roundIconBtn} onPress={selectedDimensionId ? openNewMemo : openCreateDimension}>
             <MaterialIcons name={selectedDimensionId ? 'add' : 'folder-plus'} size={26} color={primary} />
           </Pressable>
@@ -356,7 +404,12 @@ export default function MemoListScreen() {
       </View>
 
       {error ? (
-        <Pressable onPress={() => void reload()} style={[styles.errorBanner, { borderColor: borderSoft }]}>
+        <Pressable
+          onPress={() => {
+            resetSync();
+            void reload(true);
+          }}
+          style={[styles.errorBanner, { borderColor: borderSoft }]}>
           <Text style={[styles.errorText, { color: text }]}>{error}</Text>
           <Text style={[styles.errorRetry, { color: primary }]}>点击重试</Text>
         </Pressable>
@@ -404,6 +457,19 @@ export default function MemoListScreen() {
               editable={!dimensionSaving}
               autoFocus
             />
+            {editingDimension ? (
+              <Pressable
+                onPress={() => requestDeleteDimension(editingDimension)}
+                disabled={dimensionSaving}
+                style={({ pressed }) => [
+                  styles.dimensionDeleteBtn,
+                  { borderColor: borderSoft, opacity: dimensionSaving ? 0.55 : pressed ? 0.88 : 1 },
+                ]}
+              >
+                <MaterialIcons name="delete-outline" size={20} color="#dc2626" />
+                <Text style={styles.dimensionDeleteText}>删除此维度及下属备忘</Text>
+              </Pressable>
+            ) : null}
             <View style={styles.dimensionModalActions}>
               <Pressable onPress={closeDimensionModal} disabled={dimensionSaving} style={styles.modalCancelBtn}>
                 <Text style={[styles.modalCancelText, { color: outline }]}>取消</Text>
@@ -485,6 +551,13 @@ const styles = StyleSheet.create({
   topBarTitle: {
     fontSize: 17,
     fontWeight: '800',
+  },
+  topBarTitleWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    minHeight: 40,
   },
   errorBanner: {
     marginHorizontal: 16,
@@ -594,6 +667,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
+  dimensionDeleteBtn: {
+    marginTop: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  dimensionDeleteText: { color: '#dc2626', fontSize: 14, fontWeight: '800' },
   dimensionModalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 18 },
   modalCancelBtn: { paddingHorizontal: 14, paddingVertical: 11 },
   modalCancelText: { fontSize: 15, fontWeight: '800' },

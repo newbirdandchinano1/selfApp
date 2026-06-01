@@ -31,6 +31,7 @@ import {
 } from '@/lib/repositories/insights/weekly-review-journal';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
 import { MaterialIcons } from '@expo/vector-icons';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useFocusEffect } from '@react-navigation/native';
 import { Stack, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
@@ -76,8 +77,11 @@ function isDailyReviewEditableYmd(ymd: string, todayYmd: string): boolean {
   return ymd <= todayYmd;
 }
 
+const PAGE_API_KEY = 'weekly-review';
+
 export default function WeeklyReviewScreen() {
   const { logicalTodayYmd: todayYmd } = useDayBoundary();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
@@ -123,6 +127,7 @@ export default function WeeklyReviewScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      await wrapLoad(async () => {
       const [dailyTpl, weeklyTpl] = await Promise.all([
         listReviewTemplate('daily'),
         listReviewTemplate('weekly'),
@@ -220,6 +225,7 @@ export default function WeeklyReviewScreen() {
         setAdjustSavings(false);
         setAdjustPlans(false);
       }
+      });
     } catch {
       setMetrics(null);
       setDailyEntries([]);
@@ -227,7 +233,7 @@ export default function WeeklyReviewScreen() {
     } finally {
       setLoading(false);
     }
-  }, [todayYmd]);
+  }, [todayYmd, wrapLoad]);
 
   useFocusEffect(
     useCallback(() => {

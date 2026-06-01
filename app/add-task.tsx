@@ -14,6 +14,7 @@ import {
 } from '@/components/composer';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getProjectById } from '@/lib/repositories/projects/project';
@@ -221,7 +222,10 @@ function resolveStandaloneStatusOnSave(previous: string, intent: 'active' | 'she
   return 'todo';
 }
 
+const PAGE_API_KEY = 'add-task';
+
 export default function AddTaskScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const params = useLocalSearchParams<{
     source?: string;
@@ -361,48 +365,37 @@ export default function AddTaskScreen() {
     setScheduleMeta(null);
   }, []);
 
-  React.useEffect(() => {
-    if (!isEditStandalone || !editTaskId) return;
-    let cancelled = false;
-    (async () => {
-      setLoadingEdit(true);
-      try {
-        const task = await getTaskById(editTaskId);
-        if (cancelled) return;
-        if (!task || !isStandaloneTodoTask(task)) {
-          Alert.alert('待办不存在', '未找到对应待办，可能已被删除。');
-          router.back();
-          return;
+  const reloadAddTaskData = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
+        if (isEditStandalone && editTaskId) {
+          setLoadingEdit(true);
+          try {
+            const task = await getTaskById(editTaskId);
+            if (!task || !isStandaloneTodoTask(task)) {
+              Alert.alert('待办不存在', '未找到对应待办，可能已被删除。');
+              router.back();
+              return;
+            }
+            applyLoadedStandaloneTask(task);
+          } catch (error) {
+            console.warn('加载待办失败', error);
+            Alert.alert('加载失败', '无法读取待办，请稍后重试。');
+            router.back();
+          } finally {
+            setLoadingEdit(false);
+          }
         }
-        applyLoadedStandaloneTask(task);
-      } catch (error) {
-        console.warn('加载待办失败', error);
-        if (!cancelled) {
-          Alert.alert('加载失败', '无法读取待办，请稍后重试。');
-          router.back();
+        if (quickProjectId) {
+          const project = await getProjectById(quickProjectId);
+          setProjectName(project?.name?.trim() || null);
+        } else {
+          setProjectName(null);
         }
-      } finally {
-        if (!cancelled) setLoadingEdit(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [applyLoadedStandaloneTask, editTaskId, isEditStandalone, router]);
-
-  React.useEffect(() => {
-    if (!quickProjectId) {
-      setProjectName(null);
-      return;
-    }
-    let cancelled = false;
-    void getProjectById(quickProjectId).then((project) => {
-      if (!cancelled) setProjectName(project?.name?.trim() || null);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [quickProjectId]);
+      }, forceApi);
+    },
+    [applyLoadedStandaloneTask, editTaskId, isEditStandalone, quickProjectId, router, wrapLoad],
+  );
   const mainTaskOptions: MainTask[] = [
     { id: 'm1', title: 'Q4 品牌战略规划', due: '截止日期: 12月31日' },
     { id: 'm2', title: '移动端应用 2.0 重构', due: '截止日期: 11月15日' },
@@ -511,7 +504,8 @@ export default function AddTaskScreen() {
   useFocusEffect(
     React.useCallback(() => {
       readScheduleResult();
-    }, [readScheduleResult])
+      void reloadAddTaskData().catch((e) => console.warn('加载添加任务页数据失败', e));
+    }, [readScheduleResult, reloadAddTaskData]),
   );
 
   const handleCreateTask = async () => {

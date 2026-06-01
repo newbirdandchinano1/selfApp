@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   getRecipe,
   getRecipeCategory,
@@ -28,7 +29,10 @@ function normalizeId(raw: string | string[] | undefined): string {
   return '';
 }
 
+const PAGE_API_KEY = 'recipe-view';
+
 export default function RecipeViewScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { id: idParam } = useLocalSearchParams<{ id: string }>();
@@ -61,21 +65,23 @@ export default function RecipeViewScreen() {
       return;
     }
     try {
-      const item = await getRecipe(id);
-      if (!item) {
-        Alert.alert('未找到', '该菜谱可能已删除', [{ text: '确定', onPress: () => router.back() }]);
-        setRow(null);
-        return;
-      }
-      const cat = await getRecipeCategory(item.category_id);
-      setCategoryName(cat?.name ?? '');
-      setRow(item);
+      await wrapLoad(async () => {
+        const item = await getRecipe(id);
+        if (!item) {
+          Alert.alert('未找到', '该菜谱可能已删除', [{ text: '确定', onPress: () => router.back() }]);
+          setRow(null);
+          return;
+        }
+        const cat = await getRecipeCategory(item.category_id);
+        setCategoryName(cat?.name ?? '');
+        setRow(item);
+      });
     } catch {
       Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
     } finally {
       setLoading(false);
     }
-  }, [id, router]);
+  }, [id, router, wrapLoad]);
 
   useFocusEffect(
     useCallback(() => {

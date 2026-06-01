@@ -7,15 +7,15 @@ type ApiContentTransitionProps = {
   style?: StyleProp<ViewStyle>;
 };
 
-/** 全局内容区：API 读取时轻微降低透明度，完成后平滑淡入 */
+/** 全局内容区：API 读取时降低透明度并略变暗，完成后平滑淡入 */
 export function ApiContentTransition({ children, style }: ApiContentTransitionProps) {
-  const isLoading = useApiLoading();
+  const isLoading = useApiLoading(480);
   const opacity = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     Animated.timing(opacity, {
-      toValue: isLoading ? 0.92 : 1,
-      duration: isLoading ? 140 : 320,
+      toValue: isLoading ? 0.78 : 1,
+      duration: isLoading ? 180 : 340,
       easing: isLoading ? Easing.out(Easing.quad) : Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();

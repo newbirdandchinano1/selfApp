@@ -6,6 +6,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Directory, File, Paths } from 'expo-file-system';
 import React from 'react';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
@@ -13,10 +14,8 @@ import type { UserRow } from '@/lib/repositories/users/user.types';
 
 import {
   createHealthRecord,
-  getHealthIntakeTotalsForUserOnDate,
-  getHealthRecordsForUserOnDate,
-  getHealthRecordsLast7Days,
   deleteHealthRecord,
+  fetchUserHomeHealthSlice,
 } from '@/lib/repositories/health/health';
 import type { HealthIntakeDayTotals, HealthRecordRow } from '@/lib/repositories/health/health.types';
 import {
@@ -85,10 +84,7 @@ import { Swipeable } from 'react-native-gesture-handler';
 import Svg, { Circle } from 'react-native-svg';
 
 const { width, height } = Dimensions.get('window');
-
-
-
-
+const PAGE_API_KEY = 'tabs/index';
 
 const nutrientMetricMeta = [
   {
@@ -379,27 +375,18 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
   return lines;
 }
 
-async function fetchHomeHealthSlice(
-  userId: string | undefined,
+async function loadHomeHealthSliceForUser(
+  userId: string,
   weekAnchor: Date,
-  selected: Date
-): Promise<{
-  week: HealthRecordRow[];
-  prevWeek: HealthRecordRow[];
-  dayTotals: HealthIntakeDayTotals | null;
-  dayRecords: HealthRecordRow[];
-}> {
-  if (!userId) return { week: [], prevWeek: [], dayTotals: null, dayRecords: [] };
-  const endYmd = formatLocalYmd(weekAnchor);
-  const prevEndYmd = formatLocalYmd(addDays(weekAnchor, -7));
-  const dayYmd = formatLocalYmd(selected);
-  const [week, prevWeek, dayTotals, dayRecords] = await Promise.all([
-    getHealthRecordsLast7Days(userId, endYmd),
-    getHealthRecordsLast7Days(userId, prevEndYmd),
-    getHealthIntakeTotalsForUserOnDate(userId, dayYmd),
-    getHealthRecordsForUserOnDate(userId, dayYmd),
-  ]);
-  return { week, prevWeek, dayTotals, dayRecords };
+  selected: Date,
+  opts?: { localOnly?: boolean },
+) {
+  return fetchUserHomeHealthSlice(
+    userId,
+    formatLocalYmd(weekAnchor),
+    formatLocalYmd(selected),
+    opts,
+  );
 }
 
 /** 插入一条「当日增量」记录；首页与汇总接口按 record_date 对同日多条 SUM。 */
@@ -709,7 +696,8 @@ export default function HealthScreen() {
   const weekDaysPrev = React.useMemo(() => getWeekDaysFromAnchor(addDays(weekAnchorDate, -7)), [weekAnchorDate]);
   const weekDaysNext = React.useMemo(() => getWeekDaysFromAnchor(addDays(weekAnchorDate, 7)), [weekAnchorDate]);
 
-
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const focusLoadGenRef = React.useRef(0);
 
   // 获取用户信息
   const [user, setUser] = React.useState<UserRow | null>(null);
@@ -755,92 +743,79 @@ export default function HealthScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
+      const loadGen = ++focusLoadGenRef.current;
       let cancelled = false;
-      const run = async () => {
-        if (!user?.id) {
-          if (!cancelled) {
-            setHealthRecords([]);
-            setPrevWeekHealthRecords([]);
-            setSelectedDayIntakeTotals(null);
-            setSelectedDayRecords([]);
-          }
-          return;
-        }
-        try {
-          const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
-          if (!cancelled) {
-            setHealthRecords(week);
-            setPrevWeekHealthRecords(prevWeek);
-            setSelectedDayIntakeTotals(dayTotals);
-            setSelectedDayRecords(dayRecords);
-          }
-        } catch {
-          if (!cancelled) {
-            setHealthRecords([]);
-            setPrevWeekHealthRecords([]);
-            setSelectedDayIntakeTotals(null);
-            setSelectedDayRecords([]);
-          }
-        }
-      };
-      void run();
-      return () => {
-        cancelled = true;
-      };
-    }, [user?.id, weekAnchorDate, selectedDate])
-  );
+      const isStale = () => cancelled || focusLoadGenRef.current !== loadGen;
 
-  useFocusEffect(
-    React.useCallback(() => {
-      let cancelled = false;
-      const run = async () => {
-        if (!user?.id) {
-          setDailyAiTargets(null);
-          setDailyAiLoading(false);
-          return;
-        }
-        setDailyAiLoading(true);
-        try {
-          const r = await ensureDailyAiIntakeTargetsForToday({ user, todayYmd: logicalTodayYmd });
-          if (cancelled) return;
-          if (r.status === 'cached' || r.status === 'fresh') {
-            setDailyAiTargets(r.row);
-          } else {
+      void wrapLoad(async () => {
+        const currentUser = await getDefaultUser();
+        if (!currentUser?.id) {
+          if (!isStale()) {
             setDailyAiTargets(null);
+            setDailyAiLoading(false);
+          }
+          return false;
+        }
+
+        let healthLoaded = false;
+        try {
+          const applySlice = (slice: Awaited<ReturnType<typeof loadHomeHealthSliceForUser>>) => {
+            if (isStale()) return;
+            setHealthRecords(slice.week);
+            setPrevWeekHealthRecords(slice.prevWeek);
+            setSelectedDayIntakeTotals(slice.dayTotals);
+            setSelectedDayRecords(slice.dayRecords);
+          };
+
+          applySlice(await loadHomeHealthSliceForUser(currentUser.id, weekAnchorDate, selectedDate));
+          healthLoaded = true;
+        } catch (fallbackError) {
+          console.warn('健康数据本地回退失败', fallbackError);
+          return false;
+        }
+
+        if (isStale()) return false;
+
+        if (!isStale()) setDailyAiLoading(true);
+        try {
+          const r = await ensureDailyAiIntakeTargetsForToday({
+            user: currentUser,
+            todayYmd: logicalTodayYmd,
+            healthRecordsLocalOnly: healthLoaded,
+          });
+          if (!isStale()) {
+            if (r.status === 'cached' || r.status === 'fresh') {
+              setDailyAiTargets(r.row);
+            } else {
+              setDailyAiTargets(null);
+            }
           }
         } finally {
-          if (!cancelled) setDailyAiLoading(false);
+          if (!isStale()) setDailyAiLoading(false);
         }
-      };
-      void run();
-      return () => {
-        cancelled = true;
-      };
-    }, [logicalTodayYmd, user])
-  );
 
-  useFocusEffect(
-    React.useCallback(() => {
-      let cancelled = false;
-      const run = async () => {
+        if (isStale()) return healthLoaded;
+
         try {
           const [selectedItems, catalog] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
-          if (!cancelled) {
+          if (!isStale()) {
             setQuickAddItems(selectedItems);
             setQuickAddCatalog(catalog);
           }
         } catch {
-          if (!cancelled) {
+          if (!isStale()) {
             setQuickAddItems(getDefaultQuickAddItems());
             setQuickAddCatalog(getDefaultQuickAddItems());
           }
         }
-      };
-      void run();
+
+        return healthLoaded;
+      }).catch((e) => console.warn('刷新健康页数据失败', e));
+
       return () => {
         cancelled = true;
       };
-    }, [])
+    }, [logicalTodayYmd, selectedDate, weekAnchorDate, wrapLoad]),
   );
 
   const dayIntakeDisplay = React.useMemo(() => {
@@ -998,7 +973,7 @@ export default function HealthScreen() {
           targetCarbohydrateG: intakeTargetsSnapshot.carbohydrateG,
           targetSodiumMg: intakeTargetsSnapshot.sodiumMg,
         });
-        const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
+        const { week, prevWeek, dayTotals, dayRecords } = await loadHomeHealthSliceForUser(user.id, weekAnchorDate, selectedDate);
         setHealthRecords(week);
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
@@ -1045,7 +1020,7 @@ export default function HealthScreen() {
           target_carbohydrate: intakeTargetsSnapshot.carbohydrateG,
           target_sodium: intakeTargetsSnapshot.sodiumMg,
         });
-        const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
+        const { week, prevWeek, dayTotals, dayRecords } = await loadHomeHealthSliceForUser(user.id, weekAnchorDate, selectedDate);
         setHealthRecords(week);
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
@@ -1093,7 +1068,7 @@ export default function HealthScreen() {
           target_carbohydrate: intakeTargetsSnapshot.carbohydrateG,
           target_sodium: intakeTargetsSnapshot.sodiumMg,
         });
-        const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
+        const { week, prevWeek, dayTotals, dayRecords } = await loadHomeHealthSliceForUser(user.id, weekAnchorDate, selectedDate);
         setHealthRecords(week);
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
@@ -1123,7 +1098,7 @@ export default function HealthScreen() {
       if (!user?.id) return;
       try {
         await deleteHealthRecord(recordId);
-        const { week, prevWeek, dayTotals, dayRecords } = await fetchHomeHealthSlice(user.id, weekAnchorDate, selectedDate);
+        const { week, prevWeek, dayTotals, dayRecords } = await loadHomeHealthSliceForUser(user.id, weekAnchorDate, selectedDate);
         setHealthRecords(week);
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);

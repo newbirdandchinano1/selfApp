@@ -176,8 +176,10 @@ export type EnsureDailyAiIntakeTargetsResult =
 export async function ensureDailyAiIntakeTargetsForToday(params: {
   user: UserRow;
   todayYmd: string;
+  /** 首页已在同一次 wrapLoad 内同步 health_records 后传 true，避免重复 REST */
+  healthRecordsLocalOnly?: boolean;
 }): Promise<EnsureDailyAiIntakeTargetsResult> {
-  const { user, todayYmd } = params;
+  const { user, todayYmd, healthRecordsLocalOnly } = params;
   const fingerprint = buildProfileFingerprint(user, todayYmd);
   const cached = await readCache();
   if (
@@ -194,7 +196,9 @@ export async function ensureDailyAiIntakeTargetsForToday(params: {
     return { status: 'no_api_key' };
   }
 
-  const records = await getHealthRecordsLast7Days(user.id, todayYmd);
+  const records = await getHealthRecordsLast7Days(user.id, todayYmd, {
+    localOnly: healthRecordsLocalOnly,
+  });
   const context = buildContextBlock({ user, todayYmd, records });
   const ai = await estimateDailyIntakeTargetsFromContext({ apiKey, contextBlock: context });
   if (!ai.ok) {

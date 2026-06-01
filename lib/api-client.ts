@@ -7,6 +7,7 @@ import {
   setApiAuthToken,
 } from '@/lib/api-config';
 import { normalizeRecordForMysqlApi } from '@/lib/api-mysql-datetime';
+import { mapTableRowForMysqlApiUpload } from '@/lib/api-mysql-column-map';
 import {
   type ApiUploadSlimOptions,
   slimRecordForMysqlApi,
@@ -14,18 +15,20 @@ import {
 import { fetchWithTimeoutAndRetry, isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 
 export function prepareRowBodyForApi(
+  table: string,
   row: Record<string, unknown>,
   opts?: ApiUploadSlimOptions,
 ): Record<string, unknown> {
-  return slimRecordForMysqlApi(normalizeRecordForMysqlApi(row), opts);
+  const mapped = mapTableRowForMysqlApiUpload(table, row);
+  return slimRecordForMysqlApi(normalizeRecordForMysqlApi(mapped), opts);
 }
 
 /** 上传失败时依次尝试更小 payload（避免网关 413） */
-function buildApiUploadBodies(row: Record<string, unknown>): Record<string, unknown>[] {
+function buildApiUploadBodies(table: string, row: Record<string, unknown>): Record<string, unknown>[] {
   return [
-    prepareRowBodyForApi(row),
-    prepareRowBodyForApi(row, { aggressive: true, maxBytes: 24_000 }),
-    prepareRowBodyForApi(row, { aggressive: true, ultra: true, maxBytes: 8_000 }),
+    prepareRowBodyForApi(table, row),
+    prepareRowBodyForApi(table, row, { aggressive: true, maxBytes: 24_000 }),
+    prepareRowBodyForApi(table, row, { aggressive: true, ultra: true, maxBytes: 8_000 }),
   ];
 }
 
@@ -237,7 +240,7 @@ export async function apiCreateRecord<T = unknown>(
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
-  const bodies = buildApiUploadBodies(row);
+  const bodies = buildApiUploadBodies(table, row);
 
   let lastError: unknown;
   for (let i = 0; i < bodies.length; i++) {
@@ -262,7 +265,7 @@ export async function apiUpdateRecord<T = unknown>(
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
-  const bodies = buildApiUploadBodies(row);
+  const bodies = buildApiUploadBodies(table, row);
 
   let lastError: unknown;
   for (let i = 0; i < bodies.length; i++) {
@@ -289,7 +292,7 @@ export async function apiPatchRecord<T = unknown>(
 ): Promise<T> {
   return apiRequest<T>(`/api/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    body: prepareRowBodyForApi(row),
+    body: prepareRowBodyForApi(table, row),
     signal: opts?.signal,
   });
 }

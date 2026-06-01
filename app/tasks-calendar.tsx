@@ -2,6 +2,7 @@ import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { getHabitCheckInCountsByDateRange } from '@/lib/repositories/habits/habit-check-in';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getProjects } from '@/lib/repositories/projects/project';
@@ -634,7 +635,10 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   );
 });
 
+const PAGE_API_KEY = 'tasks-calendar';
+
 export default function TasksCalendarScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
@@ -735,29 +739,31 @@ export default function TasksCalendarScreen() {
       setDetailLoading(true);
     }
     try {
-      const [tasks, habits, projects, habitCheckInsByDay] = await Promise.all([
-        getTasks(),
-        getHabits(),
-        getProjects(),
-        getHabitCheckInCountsByDateRange(detailStartYmd, detailEndYmd),
-      ]);
-      const map = buildTasksCalendarSummaries({
-        startYmd: detailStartYmd,
-        endYmd: detailEndYmd,
-        tasks,
-        habits,
-        projects,
-        habitCheckInsByDay,
-        dayBoundary: boundary,
+      await wrapLoad(async () => {
+        const [tasks, habits, projects, habitCheckInsByDay] = await Promise.all([
+          getTasks(),
+          getHabits(),
+          getProjects(),
+          getHabitCheckInCountsByDateRange(detailStartYmd, detailEndYmd),
+        ]);
+        const map = buildTasksCalendarSummaries({
+          startYmd: detailStartYmd,
+          endYmd: detailEndYmd,
+          tasks,
+          habits,
+          projects,
+          habitCheckInsByDay,
+          dayBoundary: boundary,
+        });
+        setSummaries(map);
       });
-      setSummaries(map);
     } catch (e) {
       console.warn('加载任务日历失败', e);
       setSummaries(new Map());
     } finally {
       if (rangeChanged) setDetailLoading(false);
     }
-  }, [detailStartYmd, detailEndYmd, detailRangeKey, boundary]);
+  }, [detailStartYmd, detailEndYmd, detailRangeKey, boundary, wrapLoad]);
 
   useFocusEffect(
     React.useCallback(() => {

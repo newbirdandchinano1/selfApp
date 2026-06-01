@@ -11,6 +11,7 @@ import {
 } from '@/lib/repositories/visions/vision.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
@@ -76,6 +77,8 @@ function ProgressBar({
   );
 }
 
+const PAGE_API_KEY = 'vision-sub-goals-detail';
+
 export function VisionSubGoalsDetailPanel({
   subGoals,
   textColor,
@@ -87,6 +90,7 @@ export function VisionSubGoalsDetailPanel({
   onPersistSubGoals,
 }: VisionSubGoalsDetailPanelProps) {
   const router = useRouter();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const [loading, setLoading] = useState(true);
   const [progressById, setProgressById] = useState<Record<string, SubGoalProgress>>({});
   const [progressByProjectId, setProgressByProjectId] = useState<Record<string, ProjectProgress>>({});
@@ -118,7 +122,9 @@ export function VisionSubGoalsDetailPanel({
   const loadProgress = useCallback(async () => {
     setLoading(true);
     try {
-      const allProjectIds = [
+      await wrapLoad(async () => {
+        try {
+          const allProjectIds = [
         ...new Set(subGoals.flatMap(sg => collectLinkedProjectsFromSubGoal(sg).map(p => p.id))),
       ];
 
@@ -156,8 +162,14 @@ export function VisionSubGoalsDetailPanel({
         completed: overallStats.completed + standaloneStats.completed,
       };
       setOverallProgress(progressFromStats(mergedOverall));
-      setProgressByProjectId(Object.fromEntries(projectEntries));
-      setProgressById(Object.fromEntries(sgEntries));
+          setProgressByProjectId(Object.fromEntries(projectEntries));
+          setProgressById(Object.fromEntries(sgEntries));
+        } catch {
+          setOverallProgress({ total: 0, completed: 0, percent: 0 });
+          setProgressByProjectId({});
+          setProgressById({});
+        }
+      });
     } catch {
       setOverallProgress({ total: 0, completed: 0, percent: 0 });
       setProgressByProjectId({});
@@ -165,7 +177,7 @@ export function VisionSubGoalsDetailPanel({
     } finally {
       setLoading(false);
     }
-  }, [subGoals]);
+  }, [subGoals, wrapLoad]);
 
   useFocusEffect(
     useCallback(() => {

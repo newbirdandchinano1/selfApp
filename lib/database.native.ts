@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 31;
+export const DB_VERSION = 32;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -700,10 +700,21 @@ export async function initDatabase() {
       FOREIGN KEY (wish_item_id) REFERENCES wish_items(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS memo_dimensions (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced'
+    );
+
     CREATE TABLE IF NOT EXISTS memos (
       id TEXT PRIMARY KEY NOT NULL,
       title TEXT NOT NULL DEFAULT '',
       body TEXT NOT NULL DEFAULT '',
+      dimension_id TEXT,
+      dimension TEXT,
       ai_evaluation TEXT,
       ai_suggestions TEXT,
       ai_review_at TEXT,
@@ -900,6 +911,8 @@ export async function initDatabase() {
   await ensureColumn(db, 'finance_transactions', 'extra_data', 'TEXT');
   await ensureColumn(db, 'wish_items', 'ai_comment', 'TEXT');
   await ensureColumn(db, 'wish_items', 'ai_review_at', 'TEXT');
+  await ensureColumn(db, 'memos', 'dimension_id', 'TEXT');
+  await ensureColumn(db, 'memos', 'dimension', 'TEXT');
 
   await ensureColumn(db, 'task_execution_events', 'task_title', 'TEXT');
 
@@ -1042,6 +1055,11 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_recipe_categories_updated_at ON recipe_categories(updated_at);
     CREATE INDEX IF NOT EXISTS idx_recipe_items_category_id ON recipe_items(category_id);
     CREATE INDEX IF NOT EXISTS idx_recipe_items_updated_at ON recipe_items(updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_memo_dimensions_sort_order ON memo_dimensions(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_memo_dimensions_updated_at ON memo_dimensions(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_memos_dimension_id ON memos(dimension_id);
+    CREATE INDEX IF NOT EXISTS idx_memos_updated_at ON memos(updated_at);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
@@ -1160,8 +1178,9 @@ export async function initDatabase() {
   const { migrateRecipesStorageToSqliteIfNeeded } = await import('@/lib/recipes');
   await migrateRecipesStorageToSqliteIfNeeded(db);
 
-  const { migrateMemosStorageToSqliteIfNeeded } = await import('@/lib/memos');
+  const { migrateMemosStorageToSqliteIfNeeded, ensureMemoDimensionsBackfilled } = await import('@/lib/memos');
   await migrateMemosStorageToSqliteIfNeeded(db);
+  await ensureMemoDimensionsBackfilled(db);
 
   const { migrateUserWeaknessesStorageToSqliteIfNeeded } = await import('@/lib/user-weaknesses');
   await migrateUserWeaknessesStorageToSqliteIfNeeded(db);
@@ -1228,6 +1247,7 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS user_skills_meta;
     DROP TABLE IF EXISTS user_weaknesses;
     DROP TABLE IF EXISTS memos;
+    DROP TABLE IF EXISTS memo_dimensions;
     DROP TABLE IF EXISTS recipe_items;
     DROP TABLE IF EXISTS recipe_categories;
     DROP TABLE IF EXISTS earned_rewards;

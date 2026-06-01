@@ -12,6 +12,7 @@ import {
   type QuickAddCardItem,
 } from '@/lib/quick-add-cards';
 import { MaterialIcons } from '@expo/vector-icons';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -33,7 +34,10 @@ function getMetricLabels(item: QuickAddCardItem): string[] {
   });
 }
 
+const PAGE_API_KEY = 'quick-add-edit';
+
 export default function QuickAddEditScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
@@ -56,6 +60,7 @@ export default function QuickAddEditScreen() {
     React.useCallback(() => {
       let cancelled = false;
       const run = async () => {
+        await wrapLoad(async () => {
         try {
           const [selected, all] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
           if (cancelled) return;
@@ -82,12 +87,13 @@ export default function QuickAddEditScreen() {
             setAllItems([]);
           }
         }
+        });
       };
       void run();
       return () => {
         cancelled = true;
       };
-    }, [])
+    }, [wrapLoad])
   );
 
   const availableItems = React.useMemo(() => {

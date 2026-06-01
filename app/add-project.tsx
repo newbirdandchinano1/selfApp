@@ -14,6 +14,7 @@ import {
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
@@ -149,7 +150,10 @@ function ensureInboxCategory(rows: ProjectCategoryRow[]): ProjectCategoryRow[] {
   ];
 }
 
+const PAGE_API_KEY = 'add-project';
+
 export default function AddProjectScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const params = useLocalSearchParams<{ source?: string; categoryId?: string | string[] }>();
   const insets = useSafeAreaInsets();
@@ -270,7 +274,7 @@ export default function AddProjectScreen() {
 
   React.useEffect(() => {
     let mounted = true;
-    const loadCategories = async () => {
+    void wrapLoad(async () => {
       try {
         const rows = await getProjectCategories();
         if (mounted) setCategories(ensureInboxCategory(rows));
@@ -278,16 +282,15 @@ export default function AddProjectScreen() {
         console.warn('加载项目分类失败', error);
         if (mounted) setCategories(ensureInboxCategory([]));
       }
-    };
-    loadCategories();
+    });
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [wrapLoad]);
 
   React.useEffect(() => {
     let mounted = true;
-    const loadAllProjects = async () => {
+    void wrapLoad(async () => {
       setProjectsLoading(true);
       try {
         const rows = await getProjects();
@@ -298,12 +301,11 @@ export default function AddProjectScreen() {
       } finally {
         if (mounted) setProjectsLoading(false);
       }
-    };
-    void loadAllProjects();
+    });
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [wrapLoad]);
 
   const selectableProjectCategories = React.useMemo(
     () => categories.filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID),

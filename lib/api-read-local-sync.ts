@@ -14,6 +14,12 @@ export type ApplyApiReadToLocalOptions = {
   reconcileSnapshot?: boolean;
 };
 
+/**
+ * 财务账户/流水不做「快照差量物理删除」：后端若尚未收到初始余额等流水，
+ * reconcile 会把本地已 synced 的流水删掉，导致账本余额归零。
+ */
+const API_RECONCILE_SKIP_TABLES = new Set(['finance_accounts', 'finance_transactions']);
+
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
@@ -36,14 +42,38 @@ function sqliteBindingFromJson(v: unknown): string | number | null {
 function normalizeApiRowForLocal(
   row: Record<string, unknown>,
   colNames: string[],
+  table?: string,
 ): Record<string, unknown> {
   const out = { ...row };
   delete out.deleted_at;
   delete out.version;
+  if (table === 'memo_dimensions' && colNames.includes('name')) {
+    let name = String(out.name ?? '').trim();
+    if (!name && typeof out.title === 'string') {
+      name = out.title.trim();
+    }
+    if (!name) {
+      name = '未命名维度';
+    }
+    out.name = name;
+  }
   if (colNames.includes('sync_status')) {
     out.sync_status = 'synced';
   }
+  if (table === 'finance_accounts') {
+    out.sign_rule = normalizeFinanceSignRuleForApiRow(out.sign_rule, out.account_type);
+    if (out.account_type == null || out.account_type === '') {
+      out.account_type = out.sign_rule < 0 ? 'liability' : 'asset';
+    }
+  }
   return out;
+}
+
+function normalizeFinanceSignRuleForApiRow(signRule: unknown, accountType: unknown): -1 | 1 {
+  const n = typeof signRule === 'number' ? signRule : Number(signRule);
+  if (n < 0) return -1;
+  if (n > 0) return 1;
+  return accountType === 'liability' ? -1 : 1;
 }
 
 async function readLocalColumnNames(table: string): Promise<string[]> {
@@ -64,7 +94,7 @@ async function upsertRowsToLocalTable(
 
   const safe = quoteIdent(table);
   const normalized = dedupeRowsByPrimaryKey(
-    rows.map(r => normalizeApiRowForLocal(r, colNames)),
+    rows.map(r => normalizeApiRowForLocal(r, colNames, table)),
     pkCols,
   );
 
@@ -72,21 +102,30 @@ async function upsertRowsToLocalTable(
   const hasSyncStatus = colNames.includes('sync_status');
 
   for (const obj of normalized) {
-    const keys = colNames.filter(c => Object.prototype.hasOwnProperty.call(obj, c));
-    if (keys.length === 0) continue;
-
     if (hasSyncStatus && pkCol) {
       const pk = rowPrimaryKeyValue(obj, pkCols);
       if (pk) {
-        const existing = await db.getFirstAsync<{ sync_status: string }>(
-          `SELECT sync_status FROM ${safe} WHERE ${quoteIdent(pkCol)} = ? LIMIT 1`,
+        const existing = await db.getFirstAsync<Record<string, unknown>>(
+          `SELECT * FROM ${safe} WHERE ${quoteIdent(pkCol)} = ? LIMIT 1`,
           [pk],
         );
         if (existing && existing.sync_status !== 'synced') {
           continue;
         }
+        if (existing) {
+          for (const col of colNames) {
+            if (Object.prototype.hasOwnProperty.call(obj, col)) continue;
+            const prev = existing[col];
+            if (prev != null && prev !== '') {
+              obj[col] = prev;
+            }
+          }
+        }
       }
     }
+
+    const keys = colNames.filter(c => Object.prototype.hasOwnProperty.call(obj, c));
+    if (keys.length === 0) continue;
 
     const qCols = keys.map(c => quoteIdent(c)).join(', ');
     const placeholders = keys.map(() => '?').join(', ');
@@ -146,7 +185,7 @@ export async function applyApiRowsToLocalTable(
   try {
     await upsertRowsToLocalTable(table, normalizedInput, colNames, pkCols);
 
-    if (opts?.reconcileSnapshot) {
+    if (opts?.reconcileSnapshot && !API_RECONCILE_SKIP_TABLES.has(table)) {
       const apiPkSet = new Set<string>();
       for (const row of dedupeRowsByPrimaryKey(normalizedInput, pkCols)) {
         const pk = rowPrimaryKeyValue(row, pkCols);

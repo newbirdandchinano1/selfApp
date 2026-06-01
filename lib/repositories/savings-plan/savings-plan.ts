@@ -77,7 +77,13 @@ export async function updateSavingsPlan(id: string, input: UpdateSavingsPlanInpu
   const start = input.start_date ?? current.start_date;
   const end = input.end_date ?? current.end_date;
   const target = input.target_amount ?? current.target_amount;
-  assertSavingsPlanDatesAndTarget(start, end, target);
+  if (
+    input.start_date !== undefined ||
+    input.end_date !== undefined ||
+    input.target_amount !== undefined
+  ) {
+    assertSavingsPlanDatesAndTarget(start, end, target);
+  }
 
   await db.runAsync(
     `UPDATE savings_plans

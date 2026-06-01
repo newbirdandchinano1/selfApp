@@ -3,6 +3,7 @@ import { CompletionRewardBadge } from '@/components/completion-reward/Completion
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import {
   INBOX_PROJECT_CATEGORY_ID,
@@ -136,6 +137,8 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
+
+const PAGE_API_KEY = 'tabs/tasks';
 
 const MAIN_LIST_VIEW_TABS: Array<{ key: TasksMainListView; label: string }> = [
   { key: 'projects', label: '项目列表' },
@@ -794,6 +797,7 @@ function TaskCompletionHeatmap({
   reloadToken: number;
 }) {
   const router = useRouter();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const scrollRef = React.useRef<ScrollView>(null);
   const colors = isDark ? COMPLETION_HEAT_LEVEL_COLORS_DARK : COMPLETION_HEAT_LEVEL_COLORS_LIGHT;
   const [selectedYmd, setSelectedYmd] = React.useState<string | null>(null);
@@ -836,7 +840,7 @@ function TaskCompletionHeatmap({
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
-      void (async () => {
+      void wrapLoad(async () => {
         try {
           await loadCompletionHeatmap();
         } catch (e) {
@@ -846,11 +850,11 @@ function TaskCompletionHeatmap({
             setTodoCountByYmd(new Map());
           }
         }
-      })();
+      });
       return () => {
         cancelled = true;
       };
-    }, [loadCompletionHeatmap])
+    }, [loadCompletionHeatmap, wrapLoad])
   );
 
   React.useEffect(() => {
@@ -1485,6 +1489,7 @@ async function reactivateInboxCompletedProjectsWithOpenTasks(
 }
 
 export default function TasksScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   /** Measured width of the habit grid row — avoids guessing padding (tabs / safe area / web max-width). */
   const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
   const habitGridItemWidth = React.useMemo(() => {
@@ -2009,7 +2014,7 @@ export default function TasksScreen() {
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
-      (async () => {
+      void wrapLoad(async () => {
         const logicalToday = logicalTodayYmd;
         const storedExpanded = await loadExpandedProjectState();
         const rows = await loadProjects();
@@ -2061,11 +2066,12 @@ export default function TasksScreen() {
         } catch {
           if (!cancelled) setWishNameById(new Map());
         }
-      })();
+      });
       return () => {
         cancelled = true;
       };
     }, [
+      wrapLoad,
       loadExpandedProjectState,
       loadProjectCategories,
       loadProjects,

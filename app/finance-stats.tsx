@@ -1,6 +1,7 @@
 import { AppButton, AppCard, AppIconButton, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
 import {
   BUILTIN_SHEET_CATEGORY_LABELS,
@@ -184,10 +185,13 @@ function resolveTransactionCategory(
   return { key: 'uncategorized', name: '未分类', icon: DEFAULT_CATEGORY_ICON, row: undefined };
 }
 
+const PAGE_API_KEY = 'finance-stats';
+
 export default function FinanceStatsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, isDark, shadows } = useAppTheme();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const expenseColor = colors.primary;
   const incomeColor = colors.tertiary;
   const balanceColor = colors.secondary;
@@ -209,16 +213,21 @@ export default function FinanceStatsScreen() {
   const [aiBillAnalysisBusy, setAiBillAnalysisBusy] = React.useState(false);
 
   const loadStatsData = React.useCallback(async () => {
-    try {
-      const [transactionRows, categoryRows] = await Promise.all([getFinanceTransactions(), getFinanceFlowCategories()]);
-      setTransactions(transactionRows);
-      setCategories(categoryRows);
-    } catch (error) {
-      console.warn('Failed to load finance stats:', error);
-      setTransactions([]);
-      setCategories([]);
-    }
-  }, []);
+    await wrapLoad(async () => {
+      try {
+        const [transactionRows, categoryRows] = await Promise.all([
+          getFinanceTransactions(),
+          getFinanceFlowCategories(),
+        ]);
+        setTransactions(transactionRows);
+        setCategories(categoryRows);
+      } catch (error) {
+        console.warn('Failed to load finance stats:', error);
+        setTransactions([]);
+        setCategories([]);
+      }
+    });
+  }, [wrapLoad]);
 
   React.useEffect(() => {
     void loadStatsData();

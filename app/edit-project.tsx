@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   mergeDateLimit,
   resolveInheritedDefaultSchedule,
@@ -357,7 +358,10 @@ function toYmd(value: string): string | null {
   return `${year}-${month}-${day}`;
 }
 
+const PAGE_API_KEY = 'edit-project';
+
 export default function EditProjectScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string; source?: string }>();
   const insets = useSafeAreaInsets();
@@ -562,9 +566,31 @@ export default function EditProjectScreen() {
     }
   }, [projectId, router]);
 
-  React.useEffect(() => {
-    loadProject();
-  }, [loadProject]);
+  const reloadProjectPage = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
+        await loadProject();
+        try {
+          const rows = await getProjectCategories();
+          setCategories(rows);
+        } catch (error) {
+          console.warn('加载项目分类失败', error);
+          setCategories([]);
+        }
+        setProjectsLoading(true);
+        try {
+          const rows = await getProjects();
+          setAllProjects(rows);
+        } catch (error) {
+          console.warn('加载项目列表失败', error);
+          setAllProjects([]);
+        } finally {
+          setProjectsLoading(false);
+        }
+      }, forceApi);
+    },
+    [loadProject, wrapLoad],
+  );
 
   React.useEffect(() => {
     if (!projectId) return;
@@ -601,43 +627,6 @@ export default function EditProjectScreen() {
   }, [aiReviewLoading, loading, projectId, showToast, subtasks.length, zhipuReady]);
 
   React.useEffect(() => {
-    let mounted = true;
-    const loadCategories = async () => {
-      try {
-        const rows = await getProjectCategories();
-        if (mounted) setCategories(rows);
-      } catch (error) {
-        console.warn('加载项目分类失败', error);
-        if (mounted) setCategories([]);
-      }
-    };
-    loadCategories();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  React.useEffect(() => {
-    let mounted = true;
-    const loadAllProjects = async () => {
-      setProjectsLoading(true);
-      try {
-        const rows = await getProjects();
-        if (mounted) setAllProjects(rows);
-      } catch (error) {
-        console.warn('加载项目列表失败', error);
-        if (mounted) setAllProjects([]);
-      } finally {
-        if (mounted) setProjectsLoading(false);
-      }
-    };
-    void loadAllProjects();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  React.useEffect(() => {
     readScheduleResult();
   }, [readScheduleResult]);
 
@@ -647,9 +636,10 @@ export default function EditProjectScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
+      void reloadProjectPage().catch((e) => console.warn('加载项目页失败', e));
       readScheduleResult();
       void readAddTaskResult();
-    }, [readAddTaskResult, readScheduleResult])
+    }, [readAddTaskResult, readScheduleResult, reloadProjectPage]),
   );
 
   const selectedCategoryName = React.useMemo(() => {

@@ -23,6 +23,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -65,11 +66,14 @@ function SectionHeading({ title }: { title: string }) {
   return <Text style={[styles.sectionTitle, { color: colors.text }]}>{title}</Text>;
 }
 
+const PAGE_API_KEY = 'account-detail';
+
 export default function AccountDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ accountId?: string; accountName?: string; accountNo?: string }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark, shadows } = useAppTheme();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   /** 与 `finance-stats`、财务首页收支语义一致 */
   const expenseColor = colors.primary;
   const incomeColor = colors.tertiary;
@@ -153,10 +157,19 @@ export default function AccountDetailScreen() {
     }
   }, [routeAccountId, routeAccountName]);
 
+  const reloadAccountDetail = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
+        await loadAccountDetail();
+      }, forceApi);
+    },
+    [loadAccountDetail, wrapLoad],
+  );
+
   useFocusEffect(
     React.useCallback(() => {
-      void loadAccountDetail();
-    }, [loadAccountDetail]),
+      void reloadAccountDetail();
+    }, [reloadAccountDetail]),
   );
 
   const excludeFromTotalAssets = React.useMemo(
@@ -172,7 +185,7 @@ export default function AccountDetailScreen() {
         setSavingExcludeFromTotal(true);
         const merged = mergeFinanceAccountExcludeFromTotalAssets(account?.extra_data ?? null, nextExcluded);
         await updateFinanceAccount(targetId, { extra_data: merged });
-        await loadAccountDetail();
+        await reloadAccountDetail();
       } catch (error) {
         console.warn('Failed to update exclude_from_total_assets:', error);
         Alert.alert('保存失败', '请稍后重试。');
@@ -180,7 +193,7 @@ export default function AccountDetailScreen() {
         setSavingExcludeFromTotal(false);
       }
     },
-    [account?.extra_data, account?.id, loadAccountDetail, routeAccountId, savingExcludeFromTotal],
+    [account?.extra_data, account?.id, reloadAccountDetail, routeAccountId, savingExcludeFromTotal],
   );
 
   const resolvedAccountId = account?.id ?? routeAccountId;
@@ -228,13 +241,13 @@ export default function AccountDetailScreen() {
         targetLedgerBalance: targetLedger,
       });
       setBalanceModalOpen(false);
-      await loadAccountDetail();
+      await reloadAccountDetail();
     } catch (e) {
       Alert.alert('保存失败', e instanceof Error && e.message.trim() ? e.message : '请稍后重试。');
     } finally {
       setSavingBalance(false);
     }
-  }, [account, balanceDraft, loadAccountDetail, savingBalance]);
+  }, [account, balanceDraft, reloadAccountDetail, savingBalance]);
 
   const onPressEditAccountMeta = React.useCallback(() => {
     if (!resolvedAccountId) {
@@ -270,9 +283,9 @@ export default function AccountDetailScreen() {
   useFocusEffect(
     React.useCallback(() => {
       return subscribeFinanceSheetSaved(() => {
-        void loadAccountDetail();
+        void reloadAccountDetail();
       });
-    }, [loadAccountDetail]),
+    }, [reloadAccountDetail]),
   );
 
   const onDeleteAccount = React.useCallback(() => {

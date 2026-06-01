@@ -19,8 +19,59 @@ import type {
 } from './finance.types';
 
 async function getFinanceAccountById(id: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<FinanceAccountRow>('SELECT * FROM finance_accounts WHERE id = ? LIMIT 1', [id]);
+  return readApiRecord<FinanceAccountRow>('finance_accounts', id, { offlineFallback: false });
+}
+
+function isFinanceTransactionVisible(t: FinanceTransactionRow): boolean {
+  const syncStatus = (t as FinanceTransactionRow & { sync_status?: string }).sync_status;
+  return syncStatus !== 'pending_delete';
+}
+
+/** 与 SQLite SUM 规则一致，基于 REST 流水列表计算账本余额 */
+export function computeLedgerBalanceFromTransactions(
+  accountId: string,
+  transactions: FinanceTransactionRow[],
+): number {
+  let balance = 0;
+  for (const t of transactions) {
+    if (t.account_id !== accountId || !isFinanceTransactionVisible(t)) continue;
+    balance += computeTransactionLedgerEffect(t.transaction_type, t.amount, t.extra_data);
+  }
+  return balance;
+}
+
+function countLedgerTransactionsFromList(
+  accountId: string,
+  transactions: FinanceTransactionRow[],
+): number {
+  return transactions.filter(t => t.account_id === accountId && isFinanceTransactionVisible(t)).length;
+}
+
+let financeApiSyncChain: Promise<void> = Promise.resolve();
+
+/** 本地写入后推送到 REST；默认后台执行，不阻塞记账 UI */
+async function pushFinanceChangesToApi(opts?: { awaitSync?: boolean }): Promise<void> {
+  const run = async () => {
+    const { flushApiDirtyTablesNow } = await import('@/lib/api-incremental-sync');
+    await flushApiDirtyTablesNow({ rethrow: true });
+  };
+
+  const task = financeApiSyncChain.then(run);
+  financeApiSyncChain = task.catch(() => {});
+
+  if (opts?.awaitSync) {
+    try {
+      await task;
+    } catch (e) {
+      const detail = e instanceof Error && e.message.trim() ? e.message : '未知错误';
+      throw new Error(`本地已保存，但同步到服务器失败：${detail}\n请检查网络或 API 登录状态后重试。`);
+    }
+    return;
+  }
+
+  void task.catch(e => {
+    if (__DEV__) console.warn('[finance] 后台同步到服务器失败', e);
+  });
 }
 
 async function assertTransactionAmountSign(accountId: string, amount: number) {
@@ -28,13 +79,14 @@ async function assertTransactionAmountSign(accountId: string, amount: number) {
   if (!account) {
     throw new Error('finance account not found');
   }
+  const signRule = normalizeFinanceSignRule(account.sign_rule, account.account_type);
   if (amount === 0) {
     throw new Error('finance transaction amount must not be 0');
   }
-  if (account.sign_rule > 0 && amount < 0) {
+  if (signRule > 0 && amount < 0) {
     throw new Error('asset-like account only supports positive amount');
   }
-  if (account.sign_rule < 0 && amount > 0) {
+  if (signRule < 0 && amount > 0) {
     throw new Error('liability-like account only supports negative amount');
   }
 }
@@ -45,8 +97,10 @@ export function computeTransactionLedgerEffect(
   amount: number,
   extraData: string | null | undefined
 ): number {
-  if (transactionType === 'income') return Math.abs(amount);
-  if (transactionType === 'expense') return -Math.abs(amount);
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return 0;
+  if (transactionType === 'income') return Math.abs(n);
+  if (transactionType === 'expense') return -Math.abs(n);
   if (transactionType === 'transfer') {
     let leg: string | undefined;
     try {
@@ -60,21 +114,63 @@ export function computeTransactionLedgerEffect(
     } catch {
       // ignore
     }
-    if (leg === 'out') return -Math.abs(amount);
-    if (leg === 'in') return Math.abs(amount);
+    if (leg === 'out') return -Math.abs(n);
+    if (leg === 'in') return Math.abs(n);
     return 0;
   }
-  return -Math.abs(amount);
+  return -Math.abs(n);
 }
 
 const FINANCE_BALANCE_EPS = 1e-4;
 
-function assertFinanceBalanceWithinSignRule(signRule: number, balance: number): void {
-  if (signRule > 0 && balance < -FINANCE_BALANCE_EPS) {
-    throw new Error('资产类账户余额不能为负数。');
+/** 与 SQLite / API 读入的 sign_rule 对齐为 -1 | 1 */
+export function normalizeFinanceSignRule(
+  signRule: unknown,
+  accountType?: string | null,
+): -1 | 1 {
+  const n = typeof signRule === 'number' ? signRule : Number(signRule);
+  if (n < 0) return -1;
+  if (n > 0) return 1;
+  return accountType === 'liability' ? -1 : 1;
+}
+
+function formatFinanceBalanceConstraintError(
+  signRule: -1 | 1,
+  balanceAfter: number,
+  ctx?: { accountName?: string; delta?: number; ledgerBalance?: number; txnCount?: number },
+): string {
+  const label = ctx?.accountName?.trim() ? `「${ctx.accountName.trim()}」` : '该账户';
+  if (signRule > 0 && balanceAfter < -FINANCE_BALANCE_EPS) {
+    const available = Math.max(0, ctx?.ledgerBalance ?? balanceAfter - (ctx?.delta ?? 0));
+    const need = ctx?.delta != null && ctx.delta < 0 ? Math.abs(ctx.delta) : undefined;
+    const ledgerHint =
+      ctx?.txnCount === 0
+        ? '（账本内尚无流水；若创建账户时填过余额，可能被后端同步覆盖，请到账户详情重新校正余额）'
+        : ctx?.txnCount != null && ctx?.txnCount > 0 && available < FINANCE_BALANCE_EPS
+          ? '（账本流水汇总为 ¥0.00，与真实支付宝余额无关；请到账户详情校正期初余额）'
+          : '';
+    if (need != null && Number.isFinite(available)) {
+      return `${label}账本可用余额 ¥${available.toFixed(2)}，不足以支付 ¥${need.toFixed(2)}。请确认所选支付账户，或在资产页进入该账户后校正余额。${ledgerHint}`;
+    }
+    return `${label}余额不能为负数，请确认所选账户或在资产页校正余额。${ledgerHint}`;
   }
-  if (signRule < 0 && balance > FINANCE_BALANCE_EPS) {
-    throw new Error('负债类账户余额不能为正数。');
+  if (signRule < 0 && balanceAfter > FINANCE_BALANCE_EPS) {
+    return `${label}为负债类账户，余额不能为正数。`;
+  }
+  return '余额不符合账户类型约束。';
+}
+
+function assertFinanceBalanceWithinSignRule(
+  signRule: number,
+  balance: number,
+  ctx?: { accountName?: string; delta?: number; ledgerBalance?: number; txnCount?: number },
+): void {
+  const rule = normalizeFinanceSignRule(signRule);
+  if (rule > 0 && balance < -FINANCE_BALANCE_EPS) {
+    throw new Error(formatFinanceBalanceConstraintError(rule, balance, ctx));
+  }
+  if (rule < 0 && balance > FINANCE_BALANCE_EPS) {
+    throw new Error(formatFinanceBalanceConstraintError(rule, balance, ctx));
   }
 }
 
@@ -84,40 +180,116 @@ export function validateFinanceLedgerBalanceAfterChange(
   currentBalance: number,
   transactionType: string,
   amount: number,
-  extraData: string | null | undefined
+  extraData: string | null | undefined,
+  ctx?: { accountName?: string },
 ): string | null {
   try {
     const delta = computeTransactionLedgerEffect(transactionType, amount, extraData);
-    assertFinanceBalanceWithinSignRule(signRule, currentBalance + delta);
+    const rule = normalizeFinanceSignRule(signRule);
+    assertFinanceBalanceWithinSignRule(rule, currentBalance + delta, {
+      accountName: ctx?.accountName,
+      delta,
+    });
     return null;
   } catch (e) {
     return e instanceof Error ? e.message : '余额不符合账户类型约束。';
   }
 }
 
-async function getFinanceAccountComputedBalance(accountId: string): Promise<number> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ balance: number }>(
-    `
-    SELECT COALESCE(SUM(
-      CASE
-        WHEN t.transaction_type = 'income' THEN ABS(t.amount)
-        WHEN t.transaction_type = 'expense' THEN -ABS(t.amount)
-        WHEN t.transaction_type = 'transfer' THEN
-          CASE json_extract(t.extra_data, '$.transfer_leg')
-            WHEN 'out' THEN -ABS(t.amount)
-            WHEN 'in' THEN ABS(t.amount)
-            ELSE 0
-          END
-        ELSE -ABS(t.amount)
-      END
-    ), 0) AS balance
-    FROM finance_transactions t
-    WHERE t.account_id = ?
-    `,
-    [accountId]
+/** 记账入库时按账户符号规则写入 amount（资产为正、负债为负）。 */
+export function financeSignedAmountForSave(
+  signRule: unknown,
+  accountType: string | null | undefined,
+  amountAbs: number,
+): number {
+  const rule = normalizeFinanceSignRule(signRule, accountType);
+  return rule > 0 ? amountAbs : -amountAbs;
+}
+
+/** 保存前从 SQLite 读取最新账本余额并校验（与落库逻辑一致，避免 UI 缓存余额与库内不一致）。 */
+export async function validateFinanceTransactionBeforeSave(input: {
+  accountId: string;
+  transactionType: string;
+  amount: number;
+  extraData?: string | null;
+  accountName?: string;
+  /** 界面展示的账本余额；若与 SQLite 汇总不一致则先刷新本地再校验 */
+  uiLedgerBalance?: number;
+}): Promise<string | null> {
+  const account = await getFinanceAccountById(input.accountId);
+  if (!account) return '未找到账户，请刷新后重试。';
+  const signRule = normalizeFinanceSignRule(account.sign_rule, account.account_type);
+
+  let currentBalance = await getFinanceAccountLedgerBalance(input.accountId);
+  let txnCount = await countFinanceAccountLedgerTransactions(input.accountId);
+
+  const uiBal = input.uiLedgerBalance;
+  if (uiBal != null && Number.isFinite(uiBal)) {
+    return validateFinanceLedgerBalanceAfterChange(
+      signRule,
+      uiBal,
+      input.transactionType,
+      input.amount,
+      input.extraData,
+      { accountName: input.accountName ?? account.name },
+    );
+  }
+
+  if (
+    Math.abs(currentBalance) < FINANCE_BALANCE_EPS &&
+    Math.abs(uiBal ?? 0) > FINANCE_BALANCE_EPS
+  ) {
+    await Promise.all([
+      readApiTable<FinanceAccountRow>('finance_accounts', { offlineFallback: false }),
+      readApiTable<FinanceTransactionRow>('finance_transactions', { offlineFallback: false }),
+    ]);
+    currentBalance = await getFinanceAccountLedgerBalance(input.accountId);
+    txnCount = await countFinanceAccountLedgerTransactions(input.accountId);
+  }
+
+  const delta = computeTransactionLedgerEffect(
+    input.transactionType,
+    input.amount,
+    input.extraData ?? null,
   );
-  return row?.balance ?? 0;
+  try {
+    assertFinanceBalanceWithinSignRule(signRule, currentBalance + delta, {
+      accountName: input.accountName ?? account.name,
+      delta,
+      ledgerBalance: currentBalance,
+      txnCount,
+    });
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : '余额不符合账户类型约束。';
+  }
+}
+
+async function countFinanceAccountLedgerTransactions(accountId: string): Promise<number> {
+  const transactions = await readApiTable<FinanceTransactionRow>('finance_transactions', {
+    offlineFallback: false,
+  });
+  return countLedgerTransactionsFromList(accountId, transactions);
+}
+
+/**
+ * 与资产页 / 记账弹窗展示的余额一致（`getFinanceAccountsWithBalance` 同源）。
+ * 直接按 account_id 汇总 SQLite 流水，不依赖账户列表过滤。
+ */
+export async function resolveFinanceAccountLedgerBalance(accountId: string): Promise<number> {
+  return getFinanceAccountLedgerBalance(accountId);
+}
+
+/** 与 `getFinanceAccountsWithBalance` 一致：基于 REST 流水汇总，排除待删除行。 */
+export async function getFinanceAccountLedgerBalance(accountId: string): Promise<number> {
+  const transactions = await readApiTable<FinanceTransactionRow>('finance_transactions', {
+    offlineFallback: false,
+  });
+  return computeLedgerBalanceFromTransactions(accountId, transactions);
+}
+
+async function getFinanceAccountComputedBalance(accountId: string): Promise<number> {
+  return resolveFinanceAccountLedgerBalance(accountId);
 }
 
 /**
@@ -170,9 +342,10 @@ async function loadFinanceAccounts(): Promise<FinanceAccountRow[]> {
 }
 
 async function loadFinanceTransactionsForActiveAccounts(): Promise<FinanceTransactionRow[]> {
+  const readOpts = { offlineFallback: false as const };
   const [accounts, transactions] = await Promise.all([
-    loadFinanceAccounts(),
-    readApiTable<FinanceTransactionRow>('finance_transactions', { offlineFallback: true }),
+    readApiTable<FinanceAccountRow>('finance_accounts', readOpts),
+    readApiTable<FinanceTransactionRow>('finance_transactions', readOpts),
   ]);
   const accountIds = new Set(accounts.map(a => a.id));
   return transactions
@@ -188,20 +361,23 @@ export async function getFinanceAccounts() {
   return loadFinanceAccounts();
 }
 
-export async function getFinanceAccountsWithBalance() {
-  const accounts = await loadFinanceAccounts();
-  const transactions = await loadFinanceTransactionsForActiveAccounts();
-  return accounts.map(a => {
-    const balance = transactions
-      .filter(t => t.account_id === a.id)
-      .reduce(
-        (sum, t) =>
-          sum +
-          computeTransactionLedgerEffect(t.transaction_type, t.amount, t.extra_data),
-        0,
-      );
-    return { ...a, balance } satisfies FinanceAccountBalanceRow;
-  });
+export async function getFinanceAccountsWithBalance(_opts?: { localOnly?: boolean }) {
+  const readOpts = { offlineFallback: false as const };
+  const [accounts, transactions] = await Promise.all([
+    loadFinanceAccounts(),
+    readApiTable<FinanceTransactionRow>('finance_transactions', readOpts),
+  ]);
+
+  const result: FinanceAccountBalanceRow[] = [];
+  for (const a of accounts) {
+    const balance = computeLedgerBalanceFromTransactions(a.id, transactions);
+    result.push({
+      ...a,
+      sign_rule: normalizeFinanceSignRule(a.sign_rule, a.account_type),
+      balance,
+    });
+  }
+  return result;
 }
 
 export async function getFinanceAccountTypes() {
@@ -358,19 +534,33 @@ export async function deleteFinanceFlowCategory(id: string) {
   );
 }
 
-export async function createFinanceTransaction(input: CreateFinanceTransactionInput) {
+export async function createFinanceTransaction(
+  input: CreateFinanceTransactionInput,
+  opts?: { skipBalanceRecheck?: boolean },
+) {
   await assertTransactionAmountSign(input.account_id, input.amount);
-  const account = await getFinanceAccountById(input.account_id);
-  if (!account) {
-    throw new Error('finance account not found');
+  if (!opts?.skipBalanceRecheck) {
+    const account = await getFinanceAccountById(input.account_id);
+    if (!account) {
+      throw new Error('finance account not found');
+    }
+    const signRule = normalizeFinanceSignRule(account.sign_rule, account.account_type);
+    const [curBalance, txnCount] = await Promise.all([
+      resolveFinanceAccountLedgerBalance(input.account_id),
+      countFinanceAccountLedgerTransactions(input.account_id),
+    ]);
+    const delta = computeTransactionLedgerEffect(
+      input.transaction_type ?? 'expense',
+      input.amount,
+      input.extra_data ?? null,
+    );
+    assertFinanceBalanceWithinSignRule(signRule, curBalance + delta, {
+      accountName: account.name,
+      delta,
+      ledgerBalance: curBalance,
+      txnCount,
+    });
   }
-  const curBalance = await getFinanceAccountComputedBalance(input.account_id);
-  const delta = computeTransactionLedgerEffect(
-    input.transaction_type ?? 'expense',
-    input.amount,
-    input.extra_data ?? null
-  );
-  assertFinanceBalanceWithinSignRule(account.sign_rule, curBalance + delta);
 
   const db = await getDatabase();
   await db.runAsync(
@@ -391,6 +581,7 @@ export async function createFinanceTransaction(input: CreateFinanceTransactionIn
       input.extra_data ?? null,
     ]
   );
+  void pushFinanceChangesToApi();
 }
 
 const FINANCE_BALANCE_ADJUST_EPS = 1e-4;
@@ -477,7 +668,7 @@ export async function getFinanceTransactionById(id: string) {
   return readApiRecord<FinanceTransactionRow>('finance_transactions', id, { offlineFallback: true });
 }
 
-export async function getFinanceTransactions() {
+export async function getFinanceTransactions(_opts?: { localOnly?: boolean }) {
   return loadFinanceTransactionsForActiveAccounts();
 }
 
@@ -529,19 +720,31 @@ export async function updateFinanceTransaction(id: string, input: UpdateFinanceT
   if (current.account_id === nextAccountId) {
     const acct = await getFinanceAccountById(nextAccountId);
     if (acct) {
+      const signRule = normalizeFinanceSignRule(acct.sign_rule, acct.account_type);
       const cur = await getFinanceAccountComputedBalance(nextAccountId);
-      assertFinanceBalanceWithinSignRule(acct.sign_rule, cur - oldEffect + newEffect);
+      assertFinanceBalanceWithinSignRule(signRule, cur - oldEffect + newEffect, {
+        accountName: acct.name,
+        delta: newEffect - oldEffect,
+      });
     }
   } else {
     const oldAcct = await getFinanceAccountById(current.account_id);
     const newAcct = await getFinanceAccountById(nextAccountId);
     if (oldAcct) {
+      const signRule = normalizeFinanceSignRule(oldAcct.sign_rule, oldAcct.account_type);
       const curOld = await getFinanceAccountComputedBalance(current.account_id);
-      assertFinanceBalanceWithinSignRule(oldAcct.sign_rule, curOld - oldEffect);
+      assertFinanceBalanceWithinSignRule(signRule, curOld - oldEffect, {
+        accountName: oldAcct.name,
+        delta: -oldEffect,
+      });
     }
     if (newAcct) {
+      const signRule = normalizeFinanceSignRule(newAcct.sign_rule, newAcct.account_type);
       const curNew = await getFinanceAccountComputedBalance(nextAccountId);
-      assertFinanceBalanceWithinSignRule(newAcct.sign_rule, curNew + newEffect);
+      assertFinanceBalanceWithinSignRule(signRule, curNew + newEffect, {
+        accountName: newAcct.name,
+        delta: newEffect,
+      });
     }
   }
 
@@ -564,6 +767,7 @@ export async function updateFinanceTransaction(id: string, input: UpdateFinanceT
       id,
     ]
   );
+  await pushFinanceChangesToApi();
 }
 
 export async function deleteFinanceTransaction(id: string) {
@@ -575,9 +779,13 @@ export async function deleteFinanceTransaction(id: string) {
   if (current) {
     const acct = await getFinanceAccountById(current.account_id);
     if (acct) {
+      const signRule = normalizeFinanceSignRule(acct.sign_rule, acct.account_type);
       const cur = await getFinanceAccountComputedBalance(current.account_id);
       const oldEffect = computeTransactionLedgerEffect(current.transaction_type, current.amount, current.extra_data);
-      assertFinanceBalanceWithinSignRule(acct.sign_rule, cur - oldEffect);
+      assertFinanceBalanceWithinSignRule(signRule, cur - oldEffect, {
+        accountName: acct.name,
+        delta: -oldEffect,
+      });
     }
   }
   await db.runAsync(
@@ -586,4 +794,5 @@ export async function deleteFinanceTransaction(id: string) {
      WHERE id = ?`,
     [id]
   );
+  await pushFinanceChangesToApi();
 }

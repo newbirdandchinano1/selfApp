@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   createQuickAddItemMap,
   getQuickAddMetricTypes,
@@ -245,7 +246,10 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'sodium', label: '钠' },
 ];
 
+const PAGE_API_KEY = 'intake-history';
+
 export default function IntakeHistoryScreen() {
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -261,21 +265,23 @@ export default function IntakeHistoryScreen() {
     React.useCallback(() => {
       let cancelled = false;
       const load = async () => {
-        const [user, catalog] = await Promise.all([getDefaultUser(), loadAllQuickAddItems()]);
-        if (!user?.id) {
-          if (!cancelled) setLines([]);
-          return;
-        }
-        const records = await getHealthRecordsForUserOnDate(user.id, selectedDateYmd);
-        if (!cancelled) {
-          setLines(buildHistoryLines(records, catalog));
-        }
+        await wrapLoad(async () => {
+          const [user, catalog] = await Promise.all([getDefaultUser(), loadAllQuickAddItems()]);
+          if (!user?.id) {
+            if (!cancelled) setLines([]);
+            return;
+          }
+          const records = await getHealthRecordsForUserOnDate(user.id, selectedDateYmd);
+          if (!cancelled) {
+            setLines(buildHistoryLines(records, catalog));
+          }
+        });
       };
       void load();
       return () => {
         cancelled = true;
       };
-    }, [selectedDateYmd])
+    }, [selectedDateYmd, wrapLoad])
   );
 
   const filteredLines = React.useMemo(() => {

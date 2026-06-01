@@ -47,9 +47,9 @@ export function ScreenLoadingShell({
 
   if (loading) {
     return (
-      <View style={[styles.placeholder, style]}>
-        <ActivityIndicator size="small" color={colors.primary} />
-        <Text style={[styles.hint, { color: colors.textSecondary }]}>{hint}</Text>
+      <View style={[styles.placeholder, { backgroundColor: colors.background }, style]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={[styles.hint, { color: colors.text }]}>{hint}</Text>
       </View>
     );
   }
@@ -66,12 +66,12 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
-    paddingVertical: 48,
+    gap: 14,
+    paddingVertical: 56,
   },
   hint: {
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '700',
   },
   content: {
     flex: 1,

@@ -1,4 +1,5 @@
 import { readApiTable } from '@/lib/api-read';
+import type { PageApiReadOpts } from '@/lib/page-api-session';
 import { getDatabase } from '../../database.native';
 import { getSavingsPlanById, SAVINGS_PLAN_MAX_TARGET_AMOUNT } from './savings-plan';
 import type { CreateSavingsPlanDepositInput } from './savings-plan-deposit.types';
@@ -53,10 +54,11 @@ export async function getTotalDepositsForActivePlans() {
 }
 
 /** 各未删除计划的存入合计（计划无记录时为 0，由调用方补全） */
-export async function getDepositSumsByActivePlanId() {
+export async function getDepositSumsByActivePlanId(opts?: PageApiReadOpts) {
+  const readOpts = { offlineFallback: true as const, localOnly: opts?.localOnly };
   const [plans, deposits] = await Promise.all([
-    readApiTable<{ id: string }>('savings_plans', { offlineFallback: true }),
-    readApiTable<{ savings_plan_id: string; amount: number }>('savings_plan_deposits', { offlineFallback: true }),
+    readApiTable<{ id: string }>('savings_plans', readOpts),
+    readApiTable<{ savings_plan_id: string; amount: number }>('savings_plan_deposits', readOpts),
   ]);
   const planIds = new Set(plans.map(p => p.id));
   const map: Record<string, number> = {};

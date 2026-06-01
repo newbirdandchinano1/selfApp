@@ -4,6 +4,7 @@ import {
   markCloudSqliteTableDirty,
 } from '@/lib/cloud-sql-dirty-track';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
+import type { PageApiReadOpts } from '@/lib/page-api-session';
 import { sortBySortOrderAsc, sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '@/lib/database';
 import { makeTimestampEntityId } from '@/lib/entity-id';
@@ -84,10 +85,10 @@ function clampDimension(t: string): string {
   return x.length > MEMO_DIMENSION_MAX ? x.slice(0, MEMO_DIMENSION_MAX) : x;
 }
 
-function rowToDimension(row: MemoDimensionRow): MemoDimension {
+function rowToDimension(row: MemoDimensionRow & { title?: string | null }): MemoDimension {
   return {
     id: row.id,
-    name: row.name,
+    name: (row.name ?? row.title ?? '').trim(),
     sort_order: Number(row.sort_order ?? 1000),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -315,10 +316,36 @@ async function backfillMemoDimensionsIfNeeded(db: SQLite.SQLiteDatabase): Promis
   ]);
 }
 
-async function listMemosFromApi(dimensionId?: string): Promise<MemoItem[]> {
+async function repairEmptyMemoDimensionNames(db: SQLite.SQLiteDatabase): Promise<void> {
+  await db.runAsync(
+    `UPDATE memo_dimensions
+     SET name = COALESCE(
+       (
+         SELECT TRIM(m.dimension)
+         FROM memos m
+         WHERE m.dimension_id = memo_dimensions.id
+           AND TRIM(COALESCE(m.dimension, '')) != ''
+         LIMIT 1
+       ),
+       '未命名维度'
+     ),
+     updated_at = datetime('now')
+     WHERE TRIM(COALESCE(name, '')) = ''`,
+  );
+}
+
+/** 启动时：从 memos.dimension 回填 memo_dimensions，并修复空名称 */
+export async function ensureMemoDimensionsBackfilled(db?: SQLite.SQLiteDatabase): Promise<void> {
+  const database = db ?? (await getDatabase());
+  await backfillMemoDimensionsIfNeeded(database);
+  await repairEmptyMemoDimensionNames(database);
+}
+
+async function listMemosFromApi(dimensionId?: string, opts?: PageApiReadOpts): Promise<MemoItem[]> {
+  const readOpts = { offlineFallback: true as const, localOnly: opts?.localOnly };
   const [memoRows, dimensionRows] = await Promise.all([
-    readApiTable<MemoRow>('memos', { offlineFallback: true }),
-    readApiTable<MemoDimensionRow>('memo_dimensions', { offlineFallback: true }),
+    readApiTable<MemoRow>('memos', readOpts),
+    readApiTable<MemoDimensionRow>('memo_dimensions', readOpts),
   ]);
   const dimNameById = new Map(dimensionRows.map(d => [d.id, d.name]));
   let filtered = memoRows;
@@ -375,9 +402,13 @@ export async function replaceMemosFromCloudRestore(items: MemoItem[]): Promise<v
   await importMemosToDb(db, items);
 }
 
-export async function listMemoDimensions(): Promise<MemoDimension[]> {
-  const rows = await readApiTable<MemoDimensionRow>('memo_dimensions', { offlineFallback: true });
-  return sortBySortOrderAsc(rows).map(rowToDimension);
+export async function listMemoDimensions(opts?: PageApiReadOpts): Promise<MemoDimension[]> {
+  await ensureMemoDimensionsBackfilled();
+  const rows = await readApiTable<MemoDimensionRow>('memo_dimensions', {
+    offlineFallback: true,
+    localOnly: opts?.localOnly,
+  });
+  return sortBySortOrderAsc(rows).map(rowToDimension).filter(d => d.id);
 }
 
 export async function createMemoDimension(input: { name: string }): Promise<MemoDimension> {
@@ -483,8 +514,8 @@ export async function deleteMemoDimension(id: string): Promise<boolean> {
   }
 }
 
-export async function listMemos(dimensionId?: string): Promise<MemoItem[]> {
-  return listMemosFromApi(dimensionId);
+export async function listMemos(dimensionId?: string, opts?: PageApiReadOpts): Promise<MemoItem[]> {
+  return listMemosFromApi(dimensionId, opts);
 }
 
 export async function getMemo(id: string): Promise<MemoItem | null> {

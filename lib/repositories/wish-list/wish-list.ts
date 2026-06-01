@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
+import type { PageApiReadOpts } from '@/lib/page-api-session';
 import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import {
@@ -94,8 +95,11 @@ export async function getWishItemById(id: string) {
   return readApiRecord<WishItemRow>('wish_items', id, { offlineFallback: true });
 }
 
-export async function listWishItems() {
-  const rows = await readApiTable<WishItemRow>('wish_items', { offlineFallback: true });
+export async function listWishItems(opts?: PageApiReadOpts) {
+  const rows = await readApiTable<WishItemRow>('wish_items', {
+    offlineFallback: true,
+    localOnly: opts?.localOnly,
+  });
   return sortByUpdatedDesc(rows);
 }
 
