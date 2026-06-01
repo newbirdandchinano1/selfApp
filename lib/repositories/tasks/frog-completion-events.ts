@@ -72,8 +72,7 @@ export async function backfillFrogCompletionEventsFromTasks(): Promise<number> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<{ id: string; title: string; extra_data: string | null }>(
     `SELECT id, title, extra_data FROM tasks
-      WHERE deleted_at IS NULL
-        AND status IN ('done', 'cancelled')
+     WHERE status IN ('done', 'cancelled')
         AND extra_data IS NOT NULL
         AND trim(extra_data) != ''`
   );

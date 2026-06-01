@@ -32,9 +32,7 @@ export type TaskRow = {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
   sync_status: SyncStatus;
-  version: number;
   extra_data: string | null;
   /** 同一项目、同一父任务下的同级排序，数值越小越靠前 */
   sort_order: number;
@@ -78,9 +76,7 @@ export type TaskCategoryRow = {
   sort_order: number;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
   sync_status: SyncStatus;
-  version: number;
   extra_data: string | null;
 };
 

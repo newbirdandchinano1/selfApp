@@ -41,8 +41,8 @@ export async function createSavingsPlan(input: CreateSavingsPlanInput) {
   await db.runAsync(
     `INSERT INTO savings_plans (
       id, name, start_date, end_date, target_amount, avatar_uri,
-      created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [
       input.id,
       name,
@@ -83,8 +83,7 @@ export async function updateSavingsPlan(id: string, input: UpdateSavingsPlanInpu
     `UPDATE savings_plans
      SET name = ?, start_date = ?, end_date = ?, target_amount = ?, avatar_uri = ?, extra_data = ?,
          updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
       nextName,
@@ -102,7 +101,7 @@ export async function deleteSavingsPlan(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE savings_plans
-     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
+     SET updated_at = datetime('now'), sync_status = 'pending_delete'
      WHERE id = ?`,
     [id]
   );

@@ -17,8 +17,8 @@ export async function createProject(input: CreateProjectInput) {
   const inboxAtSql = inStrictInbox ? `datetime('now')` : 'NULL';
   await db.runAsync(
     `INSERT INTO projects (
-      id, category_id, name, status, note, due_date, created_at, updated_at, deleted_at, sync_status, version, extra_data, inbox_entered_at
-    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?, ${inboxAtSql})`,
+      id, category_id, name, status, note, due_date, created_at, updated_at, sync_status, extra_data, inbox_entered_at
+    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?, ${inboxAtSql})`,
     [input.id, input.category_id ?? null, input.name, input.status ?? 'active', input.note ?? null, input.due_date ?? null, input.extra_data ?? null]
   );
 }
@@ -40,16 +40,14 @@ export async function isProjectNameDuplicate(name: string, excludeId?: string) {
   const row = excludeId
     ? await db.getFirstAsync<{ id: string }>(
         `SELECT id FROM projects
-         WHERE deleted_at IS NULL
-           AND LOWER(TRIM(name)) = LOWER(TRIM(?))
+         WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
            AND id != ?
          LIMIT 1`,
         [normalizedName, excludeId]
       )
     : await db.getFirstAsync<{ id: string }>(
         `SELECT id FROM projects
-         WHERE deleted_at IS NULL
-           AND LOWER(TRIM(name)) = LOWER(TRIM(?))
+         WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
          LIMIT 1`,
         [normalizedName]
       );
@@ -79,8 +77,7 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
   await db.runAsync(
     `UPDATE projects
      SET category_id = ?, name = ?, status = ?, note = ?, due_date = ?, extra_data = ?, inbox_entered_at = ?, updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
       nextCategoryId,
@@ -99,25 +96,24 @@ export async function deleteProject(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE tasks
-     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
-     WHERE deleted_at IS NULL AND project_id = ?`,
+     SET updated_at = datetime('now'), sync_status = 'pending_delete'
+     WHERE project_id = ?`,
     [id]
   );
   await db.runAsync(
     `UPDATE projects
-     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
+     SET updated_at = datetime('now'), sync_status = 'pending_delete'
      WHERE id = ?`,
     [id]
   );
 }
 
-/** 收集箱内（`category_id` 为内置收集箱）且 `inbox_entered_at` 超过 `retentionDays` 的项目软删除（含下属任务）。 */
+/** 收集箱内（`category_id` 为内置收集箱）且 `inbox_entered_at` 超过 `retentionDays` 的项目删除（含下属任务）。 */
 export async function deleteInboxProjectsPastRetentionDays(retentionDays: number): Promise<number> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<{ id: string }>(
     `SELECT id FROM projects
-     WHERE deleted_at IS NULL
-       AND category_id = ?
+     WHERE category_id = ?
        AND inbox_entered_at IS NOT NULL
        AND datetime(inbox_entered_at) <= datetime('now', ?)`,
     [INBOX_PROJECT_CATEGORY_ID, `-${retentionDays} days`],
@@ -132,11 +128,11 @@ export async function createProjectCategory(input: CreateProjectCategoryInput) {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO project_categories (
-      id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+      id, name, sort_order, created_at, updated_at, sync_status, extra_data
     ) VALUES (
       ?, ?,
-      (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM project_categories WHERE deleted_at IS NULL),
-      datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?
+      (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM project_categories),
+      datetime('now'), datetime('now'), 'pending_create', ?
     )`,
     [input.id, input.name, input.extra_data ?? null]
   );
@@ -155,9 +151,8 @@ export async function reorderProjectCategories(orderedIds: string[]) {
     await db.runAsync(
       `UPDATE project_categories
        SET sort_order = ?, updated_at = datetime('now'),
-           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-           version = version + 1
-       WHERE id = ? AND deleted_at IS NULL`,
+           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+       WHERE id = ?`,
       [i + 1, id]
     );
   }
@@ -172,13 +167,12 @@ export async function reorderProjectCategories(orderedIds: string[]) {
 export async function updateProjectCategory(id: string, input: UpdateProjectCategoryInput) {
   if (id === INBOX_PROJECT_CATEGORY_ID) return;
   const db = await getDatabase();
-  const current = await db.getFirstAsync<ProjectCategoryRow>('SELECT * FROM project_categories WHERE id = ? AND deleted_at IS NULL LIMIT 1', [id]);
+  const current = await db.getFirstAsync<ProjectCategoryRow>('SELECT * FROM project_categories WHERE id = ? LIMIT 1', [id]);
   if (!current) return;
   await db.runAsync(
     `UPDATE project_categories
      SET name = ?, extra_data = ?, updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [input.name ?? current.name, input.extra_data ?? current.extra_data, id]
   );
@@ -189,7 +183,7 @@ export async function deleteProjectCategory(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE project_categories
-     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
+     SET updated_at = datetime('now'), sync_status = 'pending_delete'
      WHERE id = ?`,
     [id]
   );

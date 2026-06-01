@@ -160,10 +160,14 @@ async function markLocalRowsSynced(
     for (const row of rows) {
       const pk = rowPrimaryKeyValue(row, pkCols);
       if (!pk) continue;
-      await db.runAsync(
-        `UPDATE ${quoteIdent(table)} SET sync_status = 'synced' WHERE ${quoteIdent(pkCol)} = ?`,
-        [pk],
-      );
+      if (row.sync_status === 'pending_delete') {
+        await db.runAsync(`DELETE FROM ${quoteIdent(table)} WHERE ${quoteIdent(pkCol)} = ?`, [pk]);
+      } else {
+        await db.runAsync(
+          `UPDATE ${quoteIdent(table)} SET sync_status = 'synced' WHERE ${quoteIdent(pkCol)} = ?`,
+          [pk],
+        );
+      }
     }
   } finally {
     endCloudSqliteDirtyIgnoreBatch();

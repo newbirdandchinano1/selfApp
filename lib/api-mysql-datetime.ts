@@ -77,6 +77,7 @@ export function normalizeRecordForMysqlApi(row: Record<string, unknown>): Record
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(row)) {
     if (value === undefined) continue;
+    if (key === 'deleted_at' || key === 'version') continue;
     out[key] = normalizeDeepForMysqlApi(value, key);
   }
   return out;

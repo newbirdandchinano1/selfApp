@@ -13,9 +13,7 @@ export type WishItemRow = {
   ai_review_at: string | null;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
   sync_status: SyncStatus;
-  version: number;
   extra_data: string | null;
 };
 

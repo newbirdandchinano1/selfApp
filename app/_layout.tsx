@@ -7,6 +7,7 @@ import { ActivityIndicator, InteractionManager, Platform, Pressable, Text, View 
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
+import { ApiLoadingOverlay } from '@/components/api-loading-overlay';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
@@ -209,7 +210,7 @@ function RootLayoutInner() {
             ) : null}
           </View>
         ) : (
-          <>
+          <View style={{ flex: 1 }}>
             <ScreenshotDeepLinkListener />
             <AutoLedgerCoordinator dbReady={isDbReady} />
             <TaskReminderNotificationListener />
@@ -273,7 +274,8 @@ function RootLayoutInner() {
             <Stack.Screen name="auto-ledger" />
           </Stack>
             </AppErrorBoundary>
-          </>
+            <ApiLoadingOverlay />
+          </View>
         )}
         <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
       </ThemeProvider>

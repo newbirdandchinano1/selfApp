@@ -86,7 +86,7 @@ const ULTRA_DROP_COLUMNS = new Set([
   'section_next_week',
 ]);
 
-const ID_LIKE_FIELD_RE = /^(id|.*_id|key|slug|sync_status|version)$/i;
+const ID_LIKE_FIELD_RE = /^(id|.*_id|key|slug|sync_status)$/i;
 
 function looksLikeJsonString(value: string): boolean {
   const t = value.trim();

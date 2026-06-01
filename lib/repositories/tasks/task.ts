@@ -61,8 +61,7 @@ async function getNextTaskSortOrderForSiblings(
   const row = await db.getFirstAsync<{ m: number | null }>(
     `SELECT COALESCE(MAX(sort_order), 0) + 1 AS m
        FROM tasks
-      WHERE deleted_at IS NULL
-        AND IFNULL(project_id, '') = IFNULL(?, '')
+       WHERE IFNULL(project_id, '') = IFNULL(?, '')
         AND IFNULL(parent_task_id, '') = IFNULL(?, '')`,
     [projectId ?? '', parentTaskId ?? '']
   );
@@ -82,7 +81,7 @@ export async function reorderProjectTaskSiblings(
     const found = await db.getFirstAsync<{ id: string }>(
       `SELECT id FROM tasks
         WHERE id = ?
-          AND deleted_at IS NULL
+         
           AND project_id = ?
           AND IFNULL(parent_task_id, '') = ?`,
       [id, projectId, pKey]
@@ -94,8 +93,7 @@ export async function reorderProjectTaskSiblings(
       `UPDATE tasks
           SET sort_order = ?,
               updated_at = datetime('now'),
-              sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-              version = version + 1
+              sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
         WHERE id = ?`,
       [i + 1, id]
     );
@@ -150,8 +148,8 @@ export async function deleteTasksByProjectId(projectId: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE tasks
-     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
-     WHERE deleted_at IS NULL AND project_id = ?`,
+     SET updated_at = datetime('now'), sync_status = 'pending_delete'
+     WHERE project_id = ?`,
     [projectId],
   );
 }
@@ -162,8 +160,8 @@ export async function createTask(input: CreateTaskInput) {
   await db.runAsync(
     `INSERT INTO tasks (
       id, project_id, category_id, parent_task_id, title, description, note, status, priority, due_date, completed_at,
-      sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      sort_order, created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [
       input.id,
       input.project_id ?? null,
@@ -276,8 +274,7 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
     `UPDATE tasks
      SET project_id = ?, category_id = ?, parent_task_id = ?, title = ?, description = ?, note = ?, status = ?, priority = ?, due_date = ?,
          completed_at = ?, extra_data = ?, sort_order = ?, updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
       input.project_id ?? current.project_id,
@@ -302,18 +299,16 @@ export async function assignProjectIdToTaskSubtree(rootTaskId: string, projectId
   const db = await getDatabase();
   await db.runAsync(
     `WITH RECURSIVE subtree(id) AS (
-        SELECT id FROM tasks WHERE id = ? AND deleted_at IS NULL
+        SELECT id FROM tasks WHERE id = ?
         UNION ALL
         SELECT t.id
           FROM tasks t
           JOIN subtree s ON t.parent_task_id = s.id
-         WHERE t.deleted_at IS NULL
      )
      UPDATE tasks
         SET project_id = ?,
             updated_at = datetime('now'),
-            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-            version = version + 1
+            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
       WHERE id IN (SELECT id FROM subtree)`,
     [rootTaskId, projectId],
   );
@@ -323,18 +318,15 @@ export async function deleteTask(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `WITH RECURSIVE subtree(id) AS (
-        SELECT id FROM tasks WHERE id = ? AND deleted_at IS NULL
+        SELECT id FROM tasks WHERE id = ?
         UNION ALL
         SELECT t.id
           FROM tasks t
           JOIN subtree s ON t.parent_task_id = s.id
-         WHERE t.deleted_at IS NULL
      )
      UPDATE tasks
-        SET deleted_at = datetime('now'),
-            updated_at = datetime('now'),
-            sync_status = 'pending_delete',
-            version = version + 1
+        SET updated_at = datetime('now'),
+            sync_status = 'pending_delete'
       WHERE id IN (SELECT id FROM subtree)`,
     [id],
   );
@@ -344,11 +336,11 @@ export async function createTaskCategory(input: CreateTaskCategoryInput) {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO task_categories (
-      id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+      id, name, sort_order, created_at, updated_at, sync_status, extra_data
     ) VALUES (
       ?, ?,
-      (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM task_categories WHERE deleted_at IS NULL),
-      datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?
+      (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM task_categories),
+      datetime('now'), datetime('now'), 'pending_create', ?
     )`,
     [input.id, input.name, input.extra_data ?? null]
   );
@@ -367,9 +359,8 @@ export async function reorderTaskCategories(orderedIds: string[]) {
     await db.runAsync(
       `UPDATE task_categories
        SET sort_order = ?, updated_at = datetime('now'),
-           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-           version = version + 1
-       WHERE id = ? AND deleted_at IS NULL`,
+           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+       WHERE id = ?`,
       [i + 1, id]
     );
   }
@@ -377,13 +368,12 @@ export async function reorderTaskCategories(orderedIds: string[]) {
 
 export async function updateTaskCategory(id: string, input: UpdateTaskCategoryInput) {
   const db = await getDatabase();
-  const current = await db.getFirstAsync<TaskCategoryRow>('SELECT * FROM task_categories WHERE id = ? AND deleted_at IS NULL LIMIT 1', [id]);
+  const current = await db.getFirstAsync<TaskCategoryRow>('SELECT * FROM task_categories WHERE id = ? LIMIT 1', [id]);
   if (!current) return;
   await db.runAsync(
     `UPDATE task_categories
      SET name = ?, extra_data = ?, updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [input.name ?? current.name, input.extra_data ?? current.extra_data, id]
   );
@@ -393,7 +383,7 @@ export async function deleteTaskCategory(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE task_categories
-     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
+     SET updated_at = datetime('now'), sync_status = 'pending_delete'
      WHERE id = ?`,
     [id]
   );

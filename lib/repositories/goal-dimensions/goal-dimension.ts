@@ -15,8 +15,8 @@ export async function createGoalDimension(input: CreateGoalDimensionInput) {
   const extraJson = serializeGoalDimensionExtra(input.extra ?? null);
   await db.runAsync(
     `INSERT INTO goal_dimensions (
-      id, title, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      id, title, sort_order, created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [input.id, input.title.trim(), input.sort_order ?? 1000, extraJson],
   );
 }
@@ -50,9 +50,8 @@ export async function updateGoalDimension(id: string, input: UpdateGoalDimension
     `UPDATE goal_dimensions SET
       title = ?, sort_order = ?, extra_data = ?,
       updated_at = datetime('now'),
-      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-      version = version + 1
-    WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+    WHERE id = ?`,
     [title, sort_order, extra_data, id],
   );
 
@@ -66,11 +65,9 @@ export async function deleteGoalDimension(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE goal_dimensions SET
-      deleted_at = datetime('now'),
       updated_at = datetime('now'),
-      sync_status = 'pending_delete',
-      version = version + 1
-    WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = 'pending_delete'
+    WHERE id = ?`,
     [id]
   );
 }

@@ -53,8 +53,8 @@ export async function grantEarnedRewardFromExtraData(input: {
   await db.runAsync(
     `INSERT INTO earned_rewards (
       id, source_type, source_id, source_title, reward_kind, wish_item_id, label,
-      earned_at, redeemed_at, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now'), datetime('now'), NULL, 'pending_create', 1, NULL)`,
+      earned_at, redeemed_at, created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now'), datetime('now'), 'pending_create', NULL)`,
   [
     id,
     input.sourceType,
@@ -89,9 +89,8 @@ export async function redeemEarnedReward(id: string): Promise<void> {
     `UPDATE earned_rewards SET
       redeemed_at = datetime('now'),
       updated_at = datetime('now'),
-      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-      version = version + 1
-    WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+    WHERE id = ?`,
     [id],
   );
 
@@ -109,9 +108,8 @@ export async function unredeemEarnedReward(id: string): Promise<void> {
     `UPDATE earned_rewards SET
       redeemed_at = NULL,
       updated_at = datetime('now'),
-      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-      version = version + 1
-    WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+    WHERE id = ?`,
     [id],
   );
 

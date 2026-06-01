@@ -1,4 +1,5 @@
 import { apiGetRecord, apiGetTablesMeta, apiListRecords } from '@/lib/api-client';
+import { withApiLoading } from '@/lib/api-loading-tracker';
 import {
   getApiTablePrimaryKey,
   isApiReadableTable,
@@ -138,7 +139,7 @@ export async function readApiTable<T extends Record<string, unknown>>(
     return readLocalTableAll<T>(table);
   }
   try {
-    return await fetchApiTableAll<T>(table, opts);
+    return await withApiLoading(() => fetchApiTableAll<T>(table, opts));
   } catch (e) {
     if (opts?.offlineFallback) {
       if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, e);
@@ -157,7 +158,7 @@ export async function readApiRecord<T extends Record<string, unknown>>(
     return readLocalRecordByPk<T>(table, pkValue);
   }
   try {
-    return await fetchApiRecordByPk<T>(table, pkValue, opts);
+    return await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
   } catch (e) {
     if (opts?.offlineFallback) {
       if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, pkValue, e);

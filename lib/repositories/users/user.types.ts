@@ -16,10 +16,8 @@ export type UserRow = {
   weight: number;
   age: number;
   created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-  sync_status: SyncStatus;
-  version: number;
+  updated_at: string;
+  sync_status: SyncStatus;
 };
 
 export type UpdateDefaultUserInput = Pick<

@@ -8,9 +8,9 @@ export async function createHabit(input: CreateHabitInput) {
   await db.runAsync(
     `INSERT INTO habits (
       id, context, name, tag, icon, tone, note, extra_data,
-      created_at, updated_at, deleted_at, sync_status, version
+      created_at, updated_at, sync_status
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?,
-      datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
+      datetime('now'), datetime('now'), 'pending_create')`,
     [
       input.id,
       input.context,
@@ -47,8 +47,7 @@ export async function updateHabit(id: string, input: UpdateHabitInput) {
     `UPDATE habits
       SET context = ?, name = ?, tag = ?, icon = ?, tone = ?, note = ?, extra_data = ?,
           updated_at = datetime('now'),
-          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-          version = version + 1
+          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
       WHERE id = ?`,
     [
       input.context ?? current.context,
@@ -67,21 +66,17 @@ export async function deleteHabit(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE habits
-      SET deleted_at = datetime('now'),
-          updated_at = datetime('now'),
-          sync_status = 'pending_delete',
-          version = version + 1
-      WHERE id = ? AND deleted_at IS NULL`,
+      SET updated_at = datetime('now'),
+          sync_status = 'pending_delete'
+      WHERE id = ?`,
     [id]
   );
   try {
     await db.runAsync(
       `UPDATE habit_check_ins
-        SET deleted_at = datetime('now'),
-            updated_at = datetime('now'),
-            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_delete' ELSE sync_status END,
-            version = version + 1
-        WHERE habit_id = ? AND deleted_at IS NULL`,
+        SET updated_at = datetime('now'),
+            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_delete' ELSE sync_status END
+        WHERE habit_id = ?`,
       [id]
     );
   } catch {

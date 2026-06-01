@@ -12,10 +12,8 @@ export type FinanceAccountRow = {
   sign_rule: -1 | 1;
   note: string | null;
   created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-  sync_status: SyncStatus;
-  version: number;
+  updated_at: string;
+  sync_status: SyncStatus;
   extra_data: string | null;
 };
 
@@ -30,10 +28,8 @@ export type FinanceAccountTypeRow = {
   icon_key: string;
   sort_order: number;
   created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-  sync_status: SyncStatus;
-  version: number;
+  updated_at: string;
+  sync_status: SyncStatus;
   extra_data: string | null;
 };
 
@@ -64,10 +60,8 @@ export type FinanceFlowCategoryRow = {
   sort_order: number;
   is_builtin: number;
   created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-  sync_status: SyncStatus;
-  version: number;
+  updated_at: string;
+  sync_status: SyncStatus;
   extra_data: string | null;
 };
 
@@ -95,10 +89,8 @@ export type FinanceTransactionRow = {
   amount: number;
   note: string | null;
   created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-  sync_status: SyncStatus;
-  version: number;
+  updated_at: string;
+  sync_status: SyncStatus;
   extra_data: string | null;
 };
 

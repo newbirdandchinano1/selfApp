@@ -246,8 +246,8 @@ async function importStoreToDb(db: SQLite.SQLiteDatabase, store: RecipeStore): P
     for (const cat of store.categories) {
       const ts = cat.created_at || now;
       await db.runAsync(
-        `INSERT INTO recipe_categories (id, name, created_at, updated_at, deleted_at, sync_status, version)
-         VALUES (?, ?, ?, ?, NULL, 'synced', 1)`,
+        `INSERT INTO recipe_categories (id, name, created_at, updated_at, sync_status)
+         VALUES (?, ?, ?, ?, 'synced')`,
         [cat.id, cat.name, ts, ts],
       );
     }
@@ -256,8 +256,8 @@ async function importStoreToDb(db: SQLite.SQLiteDatabase, store: RecipeStore): P
       await db.runAsync(
         `INSERT INTO recipe_items (
           id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri,
-          created_at, updated_at, deleted_at, sync_status, version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+          created_at, updated_at, sync_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
         [
           item.id,
           item.category_id,
@@ -296,10 +296,10 @@ export async function migrateRecipesStorageToSqliteIfNeeded(
   if (flag?.value === '1') return;
 
   const catCount = await database.getFirstAsync<{ c: number }>(
-    'SELECT COUNT(1) AS c FROM recipe_categories WHERE deleted_at IS NULL',
+    'SELECT COUNT(1) AS c FROM recipe_categories',
   );
   const recipeCount = await database.getFirstAsync<{ c: number }>(
-    'SELECT COUNT(1) AS c FROM recipe_items WHERE deleted_at IS NULL',
+    'SELECT COUNT(1) AS c FROM recipe_items',
   );
   const hasSqliteData = Number(catCount?.c ?? 0) > 0 || Number(recipeCount?.c ?? 0) > 0;
 
@@ -407,15 +407,15 @@ export async function createRecipeCategory(name: string): Promise<RecipeCategory
   if (!trimmed) throw new Error('请输入分类名称');
   const db = await getDatabase();
   const dup = await db.getFirstAsync<{ id: string }>(
-    `SELECT id FROM recipe_categories WHERE deleted_at IS NULL AND name = ? LIMIT 1`,
+    `SELECT id FROM recipe_categories WHERE name = ? LIMIT 1`,
     [trimmed],
   );
   if (dup) throw new Error('已有同名分类');
   const now = new Date().toISOString();
   const cat: RecipeCategory = { id: newId('rcat'), name: trimmed, created_at: now };
   await db.runAsync(
-    `INSERT INTO recipe_categories (id, name, created_at, updated_at, deleted_at, sync_status, version)
-     VALUES (?, ?, ?, ?, NULL, 'synced', 1)`,
+    `INSERT INTO recipe_categories (id, name, created_at, updated_at, sync_status)
+     VALUES (?, ?, ?, ?, 'synced')`,
     [cat.id, cat.name, now, now],
   );
   markRecipesDirty();
@@ -427,20 +427,19 @@ export async function renameRecipeCategory(id: string, name: string): Promise<Re
   if (!trimmed) throw new Error('请输入分类名称');
   const db = await getDatabase();
   const existing = await db.getFirstAsync<CategoryRow>(
-    `SELECT id, name, created_at FROM recipe_categories WHERE id = ? AND deleted_at IS NULL`,
+    `SELECT id, name, created_at FROM recipe_categories WHERE id = ?`,
     [id],
   );
   if (!existing) return null;
   const dup = await db.getFirstAsync<{ id: string }>(
-    `SELECT id FROM recipe_categories WHERE deleted_at IS NULL AND name = ? AND id != ? LIMIT 1`,
+    `SELECT id FROM recipe_categories WHERE name = ? AND id != ? LIMIT 1`,
     [trimmed, id],
   );
   if (dup) throw new Error('已有同名分类');
   const now = new Date().toISOString();
   await db.runAsync(
     `UPDATE recipe_categories SET name = ?, updated_at = ?,
-      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-      version = version + 1
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [trimmed, now, id],
   );
@@ -451,7 +450,7 @@ export async function renameRecipeCategory(id: string, name: string): Promise<Re
 export async function deleteRecipeCategory(id: string): Promise<boolean> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ id: string }>(
-    `SELECT id FROM recipe_categories WHERE id = ? AND deleted_at IS NULL`,
+    `SELECT id FROM recipe_categories WHERE id = ?`,
     [id],
   );
   if (!row) return false;
@@ -472,7 +471,7 @@ export type CreateRecipeInput = {
 export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem> {
   const db = await getDatabase();
   const cat = await db.getFirstAsync<{ id: string }>(
-    `SELECT id FROM recipe_categories WHERE id = ? AND deleted_at IS NULL`,
+    `SELECT id FROM recipe_categories WHERE id = ?`,
     [input.category_id],
   );
   if (!cat) throw new Error('分类不存在');
@@ -496,8 +495,8 @@ export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem
   await db.runAsync(
     `INSERT INTO recipe_items (
       id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri,
-      created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+      created_at, updated_at, sync_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
     [
       item.id,
       item.category_id,
@@ -549,9 +548,8 @@ export async function updateRecipe(id: string, patch: UpdateRecipeInput): Promis
   await db.runAsync(
     `UPDATE recipe_items SET
       title = ?, ingredients_json = ?, steps_json = ?, notes = ?, finished_image_uri = ?, updated_at = ?,
-      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-      version = version + 1
-     WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE id = ?`,
     [title, encodeLines(ingredients), encodeLines(steps), notes, finished_image_uri, now, id],
   );
   markRecipesDirty();

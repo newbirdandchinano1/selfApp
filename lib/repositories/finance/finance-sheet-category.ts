@@ -81,7 +81,7 @@ export async function createFinanceSheetCustomCategory(
   const db = await getDatabase();
   const dup = await db.getFirstAsync<{ id: string }>(
     `SELECT id FROM finance_flow_categories
-     WHERE deleted_at IS NULL AND name = ? AND id LIKE ? LIMIT 1`,
+     WHERE name = ? AND id LIKE ? LIMIT 1`,
     [trimmed, `${FINANCE_SHEET_CATEGORY_ID_PREFIX}%`],
   );
   if (dup) throw new Error('该分类名称已存在');
@@ -89,7 +89,7 @@ export async function createFinanceSheetCustomCategory(
   const maxRow = await db.getFirstAsync<{ max_sort: number | null }>(
     `SELECT MAX(COALESCE(sort_order, 1000)) AS max_sort
      FROM finance_flow_categories
-     WHERE deleted_at IS NULL AND id LIKE ?`,
+     WHERE id LIKE ?`,
     [`${FINANCE_SHEET_CATEGORY_ID_PREFIX}%`],
   );
   const nextSort = (maxRow?.max_sort ?? 1000) + 10;
@@ -102,8 +102,8 @@ export async function createFinanceSheetCustomCategory(
 
   await db.runAsync(
     `INSERT INTO finance_flow_categories (
-      id, name, parent_id, sort_order, is_builtin, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, NULL, ?, 0, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      id, name, parent_id, sort_order, is_builtin, created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, NULL, ?, 0, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [id, trimmed, nextSort, extra_data],
   );
   return id;

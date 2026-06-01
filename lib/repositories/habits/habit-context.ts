@@ -14,13 +14,13 @@ export async function createHabitContext(name: string) {
   if (!trimmed) throw new Error('情境名称不能为空');
 
   const existing = await db.getFirstAsync<{ id: string }>(
-    `SELECT id FROM habit_contexts WHERE deleted_at IS NULL AND name = ? LIMIT 1`,
+    `SELECT id FROM habit_contexts WHERE name = ? LIMIT 1`,
     [trimmed]
   );
   if (existing) throw new Error('该情境已存在');
 
   const maxRow = await db.getFirstAsync<{ max_sort: number | null }>(
-    `SELECT MAX(COALESCE(sort_order, 1000)) AS max_sort FROM habit_contexts WHERE deleted_at IS NULL`
+    `SELECT MAX(COALESCE(sort_order, 1000)) AS max_sort FROM habit_contexts`
   );
   const nextSort = (maxRow?.max_sort ?? 1000) + 10;
   // Keep id stable & readable; fall back if collision.
@@ -37,10 +37,8 @@ export async function createHabitContext(name: string) {
        SET name = ?,
            sort_order = ?,
            is_builtin = 0,
-           deleted_at = NULL,
            updated_at = datetime('now'),
-           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-           version = version + 1
+           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
        WHERE id = ?`,
       [trimmed, nextSort, id]
     );
@@ -50,9 +48,9 @@ export async function createHabitContext(name: string) {
   await db.runAsync(
     `INSERT INTO habit_contexts (
        id, name, sort_order, is_builtin, extra_data,
-       created_at, updated_at, deleted_at, sync_status, version
+       created_at, updated_at, sync_status
      ) VALUES (?, ?, ?, 0, NULL,
-       datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
+       datetime('now'), datetime('now'), 'pending_create')`,
     [id, trimmed, nextSort]
   );
 }
@@ -66,7 +64,7 @@ export async function deleteHabitContexts(ids: string[]) {
   const placeholders = ids.map(() => '?').join(', ');
 
   const resolved = await db.getAllAsync<{ name: string }>(
-    `SELECT name FROM habit_contexts WHERE deleted_at IS NULL AND id IN (${placeholders})`,
+    `SELECT name FROM habit_contexts WHERE id IN (${placeholders})`,
     ids
   );
   const names = Array.from(new Set(resolved.map((r) => r.name).filter((n): n is string => Boolean(n?.trim()))));
@@ -76,20 +74,17 @@ export async function deleteHabitContexts(ids: string[]) {
       `UPDATE habits
        SET context = ?,
            updated_at = datetime('now'),
-           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-           version = version + 1
-       WHERE deleted_at IS NULL AND context IN (${inPh})`,
+           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+       WHERE context IN (${inPh})`,
       [HABIT_CONTEXT_FALLBACK_NAME, ...names]
     );
   }
 
   await db.runAsync(
     `UPDATE habit_contexts
-     SET deleted_at = datetime('now'),
-         updated_at = datetime('now'),
-         sync_status = 'pending_delete',
-         version = version + 1
-     WHERE deleted_at IS NULL AND id IN (${placeholders})`,
+     SET updated_at = datetime('now'),
+         sync_status = 'pending_delete'
+     WHERE id IN (${placeholders})`,
     ids
   );
 }
@@ -105,9 +100,8 @@ export async function updateHabitContextsSortOrder(contextIdsInOrder: string[]) 
       `UPDATE habit_contexts
        SET sort_order = ?,
            updated_at = datetime('now'),
-           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-           version = version + 1
-       WHERE id = ? AND deleted_at IS NULL`,
+           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+       WHERE id = ?`,
       [sortOrder, id]
     );
   }

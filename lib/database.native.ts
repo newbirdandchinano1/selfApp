@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 30;
+export const DB_VERSION = 31;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -13,9 +13,7 @@ export interface BaseRecord {
   id: string;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
   sync_status: SyncStatus;
-  version: number;
 }
 
 export async function getDatabase() {
@@ -37,23 +35,95 @@ async function ensureColumn(db: SQLite.SQLiteDatabase, table: string, column: st
  * 云恢复或历史数据漂移后，清理无法满足外键的孤儿行/字段。
  * 调用方应已 `PRAGMA foreign_keys = OFF`。
  */
+
+async function migrateDropDeletedAtAndVersionColumns(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['drop_deleted_at_version_v31'],
+  );
+  if (done) return;
+
+  const tables = await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+  );
+
+  await db.execAsync('PRAGMA foreign_keys = OFF');
+  try {
+    for (const { name } of tables) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
+      const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${name})`);
+      const colNames = cols.map(c => c.name);
+      if (colNames.includes('deleted_at')) {
+        await db.runAsync(`DELETE FROM ${name} WHERE deleted_at IS NOT NULL`);
+      }
+      if (colNames.includes('deleted_at')) {
+        try {
+          await db.execAsync(`ALTER TABLE ${name} DROP COLUMN deleted_at`);
+        } catch (e) {
+          console.warn(`DROP deleted_at on ${name} failed`, e);
+        }
+      }
+      if (colNames.includes('version') && name !== 'app_meta') {
+        try {
+          await db.execAsync(`ALTER TABLE ${name} DROP COLUMN version`);
+        } catch (e) {
+          console.warn(`DROP version on ${name} failed`, e);
+        }
+      }
+    }
+
+    await db.execAsync('DROP INDEX IF EXISTS idx_habit_check_ins_deleted_at');
+    await db.execAsync('DROP TRIGGER IF EXISTS trg_project_categories_ai_to_task');
+    await db.execAsync('DROP TRIGGER IF EXISTS trg_project_categories_au_to_task');
+    await db.execAsync(`
+      CREATE TRIGGER IF NOT EXISTS trg_project_categories_ai_to_task
+      AFTER INSERT ON project_categories
+      BEGIN
+        INSERT OR REPLACE INTO task_categories (
+          id, name, sort_order, created_at, updated_at, sync_status, extra_data
+        ) VALUES (
+          NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.sync_status, NEW.extra_data
+        );
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_project_categories_au_to_task
+      AFTER UPDATE ON project_categories
+      BEGIN
+        INSERT OR REPLACE INTO task_categories (
+          id, name, sort_order, created_at, updated_at, sync_status, extra_data
+        ) VALUES (
+          NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.sync_status, NEW.extra_data
+        );
+      END;
+    `);
+
+    await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+      'drop_deleted_at_version_v31',
+      '1',
+    ]);
+    await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+  } finally {
+    await db.execAsync('PRAGMA foreign_keys = ON');
+  }
+}
+
 async function repairDatabaseReferentialIntegrity(db: SQLite.SQLiteDatabase): Promise<void> {
   const inbox = INBOX_PROJECT_CATEGORY_ID;
 
   await db.runAsync(
     `INSERT OR IGNORE INTO project_categories (
-      id, name, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL)`,
+      id, name, created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, datetime('now'), datetime('now'), 'synced', NULL)`,
     [inbox, INBOX_PROJECT_CATEGORY_NAME],
   );
 
   try {
     await db.execAsync(`
       INSERT OR REPLACE INTO task_categories (
-        id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+        id, name, sort_order, created_at, updated_at, sync_status, extra_data
       )
       SELECT
-        id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+        id, name, sort_order, created_at, updated_at, sync_status, extra_data
       FROM project_categories;
     `);
   } catch {
@@ -63,32 +133,28 @@ async function repairDatabaseReferentialIntegrity(db: SQLite.SQLiteDatabase): Pr
   await db.runAsync(
     `UPDATE projects
      SET category_id = ?, updated_at = datetime('now')
-     WHERE deleted_at IS NULL
-       AND (category_id IS NULL OR category_id NOT IN (SELECT id FROM project_categories))`,
+     WHERE category_id IS NULL OR category_id NOT IN (SELECT id FROM project_categories)`,
     [inbox],
   );
 
   await db.runAsync(
     `UPDATE tasks
      SET category_id = NULL, updated_at = datetime('now')
-     WHERE deleted_at IS NULL
-       AND category_id IS NOT NULL
+     WHERE category_id IS NOT NULL
        AND category_id NOT IN (SELECT id FROM task_categories)`,
   );
 
   await db.runAsync(
     `UPDATE tasks
      SET project_id = NULL, updated_at = datetime('now')
-     WHERE deleted_at IS NULL
-       AND project_id IS NOT NULL
+     WHERE project_id IS NOT NULL
        AND project_id NOT IN (SELECT id FROM projects)`,
   );
 
   await db.runAsync(
     `UPDATE tasks
      SET parent_task_id = NULL, updated_at = datetime('now')
-     WHERE deleted_at IS NULL
-       AND parent_task_id IS NOT NULL
+     WHERE parent_task_id IS NOT NULL
        AND parent_task_id NOT IN (SELECT id FROM tasks)`,
   );
 
@@ -185,9 +251,7 @@ export async function initDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -197,9 +261,7 @@ export async function initDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -213,9 +275,7 @@ export async function initDatabase() {
       inbox_entered_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT,
       FOREIGN KEY (category_id) REFERENCES project_categories(id) ON DELETE SET NULL
     );
@@ -234,9 +294,7 @@ export async function initDatabase() {
       completed_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (category_id) REFERENCES task_categories(id) ON DELETE SET NULL,
@@ -250,9 +308,7 @@ export async function initDatabase() {
       is_done INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
 
@@ -283,9 +339,7 @@ export async function initDatabase() {
       currency TEXT NOT NULL DEFAULT 'CNY',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1
+      sync_status TEXT NOT NULL DEFAULT 'pending_create'
     );
 
     CREATE TABLE IF NOT EXISTS account_transactions (
@@ -297,9 +351,7 @@ export async function initDatabase() {
       happened_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );
 
@@ -312,9 +364,7 @@ export async function initDatabase() {
       note TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -326,9 +376,7 @@ export async function initDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -340,9 +388,7 @@ export async function initDatabase() {
       is_builtin INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT,
       FOREIGN KEY (parent_id) REFERENCES finance_flow_categories(id) ON DELETE SET NULL
     );
@@ -359,9 +405,7 @@ export async function initDatabase() {
       note TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT,
       FOREIGN KEY (account_id) REFERENCES finance_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (flow_category_id) REFERENCES finance_flow_categories(id) ON DELETE SET NULL
@@ -382,9 +426,7 @@ export async function initDatabase() {
       age INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1
+      sync_status TEXT NOT NULL DEFAULT 'pending_create'
     );
 
     CREATE TABLE IF NOT EXISTS health_records (
@@ -402,9 +444,7 @@ export async function initDatabase() {
       quick_add_key TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
@@ -418,9 +458,7 @@ export async function initDatabase() {
       note TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -431,9 +469,7 @@ export async function initDatabase() {
       is_builtin INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -444,9 +480,7 @@ export async function initDatabase() {
       count INTEGER NOT NULL DEFAULT 1 CHECK (count >= 1),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE,
       UNIQUE(habit_id, record_date)
     );
@@ -460,9 +494,7 @@ export async function initDatabase() {
       avatar_uri TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -473,9 +505,7 @@ export async function initDatabase() {
       note TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT,
       FOREIGN KEY (savings_plan_id) REFERENCES savings_plans(id) ON DELETE CASCADE
     );
@@ -489,9 +519,7 @@ export async function initDatabase() {
       seed_version INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -503,9 +531,7 @@ export async function initDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -518,9 +544,7 @@ export async function initDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -532,9 +556,7 @@ export async function initDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -548,9 +570,7 @@ export async function initDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -560,9 +580,7 @@ export async function initDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -579,9 +597,7 @@ export async function initDatabase() {
       ai_review_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -592,9 +608,7 @@ export async function initDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -606,9 +620,7 @@ export async function initDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT,
       FOREIGN KEY (dimension_id) REFERENCES review_dimensions(id) ON DELETE CASCADE
     );
@@ -628,9 +640,7 @@ export async function initDatabase() {
       adjust_plans INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -640,9 +650,7 @@ export async function initDatabase() {
       body TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT
     );
 
@@ -658,9 +666,7 @@ export async function initDatabase() {
       name TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      sync_status TEXT NOT NULL DEFAULT 'synced',
-      version INTEGER NOT NULL DEFAULT 1
+      sync_status TEXT NOT NULL DEFAULT 'synced'
     );
 
     CREATE TABLE IF NOT EXISTS recipe_items (
@@ -673,9 +679,7 @@ export async function initDatabase() {
       finished_image_uri TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'synced',
-      version INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (category_id) REFERENCES recipe_categories(id) ON DELETE CASCADE
     );
 
@@ -691,9 +695,7 @@ export async function initDatabase() {
       redeemed_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      version INTEGER NOT NULL DEFAULT 1,
       extra_data TEXT,
       FOREIGN KEY (wish_item_id) REFERENCES wish_items(id) ON DELETE SET NULL
     );
@@ -708,9 +710,7 @@ export async function initDatabase() {
       linked_task_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      sync_status TEXT NOT NULL DEFAULT 'synced',
-      version INTEGER NOT NULL DEFAULT 1
+      sync_status TEXT NOT NULL DEFAULT 'synced'
     );
 
     CREATE TABLE IF NOT EXISTS user_weaknesses (
@@ -722,9 +722,7 @@ export async function initDatabase() {
       ai_review_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      sync_status TEXT NOT NULL DEFAULT 'synced',
-      version INTEGER NOT NULL DEFAULT 1
+      sync_status TEXT NOT NULL DEFAULT 'synced'
     );
 
     CREATE TABLE IF NOT EXISTS user_skill_items (
@@ -736,9 +734,7 @@ export async function initDatabase() {
       sort_order INTEGER,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      sync_status TEXT NOT NULL DEFAULT 'synced',
-      version INTEGER NOT NULL DEFAULT 1
+      sync_status TEXT NOT NULL DEFAULT 'synced'
     );
 
     CREATE TABLE IF NOT EXISTS user_desired_skills (
@@ -748,9 +744,7 @@ export async function initDatabase() {
       sort_order INTEGER,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      sync_status TEXT NOT NULL DEFAULT 'synced',
-      version INTEGER NOT NULL DEFAULT 1
+      sync_status TEXT NOT NULL DEFAULT 'synced'
     );
 
     CREATE TABLE IF NOT EXISTS user_skills_meta (
@@ -779,36 +773,36 @@ export async function initDatabase() {
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
   await db.runAsync(
     `INSERT OR IGNORE INTO project_categories (
-      id, name, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL)`,
+      id, name, created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, datetime('now'), datetime('now'), 'synced', NULL)`,
     [INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME]
   );
   await db.runAsync(
     `UPDATE project_categories
-     SET name = ?, deleted_at = NULL, updated_at = datetime('now')
+     SET name = ?, updated_at = datetime('now')
      WHERE id = ?`,
     [INBOX_PROJECT_CATEGORY_NAME, INBOX_PROJECT_CATEGORY_ID]
   );
   await db.execAsync(`
     INSERT OR IGNORE INTO finance_flow_categories (
-      id, name, parent_id, sort_order, is_builtin, created_at, updated_at, deleted_at, sync_status, version, extra_data
+      id, name, parent_id, sort_order, is_builtin, created_at, updated_at, sync_status, extra_data
     ) VALUES
-      ('finance-category-snack', '零食', NULL, 1, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
-      ('finance-category-drink', '饮品', NULL, 2, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
-      ('finance-category-dining', '餐饮', NULL, 3, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL);
+      ('finance-category-snack', '零食', NULL, 1, 1, datetime('now'), datetime('now'), 'synced', NULL),
+      ('finance-category-drink', '饮品', NULL, 2, 1, datetime('now'), datetime('now'), 'synced', NULL),
+      ('finance-category-dining', '餐饮', NULL, 3, 1, datetime('now'), datetime('now'), 'synced', NULL);
   `);
 
   await db.execAsync(`
     INSERT OR IGNORE INTO habit_contexts (
-      id, name, sort_order, is_builtin, created_at, updated_at, deleted_at, sync_status, version, extra_data
+      id, name, sort_order, is_builtin, created_at, updated_at, sync_status, extra_data
     ) VALUES
-      ('起床', '起床', 10, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
-      ('晨间', '晨间', 20, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
-      ('中午', '中午', 30, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
-      ('午间', '午间', 40, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
-      ('晚间', '晚间', 50, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
-      ('睡前', '睡前', 60, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL),
-      ('全天', '全天', 70, 1, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL);
+      ('起床', '起床', 10, 1, datetime('now'), datetime('now'), 'synced', NULL),
+      ('晨间', '晨间', 20, 1, datetime('now'), datetime('now'), 'synced', NULL),
+      ('中午', '中午', 30, 1, datetime('now'), datetime('now'), 'synced', NULL),
+      ('午间', '午间', 40, 1, datetime('now'), datetime('now'), 'synced', NULL),
+      ('晚间', '晚间', 50, 1, datetime('now'), datetime('now'), 'synced', NULL),
+      ('睡前', '睡前', 60, 1, datetime('now'), datetime('now'), 'synced', NULL),
+      ('全天', '全天', 70, 1, datetime('now'), datetime('now'), 'synced', NULL);
   `);
 
   // 数据迁移/回填可能遇到云恢复后的孤儿外键；先关 FK，末尾 repair 后再打开。
@@ -832,8 +826,7 @@ export async function initDatabase() {
   await db.runAsync(
     `UPDATE projects
      SET inbox_entered_at = COALESCE(updated_at, created_at)
-     WHERE deleted_at IS NULL
-       AND category_id = ?
+     WHERE category_id = ?
        AND inbox_entered_at IS NULL`,
     [INBOX_PROJECT_CATEGORY_ID]
   );
@@ -844,7 +837,7 @@ export async function initDatabase() {
   await ensureColumn(db, 'tasks', 'extra_data', 'TEXT');
   await ensureColumn(db, 'tasks', 'sort_order', 'INTEGER');
   await db.runAsync(
-    `UPDATE tasks SET sort_order = 1000 WHERE deleted_at IS NULL AND sort_order IS NULL`
+    `UPDATE tasks SET sort_order = 1000 WHERE sort_order IS NULL`
   );
   // 项目任务 category_id 为空时，与所属项目分类对齐（须同时存在于 task_categories 镜像表）
   try {
@@ -852,17 +845,16 @@ export async function initDatabase() {
       `UPDATE tasks
        SET category_id = (
          SELECT p.category_id FROM projects p
-         WHERE p.id = tasks.project_id AND p.deleted_at IS NULL
+         WHERE p.id = tasks.project_id
        ),
        updated_at = datetime('now')
-       WHERE deleted_at IS NULL
-         AND project_id IS NOT NULL
+       WHERE project_id IS NOT NULL
          AND TRIM(project_id) != ''
          AND category_id IS NULL
          AND EXISTS (
            SELECT 1 FROM projects p
            WHERE p.id = tasks.project_id
-             AND p.deleted_at IS NULL
+            
              AND p.category_id IS NOT NULL
              AND p.category_id != ?
          )
@@ -870,7 +862,7 @@ export async function initDatabase() {
            SELECT 1 FROM task_categories tc
            WHERE tc.id = (
              SELECT p.category_id FROM projects p
-             WHERE p.id = tasks.project_id AND p.deleted_at IS NULL
+             WHERE p.id = tasks.project_id
            )
          )`,
       [INBOX_PROJECT_CATEGORY_ID],
@@ -915,7 +907,7 @@ export async function initDatabase() {
   await db.runAsync(
     `UPDATE projects
      SET category_id = ?, updated_at = datetime('now')
-     WHERE deleted_at IS NULL AND category_id IS NULL`,
+     WHERE category_id IS NULL`,
     [INBOX_PROJECT_CATEGORY_ID]
   );
 
@@ -926,15 +918,13 @@ export async function initDatabase() {
     SET sort_order = CASE
       WHEN id = '${INBOX_PROJECT_CATEGORY_ID}' THEN 0
       ELSE COALESCE(sort_order, 1000)
-    END
-    WHERE deleted_at IS NULL;
+    END;
     `
   );
   await db.execAsync(
     `
     UPDATE task_categories
-    SET sort_order = COALESCE(sort_order, 1000)
-    WHERE deleted_at IS NULL;
+    SET sort_order = COALESCE(sort_order, 1000);
     `
   );
 
@@ -944,19 +934,19 @@ export async function initDatabase() {
   try {
     await db.execAsync(`
       INSERT OR REPLACE INTO task_categories (
-        id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+        id, name, sort_order, created_at, updated_at, sync_status, extra_data
       )
       SELECT
-        id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+        id, name, sort_order, created_at, updated_at, sync_status, extra_data
       FROM project_categories;
 
       CREATE TRIGGER IF NOT EXISTS trg_project_categories_ai_to_task
       AFTER INSERT ON project_categories
       BEGIN
         INSERT OR REPLACE INTO task_categories (
-          id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+          id, name, sort_order, created_at, updated_at, sync_status, extra_data
         ) VALUES (
-          NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.deleted_at, NEW.sync_status, NEW.version, NEW.extra_data
+          NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.sync_status, NEW.extra_data
         );
       END;
 
@@ -964,9 +954,9 @@ export async function initDatabase() {
       AFTER UPDATE ON project_categories
       BEGIN
         INSERT OR REPLACE INTO task_categories (
-          id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
+          id, name, sort_order, created_at, updated_at, sync_status, extra_data
         ) VALUES (
-          NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.deleted_at, NEW.sync_status, NEW.version, NEW.extra_data
+          NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.sync_status, NEW.extra_data
         );
       END;
     `);
@@ -1011,7 +1001,6 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_habits_updated_at ON habits(updated_at);
     CREATE INDEX IF NOT EXISTS idx_habit_check_ins_habit_id ON habit_check_ins(habit_id);
     CREATE INDEX IF NOT EXISTS idx_habit_check_ins_record_date ON habit_check_ins(record_date);
-    CREATE INDEX IF NOT EXISTS idx_habit_check_ins_deleted_at ON habit_check_ins(deleted_at);
     CREATE INDEX IF NOT EXISTS idx_savings_plans_updated_at ON savings_plans(updated_at);
     CREATE INDEX IF NOT EXISTS idx_savings_plan_deposits_plan_id ON savings_plan_deposits(savings_plan_id);
     CREATE INDEX IF NOT EXISTS idx_savings_plan_deposits_updated_at ON savings_plan_deposits(updated_at);
@@ -1076,7 +1065,7 @@ export async function initDatabase() {
     try {
       await db.execAsync('BEGIN IMMEDIATE');
       const habitRows = await db.getAllAsync<{ id: string; extra_data: string | null }>(
-        'SELECT id, extra_data FROM habits WHERE deleted_at IS NULL'
+        'SELECT id, extra_data FROM habits'
       );
       for (const h of habitRows) {
         if (!h.extra_data) continue;
@@ -1102,15 +1091,13 @@ export async function initDatabase() {
             await db.runAsync(
               `INSERT INTO habit_check_ins (
                 id, habit_id, record_date, count,
-                created_at, updated_at, deleted_at, sync_status, version
-              ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)
+                created_at, updated_at, sync_status
+              ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create')
               ON CONFLICT(habit_id, record_date) DO UPDATE SET
                 id = excluded.id,
                 count = excluded.count,
-                deleted_at = NULL,
                 updated_at = datetime('now'),
-                sync_status = CASE WHEN habit_check_ins.sync_status = 'synced' THEN 'pending_update' ELSE habit_check_ins.sync_status END,
-                version = habit_check_ins.version + 1`,
+                sync_status = CASE WHEN habit_check_ins.sync_status = 'synced' THEN 'pending_update' ELSE habit_check_ins.sync_status END`,
               [rid, h.id, ymd, cnt]
             );
           }
@@ -1119,8 +1106,7 @@ export async function initDatabase() {
         const nextExtra = JSON.stringify(parsed);
         await db.runAsync(
           `UPDATE habits SET extra_data = ?, updated_at = datetime('now'),
-            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-            version = version + 1
+            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
           WHERE id = ?`,
           [nextExtra === '{}' ? null : nextExtra, h.id]
         );
@@ -1155,8 +1141,7 @@ export async function initDatabase() {
         `UPDATE cash_flow_profile
          SET necessary_expenses = 0, unnecessary_expenses = 0, target_passive_income = 0,
              updated_at = datetime('now'),
-             sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-             version = version + 1
+             sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
          WHERE id = 'default'
            AND necessary_expenses = 4000
            AND unnecessary_expenses = 1500
@@ -1186,6 +1171,8 @@ export async function initDatabase() {
 
   const { ensureReviewTemplateDefaults } = await import('@/lib/repositories/insights/review-template');
   await ensureReviewTemplateDefaults();
+
+  await migrateDropDeletedAtAndVersionColumns(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);

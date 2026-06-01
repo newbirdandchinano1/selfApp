@@ -12,10 +12,8 @@ export type ProjectRow = {
   /** 最近一次进入收集箱的时间（SQLite datetime 文本）；出箱后清空 */
   inbox_entered_at: string | null;
   created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-  sync_status: SyncStatus;
-  version: number;
+  updated_at: string;
+  sync_status: SyncStatus;
   extra_data: string | null;
 };
 
@@ -36,10 +34,8 @@ export type ProjectCategoryRow = {
   name: string;
   sort_order: number;
   created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-  sync_status: SyncStatus;
-  version: number;
+  updated_at: string;
+  sync_status: SyncStatus;
   extra_data: string | null;
 };
 

@@ -73,8 +73,8 @@ export async function createWishItem(input: CreateWishItemInput) {
   await db.runAsync(
     `INSERT INTO wish_items (
       id, name, price, category_id, category_label, desire_level, reason, reference_image_uri,
-      extra_data, created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
+      extra_data, created_at, updated_at, sync_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create')`,
     [
       id,
       input.name.trim(),
@@ -131,8 +131,7 @@ export async function updateWishItem(id: string, input: UpdateWishItemInput) {
     `UPDATE wish_items SET
       name = ?, price = ?, category_id = ?, category_label = ?, desire_level = ?, reason = ?, reference_image_uri = ?, extra_data = ?,
       updated_at = datetime('now'),
-      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-      version = version + 1
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
     WHERE id = ?`,
     [
       name,
@@ -152,11 +151,9 @@ export async function deleteWishItem(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE wish_items SET
-      deleted_at = datetime('now'),
       updated_at = datetime('now'),
-      sync_status = 'pending_delete',
-      version = version + 1
-    WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = 'pending_delete'
+    WHERE id = ?`,
     [id]
   );
 }
@@ -168,9 +165,8 @@ export async function clearWishItemAiReview(id: string) {
     `UPDATE wish_items SET
       ai_comment = NULL,
       ai_review_at = NULL,
-      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-      version = version + 1
-    WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+    WHERE id = ?`,
     [id]
   );
 }
@@ -197,9 +193,8 @@ export async function patchWishItemAiReview(id: string, ai_comment: string) {
     `UPDATE wish_items SET
       ai_comment = ?,
       ai_review_at = datetime('now'),
-      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-      version = version + 1
-    WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+    WHERE id = ?`,
     [trimmed, id]
   );
 }

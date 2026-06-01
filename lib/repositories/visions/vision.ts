@@ -25,9 +25,9 @@ export async function createVision(input: CreateVisionInput) {
   await db.runAsync(
     `INSERT INTO visions (
       id, title, description, track_kind, direction, bg_option_idx, sort_order,
-      extra_data, created_at, updated_at, deleted_at, sync_status, version
+      extra_data, created_at, updated_at, sync_status
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?,
-      datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
+      datetime('now'), datetime('now'), 'pending_create')`,
     [
       input.id,
       input.title,
@@ -68,8 +68,7 @@ export async function updateVision(id: string, input: UpdateVisionInput) {
       title = ?, description = ?, track_kind = ?, direction = ?,
       bg_option_idx = ?, sort_order = ?, extra_data = ?,
       updated_at = datetime('now'),
-      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-      version = version + 1
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
     WHERE id = ?`,
     [title, description, track_kind, direction, bg_option_idx, sort_order, extra_data, id]
   );
@@ -79,11 +78,9 @@ export async function deleteVision(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE visions SET
-      deleted_at = datetime('now'),
       updated_at = datetime('now'),
-      sync_status = 'pending_delete',
-      version = version + 1
-    WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = 'pending_delete'
+    WHERE id = ?`,
     [id]
   );
 }

@@ -8,10 +8,8 @@ export type SavingsPlanRow = {
   target_amount: number;
   avatar_uri: string | null;
   created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-  sync_status: SyncStatus;
-  version: number;
+  updated_at: string;
+  sync_status: SyncStatus;
   extra_data: string | null;
 };
 

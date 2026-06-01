@@ -192,12 +192,12 @@ function markUserSkillsDirty(): void {
 async function loadSnapshotFromDb(db: SQLite.SQLiteDatabase): Promise<UserSkillsSnapshot> {
   const skillRows = await db.getAllAsync<SkillRow>(
     `SELECT id, name, description, last_evaluation, last_suggestions, sort_order, updated_at
-     FROM user_skill_items WHERE deleted_at IS NULL
+     FROM user_skill_items
      ORDER BY COALESCE(sort_order, 999999), datetime(updated_at) DESC`,
   );
   const desiredRows = await db.getAllAsync<DesiredRow>(
     `SELECT id, name, target_level, sort_order, updated_at
-     FROM user_desired_skills WHERE deleted_at IS NULL
+     FROM user_desired_skills
      ORDER BY COALESCE(sort_order, 999999), datetime(updated_at) DESC`,
   );
   const meta = await db.getFirstAsync<MetaRow>(
@@ -254,8 +254,8 @@ async function importSnapshotToDb(db: SQLite.SQLiteDatabase, snapshot: UserSkill
       await db.runAsync(
         `INSERT INTO user_skill_items (
           id, name, description, last_evaluation, last_suggestions, sort_order,
-          created_at, updated_at, deleted_at, sync_status, version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+          created_at, updated_at, sync_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
         [
           skill.id,
           skill.name,
@@ -274,8 +274,8 @@ async function importSnapshotToDb(db: SQLite.SQLiteDatabase, snapshot: UserSkill
       await db.runAsync(
         `INSERT INTO user_desired_skills (
           id, name, target_level, sort_order,
-          created_at, updated_at, deleted_at, sync_status, version
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+          created_at, updated_at, sync_status
+        ) VALUES (?, ?, ?, ?, ?, ?, 'synced')`,
         [desired.id, desired.name, desired.target_level, sort, now, now],
       );
       sort += 1;
@@ -316,10 +316,10 @@ export async function migrateUserSkillsStorageToSqliteIfNeeded(db?: SQLite.SQLit
   if (flag?.value === '1') return;
 
   const skillCount = await database.getFirstAsync<{ c: number }>(
-    'SELECT COUNT(1) AS c FROM user_skill_items WHERE deleted_at IS NULL',
+    'SELECT COUNT(1) AS c FROM user_skill_items',
   );
   const desiredCount = await database.getFirstAsync<{ c: number }>(
-    'SELECT COUNT(1) AS c FROM user_desired_skills WHERE deleted_at IS NULL',
+    'SELECT COUNT(1) AS c FROM user_desired_skills',
   );
   const hasSqliteData = Number(skillCount?.c ?? 0) > 0 || Number(desiredCount?.c ?? 0) > 0;
 

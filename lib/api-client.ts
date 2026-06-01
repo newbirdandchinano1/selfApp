@@ -294,6 +294,17 @@ export async function apiPatchRecord<T = unknown>(
   });
 }
 
+export async function apiDeleteRecord(
+  table: string,
+  id: string,
+  opts?: { signal?: AbortSignal },
+): Promise<void> {
+  await apiRequest<null>(`/api/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    signal: opts?.signal,
+  });
+}
+
 export type ApiListPagination = {
   page: number;
   limit: number;

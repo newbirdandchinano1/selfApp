@@ -78,8 +78,8 @@ export async function createReviewDimension(input: CreateReviewDimensionInput): 
   if (!title) throw new Error('title required');
   await db.runAsync(
     `INSERT INTO review_dimensions (
-      id, scope, title, sort_order, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, NULL)`,
+      id, scope, title, sort_order, created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', NULL)`,
     [input.id, input.scope, title, input.sort_order ?? 1000],
   );
 }
@@ -96,9 +96,8 @@ export async function updateReviewDimension(id: string, input: UpdateReviewDimen
     `UPDATE review_dimensions SET
        title = ?, sort_order = ?,
        updated_at = datetime('now'),
-       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-       version = version + 1
-     WHERE id = ? AND deleted_at IS NULL`,
+       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE id = ?`,
     [title, sort_order, id],
   );
   return true;
@@ -109,20 +108,16 @@ export async function deleteReviewDimension(id: string): Promise<void> {
   if (!db) throw new Error('database not available');
   await db.runAsync(
     `UPDATE review_dimensions SET
-       deleted_at = datetime('now'),
        updated_at = datetime('now'),
-       sync_status = 'pending_delete',
-       version = version + 1
-     WHERE id = ? AND deleted_at IS NULL`,
+       sync_status = 'pending_delete'
+     WHERE id = ?`,
     [id],
   );
   await db.runAsync(
     `UPDATE review_columns SET
-       deleted_at = datetime('now'),
        updated_at = datetime('now'),
-       sync_status = 'pending_delete',
-       version = version + 1
-     WHERE dimension_id = ? AND deleted_at IS NULL`,
+       sync_status = 'pending_delete'
+     WHERE dimension_id = ?`,
     [id],
   );
 }
@@ -137,8 +132,8 @@ export async function createReviewColumn(input: CreateReviewColumnInput): Promis
   await db.runAsync(
     `INSERT INTO review_columns (
       id, dimension_id, title, placeholder, sort_order,
-      created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, NULL)`,
+      created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', NULL)`,
     [
       input.id,
       input.dimension_id,
@@ -162,9 +157,8 @@ export async function updateReviewColumn(id: string, input: UpdateReviewColumnIn
     `UPDATE review_columns SET
        title = ?, placeholder = ?, sort_order = ?,
        updated_at = datetime('now'),
-       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-       version = version + 1
-     WHERE id = ? AND deleted_at IS NULL`,
+       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE id = ?`,
     [title, placeholder, sort_order, id],
   );
   return true;
@@ -175,11 +169,9 @@ export async function deleteReviewColumn(id: string): Promise<void> {
   if (!db) throw new Error('database not available');
   await db.runAsync(
     `UPDATE review_columns SET
-       deleted_at = datetime('now'),
        updated_at = datetime('now'),
-       sync_status = 'pending_delete',
-       version = version + 1
-     WHERE id = ? AND deleted_at IS NULL`,
+       sync_status = 'pending_delete'
+     WHERE id = ?`,
     [id],
   );
 }
@@ -218,20 +210,16 @@ async function ensureDefaultReviewDimension(
     });
     return;
   }
-  if (existing.deleted_at != null) {
-    await db.runAsync(
-      `UPDATE review_dimensions SET
-         scope = ?,
-         title = ?,
-         sort_order = ?,
-         deleted_at = NULL,
-         updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
-       WHERE id = ?`,
-      [scope, dim.title.trim(), dim.sort_order ?? 1000, dim.id],
-    );
-  }
+  await db.runAsync(
+    `UPDATE review_dimensions SET
+       scope = ?,
+       title = ?,
+       sort_order = ?,
+       updated_at = datetime('now'),
+       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE id = ?`,
+    [scope, dim.title.trim(), dim.sort_order ?? 1000, dim.id],
+  );
 }
 
 async function ensureDefaultReviewColumn(
@@ -251,21 +239,17 @@ async function ensureDefaultReviewColumn(
     });
     return;
   }
-  if (existing.deleted_at != null) {
-    await db.runAsync(
-      `UPDATE review_columns SET
-         dimension_id = ?,
-         title = ?,
-         placeholder = ?,
-         sort_order = ?,
-         deleted_at = NULL,
-         updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
-       WHERE id = ?`,
-      [dim.id, col.title.trim(), col.placeholder ?? '', col.sort_order ?? 1000, col.id],
-    );
-  }
+  await db.runAsync(
+    `UPDATE review_columns SET
+       dimension_id = ?,
+       title = ?,
+       placeholder = ?,
+       sort_order = ?,
+       updated_at = datetime('now'),
+       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE id = ?`,
+    [dim.id, col.title.trim(), col.placeholder ?? '', col.sort_order ?? 1000, col.id],
+  );
 }
 
 /** 各 scope 无活跃维度时写入内置模板（含云恢复后仅软删除占位行的场景） */

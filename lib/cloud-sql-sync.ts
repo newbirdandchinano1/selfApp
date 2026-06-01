@@ -585,9 +585,7 @@ function makeInboxProjectCategoryRow(
     sort_order: 0,
     created_at: typeof source?.created_at === 'string' ? source.created_at : now,
     updated_at: typeof source?.updated_at === 'string' ? source.updated_at : now,
-    deleted_at: source?.deleted_at ?? null,
     sync_status: typeof source?.sync_status === 'string' ? source.sync_status : 'synced',
-    version: typeof source?.version === 'number' ? source.version : 1,
     extra_data: source?.extra_data ?? null,
   };
 }
@@ -603,9 +601,7 @@ function makeProjectCategoryStubRow(
     sort_order: typeof source?.sort_order === 'number' ? source.sort_order : 1000,
     created_at: typeof source?.created_at === 'string' ? source.created_at : now,
     updated_at: typeof source?.updated_at === 'string' ? source.updated_at : now,
-    deleted_at: source?.deleted_at ?? null,
     sync_status: typeof source?.sync_status === 'string' ? source.sync_status : 'synced',
-    version: typeof source?.version === 'number' ? source.version : 1,
     extra_data: source?.extra_data ?? null,
   };
 }
@@ -711,9 +707,7 @@ function makeTaskCategoryMirrorRow(
     sort_order: typeof source?.sort_order === 'number' ? source.sort_order : 1000,
     created_at: typeof source?.created_at === 'string' ? source.created_at : now,
     updated_at: typeof source?.updated_at === 'string' ? source.updated_at : now,
-    deleted_at: source?.deleted_at ?? null,
     sync_status: typeof source?.sync_status === 'string' ? source.sync_status : 'synced',
-    version: typeof source?.version === 'number' ? source.version : 1,
     extra_data: source?.extra_data ?? null,
   };
 }

@@ -43,9 +43,7 @@ export default function CategorySortScreen() {
           sort_order: 0,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          deleted_at: null,
           sync_status: 'synced',
-          version: 1,
           extra_data: null,
         }
       );

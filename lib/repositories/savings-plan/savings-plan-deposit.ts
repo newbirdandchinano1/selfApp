@@ -34,8 +34,8 @@ export async function createSavingsPlanDeposit(input: CreateSavingsPlanDepositIn
   await db.runAsync(
     `INSERT INTO savings_plan_deposits (
       id, savings_plan_id, amount, note,
-      created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [input.id, input.savings_plan_id, input.amount, input.note ?? null, input.extra_data ?? null]
   );
 }

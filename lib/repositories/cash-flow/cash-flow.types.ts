@@ -57,9 +57,7 @@ export type CashFlowProfileRow = {
   seed_version: number;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
   sync_status: SyncStatus;
-  version: number;
   extra_data: string | null;
 };
 
@@ -71,9 +69,7 @@ export type CashFlowIncomeRow = {
   sort_order: number;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
   sync_status: SyncStatus;
-  version: number;
   extra_data: string | null;
 };
 
@@ -86,9 +82,7 @@ export type CashFlowHoldingRow = {
   sort_order: number;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
   sync_status: SyncStatus;
-  version: number;
   extra_data: string | null;
 };
 
@@ -100,8 +94,6 @@ export type CashFlowExpenseLineRow = {
   sort_order: number;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
   sync_status: SyncStatus;
-  version: number;
   extra_data: string | null;
 };

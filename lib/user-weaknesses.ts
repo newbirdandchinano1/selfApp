@@ -116,8 +116,8 @@ async function importWeaknessesToDb(db: SQLite.SQLiteDatabase, items: UserWeakne
       await db.runAsync(
         `INSERT INTO user_weaknesses (
           id, title, detail, ai_evaluation, ai_suggestions, ai_review_at,
-          created_at, updated_at, deleted_at, sync_status, version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+          created_at, updated_at, sync_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
         [
           item.id,
           clampTitle(item.title),
@@ -156,7 +156,7 @@ export async function migrateUserWeaknessesStorageToSqliteIfNeeded(
   if (flag?.value === '1') return;
 
   const count = await database.getFirstAsync<{ c: number }>(
-    'SELECT COUNT(1) AS c FROM user_weaknesses WHERE deleted_at IS NULL',
+    'SELECT COUNT(1) AS c FROM user_weaknesses',
   );
   const hasSqliteData = Number(count?.c ?? 0) > 0;
 
@@ -215,8 +215,8 @@ export async function createUserWeakness(input: {
   await db.runAsync(
     `INSERT INTO user_weaknesses (
       id, title, detail, ai_evaluation, ai_suggestions, ai_review_at,
-      created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, 'synced', 1)`,
+      created_at, updated_at, sync_status
+    ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, 'synced')`,
     [item.id, item.title, item.detail, item.created_at, item.updated_at],
   );
   markWeaknessesDirty();
@@ -239,13 +239,13 @@ export async function updateUserWeakness(
   if (contentChanged) {
     await db.runAsync(
       `UPDATE user_weaknesses SET title = ?, detail = ?, ai_evaluation = NULL, ai_suggestions = NULL, ai_review_at = NULL,
-        updated_at = ?, sync_status = 'synced', version = version + 1 WHERE id = ? AND deleted_at IS NULL`,
+        updated_at = ?, sync_status = 'synced' WHERE id = ?`,
       [nextTitle, nextDetail, updated_at, id],
     );
   } else {
     await db.runAsync(
-      `UPDATE user_weaknesses SET title = ?, detail = ?, updated_at = ?, sync_status = 'synced', version = version + 1
-       WHERE id = ? AND deleted_at IS NULL`,
+      `UPDATE user_weaknesses SET title = ?, detail = ?, updated_at = ?, sync_status = 'synced'
+       WHERE id = ?`,
       [nextTitle, nextDetail, updated_at, id],
     );
   }
@@ -275,7 +275,7 @@ export async function setUserWeaknessAiReview(
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE user_weaknesses SET ai_evaluation = ?, ai_suggestions = ?, ai_review_at = ?, updated_at = ?,
-      sync_status = 'synced', version = version + 1 WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = 'synced' WHERE id = ?`,
     [payload.evaluation.trim(), payload.suggestions.trim(), now, now, id],
   );
   markWeaknessesDirty();

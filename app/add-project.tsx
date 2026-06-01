@@ -132,9 +132,7 @@ function ensureInboxCategory(rows: ProjectCategoryRow[]): ProjectCategoryRow[] {
     sort_order: 0,
     created_at: now,
     updated_at: now,
-    deleted_at: null,
     sync_status: 'synced',
-    version: 1,
     extra_data: null,
   };
 
@@ -146,7 +144,6 @@ function ensureInboxCategory(rows: ProjectCategoryRow[]): ProjectCategoryRow[] {
     {
       ...existing,
       name: INBOX_PROJECT_CATEGORY_NAME,
-      deleted_at: null,
     },
     ...withoutInbox,
   ];

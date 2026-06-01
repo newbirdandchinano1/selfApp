@@ -76,8 +76,8 @@ export async function ensureCashFlowProfileRow() {
   await db.runAsync(
     `INSERT OR IGNORE INTO cash_flow_profile (
       id, necessary_expenses, unnecessary_expenses, target_passive_income, target_months, seed_version,
-      created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, 0, 0, 0, 12, 0, datetime('now'), datetime('now'), NULL, 'synced', 1, NULL)`,
+      created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, 0, 0, 0, 12, 0, datetime('now'), datetime('now'), 'synced', NULL)`,
     [CASH_FLOW_PROFILE_ID]
   );
 }
@@ -149,8 +149,7 @@ export async function persistCashFlowState(state: CashFlowState) {
       `UPDATE cash_flow_profile
        SET necessary_expenses = ?, unnecessary_expenses = ?, target_passive_income = ?, target_months = ?,
            updated_at = datetime('now'),
-           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-           version = version + 1
+           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
        WHERE id = ?`,
       [
         state.necessaryExpenses,
@@ -171,8 +170,8 @@ export async function persistCashFlowState(state: CashFlowState) {
       await db.runAsync(
         `INSERT INTO cash_flow_incomes (
           id, name, amount, quadrant, sort_order,
-          created_at, updated_at, deleted_at, sync_status, version, extra_data
-        ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, NULL)`,
+          created_at, updated_at, sync_status, extra_data
+        ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', NULL)`,
         [i.id, i.name, i.amount, i.quadrant, sort]
       );
     }
@@ -184,8 +183,8 @@ export async function persistCashFlowState(state: CashFlowState) {
       await db.runAsync(
         `INSERT INTO cash_flow_holdings (
           id, name, principal, inflow, outflow, sort_order,
-          created_at, updated_at, deleted_at, sync_status, version, extra_data
-        ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+          created_at, updated_at, sync_status, extra_data
+        ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
         [h.id, h.name, h.principal, h.inflow, h.outflow, sort, extraJson]
       );
     }
@@ -195,8 +194,8 @@ export async function persistCashFlowState(state: CashFlowState) {
       await db.runAsync(
         `INSERT INTO cash_flow_expense_lines (
           id, name, amount, bucket, sort_order,
-          created_at, updated_at, deleted_at, sync_status, version, extra_data
-        ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, NULL)`,
+          created_at, updated_at, sync_status, extra_data
+        ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', NULL)`,
         [x.id, x.name, x.amount, x.bucket, sort]
       );
     }

@@ -1,4 +1,4 @@
-import { apiCreateRecord, apiUpdateRecord, ApiRequestError } from '@/lib/api-client';
+import { apiCreateRecord, apiDeleteRecord, apiUpdateRecord, ApiRequestError } from '@/lib/api-client';
 import {
   ensureProjectCategoryRefsForApiUpload,
   ensureTaskCategoryMirrorForApiUpload,
@@ -101,12 +101,27 @@ export async function upsertRowToApi(
     pkColsByTable?: Map<string, string[]>;
     fkRefsByTable?: Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>;
   },
-): Promise<'created' | 'updated'> {
+): Promise<'created' | 'updated' | 'deleted'> {
   let body = row;
   if (opts?.uploadedPkByTable && opts.fkRefs) {
     body = sanitizeRowForeignKeysForApiUpload(table, row, opts.uploadedPkByTable, opts.fkRefs);
   }
   const pk = rowPrimaryKeyValue(body, pkCols);
+
+  if (body.sync_status === 'pending_delete') {
+    if (!pk) {
+      throw new ApiRowUploadSkippedError(table, null, '待删除行缺少主键');
+    }
+    try {
+      await apiDeleteRecord(table, pk, { signal: opts?.signal });
+      return 'deleted';
+    } catch (e) {
+      if (e instanceof ApiRequestError && e.httpStatus === 404) {
+        return 'deleted';
+      }
+      throw e;
+    }
+  }
 
   const runUpsert = async (payload: Record<string, unknown>): Promise<'created' | 'updated'> => {
     try {

@@ -37,26 +37,33 @@ export async function getCheckInsMapByHabitId(habitId: string): Promise<Record<s
 }
 
 /**
- * 写入某日次数：count<=0 时软删该日记录。
+ * 写入某日次数：count<=0 时删除该日记录（未同步过的行直接物理删除）。
  */
 export async function upsertHabitDayCount(habitId: string, recordDateYmd: string, count: number): Promise<void> {
   const db = await getDatabase();
   if (count <= 0) {
-    await db.runAsync(
-      `UPDATE habit_check_ins
-        SET deleted_at = datetime('now'),
-            updated_at = datetime('now'),
-            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_delete' ELSE sync_status END,
-            version = version + 1
-        WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
-      [habitId, recordDateYmd]
+    const existing = await db.getFirstAsync<{ id: string; sync_status: string }>(
+      `SELECT id, sync_status FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
+      [habitId, recordDateYmd],
     );
+    if (!existing) return;
+    if (existing.sync_status === 'pending_create') {
+      await db.runAsync(`DELETE FROM habit_check_ins WHERE id = ?`, [existing.id]);
+    } else {
+      await db.runAsync(
+        `UPDATE habit_check_ins
+          SET updated_at = datetime('now'),
+              sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_delete' ELSE sync_status END
+          WHERE id = ?`,
+        [existing.id],
+      );
+    }
     return;
   }
 
-  const existing = await db.getFirstAsync<{ id: string; deleted_at: string | null }>(
-    `SELECT id, deleted_at FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
-    [habitId, recordDateYmd]
+  const existing = await db.getFirstAsync<{ id: string }>(
+    `SELECT id FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
+    [habitId, recordDateYmd],
   );
 
   if (existing) {
@@ -64,9 +71,7 @@ export async function upsertHabitDayCount(habitId: string, recordDateYmd: string
       `UPDATE habit_check_ins
         SET count = ?,
             updated_at = datetime('now'),
-            deleted_at = NULL,
-            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-            version = version + 1
+            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
         WHERE id = ?`,
       [count, existing.id]
     );
@@ -77,8 +82,8 @@ export async function upsertHabitDayCount(habitId: string, recordDateYmd: string
   await db.runAsync(
     `INSERT INTO habit_check_ins (
       id, habit_id, record_date, count,
-      created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
+      created_at, updated_at, sync_status
+    ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create')`,
     [id, habitId, recordDateYmd, count]
   );
 }
@@ -98,7 +103,7 @@ export async function incrementTodayHabitCheckIn(
   const today = getLogicalLocalYmd(new Date(), boundary);
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
+    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
     [habitId, today]
   );
   const cur = row?.count ?? 0;
@@ -116,7 +121,7 @@ export async function incrementHabitCheckInForDay(
 ): Promise<IncrementTodayHabitCheckInResult> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
+    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
     [habitId, recordDateYmd]
   );
   const cur = row?.count ?? 0;
@@ -130,7 +135,7 @@ export async function incrementHabitCheckInForDay(
 export async function getHabitCheckInDbCountForDay(habitId: string, recordDateYmd: string): Promise<number> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
+    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
     [habitId, recordDateYmd]
   );
   return row?.count ?? 0;
@@ -140,7 +145,7 @@ export async function getHabitCheckInDbCountForDay(habitId: string, recordDateYm
 export async function decrementHabitCheckInForDay(habitId: string, recordDateYmd: string): Promise<number> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
+    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
     [habitId, recordDateYmd]
   );
   const cur = row?.count ?? 0;
@@ -156,7 +161,7 @@ export async function decrementTodayHabitCheckIn(habitId: string): Promise<numbe
   const today = getLogicalLocalYmd(new Date(), boundary);
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ? AND deleted_at IS NULL`,
+    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
     [habitId, today]
   );
   const cur = row?.count ?? 0;

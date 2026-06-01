@@ -6,8 +6,6 @@ export type DailyReviewJournalRow = {
   body: string | null;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
   sync_status: SyncStatus;
-  version: number;
   extra_data: string | null;
 };

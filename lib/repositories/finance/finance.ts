@@ -20,7 +20,7 @@ import type {
 
 async function getFinanceAccountById(id: string) {
   const db = await getDatabase();
-  return db.getFirstAsync<FinanceAccountRow>('SELECT * FROM finance_accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1', [id]);
+  return db.getFirstAsync<FinanceAccountRow>('SELECT * FROM finance_accounts WHERE id = ? LIMIT 1', [id]);
 }
 
 async function assertTransactionAmountSign(accountId: string, amount: number) {
@@ -113,7 +113,7 @@ async function getFinanceAccountComputedBalance(accountId: string): Promise<numb
       END
     ), 0) AS balance
     FROM finance_transactions t
-    WHERE t.deleted_at IS NULL AND t.account_id = ?
+    WHERE t.account_id = ?
     `,
     [accountId]
   );
@@ -146,8 +146,8 @@ export async function createFinanceAccount(input: CreateFinanceAccountInput) {
   await db.runAsync(
     `INSERT INTO finance_accounts (
       id, name, account_no, account_type, sign_rule, note,
-      created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [
       input.id,
       input.name,
@@ -227,10 +227,8 @@ export async function upsertFinanceAccountType(input: UpsertFinanceAccountTypeIn
   if (existing) {
     await db.runAsync(
       `UPDATE finance_account_types
-       SET is_liability = ?, icon_key = ?, deleted_at = NULL,
-           updated_at = datetime('now'),
-           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-           version = version + 1
+       SET is_liability = ?, icon_key = ?, updated_at = datetime('now'),
+           sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
        WHERE id = ?`,
       [input.is_liability ? 1 : 0, input.icon_key || 'savings', existing.id]
     );
@@ -239,14 +237,14 @@ export async function upsertFinanceAccountType(input: UpsertFinanceAccountTypeIn
 
   const id = makeTimestampEntityId('fat_', 8);
   const sortRow = await db.getFirstAsync<{ max_sort: number | null }>(
-    `SELECT MAX(sort_order) AS max_sort FROM finance_account_types WHERE deleted_at IS NULL`
+    `SELECT MAX(sort_order) AS max_sort FROM finance_account_types`
   );
   const nextSort = (sortRow?.max_sort ?? 0) + 1;
   await db.runAsync(
     `INSERT INTO finance_account_types (
       id, name, is_liability, icon_key, sort_order,
-      created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, NULL)`,
+      created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', NULL)`,
     [id, name, input.is_liability ? 1 : 0, input.icon_key || 'savings', nextSort]
   );
   return id;
@@ -256,11 +254,9 @@ export async function deleteFinanceAccountTypeByName(name: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE finance_account_types
-     SET deleted_at = datetime('now'),
-         updated_at = datetime('now'),
-         sync_status = 'pending_delete',
-         version = version + 1
-     WHERE name = ? AND deleted_at IS NULL`,
+     SET updated_at = datetime('now'),
+         sync_status = 'pending_delete'
+     WHERE name = ?`,
     [name.trim()]
   );
 }
@@ -274,8 +270,7 @@ export async function updateFinanceAccount(id: string, input: UpdateFinanceAccou
     `UPDATE finance_accounts
      SET name = ?, account_no = ?, account_type = ?, sign_rule = ?, note = ?, extra_data = ?,
          updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
       input.name ?? current.name,
@@ -293,16 +288,14 @@ export async function deleteFinanceAccount(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE finance_transactions
-     SET deleted_at = datetime('now'),
-         updated_at = datetime('now'),
-         sync_status = 'pending_delete',
-         version = version + 1
-     WHERE account_id = ? AND deleted_at IS NULL`,
+     SET updated_at = datetime('now'),
+         sync_status = 'pending_delete'
+     WHERE account_id = ?`,
     [id]
   );
   await db.runAsync(
     `UPDATE finance_accounts
-     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
+     SET updated_at = datetime('now'), sync_status = 'pending_delete'
      WHERE id = ?`,
     [id]
   );
@@ -312,8 +305,8 @@ export async function createFinanceFlowCategory(input: CreateFinanceFlowCategory
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO finance_flow_categories (
-      id, name, parent_id, sort_order, is_builtin, created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      id, name, parent_id, sort_order, is_builtin, created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [
       input.id,
       input.name,
@@ -333,7 +326,7 @@ export async function getFinanceFlowCategories() {
 export async function updateFinanceFlowCategory(id: string, input: UpdateFinanceFlowCategoryInput) {
   const db = await getDatabase();
   const current = await db.getFirstAsync<FinanceFlowCategoryRow>(
-    'SELECT * FROM finance_flow_categories WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+    'SELECT * FROM finance_flow_categories WHERE id = ? LIMIT 1',
     [id]
   );
   if (!current) return;
@@ -342,8 +335,7 @@ export async function updateFinanceFlowCategory(id: string, input: UpdateFinance
     `UPDATE finance_flow_categories
      SET name = ?, parent_id = ?, sort_order = ?, is_builtin = ?, extra_data = ?,
          updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
       input.name ?? current.name,
@@ -360,7 +352,7 @@ export async function deleteFinanceFlowCategory(id: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE finance_flow_categories
-     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
+     SET updated_at = datetime('now'), sync_status = 'pending_delete'
      WHERE id = ?`,
     [id]
   );
@@ -384,8 +376,8 @@ export async function createFinanceTransaction(input: CreateFinanceTransactionIn
   await db.runAsync(
     `INSERT INTO finance_transactions (
       id, name, happened_at, account_id, ai_comment, transaction_type, flow_category_id, amount, note,
-      created_at, updated_at, deleted_at, sync_status, version, extra_data
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1, ?)`,
+      created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [
       input.id,
       input.name,
@@ -520,7 +512,7 @@ export async function getFinanceDailySummariesByDateRange(startYmd: string, endY
 export async function updateFinanceTransaction(id: string, input: UpdateFinanceTransactionInput) {
   const db = await getDatabase();
   const current = await db.getFirstAsync<FinanceTransactionRow>(
-    'SELECT * FROM finance_transactions WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+    'SELECT * FROM finance_transactions WHERE id = ? LIMIT 1',
     [id]
   );
   if (!current) return;
@@ -557,8 +549,7 @@ export async function updateFinanceTransaction(id: string, input: UpdateFinanceT
     `UPDATE finance_transactions
      SET name = ?, happened_at = ?, account_id = ?, ai_comment = ?, transaction_type = ?, flow_category_id = ?, amount = ?, note = ?, extra_data = ?,
          updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
       input.name ?? current.name,
@@ -578,7 +569,7 @@ export async function updateFinanceTransaction(id: string, input: UpdateFinanceT
 export async function deleteFinanceTransaction(id: string) {
   const db = await getDatabase();
   const current = await db.getFirstAsync<FinanceTransactionRow>(
-    'SELECT * FROM finance_transactions WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+    'SELECT * FROM finance_transactions WHERE id = ? LIMIT 1',
     [id]
   );
   if (current) {
@@ -591,7 +582,7 @@ export async function deleteFinanceTransaction(id: string) {
   }
   await db.runAsync(
     `UPDATE finance_transactions
-     SET deleted_at = datetime('now'), updated_at = datetime('now'), sync_status = 'pending_delete', version = version + 1
+     SET updated_at = datetime('now'), sync_status = 'pending_delete'
      WHERE id = ?`,
     [id]
   );

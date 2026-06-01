@@ -21,9 +21,7 @@ export type HealthRecordRow = {
   source_image_uri?: string | null;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
   sync_status: SyncStatus;
-  version: number;
 };
 
 export type CreateHealthRecordInput = {

@@ -9,8 +9,7 @@ import { dedupeRowsByPrimaryKey, readTablePrimaryKeyColumns } from '@/lib/sqlite
 
 export type ApplyApiReadToLocalOptions = {
   /**
-   * 全表列表读：将本地 `sync_status = 'synced'` 且不在本次 API 结果中的行与服务器对齐
-   *（软删表设 deleted_at，无 deleted_at 则物理删除）。
+   * 全表列表读：将本地 `sync_status = 'synced'` 且不在本次 API 结果中的行与服务器对齐（物理删除）。
    */
   reconcileSnapshot?: boolean;
 };
@@ -39,6 +38,8 @@ function normalizeApiRowForLocal(
   colNames: string[],
 ): Record<string, unknown> {
   const out = { ...row };
+  delete out.deleted_at;
+  delete out.version;
   if (colNames.includes('sync_status')) {
     out.sync_status = 'synced';
   }
@@ -81,15 +82,10 @@ async function reconcileSyncedRowsNotInSnapshot(
   table: string,
   pkCol: string,
   apiPkSet: Set<string>,
-  colNames: string[],
 ): Promise<void> {
-  if (!colNames.includes('sync_status')) return;
-
   const db = await getDatabase();
   if (!db) return;
 
-  const hasDeletedAt = colNames.includes('deleted_at');
-  const hasUpdatedAt = colNames.includes('updated_at');
   const safe = quoteIdent(table);
   const pkQ = quoteIdent(pkCol);
 
@@ -97,23 +93,10 @@ async function reconcileSyncedRowsNotInSnapshot(
     `SELECT ${pkQ} AS __pk, sync_status FROM ${safe} WHERE sync_status = 'synced'`,
   );
 
-  const now = new Date().toISOString();
   for (const row of localRows) {
     const pk = row.__pk == null || row.__pk === '' ? '' : String(row.__pk);
     if (!pk || apiPkSet.has(pk)) continue;
-
-    if (hasDeletedAt) {
-      const sets = ['deleted_at = ?', "sync_status = 'synced'"];
-      const params: (string | number | null)[] = [now];
-      if (hasUpdatedAt) {
-        sets.push('updated_at = ?');
-        params.push(now);
-      }
-      params.push(pk);
-      await db.runAsync(`UPDATE ${safe} SET ${sets.join(', ')} WHERE ${pkQ} = ?`, params);
-    } else {
-      await db.runAsync(`DELETE FROM ${safe} WHERE ${pkQ} = ?`, [pk]);
-    }
+    await db.runAsync(`DELETE FROM ${safe} WHERE ${pkQ} = ?`, [pk]);
   }
 }
 
@@ -152,14 +135,14 @@ export async function applyApiRowsToLocalTable(
         const pk = rowPrimaryKeyValue(row, pkCols);
         if (pk) apiPkSet.add(pk);
       }
-      await reconcileSyncedRowsNotInSnapshot(table, pkCol, apiPkSet, colNames);
+      await reconcileSyncedRowsNotInSnapshot(table, pkCol, apiPkSet);
     }
   } finally {
     endCloudSqliteDirtyIgnoreBatch();
   }
 }
 
-/** GET 单条 404：本地已 synced 的行与服务器对齐（软删或删除） */
+/** GET 单条 404：本地已 synced 的行与服务器对齐（物理删除） */
 export async function applyApiRecordMissingToLocal(table: string, pkValue: string): Promise<void> {
   if (!isApiReadableTable(table) || !pkValue.trim()) return;
 
@@ -177,27 +160,9 @@ export async function applyApiRecordMissingToLocal(table: string, pkValue: strin
   if (!local) return;
   if (colNames.includes('sync_status') && local.sync_status !== 'synced') return;
 
-  const hasDeletedAt = colNames.includes('deleted_at');
-  const hasUpdatedAt = colNames.includes('updated_at');
-  const now = new Date().toISOString();
-
   beginCloudSqliteDirtyIgnoreBatch();
   try {
-    if (hasDeletedAt) {
-      const sets = ['deleted_at = ?', "sync_status = 'synced'"];
-      const params: (string | number | null)[] = [now];
-      if (hasUpdatedAt) {
-        sets.push('updated_at = ?');
-        params.push(now);
-      }
-      params.push(pkValue);
-      await db.runAsync(
-        `UPDATE ${quoteIdent(table)} SET ${sets.join(', ')} WHERE ${quoteIdent(pkCol)} = ?`,
-        params,
-      );
-    } else {
-      await db.runAsync(`DELETE FROM ${quoteIdent(table)} WHERE ${quoteIdent(pkCol)} = ?`, [pkValue]);
-    }
+    await db.runAsync(`DELETE FROM ${quoteIdent(table)} WHERE ${quoteIdent(pkCol)} = ?`, [pkValue]);
   } finally {
     endCloudSqliteDirtyIgnoreBatch();
   }

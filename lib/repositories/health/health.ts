@@ -15,8 +15,8 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
   await db.runAsync(
     `INSERT INTO health_records (
       id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, sodium, target_sodium, record_date, quick_add_key, intake_display_title, intake_ai_comment, source_image_uri,
-      created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL, 'pending_create', 1)`,
+      created_at, updated_at, sync_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create')`,
     [
       input.id,
       input.user_id,
@@ -103,8 +103,7 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
   await db.runAsync(
     `UPDATE health_records
      SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, carbohydrate = ?, target_carbohydrate = ?, sodium = ?, target_sodium = ?, record_date = ?, quick_add_key = ?, intake_display_title = ?, intake_ai_comment = ?, source_image_uri = ?, updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END,
-         version = version + 1
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
       input.hydration ?? current.hydration,
@@ -141,9 +140,8 @@ export async function deleteHealthRecord(id: string) {
   }
   await db.runAsync(
     `UPDATE health_records
-     SET deleted_at = datetime('now'), updated_at = datetime('now'),
-         sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_delete' ELSE 'pending_delete' END,
-         version = version + 1
+     SET updated_at = datetime('now'),
+         sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_delete' ELSE 'pending_delete' END
      WHERE id = ?`,
     [id]
   );

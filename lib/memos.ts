@@ -187,7 +187,7 @@ async function importMemosToDb(db: SQLite.SQLiteDatabase, items: MemoItem[]): Pr
     await db.runAsync('DELETE FROM memos');
     const dimensionIdsByName = new Map<string, string>();
     const existingDims = await db.getAllAsync<MemoDimensionRow>(
-      'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE deleted_at IS NULL',
+      'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions',
     );
     for (const dim of existingDims) {
       dimensionIdsByName.set(dim.name.trim(), dim.id);
@@ -202,8 +202,8 @@ async function importMemosToDb(db: SQLite.SQLiteDatabase, items: MemoItem[]): Pr
           dimensionIdsByName.set(dimensionName, dimensionId);
           await db.runAsync(
             `INSERT INTO memo_dimensions (
-              id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version
-            ) VALUES (?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+              id, name, sort_order, created_at, updated_at, sync_status
+            ) VALUES (?, ?, ?, ?, ?, 'synced')`,
             [dimensionId, dimensionName, dimensionIdsByName.size * 1000, item.created_at, item.updated_at],
           );
         }
@@ -211,8 +211,8 @@ async function importMemosToDb(db: SQLite.SQLiteDatabase, items: MemoItem[]): Pr
       await db.runAsync(
         `INSERT INTO memos (
           id, title, body, dimension_id, dimension, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
-          created_at, updated_at, deleted_at, sync_status, version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+          created_at, updated_at, sync_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
         [
           item.id,
           clampTitle(item.title),
@@ -253,7 +253,7 @@ export async function migrateMemosStorageToSqliteIfNeeded(db?: SQLite.SQLiteData
   if (flag?.value === '1') return;
 
   const count = await database.getFirstAsync<{ c: number }>(
-    'SELECT COUNT(1) AS c FROM memos WHERE deleted_at IS NULL',
+    'SELECT COUNT(1) AS c FROM memos',
   );
   const hasSqliteData = Number(count?.c ?? 0) > 0;
 
@@ -283,29 +283,29 @@ async function backfillMemoDimensionsIfNeeded(db: SQLite.SQLiteDatabase): Promis
   const rows = await db.getAllAsync<{ dimension: string }>(
     `SELECT DISTINCT TRIM(dimension) AS dimension
      FROM memos
-     WHERE deleted_at IS NULL AND dimension IS NOT NULL AND TRIM(dimension) != ''`,
+     WHERE dimension IS NOT NULL AND TRIM(dimension) != ''`,
   );
   let sort = 1000;
   for (const row of rows) {
     const name = clampDimension(row.dimension);
     if (!name) continue;
     const existing = await db.getFirstAsync<{ id: string }>(
-      'SELECT id FROM memo_dimensions WHERE deleted_at IS NULL AND name = ? LIMIT 1',
+      'SELECT id FROM memo_dimensions WHERE name = ? LIMIT 1',
       [name],
     );
     const dimensionId = existing?.id ?? newDimensionId();
     if (!existing) {
       await db.runAsync(
         `INSERT INTO memo_dimensions (
-          id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version
-        ) VALUES (?, ?, ?, datetime('now'), datetime('now'), NULL, 'synced', 1)`,
+          id, name, sort_order, created_at, updated_at, sync_status
+        ) VALUES (?, ?, ?, datetime('now'), datetime('now'), 'synced')`,
         [dimensionId, name, sort],
       );
       sort += 1000;
     }
     await db.runAsync(
       `UPDATE memos SET dimension_id = ?
-       WHERE deleted_at IS NULL AND dimension_id IS NULL AND TRIM(COALESCE(dimension, '')) = ?`,
+       WHERE dimension_id IS NULL AND TRIM(COALESCE(dimension, '')) = ?`,
       [dimensionId, name],
     );
   }
@@ -346,15 +346,15 @@ async function getMemoFromApi(id: string): Promise<MemoItem | null> {
 
 async function listMemosFromDb(db: SQLite.SQLiteDatabase, dimensionId?: string): Promise<MemoItem[]> {
   const where = dimensionId
-    ? 'WHERE memos.deleted_at IS NULL AND memos.dimension_id = ?'
-    : 'WHERE memos.deleted_at IS NULL';
+    ? 'WHERE memos.dimension_id = ?'
+    : '';
   const rows = await db.getAllAsync<MemoRow>(
     `SELECT memos.id, memos.title, memos.body, memos.dimension_id,
        COALESCE(memo_dimensions.name, memos.dimension) AS dimension,
        memos.ai_evaluation, memos.ai_suggestions, memos.ai_review_at, memos.linked_task_id,
        memos.created_at, memos.updated_at
      FROM memos
-     LEFT JOIN memo_dimensions ON memo_dimensions.id = memos.dimension_id AND memo_dimensions.deleted_at IS NULL
+     LEFT JOIN memo_dimensions ON memo_dimensions.id = memos.dimension_id
      ${where}
      ORDER BY memos.updated_at DESC`,
     dimensionId ? [dimensionId] : [],
@@ -387,7 +387,7 @@ export async function createMemoDimension(input: { name: string }): Promise<Memo
   if (!name) throw new Error('维度名称不能为空');
   const now = new Date().toISOString();
   const maxSort = await db.getFirstAsync<{ v: number }>(
-    'SELECT MAX(COALESCE(sort_order, 0)) AS v FROM memo_dimensions WHERE deleted_at IS NULL',
+    'SELECT MAX(COALESCE(sort_order, 0)) AS v FROM memo_dimensions',
   );
   const item: MemoDimension = {
     id: newDimensionId(),
@@ -398,8 +398,8 @@ export async function createMemoDimension(input: { name: string }): Promise<Memo
   };
   await db.runAsync(
     `INSERT INTO memo_dimensions (
-      id, name, sort_order, created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, ?, ?, NULL, 'synced', 1)`,
+      id, name, sort_order, created_at, updated_at, sync_status
+    ) VALUES (?, ?, ?, ?, ?, 'synced')`,
     [item.id, item.name, item.sort_order, item.created_at, item.updated_at],
   );
   markMemoDimensionsDirty();
@@ -412,21 +412,21 @@ export async function updateMemoDimension(id: string, patch: { name: string }): 
   const name = clampDimension(patch.name);
   if (!name) throw new Error('维度名称不能为空');
   const prev = await db.getFirstAsync<MemoDimensionRow>(
-    'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+    'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
     [id],
   );
   if (!prev) return null;
   const now = new Date().toISOString();
   await db.runAsync(
     `UPDATE memo_dimensions
-     SET name = ?, updated_at = ?, sync_status = 'synced', version = version + 1
-     WHERE id = ? AND deleted_at IS NULL`,
+     SET name = ?, updated_at = ?, sync_status = 'synced'
+     WHERE id = ?`,
     [name, now, id],
   );
   await db.runAsync(
     `UPDATE memos
-     SET dimension = ?, updated_at = ?, sync_status = 'synced', version = version + 1
-     WHERE dimension_id = ? AND deleted_at IS NULL`,
+     SET dimension = ?, updated_at = ?, sync_status = 'synced'
+     WHERE dimension_id = ?`,
     [name, now, id],
   );
   markMemoDimensionsDirty();
@@ -437,18 +437,37 @@ export async function updateMemoDimension(id: string, patch: { name: string }): 
 export async function deleteMemoDimension(id: string): Promise<boolean> {
   const db = await getDatabase();
   await migrateMemosStorageToSqliteIfNeeded(db);
-  const now = new Date().toISOString();
+  const dim = await db.getFirstAsync<{ sync_status: string }>(
+    'SELECT sync_status FROM memo_dimensions WHERE id = ? LIMIT 1',
+    [id],
+  );
+  if (!dim) return false;
+
   await db.execAsync('BEGIN IMMEDIATE');
   try {
-    const result = await db.runAsync(
-      `UPDATE memo_dimensions
-       SET deleted_at = ?, updated_at = ?, sync_status = 'synced', version = version + 1
-       WHERE id = ? AND deleted_at IS NULL`,
-      [now, now, id],
+    const memos = await db.getAllAsync<{ id: string; sync_status: string }>(
+      'SELECT id, sync_status FROM memos WHERE dimension_id = ?',
+      [id],
     );
-    await db.runAsync('DELETE FROM memos WHERE dimension_id = ?', [id]);
+    for (const m of memos) {
+      if (m.sync_status === 'pending_create') {
+        await db.runAsync('DELETE FROM memos WHERE id = ?', [m.id]);
+      } else {
+        await db.runAsync(
+          `UPDATE memos SET updated_at = datetime('now'), sync_status = 'pending_delete' WHERE id = ?`,
+          [m.id],
+        );
+      }
+    }
+    if (dim.sync_status === 'pending_create') {
+      await db.runAsync('DELETE FROM memo_dimensions WHERE id = ?', [id]);
+    } else {
+      await db.runAsync(
+        `UPDATE memo_dimensions SET updated_at = datetime('now'), sync_status = 'pending_delete' WHERE id = ?`,
+        [id],
+      );
+    }
     await db.execAsync('COMMIT');
-    if ((result.changes ?? 0) < 1) return false;
     markMemoDimensionsDirty();
     markMemosDirty();
     return true;
@@ -474,7 +493,7 @@ export async function createMemo(input: { title: string; body: string; dimension
   const db = await getDatabase();
   await migrateMemosStorageToSqliteIfNeeded(db);
   const dimension = await db.getFirstAsync<MemoDimensionRow>(
-    'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+    'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
     [input.dimensionId],
   );
   if (!dimension) throw new Error('请先选择有效维度');
@@ -491,8 +510,8 @@ export async function createMemo(input: { title: string; body: string; dimension
   await db.runAsync(
     `INSERT INTO memos (
       id, title, body, dimension_id, dimension, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
-      created_at, updated_at, deleted_at, sync_status, version
-    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL, 'synced', 1)`,
+      created_at, updated_at, sync_status
+    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'synced')`,
     [item.id, item.title, item.body, item.dimension_id ?? null, item.dimension ?? null, item.created_at, item.updated_at],
   );
   markMemosDirty();
@@ -512,7 +531,7 @@ export async function updateMemo(
   const db = await getDatabase();
   if (nextDimensionId) {
     const dim = await db.getFirstAsync<MemoDimensionRow>(
-      'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+      'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
       [nextDimensionId],
     );
     if (!dim) throw new Error('请选择有效维度');
@@ -526,13 +545,13 @@ export async function updateMemo(
   if (contentChanged) {
     await db.runAsync(
       `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, ai_evaluation = NULL, ai_suggestions = NULL, ai_review_at = NULL,
-        updated_at = ?, sync_status = 'synced', version = version + 1 WHERE id = ? AND deleted_at IS NULL`,
+        updated_at = ?, sync_status = 'synced' WHERE id = ?`,
       [nextTitle, nextBody, nextDimensionId || null, nextDimension || null, updated_at, id],
     );
   } else {
     await db.runAsync(
-      `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, updated_at = ?, sync_status = 'synced', version = version + 1
-       WHERE id = ? AND deleted_at IS NULL`,
+      `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, updated_at = ?, sync_status = 'synced'
+       WHERE id = ?`,
       [nextTitle, nextBody, nextDimensionId || null, nextDimension || null, updated_at, id],
     );
   }
@@ -565,7 +584,7 @@ export async function setMemoAiReview(
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE memos SET ai_evaluation = ?, ai_suggestions = ?, ai_review_at = ?, updated_at = ?,
-      sync_status = 'synced', version = version + 1 WHERE id = ? AND deleted_at IS NULL`,
+      sync_status = 'synced' WHERE id = ?`,
     [payload.evaluation.trim(), payload.suggestions.trim(), now, now, id],
   );
   markMemosDirty();
@@ -581,8 +600,19 @@ export async function setMemoAiReview(
 export async function deleteMemo(id: string): Promise<boolean> {
   const db = await getDatabase();
   await migrateMemosStorageToSqliteIfNeeded(db);
-  const result = await db.runAsync('DELETE FROM memos WHERE id = ?', [id]);
-  if ((result.changes ?? 0) < 1) return false;
+  const row = await db.getFirstAsync<{ sync_status: string }>(
+    'SELECT sync_status FROM memos WHERE id = ? LIMIT 1',
+    [id],
+  );
+  if (!row) return false;
+  if (row.sync_status === 'pending_create') {
+    await db.runAsync('DELETE FROM memos WHERE id = ?', [id]);
+  } else {
+    await db.runAsync(
+      `UPDATE memos SET updated_at = datetime('now'), sync_status = 'pending_delete' WHERE id = ?`,
+      [id],
+    );
+  }
   markMemosDirty();
   return true;
 }
