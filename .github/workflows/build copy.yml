@@ -68,3 +68,4 @@ jobs:
         with:
           name: MyUnsignedIPA
           path: MyApp.ipa
+          retention-days: 7
