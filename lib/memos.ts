@@ -399,7 +399,7 @@ export async function createMemoDimension(input: { name: string }): Promise<Memo
   await db.runAsync(
     `INSERT INTO memo_dimensions (
       id, name, sort_order, created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, 'synced')`,
+    ) VALUES (?, ?, ?, ?, ?, 'pending_create')`,
     [item.id, item.name, item.sort_order, item.created_at, item.updated_at],
   );
   markMemoDimensionsDirty();
@@ -419,13 +419,15 @@ export async function updateMemoDimension(id: string, patch: { name: string }): 
   const now = new Date().toISOString();
   await db.runAsync(
     `UPDATE memo_dimensions
-     SET name = ?, updated_at = ?, sync_status = 'synced'
+     SET name = ?, updated_at = ?,
+       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [name, now, id],
   );
   await db.runAsync(
     `UPDATE memos
-     SET dimension = ?, updated_at = ?, sync_status = 'synced'
+     SET dimension = ?, updated_at = ?,
+       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE dimension_id = ?`,
     [name, now, id],
   );
@@ -511,7 +513,7 @@ export async function createMemo(input: { title: string; body: string; dimension
     `INSERT INTO memos (
       id, title, body, dimension_id, dimension, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
       created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'synced')`,
+    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'pending_create')`,
     [item.id, item.title, item.body, item.dimension_id ?? null, item.dimension ?? null, item.created_at, item.updated_at],
   );
   markMemosDirty();
@@ -545,12 +547,14 @@ export async function updateMemo(
   if (contentChanged) {
     await db.runAsync(
       `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, ai_evaluation = NULL, ai_suggestions = NULL, ai_review_at = NULL,
-        updated_at = ?, sync_status = 'synced' WHERE id = ?`,
+        updated_at = ?,
+        sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END WHERE id = ?`,
       [nextTitle, nextBody, nextDimensionId || null, nextDimension || null, updated_at, id],
     );
   } else {
     await db.runAsync(
-      `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, updated_at = ?, sync_status = 'synced'
+      `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, updated_at = ?,
+        sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
        WHERE id = ?`,
       [nextTitle, nextBody, nextDimensionId || null, nextDimension || null, updated_at, id],
     );
@@ -584,7 +588,7 @@ export async function setMemoAiReview(
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE memos SET ai_evaluation = ?, ai_suggestions = ?, ai_review_at = ?, updated_at = ?,
-      sync_status = 'synced' WHERE id = ?`,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END WHERE id = ?`,
     [payload.evaluation.trim(), payload.suggestions.trim(), now, now, id],
   );
   markMemosDirty();

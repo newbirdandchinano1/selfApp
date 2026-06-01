@@ -415,7 +415,7 @@ export async function createRecipeCategory(name: string): Promise<RecipeCategory
   const cat: RecipeCategory = { id: newId('rcat'), name: trimmed, created_at: now };
   await db.runAsync(
     `INSERT INTO recipe_categories (id, name, created_at, updated_at, sync_status)
-     VALUES (?, ?, ?, ?, 'synced')`,
+     VALUES (?, ?, ?, ?, 'pending_create')`,
     [cat.id, cat.name, now, now],
   );
   markRecipesDirty();
@@ -449,12 +449,19 @@ export async function renameRecipeCategory(id: string, name: string): Promise<Re
 
 export async function deleteRecipeCategory(id: string): Promise<boolean> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<{ id: string }>(
-    `SELECT id FROM recipe_categories WHERE id = ?`,
+  const row = await db.getFirstAsync<{ id: string; sync_status: string }>(
+    `SELECT id, sync_status FROM recipe_categories WHERE id = ?`,
     [id],
   );
   if (!row) return false;
-  await db.runAsync('DELETE FROM recipe_categories WHERE id = ?', [id]);
+  if (row.sync_status === 'pending_create') {
+    await db.runAsync('DELETE FROM recipe_categories WHERE id = ?', [id]);
+  } else {
+    await db.runAsync(
+      `UPDATE recipe_categories SET updated_at = datetime('now'), sync_status = 'pending_delete' WHERE id = ?`,
+      [id],
+    );
+  }
   markRecipesDirty();
   return true;
 }
@@ -496,7 +503,7 @@ export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem
     `INSERT INTO recipe_items (
       id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri,
       created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_create')`,
     [
       item.id,
       item.category_id,
@@ -570,8 +577,19 @@ export async function updateRecipe(id: string, patch: UpdateRecipeInput): Promis
 
 export async function deleteRecipe(id: string): Promise<boolean> {
   const db = await getDatabase();
-  const result = await db.runAsync('DELETE FROM recipe_items WHERE id = ?', [id]);
-  if ((result.changes ?? 0) === 0) return false;
+  const row = await db.getFirstAsync<{ sync_status: string }>(
+    `SELECT sync_status FROM recipe_items WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  if (!row) return false;
+  if (row.sync_status === 'pending_create') {
+    await db.runAsync('DELETE FROM recipe_items WHERE id = ?', [id]);
+  } else {
+    await db.runAsync(
+      `UPDATE recipe_items SET updated_at = datetime('now'), sync_status = 'pending_delete' WHERE id = ?`,
+      [id],
+    );
+  }
   markRecipesDirty();
   return true;
 }

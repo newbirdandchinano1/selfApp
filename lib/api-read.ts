@@ -139,14 +139,15 @@ export async function readApiTable<T extends Record<string, unknown>>(
     return readLocalTableAll<T>(table);
   }
   try {
-    return await withApiLoading(() => fetchApiTableAll<T>(table, opts));
+    await withApiLoading(() => fetchApiTableAll<T>(table, opts));
   } catch (e) {
     if (opts?.offlineFallback) {
       if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, e);
-      return readLocalTableAll<T>(table);
+      return readLocalTableVisible<T>(table);
     }
     throw e;
   }
+  return readLocalTableVisible<T>(table);
 }
 
 export async function readApiRecord<T extends Record<string, unknown>>(
@@ -155,21 +156,29 @@ export async function readApiRecord<T extends Record<string, unknown>>(
   opts?: { signal?: AbortSignal; offlineFallback?: boolean },
 ): Promise<T | null> {
   if (!isApiReadableTable(table)) {
-    return readLocalRecordByPk<T>(table, pkValue);
+    return readLocalRecordVisible<T>(table, pkValue);
   }
   try {
-    return await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
+    await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
   } catch (e) {
     if (opts?.offlineFallback) {
       if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, pkValue, e);
-      return readLocalRecordByPk<T>(table, pkValue);
+      return readLocalRecordVisible<T>(table, pkValue);
     }
     throw e;
   }
+  return readLocalRecordVisible<T>(table, pkValue);
 }
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+async function tableHasSyncStatusColumn(table: string): Promise<boolean> {
+  const db = await getDatabase();
+  if (!db) return false;
+  const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${quoteIdent(table)})`);
+  return cols.some(c => c.name === 'sync_status');
 }
 
 async function readLocalTableAll<T extends Record<string, unknown>>(table: string): Promise<T[]> {
@@ -177,6 +186,18 @@ async function readLocalTableAll<T extends Record<string, unknown>>(table: strin
   if (!db) return [];
   const rows = await db.getAllAsync(`SELECT * FROM ${quoteIdent(table)}`);
   return (rows as T[]) ?? [];
+}
+
+/** 读取本地表并排除待删除行（供 UI 展示） */
+async function readLocalTableVisible<T extends Record<string, unknown>>(table: string): Promise<T[]> {
+  const db = await getDatabase();
+  if (!db) return [];
+  const safe = quoteIdent(table);
+  if (await tableHasSyncStatusColumn(table)) {
+    const rows = await db.getAllAsync<T>(`SELECT * FROM ${safe} WHERE sync_status != 'pending_delete'`);
+    return rows ?? [];
+  }
+  return readLocalTableAll<T>(table);
 }
 
 async function readLocalRecordByPk<T extends Record<string, unknown>>(
@@ -191,4 +212,15 @@ async function readLocalRecordByPk<T extends Record<string, unknown>>(
     [pkValue],
   );
   return row ?? null;
+}
+
+async function readLocalRecordVisible<T extends Record<string, unknown>>(
+  table: string,
+  pkValue: string,
+): Promise<T | null> {
+  const row = await readLocalRecordByPk<T>(table, pkValue);
+  if (!row) return null;
+  const syncStatus = (row as Record<string, unknown>).sync_status;
+  if (syncStatus === 'pending_delete') return null;
+  return row;
 }

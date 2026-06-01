@@ -7,6 +7,10 @@ export function getApiLoadingPendingCount(): number {
   return pendingCount;
 }
 
+export function isApiLoadingActive(): boolean {
+  return pendingCount > 0;
+}
+
 export function subscribeApiLoading(listener: ApiLoadingListener): () => void {
   listeners.add(listener);
   return () => {

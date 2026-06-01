@@ -68,9 +68,26 @@ async function upsertRowsToLocalTable(
     pkCols,
   );
 
+  const pkCol = pkCols[0];
+  const hasSyncStatus = colNames.includes('sync_status');
+
   for (const obj of normalized) {
     const keys = colNames.filter(c => Object.prototype.hasOwnProperty.call(obj, c));
     if (keys.length === 0) continue;
+
+    if (hasSyncStatus && pkCol) {
+      const pk = rowPrimaryKeyValue(obj, pkCols);
+      if (pk) {
+        const existing = await db.getFirstAsync<{ sync_status: string }>(
+          `SELECT sync_status FROM ${safe} WHERE ${quoteIdent(pkCol)} = ? LIMIT 1`,
+          [pk],
+        );
+        if (existing && existing.sync_status !== 'synced') {
+          continue;
+        }
+      }
+    }
+
     const qCols = keys.map(c => quoteIdent(c)).join(', ');
     const placeholders = keys.map(() => '?').join(', ');
     const vals = keys.map(k => sqliteBindingFromJson(obj[k]));

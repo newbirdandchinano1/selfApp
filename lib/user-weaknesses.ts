@@ -216,7 +216,7 @@ export async function createUserWeakness(input: {
     `INSERT INTO user_weaknesses (
       id, title, detail, ai_evaluation, ai_suggestions, ai_review_at,
       created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, 'synced')`,
+    ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, 'pending_create')`,
     [item.id, item.title, item.detail, item.created_at, item.updated_at],
   );
   markWeaknessesDirty();
@@ -239,12 +239,14 @@ export async function updateUserWeakness(
   if (contentChanged) {
     await db.runAsync(
       `UPDATE user_weaknesses SET title = ?, detail = ?, ai_evaluation = NULL, ai_suggestions = NULL, ai_review_at = NULL,
-        updated_at = ?, sync_status = 'synced' WHERE id = ?`,
+        updated_at = ?,
+        sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END WHERE id = ?`,
       [nextTitle, nextDetail, updated_at, id],
     );
   } else {
     await db.runAsync(
-      `UPDATE user_weaknesses SET title = ?, detail = ?, updated_at = ?, sync_status = 'synced'
+      `UPDATE user_weaknesses SET title = ?, detail = ?, updated_at = ?,
+        sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
        WHERE id = ?`,
       [nextTitle, nextDetail, updated_at, id],
     );
@@ -275,7 +277,7 @@ export async function setUserWeaknessAiReview(
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE user_weaknesses SET ai_evaluation = ?, ai_suggestions = ?, ai_review_at = ?, updated_at = ?,
-      sync_status = 'synced' WHERE id = ?`,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END WHERE id = ?`,
     [payload.evaluation.trim(), payload.suggestions.trim(), now, now, id],
   );
   markWeaknessesDirty();

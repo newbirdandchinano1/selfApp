@@ -2,6 +2,7 @@ import React from 'react';
 import { ScrollView, StyleSheet, View, type ScrollViewProps, type StyleProp, type ViewStyle } from 'react-native';
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 
+import { ScreenLoadingShell } from '@/components/screen-loading-shell';
 import { Layout, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
@@ -9,6 +10,8 @@ export type AppScreenProps = {
   children: React.ReactNode;
   header?: React.ReactNode;
   scrollable?: boolean;
+  loading?: boolean;
+  loadingHint?: string;
   contentContainerStyle?: StyleProp<ViewStyle>;
   style?: StyleProp<ViewStyle>;
   edges?: Edge[];
@@ -20,6 +23,8 @@ export function AppScreen({
   children,
   header,
   scrollable = true,
+  loading = false,
+  loadingHint,
   contentContainerStyle,
   style,
   edges = ['left', 'right'],
@@ -28,9 +33,9 @@ export function AppScreen({
   const { colors } = useAppTheme();
 
   const body = (
-    <View style={[styles.content, contentContainerStyle]}>
-      {children}
-    </View>
+    <ScreenLoadingShell loading={loading} hint={loadingHint} style={styles.shell}>
+      <View style={[styles.content, contentContainerStyle]}>{children}</View>
+    </ScreenLoadingShell>
   );
 
   return (
@@ -53,6 +58,9 @@ export function AppScreen({
 
 const styles = StyleSheet.create({
   root: {
+    flex: 1,
+  },
+  shell: {
     flex: 1,
   },
   scrollContent: {

@@ -7,7 +7,8 @@ import { ActivityIndicator, InteractionManager, Platform, Pressable, Text, View 
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
-import { ApiLoadingOverlay } from '@/components/api-loading-overlay';
+import { ApiContentTransition } from '@/components/api-content-transition';
+import { ApiLoadingIndicator } from '@/components/api-loading-indicator';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
@@ -216,6 +217,7 @@ function RootLayoutInner() {
             <TaskReminderNotificationListener />
             <FinanceSheetHost />
             <AppErrorBoundary>
+            <ApiContentTransition>
             <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="add-frog" />
@@ -273,8 +275,9 @@ function RootLayoutInner() {
             <Stack.Screen name="screenshot" />
             <Stack.Screen name="auto-ledger" />
           </Stack>
+            </ApiContentTransition>
             </AppErrorBoundary>
-            <ApiLoadingOverlay />
+            <ApiLoadingIndicator />
           </View>
         )}
         <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />

@@ -1,3 +1,4 @@
+import { ScreenLoadingShell } from '@/components/screen-loading-shell';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { createStandaloneTodoFromMemo } from '@/lib/memo-to-task';
@@ -361,39 +362,33 @@ export default function MemoListScreen() {
         </Pressable>
       ) : null}
 
-      {loading ? (
-        <View style={styles.loadingWrap}>
-          <ActivityIndicator size="large" color={primary} />
+      <ScreenLoadingShell loading={loading} style={styles.listFlex}>
+        <View style={[styles.filterBarWrap, { backgroundColor: headerBg, borderBottomColor: borderSoft }]}>
+          {renderHeader}
         </View>
-      ) : (
-        <>
-          <View style={[styles.filterBarWrap, { backgroundColor: headerBg, borderBottomColor: borderSoft }]}>
-            {renderHeader}
-          </View>
-          <FlatList
-            style={styles.listFlex}
-            data={filteredItems}
-            keyExtractor={i => i.id}
-            renderItem={renderItem}
-            ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
-            contentContainerStyle={[styles.listContent, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]}
-            ListEmptyComponent={
-              <View style={[styles.emptyCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
-                <MaterialIcons name={selectedDimensionId ? 'note-add' : 'create-new-folder'} size={44} color={outline} />
-                <Text style={[styles.emptyTitle, { color: text }]}>{selectedDimensionId ? '该维度暂无备忘' : '请先新建维度'}</Text>
-                <Text style={[styles.emptySub, { color: outline }]}>{selectedDimensionId ? '点击右上角「+」在当前维度下新建备忘' : '备忘与维度在同一页面管理。先建立维度，再在维度下添加备忘。'}</Text>
-                <Pressable
-                  onPress={selectedDimensionId ? openNewMemo : openCreateDimension}
-                  style={({ pressed }) => [styles.primaryCta, { backgroundColor: primary, opacity: pressed ? 0.88 : 1 }]}
-                >
-                  <Text style={styles.primaryCtaText}>{selectedDimensionId ? '添加备忘' : '新建维度'}</Text>
-                </Pressable>
-              </View>
-            }
-            showsVerticalScrollIndicator={false}
-          />
-        </>
-      )}
+        <FlatList
+          style={styles.listFlex}
+          data={filteredItems}
+          keyExtractor={i => i.id}
+          renderItem={renderItem}
+          ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+          contentContainerStyle={[styles.listContent, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]}
+          ListEmptyComponent={
+            <View style={[styles.emptyCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
+              <MaterialIcons name={selectedDimensionId ? 'note-add' : 'create-new-folder'} size={44} color={outline} />
+              <Text style={[styles.emptyTitle, { color: text }]}>{selectedDimensionId ? '该维度暂无备忘' : '请先新建维度'}</Text>
+              <Text style={[styles.emptySub, { color: outline }]}>{selectedDimensionId ? '点击右上角「+」在当前维度下新建备忘' : '备忘与维度在同一页面管理。先建立维度，再在维度下添加备忘。'}</Text>
+              <Pressable
+                onPress={selectedDimensionId ? openNewMemo : openCreateDimension}
+                style={({ pressed }) => [styles.primaryCta, { backgroundColor: primary, opacity: pressed ? 0.88 : 1 }]}
+              >
+                <Text style={styles.primaryCtaText}>{selectedDimensionId ? '添加备忘' : '新建维度'}</Text>
+              </Pressable>
+            </View>
+          }
+          showsVerticalScrollIndicator={false}
+        />
+      </ScreenLoadingShell>
 
       <Modal visible={dimensionModalVisible} animationType="fade" transparent onRequestClose={closeDimensionModal}>
         <View style={styles.modalOverlay}>
