@@ -1,14 +1,11 @@
+import { readApiTable } from '@/lib/api-read';
+import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import type { HabitContextRow } from './habit-context.types';
 
 export async function getHabitContexts() {
-  const db = await getDatabase();
-  return db.getAllAsync<HabitContextRow>(
-    `SELECT *
-     FROM habit_contexts
-     WHERE deleted_at IS NULL
-     ORDER BY COALESCE(sort_order, 1000) ASC, name ASC`
-  );
+  const rows = await readApiTable<HabitContextRow>('habit_contexts', { offlineFallback: true });
+  return sortBySortOrderAsc(rows);
 }
 
 export async function createHabitContext(name: string) {

@@ -11,6 +11,10 @@ import {
 } from '@/lib/cloud-sql-dirty-track';
 import { isSilentCloudRestoreInFlight, setSilentCloudRestoreInFlight } from '@/lib/cloud-sync-flags';
 import { getDatabase, initDatabase } from '@/lib/database';
+import {
+  INBOX_PROJECT_CATEGORY_ID,
+  INBOX_PROJECT_CATEGORY_NAME,
+} from '@/lib/repositories/projects/constants';
 import { throwIfAborted, isAbortError } from '@/lib/cloud-fetch-retry';
 import {
   dedupeLocalTablesByPrimaryKeyIfNeeded,
@@ -212,7 +216,7 @@ type ForeignKeyRef = {
   toColumn: string;
 };
 
-async function readLocalForeignKeyRefs(table: string): Promise<ForeignKeyRef[]> {
+export async function readLocalForeignKeyRefs(table: string): Promise<ForeignKeyRef[]> {
   const db = await getDatabase();
   const safe = quoteIdent(table);
   const fks = await db.getAllAsync<{ table: string; from: string; to: string }>(
@@ -464,6 +468,14 @@ function sortTablesForCloudDelete(insertOrder: string[]): string[] {
   return [...insertOrder].reverse();
 }
 
+/** REST 增量推送：按外键依赖排序（仅扩展父表） */
+export async function resolveApiPushInsertOrder(seedTables: string[]): Promise<string[]> {
+  if (seedTables.length === 0) return [];
+  const graph = await buildLocalForeignKeyGraph();
+  const tables = expandTablesForCloudApply(seedTables, graph);
+  return sortTablesForCloudInsert(tables, graph);
+}
+
 async function trySetCloudForeignKeys(enabled: boolean, signal?: AbortSignal): Promise<void> {
   const sql = enabled ? 'PRAGMA foreign_keys = ON' : 'PRAGMA foreign_keys = OFF';
   await executeCloudSql(sql, undefined, { signal });
@@ -560,6 +572,111 @@ async function pushLocalTableRowsToCloud(
   }
 }
 
+function makeInboxProjectCategoryRow(
+  source?: Record<string, unknown>,
+): Record<string, unknown> {
+  const now = new Date().toISOString();
+  return {
+    id: INBOX_PROJECT_CATEGORY_ID,
+    name:
+      typeof source?.name === 'string' && source.name.trim()
+        ? source.name
+        : INBOX_PROJECT_CATEGORY_NAME,
+    sort_order: 0,
+    created_at: typeof source?.created_at === 'string' ? source.created_at : now,
+    updated_at: typeof source?.updated_at === 'string' ? source.updated_at : now,
+    deleted_at: source?.deleted_at ?? null,
+    sync_status: typeof source?.sync_status === 'string' ? source.sync_status : 'synced',
+    version: typeof source?.version === 'number' ? source.version : 1,
+    extra_data: source?.extra_data ?? null,
+  };
+}
+
+function makeProjectCategoryStubRow(
+  id: string,
+  source?: Record<string, unknown>,
+): Record<string, unknown> {
+  const now = new Date().toISOString();
+  return {
+    id,
+    name: typeof source?.name === 'string' && source.name.trim() ? source.name : '未命名分类',
+    sort_order: typeof source?.sort_order === 'number' ? source.sort_order : 1000,
+    created_at: typeof source?.created_at === 'string' ? source.created_at : now,
+    updated_at: typeof source?.updated_at === 'string' ? source.updated_at : now,
+    deleted_at: source?.deleted_at ?? null,
+    sync_status: typeof source?.sync_status === 'string' ? source.sync_status : 'synced',
+    version: typeof source?.version === 'number' ? source.version : 1,
+    extra_data: source?.extra_data ?? null,
+  };
+}
+
+/**
+ * REST 上传前补齐 project_categories：
+ * - 内置收集箱 project_category_inbox（服务端空库无种子数据时必须带客户端 id 写入）
+ * - projects 引用的全部分类 id
+ */
+export function ensureProjectCategoryRefsForApiUpload(
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+): void {
+  const existing = rowsByTable.get('project_categories') ?? [];
+  const byId = new Map(
+    existing
+      .filter(r => r.id != null && r.id !== '')
+      .map(r => [String(r.id), r]),
+  );
+
+  const neededIds = new Set<string>();
+  const projectRows = rowsByTable.get('projects') ?? [];
+  for (const row of projectRows) {
+    const cid = row.category_id;
+    if (cid != null && cid !== '') neededIds.add(String(cid));
+  }
+
+  if (
+    neededIds.has(INBOX_PROJECT_CATEGORY_ID) ||
+    projectRows.some(
+      row =>
+        row.category_id == null ||
+        row.category_id === '' ||
+        String(row.category_id) === INBOX_PROJECT_CATEGORY_ID,
+    )
+  ) {
+    neededIds.add(INBOX_PROJECT_CATEGORY_ID);
+  }
+
+  const merged = [...existing];
+  for (const id of neededIds) {
+    if (byId.has(id)) continue;
+    const row =
+      id === INBOX_PROJECT_CATEGORY_ID
+        ? makeInboxProjectCategoryRow(byId.get(id))
+        : makeProjectCategoryStubRow(id);
+    merged.push(row);
+    byId.set(id, row);
+  }
+
+  merged.sort((a, b) => {
+    const aInbox = String(a.id) === INBOX_PROJECT_CATEGORY_ID ? 0 : 1;
+    const bInbox = String(b.id) === INBOX_PROJECT_CATEGORY_ID ? 0 : 1;
+    if (aInbox !== bInbox) return aInbox - bInbox;
+    return Number(a.sort_order ?? 1000) - Number(b.sort_order ?? 1000);
+  });
+
+  rowsByTable.set('project_categories', merged);
+}
+
+/** 内置收集箱优先，供 REST 上传 project_categories 时使用 */
+export function sortProjectCategoriesForApiUpload(
+  rows: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  return [...rows].sort((a, b) => {
+    const aInbox = String(a.id) === INBOX_PROJECT_CATEGORY_ID ? 0 : 1;
+    const bInbox = String(b.id) === INBOX_PROJECT_CATEGORY_ID ? 0 : 1;
+    if (aInbox !== bInbox) return aInbox - bInbox;
+    return Number(a.sort_order ?? 1000) - Number(b.sort_order ?? 1000);
+  });
+}
+
 /** 任务 category_id 引用 task_categories；将 project_categories 镜像并入待上传的 task_categories */
 function mergeProjectCategoriesIntoTaskCategoriesForCloud(
   rowsByTable: Map<string, Record<string, unknown>[]>,
@@ -579,6 +696,64 @@ function mergeProjectCategoriesIntoTaskCategoriesForCloud(
     if (ids.has(sid)) continue;
     ids.add(sid);
     merged.push({ ...row });
+  }
+  rowsByTable.set('task_categories', merged);
+}
+
+function makeTaskCategoryMirrorRow(
+  id: string,
+  source?: Record<string, unknown>,
+): Record<string, unknown> {
+  const now = new Date().toISOString();
+  return {
+    id,
+    name: typeof source?.name === 'string' && source.name.trim() ? source.name : '未命名分类',
+    sort_order: typeof source?.sort_order === 'number' ? source.sort_order : 1000,
+    created_at: typeof source?.created_at === 'string' ? source.created_at : now,
+    updated_at: typeof source?.updated_at === 'string' ? source.updated_at : now,
+    deleted_at: source?.deleted_at ?? null,
+    sync_status: typeof source?.sync_status === 'string' ? source.sync_status : 'synced',
+    version: typeof source?.version === 'number' ? source.version : 1,
+    extra_data: source?.extra_data ?? null,
+  };
+}
+
+/**
+ * 上传 REST 前补齐 task_categories：
+ * - 镜像全部 project_categories（tasks.category_id 外键指向 task_categories）
+ * - 补全 tasks/projects 引用但镜像中缺失的分类行（含 pc_ 前缀项目分类）
+ */
+export function ensureTaskCategoryMirrorForApiUpload(
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+): void {
+  mergeProjectCategoriesIntoTaskCategoriesForCloud(rowsByTable);
+
+  const existing = rowsByTable.get('task_categories') ?? [];
+  const byId = new Map(
+    existing
+      .filter(r => r.id != null && r.id !== '')
+      .map(r => [String(r.id), r]),
+  );
+  const projectById = new Map(
+    (rowsByTable.get('project_categories') ?? [])
+      .filter(r => r.id != null && r.id !== '')
+      .map(r => [String(r.id), r]),
+  );
+
+  const neededIds = new Set<string>();
+  for (const table of ['tasks', 'projects'] as const) {
+    for (const row of rowsByTable.get(table) ?? []) {
+      const cid = row.category_id;
+      if (cid != null && cid !== '') neededIds.add(String(cid));
+    }
+  }
+
+  const merged = [...existing];
+  for (const id of neededIds) {
+    if (byId.has(id)) continue;
+    const row = makeTaskCategoryMirrorRow(id, projectById.get(id));
+    merged.push(row);
+    byId.set(id, row);
   }
   rowsByTable.set('task_categories', merged);
 }
@@ -693,7 +868,8 @@ export async function collectLocalTablesDataForUpload(
     await yieldToUi();
     rowsByTable.set(table, await readLocalTableRows(table));
   }
-  mergeProjectCategoriesIntoTaskCategoriesForCloud(rowsByTable);
+  ensureProjectCategoryRefsForApiUpload(rowsByTable);
+  ensureTaskCategoryMirrorForApiUpload(rowsByTable);
 
   return { insertOrder, rowsByTable };
 }

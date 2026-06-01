@@ -2,33 +2,33 @@ import { MemoFormatToolbar } from '@/components/memo/memo-format-toolbar';
 import { MemoRichBodyInput } from '@/components/memo/memo-rich-body-input';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { startMemoAiReviewInBackground } from '@/lib/memo-ai-background';
 import {
-  applyMemoFormatToModel,
-  emptyMemoEditModel,
-  memoBodyFromEditModel,
-  parseMemoBodyToEditModel,
-  updateMemoEditModelPlain,
-  type MemoEditModel,
-  type MemoFormatAction,
-  type TextSelection,
+    applyMemoFormatToModel,
+    emptyMemoEditModel,
+    memoBodyFromEditModel,
+    parseMemoBodyToEditModel,
+    updateMemoEditModelPlain,
+    type MemoEditModel,
+    type MemoFormatAction,
+    type TextSelection,
 } from '@/lib/memo-format';
 import { createMemo, getMemo, MEMO_BODY_MAX, MEMO_TITLE_MAX, updateMemo } from '@/lib/memos';
-import { startMemoAiReviewInBackground } from '@/lib/memo-ai-background';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  useWindowDimensions,
-  View,
+    ActivityIndicator,
+    Alert,
+    KeyboardAvoidingView,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    useWindowDimensions,
+    View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 

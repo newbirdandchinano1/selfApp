@@ -1,8 +1,51 @@
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { readApiTable } from '@/lib/api-read';
+import { compareDatetimeDesc, isYmdInRange, matchesOverviewScope, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
-import { TASK_OVERVIEW_EVENT_SCOPE_WHERE, TASK_OVERVIEW_SCOPE_WHERE } from './task-overview-scope';
 
 export type TaskExecutionEventAction = 'completed' | 'reopened';
+
+type TaskRowLite = {
+  id: string;
+  title?: string | null;
+  project_id?: string | null;
+  parent_task_id?: string | null;
+  status?: string;
+};
+
+type EventRowLite = {
+  id: string;
+  task_id: string;
+  action: string;
+  created_at: string;
+  task_title?: string | null;
+};
+
+export type TaskExecutionEventWithTitle = {
+  id: string;
+  task_id: string;
+  action: string;
+  created_at: string;
+  task_title: string | null;
+};
+
+async function loadScopedExecutionEvents(): Promise<TaskExecutionEventWithTitle[]> {
+  const [events, tasks] = await Promise.all([
+    readApiTable<EventRowLite>('task_execution_events', { offlineFallback: true }),
+    readApiTable<TaskRowLite>('tasks', { offlineFallback: true }),
+  ]);
+  const taskById = new Map(tasks.map(t => [t.id, t]));
+  return events
+    .filter(e => {
+      const t = taskById.get(e.task_id);
+      return t && matchesOverviewScope(t);
+    })
+    .map(e => {
+      const t = taskById.get(e.task_id);
+      const title = t?.title?.trim() || e.task_title?.trim() || null;
+      return { id: e.id, task_id: e.task_id, action: e.action, created_at: e.created_at, task_title: title };
+    });
+}
 
 export async function insertTaskExecutionEvent(
   taskId: string,
@@ -17,27 +60,12 @@ export async function insertTaskExecutionEvent(
   );
 }
 
-export type TaskExecutionEventWithTitle = {
-  id: string;
-  task_id: string;
-  action: string;
-  created_at: string;
-  task_title: string | null;
-};
-
 /** 某一本地日内的全部执行事件（含完成与恢复），按时间正序 */
 export async function getTaskExecutionEventsForLocalDay(ymd: string): Promise<TaskExecutionEventWithTitle[]> {
-  const db = await getDatabase();
-  return db.getAllAsync<TaskExecutionEventWithTitle>(
-    `SELECT e.id, e.task_id, e.action, e.created_at,
-            COALESCE(NULLIF(trim(t.title), ''), NULLIF(trim(e.task_title), '')) AS task_title
-       FROM task_execution_events e
-       INNER JOIN tasks t ON t.id = e.task_id
-      WHERE date(e.created_at) = date(?)
-        AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}
-      ORDER BY datetime(e.created_at) ASC`,
-    [ymd]
-  );
+  const events = await loadScopedExecutionEvents();
+  return events
+    .filter(e => ymdFromDatetime(e.created_at) === ymd)
+    .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
 }
 
 export async function getTaskExecutionEventsByAction(
@@ -52,42 +80,19 @@ export async function getTaskExecutionEventsByActionPage(
   limit: number,
   offset: number
 ): Promise<TaskExecutionEventWithTitle[]> {
-  const db = await getDatabase();
-  return db.getAllAsync<TaskExecutionEventWithTitle>(
-    `SELECT e.id, e.task_id, e.action, e.created_at,
-            COALESCE(NULLIF(trim(t.title), ''), NULLIF(trim(e.task_title), '')) AS task_title
-       FROM task_execution_events e
-       INNER JOIN tasks t ON t.id = e.task_id
-      WHERE e.action = ?
-        AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}
-      ORDER BY datetime(e.created_at) DESC
-      LIMIT ? OFFSET ?`,
-    [action, limit, offset]
-  );
+  const events = await loadScopedExecutionEvents();
+  return events
+    .filter(e => e.action === action)
+    .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at))
+    .slice(offset, offset + limit);
 }
 
 export async function countTaskExecutionEventsInScope(): Promise<number> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ cnt: number | null }>(
-    `SELECT COUNT(1) AS cnt
-       FROM task_execution_events e
-       INNER JOIN tasks t ON t.id = e.task_id
-      WHERE ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}`
-  );
-  return Number(row?.cnt ?? 0);
+  return (await loadScopedExecutionEvents()).length;
 }
 
 export async function countTaskExecutionEventsByAction(action: TaskExecutionEventAction): Promise<number> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ cnt: number | null }>(
-    `SELECT COUNT(1) AS cnt
-       FROM task_execution_events e
-       INNER JOIN tasks t ON t.id = e.task_id
-      WHERE e.action = ?
-        AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}`,
-    [action]
-  );
-  return Number(row?.cnt ?? 0);
+  return (await loadScopedExecutionEvents()).filter(e => e.action === action).length;
 }
 
 export async function getRecentTaskExecutionEvents(limit: number): Promise<TaskExecutionEventWithTitle[]> {
@@ -98,51 +103,35 @@ export async function getRecentTaskExecutionEventsPage(
   limit: number,
   offset: number
 ): Promise<TaskExecutionEventWithTitle[]> {
-  const db = await getDatabase();
-  return db.getAllAsync<TaskExecutionEventWithTitle>(
-    `SELECT e.id, e.task_id, e.action, e.created_at,
-            COALESCE(NULLIF(trim(t.title), ''), NULLIF(trim(e.task_title), '')) AS task_title
-       FROM task_execution_events e
-       INNER JOIN tasks t ON t.id = e.task_id
-      WHERE ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}
-      ORDER BY datetime(e.created_at) DESC
-      LIMIT ? OFFSET ?`,
-    [limit, offset]
-  );
+  const events = await loadScopedExecutionEvents();
+  return events
+    .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at))
+    .slice(offset, offset + limit);
 }
 
 /** 按本地日历日统计「标记完成」次数 */
 export async function getTaskCompletionCountsByDayRange(startYmd: string, endYmd: string): Promise<Map<string, number>> {
-  const db = await getDatabase();
-  const rows = await db.getAllAsync<{ day: string; cnt: number }>(
-    `SELECT date(e.created_at) AS day, COUNT(*) AS cnt
-       FROM task_execution_events e
-       INNER JOIN tasks t ON t.id = e.task_id
-      WHERE e.action = 'completed'
-        AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}
-        AND date(e.created_at) >= date(?)
-        AND date(e.created_at) <= date(?)
-      GROUP BY date(e.created_at)`,
-    [startYmd, endYmd]
-  );
+  const events = await loadScopedExecutionEvents();
   const m = new Map<string, number>();
-  for (const r of rows) {
-    if (r.day) m.set(r.day, Number(r.cnt));
+  for (const e of events) {
+    if (e.action !== 'completed') continue;
+    const day = ymdFromDatetime(e.created_at);
+    if (!day || !isYmdInRange(day, startYmd, endYmd)) continue;
+    m.set(day, (m.get(day) ?? 0) + 1);
   }
   return m;
 }
 
 export async function getFirstCompletedEventDayYmd(): Promise<string | null> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ d: string | null }>(
-    `SELECT date(MIN(e.created_at)) AS d
-       FROM task_execution_events e
-       INNER JOIN tasks t ON t.id = e.task_id
-      WHERE e.action = 'completed'
-        AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}`
+  const events = await loadScopedExecutionEvents().then(rows =>
+    rows.filter(e => e.action === 'completed'),
   );
-  const d = row?.d?.trim();
-  return d || null;
+  if (events.length === 0) return null;
+  const days = events
+    .map(e => ymdFromDatetime(e.created_at))
+    .filter((d): d is string => Boolean(d))
+    .sort();
+  return days[0] ?? null;
 }
 
 export async function getTaskGlobalInsightCounts(): Promise<{
@@ -152,26 +141,18 @@ export async function getTaskGlobalInsightCounts(): Promise<{
   completedEvents: number;
   reopenedEvents: number;
 }> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{
-    totalActive: number | null;
-    open: number | null;
-    donecc: number | null;
-    comp: number | null;
-    reop: number | null;
-  }>(
-    `SELECT
-       (SELECT COUNT(1) FROM tasks WHERE deleted_at IS NULL AND ${TASK_OVERVIEW_SCOPE_WHERE}) AS totalActive,
-       (SELECT COUNT(1) FROM tasks WHERE deleted_at IS NULL AND status NOT IN ('done','cancelled') AND ${TASK_OVERVIEW_SCOPE_WHERE}) AS open,
-       (SELECT COUNT(1) FROM tasks WHERE deleted_at IS NULL AND status IN ('done','cancelled') AND ${TASK_OVERVIEW_SCOPE_WHERE}) AS donecc,
-       (SELECT COUNT(1) FROM task_execution_events e INNER JOIN tasks t ON t.id = e.task_id WHERE e.action = 'completed' AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}) AS comp,
-       (SELECT COUNT(1) FROM task_execution_events e INNER JOIN tasks t ON t.id = e.task_id WHERE e.action = 'reopened' AND ${TASK_OVERVIEW_EVENT_SCOPE_WHERE}) AS reop`
-  );
+  const [tasks, events] = await Promise.all([
+    readApiTable<TaskRowLite>('tasks', { offlineFallback: true }),
+    loadScopedExecutionEvents(),
+  ]);
+  const scoped = tasks.filter(matchesOverviewScope);
+  const open = scoped.filter(t => t.status !== 'done' && t.status !== 'cancelled').length;
+  const doneOrCancelled = scoped.filter(t => t.status === 'done' || t.status === 'cancelled').length;
   return {
-    totalActive: Number(row?.totalActive ?? 0),
-    open: Number(row?.open ?? 0),
-    doneOrCancelled: Number(row?.donecc ?? 0),
-    completedEvents: Number(row?.comp ?? 0),
-    reopenedEvents: Number(row?.reop ?? 0),
+    totalActive: scoped.length,
+    open,
+    doneOrCancelled,
+    completedEvents: events.filter(e => e.action === 'completed').length,
+    reopenedEvents: events.filter(e => e.action === 'reopened').length,
   };
 }

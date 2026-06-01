@@ -1,15 +1,21 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { createStandaloneTodoFromMemo } from '@/lib/memo-to-task';
 import {
+  MEMO_DIMENSION_MAX,
+  createMemoDimension,
   deleteMemo,
+  deleteMemoDimension,
+  listMemoDimensions,
   listMemos,
   memoContextForAiReview,
   memoListPreviewBody,
   memoListPreviewTitle,
   setMemoAiReview,
+  updateMemoDimension,
+  type MemoDimension,
   type MemoItem,
 } from '@/lib/memos';
-import { createStandaloneTodoFromMemo } from '@/lib/memo-to-task';
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -23,10 +29,15 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+function sortByOrderThenTime<T extends { sort_order: number; updated_at: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => a.sort_order - b.sort_order || b.updated_at.localeCompare(a.updated_at));
+}
 
 export default function MemoListScreen() {
   const router = useRouter();
@@ -44,12 +55,21 @@ export default function MemoListScreen() {
   const tertiary = isDark ? '#fbbf24' : '#825100';
   const borderSoft = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.25)';
   const cardBg = isDark ? '#111827' : '#ffffff';
+  const headerBg = isDark ? 'rgba(17,24,39,0.98)' : 'rgba(255,255,255,0.98)';
+  const inputBg = isDark ? 'rgba(15,23,42,0.5)' : '#ffffff';
 
   const zhipuReady = isActiveAiLlmConfigured();
 
+  const [dimensions, setDimensions] = useState<MemoDimension[]>([]);
   const [items, setItems] = useState<MemoItem[]>([]);
+  const [selectedDimensionId, setSelectedDimensionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [dimensionModalVisible, setDimensionModalVisible] = useState(false);
+  const [editingDimension, setEditingDimension] = useState<MemoDimension | null>(null);
+  const [dimensionName, setDimensionName] = useState('');
+  const [dimensionSaving, setDimensionSaving] = useState(false);
 
   const [aiModalId, setAiModalId] = useState<string | null>(null);
   const [aiModalLoading, setAiModalLoading] = useState(false);
@@ -60,68 +80,122 @@ export default function MemoListScreen() {
   const reload = useCallback(async () => {
     setError(null);
     try {
-      const rows = await listMemos();
-      setItems(rows);
+      const dims = sortByOrderThenTime(await listMemoDimensions());
+      setDimensions(dims);
+      const activeId = selectedDimensionId && dims.some(d => d.id === selectedDimensionId) ? selectedDimensionId : dims[0]?.id ?? null;
+      if (activeId !== selectedDimensionId) setSelectedDimensionId(activeId);
+      setItems(activeId ? await listMemos(activeId) : []);
     } catch {
       setError('加载失败，请重试');
+      setDimensions([]);
       setItems([]);
+      setSelectedDimensionId(null);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedDimensionId]);
 
-  useFocusEffect(
-    useCallback(() => {
-      void reload();
-    }, [reload]),
-  );
+  useFocusEffect(useCallback(() => {
+    void reload();
+  }, [reload]));
 
+  const selectedDimension = useMemo(() => dimensions.find(d => d.id === selectedDimensionId) ?? null, [dimensions, selectedDimensionId]);
   const aiModalItem = useMemo(() => (aiModalId ? items.find(i => i.id === aiModalId) ?? null : null), [aiModalId, items]);
 
-  const runAiForMemo = useCallback(
-    async (row: MemoItem): Promise<{ ok: true } | { ok: false; error: string }> => {
-      const key = getActiveAiLlmApiKey().trim();
-      if (!key) return { ok: false, error: '未配置智谱 API 密钥' };
-      const ctx = memoContextForAiReview(row);
-      if (!ctx) return { ok: false, error: '该备忘标题与正文均为空' };
-      const r = await analyzeMemoReviewFromText({ apiKey: key, memoContextText: ctx });
-      if (!r.ok) return { ok: false, error: r.error };
-      const saved = await setMemoAiReview(row.id, { evaluation: r.evaluation, suggestions: r.suggestions });
-      if (!saved) return { ok: false, error: '保存失败' };
-      setItems(prev =>
-        prev.map(m =>
-          m.id === row.id
-            ? {
-                ...m,
-                ai_evaluation: r.evaluation,
-                ai_suggestions: r.suggestions,
-                ai_review_at: saved.ai_review_at,
-              }
-            : m,
-        ),
-      );
-      return { ok: true };
-    },
-    [],
-  );
+  const openCreateDimension = useCallback(() => {
+    setEditingDimension(null);
+    setDimensionName('');
+    setDimensionModalVisible(true);
+  }, []);
 
-  const openAiModal = useCallback(
-    (row: MemoItem) => {
-      if (!zhipuReady) {
-        Alert.alert(
-          '无法调用 AI',
-          '请配置智谱 API 密钥（EXPO_PUBLIC_ZHIPU_API_KEY），与项目内其他智谱能力一致。',
-        );
-        return;
+  const openEditDimension = useCallback((dimension: MemoDimension) => {
+    setEditingDimension(dimension);
+    setDimensionName(dimension.name);
+    setDimensionModalVisible(true);
+  }, []);
+
+  const closeDimensionModal = useCallback(() => {
+    if (dimensionSaving) return;
+    setDimensionModalVisible(false);
+    setEditingDimension(null);
+    setDimensionName('');
+  }, [dimensionSaving]);
+
+  const saveDimension = useCallback(async () => {
+    const name = dimensionName.trim();
+    if (!name) {
+      Alert.alert('无法保存', '请填写维度名称');
+      return;
+    }
+    setDimensionSaving(true);
+    try {
+      if (editingDimension) {
+        const updated = await updateMemoDimension(editingDimension.id, { name });
+        if (!updated) {
+          Alert.alert('保存失败', '该维度可能已删除');
+          return;
+        }
+        setDimensions(prev => prev.map(d => (d.id === updated.id ? updated : d)));
+      } else {
+        const created = await createMemoDimension({ name });
+        setDimensions(prev => sortByOrderThenTime([...prev, created]));
+        setSelectedDimensionId(created.id);
+        setItems([]);
       }
-      if (!memoContextForAiReview(row)) {
-        Alert.alert('内容为空', '请先为该备忘填写标题或正文。');
-        return;
-      }
-      setAiModalId(row.id);
-    },
-    [zhipuReady],
-  );
+      closeDimensionModal();
+    } catch (e) {
+      Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后重试');
+    } finally {
+      setDimensionSaving(false);
+    }
+  }, [closeDimensionModal, dimensionName, editingDimension]);
+
+  const requestDeleteDimension = useCallback((dimension: MemoDimension) => {
+    Alert.alert('删除维度', `确定删除维度「${dimension.name}」吗？该维度下的所有备忘也会一起删除。`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            try {
+              await deleteMemoDimension(dimension.id);
+              setDimensions(prev => prev.filter(d => d.id !== dimension.id));
+              setItems(prev => prev.filter(m => m.dimension_id !== dimension.id));
+              setSelectedDimensionId(prev => (prev === dimension.id ? null : prev));
+            } catch {
+              Alert.alert('删除失败', '请稍后重试');
+            }
+          })();
+        },
+      },
+    ]);
+  }, []);
+
+  const runAiForMemo = useCallback(async (row: MemoItem): Promise<{ ok: true } | { ok: false; error: string }> => {
+    const key = getActiveAiLlmApiKey().trim();
+    if (!key) return { ok: false, error: '未配置智谱 API 密钥' };
+    const ctx = memoContextForAiReview(row);
+    if (!ctx) return { ok: false, error: '该备忘标题与正文均为空' };
+    const r = await analyzeMemoReviewFromText({ apiKey: key, memoContextText: ctx });
+    if (!r.ok) return { ok: false, error: r.error };
+    const saved = await setMemoAiReview(row.id, { evaluation: r.evaluation, suggestions: r.suggestions });
+    if (!saved) return { ok: false, error: '保存失败' };
+    setItems(prev => prev.map(m => (m.id === row.id ? { ...m, ai_evaluation: r.evaluation, ai_suggestions: r.suggestions, ai_review_at: saved.ai_review_at } : m)));
+    return { ok: true };
+  }, []);
+
+  const openAiModal = useCallback((row: MemoItem) => {
+    if (!zhipuReady) {
+      Alert.alert('无法调用 AI', '请配置智谱 API 密钥（EXPO_PUBLIC_ZHIPU_API_KEY），与项目内其他智谱能力一致。');
+      return;
+    }
+    if (!memoContextForAiReview(row)) {
+      Alert.alert('内容为空', '请先为该备忘填写标题或正文。');
+      return;
+    }
+    setAiModalId(row.id);
+  }, [zhipuReady]);
 
   const onModalRegenerate = useCallback(async () => {
     if (!aiModalItem) return;
@@ -134,104 +208,100 @@ export default function MemoListScreen() {
     }
   }, [aiModalItem, runAiForMemo]);
 
-  const performConvertToTodo = useCallback(
-    async (row: MemoItem) => {
-      setConvertingMemoId(row.id);
-      try {
-        const { taskId, title } = await createStandaloneTodoFromMemo(row);
-        setItems(prev => prev.filter(m => m.id !== row.id));
-        delete swipeableRefs.current[row.id];
-        setAiModalId(prevId => (prevId === row.id ? null : prevId));
-        Alert.alert('已转为待办', `「${title}」已加入待办列表，原备忘已删除。`, [
-          { text: '知道了', style: 'cancel' },
-          {
-            text: '查看待办',
-            onPress: () => router.push({ pathname: '/task/[id]', params: { id: taskId } }),
-          },
-        ]);
-      } catch {
-        Alert.alert('转换失败', '请稍后重试');
-      } finally {
-        setConvertingMemoId(prev => (prev === row.id ? null : prev));
-      }
-    },
-    [router],
-  );
+  const performConvertToTodo = useCallback(async (row: MemoItem) => {
+    setConvertingMemoId(row.id);
+    try {
+      const { taskId, title } = await createStandaloneTodoFromMemo(row);
+      setItems(prev => prev.filter(m => m.id !== row.id));
+      delete swipeableRefs.current[row.id];
+      setAiModalId(prevId => (prevId === row.id ? null : prevId));
+      Alert.alert('已转为待办', `「${title}」已加入待办列表，原备忘已删除。`, [
+        { text: '知道了', style: 'cancel' },
+        { text: '查看待办', onPress: () => router.push({ pathname: '/task/[id]', params: { id: taskId } }) },
+      ]);
+    } catch {
+      Alert.alert('转换失败', '请稍后重试');
+    } finally {
+      setConvertingMemoId(prev => (prev === row.id ? null : prev));
+    }
+  }, [router]);
 
-  const onConvertToTodo = useCallback(
-    (row: MemoItem) => {
-      if (convertingMemoId === row.id) return;
-      void performConvertToTodo(row);
-    },
-    [convertingMemoId, performConvertToTodo],
-  );
-
-  const onDelete = useCallback((row: MemoItem) => {
+  const onDeleteMemo = useCallback((row: MemoItem) => {
     const title = memoListPreviewTitle(row);
     Alert.alert('删除备忘', `确定删除「${title}」？`, [
       { text: '取消', style: 'cancel' },
-      {
-        text: '删除',
-        style: 'destructive',
-        onPress: () => {
-          void (async () => {
-            try {
-              await deleteMemo(row.id);
-              setItems(prev => prev.filter(i => i.id !== row.id));
-              setAiModalId(prevId => (prevId === row.id ? null : prevId));
-            } catch {
-              Alert.alert('删除失败', '请稍后重试');
-            }
-          })();
-        },
-      },
+      { text: '删除', style: 'destructive', onPress: () => { void (async () => { try { await deleteMemo(row.id); setItems(prev => prev.filter(i => i.id !== row.id)); setAiModalId(prevId => (prevId === row.id ? null : prevId)); } catch { Alert.alert('删除失败', '请稍后重试'); } })(); } },
     ]);
   }, []);
 
-  const listHeader = useMemo(() => {
-    if (items.length === 0) return null;
-    return (
-      <View style={styles.listHintRow}>
-        <Text style={[styles.swipeListHint, { color: outline }]}>左滑可转待办或删除</Text>
-      </View>
-    );
-  }, [items.length, outline]);
+  const filteredItems = useMemo(() => {
+    if (!selectedDimensionId) return [];
+    return items.filter(item => item.dimension_id === selectedDimensionId);
+  }, [items, selectedDimensionId]);
 
-  const renderItem = useCallback(
-    ({ item }: { item: MemoItem }) => {
-      const isConverting = convertingMemoId === item.id;
-      return (
+  const openNewMemo = useCallback(() => {
+    if (!selectedDimensionId) {
+      Alert.alert('请先选择维度', '请先选择一个维度，再在该维度下新建备忘。');
+      return;
+    }
+    router.push({ pathname: '/memo-edit/[id]', params: { id: 'new', dimensionId: selectedDimensionId } });
+  }, [router, selectedDimensionId]);
+
+  const renderHeader = useMemo(() => (
+    <View style={styles.pageHeaderBlock}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dimensionPillsRow}>
+        {dimensions.map(d => {
+          const active = d.id === selectedDimensionId;
+          return (
+            <Pressable
+              key={d.id}
+              onPress={() => setSelectedDimensionId(d.id)}
+              style={({ pressed }) => [
+                styles.dimensionPill,
+                {
+                  borderColor: active ? primary : borderSoft,
+                  backgroundColor: active ? (isDark ? 'rgba(96,165,250,0.14)' : 'rgba(0,88,190,0.08)') : cardBg,
+                  opacity: pressed ? 0.9 : 1,
+                },
+              ]}
+            >
+              <MaterialIcons name="folder-special" size={16} color={active ? primary : outline} />
+              <Text style={[styles.dimensionPillText, { color: active ? primary : text }]} numberOfLines={1}>
+                {d.name}
+              </Text>
+            </Pressable>
+          );
+        })}
+        <Pressable
+          onPress={openCreateDimension}
+          style={({ pressed }) => [styles.dimensionPill, { borderColor: borderSoft, backgroundColor: cardBg, opacity: pressed ? 0.9 : 1 }]}
+        >
+          <MaterialIcons name="add" size={16} color={primary} />
+          <Text style={[styles.dimensionPillText, { color: primary }]}>新建维度</Text>
+        </Pressable>
+      </ScrollView>
+      <Text style={[styles.pageHint, { color: outline }]}>顶部可筛选维度；右上角在当前维度下新建备忘，或在未选中时新建维度。</Text>
+    </View>
+  ), [borderSoft, cardBg, dimensions, isDark, openCreateDimension, outline, primary, selectedDimensionId, text]);
+
+  const renderItem = useCallback(({ item }: { item: MemoItem }) => {
+    const isConverting = convertingMemoId === item.id;
+    return (
       <Swipeable
-        ref={r => {
-          swipeableRefs.current[item.id] = r;
-        }}
+        ref={r => { swipeableRefs.current[item.id] = r; }}
         overshootRight={false}
         rightThreshold={48}
         renderRightActions={() => (
           <View style={styles.swipeActionsRow}>
             <Pressable
-              onPress={() => onConvertToTodo(item)}
+              onPress={() => performConvertToTodo(item)}
               disabled={isConverting}
-              style={({ pressed }) => [
-                styles.swipeTodoAction,
-                { backgroundColor: primary, opacity: isConverting ? 0.55 : pressed ? 0.92 : 1 },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel={`将 ${memoListPreviewTitle(item)} 转为待办`}
+              style={({ pressed }) => [styles.swipeTodoAction, { backgroundColor: primary, opacity: isConverting ? 0.55 : pressed ? 0.92 : 1 }]}
             >
-              {isConverting ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <MaterialIcons name="playlist-add-check" size={22} color="#fff" />
-              )}
+              {isConverting ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcons name="playlist-add-check" size={22} color="#fff" />}
               <Text style={styles.swipeTodoText}>转待办</Text>
             </Pressable>
-            <Pressable
-              onPress={() => onDelete(item)}
-              style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}
-              accessibilityRole="button"
-              accessibilityLabel={`删除 ${memoListPreviewTitle(item)}`}
-            >
+            <Pressable onPress={() => onDeleteMemo(item)} style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}>
               <MaterialIcons name="delete-outline" size={24} color="#fff" />
               <Text style={styles.swipeDeleteText}>删除</Text>
             </Pressable>
@@ -244,54 +314,22 @@ export default function MemoListScreen() {
             onPress={() => router.push({ pathname: '/memo-view/[id]', params: { id: item.id } })}
             style={({ pressed }) => [styles.rowBody, { opacity: pressed ? 0.92 : 1 }]}
           >
-            <Text style={[styles.rowTitle, { color: text }]} numberOfLines={2}>
-              {memoListPreviewTitle(item)}
-            </Text>
-            <Text style={[styles.rowSub, { color: outline }]} numberOfLines={2}>
-              {memoListPreviewBody(item)}
-            </Text>
-            {item.ai_evaluation ? (
-              <Text style={[styles.rowAiPreview, { color: secondary }]} numberOfLines={2}>
-                AI：{item.ai_evaluation}
-              </Text>
-            ) : null}
-            <Text style={[styles.rowTime, { color: outline }]}>
-              更新于 {new Date(item.updated_at).toLocaleString('zh-CN')}
-              {item.ai_review_at
-                ? ` · AI ${new Date(item.ai_review_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
-                : ''}
-            </Text>
+            <Text style={[styles.rowTitle, { color: text }]} numberOfLines={2}>{memoListPreviewTitle(item)}</Text>
+            <Text style={[styles.rowSub, { color: outline }]} numberOfLines={2}>{memoListPreviewBody(item)}</Text>
+            {item.ai_evaluation ? <Text style={[styles.rowAiPreview, { color: secondary }]} numberOfLines={2}>AI：{item.ai_evaluation}</Text> : null}
+            <Text style={[styles.rowTime, { color: outline }]}>更新于 {new Date(item.updated_at).toLocaleString('zh-CN')}</Text>
           </Pressable>
           <View style={styles.rowActions}>
-            <Pressable
-              hitSlop={8}
-              onPress={() => openAiModal(item)}
-              style={({ pressed }) => [styles.rowIconBtn, { opacity: pressed ? 0.65 : 1 }]}
-            >
+            <Pressable hitSlop={8} onPress={() => openAiModal(item)} style={({ pressed }) => [styles.rowIconBtn, { opacity: pressed ? 0.65 : 1 }]}>
               <MaterialIcons name="auto-awesome" size={22} color={primary} />
             </Pressable>
           </View>
         </View>
       </Swipeable>
-      );
-    },
-    [
-      borderSoft,
-      cardBg,
-      convertingMemoId,
-      onConvertToTodo,
-      onDelete,
-      openAiModal,
-      outline,
-      primary,
-      router,
-      secondary,
-      tertiary,
-      text,
-    ],
-  );
+    );
+  }, [borderSoft, cardBg, convertingMemoId, onDeleteMemo, openAiModal, performConvertToTodo, outline, primary, router, secondary, tertiary, text]);
 
-  const headerBg = isDark ? 'rgba(17,24,39,0.98)' : 'rgba(255,255,255,0.98)';
+  const currentDimensionLabel = selectedDimension?.name ?? '备忘录';
 
   return (
     <View style={[styles.container, { backgroundColor: bg }]}>
@@ -309,12 +347,9 @@ export default function MemoListScreen() {
           <Pressable style={styles.roundIconBtn} onPress={() => router.back()}>
             <MaterialIcons name="arrow-back-ios-new" size={20} color={primary} />
           </Pressable>
-          <Text style={[styles.topBarTitle, { color: text }]}>备忘录</Text>
-          <Pressable
-            style={styles.roundIconBtn}
-            onPress={() => router.push({ pathname: '/memo-edit/[id]', params: { id: 'new' } })}
-          >
-            <MaterialIcons name="add" size={26} color={primary} />
+          <Text style={[styles.topBarTitle, { color: text }]} numberOfLines={1}>{currentDimensionLabel}</Text>
+          <Pressable style={styles.roundIconBtn} onPress={selectedDimensionId ? openNewMemo : openCreateDimension}>
+            <MaterialIcons name={selectedDimensionId ? 'add' : 'folder-plus'} size={26} color={primary} />
           </Pressable>
         </View>
       </View>
@@ -331,41 +366,62 @@ export default function MemoListScreen() {
           <ActivityIndicator size="large" color={primary} />
         </View>
       ) : (
-        <FlatList
-          style={styles.listFlex}
-          data={items}
-          keyExtractor={i => i.id}
-          renderItem={renderItem}
-          ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
-          ListHeaderComponent={listHeader}
-          contentContainerStyle={[
-            styles.listContent,
-            { paddingBottom: Math.max(insets.bottom, 16) + 24 },
-            items.length === 0 && styles.listContentEmpty,
-          ]}
-          ListEmptyComponent={
-            <View style={[styles.emptyCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
-              <MaterialIcons name="note-add" size={44} color={outline} />
-              <Text style={[styles.emptyTitle, { color: text }]}>暂无备忘</Text>
-              <Text style={[styles.emptySub, { color: outline }]}>点击右上角「+」添加第一条备忘</Text>
-              <Pressable
-                onPress={() => router.push({ pathname: '/memo-edit/[id]', params: { id: 'new' } })}
-                style={({ pressed }) => [styles.emptyCta, { opacity: pressed ? 0.88 : 1 }]}
-              >
-                <Text style={{ color: primary, fontSize: 15, fontWeight: '800' }}>添加备忘</Text>
-              </Pressable>
-            </View>
-          }
-          showsVerticalScrollIndicator={false}
-        />
+        <>
+          <View style={[styles.filterBarWrap, { backgroundColor: headerBg, borderBottomColor: borderSoft }]}>
+            {renderHeader}
+          </View>
+          <FlatList
+            style={styles.listFlex}
+            data={filteredItems}
+            keyExtractor={i => i.id}
+            renderItem={renderItem}
+            ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+            contentContainerStyle={[styles.listContent, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]}
+            ListEmptyComponent={
+              <View style={[styles.emptyCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
+                <MaterialIcons name={selectedDimensionId ? 'note-add' : 'create-new-folder'} size={44} color={outline} />
+                <Text style={[styles.emptyTitle, { color: text }]}>{selectedDimensionId ? '该维度暂无备忘' : '请先新建维度'}</Text>
+                <Text style={[styles.emptySub, { color: outline }]}>{selectedDimensionId ? '点击右上角「+」在当前维度下新建备忘' : '备忘与维度在同一页面管理。先建立维度，再在维度下添加备忘。'}</Text>
+                <Pressable
+                  onPress={selectedDimensionId ? openNewMemo : openCreateDimension}
+                  style={({ pressed }) => [styles.primaryCta, { backgroundColor: primary, opacity: pressed ? 0.88 : 1 }]}
+                >
+                  <Text style={styles.primaryCtaText}>{selectedDimensionId ? '添加备忘' : '新建维度'}</Text>
+                </Pressable>
+              </View>
+            }
+            showsVerticalScrollIndicator={false}
+          />
+        </>
       )}
 
-      <Modal
-        visible={aiModalId != null}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setAiModalId(null)}
-      >
+      <Modal visible={dimensionModalVisible} animationType="fade" transparent onRequestClose={closeDimensionModal}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.dimensionModalCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
+            <Text style={[styles.dimensionModalTitle, { color: text }]}>{editingDimension ? '编辑维度' : '新建维度'}</Text>
+            <Text style={[styles.label, { color: outline }]}>维度名称（最多 {MEMO_DIMENSION_MAX} 字）</Text>
+            <TextInput
+              value={dimensionName}
+              onChangeText={x => setDimensionName(x.length > MEMO_DIMENSION_MAX ? x.slice(0, MEMO_DIMENSION_MAX) : x)}
+              placeholder="例如：工作 / 学习 / 灵感"
+              placeholderTextColor={outline}
+              style={[styles.dimensionInput, { color: text, borderColor: borderSoft, backgroundColor: inputBg }]}
+              editable={!dimensionSaving}
+              autoFocus
+            />
+            <View style={styles.dimensionModalActions}>
+              <Pressable onPress={closeDimensionModal} disabled={dimensionSaving} style={styles.modalCancelBtn}>
+                <Text style={[styles.modalCancelText, { color: outline }]}>取消</Text>
+              </Pressable>
+              <Pressable onPress={() => void saveDimension()} disabled={dimensionSaving} style={[styles.modalSaveBtn, { backgroundColor: primary, opacity: dimensionSaving ? 0.55 : 1 }]}>
+                {dimensionSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSaveText}>保存</Text>}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={aiModalId != null} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setAiModalId(null)}>
         <SafeAreaView style={[styles.modalRoot, { backgroundColor: bg }]} edges={['left', 'right', 'bottom', 'top']}>
           <View style={[styles.modalTopBar, { borderBottomColor: borderSoft, backgroundColor: headerBg }]}>
             <Pressable onPress={() => setAiModalId(null)} style={styles.roundIconBtn}>
@@ -374,50 +430,20 @@ export default function MemoListScreen() {
             <Text style={[styles.modalTitle, { color: text }]}>AI 评价与建议</Text>
             <View style={{ width: 40 }} />
           </View>
-
           {aiModalItem ? (
-            <ScrollView
-              contentContainerStyle={[styles.modalScroll, { paddingBottom: Math.max(insets.bottom, 20) + 24 }]}
-              keyboardShouldPersistTaps="handled"
-            >
+            <ScrollView contentContainerStyle={[styles.modalScroll, { paddingBottom: Math.max(insets.bottom, 20) + 24 }]} keyboardShouldPersistTaps="handled">
               <Text style={[styles.modalKicker, { color: outline }]}>备忘内容</Text>
               <View style={[styles.modalMemoBox, { borderColor: borderSoft, backgroundColor: cardBg }]}>
-                <Text style={[styles.modalMemoText, { color: text }]}>
-                  {memoContextForAiReview(aiModalItem) || '（空）'}
-                </Text>
+                <Text style={[styles.modalMemoText, { color: text }]}>{memoContextForAiReview(aiModalItem) || '（空）'}</Text>
               </View>
-
               <Text style={[styles.modalKicker, { color: outline, marginTop: 18 }]}>评价</Text>
-              <Text style={[styles.modalBlock, { color: text }]}>
-                {aiModalItem.ai_evaluation?.trim() || '尚未生成，点击下方按钮。'}
-              </Text>
-
+              <Text style={[styles.modalBlock, { color: text }]}>{aiModalItem.ai_evaluation?.trim() || '尚未生成，点击下方按钮。'}</Text>
               <Text style={[styles.modalKicker, { color: outline, marginTop: 18 }]}>建议</Text>
-              <Text style={[styles.modalBlock, { color: text }]}>
-                {aiModalItem.ai_suggestions?.trim() || '尚未生成，点击下方按钮。'}
-              </Text>
-
-              <Pressable
-                onPress={() => void onModalRegenerate()}
-                disabled={aiModalLoading}
-                style={({ pressed }) => [
-                  styles.modalRegenBtn,
-                  { backgroundColor: secondary, opacity: aiModalLoading ? 0.55 : pressed ? 0.88 : 1 },
-                ]}
-              >
-                {aiModalLoading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={styles.modalRegenBtnText}>
-                    {aiModalItem.ai_evaluation?.trim() || aiModalItem.ai_suggestions?.trim()
-                      ? '重新生成'
-                      : '生成评价与建议'}
-                  </Text>
-                )}
+              <Text style={[styles.modalBlock, { color: text }]}>{aiModalItem.ai_suggestions?.trim() || '尚未生成，点击下方按钮。'}</Text>
+              <Pressable onPress={() => void onModalRegenerate()} disabled={aiModalLoading} style={({ pressed }) => [styles.modalRegenBtn, { backgroundColor: secondary, opacity: aiModalLoading ? 0.55 : pressed ? 0.88 : 1 }]}>
+                {aiModalLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalRegenBtnText}>{aiModalItem.ai_evaluation?.trim() || aiModalItem.ai_suggestions?.trim() ? '重新生成' : '生成评价与建议'}</Text>}
               </Pressable>
-              <Text style={[styles.modalHint, { color: outline }]}>
-                内容由智谱模型根据上文备忘生成，仅供自我梳理参考，不构成专业建议。
-              </Text>
+              <Text style={[styles.modalHint, { color: outline }]}>内容由智谱模型根据上文备忘生成，仅供自我梳理参考，不构成专业建议。</Text>
             </ScrollView>
           ) : (
             <View style={styles.loadingWrap}>
@@ -446,6 +472,14 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   listFlex: { flex: 1 },
+  filterBarWrap: {
+    borderBottomWidth: 1,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 10,
+    zIndex: 5,
+    elevation: 4,
+  },
   roundIconBtn: {
     width: 40,
     height: 40,
@@ -469,10 +503,21 @@ const styles = StyleSheet.create({
   errorText: { fontSize: 14, fontWeight: '600' },
   errorRetry: { fontSize: 14, fontWeight: '800' },
   loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 48 },
-  listContent: { paddingHorizontal: 16, paddingTop: 16 },
-  listContentEmpty: { flexGrow: 1, justifyContent: 'center' },
-  listHintRow: { marginBottom: 10, paddingHorizontal: 2 },
-  swipeListHint: { fontSize: 11, fontWeight: '600', opacity: 0.9 },
+  listContent: { paddingHorizontal: 16, paddingTop: 16, flexGrow: 1 },
+  pageHeaderBlock: { gap: 10 },
+  dimensionPillsRow: { gap: 8, paddingRight: 8 },
+  dimensionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    maxWidth: 180,
+  },
+  dimensionPillText: { fontSize: 12, fontWeight: '800' },
+  pageHint: { fontSize: 12, fontWeight: '600', lineHeight: 18 },
   swipeActionsRow: {
     flexDirection: 'row',
     alignItems: 'stretch',
@@ -534,6 +579,37 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 18, fontWeight: '900', marginTop: 8 },
   emptySub: { fontSize: 14, fontWeight: '600', textAlign: 'center', lineHeight: 20 },
   emptyCta: { marginTop: 14 },
+  primaryCta: { marginTop: 14, borderRadius: 14, paddingHorizontal: 18, paddingVertical: 12 },
+  primaryCtaText: { color: '#fff', fontSize: 15, fontWeight: '900' },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.42)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 22,
+  },
+  dimensionModalCard: { width: '100%', maxWidth: 420, borderWidth: 1, borderRadius: 20, padding: 18 },
+  dimensionModalTitle: { fontSize: 18, fontWeight: '900', marginBottom: 16 },
+  label: { fontSize: 12, fontWeight: '800', letterSpacing: 0.4, marginBottom: 8 },
+  dimensionInput: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  dimensionModalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 18 },
+  modalCancelBtn: { paddingHorizontal: 14, paddingVertical: 11 },
+  modalCancelText: { fontSize: 15, fontWeight: '800' },
+  modalSaveBtn: {
+    minWidth: 86,
+    borderRadius: 13,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    alignItems: 'center',
+  },
+  modalSaveText: { color: '#fff', fontSize: 15, fontWeight: '900' },
   modalRoot: { flex: 1 },
   modalTopBar: {
     flexDirection: 'row',
@@ -546,19 +622,10 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 17, fontWeight: '800' },
   modalScroll: { paddingHorizontal: 18, paddingTop: 16 },
   modalKicker: { fontSize: 11, fontWeight: '900', letterSpacing: 1.2, marginBottom: 8 },
-  modalMemoBox: {
-    borderWidth: 1,
-    borderRadius: 14,
-    padding: 12,
-  },
+  modalMemoBox: { borderWidth: 1, borderRadius: 14, padding: 12 },
   modalMemoText: { fontSize: 14, fontWeight: '600', lineHeight: 21 },
   modalBlock: { fontSize: 15, fontWeight: '600', lineHeight: 24 },
-  modalRegenBtn: {
-    marginTop: 22,
-    borderRadius: 14,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
+  modalRegenBtn: { marginTop: 22, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   modalRegenBtnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
   modalHint: { marginTop: 14, fontSize: 12, fontWeight: '600', lineHeight: 18 },
 });

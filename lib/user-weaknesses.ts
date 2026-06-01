@@ -1,4 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import type * as SQLite from 'expo-sqlite';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '@/lib/database';
@@ -187,23 +189,12 @@ export async function replaceUserWeaknessesFromCloudRestore(items: UserWeaknessI
 }
 
 export async function listUserWeaknesses(): Promise<UserWeaknessItem[]> {
-  const db = await getDatabase();
-  await migrateUserWeaknessesStorageToSqliteIfNeeded(db);
-  const rows = await db.getAllAsync<WeaknessRow>(
-    `SELECT id, title, detail, ai_evaluation, ai_suggestions, ai_review_at, created_at, updated_at
-     FROM user_weaknesses WHERE deleted_at IS NULL ORDER BY updated_at DESC`,
-  );
-  return rows.map(rowToWeakness);
+  const rows = await readApiTable<WeaknessRow>('user_weaknesses', { offlineFallback: true });
+  return sortByUpdatedDesc(rows).map(rowToWeakness);
 }
 
 export async function getUserWeakness(id: string): Promise<UserWeaknessItem | null> {
-  const db = await getDatabase();
-  await migrateUserWeaknessesStorageToSqliteIfNeeded(db);
-  const row = await db.getFirstAsync<WeaknessRow>(
-    `SELECT id, title, detail, ai_evaluation, ai_suggestions, ai_review_at, created_at, updated_at
-     FROM user_weaknesses WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
-    [id],
-  );
+  const row = await readApiRecord<WeaknessRow>('user_weaknesses', id, { offlineFallback: true });
   return row ? rowToWeakness(row) : null;
 }
 

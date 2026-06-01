@@ -1,4 +1,5 @@
-import { getDatabase } from '@/lib/database.native';
+import { readApiTable } from '@/lib/api-read';
+import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import { getProjectById, updateProject } from './project';
 import type { ProjectRow, ProjectStatus } from './project.types';
 import type { TaskRow, TaskStatus } from '../tasks/task.types';
@@ -65,22 +66,26 @@ export function parseProjectAiReview(extraData: string | null): ProjectAiReview 
 }
 
 export async function countProjectTasks(projectId: string): Promise<number> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ cnt: number }>(
-    `SELECT COUNT(1) AS cnt FROM tasks WHERE deleted_at IS NULL AND project_id = ?`,
-    [projectId],
-  );
-  return Number(row?.cnt ?? 0);
+  const tasks = await readApiTable<{ project_id?: string | null }>('tasks', { offlineFallback: true });
+  return tasks.filter(t => t.project_id === projectId).length;
 }
 
 export async function getAllTasksFlatByProjectId(projectId: string): Promise<TaskRow[]> {
-  const db = await getDatabase();
-  return db.getAllAsync<TaskRow>(
-    `SELECT * FROM tasks
-     WHERE deleted_at IS NULL AND project_id = ?
-     ORDER BY sort_order ASC, priority DESC, due_date ASC, created_at ASC`,
-    [projectId],
-  );
+  const tasks = await readApiTable<TaskRow>('tasks', { offlineFallback: true });
+  return tasks
+    .filter(t => t.project_id === projectId)
+    .sort((a, b) => {
+      const sa = a.sort_order ?? 0;
+      const sb = b.sort_order ?? 0;
+      if (sa !== sb) return sa - sb;
+      const pa = a.priority ?? 0;
+      const pb = b.priority ?? 0;
+      if (pa !== pb) return pb - pa;
+      const da = a.due_date ? Date.parse(a.due_date) : Number.POSITIVE_INFINITY;
+      const db = b.due_date ? Date.parse(b.due_date) : Number.POSITIVE_INFINITY;
+      if (da !== db) return da - db;
+      return compareDatetimeDesc(a.created_at, b.created_at) * -1;
+    });
 }
 
 function parseTaskExtraReminderRepeat(extraData: string | null): { reminder: string; repeat: string } {

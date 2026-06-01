@@ -1,3 +1,5 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import { CASH_FLOW_EMPTY_STATE } from './cash-flow.defaults';
@@ -83,26 +85,23 @@ export async function ensureCashFlowProfileRow() {
 export async function loadCashFlowState(): Promise<CashFlowState> {
   await ensureCashFlowProfileRow();
 
-  const db = await getDatabase();
-  const profile = await db.getFirstAsync<CashFlowProfileRow>(
-    `SELECT * FROM cash_flow_profile WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
-    [CASH_FLOW_PROFILE_ID]
-  );
+  const [profiles, incomeRows, holdingRows, expenseLineRows] = await Promise.all([
+    readApiTable<CashFlowProfileRow>('cash_flow_profile', { offlineFallback: true }),
+    readApiTable<CashFlowIncomeRow>('cash_flow_incomes', { offlineFallback: true }),
+    readApiTable<CashFlowHoldingRow>('cash_flow_holdings', { offlineFallback: true }),
+    readApiTable<CashFlowExpenseLineRow>('cash_flow_expense_lines', { offlineFallback: true }),
+  ]);
+
+  const profile = profiles.find(p => p.id === CASH_FLOW_PROFILE_ID) ?? null;
   if (!profile) {
     return CASH_FLOW_EMPTY_STATE;
   }
 
-  const incomeRows = await db.getAllAsync<CashFlowIncomeRow>(
-    `SELECT * FROM cash_flow_incomes WHERE deleted_at IS NULL ORDER BY sort_order ASC, datetime(created_at) ASC`
-  );
-  const holdingRows = await db.getAllAsync<CashFlowHoldingRow>(
-    `SELECT * FROM cash_flow_holdings WHERE deleted_at IS NULL ORDER BY sort_order ASC, datetime(created_at) ASC`
-  );
-  const expenseLineRows = await db.getAllAsync<CashFlowExpenseLineRow>(
-    `SELECT * FROM cash_flow_expense_lines WHERE deleted_at IS NULL ORDER BY sort_order ASC, datetime(created_at) ASC`
-  );
+  const sortedIncomes = sortBySortOrderAsc(incomeRows);
+  const sortedHoldings = sortBySortOrderAsc(holdingRows);
+  const sortedExpenseLines = sortBySortOrderAsc(expenseLineRows);
 
-  let expenseLines: ExpenseFlowLine[] = expenseLineRows
+  let expenseLines: ExpenseFlowLine[] = sortedExpenseLines
     .map(mapExpenseLineRow)
     .filter((x): x is ExpenseFlowLine => x != null);
 
@@ -130,8 +129,8 @@ export async function loadCashFlowState(): Promise<CashFlowState> {
   return {
     necessaryExpenses: profile.necessary_expenses,
     unnecessaryExpenses: profile.unnecessary_expenses,
-    incomes: incomeRows.map(mapIncomeRow),
-    holdings: holdingRows.map(mapHoldingRow),
+    incomes: sortedIncomes.map(mapIncomeRow),
+    holdings: sortedHoldings.map(mapHoldingRow),
     expenseLines,
     goals: {
       targetPassiveIncome: profile.target_passive_income,

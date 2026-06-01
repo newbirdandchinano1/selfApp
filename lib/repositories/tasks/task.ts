@@ -1,5 +1,12 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import {
+  compareDatetimeDesc,
+  matchesOverviewScope,
+  sortBySortOrderAsc,
+  sortByUpdatedDesc,
+  ymdFromDatetime,
+} from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
-import { TASK_OVERVIEW_SCOPE_WHERE } from './task-overview-scope';
 import type {
   CreateTaskCategoryInput,
   CreateTaskInput,
@@ -10,6 +17,41 @@ import type {
 } from './task.types';
 
 export type TaskTreeNode = TaskRow & { children: TaskTreeNode[] };
+
+async function loadAllTasks(): Promise<TaskRow[]> {
+  return readApiTable<TaskRow>('tasks', { offlineFallback: true });
+}
+
+function sortTasksForProjectList(rows: TaskRow[]): TaskRow[] {
+  return [...rows].sort((a, b) => {
+    const sa = a.sort_order ?? 0;
+    const sb = b.sort_order ?? 0;
+    if (sa !== sb) return sa - sb;
+    const pa = a.priority ?? 0;
+    const pb = b.priority ?? 0;
+    if (pa !== pb) return pb - pa;
+    const da = a.due_date ? Date.parse(a.due_date) : Number.POSITIVE_INFINITY;
+    const db = b.due_date ? Date.parse(b.due_date) : Number.POSITIVE_INFINITY;
+    if (da !== db) return da - db;
+    return compareDatetimeDesc(a.updated_at, b.updated_at);
+  });
+}
+
+function collectSubtreeIds(all: TaskRow[], rootId: string): Set<string> {
+  const ids = new Set<string>([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of all) {
+      const parent = row.parent_task_id;
+      if (parent && ids.has(String(parent)) && !ids.has(String(row.id))) {
+        ids.add(String(row.id));
+        changed = true;
+      }
+    }
+  }
+  return ids;
+}
 
 async function getNextTaskSortOrderForSiblings(
   db: Awaited<ReturnType<typeof getDatabase>>,
@@ -61,55 +103,34 @@ export async function reorderProjectTaskSiblings(
 }
 
 export async function countIncompleteDescendantTasks(rootTaskId: string): Promise<number> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ cnt: number }>(
-    `WITH RECURSIVE subtree(id) AS (
-        SELECT id FROM tasks WHERE id = ? AND deleted_at IS NULL
-        UNION ALL
-        SELECT t.id
-          FROM tasks t
-          JOIN subtree s ON t.parent_task_id = s.id
-         WHERE t.deleted_at IS NULL
-     )
-     SELECT COUNT(1) AS cnt
-       FROM tasks
-      WHERE id IN (SELECT id FROM subtree WHERE id != ?)
-        AND status NOT IN ('done', 'cancelled')`,
-    [rootTaskId, rootTaskId],
-  );
-  return Number(row?.cnt ?? 0);
+  const all = await loadAllTasks();
+  const subtree = collectSubtreeIds(all, rootTaskId);
+  subtree.delete(rootTaskId);
+  return all.filter(
+    t => subtree.has(String(t.id)) && t.status !== 'done' && t.status !== 'cancelled',
+  ).length;
 }
 
 export async function countIncompleteTasksByProjectId(projectId: string): Promise<number> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ cnt: number }>(
-    `SELECT COUNT(1) AS cnt
-       FROM tasks
-      WHERE deleted_at IS NULL
-        AND project_id = ?
-        AND status NOT IN ('done', 'cancelled')`,
-    [projectId],
-  );
-  return Number(row?.cnt ?? 0);
+  const all = await loadAllTasks();
+  return all.filter(
+    t => t.project_id === projectId && t.status !== 'done' && t.status !== 'cancelled',
+  ).length;
 }
 
 /** 统计项目下任务完成度（不含已取消）；用于愿景「目标」关联项目进度 */
 export async function getTaskCompletionStatsByProjectId(
   projectId: string
 ): Promise<{ total: number; completed: number }> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ total: number | null; completed: number | null }>(
-    `SELECT
-       COALESCE(SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END), 0) AS total,
-       COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) AS completed
-       FROM tasks
-      WHERE deleted_at IS NULL AND project_id = ?`,
-    [projectId],
-  );
-  return {
-    total: Number(row?.total ?? 0),
-    completed: Number(row?.completed ?? 0),
-  };
+  const all = await loadAllTasks().then(rows => rows.filter(t => t.project_id === projectId));
+  let total = 0;
+  let completed = 0;
+  for (const t of all) {
+    if (t.status === 'cancelled') continue;
+    total += 1;
+    if (t.status === 'done') completed += 1;
+  }
+  return { total, completed };
 }
 
 /** 多个项目任务完成度汇总（愿景「目标」多项目关联） */
@@ -161,52 +182,45 @@ export async function createTask(input: CreateTaskInput) {
 }
 
 export async function getTaskById(id: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<TaskRow>('SELECT * FROM tasks WHERE id = ? AND deleted_at IS NULL LIMIT 1', [id]);
+  return readApiRecord<TaskRow>('tasks', id, { offlineFallback: true });
 }
 
 export async function getTasks() {
-  const db = await getDatabase();
-  return db.getAllAsync<TaskRow>('SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC');
+  const rows = await loadAllTasks();
+  return sortByUpdatedDesc(rows);
 }
 
 export type TaskOverviewListFilter = 'open' | 'doneOrCancelled' | 'totalActive';
 
 /** 待办总览概况卡片：按统计维度列出当前任务（与 getTaskGlobalInsightCounts 口径一致） */
 export async function getTasksForOverviewList(filter: TaskOverviewListFilter): Promise<TaskRow[]> {
-  const db = await getDatabase();
-  const scope = `deleted_at IS NULL AND ${TASK_OVERVIEW_SCOPE_WHERE}`;
+  const scoped = (await loadAllTasks()).filter(matchesOverviewScope);
+  let filtered = scoped;
   if (filter === 'open') {
-    return db.getAllAsync<TaskRow>(
-      `SELECT * FROM tasks
-       WHERE ${scope} AND status NOT IN ('done', 'cancelled')
-       ORDER BY updated_at DESC, created_at DESC`
-    );
+    filtered = scoped.filter(t => t.status !== 'done' && t.status !== 'cancelled');
+  } else if (filter === 'doneOrCancelled') {
+    filtered = scoped.filter(t => t.status === 'done' || t.status === 'cancelled');
   }
-  if (filter === 'doneOrCancelled') {
-    return db.getAllAsync<TaskRow>(
-      `SELECT * FROM tasks
-       WHERE ${scope} AND status IN ('done', 'cancelled')
-       ORDER BY updated_at DESC, created_at DESC`
-    );
-  }
-  return db.getAllAsync<TaskRow>(
-    `SELECT * FROM tasks WHERE ${scope} ORDER BY updated_at DESC, created_at DESC`
-  );
+  return sortByUpdatedDesc(filtered);
 }
 
 /** 截止日为指定本地日（YYYY-MM-DD）的任务，含子任务，按优先级与截止时间排序。 */
 export async function getTasksDueOnDate(ymd: string) {
-  const db = await getDatabase();
-  return db.getAllAsync<TaskRow>(
-    `SELECT * FROM tasks
-     WHERE deleted_at IS NULL
-       AND due_date IS NOT NULL
-       AND trim(due_date) != ''
-       AND date(due_date) = date(?)
-     ORDER BY priority DESC, datetime(due_date) ASC, updated_at DESC`,
-    [ymd]
-  );
+  const rows = await loadAllTasks();
+  return rows
+    .filter(t => {
+      const day = ymdFromDatetime(t.due_date);
+      return day === ymd;
+    })
+    .sort((a, b) => {
+      const pa = a.priority ?? 0;
+      const pb = b.priority ?? 0;
+      if (pa !== pb) return pb - pa;
+      const da = a.due_date ? Date.parse(a.due_date) : 0;
+      const db = b.due_date ? Date.parse(b.due_date) : 0;
+      if (da !== db) return da - db;
+      return compareDatetimeDesc(a.updated_at, b.updated_at);
+    });
 }
 
 export type TaskDueDayAggregateRow = {
@@ -217,42 +231,31 @@ export type TaskDueDayAggregateRow = {
 
 /** 区间内每日截止任务数与已完成数（done/cancelled 视为 done），用于日历热力统计。 */
 export async function getTaskDueDayAggregatesForRange(startYmd: string, endYmd: string): Promise<TaskDueDayAggregateRow[]> {
-  const db = await getDatabase();
-  const rows = await db.getAllAsync<{ day: string; total: number; done: number }>(
-    `SELECT date(due_date) AS day,
-            COUNT(*) AS total,
-            SUM(CASE WHEN status IN ('done', 'cancelled') THEN 1 ELSE 0 END) AS done
-       FROM tasks
-      WHERE deleted_at IS NULL
-        AND due_date IS NOT NULL
-        AND trim(due_date) != ''
-        AND date(due_date) >= date(?)
-        AND date(due_date) <= date(?)
-      GROUP BY date(due_date)`,
-    [startYmd, endYmd]
-  );
-  return rows.map((r) => ({
-    day: r.day,
-    total: Number(r.total),
-    done: Number(r.done),
-  }));
+  const rows = await loadAllTasks();
+  const byDay = new Map<string, { total: number; done: number }>();
+  for (const t of rows) {
+    const day = ymdFromDatetime(t.due_date);
+    if (!day || day < startYmd || day > endYmd) continue;
+    const agg = byDay.get(day) ?? { total: 0, done: 0 };
+    agg.total += 1;
+    if (t.status === 'done' || t.status === 'cancelled') agg.done += 1;
+    byDay.set(day, agg);
+  }
+  return [...byDay.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, v]) => ({ day, total: v.total, done: v.done }));
 }
 
 export async function getTasksByProjectId(projectId: string) {
-  const db = await getDatabase();
-  const rows = await db.getAllAsync<TaskRow>(
-    'SELECT * FROM tasks WHERE deleted_at IS NULL AND project_id = ? ORDER BY sort_order ASC, priority DESC, due_date ASC, updated_at DESC',
-    [projectId]
+  const rows = sortTasksForProjectList(
+    (await loadAllTasks()).filter(t => t.project_id === projectId),
   );
   return buildTaskTree(rows);
 }
 
 export async function getChildTasksByParentTaskId(parentTaskId: string): Promise<TaskTreeNode[]> {
-  const db = await getDatabase();
-  const rows = await db.getAllAsync<TaskRow>(
-    'SELECT * FROM tasks WHERE deleted_at IS NULL AND parent_task_id = ? ORDER BY sort_order ASC, priority DESC, due_date ASC, updated_at DESC',
-    [parentTaskId]
-  );
+  const all = await loadAllTasks();
+  const rows = sortTasksForProjectList(all.filter(t => t.parent_task_id === parentTaskId));
   const children = await Promise.all(
     rows.map(async row => ({ ...row, children: await getChildTasksByParentTaskId(row.id) }))
   );
@@ -352,10 +355,8 @@ export async function createTaskCategory(input: CreateTaskCategoryInput) {
 }
 
 export async function getTaskCategories() {
-  const db = await getDatabase();
-  return db.getAllAsync<TaskCategoryRow>(
-    'SELECT * FROM task_categories WHERE deleted_at IS NULL ORDER BY COALESCE(sort_order, 1000000) ASC, datetime(created_at) ASC'
-  );
+  const rows = await readApiTable<TaskCategoryRow>('task_categories', { offlineFallback: true });
+  return sortBySortOrderAsc(rows);
 }
 
 export async function reorderTaskCategories(orderedIds: string[]) {

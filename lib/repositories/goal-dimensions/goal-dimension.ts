@@ -1,15 +1,13 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import { listVisions, parseVisionExtra, serializeVisionExtra, updateVision } from '../visions/vision';
 import { serializeGoalDimensionExtra } from './goal-dimension-extra';
 import type { CreateGoalDimensionInput, GoalDimensionRow, UpdateGoalDimensionInput } from './goal-dimension.types';
 
 export async function listGoalDimensions() {
-  const db = await getDatabase();
-  return db.getAllAsync<GoalDimensionRow>(
-    `SELECT * FROM goal_dimensions
-     WHERE deleted_at IS NULL
-     ORDER BY sort_order ASC, datetime(created_at) ASC`
-  );
+  const rows = await readApiTable<GoalDimensionRow>('goal_dimensions', { offlineFallback: true });
+  return sortBySortOrderAsc(rows);
 }
 
 export async function createGoalDimension(input: CreateGoalDimensionInput) {
@@ -24,11 +22,7 @@ export async function createGoalDimension(input: CreateGoalDimensionInput) {
 }
 
 export async function getGoalDimensionById(id: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<GoalDimensionRow>(
-    'SELECT * FROM goal_dimensions WHERE id = ? AND deleted_at IS NULL LIMIT 1',
-    [id],
-  );
+  return readApiRecord<GoalDimensionRow>('goal_dimensions', id, { offlineFallback: true });
 }
 
 async function syncVisionDimensionNames(dimensionId: string, newTitle: string) {

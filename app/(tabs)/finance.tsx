@@ -35,7 +35,10 @@ import {
     budgetPeriodLengthDays,
     clampBudgetRefreshDay,
     DEFAULT_BUDGET_REFRESH_DAY,
+    formatBudgetPeriodCountdownLabel,
+    formatBudgetPeriodEndDateLabel,
     getBudgetMonthKeyForDate,
+    getBudgetPeriodLastInclusiveDay,
     getBudgetPeriodStartForDate,
     getNextBudgetPeriodStart,
     getPreviousBudgetPeriodStart,
@@ -1334,6 +1337,9 @@ export default function FinanceScreen() {
 
   const budgetPeriodTotalDays = budgetPeriodLengthDays(budgetPeriodStart, budgetPeriodEndExclusive);
   const daysLeftIncludingToday = budgetDaysLeftIncludingToday(today, budgetPeriodEndExclusive);
+  const budgetPeriodLastDay = getBudgetPeriodLastInclusiveDay(budgetPeriodEndExclusive);
+  const budgetPeriodCountdownLabel = formatBudgetPeriodCountdownLabel(daysLeftIncludingToday);
+  const budgetPeriodEndDateLabel = formatBudgetPeriodEndDateLabel(budgetPeriodLastDay);
   const currentMonthKey = getBudgetMonthKeyForDate(today, budgetRefreshDay);
   const budgetSheetMonthNumber = parseInt(currentMonthKey.split('-')[1] ?? '1', 10);
   const persistedBudgetSetting = monthBudgetSettings[currentMonthKey];
@@ -2882,6 +2888,14 @@ export default function FinanceScreen() {
                     <View style={styles.budgetTopMain}>
                       <View style={styles.budgetTitleRow}>
                         <Text style={[styles.budgetSurplusTitle, { color: subtle }]}>{budgetUiScopeShort}预算结余</Text>
+                      </View>
+                      <View style={styles.budgetPeriodDeadlineRow}>
+                        <Text style={[styles.budgetPeriodCountdown, { color: primary }]}>
+                          {budgetPeriodCountdownLabel}
+                        </Text>
+                        <Text style={[styles.budgetPeriodEndDate, { color: subtle }]}>
+                          截止 {budgetPeriodEndDateLabel}
+                        </Text>
                       </View>
                       <View style={styles.budgetAmountRow}>
                         <Pressable
@@ -4672,6 +4686,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 0.4,
+  },
+  budgetPeriodDeadlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: -4,
+  },
+  budgetPeriodCountdown: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  budgetPeriodEndDate: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
   budgetAmountRow: {
     flexDirection: 'row',

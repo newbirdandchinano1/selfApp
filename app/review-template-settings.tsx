@@ -19,6 +19,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -29,6 +30,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import type { KeyboardEvent } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type ScopeTab = ReviewTemplateScope;
@@ -70,15 +72,34 @@ export default function ReviewTemplateSettingsScreen() {
   const [expandedDimId, setExpandedDimId] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [saving, setSaving] = useState(false);
+  const [modalKeyboardInset, setModalKeyboardInset] = useState(0);
+
+  useEffect(() => {
+    if (editor == null) {
+      setModalKeyboardInset(0);
+      return;
+    }
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = (e: KeyboardEvent) => setModalKeyboardInset(Math.max(0, Math.round(e.endCoordinates.height)));
+    const onHide = () => setModalKeyboardInset(0);
+    const subShow = Keyboard.addListener(showEvent, onShow);
+    const subHide = Keyboard.addListener(hideEvent, onHide);
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, [editor]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const rows = await listReviewTemplate(scope);
       setTemplate(rows);
-      if (rows.length > 0 && !expandedDimId) {
-        setExpandedDimId(rows[0].id);
-      }
+      setExpandedDimId(prev => {
+        if (prev && rows.some(d => d.id === prev)) return prev;
+        return rows.length > 0 ? rows[0].id : null;
+      });
     } catch {
       Alert.alert('加载失败', '请稍后重试');
     } finally {
@@ -330,54 +351,68 @@ export default function ReviewTemplateSettingsScreen() {
       </KeyboardAvoidingView>
 
       <Modal visible={editor != null} transparent animationType="fade" onRequestClose={() => setEditor(null)}>
-        <View style={styles.modalRoot}>
+        <KeyboardAvoidingView
+          style={styles.modalRoot}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={0}>
           <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setEditor(null)} />
-          <View style={[styles.modalSheet, { backgroundColor: surface, borderColor: outlineVariant, paddingBottom: insets.bottom + 16 }]}>
-            <Text style={[styles.modalTitle, { color: text }]}>
-              {editor?.mode === 'dimension'
-                ? editor.dimensionId
-                  ? '编辑维度'
-                  : '新建维度'
-                : editor?.columnId
-                  ? '编辑栏目'
-                  : '新建栏目'}
-            </Text>
-            <Text style={[styles.fieldLabel, { color: outline }]}>名称</Text>
-            <TextInput
-              value={editor?.title ?? ''}
-              onChangeText={t => setEditor(prev => (prev ? { ...prev, title: t } : prev))}
-              placeholder={editor?.mode === 'dimension' ? '例如：今日总结' : '例如：完成任务'}
-              placeholderTextColor={outline}
-              style={[styles.input, { backgroundColor: inputBg, borderColor: outlineVariant, color: text }]}
-            />
-            {editor?.mode === 'column' ? (
-              <>
-                <Text style={[styles.fieldLabel, { color: outline }]}>填写提示（可选）</Text>
-                <TextInput
-                  value={editor.placeholder}
-                  onChangeText={t => setEditor(prev => (prev ? { ...prev, placeholder: t } : prev))}
-                  placeholder="输入框占位说明"
-                  placeholderTextColor={outline}
-                  multiline
-                  style={[styles.input, styles.inputMulti, { backgroundColor: inputBg, borderColor: outlineVariant, color: text }]}
-                />
-              </>
-            ) : null}
-            <View style={styles.modalBtns}>
-              <Pressable
-                onPress={() => setEditor(null)}
-                style={[styles.modalBtn, { borderColor: outlineVariant }]}>
-                <Text style={{ color: outline, fontWeight: '700' }}>取消</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => void onSaveEditor()}
-                disabled={saving}
-                style={[styles.modalBtn, { backgroundColor: primary, opacity: saving ? 0.7 : 1 }]}>
-                {saving ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '800' }}>保存</Text>}
-              </Pressable>
-            </View>
+          <View
+            style={[
+              styles.modalSheet,
+              {
+                backgroundColor: surface,
+                borderColor: outlineVariant,
+                paddingBottom: insets.bottom + 16,
+                marginBottom: Platform.OS === 'android' ? modalKeyboardInset : 0,
+              },
+            ]}>
+            <ScrollView keyboardShouldPersistTaps="handled" bounces={false} showsVerticalScrollIndicator={false}>
+              <Text style={[styles.modalTitle, { color: text }]}>
+                {editor?.mode === 'dimension'
+                  ? editor.dimensionId
+                    ? '编辑维度'
+                    : '新建维度'
+                  : editor?.columnId
+                    ? '编辑栏目'
+                    : '新建栏目'}
+              </Text>
+              <Text style={[styles.fieldLabel, { color: outline }]}>名称</Text>
+              <TextInput
+                value={editor?.title ?? ''}
+                onChangeText={t => setEditor(prev => (prev ? { ...prev, title: t } : prev))}
+                placeholder={editor?.mode === 'dimension' ? '例如：今日总结' : '例如：完成任务'}
+                placeholderTextColor={outline}
+                style={[styles.input, { backgroundColor: inputBg, borderColor: outlineVariant, color: text }]}
+              />
+              {editor?.mode === 'column' ? (
+                <>
+                  <Text style={[styles.fieldLabel, { color: outline }]}>填写提示（可选）</Text>
+                  <TextInput
+                    value={editor.placeholder}
+                    onChangeText={t => setEditor(prev => (prev ? { ...prev, placeholder: t } : prev))}
+                    placeholder="输入框占位说明"
+                    placeholderTextColor={outline}
+                    multiline
+                    style={[styles.input, styles.inputMulti, { backgroundColor: inputBg, borderColor: outlineVariant, color: text }]}
+                  />
+                </>
+              ) : null}
+              <View style={styles.modalBtns}>
+                <Pressable
+                  onPress={() => setEditor(null)}
+                  style={[styles.modalBtn, { borderColor: outlineVariant }]}>
+                  <Text style={{ color: outline, fontWeight: '700' }}>取消</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void onSaveEditor()}
+                  disabled={saving}
+                  style={[styles.modalBtn, { backgroundColor: primary, opacity: saving ? 0.7 : 1 }]}>
+                  {saving ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '800' }}>保存</Text>}
+                </Pressable>
+              </View>
+            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );

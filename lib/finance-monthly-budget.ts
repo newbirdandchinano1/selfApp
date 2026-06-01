@@ -86,6 +86,23 @@ export function budgetDaysLeftIncludingToday(today: Date, periodEndExclusive: Da
   return Math.max(1, diff);
 }
 
+/** 预算周期最后一天（含），即下一周期起点前一日。 */
+export function getBudgetPeriodLastInclusiveDay(periodEndExclusive: Date): Date {
+  const last = new Date(periodEndExclusive);
+  last.setDate(last.getDate() - 1);
+  return new Date(last.getFullYear(), last.getMonth(), last.getDate(), 0, 0, 0, 0);
+}
+
+export function formatBudgetPeriodEndDateLabel(lastInclusiveDay: Date): string {
+  return `${lastInclusiveDay.getMonth() + 1}月${lastInclusiveDay.getDate()}日`;
+}
+
+/** 财务页预算周期截止倒计时（含今天）。 */
+export function formatBudgetPeriodCountdownLabel(daysLeftIncludingToday: number): string {
+  if (daysLeftIncludingToday <= 1) return '今天截止';
+  return `还剩 ${daysLeftIncludingToday} 天`;
+}
+
 export async function loadBudgetRefreshDay(): Promise<number> {
   try {
     const parsed = await getAppSetting<unknown>(AppSettingKey.financeBudgetRefreshDay);

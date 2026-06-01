@@ -1,3 +1,5 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { sortBySortOrderAsc, sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import { INBOX_PROJECT_CATEGORY_ID } from './constants';
 import type {
@@ -22,13 +24,12 @@ export async function createProject(input: CreateProjectInput) {
 }
 
 export async function getProjectById(id: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<ProjectRow>('SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL LIMIT 1', [id]);
+  return readApiRecord<ProjectRow>('projects', id, { offlineFallback: true });
 }
 
 export async function getProjects() {
-  const db = await getDatabase();
-  return db.getAllAsync<ProjectRow>('SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC');
+  const rows = await readApiTable<ProjectRow>('projects', { offlineFallback: true });
+  return sortByUpdatedDesc(rows);
 }
 
 export async function isProjectNameDuplicate(name: string, excludeId?: string) {
@@ -142,12 +143,8 @@ export async function createProjectCategory(input: CreateProjectCategoryInput) {
 }
 
 export async function getProjectCategories() {
-  const db = await getDatabase();
-  return db.getAllAsync<ProjectCategoryRow>(
-    `SELECT * FROM project_categories
-     WHERE deleted_at IS NULL
-     ORDER BY COALESCE(sort_order, 1000000) ASC, datetime(created_at) ASC`,
-  );
+  const rows = await readApiTable<ProjectCategoryRow>('project_categories', { offlineFallback: true });
+  return sortBySortOrderAsc(rows);
 }
 
 export async function reorderProjectCategories(orderedIds: string[]) {

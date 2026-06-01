@@ -1,3 +1,5 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import type { CreateSavingsPlanInput, SavingsPlanRow, UpdateSavingsPlanInput } from './savings-plan.types';
 
@@ -54,20 +56,12 @@ export async function createSavingsPlan(input: CreateSavingsPlanInput) {
 }
 
 export async function getSavingsPlanById(id: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<SavingsPlanRow>(
-    'SELECT * FROM savings_plans WHERE id = ? AND deleted_at IS NULL LIMIT 1',
-    [id]
-  );
+  return readApiRecord<SavingsPlanRow>('savings_plans', id, { offlineFallback: true });
 }
 
 export async function getSavingsPlans() {
-  const db = await getDatabase();
-  return db.getAllAsync<SavingsPlanRow>(
-    `SELECT * FROM savings_plans
-     WHERE deleted_at IS NULL
-     ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC`
-  );
+  const rows = await readApiTable<SavingsPlanRow>('savings_plans', { offlineFallback: true });
+  return sortByUpdatedDesc(rows);
 }
 
 export async function updateSavingsPlan(id: string, input: UpdateSavingsPlanInput) {

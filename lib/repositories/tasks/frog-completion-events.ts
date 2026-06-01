@@ -1,4 +1,6 @@
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { readApiTable } from '@/lib/api-read';
+import { compareDatetimeDesc, isYmdInRange } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 
 export type FrogCompletionEventAction = 'completed' | 'reopened';
@@ -32,36 +34,37 @@ export async function getFrogCompletionCountsByDayRange(
   startYmd: string,
   endYmd: string
 ): Promise<Map<string, number>> {
-  const db = await getDatabase();
-  const rows = await db.getAllAsync<{ day: string; cnt: number }>(
-    `SELECT assigned_ymd AS day, COUNT(*) AS cnt
-       FROM frog_completion_events
-      WHERE action = 'completed'
-        AND assigned_ymd >= ?
-        AND assigned_ymd <= ?
-      GROUP BY assigned_ymd`,
-    [startYmd, endYmd]
-  );
+  const rows = await readApiTable<{ assigned_ymd: string; action: string }>('frog_completion_events', {
+    offlineFallback: true,
+  });
   const m = new Map<string, number>();
   for (const r of rows) {
-    if (r.day) m.set(r.day, Number(r.cnt));
+    if (r.action !== 'completed') continue;
+    if (!r.assigned_ymd || !isYmdInRange(r.assigned_ymd, startYmd, endYmd)) continue;
+    m.set(r.assigned_ymd, (m.get(r.assigned_ymd) ?? 0) + 1);
   }
   return m;
 }
 
 /** 某一指派日内的已完成青蛙明细（含任务已删时的标题快照） */
 export async function getFrogCompletionsForAssignedDay(ymd: string): Promise<FrogCompletionDayItem[]> {
-  const db = await getDatabase();
-  return db.getAllAsync<FrogCompletionDayItem>(
-    `SELECT e.id, e.task_id, e.assigned_ymd,
-            COALESCE(NULLIF(trim(t.title), ''), NULLIF(trim(e.task_title), '')) AS task_title
-       FROM frog_completion_events e
-       LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-      WHERE e.action = 'completed'
-        AND e.assigned_ymd = ?
-      ORDER BY datetime(e.created_at) ASC`,
-    [ymd]
-  );
+  const [events, tasks] = await Promise.all([
+    readApiTable<{ id: string; task_id: string | null; assigned_ymd: string; action: string; task_title?: string | null; created_at: string }>(
+      'frog_completion_events',
+      { offlineFallback: true },
+    ),
+    readApiTable<{ id: string; title?: string | null }>('tasks', { offlineFallback: true }),
+  ]);
+  const taskById = new Map(tasks.map(t => [t.id, t]));
+  return events
+    .filter(e => e.action === 'completed' && e.assigned_ymd === ymd)
+    .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1)
+    .map(e => ({
+      id: e.id,
+      task_id: e.task_id,
+      assigned_ymd: e.assigned_ymd,
+      task_title: taskById.get(e.task_id ?? '')?.title?.trim() || e.task_title?.trim() || null,
+    }));
 }
 
 /** 将历史「已完成且带 frogAssignedOn」的任务补写入事件表（升级后执行一次） */

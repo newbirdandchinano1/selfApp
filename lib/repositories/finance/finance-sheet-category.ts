@@ -1,3 +1,5 @@
+import { readApiTable } from '@/lib/api-read';
+import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import type { FinanceFlowCategoryRow } from './finance.types';
@@ -56,17 +58,14 @@ export function isFinanceSheetCategoryRow(row: FinanceFlowCategoryRow): boolean 
 }
 
 export async function getFinanceSheetCustomCategories(transactionType: FinanceSheetTransactionType) {
-  const db = await getDatabase();
-  const rows = await db.getAllAsync<FinanceFlowCategoryRow>(
-    `SELECT * FROM finance_flow_categories
-     WHERE deleted_at IS NULL AND id LIKE ?
-     ORDER BY sort_order ASC, datetime(created_at) ASC`,
-    [`${FINANCE_SHEET_CATEGORY_ID_PREFIX}%`],
+  const rows = await readApiTable<FinanceFlowCategoryRow>('finance_flow_categories', { offlineFallback: true });
+  return sortBySortOrderAsc(
+    rows.filter(row => {
+      if (!row.id.startsWith(FINANCE_SHEET_CATEGORY_ID_PREFIX)) return false;
+      const extra = parseSheetCategoryExtra(row.extra_data);
+      return extra.transaction_type === transactionType;
+    }),
   );
-  return rows.filter((row) => {
-    const extra = parseSheetCategoryExtra(row.extra_data);
-    return extra.transaction_type === transactionType;
-  });
 }
 
 export async function createFinanceSheetCustomCategory(

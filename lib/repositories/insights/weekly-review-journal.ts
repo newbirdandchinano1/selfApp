@@ -1,3 +1,4 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { getDatabase } from '../../database.native';
 import {
   legacyWeeklyColumnsFromFields,
@@ -10,12 +11,8 @@ function journalIdForWeek(weekStartYmd: string) {
 }
 
 export async function getWeeklyReviewJournalByWeek(weekStartYmd: string): Promise<WeeklyReviewJournalRow | null> {
-  const db = await getDatabase();
-  if (!db) return null;
-  return db.getFirstAsync<WeeklyReviewJournalRow>(
-    `SELECT * FROM weekly_review_journal WHERE week_start_ymd = ? AND deleted_at IS NULL LIMIT 1`,
-    [weekStartYmd],
-  );
+  const rows = await readApiTable<WeeklyReviewJournalRow>('weekly_review_journal', { offlineFallback: true });
+  return rows.find(r => r.week_start_ymd === weekStartYmd) ?? null;
 }
 
 export async function upsertWeeklyReviewJournal(input: UpsertWeeklyReviewJournalInput): Promise<void> {

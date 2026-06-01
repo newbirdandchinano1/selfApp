@@ -1,3 +1,4 @@
+import { readApiTable } from '@/lib/api-read';
 import { getDatabase } from '../../database.native';
 import { getSavingsPlanById, SAVINGS_PLAN_MAX_TARGET_AMOUNT } from './savings-plan';
 import type { CreateSavingsPlanDepositInput } from './savings-plan-deposit.types';
@@ -41,33 +42,27 @@ export async function createSavingsPlanDeposit(input: CreateSavingsPlanDepositIn
 
 /** 未删除计划下的存入总额（用于顶部「已存款」） */
 export async function getTotalDepositsForActivePlans() {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ total: number }>(
-    `
-    SELECT COALESCE(SUM(d.amount), 0) AS total
-    FROM savings_plan_deposits d
-    INNER JOIN savings_plans p ON p.id = d.savings_plan_id AND p.deleted_at IS NULL
-    WHERE d.deleted_at IS NULL
-    `
-  );
-  return row?.total ?? 0;
+  const [plans, deposits] = await Promise.all([
+    readApiTable<{ id: string }>('savings_plans', { offlineFallback: true }),
+    readApiTable<{ savings_plan_id: string; amount: number }>('savings_plan_deposits', { offlineFallback: true }),
+  ]);
+  const planIds = new Set(plans.map(p => p.id));
+  return deposits
+    .filter(d => planIds.has(d.savings_plan_id))
+    .reduce((sum, d) => sum + Number(d.amount ?? 0), 0);
 }
 
 /** 各未删除计划的存入合计（计划无记录时为 0，由调用方补全） */
 export async function getDepositSumsByActivePlanId() {
-  const db = await getDatabase();
-  const rows = await db.getAllAsync<{ savings_plan_id: string; total: number }>(
-    `
-    SELECT d.savings_plan_id, COALESCE(SUM(d.amount), 0) AS total
-    FROM savings_plan_deposits d
-    INNER JOIN savings_plans p ON p.id = d.savings_plan_id AND p.deleted_at IS NULL
-    WHERE d.deleted_at IS NULL
-    GROUP BY d.savings_plan_id
-    `
-  );
+  const [plans, deposits] = await Promise.all([
+    readApiTable<{ id: string }>('savings_plans', { offlineFallback: true }),
+    readApiTable<{ savings_plan_id: string; amount: number }>('savings_plan_deposits', { offlineFallback: true }),
+  ]);
+  const planIds = new Set(plans.map(p => p.id));
   const map: Record<string, number> = {};
-  for (const r of rows) {
-    map[r.savings_plan_id] = r.total;
+  for (const d of deposits) {
+    if (!planIds.has(d.savings_plan_id)) continue;
+    map[d.savings_plan_id] = (map[d.savings_plan_id] ?? 0) + Number(d.amount ?? 0);
   }
   return map;
 }

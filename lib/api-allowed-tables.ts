@@ -1,0 +1,65 @@
+/** 服务端 ALLOWED_TABLES（44 张），与 src/config/tables.ts 对齐 */
+export const API_ALLOWED_TABLES = new Set([
+  'account_transactions',
+  'accounts',
+  'admin_users',
+  'app_meta',
+  'app_settings',
+  'cash_flow_expense_lines',
+  'cash_flow_holdings',
+  'cash_flow_incomes',
+  'cash_flow_profile',
+  'daily_review_journal',
+  'earned_rewards',
+  'finance_account_types',
+  'finance_accounts',
+  'finance_flow_categories',
+  'finance_transactions',
+  'frog_completion_events',
+  'goal_dimensions',
+  'habit_check_ins',
+  'habit_contexts',
+  'habits',
+  'health_records',
+  'memo_dimensions',
+  'memos',
+  'persona_portrait_cache',
+  'project_categories',
+  'projects',
+  'recipe_categories',
+  'recipe_items',
+  'review_columns',
+  'review_dimensions',
+  'savings_plan_deposits',
+  'savings_plans',
+  'task_categories',
+  'task_execution_events',
+  'task_items',
+  'tasks',
+  'user_desired_skills',
+  'user_skill_items',
+  'user_skills_meta',
+  'user_weaknesses',
+  'users',
+  'visions',
+  'weekly_review_journal',
+  'wish_items',
+]);
+
+/** 非 id 主键表 */
+export const API_TABLE_PRIMARY_KEY: Record<string, string> = {
+  app_meta: 'key',
+  app_settings: 'key',
+  persona_portrait_cache: 'slug',
+};
+
+/** 始终从本地 SQLite 读取（迁移标记等，不走 REST） */
+export const API_LOCAL_READ_ONLY_TABLES = new Set(['app_meta']);
+
+export function getApiTablePrimaryKey(table: string): string {
+  return API_TABLE_PRIMARY_KEY[table] ?? 'id';
+}
+
+export function isApiReadableTable(table: string): boolean {
+  return API_ALLOWED_TABLES.has(table) && !API_LOCAL_READ_ONLY_TABLES.has(table);
+}

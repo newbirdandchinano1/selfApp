@@ -1,3 +1,4 @@
+import { readApiRecord } from '@/lib/api-read';
 import { getDatabase } from '../../database.native';
 import type { PersonaPortraitAiData } from '@/lib/zhipu-image-parse';
 
@@ -73,16 +74,23 @@ export async function getPersonaPortraitCache(slug: string): Promise<{
   data: PersonaPortraitAiData;
 } | null> {
   if (!SLUG_SET.has(slug)) return null;
-  const db = await getDatabase();
-  if (!db) return null;
-  const row = await db.getFirstAsync<{ cache_date_ymd: string; payload_json: string }>(
-    `SELECT cache_date_ymd, payload_json
-     FROM persona_portrait_cache
-     WHERE slug = ?
-     LIMIT 1`,
-    [slug],
+  const row = await readApiRecord<{ cache_date_ymd: string; payload_json: string }>(
+    'persona_portrait_cache',
+    slug,
+    { offlineFallback: true },
   );
-  if (!row?.payload_json?.trim()) return null;
+  if (!row?.payload_json?.trim()) {
+    const db = await getDatabase();
+    if (!db) return null;
+    const local = await db.getFirstAsync<{ cache_date_ymd: string; payload_json: string }>(
+      `SELECT cache_date_ymd, payload_json FROM persona_portrait_cache WHERE slug = ? LIMIT 1`,
+      [slug],
+    );
+    if (!local?.payload_json?.trim()) return null;
+    const data = parsePersonaPortraitPayload(local.payload_json);
+    if (!data) return null;
+    return { cache_date_ymd: local.cache_date_ymd.trim(), data };
+  }
   const data = parsePersonaPortraitPayload(row.payload_json);
   if (!data) return null;
   return { cache_date_ymd: row.cache_date_ymd.trim(), data };

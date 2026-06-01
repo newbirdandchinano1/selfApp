@@ -1,3 +1,4 @@
+import { readApiTable } from '@/lib/api-read';
 import { getDatabase } from '../../database.native';
 import type { DailyReviewJournalRow } from './daily-review-journal.types';
 
@@ -6,14 +7,10 @@ function journalIdForYmd(ymd: string) {
 }
 
 export async function listDailyReviewsBetween(startYmd: string, endYmd: string): Promise<DailyReviewJournalRow[]> {
-  const db = await getDatabase();
-  if (!db) return [];
-  return db.getAllAsync<DailyReviewJournalRow>(
-    `SELECT * FROM daily_review_journal
-      WHERE deleted_at IS NULL AND record_date_ymd >= ? AND record_date_ymd <= ?
-      ORDER BY record_date_ymd ASC`,
-    [startYmd, endYmd],
-  );
+  const rows = await readApiTable<DailyReviewJournalRow>('daily_review_journal', { offlineFallback: true });
+  return rows
+    .filter(r => r.record_date_ymd >= startYmd && r.record_date_ymd <= endYmd)
+    .sort((a, b) => a.record_date_ymd.localeCompare(b.record_date_ymd));
 }
 
 export async function upsertDailyReviewJournal(record_date_ymd: string, body: string): Promise<void> {

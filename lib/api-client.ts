@@ -20,6 +20,15 @@ export function prepareRowBodyForApi(
   return slimRecordForMysqlApi(normalizeRecordForMysqlApi(row), opts);
 }
 
+/** 上传失败时依次尝试更小 payload（避免网关 413） */
+function buildApiUploadBodies(row: Record<string, unknown>): Record<string, unknown>[] {
+  return [
+    prepareRowBodyForApi(row),
+    prepareRowBodyForApi(row, { aggressive: true, maxBytes: 24_000 }),
+    prepareRowBodyForApi(row, { aggressive: true, ultra: true, maxBytes: 8_000 }),
+  ];
+}
+
 function isEntityTooLargeError(err: unknown): boolean {
   return (
     err instanceof ApiRequestError &&
@@ -228,10 +237,7 @@ export async function apiCreateRecord<T = unknown>(
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
-  const bodies = [
-    prepareRowBodyForApi(row),
-    prepareRowBodyForApi(row, { aggressive: true, maxBytes: 24_000 }),
-  ];
+  const bodies = buildApiUploadBodies(row);
 
   let lastError: unknown;
   for (let i = 0; i < bodies.length; i++) {
@@ -243,7 +249,7 @@ export async function apiCreateRecord<T = unknown>(
       });
     } catch (e) {
       lastError = e;
-      if (i === 0 && isEntityTooLargeError(e)) continue;
+      if (i < bodies.length - 1 && isEntityTooLargeError(e)) continue;
       throw e;
     }
   }
@@ -256,10 +262,7 @@ export async function apiUpdateRecord<T = unknown>(
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
-  const bodies = [
-    prepareRowBodyForApi(row),
-    prepareRowBodyForApi(row, { aggressive: true, maxBytes: 24_000 }),
-  ];
+  const bodies = buildApiUploadBodies(row);
 
   let lastError: unknown;
   for (let i = 0; i < bodies.length; i++) {
@@ -271,11 +274,106 @@ export async function apiUpdateRecord<T = unknown>(
       });
     } catch (e) {
       lastError = e;
-      if (i === 0 && isEntityTooLargeError(e)) continue;
+      if (i < bodies.length - 1 && isEntityTooLargeError(e)) continue;
       throw e;
     }
   }
   throw lastError;
+}
+
+export async function apiPatchRecord<T = unknown>(
+  table: string,
+  id: string,
+  row: Record<string, unknown>,
+  opts?: { signal?: AbortSignal },
+): Promise<T> {
+  return apiRequest<T>(`/api/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: prepareRowBodyForApi(row),
+    signal: opts?.signal,
+  });
+}
+
+export type ApiListPagination = {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
+export type ApiListResponse<T> = {
+  list: T[];
+  pagination: ApiListPagination;
+};
+
+function buildListQuery(opts?: {
+  page?: number;
+  limit?: number;
+  includeDeleted?: boolean;
+}): string {
+  const params = new URLSearchParams();
+  if (opts?.page != null) params.set('page', String(opts.page));
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  if (opts?.includeDeleted === true) params.set('includeDeleted', 'true');
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
+export async function apiListRecords<T extends Record<string, unknown>>(
+  table: string,
+  opts?: {
+    page?: number;
+    limit?: number;
+    includeDeleted?: boolean;
+    signal?: AbortSignal;
+  },
+): Promise<ApiListResponse<T>> {
+  const data = await apiRequest<ApiListResponse<T>>(
+    `/api/data/${encodeURIComponent(table)}${buildListQuery(opts)}`,
+    { method: 'GET', signal: opts?.signal },
+  );
+  return {
+    list: Array.isArray(data?.list) ? data.list : [],
+    pagination: data?.pagination ?? {
+      page: opts?.page ?? 1,
+      limit: opts?.limit ?? 50,
+      total: 0,
+      totalPages: 0,
+    },
+  };
+}
+
+export async function apiGetRecord<T extends Record<string, unknown>>(
+  table: string,
+  id: string,
+  opts?: { signal?: AbortSignal },
+): Promise<T> {
+  return apiRequest<T>(`/api/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
+    method: 'GET',
+    signal: opts?.signal,
+  });
+}
+
+export type ApiTableMetaRow = {
+  name?: string;
+  table?: string;
+  primaryKey?: string;
+  primary_key?: string;
+  hasDeletedAt?: boolean;
+  has_deleted_at?: boolean;
+  columns?: string[];
+};
+
+export async function apiGetTablesMeta(signal?: AbortSignal): Promise<ApiTableMetaRow[]> {
+  const data = await apiRequest<ApiTableMetaRow[] | { tables?: ApiTableMetaRow[] }>('/api/tables', {
+    method: 'GET',
+    signal,
+  });
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === 'object' && Array.isArray((data as { tables?: ApiTableMetaRow[] }).tables)) {
+    return (data as { tables: ApiTableMetaRow[] }).tables;
+  }
+  return [];
 }
 
 export async function apiHealthCheck(opts?: { signal?: AbortSignal }): Promise<boolean> {

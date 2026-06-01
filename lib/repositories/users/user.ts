@@ -1,3 +1,5 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { deriveRestDaysFromWorkoutDays, parseUserWeekDaysJson } from '@/lib/user-workout-schedule';
 
 import { getDatabase } from '../../database.native';
@@ -45,8 +47,7 @@ function notifyDefaultUserUpdated() {
 }
 
 export async function getDefaultUser() {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<UserRow>('SELECT * FROM users WHERE id = ? LIMIT 1', ['default']);
+  const row = await readApiRecord<UserRow>('users', 'default', { offlineFallback: true });
   if (!row) return row;
 
   if (!Object.prototype.hasOwnProperty.call(row, 'birthday')) {
@@ -55,6 +56,7 @@ export async function getDefaultUser() {
 
   const computed = computeAgeFromBirthdayIso(row.birthday);
   if (row.age !== computed) {
+    const db = await getDatabase();
     await db.runAsync(`UPDATE users SET age = ?, updated_at = datetime('now') WHERE id = ?`, [computed, 'default']);
     notifyDefaultUserUpdated();
     return { ...row, age: computed };

@@ -2,6 +2,8 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { Platform } from 'react-native';
 
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import {
   parseWishItemExtra,
@@ -89,20 +91,12 @@ export async function createWishItem(input: CreateWishItemInput) {
 }
 
 export async function getWishItemById(id: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<WishItemRow>(
-    'SELECT * FROM wish_items WHERE id = ? AND deleted_at IS NULL LIMIT 1',
-    [id]
-  );
+  return readApiRecord<WishItemRow>('wish_items', id, { offlineFallback: true });
 }
 
 export async function listWishItems() {
-  const db = await getDatabase();
-  return db.getAllAsync<WishItemRow>(
-    `SELECT * FROM wish_items
-     WHERE deleted_at IS NULL
-     ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC`
-  );
+  const rows = await readApiTable<WishItemRow>('wish_items', { offlineFallback: true });
+  return sortByUpdatedDesc(rows);
 }
 
 export async function updateWishItem(id: string, input: UpdateWishItemInput) {

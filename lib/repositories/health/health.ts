@@ -1,5 +1,7 @@
 import { File } from 'expo-file-system';
 
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { addDaysToYmd, compareDatetimeDesc, isYmdInRange, sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import type {
   CreateHealthRecordInput,
@@ -36,85 +38,58 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
 }
 
 export async function getHealthRecordById(id: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<HealthRecordRow>('SELECT * FROM health_records WHERE id = ? AND deleted_at IS NULL LIMIT 1', [id]);
+  return readApiRecord<HealthRecordRow>('health_records', id, { offlineFallback: true });
 }
 
 export async function getHealthRecordsByUserId(userId: string) {
-  const db = await getDatabase();
-  return db.getAllAsync<HealthRecordRow>(
-    'SELECT * FROM health_records WHERE user_id = ? AND deleted_at IS NULL ORDER BY record_date DESC, updated_at DESC',
-    [userId]
-  );
+  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  return sortByUpdatedDesc(rows.filter(r => r.user_id === userId));
 }
-// endDate 默认是今天
-// 会查询从 endDate 往前 6 天到今天，一共 7 天的数据
-// 排序是按日期升序
+
 export async function getHealthRecordsLast7Days(userId: string, endDate: string = new Date().toISOString().slice(0, 10)) {
-  const db = await getDatabase();
-  return db.getAllAsync<HealthRecordRow>(
-    `SELECT *
-     FROM health_records
-     WHERE user_id = ?
-       AND deleted_at IS NULL
-       AND record_date BETWEEN date(?, '-6 day') AND date(?)
-     ORDER BY record_date ASC, updated_at ASC`,
-    [userId, endDate, endDate]
-  );
+  const startDate = addDaysToYmd(endDate, -6);
+  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  return rows
+    .filter(r => r.user_id === userId && isYmdInRange(r.record_date, startDate, endDate))
+    .sort((a, b) => {
+      const d = a.record_date.localeCompare(b.record_date);
+      if (d !== 0) return d;
+      return compareDatetimeDesc(a.updated_at, b.updated_at) * -1;
+    });
 }
 
-/** 指定日历日（YYYY-MM-DD）下，该用户最新一条健康记录（同日多条时取 updated_at 最新）。 */
 export async function getLatestHealthRecordForUserOnDate(userId: string, recordDateYmd: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<HealthRecordRow>(
-    `SELECT *
-     FROM health_records
-     WHERE user_id = ?
-       AND deleted_at IS NULL
-       AND record_date = ?
-     ORDER BY updated_at DESC, created_at DESC
-     LIMIT 1`,
-    [userId, recordDateYmd]
-  );
+  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  const dayRows = rows.filter(r => r.user_id === userId && r.record_date === recordDateYmd);
+  if (dayRows.length === 0) return null;
+  return [...dayRows].sort((a, b) => compareDatetimeDesc(a.updated_at, b.updated_at))[0] ?? null;
 }
 
-/** 指定日（YYYY-MM-DD）该用户所有未删除的 health_records，按创建时间升序（便于时间线展示）。 */
 export async function getHealthRecordsForUserOnDate(userId: string, recordDateYmd: string) {
-  const db = await getDatabase();
-  return db.getAllAsync<HealthRecordRow>(
-    `SELECT *
-     FROM health_records
-     WHERE user_id = ?
-       AND deleted_at IS NULL
-       AND record_date = ?
-     ORDER BY datetime(created_at) ASC, datetime(updated_at) ASC`,
-    [userId, recordDateYmd]
-  );
+  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  return rows
+    .filter(r => r.user_id === userId && r.record_date === recordDateYmd)
+    .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
 }
 
-/** 指定日该用户所有未删除记录的摄入汇总；当日无记录时返回 null。 */
 export async function getHealthIntakeTotalsForUserOnDate(
   userId: string,
   recordDateYmd: string
 ): Promise<HealthIntakeDayTotals | null> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ cnt: number; h: number; p: number; c: number; s: number }>(
-    `SELECT COUNT(*) as cnt,
-            COALESCE(SUM(hydration), 0) as h,
-            COALESCE(SUM(protein), 0) as p,
-            COALESCE(SUM(carbohydrate), 0) as c,
-            COALESCE(SUM(sodium), 0) as s
-     FROM health_records
-     WHERE user_id = ? AND deleted_at IS NULL AND record_date = ?`,
-    [userId, recordDateYmd]
-  );
-  if (!row || row.cnt === 0) return null;
-  return {
-    hydration: Number(row.h),
-    protein: Number(row.p),
-    carbohydrate: Number(row.c),
-    sodium: Number(row.s),
-  };
+  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  const dayRows = rows.filter(r => r.user_id === userId && r.record_date === recordDateYmd);
+  if (dayRows.length === 0) return null;
+  let hydration = 0;
+  let protein = 0;
+  let carbohydrate = 0;
+  let sodium = 0;
+  for (const r of dayRows) {
+    hydration += Number(r.hydration ?? 0);
+    protein += Number(r.protein ?? 0);
+    carbohydrate += Number(r.carbohydrate ?? 0);
+    sodium += Number(r.sodium ?? 0);
+  }
+  return { hydration, protein, carbohydrate, sodium };
 }
 
 export async function updateHealthRecord(id: string, input: UpdateHealthRecordInput) {

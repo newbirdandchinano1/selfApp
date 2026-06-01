@@ -1,3 +1,5 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
@@ -27,13 +29,8 @@ export async function hasEarnedRewardForSource(
   sourceType: 'task' | 'project',
   sourceId: string,
 ): Promise<boolean> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ c: number }>(
-    `SELECT COUNT(1) AS c FROM earned_rewards
-     WHERE source_type = ? AND source_id = ? AND deleted_at IS NULL`,
-    [sourceType, sourceId],
-  );
-  return (row?.c ?? 0) > 0;
+  const rows = await readApiTable<EarnedRewardRow>('earned_rewards', { offlineFallback: true });
+  return rows.some(r => r.source_type === sourceType && r.source_id === sourceId);
 }
 
 export async function grantEarnedRewardFromExtraData(input: {
@@ -70,27 +67,22 @@ export async function grantEarnedRewardFromExtraData(input: {
   ],
   );
 
-  return db.getFirstAsync<EarnedRewardRow>(
-    'SELECT * FROM earned_rewards WHERE id = ? AND deleted_at IS NULL LIMIT 1',
-    [id],
-  );
+  return readApiRecord<EarnedRewardRow>('earned_rewards', id, { offlineFallback: true });
 }
 
 export async function listEarnedRewards(): Promise<EarnedRewardRow[]> {
-  const db = await getDatabase();
-  return db.getAllAsync<EarnedRewardRow>(
-    `SELECT * FROM earned_rewards
-     WHERE deleted_at IS NULL
-     ORDER BY redeemed_at IS NOT NULL ASC, datetime(earned_at) DESC`,
-  );
+  const rows = await readApiTable<EarnedRewardRow>('earned_rewards', { offlineFallback: true });
+  return [...rows].sort((a, b) => {
+    const aRedeemed = a.redeemed_at != null;
+    const bRedeemed = b.redeemed_at != null;
+    if (aRedeemed !== bRedeemed) return aRedeemed ? 1 : -1;
+    return compareDatetimeDesc(a.earned_at, b.earned_at);
+  });
 }
 
 export async function redeemEarnedReward(id: string): Promise<void> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<EarnedRewardRow>(
-    'SELECT * FROM earned_rewards WHERE id = ? AND deleted_at IS NULL LIMIT 1',
-    [id],
-  );
+  const row = await readApiRecord<EarnedRewardRow>('earned_rewards', id, { offlineFallback: true });
   if (!row || row.redeemed_at) return;
 
   await db.runAsync(
@@ -110,10 +102,7 @@ export async function redeemEarnedReward(id: string): Promise<void> {
 
 export async function unredeemEarnedReward(id: string): Promise<void> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<EarnedRewardRow>(
-    'SELECT * FROM earned_rewards WHERE id = ? AND deleted_at IS NULL LIMIT 1',
-    [id],
-  );
+  const row = await readApiRecord<EarnedRewardRow>('earned_rewards', id, { offlineFallback: true });
   if (!row || !row.redeemed_at) return;
 
   await db.runAsync(

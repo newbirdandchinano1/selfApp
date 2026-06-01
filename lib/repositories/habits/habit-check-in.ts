@@ -1,4 +1,6 @@
 import { makeCompositeEntityId } from '@/lib/entity-id';
+import { readApiTable } from '@/lib/api-read';
+import { isYmdInRange } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '../../tasks-logical-day';
 
@@ -7,19 +9,28 @@ export function habitCheckInRowId(habitId: string, recordDateYmd: string): strin
   return makeCompositeEntityId('hci_', habitId, recordDateYmd.replace(/-/g, ''));
 }
 
+async function loadActiveHabitIds(): Promise<Set<string>> {
+  const habits = await readApiTable<{ id: string }>('habits', { offlineFallback: true });
+  return new Set(habits.map(h => h.id));
+}
+
+async function loadActiveCheckIns(): Promise<
+  { habit_id: string; record_date: string; count: number }[]
+> {
+  const [habitIds, checkIns] = await Promise.all([
+    loadActiveHabitIds(),
+    readApiTable<{ habit_id: string; record_date: string; count: number }>('habit_check_ins', {
+      offlineFallback: true,
+    }),
+  ]);
+  return checkIns.filter(c => habitIds.has(c.habit_id) && (c.count ?? 0) >= 1);
+}
+
 /** 当前习惯所有有效打卡日 → YYYY-MM-DD → 次数（不含已软删） */
 export async function getCheckInsMapByHabitId(habitId: string): Promise<Record<string, number>> {
-  const db = await getDatabase();
-  const rows = await db.getAllAsync<{ record_date: string; count: number }>(
-    `SELECT hci.record_date AS record_date, hci.count AS count
-      FROM habit_check_ins hci
-      INNER JOIN habits h ON h.id = hci.habit_id AND h.deleted_at IS NULL
-      WHERE hci.habit_id = ? AND hci.deleted_at IS NULL AND hci.count >= 1
-      ORDER BY hci.record_date`,
-    [habitId]
-  );
+  const checkIns = await loadActiveCheckIns();
   const out: Record<string, number> = {};
-  for (const r of rows) {
+  for (const r of checkIns.filter(c => c.habit_id === habitId)) {
     out[r.record_date] = r.count;
   }
   return out;
@@ -165,44 +176,21 @@ export type HabitCheckInListStat = {
 
 /** 列表页批量统计：累计打卡天数、今日次数 */
 export async function getHabitCheckInListStats(): Promise<Map<string, HabitCheckInListStat>> {
-  const db = await getDatabase();
   const boundary = await loadTasksDayBoundary();
   const today = getLogicalLocalYmd(new Date(), boundary);
-
-  const dayRows = await db.getAllAsync<{ habit_id: string; c: number }>(
-    `SELECT hci.habit_id AS habit_id, COUNT(*) AS c
-      FROM habit_check_ins hci
-      INNER JOIN habits h ON h.id = hci.habit_id AND h.deleted_at IS NULL
-      WHERE hci.deleted_at IS NULL AND hci.count >= 1
-      GROUP BY hci.habit_id`
-  );
-
-  const todayRows = await db.getAllAsync<{ habit_id: string; count: number }>(
-    `SELECT hci.habit_id AS habit_id, hci.count AS count
-      FROM habit_check_ins hci
-      INNER JOIN habits h ON h.id = hci.habit_id AND h.deleted_at IS NULL
-      WHERE hci.deleted_at IS NULL AND hci.record_date = ? AND hci.count >= 1`,
-    [today]
-  );
+  const checkIns = await loadActiveCheckIns();
 
   const map = new Map<string, HabitCheckInListStat>();
-  for (const r of dayRows) {
-    map.set(r.habit_id, {
-      habitId: r.habit_id,
-      achievedDays: r.c,
-      todayCount: 0,
-    });
-  }
-  for (const r of todayRows) {
+  for (const r of checkIns) {
     const prev = map.get(r.habit_id);
     if (prev) {
-      prev.todayCount = r.count;
+      prev.achievedDays += 1;
     } else {
-      map.set(r.habit_id, {
-        habitId: r.habit_id,
-        achievedDays: 0,
-        todayCount: r.count,
-      });
+      map.set(r.habit_id, { habitId: r.habit_id, achievedDays: 1, todayCount: 0 });
+    }
+    if (r.record_date === today) {
+      const stat = map.get(r.habit_id)!;
+      stat.todayCount = r.count;
     }
   }
   return map;
@@ -213,19 +201,11 @@ export async function getHabitCheckInCountsByDateRange(
   startYmd: string,
   endYmd: string
 ): Promise<Map<string, Map<string, number>>> {
-  const db = await getDatabase();
-  const rows = await db.getAllAsync<{ record_date: string; habit_id: string; count: number }>(
-    `SELECT hci.record_date AS record_date, hci.habit_id AS habit_id, hci.count AS count
-       FROM habit_check_ins hci
-       INNER JOIN habits h ON h.id = hci.habit_id AND h.deleted_at IS NULL
-      WHERE hci.deleted_at IS NULL
-        AND hci.count >= 1
-        AND hci.record_date >= ?
-        AND hci.record_date <= ?`,
-    [startYmd, endYmd]
+  const checkIns = await loadActiveCheckIns().then(rows =>
+    rows.filter(r => isYmdInRange(r.record_date, startYmd, endYmd)),
   );
   const out = new Map<string, Map<string, number>>();
-  for (const r of rows) {
+  for (const r of checkIns) {
     let day = out.get(r.record_date);
     if (!day) {
       day = new Map();

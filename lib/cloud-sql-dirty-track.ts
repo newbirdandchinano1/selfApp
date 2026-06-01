@@ -35,6 +35,7 @@ export function markCloudSqliteTableDirty(table: string): void {
   dirtyTables.add(t);
   schedulePersistCloudDirty();
   scheduleCloudTablePushDebounced();
+  void import('@/lib/api-incremental-sync').then(m => m.markApiTableDirty(t));
 }
 
 /** @deprecated 使用 markCloudSqliteTableDirty */

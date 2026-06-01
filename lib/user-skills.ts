@@ -1,4 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import type * as SQLite from 'expo-sqlite';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '@/lib/database';
@@ -41,6 +43,7 @@ type SkillRow = {
   last_evaluation: string | null;
   last_suggestions: string | null;
   sort_order: number | null;
+  updated_at?: string | null;
 };
 
 type DesiredRow = {
@@ -48,6 +51,7 @@ type DesiredRow = {
   name: string;
   target_level: string;
   sort_order: number | null;
+  updated_at?: string | null;
 };
 
 type MetaRow = {
@@ -187,12 +191,12 @@ function markUserSkillsDirty(): void {
 
 async function loadSnapshotFromDb(db: SQLite.SQLiteDatabase): Promise<UserSkillsSnapshot> {
   const skillRows = await db.getAllAsync<SkillRow>(
-    `SELECT id, name, description, last_evaluation, last_suggestions, sort_order
+    `SELECT id, name, description, last_evaluation, last_suggestions, sort_order, updated_at
      FROM user_skill_items WHERE deleted_at IS NULL
      ORDER BY COALESCE(sort_order, 999999), datetime(updated_at) DESC`,
   );
   const desiredRows = await db.getAllAsync<DesiredRow>(
-    `SELECT id, name, target_level, sort_order
+    `SELECT id, name, target_level, sort_order, updated_at
      FROM user_desired_skills WHERE deleted_at IS NULL
      ORDER BY COALESCE(sort_order, 999999), datetime(updated_at) DESC`,
   );
@@ -204,6 +208,33 @@ async function loadSnapshotFromDb(db: SQLite.SQLiteDatabase): Promise<UserSkills
   return {
     skills: skillRows.map(rowToSkill),
     desired_skills: desiredRows.map(rowToDesired),
+    last_ai_at: meta?.last_ai_at?.trim() || null,
+    last_overall_suggestions: meta?.last_overall_suggestions?.trim() || null,
+    last_profile_analysis: meta?.last_profile_analysis?.trim() || null,
+  };
+}
+
+async function loadSnapshotFromApi(): Promise<UserSkillsSnapshot> {
+  const [skillRows, desiredRows] = await Promise.all([
+    readApiTable<SkillRow>('user_skill_items', { offlineFallback: true }),
+    readApiTable<DesiredRow>('user_desired_skills', { offlineFallback: true }),
+  ]);
+  const sortedSkills = [...skillRows].sort((a, b) => {
+    const sa = a.sort_order ?? 999_999;
+    const sb = b.sort_order ?? 999_999;
+    if (sa !== sb) return sa - sb;
+    return compareDatetimeDesc(a.updated_at, b.updated_at);
+  });
+  const sortedDesired = [...desiredRows].sort((a, b) => {
+    const sa = a.sort_order ?? 999_999;
+    const sb = b.sort_order ?? 999_999;
+    if (sa !== sb) return sa - sb;
+    return compareDatetimeDesc(a.updated_at, b.updated_at);
+  });
+  const meta = await readApiRecord<MetaRow>('user_skills_meta', SKILLS_META_ID, { offlineFallback: true });
+  return {
+    skills: sortedSkills.map(rowToSkill),
+    desired_skills: sortedDesired.map(rowToDesired),
     last_ai_at: meta?.last_ai_at?.trim() || null,
     last_overall_suggestions: meta?.last_overall_suggestions?.trim() || null,
     last_profile_analysis: meta?.last_profile_analysis?.trim() || null,
@@ -321,9 +352,13 @@ export async function migrateUserSkillsStorageToSqliteIfNeeded(db?: SQLite.SQLit
 }
 
 export async function loadUserSkills(): Promise<UserSkillsSnapshot> {
-  const db = await getDatabase();
-  await migrateUserSkillsStorageToSqliteIfNeeded(db);
-  return loadSnapshotFromDb(db);
+  try {
+    return await loadSnapshotFromApi();
+  } catch {
+    const db = await getDatabase();
+    await migrateUserSkillsStorageToSqliteIfNeeded(db);
+    return loadSnapshotFromDb(db);
+  }
 }
 
 export async function saveUserSkills(snapshot: UserSkillsSnapshot): Promise<void> {

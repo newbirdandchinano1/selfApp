@@ -1,3 +1,5 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import { REVIEW_TEMPLATE_DEFAULTS } from './review-template-defaults';
@@ -25,35 +27,18 @@ export function createReviewColumnId(): string {
 }
 
 export async function countReviewDimensions(scope: ReviewTemplateScope): Promise<number> {
-  const db = await getDatabase();
-  if (!db) return 0;
-  const row = await db.getFirstAsync<{ c: number }>(
-    `SELECT COUNT(1) AS c FROM review_dimensions WHERE scope = ? AND deleted_at IS NULL`,
-    [scope],
-  );
-  return row?.c ?? 0;
+  const rows = await readApiTable<ReviewDimensionRow>('review_dimensions', { offlineFallback: true });
+  return rows.filter(r => r.scope === scope).length;
 }
 
 export async function listReviewDimensions(scope: ReviewTemplateScope): Promise<ReviewDimensionRow[]> {
-  const db = await getDatabase();
-  if (!db) return [];
-  return db.getAllAsync<ReviewDimensionRow>(
-    `SELECT * FROM review_dimensions
-     WHERE scope = ? AND deleted_at IS NULL
-     ORDER BY sort_order ASC, datetime(created_at) ASC`,
-    [scope],
-  );
+  const rows = await readApiTable<ReviewDimensionRow>('review_dimensions', { offlineFallback: true });
+  return sortBySortOrderAsc(rows.filter(r => r.scope === scope));
 }
 
 export async function listReviewColumnsForDimension(dimensionId: string): Promise<ReviewColumnRow[]> {
-  const db = await getDatabase();
-  if (!db) return [];
-  return db.getAllAsync<ReviewColumnRow>(
-    `SELECT * FROM review_columns
-     WHERE dimension_id = ? AND deleted_at IS NULL
-     ORDER BY sort_order ASC, datetime(created_at) ASC`,
-    [dimensionId],
-  );
+  const rows = await readApiTable<ReviewColumnRow>('review_columns', { offlineFallback: true });
+  return sortBySortOrderAsc(rows.filter(r => r.dimension_id === dimensionId));
 }
 
 export async function listReviewTemplate(scope: ReviewTemplateScope): Promise<ReviewDimensionTemplate[]> {
@@ -79,21 +64,11 @@ export async function listReviewTemplate(scope: ReviewTemplateScope): Promise<Re
 }
 
 export async function getReviewDimensionById(id: string): Promise<ReviewDimensionRow | null> {
-  const db = await getDatabase();
-  if (!db) return null;
-  return db.getFirstAsync<ReviewDimensionRow>(
-    `SELECT * FROM review_dimensions WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
-    [id],
-  );
+  return readApiRecord<ReviewDimensionRow>('review_dimensions', id, { offlineFallback: true });
 }
 
 export async function getReviewColumnById(id: string): Promise<ReviewColumnRow | null> {
-  const db = await getDatabase();
-  if (!db) return null;
-  return db.getFirstAsync<ReviewColumnRow>(
-    `SELECT * FROM review_columns WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
-    [id],
-  );
+  return readApiRecord<ReviewColumnRow>('review_columns', id, { offlineFallback: true });
 }
 
 export async function createReviewDimension(input: CreateReviewDimensionInput): Promise<void> {
@@ -221,9 +196,15 @@ async function getReviewColumnRowAny(id: string): Promise<ReviewColumnRow | null
   return db.getFirstAsync<ReviewColumnRow>(`SELECT * FROM review_columns WHERE id = ? LIMIT 1`, [id]);
 }
 
+type DefaultReviewDimensionDef =
+  | (typeof REVIEW_TEMPLATE_DEFAULTS)['daily'][number]
+  | (typeof REVIEW_TEMPLATE_DEFAULTS)['weekly'][number];
+
+type DefaultReviewColumnDef = DefaultReviewDimensionDef['columns'][number];
+
 async function ensureDefaultReviewDimension(
   scope: ReviewTemplateScope,
-  dim: (typeof REVIEW_TEMPLATE_DEFAULTS)['daily'][number],
+  dim: DefaultReviewDimensionDef,
 ): Promise<void> {
   const db = await getDatabase();
   if (!db) throw new Error('database not available');
@@ -254,8 +235,8 @@ async function ensureDefaultReviewDimension(
 }
 
 async function ensureDefaultReviewColumn(
-  dim: (typeof REVIEW_TEMPLATE_DEFAULTS)['daily'][number],
-  col: (typeof REVIEW_TEMPLATE_DEFAULTS)['daily'][number]['columns'][number],
+  dim: DefaultReviewDimensionDef,
+  col: DefaultReviewColumnDef,
 ): Promise<void> {
   const db = await getDatabase();
   if (!db) throw new Error('database not available');

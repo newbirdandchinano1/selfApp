@@ -1,3 +1,5 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { addDaysToYmd, compareDatetimeDesc, isYmdInRange, sortByNameAsc, sortBySortOrderAsc, sortByUpdatedDesc, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '@/lib/database';
 import {
@@ -137,19 +139,15 @@ function markRecipesDirty(): void {
   markCloudSqliteTableDirty('recipe_items');
 }
 
-async function loadStoreFromDb(db: SQLite.SQLiteDatabase): Promise<RecipeStore> {
-  const categories = await db.getAllAsync<CategoryRow>(
-    `SELECT id, name, created_at FROM recipe_categories
-     WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE`,
-  );
-  const recipes = await db.getAllAsync<RecipeRow>(
-    `SELECT id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri, created_at, updated_at
-     FROM recipe_items WHERE deleted_at IS NULL`,
-  );
+async function loadStoreFromApi(): Promise<RecipeStore> {
+  const [categoryRows, recipeRows] = await Promise.all([
+    readApiTable<CategoryRow>('recipe_categories', { offlineFallback: true }),
+    readApiTable<RecipeRow>('recipe_items', { offlineFallback: true }),
+  ]);
   return {
     version: 2,
-    categories: categories.map(rowToCategory),
-    recipes: recipes.map(rowToRecipe),
+    categories: sortByNameAsc(categoryRows).map(rowToCategory),
+    recipes: recipeRows.map(rowToRecipe),
   };
 }
 
@@ -373,7 +371,7 @@ export function recipeItemsFromBackupPayload(payload: unknown): RecipeItem[] {
 export async function loadRecipeStore(): Promise<RecipeStore> {
   const db = await getDatabase();
   await migrateRecipesStorageToSqliteIfNeeded(db);
-  return loadStoreFromDb(db);
+  return loadStoreFromApi();
 }
 
 export async function replaceRecipesFromCloudRestore(payload: RecipeStore | RecipeItem[]): Promise<void> {
@@ -384,47 +382,23 @@ export async function replaceRecipesFromCloudRestore(payload: RecipeStore | Reci
 }
 
 export async function listRecipeCategories(): Promise<RecipeCategory[]> {
-  const db = await getDatabase();
-  await migrateRecipesStorageToSqliteIfNeeded(db);
-  const rows = await db.getAllAsync<CategoryRow>(
-    `SELECT id, name, created_at FROM recipe_categories
-     WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE`,
-  );
-  return rows.map(rowToCategory);
+  const rows = await readApiTable<CategoryRow>('recipe_categories', { offlineFallback: true });
+  return sortByNameAsc(rows).map(rowToCategory);
 }
 
 export async function listRecipes(categoryId?: string): Promise<RecipeItem[]> {
-  const db = await getDatabase();
-  await migrateRecipesStorageToSqliteIfNeeded(db);
-  const rows = categoryId
-    ? await db.getAllAsync<RecipeRow>(
-        `SELECT id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri, created_at, updated_at
-         FROM recipe_items WHERE deleted_at IS NULL AND category_id = ?`,
-        [categoryId],
-      )
-    : await db.getAllAsync<RecipeRow>(
-        `SELECT id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri, created_at, updated_at
-         FROM recipe_items WHERE deleted_at IS NULL`,
-      );
-  return [...rows.map(rowToRecipe)].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  const rows = await readApiTable<RecipeRow>('recipe_items', { offlineFallback: true });
+  const filtered = categoryId ? rows.filter(r => r.category_id === categoryId) : rows;
+  return sortByUpdatedDesc(filtered).map(rowToRecipe);
 }
 
 export async function getRecipeCategory(id: string): Promise<RecipeCategory | null> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<CategoryRow>(
-    `SELECT id, name, created_at FROM recipe_categories WHERE id = ? AND deleted_at IS NULL`,
-    [id],
-  );
+  const row = await readApiRecord<CategoryRow>('recipe_categories', id, { offlineFallback: true });
   return row ? rowToCategory(row) : null;
 }
 
 export async function getRecipe(id: string): Promise<RecipeItem | null> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<RecipeRow>(
-    `SELECT id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri, created_at, updated_at
-     FROM recipe_items WHERE id = ? AND deleted_at IS NULL`,
-    [id],
-  );
+  const row = await readApiRecord<RecipeRow>('recipe_items', id, { offlineFallback: true });
   return row ? rowToRecipe(row) : null;
 }
 

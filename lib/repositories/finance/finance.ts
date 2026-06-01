@@ -1,4 +1,6 @@
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { compareDatetimeDesc, sortBySortOrderAsc, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import type {
   CreateFinanceAccountInput,
@@ -158,51 +160,53 @@ export async function createFinanceAccount(input: CreateFinanceAccountInput) {
   );
 }
 
+async function loadFinanceAccounts(): Promise<FinanceAccountRow[]> {
+  const rows = await readApiTable<FinanceAccountRow>('finance_accounts', { offlineFallback: true });
+  return [...rows].sort((a, b) => {
+    const c = compareDatetimeDesc(a.created_at, b.created_at) * -1;
+    if (c !== 0) return c;
+    return compareDatetimeDesc(a.updated_at, b.updated_at);
+  });
+}
+
+async function loadFinanceTransactionsForActiveAccounts(): Promise<FinanceTransactionRow[]> {
+  const [accounts, transactions] = await Promise.all([
+    loadFinanceAccounts(),
+    readApiTable<FinanceTransactionRow>('finance_transactions', { offlineFallback: true }),
+  ]);
+  const accountIds = new Set(accounts.map(a => a.id));
+  return transactions
+    .filter(t => accountIds.has(t.account_id))
+    .sort((a, b) => {
+      const h = compareDatetimeDesc(a.happened_at, b.happened_at);
+      if (h !== 0) return h;
+      return compareDatetimeDesc(a.updated_at, b.updated_at);
+    });
+}
+
 export async function getFinanceAccounts() {
-  const db = await getDatabase();
-  return db.getAllAsync<FinanceAccountRow>(
-    'SELECT * FROM finance_accounts WHERE deleted_at IS NULL ORDER BY datetime(created_at) ASC, datetime(updated_at) DESC'
-  );
+  return loadFinanceAccounts();
 }
 
 export async function getFinanceAccountsWithBalance() {
-  const db = await getDatabase();
-  return db.getAllAsync<FinanceAccountBalanceRow>(
-    `
-    SELECT
-      a.*,
-      COALESCE(SUM(
-        CASE
-          WHEN t.id IS NULL THEN 0
-          WHEN t.transaction_type = 'income' THEN ABS(t.amount)
-          WHEN t.transaction_type = 'expense' THEN -ABS(t.amount)
-          WHEN t.transaction_type = 'transfer' THEN
-            CASE json_extract(t.extra_data, '$.transfer_leg')
-              WHEN 'out' THEN -ABS(t.amount)
-              WHEN 'in' THEN ABS(t.amount)
-              ELSE 0
-            END
-          ELSE -ABS(t.amount)
-        END
-      ), 0) AS balance
-    FROM finance_accounts a
-    LEFT JOIN finance_transactions t
-      ON t.account_id = a.id
-     AND t.deleted_at IS NULL
-    WHERE a.deleted_at IS NULL
-    GROUP BY a.id
-    ORDER BY datetime(a.created_at) ASC, datetime(a.updated_at) DESC
-    `
-  );
+  const accounts = await loadFinanceAccounts();
+  const transactions = await loadFinanceTransactionsForActiveAccounts();
+  return accounts.map(a => {
+    const balance = transactions
+      .filter(t => t.account_id === a.id)
+      .reduce(
+        (sum, t) =>
+          sum +
+          computeTransactionLedgerEffect(t.transaction_type, t.amount, t.extra_data),
+        0,
+      );
+    return { ...a, balance } satisfies FinanceAccountBalanceRow;
+  });
 }
 
 export async function getFinanceAccountTypes() {
-  const db = await getDatabase();
-  return db.getAllAsync<FinanceAccountTypeRow>(
-    `SELECT * FROM finance_account_types
-     WHERE deleted_at IS NULL
-     ORDER BY sort_order ASC, datetime(created_at) ASC, datetime(updated_at) DESC`
-  );
+  const rows = await readApiTable<FinanceAccountTypeRow>('finance_account_types', { offlineFallback: true });
+  return sortBySortOrderAsc(rows);
 }
 
 export async function upsertFinanceAccountType(input: UpsertFinanceAccountTypeInput) {
@@ -322,10 +326,8 @@ export async function createFinanceFlowCategory(input: CreateFinanceFlowCategory
 }
 
 export async function getFinanceFlowCategories() {
-  const db = await getDatabase();
-  return db.getAllAsync<FinanceFlowCategoryRow>(
-    'SELECT * FROM finance_flow_categories WHERE deleted_at IS NULL ORDER BY sort_order ASC, datetime(created_at) ASC'
-  );
+  const rows = await readApiTable<FinanceFlowCategoryRow>('finance_flow_categories', { offlineFallback: true });
+  return sortBySortOrderAsc(rows);
 }
 
 export async function updateFinanceFlowCategory(id: string, input: UpdateFinanceFlowCategoryInput) {
@@ -480,91 +482,39 @@ export async function applyFinanceAccountBalanceCorrection(input: {
 }
 
 export async function getFinanceTransactionById(id: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<FinanceTransactionRow>(
-    'SELECT * FROM finance_transactions WHERE id = ? AND deleted_at IS NULL LIMIT 1',
-    [id]
-  );
+  return readApiRecord<FinanceTransactionRow>('finance_transactions', id, { offlineFallback: true });
 }
 
 export async function getFinanceTransactions() {
-  const db = await getDatabase();
-  return db.getAllAsync<FinanceTransactionRow>(
-    `SELECT t.*
-     FROM finance_transactions t
-     INNER JOIN finance_accounts a
-       ON a.id = t.account_id
-      AND a.deleted_at IS NULL
-     WHERE t.deleted_at IS NULL
-     ORDER BY datetime(t.happened_at) DESC, datetime(t.updated_at) DESC`
-  );
+  return loadFinanceTransactionsForActiveAccounts();
 }
 
 export async function getFinanceTransactionsByAccountId(accountId: string) {
-  const db = await getDatabase();
-  return db.getAllAsync<FinanceTransactionRow>(
-    `SELECT t.*
-     FROM finance_transactions t
-     INNER JOIN finance_accounts a
-       ON a.id = t.account_id
-      AND a.deleted_at IS NULL
-     WHERE t.deleted_at IS NULL AND t.account_id = ?
-     ORDER BY datetime(t.happened_at) DESC, datetime(t.updated_at) DESC`,
-    [accountId]
-  );
+  const rows = await loadFinanceTransactionsForActiveAccounts();
+  return rows.filter(t => t.account_id === accountId);
 }
 
 export async function getFinanceTransactionsByYmd(ymd: string) {
-  const db = await getDatabase();
-  return db.getAllAsync<FinanceTransactionRow>(
-    `SELECT t.*
-     FROM finance_transactions t
-     INNER JOIN finance_accounts a
-       ON a.id = t.account_id
-      AND a.deleted_at IS NULL
-     WHERE t.deleted_at IS NULL AND date(t.happened_at) = date(?)
-     ORDER BY datetime(t.happened_at) DESC, datetime(t.updated_at) DESC`,
-    [ymd]
-  );
+  const rows = await loadFinanceTransactionsForActiveAccounts();
+  return rows.filter(t => ymdFromDatetime(t.happened_at) === ymd);
 }
 
 export async function getFinanceDailySummariesByDateRange(startYmd: string, endYmd: string) {
-  const db = await getDatabase();
-  return db.getAllAsync<FinanceDailySummaryRow>(
-    `
-    WITH tx_effect AS (
-      SELECT
-        date(t.happened_at) AS day,
-        CASE
-          WHEN t.transaction_type = 'income' THEN ABS(t.amount)
-          WHEN t.transaction_type = 'expense' THEN -ABS(t.amount)
-          WHEN t.transaction_type = 'transfer' THEN
-            CASE json_extract(t.extra_data, '$.transfer_leg')
-              WHEN 'out' THEN -ABS(t.amount)
-              WHEN 'in' THEN ABS(t.amount)
-              ELSE 0
-            END
-          ELSE -ABS(t.amount)
-        END AS effect_amount
-      FROM finance_transactions t
-      INNER JOIN finance_accounts a
-        ON a.id = t.account_id
-       AND a.deleted_at IS NULL
-      WHERE t.deleted_at IS NULL
-        AND date(t.happened_at) >= date(?)
-        AND date(t.happened_at) <= date(?)
-    )
-    SELECT
-      day,
-      COALESCE(SUM(CASE WHEN effect_amount > 0 THEN effect_amount ELSE 0 END), 0) AS income,
-      COALESCE(SUM(CASE WHEN effect_amount < 0 THEN ABS(effect_amount) ELSE 0 END), 0) AS expense,
-      COALESCE(SUM(effect_amount), 0) AS net
-    FROM tx_effect
-    GROUP BY day
-    ORDER BY day ASC
-    `,
-    [startYmd, endYmd]
-  );
+  const rows = await loadFinanceTransactionsForActiveAccounts();
+  const byDay = new Map<string, { income: number; expense: number; net: number }>();
+  for (const t of rows) {
+    const day = ymdFromDatetime(t.happened_at);
+    if (!day || day < startYmd || day > endYmd) continue;
+    const effect = computeTransactionLedgerEffect(t.transaction_type, t.amount, t.extra_data);
+    const agg = byDay.get(day) ?? { income: 0, expense: 0, net: 0 };
+    if (effect > 0) agg.income += effect;
+    else if (effect < 0) agg.expense += Math.abs(effect);
+    agg.net += effect;
+    byDay.set(day, agg);
+  }
+  return [...byDay.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, v]) => ({ day, ...v })) satisfies FinanceDailySummaryRow[];
 }
 
 export async function updateFinanceTransaction(id: string, input: UpdateFinanceTransactionInput) {

@@ -25,3 +25,12 @@ export async function clearWeeklyReviewConfiguredWeekday(): Promise<void> {
 export function isTodayConfiguredWeeklyReviewDay(configuredDow: number, now: Date = new Date()): boolean {
   return now.getDay() === configuredDow;
 }
+
+/** 周期终点（每周复盘日）当天不做日复盘，改填周复盘。 */
+export function isDailyReviewSkippedOnWeeklyReviewDay(
+  ymd: string,
+  cycleEndYmd: string,
+  configuredDow: number | null,
+): boolean {
+  return configuredDow !== null && ymd === cycleEndYmd;
+}

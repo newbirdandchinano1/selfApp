@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { readApiRecord } from '@/lib/api-read';
 import { getDatabase } from '@/lib/database';
 import { markCloudSqliteTableDirty } from '@/lib/cloud-sql-dirty-track';
 
@@ -101,12 +102,8 @@ export async function migrateAppSettingsFromAsyncStorageIfNeeded(): Promise<void
 }
 
 export async function getAppSettingRaw(key: string): Promise<string | null> {
-  const db = await getDatabase();
   await migrateAppSettingsFromAsyncStorageIfNeeded();
-  const row = await db.getFirstAsync<{ value_json: string }>(
-    'SELECT value_json FROM app_settings WHERE key = ? LIMIT 1',
-    [key],
-  );
+  const row = await readApiRecord<{ value_json: string }>('app_settings', key, { offlineFallback: true });
   if (!row?.value_json) return null;
   return row.value_json;
 }

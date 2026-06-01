@@ -1,4 +1,5 @@
-import { getDatabase } from '../../database.native';
+import { readApiTable } from '@/lib/api-read';
+import { isYmdInRange, ymdFromDatetime } from '@/lib/api-read-helpers';
 
 export type WeeklyReviewMetrics = {
   /** 统计区间类型：近 7 个自然日（含锚定日）或本地自然周（周一至周日） */
@@ -107,64 +108,76 @@ export async function fetchWeeklyReviewMetrics(
 ): Promise<WeeklyReviewMetrics> {
   const { startYmd, endYmd, start, end } =
     range === 'rolling-7' ? getRollingSevenDayRange(anchor) : getCurrentWeekRange(anchor);
-  const db = await getDatabase();
 
-  const [
-    tasksDoneRow,
-    tasksNewRow,
-    habitRow,
-    savingsRow,
-    incomeRow,
-    expenseRow,
-    wishRow,
-  ] = await Promise.all([
-    db.getFirstAsync<{ c: number }>(
-      `SELECT COUNT(1) AS c FROM tasks
-        WHERE deleted_at IS NULL AND status = 'done' AND completed_at IS NOT NULL
-          AND date(completed_at) >= date(?) AND date(completed_at) <= date(?)`,
-      [startYmd, endYmd],
-    ),
-    db.getFirstAsync<{ c: number }>(
-      `SELECT COUNT(1) AS c FROM tasks
-        WHERE deleted_at IS NULL
-          AND date(created_at) >= date(?) AND date(created_at) <= date(?)`,
-      [startYmd, endYmd],
-    ),
-    db.getFirstAsync<{ s: number }>(
-      `SELECT COALESCE(SUM(hci.count), 0) AS s
-         FROM habit_check_ins hci
-         INNER JOIN habits h ON h.id = hci.habit_id AND h.deleted_at IS NULL
-        WHERE hci.deleted_at IS NULL AND hci.count >= 1
-          AND hci.record_date >= ? AND hci.record_date <= ?`,
-      [startYmd, endYmd],
-    ),
-    db.getFirstAsync<{ s: number }>(
-      `SELECT COALESCE(SUM(d.amount), 0) AS s
-         FROM savings_plan_deposits d
-         INNER JOIN savings_plans p ON p.id = d.savings_plan_id AND p.deleted_at IS NULL
-        WHERE d.deleted_at IS NULL
-          AND date(d.created_at) >= date(?) AND date(d.created_at) <= date(?)`,
-      [startYmd, endYmd],
-    ),
-    db.getFirstAsync<{ s: number }>(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) AS s FROM finance_transactions
-        WHERE deleted_at IS NULL AND transaction_type = 'income'
-          AND date(happened_at) >= date(?) AND date(happened_at) <= date(?)`,
-      [startYmd, endYmd],
-    ),
-    db.getFirstAsync<{ s: number }>(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) AS s FROM finance_transactions
-        WHERE deleted_at IS NULL AND transaction_type = 'expense'
-          AND date(happened_at) >= date(?) AND date(happened_at) <= date(?)`,
-      [startYmd, endYmd],
-    ),
-    db.getFirstAsync<{ c: number }>(
-      `SELECT COUNT(1) AS c FROM wish_items
-        WHERE deleted_at IS NULL
-          AND date(updated_at) >= date(?) AND date(updated_at) <= date(?)`,
-      [startYmd, endYmd],
-    ),
+  const [tasks, habitCheckIns, habits, deposits, plans, transactions, wishes] = await Promise.all([
+    readApiTable<{ status?: string; completed_at?: string | null; created_at?: string }>('tasks', {
+      offlineFallback: true,
+    }),
+    readApiTable<{ habit_id: string; record_date: string; count: number }>('habit_check_ins', {
+      offlineFallback: true,
+    }),
+    readApiTable<{ id: string }>('habits', { offlineFallback: true }),
+    readApiTable<{ savings_plan_id: string; amount: number; created_at?: string }>('savings_plan_deposits', {
+      offlineFallback: true,
+    }),
+    readApiTable<{ id: string }>('savings_plans', { offlineFallback: true }),
+    readApiTable<{ transaction_type?: string; amount?: number; happened_at?: string }>('finance_transactions', {
+      offlineFallback: true,
+    }),
+    readApiTable<{ updated_at?: string }>('wish_items', { offlineFallback: true }),
   ]);
+
+  const activeHabitIds = new Set(habits.map(h => h.id));
+  const activePlanIds = new Set(plans.map(p => p.id));
+
+  const tasksCompleted = tasks.filter(t => {
+    if (t.status !== 'done' || !t.completed_at) return false;
+    const day = ymdFromDatetime(t.completed_at);
+    return day != null && isYmdInRange(day, startYmd, endYmd);
+  }).length;
+
+  const tasksCreated = tasks.filter(t => {
+    const day = ymdFromDatetime(t.created_at);
+    return day != null && isYmdInRange(day, startYmd, endYmd);
+  }).length;
+
+  const habitCheckInTotal = habitCheckIns
+    .filter(
+      c =>
+        activeHabitIds.has(c.habit_id) &&
+        (c.count ?? 0) >= 1 &&
+        isYmdInRange(c.record_date, startYmd, endYmd),
+    )
+    .reduce((sum, c) => sum + Number(c.count ?? 0), 0);
+
+  const savingsWeekTotal = deposits
+    .filter(d => {
+      if (!activePlanIds.has(d.savings_plan_id)) return false;
+      const day = ymdFromDatetime(d.created_at);
+      return day != null && isYmdInRange(day, startYmd, endYmd);
+    })
+    .reduce((sum, d) => sum + Number(d.amount ?? 0), 0);
+
+  const financeIncome = transactions
+    .filter(t => {
+      if (t.transaction_type !== 'income') return false;
+      const day = ymdFromDatetime(t.happened_at);
+      return day != null && isYmdInRange(day, startYmd, endYmd);
+    })
+    .reduce((sum, t) => sum + Math.abs(Number(t.amount ?? 0)), 0);
+
+  const financeExpense = transactions
+    .filter(t => {
+      if (t.transaction_type !== 'expense') return false;
+      const day = ymdFromDatetime(t.happened_at);
+      return day != null && isYmdInRange(day, startYmd, endYmd);
+    })
+    .reduce((sum, t) => sum + Math.abs(Number(t.amount ?? 0)), 0);
+
+  const wishUpdates = wishes.filter(w => {
+    const day = ymdFromDatetime(w.updated_at);
+    return day != null && isYmdInRange(day, startYmd, endYmd);
+  }).length;
 
   const rangeDisplay = formatRangeChinese(start, end);
   const weekTitle =
@@ -176,13 +189,13 @@ export async function fetchWeeklyReviewMetrics(
     weekEndYmd: endYmd,
     rangeDisplay,
     weekTitle,
-    tasksCompleted: Number(tasksDoneRow?.c ?? 0),
-    tasksCreated: Number(tasksNewRow?.c ?? 0),
-    habitCheckInTotal: Number(habitRow?.s ?? 0),
-    savingsWeekTotal: Math.round(Number(savingsRow?.s ?? 0)),
-    financeIncome: Math.round(Number(incomeRow?.s ?? 0)),
-    financeExpense: Math.round(Number(expenseRow?.s ?? 0)),
-    wishUpdates: Number(wishRow?.c ?? 0),
+    tasksCompleted,
+    tasksCreated,
+    habitCheckInTotal,
+    savingsWeekTotal: Math.round(savingsWeekTotal),
+    financeIncome: Math.round(financeIncome),
+    financeExpense: Math.round(financeExpense),
+    wishUpdates,
   };
 }
 

@@ -1,3 +1,5 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import type { CreateHabitInput, HabitRow, UpdateHabitInput } from './habit.types';
 
@@ -23,25 +25,17 @@ export async function createHabit(input: CreateHabitInput) {
 }
 
 export async function getHabitById(id: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<HabitRow>('SELECT * FROM habits WHERE id = ? AND deleted_at IS NULL LIMIT 1', [id]);
+  return readApiRecord<HabitRow>('habits', id, { offlineFallback: true });
 }
 
 export async function getHabits() {
-  const db = await getDatabase();
-  return db.getAllAsync<HabitRow>(
-    'SELECT * FROM habits WHERE deleted_at IS NULL ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC'
-  );
+  const rows = await readApiTable<HabitRow>('habits', { offlineFallback: true });
+  return sortByUpdatedDesc(rows);
 }
 
 export async function getHabitsByContext(context: string) {
-  const db = await getDatabase();
-  return db.getAllAsync<HabitRow>(
-    `SELECT * FROM habits
-      WHERE deleted_at IS NULL AND context = ?
-      ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC`,
-    [context]
-  );
+  const rows = await readApiTable<HabitRow>('habits', { offlineFallback: true });
+  return sortByUpdatedDesc(rows.filter(r => r.context === context));
 }
 
 export async function updateHabit(id: string, input: UpdateHabitInput) {

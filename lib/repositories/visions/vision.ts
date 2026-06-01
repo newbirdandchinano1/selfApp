@@ -1,3 +1,5 @@
+import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import type { CreateVisionInput, UpdateVisionInput, VisionExtraPayload, VisionRow } from './vision.types';
 
@@ -40,17 +42,12 @@ export async function createVision(input: CreateVisionInput) {
 }
 
 export async function getVisionRowById(id: string) {
-  const db = await getDatabase();
-  return db.getFirstAsync<VisionRow>('SELECT * FROM visions WHERE id = ? AND deleted_at IS NULL LIMIT 1', [id]);
+  return readApiRecord<VisionRow>('visions', id, { offlineFallback: true });
 }
 
 export async function listVisions() {
-  const db = await getDatabase();
-  return db.getAllAsync<VisionRow>(
-    `SELECT * FROM visions
-     WHERE deleted_at IS NULL
-     ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC`
-  );
+  const rows = await readApiTable<VisionRow>('visions', { offlineFallback: true });
+  return sortByUpdatedDesc(rows);
 }
 
 export async function updateVision(id: string, input: UpdateVisionInput) {

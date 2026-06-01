@@ -19,6 +19,7 @@ import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { initDatabase, repairLocalDatabase } from '@/lib/database';
 import { loadCloudBackupTokenCache } from '@/lib/cloud-backup-config';
 import { hydrateCloudDirtyFromStorage } from '@/lib/cloud-sql-dirty-track';
+import { hydrateApiDirtyFromStorage, markAllPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { startCloudPeriodicAlignScheduler } from '@/lib/cloud-sync-scheduler';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-selection';
@@ -70,6 +71,8 @@ function RootLayoutInner() {
       try {
         await initDatabase();
         await hydrateCloudDirtyFromStorage();
+        await hydrateApiDirtyFromStorage();
+        await markAllPendingTablesDirty();
         if (mounted) {
           setDbError(null);
           setIsDbReady(true);

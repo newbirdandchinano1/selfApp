@@ -1,5 +1,5 @@
-import * as SQLite from 'expo-sqlite';
 import { enableCloudSqliteMutationTrackingOnDatabase } from '@/lib/cloud-sql-dirty-track';
+import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';

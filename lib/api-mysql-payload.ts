@@ -8,6 +8,8 @@ export const API_UPLOAD_MAX_JSON_FIELD_CHARS = 12_000;
 
 export type ApiUploadSlimOptions = {
   aggressive?: boolean;
+  /** 仍 413 时：仅保留 id / 时间 / 数值 / 极短文本 */
+  ultra?: boolean;
   maxBytes?: number;
 };
 
@@ -44,7 +46,47 @@ const TRUNCATE_JSON_COLUMNS = new Set([
   'value',
 ]);
 
-const TRUNCATE_TEXT_COLUMNS = new Set(['body', 'description', 'note', 'notes', 'title']);
+const TRUNCATE_TEXT_COLUMNS = new Set([
+  'body',
+  'description',
+  'detail',
+  'note',
+  'notes',
+  'title',
+  'section_summary',
+  'section_plans',
+  'section_reflect',
+  'section_learnings',
+  'section_next_week',
+  'last_evaluation',
+  'last_suggestions',
+  'last_profile_analysis',
+  'last_overall_suggestions',
+]);
+
+const ULTRA_DROP_COLUMNS = new Set([
+  'extra_data',
+  'value_json',
+  'payload_json',
+  'ingredients_json',
+  'steps_json',
+  'ai_evaluation',
+  'ai_suggestions',
+  'ai_coaching',
+  'ai_comment',
+  'body',
+  'description',
+  'detail',
+  'note',
+  'notes',
+  'section_summary',
+  'section_plans',
+  'section_reflect',
+  'section_learnings',
+  'section_next_week',
+]);
+
+const ID_LIKE_FIELD_RE = /^(id|.*_id|key|slug|sync_status|version)$/i;
 
 function looksLikeJsonString(value: string): boolean {
   const t = value.trim();
@@ -53,7 +95,11 @@ function looksLikeJsonString(value: string): boolean {
 
 function isLikelyBase64Blob(value: string): boolean {
   const trimmed = value.trim();
-  return trimmed.length >= 512 && BASE64_BLOB_RE.test(trimmed);
+  return trimmed.length >= 200 && BASE64_BLOB_RE.test(trimmed);
+}
+
+function isIdLikeField(fieldKey: string): boolean {
+  return ID_LIKE_FIELD_RE.test(fieldKey);
 }
 
 function shouldStripUri(value: string, fieldKey: string): boolean {
@@ -118,7 +164,13 @@ function slimJsonValue(value: unknown, aggressive: boolean): unknown {
   return value;
 }
 
-function slimStringField(value: string, fieldKey: string, aggressive: boolean): string | null {
+function slimStringField(
+  value: string,
+  fieldKey: string,
+  aggressive: boolean,
+  ultra: boolean,
+): string | null {
+  if (ultra && ULTRA_DROP_COLUMNS.has(fieldKey)) return null;
   if (shouldStripUri(value, fieldKey)) return null;
 
   if (
@@ -142,24 +194,40 @@ function slimStringField(value: string, fieldKey: string, aggressive: boolean): 
 
   if (DATA_URI_RE.test(value) || isLikelyBase64Blob(value)) return null;
 
-  return truncateText(value, maxTextFieldChars(aggressive, fieldKey));
+  const maxLen = ultra
+    ? isIdLikeField(fieldKey)
+      ? 64
+      : 200
+    : value.length > 8_192
+      ? 1_000
+      : maxTextFieldChars(aggressive, fieldKey);
+  return truncateText(value, maxLen);
 }
 
-function slimDeepForApiUpload(value: unknown, fieldKey: string | undefined, aggressive: boolean): unknown {
+function slimDeepForApiUpload(
+  value: unknown,
+  fieldKey: string | undefined,
+  aggressive: boolean,
+  ultra: boolean,
+): unknown {
   if (value === null || value === undefined) return value;
 
   if (typeof value === 'string') {
-    return slimStringField(value, fieldKey ?? '', aggressive);
+    return slimStringField(value, fieldKey ?? '', aggressive, ultra);
   }
 
   if (Array.isArray(value)) {
-    return value.map(item => slimDeepForApiUpload(item, fieldKey, aggressive));
+    return value.map(item => slimDeepForApiUpload(item, fieldKey, aggressive, ultra));
   }
 
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = slimDeepForApiUpload(v, key, aggressive);
+      if (ultra && ULTRA_DROP_COLUMNS.has(key)) {
+        out[key] = null;
+        continue;
+      }
+      out[key] = slimDeepForApiUpload(v, key, aggressive, ultra);
     }
     return out;
   }
@@ -181,26 +249,33 @@ export function slimRecordForMysqlApi(
   opts?: ApiUploadSlimOptions,
 ): Record<string, unknown> {
   const maxBytes = opts?.maxBytes ?? API_UPLOAD_MAX_ROW_BYTES;
-  const build = (aggressive: boolean) => {
+  const build = (aggressive: boolean, ultra: boolean) => {
     const out: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(row)) {
       if (value === undefined) continue;
-      out[key] = slimDeepForApiUpload(value, key, aggressive);
+      if (ultra && ULTRA_DROP_COLUMNS.has(key)) {
+        out[key] = null;
+        continue;
+      }
+      out[key] = slimDeepForApiUpload(value, key, aggressive, ultra);
     }
     return out;
   };
 
-  let slimmed = build(opts?.aggressive ?? false);
+  let slimmed = build(opts?.aggressive ?? false, opts?.ultra ?? false);
   if (estimateJsonUtf8Bytes(slimmed) <= maxBytes) return slimmed;
 
-  slimmed = build(true);
+  slimmed = build(true, false);
+  if (estimateJsonUtf8Bytes(slimmed) <= maxBytes) return slimmed;
+
+  slimmed = build(true, true);
   if (estimateJsonUtf8Bytes(slimmed) <= maxBytes) return slimmed;
 
   const minimal: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(slimmed)) {
     if (value === null || value === undefined) continue;
     if (typeof value === 'string') {
-      minimal[key] = truncateText(value, 300);
+      minimal[key] = truncateText(value, isIdLikeField(key) ? 64 : 120);
       continue;
     }
     if (typeof value === 'number' || typeof value === 'boolean') {

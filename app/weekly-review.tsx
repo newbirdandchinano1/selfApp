@@ -17,6 +17,7 @@ import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review
 import { fetchWeeklyReviewMetrics, getRollingSevenDayRange, getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import {
   getWeeklyReviewConfiguredWeekday,
+  isDailyReviewSkippedOnWeeklyReviewDay,
   isTodayConfiguredWeeklyReviewDay,
   setWeeklyReviewConfiguredWeekday,
   WEEKLY_REVIEW_WEEKDAY_LABELS,
@@ -100,6 +101,7 @@ export default function WeeklyReviewScreen() {
 
   const [dailyEntries, setDailyEntries] = useState<DailyEntry[]>([]);
   const [dailyPeriodLabel, setDailyPeriodLabel] = useState('');
+  const [reviewCycleEndYmd, setReviewCycleEndYmd] = useState('');
   const [expandedDailyYmd, setExpandedDailyYmd] = useState<string | null>(null);
   const [dailySavingYmd, setDailySavingYmd] = useState<string | null>(null);
 
@@ -161,7 +163,22 @@ export default function WeeklyReviewScreen() {
         });
       }
       setDailyEntries(nextDaily);
-      setExpandedDailyYmd(rolling.endYmd);
+      setReviewCycleEndYmd(dow !== null ? rolling.endYmd : '');
+      const defaultExpanded =
+        nextDaily.find(
+          e =>
+            e.ymd === toYmdLocal(today) &&
+            !isDailyReviewSkippedOnWeeklyReviewDay(e.ymd, rolling.endYmd, dow) &&
+            isDailyReviewEditableYmd(e.ymd, todayYmd),
+        )?.ymd ??
+        nextDaily.find(
+          e =>
+            !isDailyReviewSkippedOnWeeklyReviewDay(e.ymd, rolling.endYmd, dow) &&
+            isDailyReviewEditableYmd(e.ymd, todayYmd),
+        )?.ymd ??
+        nextDaily.find(e => !isDailyReviewSkippedOnWeeklyReviewDay(e.ymd, rolling.endYmd, dow))?.ymd ??
+        null;
+      setExpandedDailyYmd(defaultExpanded);
 
       const allowed = dow !== null && isTodayConfiguredWeeklyReviewDay(dow, today);
       setCanEdit(allowed);
@@ -210,7 +227,7 @@ export default function WeeklyReviewScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [todayYmd]);
 
   useFocusEffect(
     useCallback(() => {
@@ -275,7 +292,12 @@ export default function WeeklyReviewScreen() {
         fields: weeklyFields,
         executionScore,
         metrics,
-        dailyReviewsDigest: buildDailyDigest(dailyEntries, dailyTemplate),
+        dailyReviewsDigest: buildDailyDigest(
+          dailyEntries.filter(
+            e => !isDailyReviewSkippedOnWeeklyReviewDay(e.ymd, reviewCycleEndYmd, configuredDow),
+          ),
+          dailyTemplate,
+        ),
       });
       await setWeeklyReviewCoachingText(periodStartYmd, coaching);
       setAiCoaching(coaching);
@@ -296,6 +318,8 @@ export default function WeeklyReviewScreen() {
     persistDraft,
     canEdit,
     dailyEntries,
+    reviewCycleEndYmd,
+    configuredDow,
   ]);
 
   const onSaveAdjustIntent = useCallback(async () => {
@@ -327,6 +351,10 @@ export default function WeeklyReviewScreen() {
   }, []);
 
   const onSaveDaily = useCallback(async (ymd: string, fields: ReviewFieldValues) => {
+    if (isDailyReviewSkippedOnWeeklyReviewDay(ymd, reviewCycleEndYmd, configuredDow)) {
+      Alert.alert('无需日复盘', '每周复盘日当天请填写下方周复盘内容。');
+      return;
+    }
     if (!isDailyReviewEditableYmd(ymd, todayYmd)) {
       Alert.alert('暂不可保存', '每日复盘不可填写未来日期；过去与今天可保存。');
       return;
@@ -341,7 +369,7 @@ export default function WeeklyReviewScreen() {
     } finally {
       setDailySavingYmd(null);
     }
-  }, [todayYmd]);
+  }, [todayYmd, reviewCycleEndYmd, configuredDow]);
 
   const onPickWeekday = useCallback(async (d: number) => {
     try {
@@ -452,7 +480,7 @@ export default function WeeklyReviewScreen() {
                 <Text style={[styles.dailySectionTitle, { color: text }]}>每日复盘</Text>
                 <Text style={[styles.dailyPeriodLine, { color: primary }]}>{dailyPeriodLabel}</Text>
                 <Text style={[styles.dailySectionHint, { color: outline }]}>
-                  区间以「下一次每周复盘日」为终点向前 7 天（与周度统计一致）；过去与自然日「今天」可填写与保存，未来日期仅可查看。生成周度 AI 建议时会参考本周期内各日已填内容。
+                  区间以「下一次每周复盘日」为终点向前 7 天（与周度统计一致）；过去与自然日「今天」可填写与保存，未来日期仅可查看。已设定的每周复盘日当天请填写下方周复盘，无需日复盘。生成周度 AI 建议时会参考本周期内各日已填内容。
                 </Text>
                 <Pressable
                   onPress={() => router.push('/review-template-settings?scope=daily')}
@@ -465,7 +493,13 @@ export default function WeeklyReviewScreen() {
                 </Pressable>
                 {dailyEntries.map(entry => {
                   const open = expandedDailyYmd === entry.ymd;
-                  const canEditDailyEntry = isDailyReviewEditableYmd(entry.ymd, todayYmd);
+                  const skippedForWeeklyReview = isDailyReviewSkippedOnWeeklyReviewDay(
+                    entry.ymd,
+                    reviewCycleEndYmd,
+                    configuredDow,
+                  );
+                  const canEditDailyEntry =
+                    !skippedForWeeklyReview && isDailyReviewEditableYmd(entry.ymd, todayYmd);
                   const allDailyCols = dailyTemplate.flatMap(d => d.columns);
                   const previewRaw = previewTextFromFields(entry.fields, allDailyCols);
                   const previewShort =
@@ -478,7 +512,12 @@ export default function WeeklyReviewScreen() {
                         <View style={{ flex: 1, minWidth: 0 }}>
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                             <Text style={[styles.dailyDayTitle, { color: text }]}>{entry.label}</Text>
-                            {!canEditDailyEntry ? (
+                            {skippedForWeeklyReview ? (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                <MaterialIcons name="event-available" size={16} color={primary} />
+                                <Text style={{ fontSize: 11, fontWeight: '800', color: primary }}>周复盘日 · 无需日复盘</Text>
+                              </View>
+                            ) : !canEditDailyEntry ? (
                               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                                 <MaterialIcons name="lock-outline" size={16} color={outline} />
                                 <Text style={{ fontSize: 11, fontWeight: '800', color: outline }}>未来 · 仅查看</Text>
@@ -486,14 +525,18 @@ export default function WeeklyReviewScreen() {
                             ) : null}
                           </View>
                           <Text style={[styles.dailyDayPreview, { color: outline }]} numberOfLines={1}>
-                            {previewShort}
+                            {skippedForWeeklyReview ? '请填写下方每周复盘' : previewShort}
                           </Text>
                         </View>
                         <MaterialIcons name={open ? 'expand-less' : 'expand-more'} size={26} color={primary} />
                       </Pressable>
                       {open ? (
                         <View style={[styles.dailyDayBody, { borderTopColor: outlineVariant }]}>
-                          {dailyTemplate.length === 0 ? (
+                          {skippedForWeeklyReview ? (
+                            <Text style={[styles.dailySectionHint, { color: outline }]}>
+                              本日为已设定的每周复盘日，请填写下方「每周复盘」内容，无需单独做日复盘。
+                            </Text>
+                          ) : dailyTemplate.length === 0 ? (
                             <Text style={[styles.dailySectionHint, { color: outline }]}>
                               尚未配置日复盘维度，请点上方「管理日复盘维度与栏目」添加。
                             </Text>
@@ -542,7 +585,7 @@ export default function WeeklyReviewScreen() {
                                 <Text style={styles.dailySaveBtnText}>保存该日</Text>
                               )}
                             </Pressable>
-                          ) : (
+                          ) : skippedForWeeklyReview ? null : (
                             <View
                               style={[
                                 styles.dailySaveBtn,
