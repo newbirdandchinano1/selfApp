@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { clearFrogAssignedOn, getFrogAssignedOn } from '@/lib/frog-assignment';
+import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { isLogicalDayInYmdRange } from '@/lib/repositories/projects/project-schedule-status';
 import { buildProjectLockMap } from '@/lib/repositories/projects/project-prerequisites';
@@ -618,6 +619,7 @@ export default function AddFrogScreen() {
           await updateTask(id, { extra_data: JSON.stringify(nextExtra) });
         })
       );
+      await pushLocalChangesToApi({ awaitSync: true });
       Alert.alert('已指派', `已将 ${ids.length} 个任务指派为今日青蛙。`);
       router.back();
     } catch (e) {

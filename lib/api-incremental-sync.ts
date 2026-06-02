@@ -45,11 +45,12 @@ export const REST_SKIP_TABLES = new Set([
 ]);
 
 const API_DIRTY_STATE_KEY = 'selfapp:api-dirty-tables-v1';
-const INCREMENTAL_PUSH_DELAY_MS = 4500;
+/** 合并同一交互内的多次脏表标记，再串行推送到 REST */
+const COALESCE_PUSH_DELAY_MS = 50;
 
 const apiDirtyTables = new Set<string>();
 let apiPersistTimer: ReturnType<typeof setTimeout> | null = null;
-let apiPushDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let coalescedApiPushTimer: ReturnType<typeof setTimeout> | null = null;
 let apiPushInFlight = false;
 
 const SQLITE_RESERVED_TABLE_NAMES = new Set(['on', 'off', 'begin', 'end', 'commit', 'rollback']);
@@ -71,7 +72,7 @@ export function markApiTableDirty(table: string): void {
   if (t.startsWith('sqlite_')) return;
   apiDirtyTables.add(t);
   schedulePersistApiDirty();
-  scheduleApiPushDebounced();
+  scheduleCoalescedApiPush();
 }
 
 function schedulePersistApiDirty(): void {
@@ -110,7 +111,7 @@ export async function hydrateApiDirtyFromStorage(): Promise<void> {
     }
     apiDirtyTables.delete('ON');
     apiDirtyTables.delete('on');
-    if (apiDirtyTables.size > 0) scheduleApiPushDebounced();
+    if (apiDirtyTables.size > 0) scheduleCoalescedApiPush();
   } catch {
     /* ignore */
   }
@@ -261,19 +262,25 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
   return { insertOrder: effectiveOrder, rowsByTable };
 }
 
+/** 脏表标记后合并推送（全局：所有经 markApiTableDirty 的写入均会触发） */
+function scheduleCoalescedApiPush(): void {
+  if (coalescedApiPushTimer) clearTimeout(coalescedApiPushTimer);
+  coalescedApiPushTimer = setTimeout(() => {
+    coalescedApiPushTimer = null;
+    void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
+  }, COALESCE_PUSH_DELAY_MS);
+}
+
+/** @deprecated 使用 scheduleCoalescedApiPush */
 export function scheduleApiPushDebounced(): void {
-  if (apiPushDebounceTimer) clearTimeout(apiPushDebounceTimer);
-  apiPushDebounceTimer = setTimeout(() => {
-    apiPushDebounceTimer = null;
-    void pushApiDirtyTablesIfNeeded();
-  }, INCREMENTAL_PUSH_DELAY_MS);
+  scheduleCoalescedApiPush();
 }
 
 /** 取消 debounce 并立即推送脏表（财务记账等需即时入库后端的场景） */
 export async function flushApiDirtyTablesNow(opts?: { rethrow?: boolean }): Promise<void> {
-  if (apiPushDebounceTimer) {
-    clearTimeout(apiPushDebounceTimer);
-    apiPushDebounceTimer = null;
+  if (coalescedApiPushTimer) {
+    clearTimeout(coalescedApiPushTimer);
+    coalescedApiPushTimer = null;
   }
   const maxWaitMs = 30000;
   const start = Date.now();
@@ -303,7 +310,7 @@ export async function markAllPendingTablesDirty(): Promise<void> {
 export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): Promise<void> {
   if (apiPushInFlight) return;
   if (isSilentCloudRestoreInFlight()) {
-    scheduleApiPushDebounced();
+    scheduleCoalescedApiPush();
     return;
   }
 
@@ -318,7 +325,7 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
   } catch (e) {
     if (__DEV__) console.warn('[api incremental] 登录失败', e);
     if (opts?.rethrow) throw e;
-    scheduleApiPushDebounced();
+    scheduleCoalescedApiPush();
     return;
   }
 
@@ -450,7 +457,7 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
   } catch (e) {
     if (__DEV__) console.warn('[api incremental] 推送失败', e);
     if (opts?.rethrow) throw e;
-    scheduleApiPushDebounced();
+    scheduleCoalescedApiPush();
   } finally {
     apiPushInFlight = false;
   }

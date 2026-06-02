@@ -1,3 +1,4 @@
+import { readLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
@@ -40,7 +41,7 @@ export async function getHabitsByContext(context: string) {
 
 export async function updateHabit(id: string, input: UpdateHabitInput) {
   const db = await getDatabase();
-  const current = await getHabitById(id);
+  const current = await readLocalRowForWrite<HabitRow>('habits', id);
   if (!current) return;
 
   await db.runAsync(

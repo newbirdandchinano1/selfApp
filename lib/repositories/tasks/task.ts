@@ -1,3 +1,4 @@
+import { readLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import {
   compareDatetimeDesc,
@@ -179,6 +180,10 @@ export async function createTask(input: CreateTaskInput) {
   );
 }
 
+async function getTaskRowForWrite(id: string): Promise<TaskRow | null> {
+  return readLocalRowForWrite<TaskRow>('tasks', id);
+}
+
 export async function getTaskById(id: string) {
   return readApiRecord<TaskRow>('tasks', id, { offlineFallback: true });
 }
@@ -268,7 +273,7 @@ export async function getTaskTreeByRootTaskId(rootTaskId: string): Promise<TaskT
 
 export async function updateTask(id: string, input: UpdateTaskInput) {
   const db = await getDatabase();
-  const current = await getTaskById(id);
+  const current = await getTaskRowForWrite(id);
   if (!current) return;
   await db.runAsync(
     `UPDATE tasks

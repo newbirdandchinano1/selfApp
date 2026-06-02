@@ -23,8 +23,8 @@ export async function insertFrogCompletionEvent(
   const db = await getDatabase();
   const id = makeTimestampEntityId('fevt_', 8);
   await db.runAsync(
-    `INSERT INTO frog_completion_events (id, task_id, assigned_ymd, action, created_at, task_title)
-     VALUES (?, ?, ?, ?, datetime('now'), ?)`,
+    `INSERT INTO frog_completion_events (id, task_id, assigned_ymd, action, created_at, task_title, sync_status)
+     VALUES (?, ?, ?, ?, datetime('now'), ?, 'pending_create')`,
     [id, taskId, ymd, action, taskTitle?.trim() || null]
   );
 }

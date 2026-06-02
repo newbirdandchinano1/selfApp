@@ -10,8 +10,8 @@ import {
 } from '@/lib/page-api-session';
 
 /**
- * 页面数据加载：每次进入均经 REST 拉取（API_ONLY_READS）；
- * markSynced 仅表示该页本会话内已成功加载过，便于 UI 状态，不再切换为只读本地。
+ * 页面数据加载：每次进入均经 REST 拉取（API_ONLY_READS），结果已含本地 pending 覆盖。
+ * markSynced 仅表示该页本会话内已成功加载过，便于 UI 状态。
  */
 export function usePageApiSync(pageKey: string) {
   const [synced, setSynced] = useState(() => hasPageSyncedWithApi(pageKey));

@@ -1,3 +1,4 @@
+import { readLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
@@ -52,7 +53,7 @@ export async function listVisions() {
 
 export async function updateVision(id: string, input: UpdateVisionInput) {
   const db = await getDatabase();
-  const current = await getVisionRowById(id);
+  const current = await readLocalRowForWrite<VisionRow>('visions', id);
   if (!current) return;
 
   const title = input.title ?? current.title;

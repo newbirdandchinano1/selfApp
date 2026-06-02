@@ -1,3 +1,4 @@
+import { readLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
@@ -66,7 +67,7 @@ export async function getSavingsPlans() {
 
 export async function updateSavingsPlan(id: string, input: UpdateSavingsPlanInput) {
   const db = await getDatabase();
-  const current = await getSavingsPlanById(id);
+  const current = await readLocalRowForWrite<SavingsPlanRow>('savings_plans', id);
   if (!current) return;
 
   const nextName = input.name !== undefined ? input.name.trim() : current.name;

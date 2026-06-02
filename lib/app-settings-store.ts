@@ -80,7 +80,14 @@ export async function migrateAppSettingsFromAsyncStorageIfNeeded(): Promise<void
       if (raw == null || raw === '') continue;
 
       await db.runAsync(
-        'INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)',
+        `INSERT INTO app_settings (key, value_json, updated_at, sync_status) VALUES (?, ?, ?, 'pending_create')
+         ON CONFLICT(key) DO UPDATE SET
+           value_json = excluded.value_json,
+           updated_at = excluded.updated_at,
+           sync_status = CASE
+             WHEN app_settings.sync_status = 'synced' THEN 'pending_update'
+             ELSE app_settings.sync_status
+           END`,
         [key, raw, now],
       );
     }
@@ -120,7 +127,14 @@ export async function setAppSetting(key: string, value: unknown): Promise<void> 
   const now = new Date().toISOString();
   const value_json = serializeValue(value);
   await db.runAsync(
-    'INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)',
+    `INSERT INTO app_settings (key, value_json, updated_at, sync_status) VALUES (?, ?, ?, 'pending_create')
+     ON CONFLICT(key) DO UPDATE SET
+       value_json = excluded.value_json,
+       updated_at = excluded.updated_at,
+       sync_status = CASE
+         WHEN app_settings.sync_status = 'synced' THEN 'pending_update'
+         ELSE app_settings.sync_status
+       END`,
     [key, value_json, now],
   );
   markAppSettingsDirty();

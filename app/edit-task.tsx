@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   buildDeadlineTextFromSchedule,
   extractScheduleLimitFromExtra,

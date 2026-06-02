@@ -1,4 +1,5 @@
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { readLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, sortBySortOrderAsc, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
@@ -439,7 +440,7 @@ export async function deleteFinanceAccountTypeByName(name: string) {
 
 export async function updateFinanceAccount(id: string, input: UpdateFinanceAccountInput) {
   const db = await getDatabase();
-  const current = await getFinanceAccountById(id);
+  const current = await readLocalRowForWrite<FinanceAccountRow>('finance_accounts', id);
   if (!current) return;
 
   await db.runAsync(

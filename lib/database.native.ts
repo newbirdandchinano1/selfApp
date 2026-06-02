@@ -318,6 +318,7 @@ export async function initDatabase() {
       action TEXT NOT NULL,
       created_at TEXT NOT NULL,
       task_title TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
     );
 
@@ -328,6 +329,7 @@ export async function initDatabase() {
       action TEXT NOT NULL,
       created_at TEXT NOT NULL,
       task_title TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
     );
 
@@ -769,7 +771,8 @@ export async function initDatabase() {
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY NOT NULL,
       value_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create'
     );
   `);
 
@@ -915,6 +918,10 @@ export async function initDatabase() {
   await ensureColumn(db, 'memos', 'dimension', 'TEXT');
 
   await ensureColumn(db, 'task_execution_events', 'task_title', 'TEXT');
+  // 增量同步依赖 sync_status；缺列时会把全表当作待推送并反复上传
+  await ensureColumn(db, 'task_execution_events', 'sync_status', "TEXT NOT NULL DEFAULT 'synced'");
+  await ensureColumn(db, 'frog_completion_events', 'sync_status', "TEXT NOT NULL DEFAULT 'synced'");
+  await ensureColumn(db, 'app_settings', 'sync_status', "TEXT NOT NULL DEFAULT 'synced'");
 
   // Ensure legacy rows have a default category_id once column exists
   await db.runAsync(

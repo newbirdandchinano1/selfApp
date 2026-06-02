@@ -9,6 +9,10 @@ import {
   syncApiReadResultToLocal,
 } from '@/lib/api-read-local-sync';
 import { isApiOnlyReads } from '@/lib/api-data-mode';
+import {
+  overlayLocalPendingOnApiRecord,
+  overlayLocalPendingOnApiTableRows,
+} from '@/lib/api-read-pending-overlay';
 import { getDatabase } from '@/lib/database';
 import { resolveReadLocalOnly } from '@/lib/page-api-session';
 
@@ -160,7 +164,7 @@ export async function fetchApiRecordByPk<T extends Record<string, unknown>>(
 }
 
 /**
- * 统一读表：API_ONLY_READS 时直接返回 REST 全量结果；
+ * 统一读表：API_ONLY_READS 时 REST 全量 + 本地 pending 覆盖；
  * 否则先拉 REST 写入 SQLite 再读本地（兼容旧模式）。
  */
 export async function readApiTable<T extends Record<string, unknown>>(
@@ -176,7 +180,9 @@ export async function readApiTable<T extends Record<string, unknown>>(
   if (!skipNetwork) {
     try {
       const rows = await withApiLoading(() => fetchApiTableAll<T>(table, opts));
-      if (isApiOnlyReads()) return rows;
+      if (isApiOnlyReads()) {
+        return overlayLocalPendingOnApiTableRows(table, rows);
+      }
     } catch (e) {
       if (opts?.offlineFallback && !isApiOnlyReads()) {
         if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, e);
@@ -219,7 +225,9 @@ export async function readApiRecord<T extends Record<string, unknown>>(
   if (!skipNetwork) {
     try {
       const row = await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
-      if (isApiOnlyReads()) return row;
+      if (isApiOnlyReads()) {
+        return overlayLocalPendingOnApiRecord(table, pkValue, row);
+      }
     } catch (e) {
       if (opts?.offlineFallback && !isApiOnlyReads()) {
         if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, pkValue, e);

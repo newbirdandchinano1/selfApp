@@ -1,5 +1,6 @@
 import { File } from 'expo-file-system';
 
+import { readLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { addDaysToYmd, compareDatetimeDesc, isYmdInRange, sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
@@ -233,7 +234,7 @@ function getDayCompletionLevelFromTotals(
 
 export async function updateHealthRecord(id: string, input: UpdateHealthRecordInput) {
   const db = await getDatabase();
-  const current = await getHealthRecordById(id);
+  const current = await readLocalRowForWrite<HealthRecordRow>('health_records', id);
 
   if (!current) {
     return;
@@ -265,7 +266,7 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
 
 export async function deleteHealthRecord(id: string) {
   const db = await getDatabase();
-  const existing = await getHealthRecordById(id);
+  const existing = await readLocalRowForWrite<HealthRecordRow>('health_records', id);
   const img = existing?.source_image_uri?.trim();
   if (img) {
     try {

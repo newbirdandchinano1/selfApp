@@ -55,7 +55,8 @@ export async function insertTaskExecutionEvent(
   const db = await getDatabase();
   const id = makeTimestampEntityId('tevt_', 8);
   await db.runAsync(
-    `INSERT INTO task_execution_events (id, task_id, action, created_at, task_title) VALUES (?, ?, ?, datetime('now'), ?)`,
+    `INSERT INTO task_execution_events (id, task_id, action, created_at, task_title, sync_status)
+     VALUES (?, ?, ?, datetime('now'), ?, 'pending_create')`,
     [id, taskId, action, taskTitle?.trim() || null]
   );
 }
