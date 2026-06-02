@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   getRecipe,
   getRecipeCategory,
@@ -59,7 +59,7 @@ export default function RecipeViewScreen() {
   const [categoryName, setCategoryName] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async () => {
+  const reload = useCallback(async (forceApi = false) => {
     if (!id) {
       setLoading(false);
       return;
@@ -75,7 +75,7 @@ export default function RecipeViewScreen() {
         const cat = await getRecipeCategory(item.category_id);
         setCategoryName(cat?.name ?? '');
         setRow(item);
-      });
+      }, forceApi);
     } catch {
       Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
     } finally {
@@ -83,11 +83,13 @@ export default function RecipeViewScreen() {
     }
   }, [id, router, wrapLoad]);
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   useFocusEffect(
     useCallback(() => {
       setLoading(true);
-      void load();
-    }, [load]),
+      void reload();
+    }, [reload]),
   );
 
   const displayTitle = row ? recipeListPreviewTitle(row) : '';
@@ -140,6 +142,7 @@ export default function RecipeViewScreen() {
         </View>
       ) : row ? (
         <ScrollView
+          refreshControl={refreshControl}
           contentContainerStyle={[
             styles.scrollInner,
             { paddingBottom: Math.max(insets.bottom, 20) + 32 },

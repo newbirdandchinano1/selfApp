@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { getRollingSevenDayRange } from '@/lib/repositories/insights/weekly-review';
 import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
 import { getWeeklyReviewConfiguredWeekday, WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/lib/weekly-review-settings';
@@ -12,7 +12,7 @@ import { visionRowToProfileCarouselItem } from '@/lib/repositories/visions/visio
 import { getHealthRecordsLast7Days } from '@/lib/repositories/health/health';
 import { computeHealthCardPreview, getIntakeTargetsSnapshot } from '@/lib/persona-health-context';
 import { localLogicalTodayYmd } from '@/lib/persona-portrait-sync';
-import { getDefaultUser } from '@/lib/repositories/users/user';
+import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import type { ProfileVisionCarouselItem } from '@/lib/visions-registry';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -254,27 +254,40 @@ export default function ProfileScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    loadUser();
-  }, [loadUser]);
+  const reload = useCallback(async (forceApi = false) => {
+    await wrapLoad(async () => {
+      await loadUser();
+      await loadHealthCardPreview();
+      await loadProfileVisions();
+      await loadProfileWishItems();
+      await loadWeeklyJournal();
+    }, forceApi);
+  }, [
+    wrapLoad,
+    loadUser,
+    loadHealthCardPreview,
+    loadProfileVisions,
+    loadProfileWishItems,
+    loadWeeklyJournal,
+  ]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     useCallback(() => {
-      void wrapLoad(async () => {
-        loadUser();
-        await loadHealthCardPreview();
-        await loadProfileVisions();
-        await loadProfileWishItems();
-        await loadWeeklyJournal();
+      let cancelled = false;
+      void reload().catch((e) => {
+        if (__DEV__) console.warn('[profile] reload failed', e);
       });
-    }, [
-      wrapLoad,
-      loadUser,
-      loadHealthCardPreview,
-      loadProfileVisions,
-      loadProfileWishItems,
-      loadWeeklyJournal,
-    ]),
+      const unsubscribe = subscribeDefaultUserUpdates(() => {
+        if (cancelled) return;
+        void loadUser();
+      });
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }, [loadUser, reload]),
   );
 
   const healthBgUrl = require('../../assets/profile/health.png');
@@ -337,6 +350,7 @@ export default function ProfileScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
       <ScrollView
+        refreshControl={refreshControl}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[
           styles.scrollContent,

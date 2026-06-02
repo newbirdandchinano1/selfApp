@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { getHealthRecordsLast7Days } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import { fetchWeeklyReviewMetrics } from '@/lib/repositories/insights/weekly-review';
@@ -260,6 +261,12 @@ export default function PersonaDetailScreen() {
     skipCacheNextRef.current = true;
     setFetchGen(n => n + 1);
   }, []);
+
+  const reload = useCallback(async () => {
+    requestManualPortraitRefresh();
+  }, [requestManualPortraitRefresh]);
+
+  const { refreshControl } = usePullToRefresh(reload);
 
   useEffect(() => {
     if (!valid) return;
@@ -717,6 +724,7 @@ export default function PersonaDetailScreen() {
       </View>
 
       <ScrollView
+        refreshControl={refreshControl}
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[

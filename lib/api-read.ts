@@ -41,6 +41,13 @@ let allTablesMetaCache: ApiTableMeta[] | null = null;
 /** 同表并发全量拉取去重，避免 reconcileSnapshot 竞态 */
 const inflightTableFetchAll = new Map<string, Promise<Record<string, unknown>[]>>();
 
+/** 本地写入后丢弃进行中的全量拉取缓存，避免 UI 读到写入前的 REST 快照 */
+export function invalidateInflightApiTableFetch(table: string): void {
+  const t = table.trim();
+  if (!t) return;
+  inflightTableFetchAll.delete(t);
+}
+
 function assertApiReadable(table: string): void {
   if (!isApiReadableTable(table)) {
     throw new Error(`表「${table}」不允许通过 REST 读取`);
@@ -220,10 +227,15 @@ export async function readApiRecord<T extends Record<string, unknown>>(
     try {
       const row = await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
       if (isApiOnlyReads()) {
-        return overlayLocalPendingOnApiRecord(table, pkValue, row);
+        const merged = await overlayLocalPendingOnApiRecord(table, pkValue, row);
+        if (merged != null) return merged;
+        if (opts?.offlineFallback) {
+          return readLocalRecordVisible<T>(table, pkValue);
+        }
+        return null;
       }
     } catch (e) {
-      if (opts?.offlineFallback && !isApiOnlyReads()) {
+      if (opts?.offlineFallback) {
         if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, pkValue, e);
         return readLocalRecordVisible<T>(table, pkValue);
       }

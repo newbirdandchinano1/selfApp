@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { listEarnedRewards, redeemEarnedReward, unredeemEarnedReward } from '@/lib/repositories/earned-rewards/earned-reward';
 import type { EarnedRewardRow } from '@/lib/repositories/earned-rewards/earned-reward.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -51,18 +51,20 @@ export default function EarnedRewardsScreen() {
   const [redeemingId, setRedeemingId] = useState<string | null>(null);
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (forceApi = false) => {
     try {
       await wrapLoad(async () => {
         const rows = await listEarnedRewards();
         setItems(rows);
-      });
+      }, forceApi);
     } catch {
       setItems([]);
     } finally {
       setLoading(false);
     }
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     useCallback(() => {
@@ -228,6 +230,7 @@ export default function EarnedRewardsScreen() {
           data={[...pending, ...redeemed]}
           keyExtractor={(item) => item.id}
           renderItem={renderRow}
+          refreshControl={refreshControl}
           contentContainerStyle={[styles.listContent, { paddingBottom: Math.max(insets.bottom, 24) }]}
           ListHeaderComponent={
             pending.length > 0 ? (

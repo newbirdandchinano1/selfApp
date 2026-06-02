@@ -1,7 +1,7 @@
 import { MemoFormattedBody } from '@/components/memo/memo-formatted-body';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { memoHasAiReview } from '@/lib/memo-format';
 import {
     getMemo,
@@ -56,7 +56,7 @@ export default function MemoViewScreen() {
   const [row, setRow] = useState<MemoItem | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async () => {
+  const reload = useCallback(async (forceApi = false) => {
     if (!id) {
       setLoading(false);
       return;
@@ -70,7 +70,7 @@ export default function MemoViewScreen() {
         return;
       }
       setRow(item);
-      });
+      }, forceApi);
     } catch {
       Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
     } finally {
@@ -78,11 +78,13 @@ export default function MemoViewScreen() {
     }
   }, [id, router, wrapLoad]);
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   useFocusEffect(
     useCallback(() => {
       setLoading(true);
-      void load();
-    }, [load]),
+      void reload();
+    }, [reload]),
   );
 
   const displayTitle = row ? memoListPreviewTitle(row) : '';
@@ -131,6 +133,7 @@ export default function MemoViewScreen() {
         </View>
       ) : row ? (
         <ScrollView
+          refreshControl={refreshControl}
           contentContainerStyle={[
             styles.scrollInner,
             { paddingBottom: Math.max(insets.bottom, 20) + 32 },

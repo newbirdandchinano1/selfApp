@@ -201,6 +201,8 @@ export async function applyApiRowsToLocalTable(
 /** GET 单条 404：本地已 synced 的行与服务器对齐（物理删除） */
 export async function applyApiRecordMissingToLocal(table: string, pkValue: string): Promise<void> {
   if (!isApiReadableTable(table) || !pkValue.trim()) return;
+  // 本地单例默认用户：服务端尚未建档案时 GET 404，不应清空本地资料
+  if (table === 'users' && pkValue === 'default') return;
 
   const db = await getDatabase();
   if (!db) return;

@@ -50,7 +50,7 @@ import {
 import type { SavingsPlanRow } from '@/lib/repositories/savings-plan/savings-plan.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
@@ -1010,7 +1010,7 @@ export default function SavingsPlanScreen() {
   const [overviewEditVisible, setOverviewEditVisible] = React.useState(false);
   const [topProgressMode, setTopProgressMode] = React.useState<TopOverviewProgressMode>('total');
 
-  const refreshPlansAndDeposits = React.useCallback(async () => {
+  const refreshPlansAndDeposits = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
     try {
       const [rows, settings] = await Promise.all([getSavingsPlans(), loadSavingsOverviewSettings()]);
@@ -1031,8 +1031,10 @@ export default function SavingsPlanScreen() {
       setWishByPlanId({});
       setTotalDeposits(0);
     }
-    });
+    }, forceApi);
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, refreshPlansAndDeposits);
 
   React.useEffect(() => {
     void refreshPlansAndDeposits();
@@ -1200,6 +1202,7 @@ export default function SavingsPlanScreen() {
       />
 
       <ScrollView
+        refreshControl={refreshControl}
         style={styles.mainScroll}
         contentContainerStyle={[
           styles.mainContent,

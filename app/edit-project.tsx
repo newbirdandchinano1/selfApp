@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   mergeDateLimit,
   resolveInheritedDefaultSchedule,
@@ -592,6 +592,8 @@ export default function EditProjectScreen() {
     [loadProject, wrapLoad],
   );
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadProjectPage);
+
   React.useEffect(() => {
     if (!projectId) return;
     return addProjectAiReviewSavedListener((saved) => {
@@ -1038,7 +1040,7 @@ export default function EditProjectScreen() {
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
-        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 150 + Math.max(insets.bottom, 12) }]} showsVerticalScrollIndicator={false}>
+        <ScrollView refreshControl={refreshControl} contentContainerStyle={[styles.content, { paddingBottom: 150 + Math.max(insets.bottom, 12) }]} showsVerticalScrollIndicator={false}>
           <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>基础信息</Text>
             <TextInput

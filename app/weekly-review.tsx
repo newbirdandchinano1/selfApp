@@ -31,7 +31,7 @@ import {
 } from '@/lib/repositories/insights/weekly-review-journal';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
 import { MaterialIcons } from '@expo/vector-icons';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useFocusEffect } from '@react-navigation/native';
 import { Stack, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
@@ -124,7 +124,7 @@ export default function WeeklyReviewScreen() {
   const [adjustSavings, setAdjustSavings] = useState(false);
   const [adjustPlans, setAdjustPlans] = useState(false);
 
-  const load = useCallback(async () => {
+  const reload = useCallback(async (forceApi = false) => {
     setLoading(true);
     try {
       await wrapLoad(async () => {
@@ -225,7 +225,7 @@ export default function WeeklyReviewScreen() {
         setAdjustSavings(false);
         setAdjustPlans(false);
       }
-      });
+      }, forceApi);
     } catch {
       setMetrics(null);
       setDailyEntries([]);
@@ -235,10 +235,12 @@ export default function WeeklyReviewScreen() {
     }
   }, [todayYmd, wrapLoad]);
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   useFocusEffect(
     useCallback(() => {
-      void load();
-    }, [load]),
+      void reload();
+    }, [reload]),
   );
 
   const persistDraft = useCallback(async () => {
@@ -383,11 +385,11 @@ export default function WeeklyReviewScreen() {
       setConfiguredDow(d);
       setPickerOpen(false);
       Alert.alert('已保存', `已设定每周「${WEEKLY_REVIEW_WEEKDAY_LABELS[d]}」为复盘日。统计区间为该日当天向前连续 7 个自然日（含当天）。`);
-      void load();
+      void reload();
     } catch {
       Alert.alert('失败', '请稍后再试');
     }
-  }, [load]);
+  }, [reload]);
 
   const inputSurface = isDark ? 'rgba(15,23,42,0.55)' : '#f4f6ff';
   const inputBorder = outlineVariant;
@@ -428,6 +430,7 @@ export default function WeeklyReviewScreen() {
           </View>
         ) : (
           <ScrollView
+            refreshControl={refreshControl}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             contentContainerStyle={[styles.scroll, { paddingBottom: 28 + insets.bottom }]}>

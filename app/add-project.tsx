@@ -14,7 +14,7 @@ import {
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
@@ -272,40 +272,33 @@ export default function AddProjectScreen() {
     }, [readScheduleResult]),
   );
 
-  React.useEffect(() => {
-    let mounted = true;
-    void wrapLoad(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
+    await wrapLoad(async () => {
       try {
         const rows = await getProjectCategories();
-        if (mounted) setCategories(ensureInboxCategory(rows));
+        setCategories(ensureInboxCategory(rows));
       } catch (error) {
         console.warn('加载项目分类失败', error);
-        if (mounted) setCategories(ensureInboxCategory([]));
+        setCategories(ensureInboxCategory([]));
       }
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [wrapLoad]);
-
-  React.useEffect(() => {
-    let mounted = true;
-    void wrapLoad(async () => {
       setProjectsLoading(true);
       try {
-        const rows = await getProjects();
-        if (mounted) setAllProjects(rows);
+        const projectRows = await getProjects();
+        setAllProjects(projectRows);
       } catch (error) {
         console.warn('加载项目列表失败', error);
-        if (mounted) setAllProjects([]);
+        setAllProjects([]);
       } finally {
-        if (mounted) setProjectsLoading(false);
+        setProjectsLoading(false);
       }
-    });
-    return () => {
-      mounted = false;
-    };
+    }, forceApi);
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
+  React.useEffect(() => {
+    void reload();
+  }, [reload]);
 
   const selectableProjectCategories = React.useMemo(
     () => categories.filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID),
@@ -389,6 +382,7 @@ export default function AddProjectScreen() {
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={composerStyles.flex}>
         <ScrollView
+          refreshControl={refreshControl}
           contentContainerStyle={[
             composerStyles.content,
             { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md) },

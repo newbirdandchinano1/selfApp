@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerResult } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
@@ -456,6 +456,8 @@ export default function TaskDetailScreen() {
     [loadTaskDetail, wrapLoad],
   );
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadTaskDetail);
+
   React.useEffect(() => {
     readScheduleResult();
   }, [readScheduleResult]);
@@ -600,7 +602,7 @@ export default function TaskDetailScreen() {
         <View style={styles.headerSpacer} />
       </View>
 
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 140 }]} showsVerticalScrollIndicator={false}>
+      <ScrollView refreshControl={refreshControl} contentContainerStyle={[styles.content, { paddingBottom: 140 }]} showsVerticalScrollIndicator={false}>
         <View style={styles.section}>
           <Text style={[styles.headline, { color: theme.text }]} numberOfLines={3}>
             {title || '未找到任务'}

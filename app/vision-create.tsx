@@ -1,7 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { VisionSubGoalsSection } from '@/components/vision-sub-goals/VisionSubGoalsSection';
 import { createGoalDimension, listGoalDimensions } from '@/lib/repositories/goal-dimensions/goal-dimension';
 import type { GoalDimensionRow } from '@/lib/repositories/goal-dimensions/goal-dimension.types';
@@ -153,7 +153,7 @@ export default function VisionCreateScreen() {
   const [newDimTitle, setNewDimTitle] = useState('');
   const [newDimBusy, setNewDimBusy] = useState(false);
 
-  const loadGoalDimensions = useCallback(async () => {
+  const reload = useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
       try {
         const rows = await listGoalDimensions();
@@ -161,13 +161,15 @@ export default function VisionCreateScreen() {
       } catch {
         setGoalDimensions([]);
       }
-    });
+    }, forceApi);
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     useCallback(() => {
-      void loadGoalDimensions();
-    }, [loadGoalDimensions]),
+      void reload();
+    }, [reload]),
   );
 
   useEffect(() => {
@@ -394,6 +396,7 @@ export default function VisionCreateScreen() {
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <ScrollView
+          refreshControl={refreshControl}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           bounces={false}

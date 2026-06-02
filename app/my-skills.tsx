@@ -21,6 +21,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import {
   ActivityIndicator,
   Alert,
@@ -78,8 +79,8 @@ export default function MySkillsScreen() {
   const [aiBusy, setAiBusy] = useState(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [skills, user] = await Promise.all([loadUserSkills(), getDefaultUser()]);
       setSnapshot(ensureUserSkillsSnapshot(skills));
@@ -87,9 +88,11 @@ export default function MySkillsScreen() {
     } catch {
       setSnapshot(createEmptyUserSkillsSnapshot());
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
+
+  const { refreshControl } = usePullToRefresh(() => load(true));
 
   useEffect(() => {
     void load();
@@ -244,6 +247,7 @@ export default function MySkillsScreen() {
           </View>
         ) : (
           <ScrollView
+            refreshControl={refreshControl}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             contentContainerStyle={[styles.scroll, { paddingBottom: 32 + insets.bottom }]}>

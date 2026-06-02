@@ -9,7 +9,7 @@ import { type HabitKind, parseHabitKind } from '@/lib/repositories/habits/habit-
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -188,7 +188,7 @@ export default function AddHabitScreen() {
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
 
-  const loadContexts = React.useCallback(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
     try {
       const rows = await getHabitContexts();
@@ -207,13 +207,15 @@ export default function AddHabitScreen() {
     } catch (err) {
       console.warn('加载情境分类失败', err);
     }
-    });
+    }, forceApi);
   }, [isEditMode, wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     React.useCallback(() => {
-      void loadContexts();
-    }, [loadContexts])
+      void reload();
+    }, [reload])
   );
 
   const toggleWeekDay = React.useCallback((day: string) => {
@@ -503,6 +505,7 @@ export default function AddHabitScreen() {
       />
 
       <ScrollView
+        refreshControl={refreshControl}
         contentContainerStyle={[
           styles.content,
           { paddingBottom: Spacing['7xl'] + 72 + Math.max(insets.bottom, Spacing.md) },

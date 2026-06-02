@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   createQuickAddItemMap,
   getQuickAddMetricTypes,
@@ -261,27 +261,24 @@ export default function IntakeHistoryScreen() {
   const [filter, setFilter] = React.useState<FilterKey>('all');
   const [lines, setLines] = React.useState<IntakeHistoryLine[]>([]);
 
+  const reload = React.useCallback(async (forceApi = false) => {
+    await wrapLoad(async () => {
+      const [user, catalog] = await Promise.all([getDefaultUser(), loadAllQuickAddItems()]);
+      if (!user?.id) {
+        setLines([]);
+        return;
+      }
+      const records = await getHealthRecordsForUserOnDate(user.id, selectedDateYmd);
+      setLines(buildHistoryLines(records, catalog));
+    }, forceApi);
+  }, [selectedDateYmd, wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   useFocusEffect(
     React.useCallback(() => {
-      let cancelled = false;
-      const load = async () => {
-        await wrapLoad(async () => {
-          const [user, catalog] = await Promise.all([getDefaultUser(), loadAllQuickAddItems()]);
-          if (!user?.id) {
-            if (!cancelled) setLines([]);
-            return;
-          }
-          const records = await getHealthRecordsForUserOnDate(user.id, selectedDateYmd);
-          if (!cancelled) {
-            setLines(buildHistoryLines(records, catalog));
-          }
-        });
-      };
-      void load();
-      return () => {
-        cancelled = true;
-      };
-    }, [selectedDateYmd, wrapLoad])
+      void reload();
+    }, [reload]),
   );
 
   const filteredLines = React.useMemo(() => {
@@ -307,7 +304,7 @@ export default function IntakeHistoryScreen() {
         <View style={styles.backBtn} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView refreshControl={refreshControl} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.filterRow}>
           {FILTERS.map((item) => {
             const active = filter === item.key;

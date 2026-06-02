@@ -13,7 +13,7 @@ import {
 } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate, ReviewTemplateScope } from '@/lib/repositories/insights/review-template.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useFocusEffect } from '@react-navigation/native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -95,7 +95,7 @@ export default function ReviewTemplateSettingsScreen() {
     };
   }, [editor]);
 
-  const load = useCallback(async () => {
+  const reload = useCallback(async (forceApi = false) => {
     setLoading(true);
     try {
       await wrapLoad(async () => {
@@ -105,7 +105,7 @@ export default function ReviewTemplateSettingsScreen() {
           if (prev && rows.some(d => d.id === prev)) return prev;
           return rows.length > 0 ? rows[0].id : null;
         });
-      });
+      }, forceApi);
     } catch {
       Alert.alert('加载失败', '请稍后重试');
     } finally {
@@ -113,14 +113,16 @@ export default function ReviewTemplateSettingsScreen() {
     }
   }, [scope, wrapLoad]);
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    void reload();
+  }, [reload]);
 
   useFocusEffect(
     useCallback(() => {
-      void load();
-    }, [load]),
+      void reload();
+    }, [reload]),
   );
 
   const openAddDimension = () => {
@@ -156,7 +158,7 @@ export default function ReviewTemplateSettingsScreen() {
             try {
               await deleteReviewDimension(dim.id);
               if (expandedDimId === dim.id) setExpandedDimId(null);
-              await load();
+              await reload();
             } catch {
               Alert.alert('删除失败', '请稍后重试');
             }
@@ -176,7 +178,7 @@ export default function ReviewTemplateSettingsScreen() {
           void (async () => {
             try {
               await deleteReviewColumn(columnId);
-              await load();
+              await reload();
             } catch {
               Alert.alert('删除失败', '请稍后重试');
             }
@@ -226,7 +228,7 @@ export default function ReviewTemplateSettingsScreen() {
         }
       }
       setEditor(null);
-      await load();
+      await reload();
     } catch {
       Alert.alert('保存失败', '请稍后重试');
     } finally {
@@ -279,6 +281,7 @@ export default function ReviewTemplateSettingsScreen() {
           </View>
         ) : (
           <ScrollView
+            refreshControl={refreshControl}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={[styles.scroll, { paddingBottom: 24 + insets.bottom }]}>
             <Text style={[styles.hint, { color: outline }]}>

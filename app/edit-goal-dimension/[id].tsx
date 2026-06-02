@@ -1,6 +1,7 @@
 import { GoalDimensionFormFields } from '@/components/goal-dimension/GoalDimensionFormFields';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { getGoalDimensionById, updateGoalDimension } from '@/lib/repositories/goal-dimensions/goal-dimension';
 import {
   parseGoalDimensionExtra,
@@ -55,33 +56,37 @@ export default function EditGoalDimensionScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  const reload = useCallback(async () => {
+    if (!dimensionId) {
+      setLoading(false);
+      return;
+    }
+    try {
+      const row = await getGoalDimensionById(dimensionId);
+      if (!row) {
+        Alert.alert('未找到', '该维度可能已删除', [{ text: '确定', onPress: () => router.back() }]);
+        return;
+      }
+      setTitle(row.title);
+      setPriority(sortOrderToPriorityValue(row.sort_order));
+      setNote(parseGoalDimensionExtra(row.extra_data)?.note ?? '');
+    } catch {
+      Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
+    } finally {
+      setLoading(false);
+    }
+  }, [dimensionId, router]);
+
+  const { refreshControl } = usePullToRefresh(reload);
+
   useEffect(() => {
     if (!dimensionId) {
       setLoading(false);
       return;
     }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const row = await getGoalDimensionById(dimensionId);
-        if (cancelled) return;
-        if (!row) {
-          Alert.alert('未找到', '该维度可能已删除', [{ text: '确定', onPress: () => router.back() }]);
-          return;
-        }
-        setTitle(row.title);
-        setPriority(sortOrderToPriorityValue(row.sort_order));
-        setNote(parseGoalDimensionExtra(row.extra_data)?.note ?? '');
-      } catch {
-        Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [dimensionId, router]);
+    setLoading(true);
+    void reload();
+  }, [dimensionId, reload]);
 
   const onSave = useCallback(async () => {
     const t = title.trim();
@@ -157,6 +162,7 @@ export default function EditGoalDimensionScreen() {
           keyboardVerticalOffset={insets.top + 56}
         >
           <ScrollView
+            refreshControl={refreshControl}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={[styles.scrollInner, { paddingBottom: Math.max(insets.bottom, 20) + 24 }]}
             showsVerticalScrollIndicator={false}

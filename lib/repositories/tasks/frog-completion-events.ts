@@ -12,6 +12,27 @@ export type FrogCompletionDayItem = {
   task_title: string | null;
 };
 
+type FrogCompletionEventRow = {
+  id: string;
+  task_id: string | null;
+  assigned_ymd: string;
+  action: string;
+  created_at: string;
+};
+
+/** 同一青蛙任务 + 指派日只保留最新一次操作；仅当最新为 completed 时计入热力图 */
+function filterNetCompletedFrogEvents<T extends FrogCompletionEventRow>(events: T[]): T[] {
+  const latestByKey = new Map<string, T>();
+  for (const e of events) {
+    const groupKey = e.task_id ? `${e.task_id}\0${e.assigned_ymd}` : `${e.id}\0${e.assigned_ymd}`;
+    const prev = latestByKey.get(groupKey);
+    if (!prev || compareDatetimeDesc(prev.created_at, e.created_at) > 0) {
+      latestByKey.set(groupKey, e);
+    }
+  }
+  return [...latestByKey.values()].filter((e) => e.action === 'completed');
+}
+
 export async function insertFrogCompletionEvent(
   taskId: string,
   assignedYmd: string,
@@ -34,12 +55,11 @@ export async function getFrogCompletionCountsByDayRange(
   startYmd: string,
   endYmd: string
 ): Promise<Map<string, number>> {
-  const rows = await readApiTable<{ assigned_ymd: string; action: string }>('frog_completion_events', {
+  const rows = await readApiTable<FrogCompletionEventRow>('frog_completion_events', {
     offlineFallback: true,
   });
   const m = new Map<string, number>();
-  for (const r of rows) {
-    if (r.action !== 'completed') continue;
+  for (const r of filterNetCompletedFrogEvents(rows)) {
     if (!r.assigned_ymd || !isYmdInRange(r.assigned_ymd, startYmd, endYmd)) continue;
     m.set(r.assigned_ymd, (m.get(r.assigned_ymd) ?? 0) + 1);
   }
@@ -56,8 +76,8 @@ export async function getFrogCompletionsForAssignedDay(ymd: string): Promise<Fro
     readApiTable<{ id: string; title?: string | null }>('tasks', { offlineFallback: true }),
   ]);
   const taskById = new Map(tasks.map(t => [t.id, t]));
-  return events
-    .filter(e => e.action === 'completed' && e.assigned_ymd === ymd)
+  return filterNetCompletedFrogEvents(events)
+    .filter(e => e.assigned_ymd === ymd)
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1)
     .map(e => ({
       id: e.id,

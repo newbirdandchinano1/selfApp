@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import {
   loadCashFlowState,
   newCashFlowHoldingId,
@@ -209,6 +210,13 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
   const subtle = isDark ? theme.textSecondary : '#64748b';
   const border = isDark ? 'rgba(148,163,184,0.2)' : '#e2e8f0';
 
+  const reloadCashFlow = React.useCallback(async () => {
+    const loaded = await loadCashFlowState();
+    setState(loaded);
+  }, [setState]);
+
+  const { refreshControl } = usePullToRefresh(reloadCashFlow);
+
   const headerTitle =
     route === 'dashboard'
       ? '现金流图'
@@ -277,6 +285,7 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
         </View>
       ) : (
       <ScrollView
+        refreshControl={refreshControl}
         style={styles.scroll}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: 28 + insets.bottom }]}
         keyboardShouldPersistTaps="handled"

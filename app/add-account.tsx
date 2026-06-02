@@ -1,7 +1,7 @@
 import { AppButton, AppCard, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import {
   applyFinanceAccountBalanceCorrection,
@@ -97,7 +97,7 @@ export default function AddAccountScreen() {
     (!isEditMode || editSheetReady);
   const isSelectedLiability = accountType === 'liability' || (accountType === 'custom' && customIsLiability);
 
-  const loadCustomTypeOptions = React.useCallback(async () => {
+  const reloadCustomTypes = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
     try {
       const rows = await getFinanceAccountTypes();
@@ -112,76 +112,76 @@ export default function AddAccountScreen() {
       console.warn('Failed to load custom account types:', e);
       setCustomTypeOptions(getCustomAccountTypeOptions());
     }
-    });
+    }, forceApi);
   }, [wrapLoad]);
+
+  const reload = React.useCallback(async (forceApi = false) => {
+    if (isEditMode && editAccountId) {
+      setEditSheetReady(false);
+      await wrapLoad(async () => {
+        try {
+          const rows = await getFinanceAccountsWithBalance();
+          const row = rows.find((r) => r.id === editAccountId);
+          if (!row) {
+            Alert.alert('账户不存在', '该账户可能已被删除。', [{ text: '确定', onPress: () => router.back() }]);
+            return;
+          }
+          setAccountName(row.name);
+          setAccountNo(row.account_no ?? '');
+          setNotes(row.note ?? '');
+          editLedgerMetaRef.current = { sign_rule: row.sign_rule, account_type: row.account_type };
+          setBalance(financeBalanceInputTextFromLedger(row.balance ?? 0, row.sign_rule, row.account_type));
+          let parsed: Record<string, unknown> = {};
+          try {
+            parsed = row.extra_data ? (JSON.parse(row.extra_data) as Record<string, unknown>) : {};
+          } catch {
+            parsed = {};
+          }
+          editExtraBaselineRef.current = { ...parsed };
+          const uiType = parsed.ui_account_type;
+          if (
+            uiType === 'cash_wallet' ||
+            uiType === 'bank' ||
+            uiType === 'investment' ||
+            uiType === 'liability' ||
+            uiType === 'custom'
+          ) {
+            setAccountType(uiType);
+          } else if (row.account_type === 'liability') {
+            setAccountType('liability');
+          } else {
+            setAccountType('bank');
+          }
+          if (typeof parsed.ui_custom_type_name === 'string') setCustomTypeName(parsed.ui_custom_type_name);
+          if (typeof parsed.ui_is_liability === 'boolean') setCustomIsLiability(parsed.ui_is_liability);
+          const ik = parsed.ui_icon_key;
+          if (typeof ik === 'string' && ik.length > 0) setIconKey(ik);
+          setEditSheetReady(true);
+        } catch (e) {
+          console.warn('Failed to load account for edit:', e);
+          Alert.alert('加载失败', '请稍后重试。', [{ text: '确定', onPress: () => router.back() }]);
+        }
+      }, forceApi);
+      return;
+    }
+
+    setEditSheetReady(true);
+    setBalance('');
+    const draft = getCustomAccountTypeDraft();
+    setCustomTypeName(draft.name);
+    setCustomIsLiability(draft.isLiability);
+    await reloadCustomTypes(forceApi);
+    if (accountType === 'custom' && draft.iconKey) {
+      setIconKey(draft.iconKey);
+    }
+  }, [accountType, editAccountId, isEditMode, reloadCustomTypes, router, wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     React.useCallback(() => {
-      if (isEditMode) {
-        let alive = true;
-        setEditSheetReady(false);
-        void wrapLoad(async () => {
-          try {
-            const rows = await getFinanceAccountsWithBalance();
-            if (!alive) return;
-            const row = rows.find((r) => r.id === editAccountId);
-            if (!row) {
-              Alert.alert('账户不存在', '该账户可能已被删除。', [{ text: '确定', onPress: () => router.back() }]);
-              return;
-            }
-            setAccountName(row.name);
-            setAccountNo(row.account_no ?? '');
-            setNotes(row.note ?? '');
-            editLedgerMetaRef.current = { sign_rule: row.sign_rule, account_type: row.account_type };
-            setBalance(financeBalanceInputTextFromLedger(row.balance ?? 0, row.sign_rule, row.account_type));
-            let parsed: Record<string, unknown> = {};
-            try {
-              parsed = row.extra_data ? (JSON.parse(row.extra_data) as Record<string, unknown>) : {};
-            } catch {
-              parsed = {};
-            }
-            editExtraBaselineRef.current = { ...parsed };
-            const uiType = parsed.ui_account_type;
-            if (
-              uiType === 'cash_wallet' ||
-              uiType === 'bank' ||
-              uiType === 'investment' ||
-              uiType === 'liability' ||
-              uiType === 'custom'
-            ) {
-              setAccountType(uiType);
-            } else if (row.account_type === 'liability') {
-              setAccountType('liability');
-            } else {
-              setAccountType('bank');
-            }
-            if (typeof parsed.ui_custom_type_name === 'string') setCustomTypeName(parsed.ui_custom_type_name);
-            if (typeof parsed.ui_is_liability === 'boolean') setCustomIsLiability(parsed.ui_is_liability);
-            const ik = parsed.ui_icon_key;
-            if (typeof ik === 'string' && ik.length > 0) setIconKey(ik);
-            setEditSheetReady(true);
-          } catch (e) {
-            console.warn('Failed to load account for edit:', e);
-            if (alive) {
-              Alert.alert('加载失败', '请稍后重试。', [{ text: '确定', onPress: () => router.back() }]);
-            }
-          }
-        });
-        return () => {
-          alive = false;
-        };
-      }
-
-      setEditSheetReady(true);
-      setBalance('');
-      const draft = getCustomAccountTypeDraft();
-      setCustomTypeName(draft.name);
-      setCustomIsLiability(draft.isLiability);
-      void loadCustomTypeOptions();
-      if (accountType === 'custom' && draft.iconKey) {
-        setIconKey(draft.iconKey);
-      }
-    }, [accountType, editAccountId, isEditMode, loadCustomTypeOptions, router, wrapLoad]),
+      void reload();
+    }, [reload]),
   );
 
   const onSave = React.useCallback(async () => {
@@ -376,6 +376,7 @@ export default function AddAccountScreen() {
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView
+          refreshControl={refreshControl}
           contentContainerStyle={[
             styles.scrollContent,
             { paddingBottom: Spacing['7xl'] + 80 + Math.max(insets.bottom, 0) },
@@ -432,7 +433,7 @@ export default function AddAccountScreen() {
                                 try {
                                   await deleteFinanceAccountTypeByName(t.name);
                                   removeCustomAccountTypeOption(t.name);
-                                  await loadCustomTypeOptions();
+                                  await reloadCustomTypes();
                                   if (accountType === 'custom' && customTypeName === t.name) {
                                     setAccountType('bank');
                                     setCustomTypeName('');

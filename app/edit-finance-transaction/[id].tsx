@@ -1,5 +1,6 @@
 import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
 import { Colors } from '@/constants/theme';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
 import { FINANCE_SHEET_CATEGORY_ID_PREFIX } from '@/lib/repositories/finance/finance-sheet-category';
@@ -115,13 +116,13 @@ export default function EditFinanceTransactionScreen() {
     [accountId, accounts],
   );
 
-  const load = React.useCallback(async () => {
+  const load = React.useCallback(async (silent = false) => {
     if (!id) {
-      setLoading(false);
+      if (!silent) setLoading(false);
       setRow(null);
       return;
     }
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const [txn, accRows] = await Promise.all([getFinanceTransactionById(id), getFinanceAccountsWithBalance()]);
       setAccounts(accRows);
@@ -167,9 +168,11 @@ export default function EditFinanceTransactionScreen() {
       console.warn('Failed to load finance transaction:', e);
       setRow(null);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [expenseCategories, id, incomeCategories]);
+
+  const { refreshControl } = usePullToRefresh(() => load(true));
 
   React.useEffect(() => {
     void load();
@@ -309,6 +312,7 @@ export default function EditFinanceTransactionScreen() {
       </View>
 
       <ScrollView
+        refreshControl={refreshControl}
         contentContainerStyle={{ paddingBottom: Math.max(24, insets.bottom + 16), paddingHorizontal: 16, paddingTop: 16 }}
         keyboardShouldPersistTaps="handled">
         <View style={[styles.card, { backgroundColor: surface, borderColor: outlineVariant }]}>

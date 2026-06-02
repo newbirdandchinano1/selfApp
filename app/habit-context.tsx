@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { createHabitContext, deleteHabitContexts, getHabitContexts, updateHabitContextsSortOrder } from '@/lib/repositories/habits/habit-context';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -35,7 +35,7 @@ export default function HabitContextScreen() {
   const [addVisible, setAddVisible] = React.useState(false);
   const [newContextName, setNewContextName] = React.useState('');
 
-  const loadContextCounts = React.useCallback(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
     try {
       const [contexts, habits] = await Promise.all([getHabitContexts(), getHabits()]);
@@ -61,13 +61,15 @@ export default function HabitContextScreen() {
       console.warn('加载习惯情境失败', err);
       setContextData((prev) => prev);
     }
-    });
+    }, forceApi);
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     React.useCallback(() => {
-      void loadContextCounts();
-    }, [loadContextCounts])
+      void reload();
+    }, [reload])
   );
 
   const persistOrder = React.useCallback(async (rows: ContextRow[]) => {
@@ -240,6 +242,7 @@ export default function HabitContextScreen() {
         data={contextData}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
+        refreshControl={refreshControl}
         contentContainerStyle={[styles.content, { paddingBottom: 18 + Math.max(insets.bottom, 8) }]}
         showsVerticalScrollIndicator={false}
         activationDistance={editMode ? 9999 : 0}

@@ -6,7 +6,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Directory, File, Paths } from 'expo-file-system';
 import React from 'react';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
@@ -741,81 +741,71 @@ export default function HealthScreen() {
   );
   const intakeParseLocked = pendingIntake != null;
 
+  const reload = React.useCallback(async (forceApi = false) => {
+    const currentUser = await getDefaultUser();
+    if (!currentUser?.id) {
+      setDailyAiTargets(null);
+      setDailyAiLoading(false);
+      return;
+    }
+
+    let healthLoaded = false;
+    try {
+      const applySlice = (slice: Awaited<ReturnType<typeof loadHomeHealthSliceForUser>>) => {
+        setHealthRecords(slice.week);
+        setPrevWeekHealthRecords(slice.prevWeek);
+        setSelectedDayIntakeTotals(slice.dayTotals);
+        setSelectedDayRecords(slice.dayRecords);
+      };
+
+      applySlice(await loadHomeHealthSliceForUser(currentUser.id, weekAnchorDate, selectedDate));
+      healthLoaded = true;
+    } catch (fallbackError) {
+      console.warn('健康数据本地回退失败', fallbackError);
+      return;
+    }
+
+    // 下拉刷新只同步摄入/快捷卡片；AI 日目标仅在进入页面时更新，避免刷新 spinner 长时间卡住
+    if (!forceApi) {
+      setDailyAiLoading(true);
+      try {
+        const r = await ensureDailyAiIntakeTargetsForToday({
+          user: currentUser,
+          todayYmd: logicalTodayYmd,
+          healthRecordsLocalOnly: healthLoaded,
+        });
+        if (r.status === 'cached' || r.status === 'fresh') {
+          setDailyAiTargets(r.row);
+        } else {
+          setDailyAiTargets(null);
+        }
+      } finally {
+        setDailyAiLoading(false);
+      }
+    }
+
+    try {
+      const [selectedItems, catalog] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
+      setQuickAddItems(selectedItems);
+      setQuickAddCatalog(catalog);
+    } catch {
+      setQuickAddItems(getDefaultQuickAddItems());
+      setQuickAddCatalog(getDefaultQuickAddItems());
+    }
+  }, [logicalTodayYmd, selectedDate, weekAnchorDate]);
+
+  const reloadPage = React.useCallback(async (forceApi = false) => {
+    await wrapLoad(async () => {
+      await reload(forceApi);
+    }, forceApi);
+  }, [reload, wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
+
   useFocusEffect(
     React.useCallback(() => {
-      const loadGen = ++focusLoadGenRef.current;
-      let cancelled = false;
-      const isStale = () => cancelled || focusLoadGenRef.current !== loadGen;
-
-      void wrapLoad(async () => {
-        const currentUser = await getDefaultUser();
-        if (!currentUser?.id) {
-          if (!isStale()) {
-            setDailyAiTargets(null);
-            setDailyAiLoading(false);
-          }
-          return false;
-        }
-
-        let healthLoaded = false;
-        try {
-          const applySlice = (slice: Awaited<ReturnType<typeof loadHomeHealthSliceForUser>>) => {
-            if (isStale()) return;
-            setHealthRecords(slice.week);
-            setPrevWeekHealthRecords(slice.prevWeek);
-            setSelectedDayIntakeTotals(slice.dayTotals);
-            setSelectedDayRecords(slice.dayRecords);
-          };
-
-          applySlice(await loadHomeHealthSliceForUser(currentUser.id, weekAnchorDate, selectedDate));
-          healthLoaded = true;
-        } catch (fallbackError) {
-          console.warn('健康数据本地回退失败', fallbackError);
-          return false;
-        }
-
-        if (isStale()) return false;
-
-        if (!isStale()) setDailyAiLoading(true);
-        try {
-          const r = await ensureDailyAiIntakeTargetsForToday({
-            user: currentUser,
-            todayYmd: logicalTodayYmd,
-            healthRecordsLocalOnly: healthLoaded,
-          });
-          if (!isStale()) {
-            if (r.status === 'cached' || r.status === 'fresh') {
-              setDailyAiTargets(r.row);
-            } else {
-              setDailyAiTargets(null);
-            }
-          }
-        } finally {
-          if (!isStale()) setDailyAiLoading(false);
-        }
-
-        if (isStale()) return healthLoaded;
-
-        try {
-          const [selectedItems, catalog] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
-          if (!isStale()) {
-            setQuickAddItems(selectedItems);
-            setQuickAddCatalog(catalog);
-          }
-        } catch {
-          if (!isStale()) {
-            setQuickAddItems(getDefaultQuickAddItems());
-            setQuickAddCatalog(getDefaultQuickAddItems());
-          }
-        }
-
-        return healthLoaded;
-      }).catch((e) => console.warn('刷新健康页数据失败', e));
-
-      return () => {
-        cancelled = true;
-      };
-    }, [logicalTodayYmd, selectedDate, weekAnchorDate, wrapLoad]),
+      void reloadPage().catch((e) => console.warn('刷新健康页数据失败', e));
+    }, [reloadPage]),
   );
 
   const dayIntakeDisplay = React.useMemo(() => {
@@ -1776,6 +1766,7 @@ export default function HealthScreen() {
       </View>
 
       <ScrollView
+        refreshControl={refreshControl}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}

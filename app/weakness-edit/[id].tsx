@@ -1,5 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { startWeaknessAiReviewInBackground } from '@/lib/weakness-ai-background';
 import {
   createUserWeakness,
@@ -56,32 +57,33 @@ export default function WeaknessEditScreen() {
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
 
+  const reload = useCallback(async () => {
+    if (isNew || !id) return;
+    setLoading(true);
+    try {
+      const row = await getUserWeakness(id);
+      if (!row) {
+        Alert.alert('未找到', '该记录可能已删除', [{ text: '确定', onPress: () => router.back() }]);
+        return;
+      }
+      setTitle(row.title);
+      setDetail(row.detail);
+    } catch {
+      Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
+    } finally {
+      setLoading(false);
+    }
+  }, [id, isNew, router]);
+
+  const { refreshControl } = usePullToRefresh(reload);
+
   useEffect(() => {
     if (isNew || !id) {
       setLoading(false);
       return;
     }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const row = await getUserWeakness(id);
-        if (cancelled) return;
-        if (!row) {
-          Alert.alert('未找到', '该记录可能已删除', [{ text: '确定', onPress: () => router.back() }]);
-          return;
-        }
-        setTitle(row.title);
-        setDetail(row.detail);
-      } catch {
-        Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [id, isNew, router]);
+    void reload();
+  }, [id, isNew, reload]);
 
   const onSave = useCallback(async () => {
     const t = title.trim();
@@ -162,6 +164,7 @@ export default function WeaknessEditScreen() {
           keyboardVerticalOffset={insets.top + 56}
         >
           <ScrollView
+            refreshControl={refreshControl}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={[
               styles.scrollInner,

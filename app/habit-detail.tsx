@@ -14,7 +14,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   ActivityIndicator,
   Alert,
@@ -225,6 +225,8 @@ export default function HabitDetailScreen() {
     },
     [habitId, wrapLoad],
   );
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -447,6 +449,7 @@ export default function HabitDetailScreen() {
       </View>
 
       <ScrollView
+        refreshControl={refreshControl}
         style={styles.scrollFlex}
         contentContainerStyle={[
           styles.scrollContent,

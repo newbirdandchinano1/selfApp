@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   deleteUserWeakness,
   listUserWeaknesses,
@@ -97,6 +97,8 @@ export default function WeaknessListScreen() {
       setLoading(false);
     }
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     useCallback(() => {
@@ -357,6 +359,7 @@ export default function WeaknessListScreen() {
           data={items}
           keyExtractor={i => i.id}
           renderItem={renderItem}
+          refreshControl={refreshControl}
           ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
           ListHeaderComponent={listHeader}
           contentContainerStyle={[

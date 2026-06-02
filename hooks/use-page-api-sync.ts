@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 
+import { usePullToRefresh, type UsePullToRefreshResult } from '@/hooks/use-pull-to-refresh';
 import {
   beginPageApiRead,
   endPageApiRead,
@@ -55,4 +56,20 @@ export function usePageApiSync(pageKey: string) {
     markSynced,
     resetSync,
   };
+}
+
+/**
+ * 页面下拉刷新：重置本会话同步标记并强制经 wrapLoad 从接口/本地库重载。
+ * reload 应接受 forceApi 参数（与 wrapLoad 第二参一致）。
+ */
+export function usePagePullRefresh(
+  pageKey: string,
+  reload: (forceApi?: boolean) => Promise<void>,
+): UsePullToRefreshResult {
+  const refreshFromApi = useCallback(async () => {
+    resetPageApiSession(pageKey);
+    await reload(true);
+  }, [pageKey, reload]);
+
+  return usePullToRefresh(refreshFromApi);
 }

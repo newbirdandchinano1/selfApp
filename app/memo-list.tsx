@@ -19,7 +19,7 @@ import {
 } from '@/lib/memos';
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
@@ -107,6 +107,8 @@ export default function MemoListScreen() {
     },
     [wrapLoad, selectedDimensionId],
   );
+
+  const { refreshControl } = usePagePullRefresh(MEMO_LIST_PAGE_KEY, reload);
 
   useFocusEffect(useCallback(() => {
     void reload();
@@ -424,6 +426,7 @@ export default function MemoListScreen() {
           data={filteredItems}
           keyExtractor={i => i.id}
           renderItem={renderItem}
+          refreshControl={refreshControl}
           ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
           contentContainerStyle={[styles.listContent, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]}
           ListEmptyComponent={

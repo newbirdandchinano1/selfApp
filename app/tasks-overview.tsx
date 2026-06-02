@@ -10,14 +10,14 @@ import {
   getRecentTaskExecutionEventsPage,
   getTaskCompletionCountsByDayRange,
   getTaskExecutionEventsByActionPage,
-  getTaskExecutionEventsForLocalDay,
+  getNetCompletedTaskEventsForLocalDay,
   getTaskGlobalInsightCounts,
   type TaskExecutionEventWithTitle,
 } from '@/lib/repositories/tasks/task-execution-events';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { buildGlobalTaskHeatmapGrid, heatmapGridDayRange, type HeatmapCell } from '@/lib/tasks-global-heatmap';
 import { MaterialIcons } from '@expo/vector-icons';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 import { ActivityIndicator, Dimensions, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -218,7 +218,7 @@ export default function TasksOverviewScreen() {
   const [selectedHeatYmd, setSelectedHeatYmd] = React.useState<string | null>(null);
   const [selectedHeatCount, setSelectedHeatCount] = React.useState(0);
   const [selectedHeatInRange, setSelectedHeatInRange] = React.useState(true);
-  const [dayEvents, setDayEvents] = React.useState<Awaited<ReturnType<typeof getTaskExecutionEventsForLocalDay>>>([]);
+  const [dayEvents, setDayEvents] = React.useState<Awaited<ReturnType<typeof getNetCompletedTaskEventsForLocalDay>>>([]);
   const [dayEventsLoading, setDayEventsLoading] = React.useState(false);
 
   const [selectedStatKey, setSelectedStatKey] = React.useState<OverviewStatKey | null>(null);
@@ -319,21 +319,18 @@ export default function TasksOverviewScreen() {
     }
   }, [selectedHeatYmd, selectedStatKey, statEvents.length, statEventsHasMore, statEventsLoadingMore, statEventsTotal, statLoading]);
 
+  const reload = React.useCallback(async (forceApi = false) => {
+    await wrapLoad(async () => {
+      await Promise.all([loadOverview(heatLayout.weeks), loadEventsFirstPage()]);
+    }, forceApi);
+  }, [heatLayout.weeks, loadEventsFirstPage, loadOverview, wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   useFocusEffect(
     React.useCallback(() => {
-      let cancelled = false;
-      void wrapLoad(async () => {
-        try {
-          await Promise.all([loadOverview(heatLayout.weeks), loadEventsFirstPage()]);
-        } catch (e) {
-          console.warn('加载待办总览失败', e);
-        }
-        if (cancelled) return;
-      });
-      return () => {
-        cancelled = true;
-      };
-    }, [heatLayout.weeks, loadEventsFirstPage, loadOverview, wrapLoad])
+      void reload().catch((e) => console.warn('加载待办总览失败', e));
+    }, [reload])
   );
 
   const handleMainScroll = React.useCallback(
@@ -368,7 +365,7 @@ export default function TasksOverviewScreen() {
     }
     let cancelled = false;
     setDayEventsLoading(true);
-    getTaskExecutionEventsForLocalDay(selectedHeatYmd)
+    getNetCompletedTaskEventsForLocalDay(selectedHeatYmd)
       .then((rows) => {
         if (!cancelled) setDayEvents(rows);
       })
@@ -505,6 +502,7 @@ export default function TasksOverviewScreen() {
       </View>
 
       <ScrollView
+        refreshControl={refreshControl}
         contentContainerStyle={[styles.content, { paddingBottom: 32 }]}
         showsVerticalScrollIndicator={false}
         onScroll={handleMainScroll}

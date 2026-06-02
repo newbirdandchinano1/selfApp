@@ -3,7 +3,7 @@ import { CompletionRewardBadge } from '@/components/completion-reward/Completion
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import {
   INBOX_PROJECT_CATEGORY_ID,
@@ -53,7 +53,7 @@ import {
 import { clearFrogAssignedOn } from '@/lib/frog-assignment';
 import {
   getTaskCompletionCountsByDayRange,
-  getTaskExecutionEventsForLocalDay,
+  getNetCompletedTaskEventsForLocalDay,
   insertTaskExecutionEvent,
   type TaskExecutionEventWithTitle,
 } from '@/lib/repositories/tasks/task-execution-events';
@@ -921,11 +921,11 @@ function TaskCompletionHeatmap({
       try {
         const [frogItems, todoEvents] = await Promise.all([
           getFrogCompletionsForAssignedDay(selectedYmd),
-          getTaskExecutionEventsForLocalDay(selectedYmd),
+          getNetCompletedTaskEventsForLocalDay(selectedYmd),
         ]);
         if (!cancelled) {
           setSelectedFrogItems(frogItems);
-          setSelectedTodoItems(todoEvents.filter((e) => e.action === 'completed'));
+          setSelectedTodoItems(todoEvents);
         }
       } catch (e) {
         console.warn('加载完成明细失败', e);
@@ -1767,15 +1767,15 @@ export default function TasksScreen() {
     }
   }, []);
 
-  const loadTasks = React.useCallback(async (): Promise<number> => {
+  const loadTasks = React.useCallback(async (opts?: { forceRefresh?: boolean }): Promise<number> => {
     try {
-      let rows = await getTasks();
+      let rows = await getTasks(opts);
       const logicalToday = getLogicalLocalYmd(new Date(), dayBoundary);
       const rolled = await applyRepeatingTaskRollovers(rows, logicalToday, dayBoundary);
       const overdueBumped = await applyOverdueTaskPriorityBump(rows, logicalToday);
       if (rolled > 0 || overdueBumped > 0) {
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        rows = await getTasks();
+        rows = await getTasks(opts);
       }
       setTasks(rows);
       return rolled + overdueBumped;
@@ -2011,75 +2011,78 @@ export default function TasksScreen() {
     loadProjectCategories();
   }, [categoryModalVisible, loadProjectCategories]);
 
+  const reload = React.useCallback(async (forceApi = false) => {
+    const logicalToday = logicalTodayYmd;
+    const storedExpanded = await loadExpandedProjectState();
+    const rows = await loadProjects();
+    if (!storedExpanded) {
+      const allCollapsed = Object.fromEntries(rows.map((p) => [p.id, false] as const));
+      setExpandedProjectIds(allCollapsed);
+      await saveExpandedProjectState(allCollapsed);
+    } else {
+      const merged: Record<string, boolean> = { ...storedExpanded };
+      for (const p of rows) {
+        if (typeof merged[p.id] !== 'boolean') merged[p.id] = false;
+      }
+      setExpandedProjectIds(merged);
+      await saveExpandedProjectState(merged);
+    }
+    let treeMap = await loadProjectTasks(rows);
+    const archived = await autoArchiveProjectsPastDueIfNeeded(rows, treeMap, logicalToday);
+    let workingRows = rows;
+    if (archived > 0) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      workingRows = await loadProjects();
+      treeMap = await loadProjectTasks(workingRows);
+    }
+    const catRows = await loadProjectCategories();
+    const reactivated = await reactivateInboxCompletedProjectsWithOpenTasks(workingRows, treeMap, catRows);
+    if (reactivated > 0) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      const refreshed = await loadProjects();
+      await loadProjectTasks(refreshed);
+    }
+    const purgedInbox = await deleteInboxProjectsPastRetentionDays(INBOX_PROJECT_RETENTION_DAYS);
+    if (purgedInbox > 0) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      const afterPurge = await loadProjects();
+      await loadProjectTasks(afterPurge);
+    }
+    const taskRolled = await loadTasks();
+    if (taskRolled > 0) {
+      await loadProjectTasks(workingRows);
+    }
+    await loadHabits();
+    try {
+      const wishRows = await listWishItems();
+      setWishNameById(new Map(wishRows.map((r) => [r.id, r.name])));
+    } catch {
+      setWishNameById(new Map());
+    }
+  }, [
+    loadExpandedProjectState,
+    loadProjectCategories,
+    loadProjects,
+    loadProjectTasks,
+    loadTasks,
+    loadHabits,
+    logicalTodayYmd,
+    saveExpandedProjectState,
+  ]);
+
+  const reloadPage = React.useCallback(async (forceApi = false) => {
+    await wrapLoad(async () => {
+      await reload();
+    }, forceApi);
+  }, [reload, wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
+
   useFocusEffect(
     React.useCallback(() => {
-      let cancelled = false;
-      void wrapLoad(async () => {
-        const logicalToday = logicalTodayYmd;
-        const storedExpanded = await loadExpandedProjectState();
-        const rows = await loadProjects();
-        if (cancelled) return;
-        // 首次无存储记录：默认全部收起；有记录则按记录恢复（新项目默认收起）。
-        if (!storedExpanded) {
-          const allCollapsed = Object.fromEntries(rows.map((p) => [p.id, false] as const));
-          setExpandedProjectIds(allCollapsed);
-          await saveExpandedProjectState(allCollapsed);
-        } else {
-          const merged: Record<string, boolean> = { ...storedExpanded };
-          for (const p of rows) {
-            if (typeof merged[p.id] !== 'boolean') merged[p.id] = false;
-          }
-          setExpandedProjectIds(merged);
-          await saveExpandedProjectState(merged);
-        }
-        let treeMap = await loadProjectTasks(rows);
-        const archived = await autoArchiveProjectsPastDueIfNeeded(rows, treeMap, logicalToday);
-        let workingRows = rows;
-        if (archived > 0) {
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-          workingRows = await loadProjects();
-          treeMap = await loadProjectTasks(workingRows);
-        }
-        const catRows = await loadProjectCategories();
-        const reactivated = await reactivateInboxCompletedProjectsWithOpenTasks(workingRows, treeMap, catRows);
-        if (reactivated > 0) {
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-          const refreshed = await loadProjects();
-          await loadProjectTasks(refreshed);
-        }
-        const purgedInbox = await deleteInboxProjectsPastRetentionDays(INBOX_PROJECT_RETENTION_DAYS);
-        if (purgedInbox > 0) {
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-          const afterPurge = await loadProjects();
-          await loadProjectTasks(afterPurge);
-        }
-        const taskRolled = await loadTasks();
-        if (taskRolled > 0 && !cancelled) {
-          await loadProjectTasks(workingRows);
-        }
-        await loadHabits();
-        try {
-          const wishRows = await listWishItems();
-          if (!cancelled) {
-            setWishNameById(new Map(wishRows.map((r) => [r.id, r.name])));
-          }
-        } catch {
-          if (!cancelled) setWishNameById(new Map());
-        }
-      });
-      return () => {
-        cancelled = true;
-      };
+      void reloadPage();
     }, [
-      wrapLoad,
-      loadExpandedProjectState,
-      loadProjectCategories,
-      loadProjects,
-      loadProjectTasks,
-      loadTasks,
-      loadHabits,
-      logicalTodayYmd,
-      saveExpandedProjectState,
+      reloadPage,
     ])
   );
 
@@ -2562,7 +2565,7 @@ export default function TasksScreen() {
             console.warn('记录青蛙完成事件失败', frogLogErr);
           }
         }
-        if (!wasDone) setCompletionHeatmapReloadToken((n) => n + 1);
+        setCompletionHeatmapReloadToken((n) => n + 1);
         if (nextStatus === 'done' && current.project_id) {
           const pid = current.project_id;
           const proj = projects.find((p) => p.id === pid);
@@ -2633,8 +2636,30 @@ export default function TasksScreen() {
     }
     if (quickTodoSaving) return;
     setQuickTodoSaving(true);
+    const id = makeTimestampEntityId('tsk_', 8);
+    const now = new Date().toISOString();
+    const optimisticTask: TaskRow = {
+      id,
+      project_id: null,
+      category_id: null,
+      parent_task_id: null,
+      title,
+      description: null,
+      note: null,
+      status: 'todo',
+      priority: 0,
+      due_date: null,
+      completed_at: null,
+      created_at: now,
+      updated_at: now,
+      sync_status: 'pending_create',
+      extra_data: null,
+      sort_order: 0,
+    };
     try {
-      const id = makeTimestampEntityId('tsk_', 8);
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setTasks((prev) => [optimisticTask, ...prev]);
+      setQuickTodoDraft('');
       await createTask({
         id,
         project_id: null,
@@ -2647,12 +2672,11 @@ export default function TasksScreen() {
         due_date: null,
         extra_data: null,
       });
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setQuickTodoDraft('');
-      await loadTasks();
+      await loadTasks({ forceRefresh: true });
     } catch (err) {
       console.warn('创建无项目待办失败', err);
       Alert.alert('保存失败', '待办未能写入，请稍后重试。');
+      await loadTasks({ forceRefresh: true });
     } finally {
       setQuickTodoSaving(false);
     }
@@ -3135,6 +3159,7 @@ export default function TasksScreen() {
 
       <ScrollView
         ref={mainScrollRef}
+        refreshControl={refreshControl}
         style={styles.scroll}
         contentContainerStyle={[
           styles.content,

@@ -23,7 +23,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -165,6 +165,8 @@ export default function AccountDetailScreen() {
     },
     [loadAccountDetail, wrapLoad],
   );
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadAccountDetail);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -398,6 +400,7 @@ export default function AccountDetailScreen() {
       />
 
       <ScrollView
+        refreshControl={refreshControl}
         contentContainerStyle={[
           styles.scrollContent,
           {

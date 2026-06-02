@@ -2,7 +2,7 @@ import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { getHabitCheckInCountsByDateRange } from '@/lib/repositories/habits/habit-check-in';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getProjects } from '@/lib/repositories/projects/project';
@@ -731,7 +731,7 @@ export default function TasksCalendarScreen() {
   const detailRangeKey = `${detailStartYmd}:${detailEndYmd}`;
   const detailRangeKeyRef = React.useRef('');
 
-  const loadDetailSummaries = React.useCallback(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
     const rangeKey = detailRangeKey;
     const rangeChanged = rangeKey !== detailRangeKeyRef.current;
     if (rangeChanged) {
@@ -756,7 +756,7 @@ export default function TasksCalendarScreen() {
           dayBoundary: boundary,
         });
         setSummaries(map);
-      });
+      }, forceApi);
     } catch (e) {
       console.warn('加载任务日历失败', e);
       setSummaries(new Map());
@@ -765,15 +765,17 @@ export default function TasksCalendarScreen() {
     }
   }, [detailStartYmd, detailEndYmd, detailRangeKey, boundary, wrapLoad]);
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   useFocusEffect(
     React.useCallback(() => {
-      void loadDetailSummaries();
-    }, [loadDetailSummaries])
+      void reload();
+    }, [reload])
   );
 
   React.useEffect(() => {
-    void loadDetailSummaries();
-  }, [monthOffset, detailRangeKey, loadDetailSummaries]);
+    void reload();
+  }, [monthOffset, detailRangeKey, reload]);
 
   React.useEffect(() => {
     setVisibleMonthOffset(monthOffset);
@@ -846,6 +848,7 @@ export default function TasksCalendarScreen() {
       </View>
 
       <ScrollView
+        refreshControl={refreshControl}
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled>

@@ -2,6 +2,7 @@ import { MemoFormatToolbar } from '@/components/memo/memo-format-toolbar';
 import { MemoRichBodyInput } from '@/components/memo/memo-rich-body-input';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { startMemoAiReviewInBackground } from '@/lib/memo-ai-background';
 import {
     applyMemoFormatToModel,
@@ -73,32 +74,33 @@ export default function MemoEditScreen() {
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
 
+  const reload = useCallback(async () => {
+    if (isNew || !id) return;
+    setLoading(true);
+    try {
+      const row = await getMemo(id);
+      if (!row) {
+        Alert.alert('未找到', '该备忘可能已删除', [{ text: '确定', onPress: () => router.back() }]);
+        return;
+      }
+      setTitle(row.title);
+      setBodyModel(parseMemoBodyToEditModel(row.body));
+    } catch {
+      Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
+    } finally {
+      setLoading(false);
+    }
+  }, [id, isNew, router]);
+
+  const { refreshControl } = usePullToRefresh(reload);
+
   useEffect(() => {
     if (isNew || !id) {
       setLoading(false);
       return;
     }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const row = await getMemo(id);
-        if (cancelled) return;
-        if (!row) {
-          Alert.alert('未找到', '该备忘可能已删除', [{ text: '确定', onPress: () => router.back() }]);
-          return;
-        }
-        setTitle(row.title);
-        setBodyModel(parseMemoBodyToEditModel(row.body));
-      } catch {
-        Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [id, isNew, router]);
+    void reload();
+  }, [id, isNew, reload]);
 
   const onFormatAction = useCallback(
     (action: MemoFormatAction) => {
@@ -193,6 +195,7 @@ export default function MemoEditScreen() {
           keyboardVerticalOffset={insets.top + 56}
         >
           <ScrollView
+            refreshControl={refreshControl}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={[
               styles.scrollInner,

@@ -12,7 +12,7 @@ import {
   type QuickAddCardItem,
 } from '@/lib/quick-add-cards';
 import { MaterialIcons } from '@expo/vector-icons';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -56,44 +56,40 @@ export default function QuickAddEditScreen() {
   );
   const [allItems, setAllItems] = React.useState<QuickAddItem[]>([]);
 
+  const reload = React.useCallback(async (forceApi = false) => {
+    await wrapLoad(async () => {
+    try {
+      const [selected, all] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
+      setHomeItems(
+        selected.map((item) => ({
+          ...item,
+          icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+        }))
+      );
+      setAllItems(
+        all.map((item) => ({
+          ...item,
+          icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+        }))
+      );
+    } catch {
+      setHomeItems(
+        getDefaultQuickAddItems().map((item) => ({
+          ...item,
+          icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+        }))
+      );
+      setAllItems([]);
+    }
+    }, forceApi);
+  }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   useFocusEffect(
     React.useCallback(() => {
-      let cancelled = false;
-      const run = async () => {
-        await wrapLoad(async () => {
-        try {
-          const [selected, all] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
-          if (cancelled) return;
-          setHomeItems(
-            selected.map((item) => ({
-              ...item,
-              icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-            }))
-          );
-          setAllItems(
-            all.map((item) => ({
-              ...item,
-              icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-            }))
-          );
-        } catch {
-          if (!cancelled) {
-            setHomeItems(
-              getDefaultQuickAddItems().map((item) => ({
-                ...item,
-                icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-              }))
-            );
-            setAllItems([]);
-          }
-        }
-        });
-      };
-      void run();
-      return () => {
-        cancelled = true;
-      };
-    }, [wrapLoad])
+      void reload();
+    }, [reload])
   );
 
   const availableItems = React.useMemo(() => {
@@ -183,7 +179,7 @@ export default function QuickAddEditScreen() {
         </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 28 + Math.max(insets.bottom, 12) }]} showsVerticalScrollIndicator={false}>
+      <ScrollView refreshControl={refreshControl} contentContainerStyle={[styles.content, { paddingBottom: 28 + Math.max(insets.bottom, 12) }]} showsVerticalScrollIndicator={false}>
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: theme.text }]}>首页展示</Text>
           <View style={styles.cardList}>

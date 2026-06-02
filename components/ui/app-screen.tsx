@@ -2,6 +2,7 @@ import React from 'react';
 import { ScrollView, StyleSheet, View, type ScrollViewProps, type StyleProp, type ViewStyle } from 'react-native';
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 
+import { PullRefreshScrollView } from '@/components/pull-refresh-scroll-view';
 import { ScreenLoadingShell } from '@/components/screen-loading-shell';
 import { Layout, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -12,6 +13,8 @@ export type AppScreenProps = {
   scrollable?: boolean;
   loading?: boolean;
   loadingHint?: string;
+  /** 下拉刷新时重新拉取页面数据 */
+  onRefreshData?: () => Promise<void>;
   contentContainerStyle?: StyleProp<ViewStyle>;
   style?: StyleProp<ViewStyle>;
   edges?: Edge[];
@@ -25,6 +28,7 @@ export function AppScreen({
   scrollable = true,
   loading = false,
   loadingHint,
+  onRefreshData,
   contentContainerStyle,
   style,
   edges = ['left', 'right'],
@@ -42,13 +46,24 @@ export function AppScreen({
     <SafeAreaView style={[styles.root, { backgroundColor: colors.background }, style]} edges={edges}>
       {header}
       {scrollable ? (
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-          {...scrollProps}>
-          {body}
-        </ScrollView>
+        onRefreshData ? (
+          <PullRefreshScrollView
+            onRefreshData={onRefreshData}
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            {...scrollProps}>
+            {body}
+          </PullRefreshScrollView>
+        ) : (
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            {...scrollProps}>
+            {body}
+          </ScrollView>
+        )
       ) : (
         body
       )}

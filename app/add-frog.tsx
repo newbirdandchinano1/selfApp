@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { clearFrogAssignedOn, getFrogAssignedOn } from '@/lib/frog-assignment';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
@@ -484,7 +484,7 @@ export default function AddFrogScreen() {
   const [taskMap, setTaskMap] = React.useState<Record<string, TaskRow>>({});
   const [lockedProjectIds, setLockedProjectIds] = React.useState<Set<string>>(() => new Set());
 
-  const loadEligibleTasks = React.useCallback(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
     setLoading(true);
     try {
       await wrapLoad(async () => {
@@ -527,16 +527,18 @@ export default function AddFrogScreen() {
           setTaskMap({});
           setLockedProjectIds(new Set());
         }
-      });
+      }, forceApi);
     } finally {
       setLoading(false);
     }
   }, [wrapLoad]);
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   useFocusEffect(
     React.useCallback(() => {
-      void loadEligibleTasks();
-    }, [loadEligibleTasks])
+      void reload();
+    }, [reload])
   );
 
   const surface = theme.background;
@@ -578,7 +580,7 @@ export default function AddFrogScreen() {
               try {
                 const nextExtra = clearFrogAssignedOn(row.extra_data);
                 await updateTask(id, { extra_data: nextExtra });
-                await loadEligibleTasks();
+                await reload();
               } catch (e) {
                 console.warn('取消青蛙指派失败', e);
                 Alert.alert('操作失败', '未能取消指派，请稍后重试。');
@@ -590,7 +592,7 @@ export default function AddFrogScreen() {
         },
       ]);
     },
-    [loadEligibleTasks, taskMap]
+    [reload, taskMap]
   );
 
   const assignFrogs = React.useCallback(async () => {
@@ -653,6 +655,7 @@ export default function AddFrogScreen() {
       </View>
 
       <ScrollView
+        refreshControl={refreshControl}
         contentContainerStyle={[
           styles.content,
           { paddingBottom: 140 + Math.max(insets.bottom, 12) },

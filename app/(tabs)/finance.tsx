@@ -92,7 +92,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
     ActivityIndicator,
     Alert,
@@ -2058,7 +2058,8 @@ export default function FinanceScreen() {
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
-      void wrapLoad(async () => {
+      const run = async (forceApi = false) => {
+        await wrapLoad(async () => {
         try {
           await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
           if (cancelled) return;
@@ -2086,12 +2087,32 @@ export default function FinanceScreen() {
         } catch (e) {
           console.warn('Finance tab focus refresh failed:', e);
         }
-      }, true);
+        }, forceApi);
+      };
+      void run(true);
       return () => {
         cancelled = true;
       };
     }, [applyManualOrTransferSheetIntent, loadFinanceAccounts, loadFinanceTransactions, wrapLoad])
   );
+
+  const reload = React.useCallback(async (forceApi = false) => {
+    await wrapLoad(async () => {
+      try {
+        await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+        const rawDefaults = await loadFinanceDefaultAccounts();
+        defaultAccountsRef.current = sanitizeFinanceDefaultAccounts(rawDefaults, financeAccountsRef.current);
+        const settings = await loadMonthBudgetSettings();
+        setMonthBudgetSettings(settings);
+        const rd = await loadBudgetRefreshDay();
+        setBudgetRefreshDay(rd);
+      } catch (e) {
+        console.warn('Finance tab refresh failed:', e);
+      }
+    }, forceApi);
+  }, [loadFinanceAccounts, loadFinanceTransactions, wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   const closeSheet = React.useCallback(() => {
     if (isSavingTransaction || isParsingSentence || isSentencePreviewBusy) return;
@@ -2884,6 +2905,7 @@ export default function FinanceScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
       <ScrollView
+        refreshControl={refreshControl}
         stickyHeaderIndices={[0]}
         contentContainerStyle={[
           styles.scrollContent,

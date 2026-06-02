@@ -46,8 +46,57 @@ function notifyDefaultUserUpdated() {
   }
 }
 
+async function readLocalDefaultUser(): Promise<UserRow | null> {
+  const db = await getDatabase();
+  if (!db) return null;
+  const row = await db.getFirstAsync<UserRow>(
+    `SELECT * FROM users WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
+    ['default'],
+  );
+  return row ?? null;
+}
+
+/** 本地尚无 default 用户时写入种子行（与 database 迁移一致） */
+async function ensureLocalDefaultUserSeed(): Promise<UserRow> {
+  const db = await getDatabase();
+  await db.runAsync(
+    'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
+    ['default'],
+  );
+  await db.runAsync(
+    `UPDATE users
+     SET gender = COALESCE(NULLIF(gender, ''), '男'),
+         lifestyle = COALESCE(NULLIF(lifestyle, ''), '长期静坐不运动'),
+         goal = COALESCE(NULLIF(goal, ''), '无')
+     WHERE id = ?`,
+    ['default'],
+  );
+  const row = await readLocalDefaultUser();
+  if (!row) throw new Error('无法初始化默认用户');
+  return row;
+}
+
 export async function getDefaultUser() {
-  const row = await readApiRecord<UserRow>('users', 'default', { offlineFallback: true });
+  let row: UserRow | null = null;
+  try {
+    row = await readApiRecord<UserRow>('users', 'default', { offlineFallback: true });
+  } catch (e) {
+    if (__DEV__) console.warn('[user] REST 读取 default 用户失败，回退本地', e);
+  }
+  if (!row) {
+    row = await readLocalDefaultUser();
+  }
+  if (!row) {
+    try {
+      const rows = await readApiTable<UserRow>('users', { offlineFallback: true });
+      row = rows.find((u) => u.id === 'default') ?? null;
+    } catch {
+      // ignore
+    }
+  }
+  if (!row) {
+    row = await ensureLocalDefaultUserSeed();
+  }
   if (!row) return row;
 
   if (!Object.prototype.hasOwnProperty.call(row, 'birthday')) {

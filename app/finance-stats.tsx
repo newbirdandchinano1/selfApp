@@ -1,7 +1,7 @@
 import { AppButton, AppCard, AppIconButton, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
 import {
   BUILTIN_SHEET_CATEGORY_LABELS,
@@ -212,7 +212,7 @@ export default function FinanceStatsScreen() {
   const [aiBillAnalysisError, setAiBillAnalysisError] = React.useState<string | null>(null);
   const [aiBillAnalysisBusy, setAiBillAnalysisBusy] = React.useState(false);
 
-  const loadStatsData = React.useCallback(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
       try {
         const [transactionRows, categoryRows] = await Promise.all([
@@ -226,17 +226,19 @@ export default function FinanceStatsScreen() {
         setTransactions([]);
         setCategories([]);
       }
-    });
+    }, forceApi);
   }, [wrapLoad]);
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   React.useEffect(() => {
-    void loadStatsData();
-  }, [loadStatsData]);
+    void reload();
+  }, [reload]);
 
   useFocusEffect(
     React.useCallback(() => {
-      void loadStatsData();
-    }, [loadStatsData])
+      void reload();
+    }, [reload])
   );
 
   const range = React.useMemo(() => {
@@ -620,6 +622,7 @@ export default function FinanceStatsScreen() {
       <ScreenHeader title="统计" onBack={() => router.back()} />
 
       <ScrollView
+        refreshControl={refreshControl}
         contentContainerStyle={[
           styles.scrollContent,
           { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md) },

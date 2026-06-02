@@ -21,6 +21,21 @@ type EventRowLite = {
   task_title?: string | null;
 };
 
+/** 同一任务 + 本地日只保留最新一次操作；仅当最新为 completed 时计入热力图 */
+function filterNetCompletedTaskEvents<T extends EventRowLite>(events: T[]): T[] {
+  const latestByKey = new Map<string, T>();
+  for (const e of events) {
+    const day = ymdFromDatetime(e.created_at);
+    if (!day) continue;
+    const groupKey = `${e.task_id}\0${day}`;
+    const prev = latestByKey.get(groupKey);
+    if (!prev || compareDatetimeDesc(prev.created_at, e.created_at) > 0) {
+      latestByKey.set(groupKey, e);
+    }
+  }
+  return [...latestByKey.values()].filter((e) => e.action === 'completed');
+}
+
 export type TaskExecutionEventWithTitle = {
   id: string;
   task_id: string;
@@ -65,6 +80,14 @@ export async function insertTaskExecutionEvent(
 export async function getTaskExecutionEventsForLocalDay(ymd: string): Promise<TaskExecutionEventWithTitle[]> {
   const events = await loadScopedExecutionEvents();
   return events
+    .filter(e => ymdFromDatetime(e.created_at) === ymd)
+    .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
+}
+
+/** 某一本地日内仍有效的「标记完成」记录（取消完成后再完成只计一次） */
+export async function getNetCompletedTaskEventsForLocalDay(ymd: string): Promise<TaskExecutionEventWithTitle[]> {
+  const events = await loadScopedExecutionEvents();
+  return filterNetCompletedTaskEvents(events)
     .filter(e => ymdFromDatetime(e.created_at) === ymd)
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
 }
@@ -114,8 +137,7 @@ export async function getRecentTaskExecutionEventsPage(
 export async function getTaskCompletionCountsByDayRange(startYmd: string, endYmd: string): Promise<Map<string, number>> {
   const events = await loadScopedExecutionEvents();
   const m = new Map<string, number>();
-  for (const e of events) {
-    if (e.action !== 'completed') continue;
+  for (const e of filterNetCompletedTaskEvents(events)) {
     const day = ymdFromDatetime(e.created_at);
     if (!day || !isYmdInRange(day, startYmd, endYmd)) continue;
     m.set(day, (m.get(day) ?? 0) + 1);
@@ -124,9 +146,7 @@ export async function getTaskCompletionCountsByDayRange(startYmd: string, endYmd
 }
 
 export async function getFirstCompletedEventDayYmd(): Promise<string | null> {
-  const events = await loadScopedExecutionEvents().then(rows =>
-    rows.filter(e => e.action === 'completed'),
-  );
+  const events = await loadScopedExecutionEvents().then(filterNetCompletedTaskEvents);
   if (events.length === 0) return null;
   const days = events
     .map(e => ymdFromDatetime(e.created_at))

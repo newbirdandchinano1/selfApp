@@ -19,8 +19,8 @@ import type {
 
 export type TaskTreeNode = TaskRow & { children: TaskTreeNode[] };
 
-async function loadAllTasks(): Promise<TaskRow[]> {
-  return readApiTable<TaskRow>('tasks', { offlineFallback: true });
+async function loadAllTasks(opts?: { forceRefresh?: boolean }): Promise<TaskRow[]> {
+  return readApiTable<TaskRow>('tasks', { offlineFallback: true, forceRefresh: opts?.forceRefresh });
 }
 
 function sortTasksForProjectList(rows: TaskRow[]): TaskRow[] {
@@ -188,8 +188,8 @@ export async function getTaskById(id: string) {
   return readApiRecord<TaskRow>('tasks', id, { offlineFallback: true });
 }
 
-export async function getTasks() {
-  const rows = await loadAllTasks();
+export async function getTasks(opts?: { forceRefresh?: boolean }) {
+  const rows = await loadAllTasks(opts);
   return sortByUpdatedDesc(rows);
 }
 

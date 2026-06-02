@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { createQuickAddItemMap, loadAllQuickAddItems, type QuickAddCardItem } from '@/lib/quick-add-cards';
 import { deleteHealthRecord, getHealthRecordById } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
@@ -162,7 +162,7 @@ export default function IntakeRecordDetailScreen() {
   const [deleting, setDeleting] = React.useState(false);
   const [imageLoadError, setImageLoadError] = React.useState(false);
 
-  const load = React.useCallback(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
     if (!recordId?.trim()) {
       setRow(null);
       setForbidden(false);
@@ -189,7 +189,7 @@ export default function IntakeRecordDetailScreen() {
         setRow(rec);
         setFocusMetric(resolveFocusMetric(rec, parseMetricParam(metricParam)));
         setImageLoadError(false);
-      });
+      }, forceApi);
     } catch {
       setRow(null);
       setForbidden(false);
@@ -198,10 +198,12 @@ export default function IntakeRecordDetailScreen() {
     }
   }, [recordId, dateYmd, metricParam, wrapLoad]);
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
   useFocusEffect(
     React.useCallback(() => {
-      void load();
-    }, [load])
+      void reload();
+    }, [reload])
   );
 
   const meta = METRIC_META[focusMetric];
@@ -282,7 +284,7 @@ export default function IntakeRecordDetailScreen() {
           </Pressable>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <ScrollView refreshControl={refreshControl} contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>摄入附图</Text>
             <View style={[styles.photoCard, { backgroundColor: theme.surface, borderColor: border }]}>

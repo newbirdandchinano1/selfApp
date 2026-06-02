@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   buildUserHealthCalendarSnapshot,
   getHealthDayMetricsForUser,
@@ -142,6 +142,8 @@ export default function HealthCalendarScreen() {
     },
     [today, wrapLoad],
   );
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadCalendar);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -300,6 +302,7 @@ export default function HealthCalendarScreen() {
             data={timelineData}
             keyExtractor={(item) => item.key}
             renderItem={renderItem}
+            refreshControl={refreshControl}
             initialNumToRender={40}
             maxToRenderPerBatch={60}
             windowSize={12}

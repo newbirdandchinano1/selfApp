@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   buildDeadlineTextFromSchedule,
   extractScheduleLimitFromExtra,
@@ -428,19 +428,21 @@ export default function EditTaskScreen() {
     return !formSnapshotsEqual(loadedFormSnapshot, current);
   }, [completionReward, deadlineText, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
 
-  const loadSubtasks = React.useCallback(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
     if (!taskId) return;
     try {
       await wrapLoad(async () => {
         const nodes = await getChildTasksByParentTaskId(taskId);
         const rows = nodes.map((n) => n as unknown as TaskRow);
         setSubtasks(rows.map(mapTaskRowToSubtask));
-      });
+      }, forceApi);
     } catch (error) {
       console.warn('加载子任务失败', error);
       setSubtasks([]);
     }
   }, [taskId, wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   const readScheduleResult = React.useCallback(() => {
     const picked = consumeSchedulePickerResult(scheduleSource);
@@ -553,12 +555,12 @@ export default function EditTaskScreen() {
         }),
       });
       Alert.alert('已添加', '子任务已创建。');
-      await loadSubtasks();
+      await reload();
     } catch (error) {
       console.warn('创建子任务失败', error);
       Alert.alert('添加失败', '子任务创建失败，请稍后重试。');
     }
-  }, [addSubtaskSource, loadSubtasks, taskId, taskSnapshot]);
+  }, [addSubtaskSource, reload, taskId, taskSnapshot]);
 
   const loadTask = React.useCallback(async () => {
     if (!taskId) {
@@ -620,7 +622,7 @@ export default function EditTaskScreen() {
       setParentDateLimit(parentLimit);
       setProjectDateLimit(projectLimit);
 
-      await loadSubtasks();
+      await reload();
     } catch (error) {
       console.warn('加载任务详情失败', error);
       Alert.alert('加载失败', '无法读取任务详情，请稍后重试。');
@@ -628,7 +630,7 @@ export default function EditTaskScreen() {
     } finally {
       setLoading(false);
     }
-  }, [loadSubtasks, router, taskId]);
+  }, [reload, router, taskId]);
 
   React.useEffect(() => {
     loadTask();
@@ -642,8 +644,8 @@ export default function EditTaskScreen() {
     React.useCallback(() => {
       readScheduleResult();
       void readAddSubtaskResult();
-      void loadSubtasks();
-    }, [readAddSubtaskResult, readScheduleResult])
+      void reload();
+    }, [readAddSubtaskResult, readScheduleResult, reload])
   );
 
   React.useEffect(() => {
@@ -857,6 +859,7 @@ export default function EditTaskScreen() {
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView
+          refreshControl={refreshControl}
           contentContainerStyle={[styles.content, { paddingBottom: 150 + Math.max(insets.bottom, 12) }]}
           showsVerticalScrollIndicator={false}>
           <View style={styles.section}>

@@ -1,7 +1,7 @@
 import { AppCard, ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import {
   loadFinanceDefaultAccounts,
@@ -67,7 +67,7 @@ export default function AssetsScreen() {
     [assetAccounts, defaultAccounts.defaultIncomeAccountId],
   );
 
-  const loadAccounts = React.useCallback(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
       try {
         const [rows, typeRows, rawDefaults] = await Promise.all([
@@ -83,8 +83,10 @@ export default function AssetsScreen() {
         setAccounts([]);
         setAccountTypes([]);
       }
-    });
+    }, forceApi);
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   const saveDefaultAccount = React.useCallback(
     async (target: 'payment' | 'income', accountId: string | null) => {
@@ -103,13 +105,13 @@ export default function AssetsScreen() {
   );
 
   React.useEffect(() => {
-    void loadAccounts();
-  }, [loadAccounts]);
+    void reload();
+  }, [reload]);
 
   useFocusEffect(
     React.useCallback(() => {
-      void loadAccounts();
-    }, [loadAccounts]),
+      void reload();
+    }, [reload]),
   );
 
   const formatMoney0 = React.useCallback((value: number) => {
@@ -354,6 +356,7 @@ export default function AssetsScreen() {
       />
 
       <ScrollView
+        refreshControl={refreshControl}
         contentContainerStyle={[
           styles.content,
           {

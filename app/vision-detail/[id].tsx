@@ -25,7 +25,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   ActivityIndicator,
   Alert,
@@ -197,48 +197,43 @@ export default function VisionDetailScreen() {
     exitEditMode();
   }, [id, exitEditMode]);
 
-  useFocusEffect(
-    useCallback(() => {
-      let alive = true;
-      if (!id) {
+  const reload = useCallback(async (forceApi = false) => {
+    if (!id) {
+      setRecord(null);
+      setDbRow(null);
+      return;
+    }
+    const reg = getRegistryVisionById(id);
+    if (reg) {
+      setRecord(reg);
+      setDbRow(null);
+      return;
+    }
+    setRecord(undefined);
+    setDbRow(null);
+    await wrapLoad(async () => {
+      try {
+        const row = await getVisionRowById(id);
+        if (row) {
+          setDbRow(row);
+          setRecord(await visionRowToDetailRecord(row));
+        } else {
+          setRecord(null);
+          setDbRow(null);
+        }
+      } catch {
         setRecord(null);
         setDbRow(null);
-        return () => {
-          alive = false;
-        };
       }
-      const reg = getRegistryVisionById(id);
-      if (reg) {
-        setRecord(reg);
-        setDbRow(null);
-        return () => {
-          alive = false;
-        };
-      }
-      setRecord(undefined);
-      setDbRow(null);
-      void wrapLoad(async () => {
-        try {
-          const row = await getVisionRowById(id);
-          if (!alive) return;
-          if (row) {
-            setDbRow(row);
-            setRecord(await visionRowToDetailRecord(row));
-          } else {
-            setRecord(null);
-            setDbRow(null);
-          }
-        } catch {
-          if (alive) {
-            setRecord(null);
-            setDbRow(null);
-          }
-        }
-      });
-      return () => {
-        alive = false;
-      };
-    }, [id]),
+    }, forceApi);
+  }, [id, wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
+  useFocusEffect(
+    useCallback(() => {
+      void reload();
+    }, [reload]),
   );
 
   const beginEdit = () => {
@@ -458,6 +453,7 @@ export default function VisionDetailScreen() {
         keyboardVerticalOffset={0}
       >
         <ScrollView
+          refreshControl={refreshControl}
           contentContainerStyle={[styles.content, { paddingBottom: 28 + Math.max(insets.bottom, 12) }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"

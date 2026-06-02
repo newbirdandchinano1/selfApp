@@ -1,5 +1,4 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
 import { getProjectCategories, reorderProjectCategories } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow } from '@/lib/repositories/projects/project.types';
@@ -56,6 +55,8 @@ export default function CategorySortScreen() {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  const { refreshControl } = usePullToRefresh(load);
 
   const persist = React.useCallback(async () => {
     if (persistLockRef.current) return;
@@ -132,6 +133,7 @@ export default function CategorySortScreen() {
               data={data as any}
               keyExtractor={(item: any) => item.id}
               renderItem={renderItem as any}
+              refreshControl={refreshControl}
               onDragEnd={({ data: next }) => {
                 setProjectCategories(next as any);
                 void persist();

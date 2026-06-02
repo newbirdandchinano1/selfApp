@@ -1,5 +1,5 @@
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { buildCashFlowAiSummaryText, calculateCashFlowMetrics } from '@/lib/cash-flow/cash-flow-metrics';
 import { loadCashFlowState } from '@/lib/repositories/cash-flow/cash-flow';
 import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
@@ -90,7 +90,7 @@ export default function AiFinanceAnalysisScreen() {
     [aiDashboard],
   );
 
-  const loadMonthlyOverview = React.useCallback(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
     setBootReady(false);
     try {
       await wrapLoad(async () => {
@@ -224,11 +224,13 @@ export default function AiFinanceAnalysisScreen() {
       setSelectedIncomeForecastIndex(5);
       setCashFlowAiBlock(null);
     }
-      });
+      }, forceApi);
     } finally {
       setBootReady(true);
     }
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   const savingsForecastChart = React.useMemo(() => {
     const points = savingsForecastSeries.length ? savingsForecastSeries : Array(12).fill(0);
@@ -440,13 +442,13 @@ export default function AiFinanceAnalysisScreen() {
   }, [bootReady]);
 
   React.useEffect(() => {
-    void loadMonthlyOverview();
-  }, [loadMonthlyOverview]);
+    void reload();
+  }, [reload]);
 
   useFocusEffect(
     React.useCallback(() => {
-      void loadMonthlyOverview();
-    }, [loadMonthlyOverview])
+      void reload();
+    }, [reload])
   );
 
   const pageLocked = !bootReady || aiDashboardLoading;
@@ -490,7 +492,7 @@ export default function AiFinanceAnalysisScreen() {
         </View>
       ) : null}
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView refreshControl={refreshControl} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={[styles.summaryCard, { backgroundColor: surface }]}>
           <View style={[styles.leftAccent, { backgroundColor: expenseAccent }]} />
           <Text style={[styles.kicker, { color: subtle }]}>本月汇总</Text>

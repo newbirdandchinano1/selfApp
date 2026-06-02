@@ -6,6 +6,7 @@ import {
 } from '@/components/recipe/dynamic-line-inputs';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import {
   createRecipe,
   getRecipe,
@@ -76,6 +77,46 @@ export default function RecipeEditScreen() {
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
 
+  const reload = useCallback(async () => {
+    if (isNew) {
+      if (!categoryId) return;
+      setLoading(true);
+      try {
+        const cat = await getRecipeCategory(categoryId);
+        setCategoryName(cat?.name ?? '');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+    if (!id) return;
+    setLoading(true);
+    try {
+      const row = await getRecipe(id);
+      if (!row) {
+        Alert.alert('未找到', '该菜谱可能已删除', [{ text: '确定', onPress: () => router.back() }]);
+        return;
+      }
+      const cat = await getRecipeCategory(row.category_id);
+      setCategoryName(cat?.name ?? '');
+      setTitle(row.title);
+      setIngredientLines(
+        ensureMinLines(row.ingredients.length > 0 ? row.ingredients : linesFromLegacyText('')),
+      );
+      setStepLines(ensureMinLines(row.steps.length > 0 ? row.steps : linesFromLegacyText('')));
+      setNotes(row.notes ?? '');
+      const img = row.finished_image_uri ?? null;
+      setFinishedImageUri(img);
+      setInitialImageUri(img);
+    } catch {
+      Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
+    } finally {
+      setLoading(false);
+    }
+  }, [categoryId, id, isNew, router]);
+
+  const { refreshControl } = usePullToRefresh(reload);
+
   useEffect(() => {
     if (isNew) {
       if (!categoryId) {
@@ -85,47 +126,15 @@ export default function RecipeEditScreen() {
         setLoading(false);
         return;
       }
-      void (async () => {
-        const cat = await getRecipeCategory(categoryId);
-        setCategoryName(cat?.name ?? '');
-        setLoading(false);
-      })();
+      void reload();
       return;
     }
     if (!id) {
       setLoading(false);
       return;
     }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const row = await getRecipe(id);
-        if (cancelled) return;
-        if (!row) {
-          Alert.alert('未找到', '该菜谱可能已删除', [{ text: '确定', onPress: () => router.back() }]);
-          return;
-        }
-        const cat = await getRecipeCategory(row.category_id);
-        setCategoryName(cat?.name ?? '');
-        setTitle(row.title);
-        setIngredientLines(
-          ensureMinLines(row.ingredients.length > 0 ? row.ingredients : linesFromLegacyText('')),
-        );
-        setStepLines(ensureMinLines(row.steps.length > 0 ? row.steps : linesFromLegacyText('')));
-        setNotes(row.notes ?? '');
-        const img = row.finished_image_uri ?? null;
-        setFinishedImageUri(img);
-        setInitialImageUri(img);
-      } catch {
-        Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [categoryId, id, isNew, router]);
+    void reload();
+  }, [categoryId, id, isNew, reload, router]);
 
   const pickFinishedImage = useCallback(async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -268,6 +277,7 @@ export default function RecipeEditScreen() {
           keyboardVerticalOffset={insets.top + 56}
         >
           <ScrollView
+            refreshControl={refreshControl}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={[
               styles.scrollInner,

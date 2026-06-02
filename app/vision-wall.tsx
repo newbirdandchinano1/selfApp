@@ -55,7 +55,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
@@ -504,7 +504,7 @@ export default function VisionWallScreen() {
     setNewDimNote('');
   }, []);
 
-  const loadWallEntries = useCallback(async () => {
+  const loadWallEntries = useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
     try {
       const year = new Date().getFullYear();
@@ -554,8 +554,10 @@ export default function VisionWallScreen() {
       setGoalDimensions([]);
       setPlanContext(null);
     }
-    });
+    }, forceApi);
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, loadWallEntries);
 
   const aiStale = useMemo(() => {
     if (!planContext || !aiAssessment || !aiCacheFingerprint) return false;
@@ -846,7 +848,7 @@ export default function VisionWallScreen() {
           </View>
         </View>
 
-        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <ScrollView refreshControl={refreshControl} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <View style={{ marginTop: 8, marginBottom: 16 }}>
             <Text style={[styles.kicker, { color: isDark ? 'rgba(148,163,184,0.95)' : 'rgba(114,119,133,0.95)' }]}>
               Life Manifesto

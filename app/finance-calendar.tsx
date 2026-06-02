@@ -1,6 +1,7 @@
 import { AppButton, AppIconButton } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { runPageApiLoad } from '@/lib/page-api-session';
 import { getFinanceDailySummariesByDateRange, getFinanceTransactionsByYmd } from '@/lib/repositories/finance/finance';
 import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
@@ -155,6 +156,7 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
   setSelectedDate: (d: Date) => void;
   setSheetSnap: (v: 'half' | 'full') => void;
   setSheetVisible: (v: boolean) => void;
+  calendarRefreshKey: number;
 }) {
   const {
     offset,
@@ -176,6 +178,7 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
     setSelectedDate,
     setSheetSnap,
     setSheetVisible,
+    calendarRefreshKey,
   } = props;
 
   const monthDate = React.useMemo(() => addMonths(todayMonthStart, offset), [offset, todayMonthStart]);
@@ -213,7 +216,7 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [gridEnd, gridStart]);
+  }, [gridEnd, gridStart, calendarRefreshKey]);
 
   const cells = React.useMemo(() => buildCalendarCells(monthDate, dailyMap), [dailyMap, monthDate]);
 
@@ -344,6 +347,33 @@ export default function FinanceCalendarScreen() {
   const activeDate = selectedDate ?? today;
   const [activeTxns, setActiveTxns] = React.useState<Txn[]>([]);
   const [dayTotal, setDayTotal] = React.useState(0);
+  const [calendarRefreshKey, setCalendarRefreshKey] = React.useState(0);
+
+  const reloadDayTxns = React.useCallback(async (date: Date) => {
+    try {
+      const rows = await getFinanceTransactionsByYmd(formatYMD(date));
+      const ui = rows.map((row) => txnToUi(row));
+      setActiveTxns(ui);
+      setDayTotal(ui.reduce((sum, t) => sum + t.displayAmount, 0));
+      if (ui.length > 0) {
+        setSheetSnap('half');
+        setSheetVisible(true);
+      } else {
+        setSheetVisible(false);
+      }
+    } catch {
+      setActiveTxns([]);
+      setDayTotal(0);
+      setSheetVisible(false);
+    }
+  }, []);
+
+  const reload = React.useCallback(async () => {
+    setCalendarRefreshKey((k) => k + 1);
+    await reloadDayTxns(activeDate);
+  }, [activeDate, reloadDayTxns]);
+
+  const { refreshControl } = usePullToRefresh(reload);
 
   const dayAiInsightSummary = React.useMemo(() => {
     const total = activeTxns.length;
@@ -355,30 +385,14 @@ export default function FinanceCalendarScreen() {
 
   React.useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const rows = await getFinanceTransactionsByYmd(formatYMD(activeDate));
-        if (cancelled) return;
-        const ui = rows.map((row) => txnToUi(row));
-        setActiveTxns(ui);
-        setDayTotal(ui.reduce((sum, t) => sum + t.displayAmount, 0));
-        if (ui.length > 0) {
-          setSheetSnap('half');
-          setSheetVisible(true);
-        } else {
-          setSheetVisible(false);
-        }
-      } catch {
-        if (cancelled) return;
-        setActiveTxns([]);
-        setDayTotal(0);
-        setSheetVisible(false);
-      }
+    void (async () => {
+      if (cancelled) return;
+      await reloadDayTxns(activeDate);
     })();
     return () => {
       cancelled = true;
     };
-  }, [activeDate]);
+  }, [activeDate, reloadDayTxns]);
 
   const text = colors.text;
   const subtle = colors.textSecondary;
@@ -562,7 +576,7 @@ export default function FinanceCalendarScreen() {
       </View>
 
       <Pressable style={styles.mainArea} onPress={() => setSheetVisible(false)}>
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView refreshControl={refreshControl} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           <View style={styles.monthHeader}>
             <View>
               <Text style={[Typography.kicker, { color: subtle }]}>
@@ -669,6 +683,7 @@ export default function FinanceCalendarScreen() {
                   setSelectedDate={setSelectedDate}
                   setSheetSnap={setSheetSnap}
                   setSheetVisible={setSheetVisible}
+                  calendarRefreshKey={calendarRefreshKey}
                 />
               );
             }}

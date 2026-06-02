@@ -5,7 +5,7 @@ import { isWishItemFulfilled } from '@/lib/repositories/wish-list/wish-list-extr
 import { getDepositSumsByActivePlanId } from '@/lib/repositories/savings-plan/savings-plan-deposit';
 import { deleteWishItem, listWishItems, setWishItemFulfilled } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   deleteLinkedPlanForWish,
   getLinkedSavingsPlanId,
@@ -173,6 +173,8 @@ export default function WishListScreen() {
     [wrapLoad],
   );
 
+  const { onRefresh: onRefreshData } = usePagePullRefresh(WISH_LIST_PAGE_KEY, reload);
+
   useFocusEffect(
     useCallback(() => {
       void reload();
@@ -327,6 +329,7 @@ export default function WishListScreen() {
   return (
     <AppScreen
       edges={['left', 'right']}
+      onRefreshData={onRefreshData}
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 12) + 88, gap: Spacing['4xl'] }}
       header={
         <ScreenHeader

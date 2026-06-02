@@ -24,6 +24,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 
 
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { getDefaultUser, updateDefaultUser } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 
@@ -285,10 +286,15 @@ export default function EditProfileScreen() {
     let mounted = true;
   
     const loadUser = async () => {
-      const data = await getDefaultUser();
-      if (!mounted) return;
-  
-      setUser(data);
+      try {
+        const data = await getDefaultUser();
+        if (!mounted) return;
+        setUser(data);
+      } catch (e) {
+        if (__DEV__) console.warn('[edit-profile] load user failed', e);
+        if (!mounted) return;
+        setUser(null);
+      }
     };
   
     loadUser();
@@ -297,6 +303,13 @@ export default function EditProfileScreen() {
       mounted = false;
     };
   }, []);
+
+  const reloadUser = React.useCallback(async () => {
+    const data = await getDefaultUser();
+    setUser(data);
+  }, []);
+
+  const { refreshControl } = usePullToRefresh(reloadUser);
   
   useEffect(() => {
     if (!healthKitSupported) return;
@@ -411,6 +424,7 @@ export default function EditProfileScreen() {
       </View>
 
       <ScrollView
+        refreshControl={refreshControl}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingTop: 18, paddingBottom: Math.max(insets.bottom + 20, 32) }}
       >

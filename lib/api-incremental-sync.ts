@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { setLastApiIncrementalSyncAtIso } from '@/lib/api-backup-meta';
 import { ensureApiLoggedIn } from '@/lib/api-client';
+import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import {
   ApiRowUploadSkippedError,
   rowPrimaryKeyValue,
@@ -40,6 +41,8 @@ import { dedupeRowsByPrimaryKey, readTablePrimaryKeyColumns } from '@/lib/sqlite
 /** REST 增量同步跳过的表（与全量迁移一致） */
 export const REST_SKIP_TABLES = new Set([
   'admin_users',
+  /** 本地迁移/回填标记，仅设备内有效，见 API_LOCAL_READ_ONLY_TABLES */
+  'app_meta',
   /** AI 画像缓存，体积大且可重新生成 */
   'persona_portrait_cache',
 ]);
@@ -71,6 +74,7 @@ export function markApiTableDirty(table: string): void {
   if (REST_SKIP_TABLES.has(t)) return;
   if (t.startsWith('sqlite_')) return;
   apiDirtyTables.add(t);
+  invalidateInflightApiTableFetch(t);
   schedulePersistApiDirty();
   scheduleCoalescedApiPush();
 }
@@ -105,13 +109,17 @@ export async function hydrateApiDirtyFromStorage(): Promise<void> {
       const sqliteRaw = (o as Record<string, unknown>).sqlite;
       if (Array.isArray(sqliteRaw)) {
         for (const x of sqliteRaw) {
-          if (typeof x === 'string' && isSafeTableName(x)) apiDirtyTables.add(x);
+          if (typeof x === 'string' && isSafeTableName(x) && !REST_SKIP_TABLES.has(x)) {
+            apiDirtyTables.add(x);
+          }
         }
       }
     }
     apiDirtyTables.delete('ON');
     apiDirtyTables.delete('on');
+    for (const t of REST_SKIP_TABLES) apiDirtyTables.delete(t);
     if (apiDirtyTables.size > 0) scheduleCoalescedApiPush();
+    else void persistApiDirtyNow();
   } catch {
     /* ignore */
   }

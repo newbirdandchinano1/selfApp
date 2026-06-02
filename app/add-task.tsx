@@ -14,7 +14,7 @@ import {
 } from '@/components/composer';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getProjectById } from '@/lib/repositories/projects/project';
@@ -396,6 +396,9 @@ export default function AddTaskScreen() {
     },
     [applyLoadedStandaloneTask, editTaskId, isEditStandalone, quickProjectId, router, wrapLoad],
   );
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadAddTaskData);
+
   const mainTaskOptions: MainTask[] = [
     { id: 'm1', title: 'Q4 品牌战略规划', due: '截止日期: 12月31日' },
     { id: 'm2', title: '移动端应用 2.0 重构', due: '截止日期: 11月15日' },
@@ -632,6 +635,7 @@ export default function AddTaskScreen() {
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={composerStyles.flex}>
         <ScrollView
+          refreshControl={refreshControl}
           contentContainerStyle={[
             composerStyles.content,
             { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md) },

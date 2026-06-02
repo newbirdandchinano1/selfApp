@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   createRecipeCategory,
   deleteRecipe,
@@ -78,12 +78,12 @@ export default function MyRecipesScreen() {
   const [categorySaving, setCategorySaving] = useState(false);
   const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (forceApi = false) => {
     try {
       await wrapLoad(async () => {
         const s = await loadRecipeStore();
         setStore(s);
-      });
+      }, forceApi);
     } catch {
       Alert.alert('加载失败', '请稍后重试');
       setStore({ version: 2, categories: [], recipes: [] });
@@ -91,6 +91,8 @@ export default function MyRecipesScreen() {
       setLoading(false);
     }
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     useCallback(() => {
@@ -449,6 +451,7 @@ export default function MyRecipesScreen() {
         </View>
       ) : (
         <ScrollView
+          refreshControl={refreshControl}
           contentContainerStyle={{
             paddingHorizontal: 16,
             paddingBottom: Math.max(insets.bottom, 20) + 16,

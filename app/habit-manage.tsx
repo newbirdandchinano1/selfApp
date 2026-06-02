@@ -1,7 +1,7 @@
 import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui/screen-header';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { getHabitCheckInListStats } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
@@ -45,7 +45,7 @@ export default function HabitManageScreen() {
   const [menuVisible, setMenuVisible] = React.useState(false);
   const [menuTarget, setMenuTarget] = React.useState<{ groupCategory: string; item: HabitItem } | null>(null);
 
-  const loadHabits = React.useCallback(async () => {
+  const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
     try {
       const [rows, checkStats] = await Promise.all([getHabits(), getHabitCheckInListStats()]);
@@ -93,13 +93,15 @@ export default function HabitManageScreen() {
       setHabitData([]);
       setContextTabs([]);
     }
-    });
+    }, forceApi);
   }, [wrapLoad]);
+
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     React.useCallback(() => {
-      void loadHabits();
-    }, [loadHabits]),
+      void reload();
+    }, [reload]),
   );
 
   const openItemMenu = (groupCategory: string, item: HabitItem) => {
@@ -191,6 +193,7 @@ export default function HabitManageScreen() {
       />
 
       <ScrollView
+        refreshControl={refreshControl}
         contentContainerStyle={[
           styles.content,
           { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md) },
