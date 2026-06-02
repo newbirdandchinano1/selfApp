@@ -27,6 +27,9 @@ export const AppSettingKey = {
   tasksCompletionDayStart: '@tasks_completion_day_start_v1',
   aiLlmProvider: '@selfapp/ai_llm_provider_id',
   weeklyReviewWeekday: 'weekly_review_weekday_dow',
+  dailyReviewReminderEnabled: 'daily_review_reminder_enabled_v1',
+  dailyReviewReminderHour: 'daily_review_reminder_hour_v1',
+  dailyReviewReminderMinute: 'daily_review_reminder_minute_v1',
 } as const;
 
 const MIGRATION_ASYNC_KEYS: string[] = Object.values(AppSettingKey);

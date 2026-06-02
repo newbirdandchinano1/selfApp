@@ -13,7 +13,9 @@ import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
+import { DailyReviewReminderNotificationListener } from '@/components/daily-review-reminder-notification-listener';
 import { TaskReminderNotificationListener } from '@/components/task-reminder-notification-listener';
+import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
 import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -62,6 +64,7 @@ function RootLayoutInner() {
           if (Platform.OS !== 'web') {
             startCloudPeriodicAlignScheduler();
             void ensurePersonaPortraitsForTodayInBackground();
+            void syncDailyReviewReminderNotification();
           }
         } catch (e) {
           console.warn('后台初始化失败', e);
@@ -215,6 +218,7 @@ function RootLayoutInner() {
             <ScreenshotDeepLinkListener />
             <AutoLedgerCoordinator dbReady={isDbReady} />
             <TaskReminderNotificationListener />
+            <DailyReviewReminderNotificationListener />
             <FinanceSheetHost />
             <AppErrorBoundary>
             <ApiContentTransition>

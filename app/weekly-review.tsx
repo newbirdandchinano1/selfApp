@@ -30,7 +30,14 @@ import {
   upsertWeeklyReviewJournal,
 } from '@/lib/repositories/insights/weekly-review-journal';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
+import {
+  formatDailyReviewReminderClock,
+  getDailyReviewReminderSettings,
+  setDailyReviewReminderSettings,
+} from '@/lib/daily-review-reminder-settings';
+import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { MaterialIcons } from '@expo/vector-icons';
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useFocusEffect } from '@react-navigation/native';
 import { Stack, useRouter } from 'expo-router';
@@ -103,6 +110,15 @@ export default function WeeklyReviewScreen() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
 
+  const [dailyReminderEnabled, setDailyReminderEnabled] = useState(false);
+  const [dailyReminderTime, setDailyReminderTime] = useState(() => {
+    const d = new Date();
+    d.setHours(21, 0, 0, 0);
+    return d;
+  });
+  const [dailyReminderTimePickerOpen, setDailyReminderTimePickerOpen] = useState(false);
+  const [dailyReminderBusy, setDailyReminderBusy] = useState(false);
+
   const [dailyEntries, setDailyEntries] = useState<DailyEntry[]>([]);
   const [dailyPeriodLabel, setDailyPeriodLabel] = useState('');
   const [reviewCycleEndYmd, setReviewCycleEndYmd] = useState('');
@@ -138,8 +154,15 @@ export default function WeeklyReviewScreen() {
       const wColIds = collectColumnIds(weeklyTpl);
 
       const today = new Date();
-      const dow = await getWeeklyReviewConfiguredWeekday();
+      const [dow, reminderSettings] = await Promise.all([
+        getWeeklyReviewConfiguredWeekday(),
+        getDailyReviewReminderSettings(),
+      ]);
       setConfiguredDow(dow);
+      setDailyReminderEnabled(reminderSettings.enabled);
+      const reminderDate = new Date();
+      reminderDate.setHours(reminderSettings.hour, reminderSettings.minute, 0, 0);
+      setDailyReminderTime(reminderDate);
 
       const rolling =
         dow !== null ? getRollingSevenDayRangeEndingOnNextReviewDay(today, dow) : getRollingSevenDayRange(today);
@@ -379,6 +402,68 @@ export default function WeeklyReviewScreen() {
     }
   }, [todayYmd, reviewCycleEndYmd, configuredDow]);
 
+  const persistDailyReminder = useCallback(
+    async (next: { enabled: boolean; hour: number; minute: number }) => {
+      setDailyReminderBusy(true);
+      try {
+        await setDailyReviewReminderSettings(next);
+        const { permissionDenied, scheduled } = await syncDailyReviewReminderNotification(next);
+        if (next.enabled && permissionDenied) {
+          Alert.alert(
+            '需要通知权限',
+            '已保存提醒设置，但系统未授予通知权限，提醒将无法送达。请在系统设置中为本应用开启通知。',
+          );
+        } else if (next.enabled && !scheduled && Platform.OS !== 'web') {
+          Alert.alert('提醒未生效', '请稍后再试，或检查系统通知设置。');
+        }
+      } catch (e) {
+        console.warn('daily review reminder', e);
+        Alert.alert('保存失败', '请稍后再试');
+      } finally {
+        setDailyReminderBusy(false);
+      }
+    },
+    [],
+  );
+
+  const onToggleDailyReminder = useCallback(() => {
+    const nextEnabled = !dailyReminderEnabled;
+    setDailyReminderEnabled(nextEnabled);
+    void persistDailyReminder({
+      enabled: nextEnabled,
+      hour: dailyReminderTime.getHours(),
+      minute: dailyReminderTime.getMinutes(),
+    });
+  }, [dailyReminderEnabled, dailyReminderTime, persistDailyReminder]);
+
+  const onConfirmDailyReminderTime = useCallback(() => {
+    setDailyReminderTimePickerOpen(false);
+    void persistDailyReminder({
+      enabled: dailyReminderEnabled,
+      hour: dailyReminderTime.getHours(),
+      minute: dailyReminderTime.getMinutes(),
+    });
+  }, [dailyReminderEnabled, dailyReminderTime, persistDailyReminder]);
+
+  const onDailyReminderTimePickerChange = useCallback(
+    (event: DateTimePickerEvent, date?: Date) => {
+      if (Platform.OS === 'android') {
+        setDailyReminderTimePickerOpen(false);
+      }
+      if (event.type === 'dismissed') return;
+      if (!date) return;
+      setDailyReminderTime(date);
+      if (Platform.OS === 'android') {
+        void persistDailyReminder({
+          enabled: dailyReminderEnabled,
+          hour: date.getHours(),
+          minute: date.getMinutes(),
+        });
+      }
+    },
+    [dailyReminderEnabled, persistDailyReminder],
+  );
+
   const onPickWeekday = useCallback(async (d: number) => {
     try {
       await setWeeklyReviewConfiguredWeekday(d);
@@ -491,6 +576,63 @@ export default function WeeklyReviewScreen() {
                 <Text style={[styles.dailySectionHint, { color: outline }]}>
                   区间以「下一次每周复盘日」为终点向前 7 天（与周度统计一致）；过去与自然日「今天」可填写与保存，未来日期仅可查看。已设定的每周复盘日当天请填写下方周复盘，无需日复盘。生成周度 AI 建议时会参考本周期内各日已填内容。
                 </Text>
+
+                <View style={[styles.dailyReminderCard, { borderColor: outlineVariant, backgroundColor: isDark ? 'rgba(15,23,42,0.35)' : '#f8faff' }]}>
+                  <View style={styles.dailyReminderHead}>
+                    <View style={{ flex: 1, gap: 4 }}>
+                      <Text style={[styles.dailyReminderTitle, { color: text }]}>每日提醒复盘</Text>
+                      <Text style={[styles.dailySectionHint, { color: outline }]}>
+                        在设定时间通过本地通知提醒你完成日复盘
+                        {Platform.OS === 'web' ? '（网页版不登记系统提醒）' : ''}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={onToggleDailyReminder}
+                      disabled={dailyReminderBusy}
+                      style={[
+                        styles.reminderSwitchTrack,
+                        {
+                          backgroundColor: dailyReminderEnabled ? secondary : outlineVariant,
+                          opacity: dailyReminderBusy ? 0.6 : 1,
+                        },
+                      ]}
+                      accessibilityRole="switch"
+                      accessibilityState={{ checked: dailyReminderEnabled }}>
+                      <View style={[styles.reminderSwitchDot, dailyReminderEnabled && styles.reminderSwitchDotOn]} />
+                    </Pressable>
+                  </View>
+
+                  {dailyReminderEnabled ? (
+                    <>
+                      <Pressable
+                        onPress={() => {
+                          if (Platform.OS === 'web') return;
+                          setDailyReminderTimePickerOpen(true);
+                        }}
+                        style={({ pressed }) => [
+                          styles.dailyReminderTimeRow,
+                          {
+                            borderColor: outlineVariant,
+                            backgroundColor: isDark ? 'rgba(30,41,59,0.65)' : '#ffffff',
+                            opacity: Platform.OS === 'web' ? 0.65 : pressed ? 0.88 : 1,
+                          },
+                        ]}>
+                        <Text style={[styles.dailyReminderRowLabel, { color: outline }]}>提醒时间</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={[styles.dailyReminderTimeValue, { color: text }]}>
+                            {formatDailyReviewReminderClock(
+                              dailyReminderTime.getHours(),
+                              dailyReminderTime.getMinutes(),
+                            )}
+                          </Text>
+                          {Platform.OS !== 'web' ? <MaterialIcons name="schedule" size={20} color={primary} /> : null}
+                        </View>
+                      </Pressable>
+
+                    </>
+                  ) : null}
+                </View>
+
                 <Pressable
                   onPress={() => router.push('/review-template-settings?scope=daily')}
                   style={({ pressed }) => [
@@ -773,6 +915,67 @@ export default function WeeklyReviewScreen() {
           </ScrollView>
         )}
       </KeyboardAvoidingView>
+
+      {dailyReminderTimePickerOpen && Platform.OS === 'android' ? (
+        <DateTimePicker
+          value={dailyReminderTime}
+          mode="time"
+          display="default"
+          is24Hour
+          onChange={onDailyReminderTimePickerChange}
+        />
+      ) : null}
+
+      <Modal
+        visible={dailyReminderTimePickerOpen && Platform.OS === 'ios'}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDailyReminderTimePickerOpen(false)}>
+        <View style={styles.reminderTimeModalRoot}>
+          <Pressable
+            style={[styles.reminderTimeModalBackdrop, { backgroundColor: isDark ? 'rgba(0,0,0,0.55)' : 'rgba(15,23,42,0.35)' }]}
+            onPress={() => setDailyReminderTimePickerOpen(false)}
+            accessibilityRole="button"
+            accessibilityLabel="关闭"
+          />
+          <View
+            style={[
+              styles.reminderTimePickerCard,
+              {
+                backgroundColor: surface,
+                borderColor: outlineVariant,
+              },
+            ]}>
+            <Text style={[styles.modalTitle, { color: text }]}>选择提醒时间</Text>
+            <DateTimePicker
+              value={dailyReminderTime}
+              mode="time"
+              display="spinner"
+              themeVariant={isDark ? 'dark' : 'light'}
+              locale="zh_CN"
+              onChange={onDailyReminderTimePickerChange}
+            />
+            <View style={styles.reminderPickerActions}>
+              <Pressable
+                onPress={() => setDailyReminderTimePickerOpen(false)}
+                style={({ pressed }) => [
+                  styles.reminderPickerBtn,
+                  { borderColor: outlineVariant, opacity: pressed ? 0.88 : 1 },
+                ]}>
+                <Text style={[styles.reminderPickerBtnText, { color: outline }]}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={onConfirmDailyReminderTime}
+                style={({ pressed }) => [
+                  styles.reminderPickerBtn,
+                  { backgroundColor: primary, borderColor: primary, opacity: pressed ? 0.88 : 1 },
+                ]}>
+                <Text style={[styles.reminderPickerBtnText, { color: '#fff' }]}>确定</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
         <View style={styles.modalRoot}>
@@ -1234,6 +1437,76 @@ const styles = StyleSheet.create({
   dailySectionTitle: { fontSize: 17, fontWeight: '900', letterSpacing: -0.2 },
   dailyPeriodLine: { fontSize: 12, fontWeight: '800', lineHeight: 18 },
   dailySectionHint: { fontSize: 12, lineHeight: 18, fontWeight: '600' },
+  dailyReminderCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 12,
+    gap: 10,
+    marginTop: 4,
+  },
+  dailyReminderHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  dailyReminderTitle: { fontSize: 14, fontWeight: '900' },
+  dailyReminderTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  dailyReminderRowLabel: { fontSize: 12, fontWeight: '800' },
+  dailyReminderTimeValue: { fontSize: 18, fontWeight: '900' },
+  reminderSwitchTrack: {
+    width: 48,
+    height: 28,
+    borderRadius: 14,
+    padding: 3,
+    justifyContent: 'center',
+  },
+  reminderSwitchDot: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#fff',
+  },
+  reminderSwitchDotOn: { alignSelf: 'flex-end' },
+  reminderTimeModalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  reminderTimeModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  reminderTimePickerCard: {
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 16,
+    maxWidth: 400,
+    alignSelf: 'center',
+    width: '100%',
+    zIndex: 2,
+    elevation: 8,
+    gap: 8,
+    overflow: 'hidden',
+  },
+  reminderPickerActions: { flexDirection: 'row', gap: 10, marginTop: 8 },
+  reminderPickerBtn: {
+    flex: 1,
+    borderRadius: 14,
+    borderWidth: 1,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reminderPickerBtnText: { fontSize: 15, fontWeight: '800' },
   templateLinkBtn: {
     flexDirection: 'row',
     alignItems: 'center',
