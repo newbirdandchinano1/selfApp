@@ -1,6 +1,6 @@
 /**
- * 为 true 时：展示与查询以 REST 为主；readApiTable/readApiRecord 会自动合并本地待同步行（即时 UI）。
- * 写入经 SQLite → markApiTableDirty → 约 50ms 内合并推送到 REST。
+ * 为 true 时：展示以 REST 为主，并将 REST 结果缓存到本地 SQLite 供写改删使用；
+ * readApiTable/readApiRecord 还会合并本地 pending 行（即时 UI）。
  */
 export const API_ONLY_READS = true;
 

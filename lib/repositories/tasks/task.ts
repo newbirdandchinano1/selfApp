@@ -1,4 +1,4 @@
-import { readLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import {
   compareDatetimeDesc,
@@ -181,7 +181,7 @@ export async function createTask(input: CreateTaskInput) {
 }
 
 async function getTaskRowForWrite(id: string): Promise<TaskRow | null> {
-  return readLocalRowForWrite<TaskRow>('tasks', id);
+  return ensureLocalRowForWrite<TaskRow>('tasks', id);
 }
 
 export async function getTaskById(id: string) {
@@ -320,6 +320,7 @@ export async function assignProjectIdToTaskSubtree(rootTaskId: string, projectId
 }
 
 export async function deleteTask(id: string) {
+  await ensureLocalRowForWrite('tasks', id);
   const db = await getDatabase();
   await db.runAsync(
     `WITH RECURSIVE subtree(id) AS (
@@ -385,6 +386,7 @@ export async function updateTaskCategory(id: string, input: UpdateTaskCategoryIn
 }
 
 export async function deleteTaskCategory(id: string) {
+  await ensureLocalRowForWrite('task_categories', id);
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE task_categories

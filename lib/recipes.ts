@@ -1,4 +1,4 @@
-import { readLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { addDaysToYmd, compareDatetimeDesc, isYmdInRange, sortByNameAsc, sortBySortOrderAsc, sortByUpdatedDesc, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
@@ -531,7 +531,7 @@ export type UpdateRecipeInput = {
 
 export async function updateRecipe(id: string, patch: UpdateRecipeInput): Promise<RecipeItem | null> {
   const db = await getDatabase();
-  const prevRow = await readLocalRowForWrite<RecipeRow>('recipe_items', id);
+  const prevRow = await ensureLocalRowForWrite<RecipeRow>('recipe_items', id);
   const prev = prevRow ? rowToRecipe(prevRow) : null;
   if (!prev) return null;
 

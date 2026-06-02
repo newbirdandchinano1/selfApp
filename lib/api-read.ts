@@ -119,11 +119,9 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
       page += 1;
     }
 
-    if (!isApiOnlyReads()) {
-      await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
-        reconcileSnapshot: true,
-      });
-    }
+    await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
+      reconcileSnapshot: true,
+    });
 
     return all;
   })();
@@ -148,15 +146,11 @@ export async function fetchApiRecordByPk<T extends Record<string, unknown>>(
   if (!pkValue.trim()) return null;
   try {
     const row = await apiGetRecord<T>(table, pkValue, opts);
-    if (!isApiOnlyReads()) {
-      await syncApiReadResultToLocal(table, row as Record<string, unknown>);
-    }
+    await syncApiReadResultToLocal(table, row as Record<string, unknown>);
     return row;
   } catch (e) {
     if (e instanceof Error && /404|不存在|not found/i.test(e.message)) {
-      if (!isApiOnlyReads()) {
-        await applyApiRecordMissingToLocal(table, pkValue);
-      }
+      await applyApiRecordMissingToLocal(table, pkValue);
       return null;
     }
     throw e;

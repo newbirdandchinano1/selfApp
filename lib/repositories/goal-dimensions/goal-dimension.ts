@@ -1,4 +1,4 @@
-import { readLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
@@ -38,7 +38,7 @@ async function syncVisionDimensionNames(dimensionId: string, newTitle: string) {
 }
 
 export async function updateGoalDimension(id: string, input: UpdateGoalDimensionInput) {
-  const current = await readLocalRowForWrite<GoalDimensionRow>('goal_dimensions', id);
+  const current = await ensureLocalRowForWrite<GoalDimensionRow>('goal_dimensions', id);
   if (!current) return false;
 
   const title = input.title !== undefined ? input.title.trim() : current.title;
@@ -63,6 +63,7 @@ export async function updateGoalDimension(id: string, input: UpdateGoalDimension
 }
 
 export async function deleteGoalDimension(id: string) {
+  await ensureLocalRowForWrite('goal_dimensions', id);
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE goal_dimensions SET

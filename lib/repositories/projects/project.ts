@@ -1,4 +1,4 @@
-import { readLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortBySortOrderAsc, sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
@@ -49,7 +49,7 @@ export async function isProjectNameDuplicate(name: string, excludeId?: string) {
 
 export async function updateProject(id: string, input: UpdateProjectInput) {
   const db = await getDatabase();
-  const current = await readLocalRowForWrite<ProjectRow>('projects', id);
+  const current = await ensureLocalRowForWrite<ProjectRow>('projects', id);
   if (!current) return;
 
   const nextCategoryId = input.category_id !== undefined ? input.category_id : current.category_id;
@@ -85,6 +85,7 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
 }
 
 export async function deleteProject(id: string) {
+  await ensureLocalRowForWrite('projects', id);
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE tasks

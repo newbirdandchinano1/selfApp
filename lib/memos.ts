@@ -3,7 +3,7 @@ import {
   endCloudSqliteDirtyIgnoreBatch,
   markCloudSqliteTableDirty,
 } from '@/lib/cloud-sql-dirty-track';
-import { readLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import type { PageApiReadOpts } from '@/lib/page-api-session';
 import { sortBySortOrderAsc, sortByUpdatedDesc } from '@/lib/api-read-helpers';
@@ -556,7 +556,7 @@ export async function updateMemo(
   id: string,
   patch: { title?: string; body?: string; dimensionId?: string },
 ): Promise<MemoItem | null> {
-  const row = await readLocalRowForWrite<MemoRow>('memos', id);
+  const row = await ensureLocalRowForWrite<MemoRow>('memos', id);
   const prev = row ? rowToMemo(row) : null;
   if (!prev) return null;
   const nextTitle = patch.title !== undefined ? clampTitle(patch.title) : prev.title;

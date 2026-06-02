@@ -2,7 +2,7 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { Platform } from 'react-native';
 
 import { makeTimestampEntityId } from '@/lib/entity-id';
-import { readLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import type { PageApiReadOpts } from '@/lib/page-api-session';
 import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
@@ -106,7 +106,7 @@ export async function listWishItems(opts?: PageApiReadOpts) {
 
 export async function updateWishItem(id: string, input: UpdateWishItemInput) {
   const db = await getDatabase();
-  const current = await readLocalRowForWrite<WishItemRow>('wish_items', id);
+  const current = await ensureLocalRowForWrite<WishItemRow>('wish_items', id);
   if (!current) return;
 
   let refUri: string | null;
@@ -153,6 +153,7 @@ export async function updateWishItem(id: string, input: UpdateWishItemInput) {
 }
 
 export async function deleteWishItem(id: string) {
+  await ensureLocalRowForWrite('wish_items', id);
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE wish_items SET
@@ -179,7 +180,7 @@ export async function clearWishItemAiReview(id: string) {
 /** 写入单条 AI 评价（不修改 updated_at，避免触发「需重新生成」的误判）。 */
 /** 标记心愿已实现或未实现（写入 extra_data.fulfilled_at） */
 export async function setWishItemFulfilled(id: string, fulfilled: boolean) {
-  const current = await readLocalRowForWrite<WishItemRow>('wish_items', id);
+  const current = await ensureLocalRowForWrite<WishItemRow>('wish_items', id);
   if (!current) return;
   const extra: WishItemExtraPayload = parseWishItemExtra(current.extra_data) ?? {};
   if (fulfilled) {

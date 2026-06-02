@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { readLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import type * as SQLite from 'expo-sqlite';
@@ -228,7 +228,7 @@ export async function updateUserWeakness(
   id: string,
   patch: { title?: string; detail?: string },
 ): Promise<UserWeaknessItem | null> {
-  const row = await readLocalRowForWrite<WeaknessRow>('user_weaknesses', id);
+  const row = await ensureLocalRowForWrite<WeaknessRow>('user_weaknesses', id);
   const prev = row ? rowToWeakness(row) : null;
   if (!prev) return null;
   const nextTitle = patch.title !== undefined ? clampTitle(patch.title) : prev.title;
