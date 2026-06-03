@@ -35,6 +35,7 @@ import {
   isProjectScheduleNotYetStarted,
 } from '@/lib/repositories/projects/project-schedule-status';
 import {
+  cascadeParentTaskStatusAfterChildChange,
   countIncompleteTasksByProjectId,
   createTask,
   deleteTask,
@@ -2013,7 +2014,11 @@ export default function TasksScreen() {
 
   const reload = React.useCallback(async (forceApi = false) => {
     const logicalToday = logicalTodayYmd;
-    const storedExpanded = await loadExpandedProjectState();
+    const [storedExpanded, storedHideCompleted, storedMainListView] = await Promise.all([
+      loadExpandedProjectState(),
+      loadHideCompletedProjectTasks(),
+      loadMainListView(),
+    ]);
     const rows = await loadProjects();
     if (!storedExpanded) {
       const allCollapsed = Object.fromEntries(rows.map((p) => [p.id, false] as const));
@@ -2026,6 +2031,12 @@ export default function TasksScreen() {
       }
       setExpandedProjectIds(merged);
       await saveExpandedProjectState(merged);
+    }
+    if (storedHideCompleted != null) {
+      setHideCompletedProjectTasks(storedHideCompleted);
+    }
+    if (storedMainListView != null) {
+      setMainListView(storedMainListView);
     }
     let treeMap = await loadProjectTasks(rows);
     const archived = await autoArchiveProjectsPastDueIfNeeded(rows, treeMap, logicalToday);
@@ -2061,6 +2072,8 @@ export default function TasksScreen() {
     }
   }, [
     loadExpandedProjectState,
+    loadHideCompletedProjectTasks,
+    loadMainListView,
     loadProjectCategories,
     loadProjects,
     loadProjectTasks,
@@ -2565,6 +2578,42 @@ export default function TasksScreen() {
             console.warn('记录青蛙完成事件失败', frogLogErr);
           }
         }
+        const cascadeChanges = await cascadeParentTaskStatusAfterChildChange(taskId, nextStatus === 'done');
+        if (cascadeChanges.length > 0) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          for (const change of cascadeChanges) {
+            setTasks((prev) =>
+              prev.map((t) =>
+                t.id === change.id
+                  ? { ...t, status: change.status, completed_at: change.completed_at }
+                  : t
+              )
+            );
+            setProjectTaskTreeMap((prev) =>
+              updateTaskInProjectTree(prev, change.id, (node) => ({
+                ...node,
+                status: change.status,
+                completed_at: change.completed_at,
+              }))
+            );
+            try {
+              await insertTaskExecutionEvent(
+                change.id,
+                change.status === 'done' ? 'completed' : 'reopened',
+                change.title ?? null
+              );
+            } catch (logErr) {
+              console.warn('记录父任务级联执行事件失败', logErr);
+            }
+            if (change.status === 'done') {
+              await tryGrantTaskCompletionReward({
+                id: change.id,
+                title: change.title,
+                extra_data: change.extra_data,
+              });
+            }
+          }
+        }
         setCompletionHeatmapReloadToken((n) => n + 1);
         if (nextStatus === 'done' && current.project_id) {
           const pid = current.project_id;
@@ -2575,11 +2624,19 @@ export default function TasksScreen() {
             proj.status !== 'archived' &&
             !isProjectInInboxCategory(proj.category_id)
           ) {
-            const nextTreeMap = updateTaskInProjectTree(projectTaskTreeMap, taskId, (node) => ({
+            let nextTreeMap = updateTaskInProjectTree(projectTaskTreeMap, taskId, (node) => ({
               ...node,
               status: nextStatus,
               completed_at: nextCompletedAt,
+              extra_data: nextExtraData,
             }));
+            for (const change of cascadeChanges) {
+              nextTreeMap = updateTaskInProjectTree(nextTreeMap, change.id, (node) => ({
+                ...node,
+                status: change.status,
+                completed_at: change.completed_at,
+              }));
+            }
             const tree = nextTreeMap[pid] ?? [];
             if (isProjectInboxProgressComplete(proj, tree)) {
               showMoveProjectToInboxPrompt(proj, () => void moveProjectToInboxById(pid));

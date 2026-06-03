@@ -16,6 +16,7 @@ import type {
   UpdateTaskCategoryInput,
   UpdateTaskInput,
 } from './task.types';
+import { isTaskShelvedStatus, isTaskTerminalStatus } from './task.types';
 
 export type TaskTreeNode = TaskRow & { children: TaskTreeNode[] };
 
@@ -108,6 +109,78 @@ export async function countIncompleteDescendantTasks(rootTaskId: string): Promis
   return all.filter(
     t => subtree.has(String(t.id)) && t.status !== 'done' && t.status !== 'cancelled',
   ).length;
+}
+
+export type ParentTaskCascadeChange = Pick<TaskRow, 'id' | 'status' | 'completed_at' | 'title' | 'extra_data'>;
+
+function areAllDirectChildrenTerminal(rows: TaskRow[], parentId: string): boolean {
+  const children = rows.filter(t => t.parent_task_id === parentId);
+  if (children.length === 0) return false;
+  return children.every(t => isTaskTerminalStatus(t.status));
+}
+
+/**
+ * 子任务勾选完成/恢复后，沿父链自动完成或恢复父任务（仅看直接子任务，与项目列表进度条一致）。
+ */
+export async function cascadeParentTaskStatusAfterChildChange(
+  childTaskId: string,
+  childMarkedDone: boolean,
+): Promise<ParentTaskCascadeChange[]> {
+  const all = await loadAllTasks();
+  const byId = new Map(all.map(t => [t.id, t]));
+  const child = byId.get(childTaskId);
+  if (!child?.parent_task_id) return [];
+
+  const changes: ParentTaskCascadeChange[] = [];
+  let parentId: string | null = child.parent_task_id;
+
+  while (parentId) {
+    const parent = byId.get(parentId);
+    if (!parent) break;
+
+    if (childMarkedDone) {
+      if (isTaskShelvedStatus(parent.status)) break;
+      if (isTaskTerminalStatus(parent.status)) {
+        parentId = parent.parent_task_id;
+        continue;
+      }
+      if (!areAllDirectChildrenTerminal(all, parentId)) break;
+
+      const completedAt = new Date().toISOString();
+      await updateTask(parentId, { status: 'done', completed_at: completedAt });
+      const nextParent = { ...parent, status: 'done' as const, completed_at: completedAt };
+      byId.set(parentId, nextParent);
+      const idx = all.findIndex(t => t.id === parentId);
+      if (idx >= 0) all[idx] = nextParent;
+      changes.push({
+        id: parentId,
+        status: 'done',
+        completed_at: completedAt,
+        title: parent.title,
+        extra_data: parent.extra_data,
+      });
+      parentId = parent.parent_task_id;
+      continue;
+    }
+
+    if (!isTaskTerminalStatus(parent.status)) break;
+
+    await updateTask(parentId, { status: 'todo', completed_at: null });
+    const nextParent = { ...parent, status: 'todo' as const, completed_at: null };
+    byId.set(parentId, nextParent);
+    const idx = all.findIndex(t => t.id === parentId);
+    if (idx >= 0) all[idx] = nextParent;
+    changes.push({
+      id: parentId,
+      status: 'todo',
+      completed_at: null,
+      title: parent.title,
+      extra_data: parent.extra_data,
+    });
+    parentId = parent.parent_task_id;
+  }
+
+  return changes;
 }
 
 export async function countIncompleteTasksByProjectId(projectId: string): Promise<number> {

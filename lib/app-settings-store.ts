@@ -113,6 +113,17 @@ export async function migrateAppSettingsFromAsyncStorageIfNeeded(): Promise<void
 
 export async function getAppSettingRaw(key: string): Promise<string | null> {
   await migrateAppSettingsFromAsyncStorageIfNeeded();
+  const db = await getDatabase();
+  const localRow = await db.getFirstAsync<{ value_json: string; sync_status: string }>(
+    'SELECT value_json, sync_status FROM app_settings WHERE key = ? LIMIT 1',
+    [key],
+  );
+  if (localRow) {
+    if (localRow.sync_status === 'pending_delete') return null;
+    if (localRow.value_json != null && localRow.value_json !== '') {
+      return localRow.value_json;
+    }
+  }
   const row = await readApiRecord<{ value_json: string }>('app_settings', key, { offlineFallback: true });
   if (!row?.value_json) return null;
   return row.value_json;
