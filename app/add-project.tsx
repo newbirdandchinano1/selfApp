@@ -26,6 +26,7 @@ import {
 import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
 import { createProject, getProjectCategories, getProjects, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import { dueDateFromScheduleMeta } from '@/lib/schedule-inherit';
 import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
 import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
 import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
@@ -353,7 +354,7 @@ export default function AddProjectScreen() {
         name: trimmedTitle,
         category_id: selectedCategoryId,
         note: notes.trim() || null,
-        due_date: extractDueDate(deadlineText),
+        due_date: dueDateFromScheduleMeta(scheduleToSave, extractDueDate(deadlineText)),
         extra_data: mergeCompletionRewardIntoExtraData(JSON.stringify(extra), completionReward),
       });
       router.back();

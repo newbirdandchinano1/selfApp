@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
+  dueDateFromScheduleMeta,
   mergeDateLimit,
   resolveInheritedDefaultSchedule,
   scheduleMetaToDateLimit,
@@ -493,10 +494,10 @@ export default function EditProjectScreen() {
 
     try {
       const taskSchedule = task.schedule ?? null;
-      const dueDate =
-        taskSchedule?.mode === 'time' && taskSchedule.range?.end
-          ? formatDate(taskSchedule.range.end)
-          : extractDueDate(task.deadline || task.deadlineText || '');
+      const dueDate = dueDateFromScheduleMeta(
+        taskSchedule,
+        extractDueDate(task.deadline || task.deadlineText || ''),
+      );
       await createTask({
         id: task.id,
         project_id: projectId,
@@ -638,9 +639,20 @@ export default function EditProjectScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      void reloadProjectPage().catch((e) => console.warn('加载项目页失败', e));
-      readScheduleResult();
-      void readAddTaskResult();
+      let cancelled = false;
+      void (async () => {
+        try {
+          await reloadProjectPage();
+        } catch (e) {
+          console.warn('加载项目页失败', e);
+        }
+        if (cancelled) return;
+        readScheduleResult();
+        await readAddTaskResult();
+      })();
+      return () => {
+        cancelled = true;
+      };
     }, [readAddTaskResult, readScheduleResult, reloadProjectPage]),
   );
 
@@ -766,15 +778,16 @@ export default function EditProjectScreen() {
         { ...projectExtraData, schedule: scheduleToSave },
         prerequisiteProjectIds,
       );
+      const projectDueDate = dueDateFromScheduleMeta(scheduleToSave, extractDueDate(deadlineText));
       await updateProject(projectId, {
         category_id: normalizedCategoryId,
         name: trimmedTitle,
         note: notes.trim() || null,
-        due_date: extractDueDate(deadlineText),
+        due_date: projectDueDate,
         extra_data: mergeCompletionRewardIntoExtraData(JSON.stringify(mergedExtra), completionReward),
       });
       const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleToSave), {
-        end: extractDueDate(deadlineText) ?? undefined,
+        end: projectDueDate ?? undefined,
       });
       const existingTasks = await getTasksByProjectId(projectId);
       const existingTaskIds = new Set(collectAllSubtaskIds(mapTaskTreeToSubtaskNodes(existingTasks)));

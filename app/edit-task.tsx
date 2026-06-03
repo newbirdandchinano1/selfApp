@@ -3,6 +3,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   buildDeadlineTextFromSchedule,
+  dueDateFromScheduleMeta,
   extractScheduleLimitFromExtra,
   formatDate,
   formatTime,
@@ -534,10 +535,10 @@ export default function EditTaskScreen() {
 
     try {
       const subtaskSchedule = payload.task.schedule ?? null;
-      const dueDate =
-        subtaskSchedule?.mode === 'time' && subtaskSchedule.range?.end
-          ? formatDate(subtaskSchedule.range.end)
-          : extractDueDate(payload.task.deadline || payload.task.deadlineText || '');
+      const dueDate = dueDateFromScheduleMeta(
+        subtaskSchedule,
+        extractDueDate(payload.task.deadline || payload.task.deadlineText || ''),
+      );
       await createTask({
         id: payload.task.id,
         project_id: taskSnapshot.project_id,
@@ -673,10 +674,7 @@ export default function EditTaskScreen() {
     try {
       setSaving(true);
       const meta = scheduleMetaRef.current;
-      const dueDate =
-        meta?.mode === 'time' && meta.range?.end
-          ? formatDate(meta.range.end)
-          : extractDueDate(deadlineTextRef.current);
+      const dueDate = dueDateFromScheduleMeta(meta, extractDueDate(deadlineTextRef.current));
       await updateTask(taskId, {
         title: trimmedTitle,
         note: notesRef.current.trim() || null,

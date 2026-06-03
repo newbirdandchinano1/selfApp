@@ -20,6 +20,7 @@ import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
   applyScheduleMetaToLabels,
+  dueDateFromScheduleMeta,
   extractScheduleLimitFromExtra,
   parseDateLimitParam,
   parseDefaultScheduleParam,
@@ -504,11 +505,14 @@ export default function AddTaskScreen() {
     readScheduleResult();
   }, [readScheduleResult]);
 
+  React.useEffect(() => {
+    void reloadAddTaskData().catch((e) => console.warn('加载添加任务页数据失败', e));
+  }, [reloadAddTaskData]);
+
   useFocusEffect(
     React.useCallback(() => {
       readScheduleResult();
-      void reloadAddTaskData().catch((e) => console.warn('加载添加任务页数据失败', e));
-    }, [readScheduleResult, reloadAddTaskData]),
+    }, [readScheduleResult]),
   );
 
   const handleCreateTask = async () => {
@@ -521,6 +525,9 @@ export default function AddTaskScreen() {
       try {
         setIsSubmitting(true);
         const shelved = standaloneIntent === 'shelved';
+        const dueDate = shelved
+          ? null
+          : dueDateFromScheduleMeta(scheduleMeta, extractDueDateFromDeadlineText(deadlineText));
         const extraPayload = shelved
           ? JSON.stringify({ reminder: '', repeat: '', schedule: null })
           : JSON.stringify({
@@ -534,7 +541,7 @@ export default function AddTaskScreen() {
             note: notes.trim() || null,
             status: resolveStandaloneStatusOnSave(editTaskStatusRef.current, standaloneIntent),
             priority: labelToTaskPriority(priorityLabel),
-            due_date: shelved ? null : extractDueDateFromDeadlineText(deadlineText) ?? null,
+            due_date: dueDate,
             extra_data: extraPayload,
           });
         } else {
@@ -548,7 +555,7 @@ export default function AddTaskScreen() {
             note: notes.trim() || null,
             status: shelved ? 'shelved' : 'todo',
             priority: labelToTaskPriority(priorityLabel),
-            due_date: shelved ? null : extractDueDateFromDeadlineText(deadlineText) ?? null,
+            due_date: dueDate,
             extra_data: extraPayload,
           });
         }
@@ -574,7 +581,7 @@ export default function AddTaskScreen() {
           note: notes.trim() || null,
           status: 'todo',
           priority: labelToTaskPriority(priorityLabel),
-          due_date: extractDueDateFromDeadlineText(deadlineText) ?? null,
+          due_date: dueDateFromScheduleMeta(scheduleMeta, extractDueDateFromDeadlineText(deadlineText)),
           extra_data: mergeCompletionRewardIntoExtraData(
             JSON.stringify({
               reminder: reminderText || '',

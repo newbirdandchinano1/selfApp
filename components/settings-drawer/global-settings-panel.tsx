@@ -35,12 +35,7 @@ import {
     type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import type { ThemePreference } from '@/lib/theme-preference';
-import {
-    getZhipuApiKey,
-    getZhipuApiKeyFromEnv,
-    probeZhipuTextConnectivity,
-    type ZhipuConnectivityProbeResult,
-} from '@/lib/zhipu-image-parse';
+import { probeZhipuTextConnectivity, type ZhipuConnectivityProbeResult } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
@@ -492,7 +487,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     setZhipuProbeError(null);
     setZhipuProbeResult(null);
     try {
-      const row = await probeZhipuTextConnectivity(getZhipuApiKey());
+      const row = await probeZhipuTextConnectivity();
       setZhipuProbeResult(row);
     } catch (e) {
       setZhipuProbeError(e instanceof Error ? e.message : String(e));
@@ -939,10 +934,10 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           {renderSectionHead('AI', '文本与识图引擎')}
           <View style={[styles.card, { backgroundColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(0,88,190,0.04)', borderColor: cardBorder, gap: 10 }]}>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 19 }]}>
-              记账、备忘、心愿、饮食识图等共用智谱 GLM。可用 EXPO_PUBLIC_ZHIPU_API_KEY 覆盖内置密钥。
+              记账、备忘、心愿、饮食识图等 AI 能力由「服务器同步」所配置的后端统一代理（智谱 Key 仅存服务端）。
             </Text>
             <Text style={[styles.rowHint, { color: outline, fontSize: 11 }]}>
-              {getZhipuApiKeyFromEnv() ? '已设置 EXPO_PUBLIC_ZHIPU_API_KEY' : '未设置环境变量时使用应用内置密钥'}
+              请先保存上方服务器账号；下方按钮可探测后端 → 智谱链路是否正常。
             </Text>
 
             <Pressable
