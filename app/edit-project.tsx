@@ -20,6 +20,7 @@ import {
   validatePrerequisiteSelection,
 } from '@/lib/repositories/projects/project-prerequisites';
 import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
+import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
 import { addProjectAiReviewSavedListener, runProjectAiReview } from '@/lib/project-ai-review-background';
 import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
@@ -383,6 +384,11 @@ export default function EditProjectScreen() {
   const [persistedTaskIds, setPersistedTaskIds] = React.useState<Set<string>>(new Set());
   const [categories, setCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
+  /** 供 readAddTaskResult 读取，避免将其列入依赖导致改分类时 useFocusEffect 整页重载 */
+  const selectedCategoryIdRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    selectedCategoryIdRef.current = selectedCategoryId;
+  }, [selectedCategoryId]);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
@@ -489,8 +495,9 @@ export default function EditProjectScreen() {
     }
 
     const task = payload.task;
+    const categoryId = selectedCategoryIdRef.current;
     const normalizedCategoryId =
-      !selectedCategoryId || selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
+      !categoryId || categoryId === INBOX_PROJECT_CATEGORY_ID ? null : categoryId;
 
     try {
       const taskSchedule = task.schedule ?? null;
@@ -523,7 +530,7 @@ export default function EditProjectScreen() {
       globalThis.__addTaskResult = undefined;
       Alert.alert('任务保存失败', '任务未能写入数据库，请返回重新添加或稍后重试。');
     }
-  }, [addTaskSource, projectId, selectedCategoryId, showToast]);
+  }, [addTaskSource, projectId, showToast]);
 
   const loadProject = React.useCallback(async () => {
     if (!projectId) {
@@ -637,23 +644,30 @@ export default function EditProjectScreen() {
     void readAddTaskResult();
   }, [readAddTaskResult]);
 
+  const reloadProjectPageRef = React.useRef(reloadProjectPage);
+  reloadProjectPageRef.current = reloadProjectPage;
+  const readScheduleResultRef = React.useRef(readScheduleResult);
+  readScheduleResultRef.current = readScheduleResult;
+  const readAddTaskResultRef = React.useRef(readAddTaskResult);
+  readAddTaskResultRef.current = readAddTaskResult;
+
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
       void (async () => {
         try {
-          await reloadProjectPage();
+          await reloadProjectPageRef.current();
         } catch (e) {
           console.warn('加载项目页失败', e);
         }
         if (cancelled) return;
-        readScheduleResult();
-        await readAddTaskResult();
+        readScheduleResultRef.current();
+        await readAddTaskResultRef.current();
       })();
       return () => {
         cancelled = true;
       };
-    }, [readAddTaskResult, readScheduleResult, reloadProjectPage]),
+    }, [projectId]),
   );
 
   const selectedCategoryName = React.useMemo(() => {
@@ -830,11 +844,12 @@ export default function EditProjectScreen() {
       }
       console.warn('保存项目失败', error);
       Alert.alert('保存失败', formatSaveError(error));
-    } finally {
       setSaving(false);
     }
 
     if (!committed) return;
+
+    void pushLocalChangesToApi();
 
     try {
       if (Platform.OS !== 'web' && router.canGoBack()) {
@@ -846,6 +861,7 @@ export default function EditProjectScreen() {
       }
     } catch (e) {
       console.warn('离开编辑页失败（数据已保存）', e);
+      setSaving(false);
       try {
         router.replace('/(tabs)/tasks');
       } catch (e2) {
@@ -1039,7 +1055,11 @@ export default function EditProjectScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
       <View style={[styles.header, { paddingTop: Math.max(insets.top, 12), backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.82)', borderBottomColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)' }]}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
+        <Pressable
+          onPress={() => router.back()}
+          disabled={saving}
+          hitSlop={10}
+          style={({ pressed }) => [styles.iconBtn, { opacity: saving ? 0.45 : pressed ? 0.75 : 1 }]}>
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: primary }]}>{loading ? '项目详情' : '编辑项目'}</Text>
@@ -1062,7 +1082,7 @@ export default function EditProjectScreen() {
               placeholder="项目名称"
               placeholderTextColor={outlineVariant}
               multiline
-              editable={!loading}
+              editable={!loading && !saving}
               maxLength={TITLE_MAX_LENGTH}
               style={[styles.titleInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
             />
@@ -1075,7 +1095,7 @@ export default function EditProjectScreen() {
             <Text style={[styles.sectionLabel, { color: outline }]}>项目分类</Text>
             <Pressable
               onPress={() => setCategoryModalVisible(true)}
-              disabled={loading}
+              disabled={loading || saving}
               style={({ pressed }) => [
                 styles.categorySelect,
                 { backgroundColor: surfaceLow, borderColor: outlineVariant, opacity: loading ? 0.65 : pressed ? 0.8 : 1 },
@@ -1095,7 +1115,7 @@ export default function EditProjectScreen() {
               allProjects={allProjects}
               excludeProjectId={projectId}
               loading={projectsLoading || loading}
-              disabled={loading}
+              disabled={loading || saving}
               onChange={setPrerequisiteProjectIds}
               textColor={theme.text}
               outline={outline}
@@ -1133,7 +1153,7 @@ export default function EditProjectScreen() {
                   </View>
                 )}
               </View>
-              <Pressable onPress={openSchedulePicker} disabled={loading} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
+              <Pressable onPress={openSchedulePicker} disabled={loading || saving} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
               </Pressable>
             </View>
@@ -1249,7 +1269,7 @@ export default function EditProjectScreen() {
             <CompletionRewardField
               value={completionReward}
               onChange={setCompletionReward}
-              disabled={loading}
+              disabled={loading || saving}
               textColor={theme.text}
               outline={outline}
               placeholderColor={outlineVariant}
@@ -1263,7 +1283,7 @@ export default function EditProjectScreen() {
           <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>上下文备注</Text>
             <View style={[styles.notesWrap, { backgroundColor: surfaceLow }]}>
-              <TextInput value={notes} onChangeText={setNotes} placeholder="在此记录更多背景信息..." placeholderTextColor={outline} multiline editable={!loading} style={[styles.notesInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]} />
+              <TextInput value={notes} onChangeText={setNotes} placeholder="在此记录更多背景信息..." placeholderTextColor={outline} multiline editable={!loading && !saving} style={[styles.notesInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]} />
               <View style={styles.notesIcon} pointerEvents="none"><MaterialIcons name="notes" size={20} color={outlineVariant} /></View>
             </View>
           </View>
@@ -1329,6 +1349,13 @@ export default function EditProjectScreen() {
           </View>
         </View>
       </Modal>
+
+      {saving ? (
+        <View style={[styles.savingOverlay, { backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : 'rgba(255,255,255,0.72)' }]} pointerEvents="auto">
+          <ActivityIndicator size="large" color={primary} />
+          <Text style={[styles.savingOverlayText, { color: theme.text }]}>正在保存…</Text>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -1425,4 +1452,12 @@ const styles = StyleSheet.create({
   toastHost: { width: '100%', alignItems: 'center' },
   toastWrap: { borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8, maxWidth: '92%' },
   toastText: { color: '#fff', fontSize: 13, fontWeight: '600', textAlign: 'center' },
+  savingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 300,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+  },
+  savingOverlayText: { fontSize: 15, fontWeight: '700' },
 });

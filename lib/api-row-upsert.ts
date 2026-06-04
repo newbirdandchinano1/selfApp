@@ -157,6 +157,16 @@ function isRecoverableParentReferenceError(err: unknown): boolean {
   return isForeignKeyConstraintError(err) || isMissingParentRecordApiError(err);
 }
 
+function shouldPreserveCategoryFkOnUpload(
+  table: string,
+  fk: { fromColumn: string; parentTable: string },
+): boolean {
+  return (
+    (table === 'projects' && fk.fromColumn === 'category_id' && fk.parentTable === 'project_categories') ||
+    (table === 'tasks' && fk.fromColumn === 'category_id' && fk.parentTable === 'task_categories')
+  );
+}
+
 function nullifyRowForeignKeys(
   table: string,
   row: Record<string, unknown>,
@@ -165,6 +175,7 @@ function nullifyRowForeignKeys(
   const out = { ...row };
   for (const fk of fkRefs) {
     if (fk.parentTable === table) continue;
+    if (shouldPreserveCategoryFkOnUpload(table, fk)) continue;
     if (out[fk.fromColumn] != null && out[fk.fromColumn] !== '') {
       out[fk.fromColumn] = null;
     }
@@ -181,6 +192,7 @@ function sanitizeRowForeignKeysForApiUpload(
   const out = { ...row };
   for (const fk of fkRefs) {
     if (fk.parentTable === table) continue;
+    if (shouldPreserveCategoryFkOnUpload(table, fk)) continue;
     const val = out[fk.fromColumn];
     if (val == null || val === '') continue;
     const uploaded = uploadedPkByTable.get(fk.parentTable);

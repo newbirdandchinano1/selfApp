@@ -368,8 +368,38 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
       const rawRows = rowsByTable.get(table) ?? [];
       if (rawRows.length === 0) continue;
 
-      const prepared = await prepareLocalRowsForUpload(table, rawRows, rowsByTable);
       const pkCols = pkColsByTable.get(table) ?? ['id'];
+
+      if (table === 'projects') {
+        ensureProjectCategoryRefsForApiUpload(rowsByTable);
+        await upsertProjectCategoriesReferencedByProjects(
+          rawRows,
+          rowsByTable,
+          pkColsByTable,
+          uploadedPkByTable,
+          fkRefsByTable,
+        );
+      }
+
+      if (table === 'tasks') {
+        ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+        await upsertTaskCategoriesReferencedByTasks(
+          rawRows,
+          rowsByTable,
+          pkColsByTable,
+          uploadedPkByTable,
+          fkRefsByTable,
+        );
+        await upsertProjectsReferencedByTasks(
+          rawRows,
+          rowsByTable,
+          pkColsByTable,
+          uploadedPkByTable,
+          fkRefsByTable,
+        );
+      }
+
+      const prepared = await prepareLocalRowsForUpload(table, rawRows, rowsByTable);
       let rows = dedupeRowsByPrimaryKey(prepared, pkCols);
       if (table === 'project_categories') {
         rows = sortProjectCategoriesForApiUpload(rows);
@@ -377,16 +407,6 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
 
       const uploadedRows: Record<string, unknown>[] = [];
       const uploadedPks = uploadedPkByTable.get(table)!;
-
-      if (table === 'projects') {
-        await upsertProjectCategoriesReferencedByProjects(
-          rows,
-          rowsByTable,
-          pkColsByTable,
-          uploadedPkByTable,
-          fkRefsByTable,
-        );
-      }
 
       if (table === 'memos') {
         await upsertMemoDimensionsReferencedByMemos(
@@ -400,23 +420,6 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
 
       if (table === 'finance_transactions') {
         await upsertFinanceAccountsReferencedByTransactions(
-          rows,
-          rowsByTable,
-          pkColsByTable,
-          uploadedPkByTable,
-          fkRefsByTable,
-        );
-      }
-
-      if (table === 'tasks') {
-        await upsertTaskCategoriesReferencedByTasks(
-          rows,
-          rowsByTable,
-          pkColsByTable,
-          uploadedPkByTable,
-          fkRefsByTable,
-        );
-        await upsertProjectsReferencedByTasks(
           rows,
           rowsByTable,
           pkColsByTable,

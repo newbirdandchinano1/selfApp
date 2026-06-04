@@ -412,31 +412,15 @@ export async function triggerApiFullUpload(opts?: {
 
       const rawRows = rowsByTable.get(table) ?? [];
 
-      const prepared = await prepareLocalRowsForUpload(table, rawRows, rowsByTable);
-
       const pkCols = pkColsByTable.get(table) ?? (await readTablePrimaryKeyColumns(db, table));
-
-      let rows = dedupeRowsByPrimaryKey(prepared, pkCols);
-
-      if (table === 'project_categories') {
-
-        rows = sortProjectCategoriesForApiUpload(rows);
-
-      }
-
-      const uploadedRows: Record<string, unknown>[] = [];
-
-      const uploadedPks = uploadedPkByTable.get(table) ?? new Set<string>();
-
-      uploadedPkByTable.set(table, uploadedPks);
-
-
 
       if (table === 'projects') {
 
+        ensureProjectCategoryRefsForApiUpload(rowsByTable);
+
         await upsertProjectCategoriesReferencedByProjects(
 
-          rows,
+          rawRows,
 
           rowsByTable,
 
@@ -451,6 +435,64 @@ export async function triggerApiFullUpload(opts?: {
         );
 
       }
+
+
+
+      if (table === 'tasks') {
+
+        ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+
+        await upsertTaskCategoriesReferencedByTasks(
+
+          rawRows,
+
+          rowsByTable,
+
+          pkColsByTable,
+
+          uploadedPkByTable,
+
+          fkRefsByTable,
+
+          opts?.signal,
+
+        );
+
+        await upsertProjectsReferencedByTasks(
+
+          rawRows,
+
+          rowsByTable,
+
+          pkColsByTable,
+
+          uploadedPkByTable,
+
+          fkRefsByTable,
+
+          opts?.signal,
+
+        );
+
+      }
+
+
+
+      const prepared = await prepareLocalRowsForUpload(table, rawRows, rowsByTable);
+
+      let rows = dedupeRowsByPrimaryKey(prepared, pkCols);
+
+      if (table === 'project_categories') {
+
+        rows = sortProjectCategoriesForApiUpload(rows);
+
+      }
+
+      const uploadedRows: Record<string, unknown>[] = [];
+
+      const uploadedPks = uploadedPkByTable.get(table) ?? new Set<string>();
+
+      uploadedPkByTable.set(table, uploadedPks);
 
 
 
@@ -479,44 +521,6 @@ export async function triggerApiFullUpload(opts?: {
       if (table === 'finance_transactions') {
 
         await upsertFinanceAccountsReferencedByTransactions(
-
-          rows,
-
-          rowsByTable,
-
-          pkColsByTable,
-
-          uploadedPkByTable,
-
-          fkRefsByTable,
-
-          opts?.signal,
-
-        );
-
-      }
-
-
-
-      if (table === 'tasks') {
-
-        await upsertTaskCategoriesReferencedByTasks(
-
-          rows,
-
-          rowsByTable,
-
-          pkColsByTable,
-
-          uploadedPkByTable,
-
-          fkRefsByTable,
-
-          opts?.signal,
-
-        );
-
-        await upsertProjectsReferencedByTasks(
 
           rows,
 

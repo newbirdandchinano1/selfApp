@@ -325,6 +325,13 @@ async function prepareRowsForCloudInsert(
 
   for (const fk of fks) {
     if (fk.parentTable === table) continue;
+    // projects/tasks 的 category_id 由 upsert*CategoriesReferenced* 先上传父表，勿在此提前置空
+    if (
+      (table === 'projects' && fk.fromColumn === 'category_id' && fk.parentTable === 'project_categories') ||
+      (table === 'tasks' && fk.fromColumn === 'category_id' && fk.parentTable === 'task_categories')
+    ) {
+      continue;
+    }
     const parentRows = rowsByTable.get(fk.parentTable) ?? [];
     const parentIds = new Set<string>();
     for (const pr of parentRows) {
