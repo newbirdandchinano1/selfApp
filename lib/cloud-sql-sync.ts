@@ -613,14 +613,28 @@ function makeProjectCategoryStubRow(
   };
 }
 
+async function fetchLocalTableRowById(
+  table: string,
+  id: string,
+): Promise<Record<string, unknown> | null> {
+  const db = await getDatabase();
+  if (!db) return null;
+  const row = await db.getFirstAsync<Record<string, unknown>>(
+    `SELECT * FROM ${quoteIdent(table)} WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  return row ?? null;
+}
+
 /**
  * REST 上传前补齐 project_categories：
  * - 内置收集箱 project_category_inbox（服务端空库无种子数据时必须带客户端 id 写入）
  * - projects 引用的全部分类 id
+ * - 优先从本地 SQLite 读取真实分类名，避免占位「未命名分类」覆盖服务端
  */
-export function ensureProjectCategoryRefsForApiUpload(
+export async function ensureProjectCategoryRefsForApiUpload(
   rowsByTable: Map<string, Record<string, unknown>[]>,
-): void {
+): Promise<void> {
   const existing = rowsByTable.get('project_categories') ?? [];
   const byId = new Map(
     existing
@@ -650,10 +664,15 @@ export function ensureProjectCategoryRefsForApiUpload(
   const merged = [...existing];
   for (const id of neededIds) {
     if (byId.has(id)) continue;
-    const row =
-      id === INBOX_PROJECT_CATEGORY_ID
-        ? makeInboxProjectCategoryRow(byId.get(id))
-        : makeProjectCategoryStubRow(id);
+    if (id === INBOX_PROJECT_CATEGORY_ID) {
+      const localInbox = await fetchLocalTableRowById('project_categories', id);
+      const row = makeInboxProjectCategoryRow(localInbox ?? byId.get(id));
+      merged.push(row);
+      byId.set(id, row);
+      continue;
+    }
+    const localRow = await fetchLocalTableRowById('project_categories', id);
+    const row = localRow ?? makeProjectCategoryStubRow(id);
     merged.push(row);
     byId.set(id, row);
   }
@@ -805,10 +824,12 @@ function makeTaskCategoryMirrorRow(
  * 上传 REST 前补齐 task_categories：
  * - 镜像全部 project_categories（tasks.category_id 外键指向 task_categories）
  * - 补全 tasks/projects 引用但镜像中缺失的分类行（含 pc_ 前缀项目分类）
+ * - 优先从本地 SQLite 读取，避免占位「未命名分类」覆盖服务端
  */
-export function ensureTaskCategoryMirrorForApiUpload(
+export async function ensureTaskCategoryMirrorForApiUpload(
   rowsByTable: Map<string, Record<string, unknown>[]>,
-): void {
+): Promise<void> {
+  await ensureProjectCategoryRefsForApiUpload(rowsByTable);
   mergeProjectCategoriesIntoTaskCategoriesForCloud(rowsByTable);
 
   const existing = rowsByTable.get('task_categories') ?? [];
@@ -834,7 +855,15 @@ export function ensureTaskCategoryMirrorForApiUpload(
   const merged = [...existing];
   for (const id of neededIds) {
     if (byId.has(id)) continue;
-    const row = makeTaskCategoryMirrorRow(id, projectById.get(id));
+    const localTaskCategory = await fetchLocalTableRowById('task_categories', id);
+    if (localTaskCategory) {
+      merged.push(localTaskCategory);
+      byId.set(id, localTaskCategory);
+      continue;
+    }
+    const projectSource =
+      projectById.get(id) ?? (await fetchLocalTableRowById('project_categories', id)) ?? undefined;
+    const row = makeTaskCategoryMirrorRow(id, projectSource);
     merged.push(row);
     byId.set(id, row);
   }
@@ -951,8 +980,8 @@ export async function collectLocalTablesDataForUpload(
     await yieldToUi();
     rowsByTable.set(table, await readLocalTableRows(table));
   }
-  ensureProjectCategoryRefsForApiUpload(rowsByTable);
-  ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+  await ensureProjectCategoryRefsForApiUpload(rowsByTable);
+  await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
 
   return { insertOrder, rowsByTable };
 }

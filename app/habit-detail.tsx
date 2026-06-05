@@ -7,6 +7,15 @@ import {
 } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
+import {
+  computeConsecutiveGoalMetDays,
+  isHabitDayGoalMet,
+  parseHabitConsecutiveTargetDays,
+  parseHabitDailyGoal,
+  parseHabitIncrementCap,
+} from '@/lib/repositories/habits/habit-goal';
+import { isBreakHabitSucceeded, parseBreakHabitCycle, syncBreakHabitCompletions } from '@/lib/repositories/habits/habit-break-success';
+import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -94,21 +103,44 @@ function startOfWeekMonday(d: Date): Date {
   return x;
 }
 
-function countDistinctAchievedDays(checkIns: Record<string, number>): number {
-  return Object.entries(checkIns).filter(([, c]) => c > 0).length;
+function countDistinctAchievedDays(
+  checkIns: Record<string, number>,
+  kind: HabitKind,
+  dailyGoal: number | null
+): number {
+  return Object.values(checkIns).filter((c) =>
+    isHabitDayGoalMet({ kind, todayCount: c, dailyGoal })
+  ).length;
 }
 
-function countAchievedInMonth(checkIns: Record<string, number>, year: number, month0: number): number {
-  const keys = Object.keys(checkIns).filter((k) => k.startsWith(`${year}-${pad2(month0 + 1)}-`));
-  return keys.filter((k) => (checkIns[k] ?? 0) > 0).length;
+function countAchievedInMonth(
+  checkIns: Record<string, number>,
+  year: number,
+  month0: number,
+  kind: HabitKind,
+  dailyGoal: number | null,
+  daysInMonth: number
+): number {
+  let n = 0;
+  for (let day = 1; day <= daysInMonth; day++) {
+    const k = `${year}-${pad2(month0 + 1)}-${pad2(day)}`;
+    if (isHabitDayGoalMet({ kind, todayCount: checkIns[k] ?? 0, dailyGoal })) n++;
+  }
+  return n;
 }
 
-function countAchievedInWeek(checkIns: Record<string, number>, weekStartMon: Date): number {
+function countAchievedInWeek(
+  checkIns: Record<string, number>,
+  weekStartMon: Date,
+  kind: HabitKind,
+  dailyGoal: number | null
+): number {
   let n = 0;
   for (let i = 0; i < 7; i++) {
     const dt = new Date(weekStartMon);
     dt.setDate(weekStartMon.getDate() + i);
-    if ((checkIns[toYMD(dt)] ?? 0) > 0) n++;
+    const k = toYMD(dt);
+    if (isHabitDayGoalMet({ kind, todayCount: checkIns[k] ?? 0, dailyGoal })) n++;
   }
   return n;
 }
@@ -145,6 +177,21 @@ function completionBlue(count: number, emptyBackground: string): string {
   if (count === 1) return BLUE_LEGEND[0];
   if (count === 2) return BLUE_LEGEND[1];
   return BLUE_LEGEND[2];
+}
+
+const BREAK_GOAL_MET = '#86efac';
+const BREAK_GOAL_FAIL = '#fecaca';
+
+function completionBreakDay(
+  count: number,
+  dailyGoal: number | null,
+  emptyBackground: string
+): string {
+  if (isHabitDayGoalMet({ kind: 'break', todayCount: count, dailyGoal })) {
+    return count <= 0 ? BREAK_GOAL_MET : '#4ade80';
+  }
+  if (count <= 0) return emptyBackground;
+  return BREAK_GOAL_FAIL;
 }
 
 function needsLightTextOnBlue(fill: string): boolean {
@@ -202,6 +249,7 @@ export default function HabitDetailScreen() {
         try {
           const boundary = await loadTasksDayBoundary();
           setLogicalTodayYmd(getLogicalLocalYmd(new Date(), boundary));
+          await syncBreakHabitCompletions();
           const row = await getHabitById(habitId);
           setHabit(row ?? null);
           if (!row) {
@@ -250,11 +298,38 @@ export default function HabitDetailScreen() {
           ? habit.tag.trim()
           : '暂无备注';
 
-  const totalAchieved = countDistinctAchievedDays(checkIns);
-  const weekAchieved = countAchievedInWeek(checkIns, startOfWeekMonday(focusDate));
-  const monthAchieved = countAchievedInMonth(checkIns, focusDate.getFullYear(), focusDate.getMonth());
+  const habitKind = habit ? parseHabitKind(habit.extra_data) : 'build';
+  const dailyGoal = habit ? parseHabitDailyGoal(habit.extra_data, habitKind) : null;
+  const consecutiveTargetDays = habit ? parseHabitConsecutiveTargetDays(habit.extra_data) : null;
+  const incrementCap = habit ? parseHabitIncrementCap(habit.extra_data, habitKind) : null;
 
   const { leadingBlank, daysInMonth } = monthMatrix(calendarMonth.getFullYear(), calendarMonth.getMonth());
+
+  const totalAchieved = countDistinctAchievedDays(checkIns, habitKind, dailyGoal);
+  const weekAchieved = countAchievedInWeek(checkIns, startOfWeekMonday(focusDate), habitKind, dailyGoal);
+  const monthAchieved = countAchievedInMonth(
+    checkIns,
+    focusDate.getFullYear(),
+    focusDate.getMonth(),
+    habitKind,
+    dailyGoal,
+    daysInMonth
+  );
+
+  const breakCycle = habit ? parseBreakHabitCycle(habit.extra_data) : null;
+  const breakSucceeded = habit ? isBreakHabitSucceeded(habit.extra_data) : false;
+
+  const consecutiveStreak = React.useMemo(
+    () =>
+      computeConsecutiveGoalMetDays({
+        checkIns,
+        endYmd: focusYmd,
+        kind: habitKind,
+        dailyGoal,
+        minYmd: breakCycle?.cycleStartedAt ?? null,
+      }),
+    [checkIns, focusYmd, habitKind, dailyGoal, breakCycle?.cycleStartedAt]
+  );
 
   const trendCounts = React.useMemo(() => {
     const arr: number[] = [];
@@ -266,9 +341,11 @@ export default function HabitDetailScreen() {
     return arr;
   }, [checkIns, trendWeekStart]);
 
-  const dailyGoal =
-    typeof quantify?.dailyGoal === 'number' && quantify.dailyGoal > 0 ? Math.round(quantify.dailyGoal) : null;
-  const trendMax = Math.max(dailyGoal ?? 1, ...trendCounts, 1);
+  const trendMax = Math.max(
+    habitKind === 'break' ? (dailyGoal ?? 0) + 1 : (dailyGoal ?? 1),
+    ...trendCounts,
+    1
+  );
 
   const trendEnd = React.useMemo(() => {
     const t = new Date(trendWeekStart);
@@ -284,10 +361,10 @@ export default function HabitDetailScreen() {
     const m = calendarMonth.getMonth();
     for (let day = 1; day <= daysInMonth; day++) {
       const k = `${y}-${pad2(m + 1)}-${pad2(day)}`;
-      if ((checkIns[k] ?? 0) > 0) n++;
+      if (isHabitDayGoalMet({ kind: habitKind, todayCount: checkIns[k] ?? 0, dailyGoal })) n++;
     }
     return n;
-  }, [calendarMonth, checkIns, daysInMonth]);
+  }, [calendarMonth, checkIns, daysInMonth, habitKind, dailyGoal]);
 
   const chartW = Math.min(Dimensions.get('window').width - 32, 440);
 
@@ -347,12 +424,12 @@ export default function HabitDetailScreen() {
     }
     setMakeUpSaving(true);
     try {
-      const { increased } = await incrementHabitCheckInForDay(habit.id, ymd, dailyGoal);
+      const { increased } = await incrementHabitCheckInForDay(habit.id, ymd, incrementCap);
       if (!increased) {
         Alert.alert(
           '已达上限',
-          dailyGoal != null
-            ? `该习惯每日最多 ${dailyGoal} 次，${ymd} 当日已记满。`
+          incrementCap != null
+            ? `该习惯每日最多 ${incrementCap} 次，${ymd} 当日已记满。`
             : '当日次数未增加（可能已达上限）。'
         );
         return;
@@ -365,7 +442,7 @@ export default function HabitDetailScreen() {
     } finally {
       setMakeUpSaving(false);
     }
-  }, [habit, focusYmd, dailyGoal, reload]);
+  }, [habit, focusYmd, incrementCap, reload]);
 
   const handleCancelMakeUpCheckIn = React.useCallback(async () => {
     if (!habit) return;
@@ -483,8 +560,29 @@ export default function HabitDetailScreen() {
         <View style={styles.makeUpBlock}>
           <Text style={styles.makeUpHint}>
             {focusYmd} 已记 <Text style={styles.makeUpHintStrong}>{checkIns[focusYmd] ?? 0}</Text> 次
-            {dailyGoal != null ? ` / 日上限 ${dailyGoal}` : ''}
+            {habitKind === 'break'
+              ? dailyGoal != null
+                ? ` / 每日阈值 ${dailyGoal}（低于即达标）`
+                : ''
+              : dailyGoal != null
+                ? ` / 日目标 ${dailyGoal}`
+                : ''}
           </Text>
+          {habitKind === 'break' ? (
+            breakSucceeded ? (
+              <Text style={[styles.makeUpSub, { color: GREEN_TEXT }]}>
+                已连续 {breakCycle?.completedStreak ?? consecutiveTargetDays ?? '—'} 天达标
+                {breakCycle?.completedAt ? ` · ${breakCycle.completedAt} 戒除成功` : ' · 戒除成功'}
+              </Text>
+            ) : (
+              <Text style={styles.makeUpSub}>
+                当日记录次数低于阈值视为达标
+                {consecutiveTargetDays != null
+                  ? ` · 已连续 ${consecutiveStreak} / ${consecutiveTargetDays} 天`
+                  : ` · 已连续 ${consecutiveStreak} 天`}
+              </Text>
+            )
+          ) : null}
           {focusYmd >= logicalTodayYmd ? (
             <Text style={styles.makeUpSub}>补卡、取消补卡仅针对「逻辑日」之前的日期（与应用日界设置一致）。</Text>
           ) : null}
@@ -580,7 +678,9 @@ export default function HabitDetailScreen() {
               <View style={[styles.legendSq, { backgroundColor: BLUE_LEGEND[2] }]} />
               <Text style={styles.legendTxt}>多</Text>
             </View>
-            <Text style={styles.legendItalic}>{monthHitCount} 天有记录</Text>
+            <Text style={styles.legendItalic}>
+              {habitKind === 'break' ? `${monthHitCount} 天达标` : `${monthHitCount} 天有记录`}
+            </Text>
           </View>
 
           <View style={styles.weekdayRow}>
@@ -602,8 +702,14 @@ export default function HabitDetailScreen() {
               const ymd = `${y}-${pad2(m + 1)}-${pad2(day)}`;
               const cnt = checkIns[ymd] ?? 0;
               const isSel = ymd === focusYmd;
-              const fill = completionBlue(cnt, CAL_DAY_EMPTY);
-              const showLightText = cnt > 0 && needsLightTextOnBlue(fill);
+              const fill =
+                habitKind === 'break'
+                  ? completionBreakDay(cnt, dailyGoal, CAL_DAY_EMPTY)
+                  : completionBlue(cnt, CAL_DAY_EMPTY);
+              const showLightText =
+                habitKind === 'break'
+                  ? !isHabitDayGoalMet({ kind: 'break', todayCount: cnt, dailyGoal }) && cnt > 0
+                  : cnt > 0 && needsLightTextOnBlue(fill);
               return (
                 <Pressable key={ymd} onPress={() => selectCalendarDay(y, m, day)} style={styles.calCell}>
                   <View
@@ -725,7 +831,11 @@ export default function HabitDetailScreen() {
                     const inYear = dt.getFullYear() === heatmapYear;
                     const ymd = toYMD(dt);
                     const cnt = inYear ? checkIns[ymd] ?? 0 : 0;
-                    const bg = !inYear ? HEAT_OUT_YEAR : completionBlue(cnt, HEAT_DAY_EMPTY);
+                    const bg = !inYear
+                      ? HEAT_OUT_YEAR
+                      : habitKind === 'break'
+                        ? completionBreakDay(cnt, dailyGoal, HEAT_DAY_EMPTY)
+                        : completionBlue(cnt, HEAT_DAY_EMPTY);
                     return (
                       <View key={`${wi}-${di}`} style={[styles.heatCell, { backgroundColor: bg }]} />
                     );

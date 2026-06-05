@@ -84,9 +84,24 @@ import {
   getHabitCheckInListStats,
   incrementTodayHabitCheckIn,
 } from '@/lib/repositories/habits/habit-check-in';
-import { getHabits } from '@/lib/repositories/habits/habit';
+import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
+import {
+  isBreakHabitSucceeded,
+  syncBreakHabitCompletions,
+  tryMarkBreakHabitCompleted,
+} from '@/lib/repositories/habits/habit-break-success';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import {
+  breakSlipBadgeColor,
+  breakSlipBorderColor,
+  buildProgressBadgeColor,
+  buildProgressBorderColor,
+  getBreakHabitDayUiState,
+  isHabitDayGoalMet,
+  parseHabitDailyGoal,
+  parseHabitIncrementCap,
+} from '@/lib/repositories/habits/habit-goal';
 import {
   applyRepeatingTaskRollovers,
   isTaskRepeatDueOnLogicalDay,
@@ -431,27 +446,16 @@ type HabitSection = {
     icon: string;
     name: string;
     todayCount: number;
-    /** `extra_data.quantify.dailyGoal`，null 表示不限 */
-    dailyGoalMax: number | null;
+    /** `extra_data.quantify.dailyGoal`；戒除可为 0，养成为 null 表示不限 */
+    dailyGoal: number | null;
+    /** 打卡递增上限（戒除习惯不设上限） */
+    incrementCap: number | null;
     /** `extra_data.habitKind`：养成 / 戒除 */
     kind: HabitKind;
     /** 用于按 `schedule` 判断今日是否在循环打卡日 */
     extraData: string | null;
   }>;
 };
-
-function parseHabitDailyGoalMax(extraData: string | null): number | null {
-  if (!extraData) return null;
-  try {
-    const p = JSON.parse(extraData) as { quantify?: { dailyGoal?: number | null } };
-    const g = p?.quantify?.dailyGoal;
-    if (g === null || g === undefined) return null;
-    if (typeof g === 'number' && Number.isFinite(g) && g > 0) return Math.min(99, Math.max(1, Math.round(g)));
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 /** 与 `app/add-habit.tsx` 中 `schedule.activeTab` 一致 */
 type HabitCycleTab = '每周定期' | '每周N天' | '每月定期' | '每月N天';
@@ -1789,6 +1793,7 @@ export default function TasksScreen() {
 
   const loadHabits = React.useCallback(async () => {
     try {
+      await syncBreakHabitCompletions();
       const [contexts, rows, checkStats] = await Promise.all([
         getHabitContexts(),
         getHabits(),
@@ -1797,16 +1802,20 @@ export default function TasksScreen() {
       const itemsByContext = new Map<string, HabitSection['items']>();
 
       for (const r of rows) {
+        const kind = parseHabitKind(r.extra_data);
+        if (kind === 'break' && isBreakHabitSucceeded(r.extra_data)) continue;
+
         const arr = itemsByContext.get(r.context) ?? [];
         const todayCount = checkStats.get(r.id)?.todayCount ?? 0;
-        const dailyGoalMax = parseHabitDailyGoalMax(r.extra_data);
-        const kind = parseHabitKind(r.extra_data);
+        const dailyGoal = parseHabitDailyGoal(r.extra_data, kind);
+        const incrementCap = parseHabitIncrementCap(r.extra_data, kind);
         arr.push({
           id: r.id,
           icon: r.icon,
           name: r.name,
           todayCount,
-          dailyGoalMax,
+          dailyGoal,
+          incrementCap,
           kind,
           extraData: r.extra_data ?? null,
         });
@@ -2854,17 +2863,34 @@ export default function TasksScreen() {
     );
   }, []);
 
-  const handleHabitIncrement = React.useCallback(
-    async (habitId: string, dailyGoalMax: number | null) => {
+  const maybeCompleteBreakHabit = React.useCallback(
+    async (habitId: string) => {
       try {
-        const { nextCount, increased } = await incrementTodayHabitCheckIn(habitId, dailyGoalMax);
+        const habit = await getHabitById(habitId);
+        if (!habit || parseHabitKind(habit.extra_data) !== 'break') return;
+        if (isBreakHabitSucceeded(habit.extra_data)) return;
+        const todayYmd = getLogicalLocalYmd(new Date(), dayBoundary);
+        const marked = await tryMarkBreakHabitCompleted(habit, todayYmd);
+        if (marked) await loadHabits();
+      } catch (err) {
+        console.warn('检测戒除习惯完成状态失败', err);
+      }
+    },
+    [dayBoundary, loadHabits]
+  );
+
+  const handleHabitIncrement = React.useCallback(
+    async (habitId: string, incrementCap: number | null) => {
+      try {
+        const { nextCount, increased } = await incrementTodayHabitCheckIn(habitId, incrementCap);
         patchHabitTodayCount(habitId, nextCount);
         if (increased) void playHabitCheckInDing();
+        await maybeCompleteBreakHabit(habitId);
       } catch (err) {
         console.warn('习惯打卡失败', err);
       }
     },
-    [patchHabitTodayCount]
+    [maybeCompleteBreakHabit, patchHabitTodayCount]
   );
 
   const handleHabitUndoOnce = React.useCallback(
@@ -2872,15 +2898,16 @@ export default function TasksScreen() {
       try {
         const nextCount = await decrementTodayHabitCheckIn(habitId);
         patchHabitTodayCount(habitId, nextCount);
+        await maybeCompleteBreakHabit(habitId);
       } catch (err) {
         console.warn('撤销打卡失败', err);
       }
     },
-    [patchHabitTodayCount]
+    [maybeCompleteBreakHabit, patchHabitTodayCount]
   );
 
   const handleHabitIconPress = React.useCallback(
-    (item: { id: string; dailyGoalMax: number | null }) => {
+    (item: { id: string; incrementCap: number | null }) => {
       const DOUBLE_MS = 300;
       const now = Date.now();
       const first = habitIconTapFirstRef.current;
@@ -2898,7 +2925,7 @@ export default function TasksScreen() {
       habitIconTapTimerRef.current = setTimeout(() => {
         habitIconTapTimerRef.current = null;
         habitIconTapFirstRef.current = null;
-        void handleHabitIncrement(item.id, item.dailyGoalMax);
+        void handleHabitIncrement(item.id, item.incrementCap);
       }, DOUBLE_MS);
     },
     [handleHabitIncrement, handleHabitUndoOnce]
@@ -3812,11 +3839,26 @@ export default function TasksScreen() {
                         {visibleHabitItems.map((item) => {
                           const scheduleAllowsToday = isHabitScheduledToday(item.extraData, habitScheduleAnchorDate);
                           const hasProgress = item.todayCount > 0;
-                          const goalMet =
-                            item.dailyGoalMax != null
-                              ? item.todayCount >= item.dailyGoalMax
-                              : item.todayCount > 0;
                           const isBreak = item.kind === 'break';
+                          const breakUi = isBreak
+                            ? getBreakHabitDayUiState(item.todayCount, item.dailyGoal)
+                            : null;
+                          const goalMet =
+                            !isBreak &&
+                            isHabitDayGoalMet({
+                              kind: item.kind,
+                              todayCount: item.todayCount,
+                              dailyGoal: item.dailyGoal,
+                            });
+                          const goalFailed = isBreak && scheduleAllowsToday && breakUi === 'failed';
+                          const breakSlipping = isBreak && scheduleAllowsToday && breakUi === 'slipping';
+                          const buildProgressing =
+                            !isBreak &&
+                            scheduleAllowsToday &&
+                            hasProgress &&
+                            !goalMet &&
+                            item.dailyGoal != null &&
+                            item.dailyGoal > 0;
 
                           const openHabitDetail = () =>
                             router.push({
@@ -3825,15 +3867,24 @@ export default function TasksScreen() {
                             });
 
                           const partialBorderBuild = isDark ? 'rgba(52,211,153,0.5)' : 'rgba(0,108,73,0.42)';
-                          const partialBorderBreak = isDark ? 'rgba(251,191,36,0.62)' : 'rgba(180,83,9,0.48)';
-                          const partialBorder = isBreak ? partialBorderBreak : partialBorderBuild;
+                          const failBorder = isDark ? 'rgba(248,113,113,0.85)' : 'rgba(220,38,38,0.78)';
+                          const slipBorder = breakSlipping
+                            ? breakSlipBorderColor(item.todayCount, item.dailyGoal, isDark)
+                            : null;
+                          const buildBorder = buildProgressing
+                            ? buildProgressBorderColor(item.todayCount, item.dailyGoal, isDark)
+                            : null;
                           const progressBadgeBg = isBreak
-                            ? isDark
-                              ? 'rgba(234,88,12,0.92)'
-                              : 'rgba(194,65,12,0.9)'
-                            : isDark
-                              ? 'rgba(52,211,153,0.92)'
-                              : 'rgba(0,108,73,0.88)';
+                            ? breakSlipping
+                              ? breakSlipBadgeColor(item.todayCount, item.dailyGoal, isDark)
+                              : isDark
+                                ? 'rgba(234,88,12,0.92)'
+                                : 'rgba(194,65,12,0.9)'
+                            : buildProgressing
+                              ? buildProgressBadgeColor(item.todayCount, item.dailyGoal, isDark)
+                              : isDark
+                                ? 'rgba(52,211,153,0.92)'
+                                : 'rgba(0,108,73,0.88)';
 
                           return (
                             <View key={item.id} style={[styles.habitItem, { width: habitGridItemWidth }]}>
@@ -3858,24 +3909,43 @@ export default function TasksScreen() {
                                     style={[
                                       styles.habitIconCircle,
                                       {
-                                        borderColor: goalMet
-                                          ? secondary
-                                          : hasProgress
-                                            ? partialBorder
-                                            : isDark
-                                              ? 'rgba(148,163,184,0.42)'
-                                              : 'rgba(148,163,184,0.5)',
-                                        borderStyle: goalMet ? 'solid' : 'dashed',
+                                        borderColor: isBreak
+                                          ? goalFailed
+                                            ? failBorder
+                                            : breakSlipping && slipBorder
+                                              ? slipBorder
+                                              : isDark
+                                                ? 'rgba(148,163,184,0.42)'
+                                                : 'rgba(148,163,184,0.5)'
+                                          : goalMet
+                                            ? secondary
+                                            : buildProgressing && buildBorder
+                                              ? buildBorder
+                                              : hasProgress
+                                                ? partialBorderBuild
+                                                : isDark
+                                                  ? 'rgba(148,163,184,0.42)'
+                                                  : 'rgba(148,163,184,0.5)',
+                                        borderStyle: goalMet || goalFailed ? 'solid' : breakSlipping || buildProgressing ? 'solid' : 'dashed',
+                                        borderWidth: goalFailed || breakSlipping || buildProgressing ? 2 : StyleSheet.hairlineWidth,
                                         backgroundColor: card,
                                         opacity: scheduleAllowsToday ? 1 : 0.45,
                                       },
                                     ]}>
-                                    <Text style={[styles.habitIconText, goalMet && styles.habitIconTextDone]}>
+                                    <Text
+                                      style={[
+                                        styles.habitIconText,
+                                        (goalMet || goalFailed) && styles.habitIconTextDone,
+                                      ]}>
                                       {item.icon}
                                     </Text>
                                     {goalMet ? (
                                       <View style={styles.habitIconDoneOverlay} pointerEvents="none">
                                         <MaterialIcons name="check" size={30} color={secondary} />
+                                      </View>
+                                    ) : goalFailed ? (
+                                      <View style={styles.habitIconDoneOverlay} pointerEvents="none">
+                                        <Text style={styles.habitIconFailMark}>❌</Text>
                                       </View>
                                     ) : null}
                                     {!scheduleAllowsToday ? (
@@ -3888,7 +3958,18 @@ export default function TasksScreen() {
                                     <View style={[styles.habitTodayBadge, { borderColor: card, backgroundColor: secondary }]}>
                                       <MaterialIcons name="check" size={11} color="#fff" />
                                     </View>
-                                  ) : hasProgress ? (
+                                  ) : goalFailed ? (
+                                    <View
+                                      style={[
+                                        styles.habitTodayBadge,
+                                        {
+                                          borderColor: card,
+                                          backgroundColor: isDark ? 'rgba(220,38,38,0.92)' : 'rgba(220,38,38,0.88)',
+                                        },
+                                      ]}>
+                                      <Text style={styles.habitTodayBadgeFail}>❌</Text>
+                                    </View>
+                                  ) : breakSlipping || buildProgressing || (!isBreak && hasProgress) ? (
                                     <View
                                       style={[
                                         styles.habitTodayBadge,
@@ -3905,7 +3986,7 @@ export default function TasksScreen() {
                               <Pressable
                                 onPress={() => {
                                   if (!scheduleAllowsToday) return;
-                                  void handleHabitIncrement(item.id, item.dailyGoalMax);
+                                  void handleHabitIncrement(item.id, item.incrementCap);
                                 }}
                                 onLongPress={openHabitDetail}
                                 delayLongPress={260}
@@ -5758,6 +5839,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  habitIconFailMark: { fontSize: 28, lineHeight: 32 },
   habitIconLockOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
@@ -5778,6 +5860,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
   },
   habitTodayBadgeCount: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  habitTodayBadgeFail: { fontSize: 9, lineHeight: 11 },
   habitItemText: { fontSize: 13, fontWeight: '800', textAlign: 'center', lineHeight: 19 },
   habitAddCircle: {
     width: 76,

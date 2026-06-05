@@ -7,6 +7,14 @@ import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
 import { getHabits, deleteHabit as deleteHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
+import {
+  isBreakHabitSucceeded,
+  parseBreakHabitCycle,
+  restartBreakHabit,
+  syncBreakHabitCompletions,
+} from '@/lib/repositories/habits/habit-break-success';
+import { parseHabitConsecutiveTargetDays } from '@/lib/repositories/habits/habit-goal';
+import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -21,7 +29,15 @@ type HabitItem = {
   icon: string;
   achievedDays: number;
   todayCount: number;
+  kind: HabitKind;
+  breakSucceeded: boolean;
+  breakCompletedAt: string | null;
+  breakCompletedStreak: number | null;
+  consecutiveTargetDays: number | null;
 };
+
+const HABIT_KIND_BREAK_ACCENT = '#ea580c';
+const HABIT_KIND_BREAK_SUCCESS = '#059669';
 
 type HabitGroup = {
   category: string;
@@ -45,15 +61,21 @@ export default function HabitManageScreen() {
   const [menuVisible, setMenuVisible] = React.useState(false);
   const [menuTarget, setMenuTarget] = React.useState<{ groupCategory: string; item: HabitItem } | null>(null);
 
+  const [restartingId, setRestartingId] = React.useState<string | null>(null);
+
   const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
     try {
+      await syncBreakHabitCompletions();
       const [rows, checkStats] = await Promise.all([getHabits(), getHabitCheckInListStats()]);
       const byCtx = new Map<string, HabitItem[]>();
 
       rows.forEach((r: HabitRow) => {
         const items = byCtx.get(r.context) ?? [];
         const st = checkStats.get(r.id);
+        const kind = parseHabitKind(r.extra_data);
+        const cycle = parseBreakHabitCycle(r.extra_data);
+        const breakSucceeded = kind === 'break' && isBreakHabitSucceeded(r.extra_data);
         items.push({
           id: r.id,
           name: r.name,
@@ -61,6 +83,11 @@ export default function HabitManageScreen() {
           icon: r.icon,
           achievedDays: st?.achievedDays ?? 0,
           todayCount: st?.todayCount ?? 0,
+          kind,
+          breakSucceeded,
+          breakCompletedAt: cycle.completedAt,
+          breakCompletedStreak: cycle.completedStreak,
+          consecutiveTargetDays: kind === 'break' ? parseHabitConsecutiveTargetDays(r.extra_data) : null,
         });
         byCtx.set(r.context, items);
       });
@@ -128,6 +155,34 @@ export default function HabitManageScreen() {
     });
   };
 
+  const confirmRestartBreakHabit = (_groupCategory: string, item: HabitItem) => {
+    closeItemMenu();
+    Alert.alert(
+      '重启戒除挑战',
+      `重新开始「${item.name}」？将清除本次成功记录，并从今天起重新计算连续达标天数。`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '重启',
+          onPress: () => {
+            void (async () => {
+              setRestartingId(item.id);
+              try {
+                await restartBreakHabit(item.id);
+                await reload();
+              } catch (err) {
+                console.warn('重启戒除习惯失败', err);
+                Alert.alert('操作失败', '重启未保存，请稍后重试。');
+              } finally {
+                setRestartingId(null);
+              }
+            })();
+          },
+        },
+      ]
+    );
+  };
+
   const deleteHabit = (groupCategory: string, item: HabitItem) => {
     closeItemMenu();
     Alert.alert('删除习惯', `确认删除「${item.name}」吗？`, [
@@ -140,7 +195,7 @@ export default function HabitManageScreen() {
             try {
               await deleteHabitById(item.id);
               void cancelScheduledHabitReminder(item.id);
-              await loadHabits();
+              await reload();
             } catch (err) {
               console.warn('删除习惯失败', err);
             }
@@ -238,7 +293,15 @@ export default function HabitManageScreen() {
             <View key={group.category} style={styles.groupWrap}>
               <Text style={[Typography.kicker, styles.groupTitle, { color: colors.textSecondary }]}>{group.category}</Text>
               <View style={styles.groupItems}>
-                {group.items.map((item) => (
+                {group.items.map((item) => {
+                  const isBreak = item.kind === 'break';
+                  const isRestarting = restartingId === item.id;
+                  const leftAccent = item.breakSucceeded
+                    ? HABIT_KIND_BREAK_SUCCESS
+                    : isBreak
+                      ? HABIT_KIND_BREAK_ACCENT
+                      : colors.primary;
+                  return (
                   <View
                     key={item.id}
                     style={[
@@ -247,25 +310,95 @@ export default function HabitManageScreen() {
                       {
                         backgroundColor: colors.surface,
                         borderColor: colors.outline,
-                        borderLeftColor: colors.primary,
+                        borderLeftColor: leftAccent,
+                      },
+                      item.breakSucceeded && {
+                        backgroundColor: isDark ? 'rgba(5,150,105,0.08)' : 'rgba(5,150,105,0.06)',
                       },
                     ]}>
                     <Pressable
                       onPress={() => goEditHabit(group.category, item)}
                       style={({ pressed }) => [styles.itemMainPressable, pressed && { opacity: 0.92 }]}>
                       <View style={styles.itemMain}>
-                        <Text style={styles.itemEmoji}>{item.icon}</Text>
+                        <View style={styles.itemEmojiWrap}>
+                          <Text style={styles.itemEmoji}>{item.icon}</Text>
+                          {isBreak ? (
+                            <View style={[styles.itemKindBadge, { borderColor: colors.surface }]}>
+                              <Text style={styles.itemKindBadgeText}>戒</Text>
+                            </View>
+                          ) : null}
+                        </View>
                         <View style={styles.itemTextWrap}>
-                          <Text style={[styles.itemTitle, { color: colors.text }]}>{item.name}</Text>
-                          <View style={[styles.itemTag, { backgroundColor: colors.surfaceMuted }]}>
-                            <Text style={[styles.itemTagText, { color: colors.textSecondary }]}>{item.tag ?? ''}</Text>
+                          <View style={styles.itemTitleRow}>
+                            <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={1}>
+                              {item.name}
+                            </Text>
+                            {isBreak ? (
+                              <View
+                                style={[
+                                  styles.itemKindPill,
+                                  item.breakSucceeded
+                                    ? {
+                                        backgroundColor: isDark
+                                          ? 'rgba(5,150,105,0.22)'
+                                          : 'rgba(5,150,105,0.12)',
+                                        borderColor: isDark ? 'rgba(5,150,105,0.45)' : 'rgba(5,150,105,0.35)',
+                                      }
+                                    : {
+                                        backgroundColor: isDark
+                                          ? 'rgba(234,88,12,0.22)'
+                                          : 'rgba(234,88,12,0.12)',
+                                        borderColor: isDark ? 'rgba(234,88,12,0.45)' : 'rgba(234,88,12,0.35)',
+                                      },
+                                ]}>
+                                <Text
+                                  style={[
+                                    styles.itemKindPillText,
+                                    item.breakSucceeded && { color: HABIT_KIND_BREAK_SUCCESS },
+                                  ]}>
+                                  {item.breakSucceeded ? '戒除成功' : '戒坏习惯'}
+                                </Text>
+                              </View>
+                            ) : null}
                           </View>
-                          {item.achievedDays > 0 || item.todayCount > 0 ? (
+                          <View style={styles.itemTagRow}>
+                            <View style={[styles.itemTag, { backgroundColor: colors.surfaceMuted }]}>
+                              <Text style={[styles.itemTagText, { color: colors.textSecondary }]}>{item.tag ?? ''}</Text>
+                            </View>
+                          </View>
+                          {item.breakSucceeded ? (
+                            <Text style={[styles.itemStats, { color: HABIT_KIND_BREAK_SUCCESS }]}>
+                              已连续 {item.breakCompletedStreak ?? item.consecutiveTargetDays ?? '—'} 天达标
+                              {item.breakCompletedAt ? ` · ${item.breakCompletedAt} 完成` : ''}
+                            </Text>
+                          ) : item.achievedDays > 0 || item.todayCount > 0 ? (
                             <Text style={[styles.itemStats, { color: colors.textSecondary }]}>
-                              {item.todayCount > 0 ? `今日 ${item.todayCount} 次` : null}
+                              {item.todayCount > 0
+                                ? isBreak
+                                  ? `今日破戒 ${item.todayCount} 次`
+                                  : `今日 ${item.todayCount} 次`
+                                : null}
                               {item.todayCount > 0 && item.achievedDays > 0 ? ' · ' : null}
                               {item.achievedDays > 0 ? `累计 ${item.achievedDays} 天` : null}
                             </Text>
+                          ) : null}
+                          {item.breakSucceeded ? (
+                            <Pressable
+                              disabled={isRestarting}
+                              onPress={() => confirmRestartBreakHabit(group.category, item)}
+                              style={({ pressed }) => [
+                                styles.restartBtn,
+                                {
+                                  borderColor: isDark ? 'rgba(5,150,105,0.45)' : 'rgba(5,150,105,0.35)',
+                                  backgroundColor: isDark ? 'rgba(5,150,105,0.14)' : 'rgba(5,150,105,0.08)',
+                                  opacity: isRestarting ? 0.55 : pressed ? 0.88 : 1,
+                                },
+                              ]}>
+                              <MaterialIcons name="replay" size={14} color={HABIT_KIND_BREAK_SUCCESS} />
+                              <Text style={[styles.restartBtnText, { color: HABIT_KIND_BREAK_SUCCESS }]}>
+                                {isRestarting ? '重启中…' : '重启挑战'}
+                              </Text>
+                            </Pressable>
                           ) : null}
                         </View>
                       </View>
@@ -276,7 +409,8 @@ export default function HabitManageScreen() {
                       <MaterialIcons name="more-vert" size={20} color={colors.textSecondary} />
                     </Pressable>
                   </View>
-                ))}
+                  );
+                })}
               </View>
             </View>
           ))}
@@ -311,6 +445,25 @@ export default function HabitManageScreen() {
             <MaterialIcons name="edit" size={18} color={colors.text} />
             <Text style={[styles.menuItemText, { color: colors.text }]}>编辑习惯</Text>
           </Pressable>
+
+          {menuTarget?.item.breakSucceeded ? (
+            <Pressable
+              disabled={!menuTarget || restartingId === menuTarget.item.id}
+              onPress={() => {
+                if (!menuTarget) return;
+                confirmRestartBreakHabit(menuTarget.groupCategory, menuTarget.item);
+              }}
+              style={({ pressed }) => [
+                styles.menuItem,
+                {
+                  backgroundColor: isDark ? 'rgba(5,150,105,0.18)' : 'rgba(5,150,105,0.1)',
+                },
+                pressed && { opacity: 0.9 },
+              ]}>
+              <MaterialIcons name="replay" size={18} color={HABIT_KIND_BREAK_SUCCESS} />
+              <Text style={[styles.menuItemText, { color: HABIT_KIND_BREAK_SUCCESS }]}>重启挑战</Text>
+            </Pressable>
+          ) : null}
 
           <Pressable
             disabled={!menuTarget}
@@ -395,9 +548,33 @@ const styles = StyleSheet.create({
   },
   itemMainPressable: { flex: 1, minWidth: 0 },
   itemMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
+  itemEmojiWrap: { position: 'relative', width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   itemEmoji: { fontSize: 30 },
-  itemTextWrap: { gap: Spacing.xs, flex: 1 },
-  itemTitle: { fontSize: 16, fontWeight: '800' },
+  itemKindBadge: {
+    position: 'absolute',
+    left: -4,
+    top: -4,
+    minWidth: 18,
+    height: 16,
+    paddingHorizontal: 3,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: HABIT_KIND_BREAK_ACCENT,
+    borderWidth: 2,
+  },
+  itemKindBadgeText: { color: '#fff', fontSize: 9, fontWeight: '900' },
+  itemTextWrap: { gap: Spacing.xs, flex: 1, minWidth: 0 },
+  itemTitleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexWrap: 'wrap' },
+  itemTitle: { fontSize: 16, fontWeight: '800', flexShrink: 1 },
+  itemKindPill: {
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  itemKindPillText: { fontSize: 10, fontWeight: '800', color: HABIT_KIND_BREAK_ACCENT },
+  itemTagRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   itemTag: {
     alignSelf: 'flex-start',
     borderRadius: Radius.sm,
@@ -406,6 +583,18 @@ const styles = StyleSheet.create({
   },
   itemTagText: { fontSize: 11, fontWeight: '600' },
   itemStats: { fontSize: 11, fontWeight: '600', marginTop: 2 },
+  restartBtn: {
+    alignSelf: 'flex-start',
+    marginTop: Spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  restartBtnText: { fontSize: 12, fontWeight: '800' },
   moreBtn: {
     width: 30,
     height: 30,

@@ -5,6 +5,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { getHabitCheckInCountsByDateRange } from '@/lib/repositories/habits/habit-check-in';
 import { getHabits } from '@/lib/repositories/habits/habit';
+import { isHabitDayGoalMet } from '@/lib/repositories/habits/habit-goal';
 import { getProjects } from '@/lib/repositories/projects/project';
 import { getTasks } from '@/lib/repositories/tasks/task';
 import { isTaskActiveStatus } from '@/lib/repositories/tasks/task.types';
@@ -194,8 +195,9 @@ function HabitRowItem({
   rowBg: string;
   borderColor: string;
 }) {
-  const goal = item.dailyGoalMax;
-  const met = goal !== null ? item.todayCount >= goal : item.todayCount > 0;
+  const goal = item.dailyGoal;
+  const met = isHabitDayGoalMet({ kind: item.kind, todayCount: item.todayCount, dailyGoal: goal });
+  const isBreak = item.kind === 'break';
   return (
     <Pressable
       onPress={onPress}
@@ -213,8 +215,9 @@ function HabitRowItem({
           {item.name}
         </Text>
         <Text style={[styles.listMeta, { color: met ? success : muted }]}>
-          打卡 {item.todayCount}
-          {goal !== null ? ` / ${goal}` : ''}
+          {isBreak ? '记录' : '打卡'} {item.todayCount}
+          {goal != null ? ` / 阈值 ${goal}` : ''}
+          {isBreak ? (met ? ' · 达标' : ' · 未达标') : ''}
         </Text>
       </View>
       <MaterialIcons name="chevron-right" size={18} color={muted} />

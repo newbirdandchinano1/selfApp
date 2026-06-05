@@ -323,7 +323,7 @@ export async function upsertRowToApi(
     const categoryId = payload.category_id;
     if (categoryId == null || categoryId === '') return;
 
-    ensureTaskCategoryMirrorForApiUpload(opts.rowsByTable);
+    await ensureTaskCategoryMirrorForApiUpload(opts.rowsByTable);
 
     const cid = String(categoryId);
     const categoryRow = (opts.rowsByTable.get('task_categories') ?? []).find(c => String(c.id) === cid);
@@ -400,8 +400,8 @@ export async function upsertProjectCategoriesReferencedByProjects(
   fkRefsByTable: Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>,
   signal?: AbortSignal,
 ): Promise<void> {
-  ensureProjectCategoryRefsForApiUpload(rowsByTable);
-  ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+  await ensureProjectCategoryRefsForApiUpload(rowsByTable);
+  await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
 
   const categoryIds = new Set<string>();
   for (const project of projectRows) {
@@ -438,8 +438,8 @@ export async function upsertTaskCategoriesReferencedByTasks(
   fkRefsByTable: Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>,
   signal?: AbortSignal,
 ): Promise<void> {
-  ensureProjectCategoryRefsForApiUpload(rowsByTable);
-  ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+  await ensureProjectCategoryRefsForApiUpload(rowsByTable);
+  await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
 
   const categoryIds = new Set<string>();
   for (const task of taskRows) {

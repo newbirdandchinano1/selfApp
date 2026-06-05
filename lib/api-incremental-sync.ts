@@ -251,8 +251,8 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
     }
   }
 
-  ensureProjectCategoryRefsForApiUpload(rowsByTable);
-  ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+  await ensureProjectCategoryRefsForApiUpload(rowsByTable);
+  await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
   await ensureFinanceAccountRefsForApiUpload(rowsByTable);
   await ensureMemoDimensionRefsForApiUpload(rowsByTable);
 
@@ -371,7 +371,7 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
       const pkCols = pkColsByTable.get(table) ?? ['id'];
 
       if (table === 'projects') {
-        ensureProjectCategoryRefsForApiUpload(rowsByTable);
+        await ensureProjectCategoryRefsForApiUpload(rowsByTable);
         await upsertProjectCategoriesReferencedByProjects(
           rawRows,
           rowsByTable,
@@ -382,7 +382,7 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
       }
 
       if (table === 'tasks') {
-        ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+        await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
         await upsertTaskCategoriesReferencedByTasks(
           rawRows,
           rowsByTable,

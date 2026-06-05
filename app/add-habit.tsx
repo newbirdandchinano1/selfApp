@@ -3,7 +3,7 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
-import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
+import { ensureBreakHabitCycleExtra } from '@/lib/repositories/habits/habit-break-success';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { type HabitKind, parseHabitKind } from '@/lib/repositories/habits/habit-kind';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -180,6 +180,7 @@ export default function AddHabitScreen() {
   const [unitInput, setUnitInput] = React.useState('');
   const [eachPlus, setEachPlus] = React.useState(1);
   const [dailyGoal, setDailyGoal] = React.useState<number | null>(null);
+  const [consecutiveTargetDays, setConsecutiveTargetDays] = React.useState(7);
   const [habitNote, setHabitNote] = React.useState('');
   const [habitKind, setHabitKind] = React.useState<HabitKind>('build');
   const [iconPickerOpen, setIconPickerOpen] = React.useState(false);
@@ -289,11 +290,21 @@ export default function AddHabitScreen() {
             if (quantify && typeof quantify === 'object') {
               if (typeof quantify.unit === 'string') setUnitInput(quantify.unit);
               if (typeof quantify.eachPlus === 'number') setEachPlus(Math.max(1, Math.min(99, Math.round(quantify.eachPlus))));
-              if (quantify.dailyGoal === null) setDailyGoal(null);
-              else if (typeof quantify.dailyGoal === 'number') {
+              const kindFromExtra = parseHabitKind(row.extra_data);
+              if (quantify.dailyGoal === null) {
+                setDailyGoal(kindFromExtra === 'break' ? 0 : null);
+              } else if (typeof quantify.dailyGoal === 'number') {
                 const g = Math.round(quantify.dailyGoal);
-                if (g <= 0) setDailyGoal(null);
-                else setDailyGoal(Math.min(99, Math.max(1, g)));
+                if (kindFromExtra === 'break') {
+                  setDailyGoal(Math.min(99, Math.max(0, g)));
+                } else if (g <= 0) {
+                  setDailyGoal(null);
+                } else {
+                  setDailyGoal(Math.min(99, Math.max(1, g)));
+                }
+              }
+              if (typeof quantify.consecutiveTargetDays === 'number') {
+                setConsecutiveTargetDays(Math.min(999, Math.max(1, Math.round(quantify.consecutiveTargetDays))));
               }
             }
 
@@ -336,6 +347,15 @@ export default function AddHabitScreen() {
     return map[context] ?? '#EFE1DF';
   }, []);
 
+  React.useEffect(() => {
+    if (habitKind === 'break') {
+      setQuantifyEnabled(true);
+      setDailyGoal((v) => (v === null ? 0 : v));
+    } else {
+      setDailyGoal((v) => (v === 0 ? null : v));
+    }
+  }, [habitKind]);
+
   const deriveTagByCycle = React.useCallback((): string => {
     if (activeTab === '每周N天') return `每周${weeklyNDays}天`;
     if (activeTab === '每月N天') return `每月${monthlyNDays}天`;
@@ -376,7 +396,14 @@ export default function AddHabitScreen() {
       ? { enabled: true as const, hour: reminderTime.getHours(), minute: reminderTime.getMinutes() }
       : { enabled: false as const };
 
-    const extraData = JSON.stringify({
+    const resolvedDailyGoal =
+      habitKind === 'break'
+        ? Math.min(99, Math.max(0, dailyGoal ?? 0))
+        : dailyGoal !== null && dailyGoal < 1
+          ? null
+          : dailyGoal;
+
+    const extraDataRaw = JSON.stringify({
       ...existingExtra,
       habitKind,
       quantifyEnabled,
@@ -384,7 +411,10 @@ export default function AddHabitScreen() {
         ? {
             unit: unitResolved,
             eachPlus,
-            dailyGoal: dailyGoal !== null && dailyGoal < 1 ? null : dailyGoal,
+            dailyGoal: resolvedDailyGoal,
+            ...(habitKind === 'break'
+              ? { consecutiveTargetDays: Math.min(999, Math.max(1, consecutiveTargetDays)) }
+              : {}),
           }
         : null,
       schedule: {
@@ -397,6 +427,8 @@ export default function AddHabitScreen() {
       },
       reminder: reminderPayload,
     });
+    const extraData =
+      habitKind === 'break' ? ensureBreakHabitCycleExtra(extraDataRaw) : extraDataRaw;
 
     const note = habitNote.trim() || null;
 
@@ -445,6 +477,7 @@ export default function AddHabitScreen() {
   }, [
     activeMonthlyFilter,
     activeTab,
+    consecutiveTargetDays,
     dailyGoal,
     deriveTagByCycle,
     deriveToneByContext,
@@ -658,7 +691,10 @@ export default function AddHabitScreen() {
                     </Text>
                   </View>
                   <Pressable
-                    onPress={() => setQuantifyEnabled((v) => !v)}
+                    onPress={() => {
+                      if (habitKind === 'break') return;
+                      setQuantifyEnabled((v) => !v);
+                    }}
                     style={[
                       styles.switchTrack,
                       {
@@ -699,20 +735,49 @@ export default function AddHabitScreen() {
                     />
                     <NumberControl
                       label="每日目标"
-                      value={dailyGoal}
-                      displayValue={dailyGoal === null ? '不限' : String(dailyGoal)}
+                      value={habitKind === 'break' ? (dailyGoal ?? 0) : dailyGoal}
+                      displayValue={
+                        habitKind === 'break'
+                          ? String(dailyGoal ?? 0)
+                          : dailyGoal === null
+                            ? '不限'
+                            : String(dailyGoal)
+                      }
                       onMinus={() =>
                         setDailyGoal((v) => {
+                          if (habitKind === 'break') {
+                            return Math.max(0, (v ?? 0) - 1);
+                          }
                           if (v === null) return null;
                           if (v <= 1) return null;
                           return v - 1;
                         })
                       }
-                      onPlus={() => setDailyGoal((v) => (v === null ? 1 : Math.min(99, v + 1)))}
-                      showOptional
+                      onPlus={() =>
+                        setDailyGoal((v) => {
+                          if (habitKind === 'break') return Math.min(99, (v ?? 0) + 1);
+                          return v === null ? 1 : Math.min(99, v + 1);
+                        })
+                      }
+                      showOptional={habitKind !== 'break'}
                       textColor={colors.text}
                       mutedColor={colors.textSecondary}
                     />
+                    {habitKind === 'break' ? (
+                      <>
+                        <Text style={[Typography.caption, styles.quantifyBreakHint, { color: colors.textSecondary }]}>
+                          当日记录次数低于此值视为达成目标（0 表示零次破戒）
+                        </Text>
+                        <NumberControl
+                          label="连续目标天数"
+                          value={consecutiveTargetDays}
+                          onMinus={() => setConsecutiveTargetDays((v) => Math.max(1, v - 1))}
+                          onPlus={() => setConsecutiveTargetDays((v) => Math.min(999, v + 1))}
+                          textColor={colors.text}
+                          mutedColor={colors.textSecondary}
+                        />
+                      </>
+                    ) : null}
                   </View>
                 ) : null}
               </AppCard>
@@ -1286,6 +1351,7 @@ const styles = StyleSheet.create({
   quantifyTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   quantifyTitle: { fontSize: 15 },
   quantifyHint: { marginTop: 2 },
+  quantifyBreakHint: { marginTop: -4, marginBottom: 8, paddingHorizontal: 2 },
   switchTrack: {
     width: 48,
     height: 26,

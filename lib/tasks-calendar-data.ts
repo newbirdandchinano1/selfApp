@@ -1,4 +1,7 @@
 import { isHabitScheduledOnLogicalYmd } from '@/lib/habit-schedule';
+import { isBreakHabitSucceeded } from '@/lib/repositories/habits/habit-break-success';
+import { isHabitDayGoalMet, parseHabitDailyGoal } from '@/lib/repositories/habits/habit-goal';
+import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { isTaskRepeatDueOnLogicalDay, parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getLogicalLocalYmd } from '@/lib/tasks-logical-day';
@@ -20,7 +23,8 @@ export type TasksCalendarHabitItem = {
   name: string;
   icon: string;
   todayCount: number;
-  dailyGoalMax: number | null;
+  dailyGoal: number | null;
+  kind: HabitKind;
 };
 
 export type TasksCalendarProjectItem = {
@@ -196,19 +200,6 @@ function toTaskItem(task: TaskRow, kind: TasksCalendarTaskItem['kind']): TasksCa
   };
 }
 
-function parseHabitDailyGoalMax(extraData: string | null): number | null {
-  if (!extraData) return null;
-  try {
-    const p = JSON.parse(extraData) as { quantify?: { dailyGoal?: number | null } };
-    const g = p?.quantify?.dailyGoal;
-    if (g === null || g === undefined) return null;
-    if (typeof g === 'number' && Number.isFinite(g) && g > 0) return Math.min(99, Math.max(1, Math.round(g)));
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
-
 function emptyDay(ymd: string): TasksCalendarDaySummary {
   return {
     ymd,
@@ -230,7 +221,9 @@ export function getTasksCalendarCellLevel(summary: TasksCalendarDaySummary | und
     summary.matrixTasks.filter((t) => isTaskActiveStatus(t.status)).length;
   const dueOpen = summary.dueTasks.filter((t) => isTaskActiveStatus(t.status)).length;
   const habitDue = summary.habits.length;
-  const habitDone = summary.habits.filter((h) => h.todayCount > 0).length;
+  const habitDone = summary.habits.filter((h) =>
+    isHabitDayGoalMet({ kind: h.kind, todayCount: h.todayCount, dailyGoal: h.dailyGoal })
+  ).length;
   const frogDone = summary.frogs.filter((t) => t.status === 'done').length;
   const score = openTasks + dueOpen + habitDue + frogDone + habitDone + summary.projectsDue.length;
   if (score <= 0) return 0;
@@ -282,14 +275,18 @@ export function buildTasksCalendarSummaries(params: {
     const checkMap = habitCheckInsByDay.get(ymd) ?? new Map<string, number>();
 
     for (const habit of habits) {
+      if (parseHabitKind(habit.extra_data) === 'break' && isBreakHabitSucceeded(habit.extra_data)) continue;
       if (!isHabitScheduledOnLogicalYmd(habit.extra_data, ymd)) continue;
       const count = checkMap.get(habit.id) ?? 0;
+      const kind = parseHabitKind(habit.extra_data);
+      const dailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
       day.habits.push({
         id: habit.id,
         name: habit.name,
         icon: habit.icon,
         todayCount: count,
-        dailyGoalMax: parseHabitDailyGoalMax(habit.extra_data),
+        dailyGoal,
+        kind,
       });
     }
 

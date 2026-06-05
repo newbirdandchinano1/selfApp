@@ -350,9 +350,9 @@ export async function triggerApiFullUpload(opts?: {
     await applyEntityIdRemapToLocalDatabase(idRemap);
   }
 
-  ensureProjectCategoryRefsForApiUpload(rowsByTable);
+  await ensureProjectCategoryRefsForApiUpload(rowsByTable);
 
-  ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+  await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
 
   await ensureFinanceAccountRefsForApiUpload(rowsByTable);
 
@@ -416,7 +416,7 @@ export async function triggerApiFullUpload(opts?: {
 
       if (table === 'projects') {
 
-        ensureProjectCategoryRefsForApiUpload(rowsByTable);
+        await ensureProjectCategoryRefsForApiUpload(rowsByTable);
 
         await upsertProjectCategoriesReferencedByProjects(
 
@@ -440,7 +440,7 @@ export async function triggerApiFullUpload(opts?: {
 
       if (table === 'tasks') {
 
-        ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+        await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
 
         await upsertTaskCategoriesReferencedByTasks(
 
