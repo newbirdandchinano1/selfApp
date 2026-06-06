@@ -9,10 +9,6 @@ import {
   syncApiReadResultToLocal,
 } from '@/lib/api-read-local-sync';
 import { isApiOnlyReads } from '@/lib/api-data-mode';
-import {
-  overlayLocalPendingOnApiRecord,
-  overlayLocalPendingOnApiTableRows,
-} from '@/lib/api-read-pending-overlay';
 import { getDatabase } from '@/lib/database';
 import { resolveReadLocalOnly } from '@/lib/page-api-session';
 
@@ -180,9 +176,10 @@ export async function readApiTable<T extends Record<string, unknown>>(
   const skipNetwork = resolveReadLocalOnly(opts);
   if (!skipNetwork) {
     try {
-      const rows = await withApiLoading(() => fetchApiTableAll<T>(table, opts));
+      await withApiLoading(() => fetchApiTableAll<T>(table, opts));
       if (isApiOnlyReads()) {
-        return overlayLocalPendingOnApiTableRows(table, rows);
+        /** 已 sync 到 SQLite（含 extra_data 合并）；以本地为准，避免 REST 缺字段时 UI 读到旧快照 */
+        return readLocalTableVisible<T>(table);
       }
     } catch (e) {
       if (opts?.offlineFallback && !isApiOnlyReads()) {
@@ -225,14 +222,10 @@ export async function readApiRecord<T extends Record<string, unknown>>(
   const skipNetwork = resolveReadLocalOnly(opts);
   if (!skipNetwork) {
     try {
-      const row = await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
+      await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
       if (isApiOnlyReads()) {
-        const merged = await overlayLocalPendingOnApiRecord(table, pkValue, row);
-        if (merged != null) return merged;
-        if (opts?.offlineFallback) {
-          return readLocalRecordVisible<T>(table, pkValue);
-        }
-        return null;
+        /** 已 sync 到 SQLite（含 extra_data 合并）；以本地为准，避免 REST 缺字段时编辑页读到旧值 */
+        return readLocalRecordVisible<T>(table, pkValue);
       }
     } catch (e) {
       if (opts?.offlineFallback) {

@@ -1,4 +1,5 @@
 import { getApiTablePrimaryKey, isApiReadableTable } from '@/lib/api-allowed-tables';
+import { mergeFinanceTxnExtraOnApiSync } from '@/lib/repositories/finance/finance-transaction-extra';
 import { rowPrimaryKeyValue } from '@/lib/api-row-upsert';
 import {
   beginCloudSqliteDirtyIgnoreBatch,
@@ -113,6 +114,12 @@ async function upsertRowsToLocalTable(
           continue;
         }
         if (existing) {
+          if (table === 'finance_transactions' && colNames.includes('extra_data')) {
+            obj.extra_data = mergeFinanceTxnExtraOnApiSync(
+              typeof obj.extra_data === 'string' ? obj.extra_data : null,
+              typeof existing.extra_data === 'string' ? existing.extra_data : null,
+            );
+          }
           for (const col of colNames) {
             if (Object.prototype.hasOwnProperty.call(obj, col)) continue;
             const prev = existing[col];

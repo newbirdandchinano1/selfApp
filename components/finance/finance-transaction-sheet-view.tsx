@@ -35,7 +35,7 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
     sheetModalMaxHeight,
     sheetModalBodyMaxHeight,
     activeSheetTab,
-    resetSheetForm,
+    switchSheetTab,
     transferFromAccount,
     transferToAccount,
     transferFromAccountId,
@@ -82,7 +82,7 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
     canSaveSentence,
     isParsingSentence,
     sheetIncludeInBudget,
-    setSheetIncludeInBudget,
+    applySheetIncludeInBudget,
     selectedAccount,
     sheetImageUris,
     setSheetImageUris,
@@ -123,19 +123,19 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
             </View>
 
             <View style={[styles.sheetTabs, { borderBottomColor: outlineVariant }]}>
-              <Pressable onPress={() => resetSheetForm('sentence')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => switchSheetTab('sentence')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'sentence' ? { color: tertiary } : { color: subtle }]}>一句话</Text>
                 {activeSheetTab === 'sentence' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
-              <Pressable onPress={() => resetSheetForm('expense')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => switchSheetTab('expense')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'expense' ? { color: tertiary } : { color: subtle }]}>支出</Text>
                 {activeSheetTab === 'expense' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
-              <Pressable onPress={() => resetSheetForm('income')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => switchSheetTab('income')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'income' ? { color: tertiary } : { color: subtle }]}>收入</Text>
                 {activeSheetTab === 'income' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
-              <Pressable onPress={() => resetSheetForm('transfer')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => switchSheetTab('transfer')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'transfer' ? { color: tertiary } : { color: subtle }]}>转账</Text>
                 {activeSheetTab === 'transfer' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
@@ -447,20 +447,17 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                   </View>
 
                   {activeSheetTab === 'expense' || activeSheetTab === 'sentence' ? (
-                    <View
-                      style={[
+                    <Pressable
+                      accessibilityRole="switch"
+                      accessibilityLabel="计入本月预算"
+                      accessibilityState={{ checked: sheetIncludeInBudget }}
+                      onPress={() => applySheetIncludeInBudget((prev) => !prev)}
+                      style={({ pressed }) => [
                         styles.sheetBudgetCard,
                         { backgroundColor: surface, borderColor: outlineVariant },
+                        pressed ? { opacity: 0.82 } : null,
                       ]}>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="计入本月预算"
-                        accessibilityState={{ checked: sheetIncludeInBudget }}
-                        onPress={() => setSheetIncludeInBudget((v) => !v)}
-                        style={({ pressed }) => [
-                          styles.sheetBudgetMainHit,
-                          pressed ? { opacity: 0.82 } : null,
-                        ]}>
+                      <View style={styles.sheetBudgetMainHit}>
                         <View
                           style={[
                             styles.sheetBudgetIconWrap,
@@ -478,15 +475,15 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                               : '仍记为支出，不参与预算与今日可用'}
                           </Text>
                         </View>
-                      </Pressable>
+                      </View>
                       <Switch
                         value={sheetIncludeInBudget}
-                        onValueChange={setSheetIncludeInBudget}
+                        pointerEvents="none"
                         trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
                         thumbColor="#ffffff"
                         ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
                       />
-                    </View>
+                    </Pressable>
                   ) : null}
 
                   {activeSheetTab === 'sentence' ? (

@@ -23,18 +23,74 @@ export function getBudgetFixedExpenseIdFromTxnExtra(extraData: string | null): s
   }
 }
 
-export function isFinanceTransactionExcludedFromBudget(extraData: string | null): boolean {
-  if (getBudgetFixedExpenseIdFromTxnExtra(extraData) !== null) return true;
-  if (!extraData) return false;
+function parseFinanceTxnExtraObject(extraData: string | null): Record<string, unknown> {
+  if (!extraData) return {};
   try {
     const raw = JSON.parse(extraData) as unknown;
-    if (raw && typeof raw === 'object' && FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET in raw) {
-      return Boolean((raw as Record<string, unknown>)[FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET]);
-    }
+    if (raw && typeof raw === 'object') return raw as Record<string, unknown>;
   } catch {
     // ignore
   }
-  return false;
+  return {};
+}
+
+/** 解析 extra_data 中的 exclude_from_budget（兼容布尔、数字与字符串）。 */
+export function readExcludeFromBudgetFromExtraObject(raw: Record<string, unknown>): boolean {
+  if (!(FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET in raw)) return false;
+  const v = raw[FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET];
+  if (v === true || v === 1) return true;
+  if (v === false || v === 0 || v === null) return false;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (s === 'true' || s === '1') return true;
+    if (s === 'false' || s === '0' || s === '') return false;
+  }
+  return Boolean(v);
+}
+
+/** 新建/更新流水时写入 extra_data 的预算标记（仅支出有效）。 */
+export function budgetExtraPatchForTransaction(
+  transactionType: string,
+  includeInBudget: boolean,
+): Record<string, boolean> {
+  if (transactionType !== 'expense') return {};
+  return { [FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET]: !includeInBudget };
+}
+
+/** 支出是否计入预算（收入/转账恒为 true）。 */
+export function isExpenseIncludedInBudget(extraData: string | null): boolean {
+  return !readExcludeFromBudgetFromExtraObject(parseFinanceTxnExtraObject(extraData));
+}
+
+/**
+ * REST 回写本地时合并 extra_data：预算标记以本地为准（服务端可能未持久化或回传默认值）。
+ */
+export function mergeFinanceTxnExtraOnApiSync(
+  apiExtraData: string | null | undefined,
+  localExtraData: string | null | undefined,
+): string | null {
+  const api = parseFinanceTxnExtraObject(apiExtraData ?? null);
+  const local = parseFinanceTxnExtraObject(localExtraData ?? null);
+  const merged: Record<string, unknown> = { ...api };
+
+  // 本地已写入时以本地为准：服务端可能未持久化该字段，或回传默认 false 覆盖用户标记
+  if (FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET in local) {
+    merged[FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET] = local[FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET];
+  }
+  if (
+    FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_ID in local &&
+    !(FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_ID in api)
+  ) {
+    merged[FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_ID] = local[FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_ID];
+  }
+
+  if (Object.keys(merged).length === 0) return null;
+  return JSON.stringify(merged);
+}
+
+export function isFinanceTransactionExcludedFromBudget(extraData: string | null): boolean {
+  if (getBudgetFixedExpenseIdFromTxnExtra(extraData) !== null) return true;
+  return readExcludeFromBudgetFromExtraObject(parseFinanceTxnExtraObject(extraData));
 }
 
 export type FinanceTransactionExtra = {

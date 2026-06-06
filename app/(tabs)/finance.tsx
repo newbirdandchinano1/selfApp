@@ -71,6 +71,7 @@ import {
 } from '@/lib/repositories/finance/finance';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import {
+    budgetExtraPatchForTransaction,
     getBudgetFixedExpenseIdFromTxnExtra,
     isFinanceTransactionExcludedFromBudget,
 } from '@/lib/repositories/finance/finance-transaction-extra';
@@ -549,6 +550,14 @@ export default function FinanceScreen() {
   const [sheetImageUris, setSheetImageUris] = React.useState<string[]>([]);
   /** 支出是否计入本月预算（收入页不展示该项，保存时也不会写入排除标记） */
   const [sheetIncludeInBudget, setSheetIncludeInBudget] = React.useState(true);
+  const sheetIncludeInBudgetRef = React.useRef(true);
+  const applySheetIncludeInBudget = React.useCallback((value: boolean | ((prev: boolean) => boolean)) => {
+    setSheetIncludeInBudget((prev) => {
+      const next = typeof value === 'function' ? value(prev) : value;
+      sheetIncludeInBudgetRef.current = next;
+      return next;
+    });
+  }, []);
   const [isPickingImage, setIsPickingImage] = React.useState(false);
   const [sentenceLedgerPreview, setSentenceLedgerPreview] = React.useState<SentenceLedgerPreviewState>(null);
   const [isSentencePreviewBusy, setIsSentencePreviewBusy] = React.useState(false);
@@ -1989,13 +1998,15 @@ export default function FinanceScreen() {
     }
   }, [activeSheetTab, expenseCategories, incomeCategories, selectedCategoryKey]);
 
-  const resetSheetForm = React.useCallback((nextTab: SheetTab = 'sentence') => {
+  const resetSheetForm = React.useCallback((nextTab: SheetTab = 'sentence', opts?: { preserveBudget?: boolean }) => {
     setActiveSheetTab(nextTab);
     setSheetAmount('');
     setSheetSentence('');
     setSheetNote('');
     setSheetImageUris([]);
-    setSheetIncludeInBudget(true);
+    if (!opts?.preserveBudget) {
+      applySheetIncludeInBudget(true);
+    }
     setSelectedHappenedAt(new Date());
     setIsDatePickerVisible(false);
     setIsTimePickerVisible(false);
@@ -2008,7 +2019,15 @@ export default function FinanceScreen() {
     if (list.length > 0) {
       setSelectedAccountId(getDefaultSheetAccountIdForTab(nextTab, list));
     }
-  }, [getDefaultSheetAccountIdForTab]);
+  }, [applySheetIncludeInBudget, getDefaultSheetAccountIdForTab]);
+
+  const switchSheetTab = React.useCallback(
+    (nextTab: SheetTab) => {
+      if (activeSheetTab === nextTab) return;
+      resetSheetForm(nextTab, { preserveBudget: true });
+    },
+    [activeSheetTab, resetSheetForm],
+  );
 
   const applyManualOrTransferSheetIntent = React.useCallback(
     (intent: FinanceSheetLaunchIntent) => {
@@ -2533,6 +2552,7 @@ export default function FinanceScreen() {
   }, [selectedAccount, sheetSentence, resolveFinanceSentenceLine, expenseCategories, incomeCategories]);
 
   const handleSaveTransaction = React.useCallback(async () => {
+    if (isSavingTransaction || isParsingSentence) return;
     if (activeSheetTab === 'transfer') {
       if (!transferFromAccount || !transferToAccount) {
         Alert.alert('请选择账户', '需要选择扣款账户与入账账户。');
@@ -2657,7 +2677,7 @@ export default function FinanceScreen() {
       }
 
       const happenedAtIso = selectedHappenedAt.toISOString();
-      const includeInBudget = sheetIncludeInBudget;
+      const includeInBudget = sheetIncludeInBudgetRef.current;
       const manualAccount = selectedAccount;
 
       setIsParsingSentence(true);
@@ -2724,7 +2744,7 @@ export default function FinanceScreen() {
               ...(aiSuggestedAccount && aiSuggestedAccount.id !== account.id
                 ? { ai_suggested_account_id: aiSuggestedAccount.id, ai_suggested_account_name: aiSuggestedAccount.name }
                 : {}),
-              ...(transactionType === 'expense' && !includeInBudget ? { exclude_from_budget: true } : {}),
+              ...budgetExtraPatchForTransaction(transactionType, includeInBudget),
             }),
           },
           { skipBalanceRecheck: true },
@@ -2786,7 +2806,7 @@ export default function FinanceScreen() {
             category_key: selectedCategory?.key ?? null,
             category_label: selectedCategory?.label ?? null,
             attachments: sheetImageUris.length ? sheetImageUris.map((uri) => ({ type: 'image', uri })) : null,
-            ...(transactionType === 'expense' && !sheetIncludeInBudget ? { exclude_from_budget: true } : {}),
+            ...budgetExtraPatchForTransaction(transactionType, sheetIncludeInBudgetRef.current),
           }),
         },
         { skipBalanceRecheck: true },
@@ -2808,6 +2828,8 @@ export default function FinanceScreen() {
     amountNumber,
     expenseCategories,
     incomeCategories,
+    isParsingSentence,
+    isSavingTransaction,
     loadFinanceAccounts,
     loadFinanceTransactions,
     pickAccountForAutoLedger,
@@ -2817,7 +2839,6 @@ export default function FinanceScreen() {
     selectedCategory,
     selectedHappenedAt,
     sheetImageUris,
-    sheetIncludeInBudget,
     sheetNote,
     sheetSentence,
     transferFromAccount,
@@ -3608,19 +3629,19 @@ export default function FinanceScreen() {
             </View>
 
             <View style={[styles.sheetTabs, { borderBottomColor: outlineVariant }]}>
-              <Pressable onPress={() => resetSheetForm('sentence')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => switchSheetTab('sentence')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'sentence' ? { color: tertiary } : { color: subtle }]}>一句话</Text>
                 {activeSheetTab === 'sentence' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
-              <Pressable onPress={() => resetSheetForm('expense')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => switchSheetTab('expense')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'expense' ? { color: tertiary } : { color: subtle }]}>支出</Text>
                 {activeSheetTab === 'expense' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
-              <Pressable onPress={() => resetSheetForm('income')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => switchSheetTab('income')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'income' ? { color: tertiary } : { color: subtle }]}>收入</Text>
                 {activeSheetTab === 'income' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
-              <Pressable onPress={() => resetSheetForm('transfer')} style={styles.sheetTabBtn}>
+              <Pressable onPress={() => switchSheetTab('transfer')} style={styles.sheetTabBtn}>
                 <Text style={[styles.sheetTabText, activeSheetTab === 'transfer' ? { color: tertiary } : { color: subtle }]}>转账</Text>
                 {activeSheetTab === 'transfer' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
               </Pressable>
@@ -3932,20 +3953,17 @@ export default function FinanceScreen() {
                   </View>
 
                   {activeSheetTab === 'expense' || activeSheetTab === 'sentence' ? (
-                    <View
-                      style={[
+                    <Pressable
+                      accessibilityRole="switch"
+                      accessibilityLabel="计入本月预算"
+                      accessibilityState={{ checked: sheetIncludeInBudget }}
+                      onPress={() => applySheetIncludeInBudget((prev) => !prev)}
+                      style={({ pressed }) => [
                         styles.sheetBudgetCard,
                         { backgroundColor: surface, borderColor: outlineVariant },
+                        pressed ? { opacity: 0.82 } : null,
                       ]}>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="计入本月预算"
-                        accessibilityState={{ checked: sheetIncludeInBudget }}
-                        onPress={() => setSheetIncludeInBudget((v) => !v)}
-                        style={({ pressed }) => [
-                          styles.sheetBudgetMainHit,
-                          pressed ? { opacity: 0.82 } : null,
-                        ]}>
+                      <View style={styles.sheetBudgetMainHit}>
                         <View
                           style={[
                             styles.sheetBudgetIconWrap,
@@ -3963,15 +3981,15 @@ export default function FinanceScreen() {
                               : '仍记为支出，不参与预算与今日可用'}
                           </Text>
                         </View>
-                      </Pressable>
+                      </View>
                       <Switch
                         value={sheetIncludeInBudget}
-                        onValueChange={setSheetIncludeInBudget}
+                        pointerEvents="none"
                         trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
                         thumbColor="#ffffff"
                         ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
                       />
-                    </View>
+                    </Pressable>
                   ) : null}
 
                   {activeSheetTab === 'sentence' ? (

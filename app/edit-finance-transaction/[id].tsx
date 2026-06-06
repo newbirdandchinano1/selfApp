@@ -10,6 +10,11 @@ import {
   getFinanceTransactionById,
   updateFinanceTransaction,
 } from '@/lib/repositories/finance/finance';
+import {
+  budgetExtraPatchForTransaction,
+  isExpenseIncludedInBudget,
+} from '@/lib/repositories/finance/finance-transaction-extra';
+import { notifyFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -86,6 +91,22 @@ export default function EditFinanceTransactionScreen() {
   const [datePickerOpen, setDatePickerOpen] = React.useState(false);
   const [timePickerOpen, setTimePickerOpen] = React.useState(false);
   const [includeInBudget, setIncludeInBudget] = React.useState(true);
+  const includeInBudgetRef = React.useRef(true);
+  /** 用户已手动切换预算开关后，异步 load 完成时不得覆盖 */
+  const budgetTouchedByUserRef = React.useRef(false);
+
+  const applyIncludeInBudget = React.useCallback((value: boolean | ((prev: boolean) => boolean)) => {
+    setIncludeInBudget((prev) => {
+      const next = typeof value === 'function' ? value(prev) : value;
+      includeInBudgetRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const userToggleIncludeInBudget = React.useCallback(() => {
+    budgetTouchedByUserRef.current = true;
+    applyIncludeInBudget((prev) => !prev);
+  }, [applyIncludeInBudget]);
   const [aiComment, setAiComment] = React.useState('');
 
   const {
@@ -103,6 +124,11 @@ export default function EditFinanceTransactionScreen() {
     confirmDeleteCustomCategory,
     customCategoriesReady,
   } = useFinanceSheetCategories({ primary, secondary, tertiary, subtle });
+
+  const expenseCategoriesRef = React.useRef(expenseCategories);
+  const incomeCategoriesRef = React.useRef(incomeCategories);
+  expenseCategoriesRef.current = expenseCategories;
+  incomeCategoriesRef.current = incomeCategories;
 
   const activeCategories = tab === 'income' ? incomeCategories : tab === 'expense' ? expenseCategories : [];
 
@@ -144,7 +170,7 @@ export default function EditFinanceTransactionScreen() {
       const extra = parseExtraData(txn.extra_data);
       const ck = typeof extra.category_key === 'string' ? extra.category_key : null;
       const cl = typeof extra.category_label === 'string' ? extra.category_label.trim() : '';
-      const pool = ttype === 'income' ? incomeCategories : expenseCategories;
+      const pool = ttype === 'income' ? incomeCategoriesRef.current : expenseCategoriesRef.current;
       if (ck) {
         const keys = new Set(pool.map((c) => c.key));
         if (keys.has(ck) || ck.startsWith(FINANCE_SHEET_CATEGORY_ID_PREFIX)) {
@@ -162,17 +188,24 @@ export default function EditFinanceTransactionScreen() {
         setCategoryKey(ttype === 'income' ? 'salary' : 'food');
       }
 
-      const budgetExtra = parseExtraData(txn.extra_data);
-      setIncludeInBudget(ttype !== 'expense' ? true : !Boolean(budgetExtra.exclude_from_budget));
+      if (silent) budgetTouchedByUserRef.current = false;
+      if (!budgetTouchedByUserRef.current) {
+        const includedInBudget = ttype !== 'expense' ? true : isExpenseIncludedInBudget(txn.extra_data);
+        applyIncludeInBudget(includedInBudget);
+      }
     } catch (e) {
       console.warn('Failed to load finance transaction:', e);
       setRow(null);
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [expenseCategories, id, incomeCategories]);
+  }, [applyIncludeInBudget, id]);
 
   const { refreshControl } = usePullToRefresh(() => load(true));
+
+  React.useEffect(() => {
+    budgetTouchedByUserRef.current = false;
+  }, [id]);
 
   React.useEffect(() => {
     void load();
@@ -190,6 +223,7 @@ export default function EditFinanceTransactionScreen() {
   }, [categoryKey, customCategoriesReady, expenseCategories, incomeCategories, tab]);
 
   const onSave = React.useCallback(async () => {
+    if (saving) return;
     if (!row || !selectedAccount) {
       Alert.alert('无法保存', '缺少交易或账户信息。');
       return;
@@ -211,8 +245,9 @@ export default function EditFinanceTransactionScreen() {
         manual: true,
         category_key: tab === 'transfer' ? null : selectedCategory?.key ?? null,
         category_label: tab === 'transfer' ? null : selectedCategory?.label ?? null,
-        exclude_from_budget: tab === 'expense' ? !includeInBudget : false,
+        ...budgetExtraPatchForTransaction(tab, includeInBudgetRef.current),
       };
+      const mergedExtra = mergeExtraData(row.extra_data, extraPatch);
       await updateFinanceTransaction(row.id, {
         name: title,
         happened_at: happenedAt.toISOString(),
@@ -220,8 +255,10 @@ export default function EditFinanceTransactionScreen() {
         transaction_type: tab,
         amount: signedAmount,
         note: noteDraft.trim() || null,
-        extra_data: mergeExtraData(row.extra_data, extraPatch),
+        extra_data: mergedExtra,
       });
+      setRow((prev) => (prev ? { ...prev, extra_data: mergedExtra } : prev));
+      notifyFinanceSheetSaved();
       const existingAiComment = row.ai_comment?.trim() ?? '';
       if (tab !== 'transfer' && !existingAiComment) {
         await tryPersistFinanceTxnAiComment(row.id, {
@@ -241,7 +278,7 @@ export default function EditFinanceTransactionScreen() {
     } finally {
       setSaving(false);
     }
-  }, [amountDraft, happenedAt, includeInBudget, nameDraft, noteDraft, router, row, selectedAccount, selectedCategory, tab]);
+  }, [amountDraft, happenedAt, nameDraft, noteDraft, router, row, saving, selectedAccount, selectedCategory, tab]);
 
   const onDelete = React.useCallback(() => {
     if (!row || deleting) return;
@@ -426,41 +463,44 @@ export default function EditFinanceTransactionScreen() {
         )}
 
         {tab === 'expense' ? (
-          <View style={[styles.card, { backgroundColor: surface, borderColor: outlineVariant, marginTop: 12 }]}>
-            <View style={styles.budgetOptionRow}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="计入本月预算"
-                accessibilityState={{ checked: includeInBudget }}
-                onPress={() => setIncludeInBudget((v) => !v)}
-                style={({ pressed }) => [styles.budgetOptionHit, pressed ? { opacity: 0.82 } : null]}>
-                <View
-                  style={[
-                    styles.budgetOptionIconWrap,
-                    {
-                      backgroundColor: isDark ? 'rgba(251, 191, 36, 0.14)' : 'rgba(130, 81, 0, 0.09)',
-                    },
-                  ]}>
-                  <MaterialIcons name="pie-chart" size={22} color={tertiary} />
-                </View>
-                <View style={styles.budgetOptionTextCol}>
-                  <Text style={[styles.budgetOptionTitle, { color: text }]}>计入本月预算</Text>
-                  <Text style={[styles.budgetOptionSubtitle, { color: subtle }]} numberOfLines={2}>
-                    {includeInBudget
-                      ? '占用本月预算与「今日可用」计算'
-                      : '仍记为支出，不参与预算与今日可用'}
-                  </Text>
-                </View>
-              </Pressable>
-              <Switch
-                value={includeInBudget}
-                onValueChange={setIncludeInBudget}
-                trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
-                thumbColor="#ffffff"
-                ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
-              />
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityLabel="计入本月预算"
+            accessibilityState={{ checked: includeInBudget }}
+            onPress={userToggleIncludeInBudget}
+            style={({ pressed }) => [
+              styles.card,
+              styles.budgetOptionRow,
+              { backgroundColor: surface, borderColor: outlineVariant, marginTop: 12 },
+              pressed ? { opacity: 0.82 } : null,
+            ]}>
+            <View style={styles.budgetOptionHit}>
+              <View
+                style={[
+                  styles.budgetOptionIconWrap,
+                  {
+                    backgroundColor: isDark ? 'rgba(251, 191, 36, 0.14)' : 'rgba(130, 81, 0, 0.09)',
+                  },
+                ]}>
+                <MaterialIcons name="pie-chart" size={22} color={tertiary} />
+              </View>
+              <View style={styles.budgetOptionTextCol}>
+                <Text style={[styles.budgetOptionTitle, { color: text }]}>计入本月预算</Text>
+                <Text style={[styles.budgetOptionSubtitle, { color: subtle }]} numberOfLines={2}>
+                  {includeInBudget
+                    ? '占用本月预算与「今日可用」计算'
+                    : '仍记为支出，不参与预算与今日可用'}
+                </Text>
+              </View>
             </View>
-          </View>
+            <Switch
+              value={includeInBudget}
+              pointerEvents="none"
+              trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
+              thumbColor="#ffffff"
+              ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
+            />
+          </Pressable>
         ) : null}
 
         <View style={[styles.card, { backgroundColor: surface, borderColor: outlineVariant, marginTop: 12 }]}>

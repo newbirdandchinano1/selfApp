@@ -29,6 +29,7 @@ import {
     normalizeFinanceSignRule,
     validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
+import { budgetExtraPatchForTransaction } from '@/lib/repositories/finance/finance-transaction-extra';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
 import {
     getActiveAiLlmApiKey,
@@ -87,6 +88,14 @@ export function useFinanceTransactionSheetController({
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [sheetImageUris, setSheetImageUris] = React.useState<string[]>([]);
   const [sheetIncludeInBudget, setSheetIncludeInBudget] = React.useState(true);
+  const sheetIncludeInBudgetRef = React.useRef(true);
+  const applySheetIncludeInBudget = React.useCallback((value: boolean | ((prev: boolean) => boolean)) => {
+    setSheetIncludeInBudget((prev) => {
+      const next = typeof value === 'function' ? value(prev) : value;
+      sheetIncludeInBudgetRef.current = next;
+      return next;
+    });
+  }, []);
   const [sentenceLedgerPreview, setSentenceLedgerPreview] = React.useState<SentenceLedgerPreviewState>(null);
   const [isSentencePreviewBusy, setIsSentencePreviewBusy] = React.useState(false);
   const [sheetKeyboardInset, setSheetKeyboardInset] = React.useState(0);
@@ -256,13 +265,15 @@ export function useFinanceTransactionSheetController({
   }, []);
 
   const resetSheetForm = React.useCallback(
-    (nextTab: SheetTab = 'sentence') => {
+    (nextTab: SheetTab = 'sentence', opts?: { preserveBudget?: boolean }) => {
       setActiveSheetTab(nextTab);
       setSheetAmount('');
       setSheetSentence('');
       setSheetNote('');
       setSheetImageUris([]);
-      setSheetIncludeInBudget(true);
+      if (!opts?.preserveBudget) {
+        applySheetIncludeInBudget(true);
+      }
       setSelectedHappenedAt(new Date());
       setIsDatePickerVisible(false);
       setIsTimePickerVisible(false);
@@ -276,7 +287,15 @@ export function useFinanceTransactionSheetController({
         setSelectedAccountId(getDefaultSheetAccountIdForTab(nextTab, list));
       }
     },
-    [getDefaultSheetAccountIdForTab],
+    [applySheetIncludeInBudget, getDefaultSheetAccountIdForTab],
+  );
+
+  const switchSheetTab = React.useCallback(
+    (nextTab: SheetTab) => {
+      if (activeSheetTab === nextTab) return;
+      resetSheetForm(nextTab, { preserveBudget: true });
+    },
+    [activeSheetTab, resetSheetForm],
   );
 
   const applyLaunchIntent = React.useCallback(
@@ -556,6 +575,7 @@ export function useFinanceTransactionSheetController({
   }, [selectedAccount, sheetSentence, resolveFinanceSentenceLine, expenseCategories, incomeCategories]);
 
   const handleSaveTransaction = React.useCallback(async () => {
+    if (isSavingTransaction || isParsingSentence) return;
     if (activeSheetTab === 'transfer') {
       if (!transferFromAccount || !transferToAccount) {
         Alert.alert('请选择账户', '需要选择扣款账户与入账账户。');
@@ -658,7 +678,7 @@ export function useFinanceTransactionSheetController({
         return;
       }
       const happenedAtIso = selectedHappenedAt.toISOString();
-      const includeInBudget = sheetIncludeInBudget;
+      const includeInBudget = sheetIncludeInBudgetRef.current;
       const manualAccount = selectedAccount;
 
       setIsParsingSentence(true);
@@ -713,7 +733,7 @@ export function useFinanceTransactionSheetController({
               ...(aiSuggestedAccount && aiSuggestedAccount.id !== account.id
                 ? { ai_suggested_account_id: aiSuggestedAccount.id, ai_suggested_account_name: aiSuggestedAccount.name }
                 : {}),
-              ...(transactionType === 'expense' && !includeInBudget ? { exclude_from_budget: true } : {}),
+              ...budgetExtraPatchForTransaction(transactionType, includeInBudget),
             }),
           },
           { skipBalanceRecheck: true },
@@ -766,7 +786,7 @@ export function useFinanceTransactionSheetController({
             category_key: selectedCategory?.key ?? null,
             category_label: selectedCategory?.label ?? null,
             attachments: sheetImageUris.length ? sheetImageUris.map((uri) => ({ type: 'image', uri })) : null,
-            ...(transactionType === 'expense' && !sheetIncludeInBudget ? { exclude_from_budget: true } : {}),
+            ...budgetExtraPatchForTransaction(transactionType, sheetIncludeInBudgetRef.current),
           }),
         },
         { skipBalanceRecheck: true },
@@ -783,6 +803,8 @@ export function useFinanceTransactionSheetController({
     expenseCategories,
     finishSaved,
     incomeCategories,
+    isParsingSentence,
+    isSavingTransaction,
     loadFinanceAccounts,
     onClose,
     onSaved,
@@ -792,7 +814,6 @@ export function useFinanceTransactionSheetController({
     selectedCategory,
     selectedHappenedAt,
     sheetImageUris,
-    sheetIncludeInBudget,
     sheetNote,
     sheetSentence,
     transferFromAccount,
@@ -820,6 +841,7 @@ export function useFinanceTransactionSheetController({
     sheetModalBodyMaxHeight,
     activeSheetTab,
     resetSheetForm,
+    switchSheetTab,
     transferFromAccount,
     transferToAccount,
     transferFromAccountId,
@@ -856,7 +878,7 @@ export function useFinanceTransactionSheetController({
     canSaveSentence,
     isParsingSentence,
     sheetIncludeInBudget,
-    setSheetIncludeInBudget,
+    applySheetIncludeInBudget,
     selectedAccount,
     sheetImageUris,
     setSheetImageUris,

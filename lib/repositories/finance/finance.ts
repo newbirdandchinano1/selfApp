@@ -1,6 +1,6 @@
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
-import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, sortBySortOrderAsc, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import type {
@@ -666,6 +666,14 @@ export async function applyFinanceAccountBalanceCorrection(input: {
 }
 
 export async function getFinanceTransactionById(id: string) {
+  const db = await getDatabase();
+  if (db && id.trim()) {
+    const local = await db.getFirstAsync<FinanceTransactionRow>(
+      `SELECT * FROM finance_transactions WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
+      [id],
+    );
+    if (local) return local;
+  }
   return readApiRecord<FinanceTransactionRow>('finance_transactions', id, { offlineFallback: true });
 }
 
@@ -768,6 +776,7 @@ export async function updateFinanceTransaction(id: string, input: UpdateFinanceT
       id,
     ]
   );
+  invalidateInflightApiTableFetch('finance_transactions');
   await pushFinanceChangesToApi();
 }
 
