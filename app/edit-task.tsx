@@ -13,6 +13,7 @@ import {
   toYmd,
   type DateLimitYmd,
 } from '@/lib/schedule-inherit';
+import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
@@ -445,9 +446,9 @@ export default function EditTaskScreen() {
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
-  const readScheduleResult = React.useCallback(() => {
+  const readScheduleResult = React.useCallback((): boolean => {
     const picked = consumeSchedulePickerResult(scheduleSource);
-    if (!picked) return;
+    if (!picked) return false;
 
     if (picked.repeatOption !== '不重复') {
       setDeadlineText('');
@@ -490,6 +491,7 @@ export default function EditTaskScreen() {
       endTime: picked.endTime,
     });
 
+    return true;
   }, [scheduleSource]);
 
   const openSchedulePicker = React.useCallback(() => {
@@ -643,9 +645,11 @@ export default function EditTaskScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      readScheduleResult();
+      const consumedSchedule = readScheduleResult();
       void readAddSubtaskResult();
-      void reload();
+      if (!consumedSchedule) {
+        void reload();
+      }
     }, [readAddSubtaskResult, readScheduleResult, reload])
   );
 
@@ -675,35 +679,71 @@ export default function EditTaskScreen() {
       setSaving(true);
       const meta = scheduleMetaRef.current;
       const dueDate = dueDateFromScheduleMeta(meta, extractDueDate(deadlineTextRef.current));
+      const mergedExtra = mergeCompletionRewardIntoExtraData(
+        JSON.stringify({
+          ...parseTaskExtraData(snapshot.extra_data),
+          reminder: reminderTextRef.current,
+          repeat: repeatTextRef.current,
+          schedule: meta,
+        }),
+        completionRewardRef.current,
+      );
       await updateTask(taskId, {
         title: trimmedTitle,
         note: notesRef.current.trim() || null,
         priority: toTaskPriority(priorityKeyToLabel(priorityRef.current)),
         due_date: dueDate,
-        extra_data: mergeCompletionRewardIntoExtraData(
-          JSON.stringify({
-            ...parseTaskExtraData(snapshot.extra_data),
-            reminder: reminderTextRef.current,
-            repeat: repeatTextRef.current,
-            schedule: meta,
-          }),
-          completionRewardRef.current,
-        ),
+        extra_data: mergedExtra,
       });
       const parentFrame = mergeDateLimit(scheduleMetaToDateLimit(meta), {
         end: toYmd(dueDate ?? undefined) ?? undefined,
       });
       const tightenFrame = mergeDateLimit(parentFrame, projectDateLimit);
       await tightenDescendantTasksOf(taskId, tightenFrame);
+      await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+
+      const nextSnapshot = buildFormSnapshotFromFields({
+        title: trimmedTitle,
+        notes: notesRef.current,
+        priority: priorityRef.current,
+        deadlineText: deadlineTextRef.current,
+        reminderText: reminderTextRef.current,
+        repeatText: repeatTextRef.current,
+        scheduleMeta: meta,
+        completionReward: completionRewardRef.current,
+      });
+      setLoadedFormSnapshot(nextSnapshot);
+      setTaskSnapshot((prev) =>
+        prev
+          ? {
+              ...prev,
+              title: trimmedTitle,
+              note: notesRef.current.trim() || null,
+              priority: toTaskPriority(priorityKeyToLabel(priorityRef.current)),
+              due_date: dueDate,
+              extra_data: mergedExtra,
+            }
+          : prev,
+      );
       return true;
     } catch (error) {
       console.warn('更新任务失败', error);
-      Alert.alert('保存失败', '任务保存失败，请稍后重试。');
+      const detail =
+        error instanceof Error && error.message.trim() ? error.message : '任务保存失败，请稍后重试。';
+      const syncHint = /同步|服务器|网络|登录/i.test(detail)
+        ? detail
+        : `${detail}\n\n若仅本机已保存，请检查网络与服务器登录状态后重试。`;
+      Alert.alert('保存失败', syncHint);
       return false;
     } finally {
       setSaving(false);
     }
   }, [loading, projectDateLimit, taskId]);
+
+  const handleSavePress = React.useCallback(() => {
+    if (saving || loading) return;
+    void persistTask();
+  }, [loading, persistTask, saving]);
 
   /** 从详情→编辑离开（保存或删除）时跳过详情页，直接回到任务 Tab */
   const navigateAfterLeaveEdit = React.useCallback(() => {
@@ -852,7 +892,16 @@ export default function EditTaskScreen() {
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: primary }]}>{loading ? '任务详情' : '编辑任务'}</Text>
-        <View style={styles.headerActionSpacer} />
+        <Pressable
+          onPress={handleSavePress}
+          disabled={saving || loading}
+          hitSlop={10}
+          style={({ pressed }) => [
+            styles.headerActionBtn,
+            { opacity: saving || loading ? 0.55 : pressed ? 0.75 : 1 },
+          ]}>
+          <Text style={[styles.headerActionText, { color: primary }]}>{saving ? '保存中' : '保存'}</Text>
+        </Pressable>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
@@ -1163,7 +1212,8 @@ const styles = StyleSheet.create({
   },
   iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 24, fontWeight: '800', letterSpacing: -0.4 },
-  headerActionSpacer: { width: 36, height: 36 },
+  headerActionBtn: { minWidth: 46, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  headerActionText: { fontSize: 15, fontWeight: '800' },
   content: { paddingTop: 92, paddingHorizontal: 18, gap: 22 },
   section: { gap: 10 },
   sectionLabel: {

@@ -346,8 +346,13 @@ export async function getTaskTreeByRootTaskId(rootTaskId: string): Promise<TaskT
 
 export async function updateTask(id: string, input: UpdateTaskInput) {
   const db = await getDatabase();
+  if (!db) {
+    throw new Error('本地数据库不可用，无法保存任务');
+  }
   const current = await getTaskRowForWrite(id);
-  if (!current) return;
+  if (!current) {
+    throw new Error('任务尚未同步到本地，请下拉刷新后重试');
+  }
   await db.runAsync(
     `UPDATE tasks
      SET project_id = ?, category_id = ?, parent_task_id = ?, title = ?, description = ?, note = ?, status = ?, priority = ?, due_date = ?,

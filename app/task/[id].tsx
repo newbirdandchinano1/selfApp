@@ -4,6 +4,7 @@ import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerResult } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
+import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import { getTaskById, getTaskTreeByRootTaskId, updateTask } from '@/lib/repositories/tasks/task';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
@@ -387,10 +388,11 @@ export default function TaskDetailScreen() {
     if (parsedYearly) setYearlyDate(parsedYearly);
   }, []);
 
-  const readScheduleResult = React.useCallback(() => {
+  const readScheduleResult = React.useCallback((): boolean => {
     const picked = consumeSchedulePickerResult(scheduleSource);
-    if (!picked) return;
+    if (!picked) return false;
     applySchedulePick(picked, extraDataRef.current);
+    return true;
   }, [applySchedulePick, scheduleSource]);
 
   const loadTaskDetail = React.useCallback(async () => {
@@ -464,8 +466,10 @@ export default function TaskDetailScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      readScheduleResult();
-      void reloadTaskDetail().catch((e) => console.warn('加载任务详情失败', e));
+      const consumedSchedule = readScheduleResult();
+      if (!consumedSchedule) {
+        void reloadTaskDetail().catch((e) => console.warn('加载任务详情失败', e));
+      }
     }, [readScheduleResult, reloadTaskDetail]),
   );
 
@@ -477,6 +481,7 @@ export default function TaskDetailScreen() {
         due_date: dueDateRef.current,
         extra_data: extraDataRef.current ?? null,
       });
+      await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
       return true;
     } catch (error) {
       console.warn('保存任务详情失败', error);
