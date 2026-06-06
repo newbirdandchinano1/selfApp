@@ -1,4 +1,9 @@
-import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
+import {
+  getDayBoundarySync,
+  getLogicalLocalYmd,
+  loadTasksDayBoundary,
+  type TasksDayBoundary,
+} from '@/lib/tasks-logical-day';
 import { getCheckInsMapByHabitId } from './habit-check-in';
 import { getHabitById, getHabits, updateHabit } from './habit';
 import type { HabitRow } from './habit.types';
@@ -78,11 +83,27 @@ export function mergeBreakHabitCycleExtra(
   });
 }
 
-export function ensureBreakHabitCycleExtra(extraData: string | null): string {
+/** 戒除挑战计日起点：优先周期字段，否则用习惯创建日的逻辑日 */
+export function resolveBreakCycleStartYmd(
+  cycle: BreakHabitCycleMeta,
+  habitCreatedAt: string | null | undefined,
+  boundary?: TasksDayBoundary
+): string | null {
+  if (cycle.cycleStartedAt) return cycle.cycleStartedAt;
+  if (!habitCreatedAt?.trim()) return null;
+  const created = new Date(habitCreatedAt);
+  if (Number.isNaN(created.getTime())) return null;
+  return getLogicalLocalYmd(created, boundary ?? getDayBoundarySync());
+}
+
+export function ensureBreakHabitCycleExtra(
+  extraData: string | null,
+  cycleStartedAt?: string | null
+): string {
   const extra = parseExtraObject(extraData);
   if (extra.breakHabitCycle && typeof extra.breakHabitCycle === 'object') return extraData ?? '{}';
   return mergeBreakHabitCycleExtra(extraData, {
-    cycleStartedAt: null,
+    cycleStartedAt: cycleStartedAt ?? null,
     completedAt: null,
     completedStreak: null,
   });
@@ -92,14 +113,16 @@ export function computeActiveBreakStreak(
   checkIns: Record<string, number>,
   endYmd: string,
   dailyGoal: number | null,
-  cycle: BreakHabitCycleMeta
+  cycle: BreakHabitCycleMeta,
+  habitCreatedAt?: string | null,
+  boundary?: TasksDayBoundary
 ): number {
   return computeConsecutiveGoalMetDays({
     checkIns,
     endYmd,
     kind: 'break',
     dailyGoal,
-    minYmd: cycle.cycleStartedAt,
+    minYmd: resolveBreakCycleStartYmd(cycle, habitCreatedAt, boundary),
   });
 }
 
@@ -109,21 +132,61 @@ function shouldEvaluateBreakSuccess(habit: HabitRow): boolean {
   return parseHabitConsecutiveTargetDays(habit.extra_data) != null;
 }
 
+/** 旧数据缺少 cycleStartedAt 时补写创建日，并撤销误触发的「戒除成功」 */
+async function repairBreakHabitCycleIfNeeded(
+  habit: HabitRow,
+  todayYmd: string,
+  boundary: TasksDayBoundary
+): Promise<HabitRow> {
+  const cycle = parseBreakHabitCycle(habit.extra_data);
+  if (cycle.cycleStartedAt) return habit;
+
+  const createdYmd = resolveBreakCycleStartYmd(cycle, habit.created_at, boundary);
+  if (!createdYmd) return habit;
+
+  let extra = mergeBreakHabitCycleExtra(habit.extra_data, { cycleStartedAt: createdYmd });
+  let next = { ...habit, extra_data: extra };
+
+  if (isBreakHabitSucceeded(extra)) {
+    const target = parseHabitConsecutiveTargetDays(extra);
+    const dailyGoal = parseHabitDailyGoal(extra, 'break');
+    const repairedCycle = parseBreakHabitCycle(extra);
+    const map = await getCheckInsMapByHabitId(habit.id);
+    const streak = computeActiveBreakStreak(map, todayYmd, dailyGoal, repairedCycle, habit.created_at, boundary);
+    if (target == null || streak < target) {
+      extra = mergeBreakHabitCycleExtra(extra, { completedAt: null, completedStreak: null });
+      next = { ...habit, extra_data: extra };
+    }
+  }
+
+  await updateHabit(habit.id, { extra_data: extra });
+  return next;
+}
+
 /** 检测单条戒除习惯是否达成连续目标，达成则写入 extra_data */
 export async function tryMarkBreakHabitCompleted(
   habit: HabitRow,
   todayYmd: string,
-  checkIns?: Record<string, number>
+  checkIns?: Record<string, number>,
+  boundary?: TasksDayBoundary
 ): Promise<boolean> {
   if (!shouldEvaluateBreakSuccess(habit)) return false;
 
   const target = parseHabitConsecutiveTargetDays(habit.extra_data);
   if (target == null) return false;
 
+  const resolvedBoundary = boundary ?? (await loadTasksDayBoundary());
   const dailyGoal = parseHabitDailyGoal(habit.extra_data, 'break');
   const cycle = parseBreakHabitCycle(habit.extra_data);
   const map = checkIns ?? (await getCheckInsMapByHabitId(habit.id));
-  const streak = computeActiveBreakStreak(map, todayYmd, dailyGoal, cycle);
+  const streak = computeActiveBreakStreak(
+    map,
+    todayYmd,
+    dailyGoal,
+    cycle,
+    habit.created_at,
+    resolvedBoundary
+  );
 
   if (streak < target) return false;
 
@@ -140,13 +203,27 @@ export async function syncBreakHabitCompletions(): Promise<void> {
   const boundary = await loadTasksDayBoundary();
   const todayYmd = getLogicalLocalYmd(new Date(), boundary);
   const habits = await getHabits();
-  const candidates = habits.filter(shouldEvaluateBreakSuccess);
+  const breakHabits = habits.filter((h) => parseHabitKind(h.extra_data) === 'break');
+  if (breakHabits.length === 0) return;
+
+  const repaired = await Promise.all(
+    breakHabits.map(async (habit) => {
+      try {
+        return await repairBreakHabitCycleIfNeeded(habit, todayYmd, boundary);
+      } catch (err) {
+        console.warn('修复戒除习惯周期失败', habit.id, err);
+        return habit;
+      }
+    })
+  );
+
+  const candidates = repaired.filter(shouldEvaluateBreakSuccess);
   if (candidates.length === 0) return;
 
   await Promise.all(
     candidates.map(async (habit) => {
       try {
-        await tryMarkBreakHabitCompleted(habit, todayYmd);
+        await tryMarkBreakHabitCompleted(habit, todayYmd, undefined, boundary);
       } catch (err) {
         console.warn('同步戒除习惯完成状态失败', habit.id, err);
       }

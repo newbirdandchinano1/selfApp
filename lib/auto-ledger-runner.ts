@@ -19,6 +19,7 @@ import {
     sleepMs,
 } from '@/lib/auto-ledger-retry';
 import { enterAutoLedgerSession, leaveAutoLedgerSession } from '@/lib/auto-ledger-session';
+import { resolveHappenedAtForBillLedger } from '@/lib/finance-bill-happened-at';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import {
     loadFinanceDefaultAccounts,
@@ -308,7 +309,9 @@ export async function processAutoLedgerFromImage(
           }
 
           const txnId = makeTimestampEntityId('ft_', 8);
-          const happenedAtIso = new Date().toISOString();
+          const { iso: happenedAtIso, fromBill: happenedAtFromBill } = resolveHappenedAtForBillLedger(
+            resolved.happened_at,
+          );
           const noteLine =
             ledgerSource === 'shortcut_intent'
               ? `快捷指令截图 · ${parsed.name}`
@@ -333,6 +336,8 @@ export async function processAutoLedgerFromImage(
               from_picker_image: ledgerSource === 'picker',
               recognized_payment_account: resolved.payment_account_label,
               matched_account_name: account.name,
+              recognized_happened_at: resolved.happened_at,
+              happened_at_from_bill: happenedAtFromBill,
               category_key: cat.key,
               category_label: cat.label,
               attachments: [{ type: 'image', uri: imageDataUri }],

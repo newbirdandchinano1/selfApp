@@ -3,7 +3,9 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
+import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { ensureBreakHabitCycleExtra } from '@/lib/repositories/habits/habit-break-success';
+import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { type HabitKind, parseHabitKind } from '@/lib/repositories/habits/habit-kind';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -15,7 +17,9 @@ import React from 'react';
 import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type CycleTab = '每周定期' | '每周N天' | '每月定期' | '每月N天';
+type CycleTab = '每天' | '每周定期' | '每周N天' | '每月定期' | '每月N天';
+
+const CYCLE_TABS: CycleTab[] = ['每天', '每周N天', '每月N天', '每周定期', '每月定期'];
 
 const WORK_DAYS = ['周一', '周二', '周三', '周四', '周五'];
 const WEEKEND_DAYS = ['周六', '周日'];
@@ -357,6 +361,7 @@ export default function AddHabitScreen() {
   }, [habitKind]);
 
   const deriveTagByCycle = React.useCallback((): string => {
+    if (activeTab === '每天') return '每天';
     if (activeTab === '每周N天') return `每周${weeklyNDays}天`;
     if (activeTab === '每月N天') return `每月${monthlyNDays}天`;
     if (activeTab === '每周定期') return '每周定期';
@@ -427,8 +432,19 @@ export default function AddHabitScreen() {
       },
       reminder: reminderPayload,
     });
-    const extraData =
-      habitKind === 'break' ? ensureBreakHabitCycleExtra(extraDataRaw) : extraDataRaw;
+    let extraData = extraDataRaw;
+    if (habitKind === 'break') {
+      let cycleStartedAt: string | null = null;
+      if (!isEditMode) {
+        try {
+          const boundary = await loadTasksDayBoundary();
+          cycleStartedAt = getLogicalLocalYmd(new Date(), boundary);
+        } catch {
+          cycleStartedAt = getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY);
+        }
+      }
+      extraData = ensureBreakHabitCycleExtra(extraDataRaw, cycleStartedAt);
+    }
 
     const note = habitNote.trim() || null;
 
@@ -841,7 +857,7 @@ export default function AddHabitScreen() {
             {cycleOpen ? (
               <AppCard variant="muted" padded={false} style={styles.cycleSectionOuter}>
                 <View style={[styles.tabWrap, { backgroundColor: colors.capsule }]}>
-                  {(['每周定期', '每周N天', '每月定期', '每月N天'] as CycleTab[]).map((tab) => {
+                  {CYCLE_TABS.map((tab) => {
                     const active = tab === activeTab;
                     return (
                       <Pressable
@@ -866,6 +882,12 @@ export default function AddHabitScreen() {
                 </View>
 
                 <View style={[styles.cycleBody, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+                  {activeTab === '每天' ? (
+                    <Text style={[Typography.body, styles.cycleHintText, { color: colors.textSecondary }]}>
+                      每天都可打卡，全年无休
+                    </Text>
+                  ) : null}
+
                   {activeTab === '每周定期' ? (
                     <>
                       <Text style={[Typography.caption, styles.cycleLabel, { color: colors.textSecondary }]}>工作日</Text>
@@ -1397,9 +1419,17 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     padding: Spacing.xs,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: Spacing.xs,
   },
-  tabItem: { flex: 1, borderRadius: Radius.sm, paddingVertical: Spacing.md, alignItems: 'center' },
+  tabItem: {
+    flexGrow: 1,
+    flexBasis: '31%',
+    minWidth: 72,
+    borderRadius: Radius.sm,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+  },
   tabText: { fontSize: 12 },
   cycleBody: { borderRadius: Radius.md, borderWidth: StyleSheet.hairlineWidth, padding: Spacing.xl, gap: Spacing.lg },
   cycleLabel: { fontSize: 13 },

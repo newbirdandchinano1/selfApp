@@ -2,7 +2,7 @@
 
 const HABIT_CN_WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
 
-type HabitCycleTab = '每周定期' | '每周N天' | '每月定期' | '每月N天';
+export type HabitCycleTab = '每天' | '每周定期' | '每周N天' | '每月定期' | '每月N天';
 
 type HabitScheduleMeta = {
   activeTab?: HabitCycleTab | string;
@@ -34,7 +34,7 @@ export function isHabitScheduledOnLogicalYmd(extraData: string | null, logicalYm
   const tab = schedule?.activeTab;
   if (!tab || typeof tab !== 'string') return true;
 
-  if (tab === '每周N天' || tab === '每月N天') return true;
+  if (tab === '每天' || tab === '每周N天' || tab === '每月N天') return true;
 
   const d = logicalYmdToLocalDate(logicalYmd);
 

@@ -24,6 +24,7 @@ import {
     runInAutoLedgerSession,
 } from '@/lib/auto-ledger-session';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
+import { resolveHappenedAtForBillLedger } from '@/lib/finance-bill-happened-at';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import {
     loadFinanceDefaultAccounts,
@@ -1837,7 +1838,9 @@ export default function FinanceScreen() {
             }
 
             const txnId = makeTimestampEntityId('ft_', 8);
-            const happenedAtIso = new Date().toISOString();
+            const { iso: happenedAtIso, fromBill: happenedAtFromBill } = resolveHappenedAtForBillLedger(
+              resolved.happened_at,
+            );
             const noteLine =
               ledgerSource === 'shortcut_intent'
                 ? `快捷指令截图 · ${parsed.name}`
@@ -1862,6 +1865,8 @@ export default function FinanceScreen() {
                 from_picker_image: ledgerSource === 'picker',
                 recognized_payment_account: resolved.payment_account_label,
                 matched_account_name: account.name,
+                recognized_happened_at: resolved.happened_at,
+                happened_at_from_bill: happenedAtFromBill,
                 category_key: cat.key,
                 category_label: cat.label,
                 attachments: [{ type: 'image', uri: imageDataUri }],

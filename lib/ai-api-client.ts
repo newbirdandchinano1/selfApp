@@ -36,6 +36,12 @@ export type FinanceOneLinerJson = {
   payment_account_label: string | null;
   account_name: string | null;
   is_bill?: boolean;
+  /** 截图记账：账单上的消费/支付时间（ISO8601 或常见中文日期时间） */
+  happened_at?: string | null;
+  consumption_time?: string | null;
+  paid_at?: string | null;
+  transaction_time?: string | null;
+  payment_time?: string | null;
 };
 
 export async function aiGetHealth(): Promise<AiHealthData> {

@@ -14,7 +14,12 @@ import {
   parseHabitDailyGoal,
   parseHabitIncrementCap,
 } from '@/lib/repositories/habits/habit-goal';
-import { isBreakHabitSucceeded, parseBreakHabitCycle, syncBreakHabitCompletions } from '@/lib/repositories/habits/habit-break-success';
+import {
+  isBreakHabitSucceeded,
+  parseBreakHabitCycle,
+  resolveBreakCycleStartYmd,
+  syncBreakHabitCompletions,
+} from '@/lib/repositories/habits/habit-break-success';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
@@ -326,9 +331,9 @@ export default function HabitDetailScreen() {
         endYmd: focusYmd,
         kind: habitKind,
         dailyGoal,
-        minYmd: breakCycle?.cycleStartedAt ?? null,
+        minYmd: habit ? resolveBreakCycleStartYmd(breakCycle ?? parseBreakHabitCycle(null), habit.created_at) : null,
       }),
-    [checkIns, focusYmd, habitKind, dailyGoal, breakCycle?.cycleStartedAt]
+    [breakCycle, checkIns, focusYmd, habit, habitKind, dailyGoal]
   );
 
   const trendCounts = React.useMemo(() => {

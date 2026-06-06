@@ -5,6 +5,7 @@
 
 import { ApiRequestError } from '@/lib/api-client';
 import * as aiApi from '@/lib/ai-api-client';
+import { extractBillHappenedAtFromAiJson } from '@/lib/finance-bill-happened-at';
 
 export type {
   AiFinanceDashboardInsight,
@@ -733,6 +734,8 @@ export type ParseFinanceOneLinerFromTextResult =
       category_label: string | null;
       payment_account_label: string | null;
       account_name: string | null;
+      /** 截图记账：账单上的消费时间（ISO8601），无法识别时为 null */
+      happened_at?: string | null;
       rawContent: string;
       attempts: number;
     }
@@ -741,10 +744,12 @@ export type ParseFinanceOneLinerFromTextResult =
 function mapFinanceOneLinerOk(
   data: aiApi.FinanceOneLinerJson,
   rawContent: string,
+  options?: { extractBillHappenedAt?: boolean },
 ): ParseFinanceOneLinerFromTextResult {
   if (!Number.isFinite(data.amount) || data.amount <= 0) {
     return { ok: false, error: '未能从话中解析出有效金额与标题', attempts: 1, details: data };
   }
+  const happened_at = options?.extractBillHappenedAt ? extractBillHappenedAtFromAiJson(data) : undefined;
   return {
     ok: true,
     transaction_type: data.transaction_type,
@@ -753,6 +758,7 @@ function mapFinanceOneLinerOk(
     category_label: data.category_label,
     payment_account_label: data.payment_account_label,
     account_name: data.account_name,
+    ...(happened_at !== undefined ? { happened_at } : {}),
     rawContent,
     attempts: 1,
   };
@@ -793,6 +799,7 @@ export type ParseFinanceOneLinerFromImageResult =
       category_label: string | null;
       payment_account_label: string | null;
       account_name: string | null;
+      happened_at: string | null;
       rawContent: string;
       attempts: number;
     }
@@ -821,9 +828,9 @@ export async function parseFinanceOneLinerFromImage(
         details: data,
       };
     }
-    const mapped = mapFinanceOneLinerOk(data, JSON.stringify(data));
+    const mapped = mapFinanceOneLinerOk(data, JSON.stringify(data), { extractBillHappenedAt: true });
     if (!mapped.ok) return mapped;
-    return mapped;
+    return { ...mapped, happened_at: mapped.happened_at ?? null };
   } catch (e) {
     const err = mapApiError(e);
     const notBill = /不是账单|支付凭证/.test(err.error);
