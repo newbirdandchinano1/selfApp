@@ -596,10 +596,10 @@ export default function FinanceScreen() {
     }, 400);
   }, []);
 
-  const loadFinanceTransactions = React.useCallback(async () => {
+  const loadFinanceTransactions = React.useCallback(async (forceRefresh = false) => {
     try {
       const [rows, categories] = await Promise.all([
-        getFinanceTransactions(),
+        getFinanceTransactions({ forceRefresh }),
         getFinanceFlowCategories(),
       ]);
       txnAiSkippedIdsRef.current.clear();
@@ -621,7 +621,7 @@ export default function FinanceScreen() {
   const reloadFinanceTransactions = React.useCallback(
     async (forceApi = false) => {
       await wrapLoad(async () => {
-        await loadFinanceTransactions();
+        await loadFinanceTransactions(forceApi);
       }, forceApi);
     },
     [loadFinanceTransactions, wrapLoad],

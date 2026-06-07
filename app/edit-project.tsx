@@ -217,10 +217,10 @@ function parseTaskExtraData(raw: string | null): Record<string, unknown> {
 
 function toTaskPriority(value?: string): TaskPriority {
   const text = (value ?? '').toLowerCase();
-  if (text.includes('紧急重要')) return 4;
-  if (text.includes('紧急不重要')) return 3;
-  if (text.includes('不紧急重要')) return 2;
   if (text.includes('不紧急不重要')) return 1;
+  if (text.includes('不紧急重要')) return 2;
+  if (text.includes('紧急不重要')) return 3;
+  if (text.includes('紧急重要')) return 4;
   return 0;
 }
 
@@ -301,11 +301,19 @@ function getPriorityColor(priorityText: string, isDark: boolean) {
     };
   }
 
-  if (value.includes('紧急重要')) {
+  if (value.includes('不紧急不重要')) {
     return {
-      tint: isDark ? '#f87171' : '#ba1a1a',
-      bg: isDark ? 'rgba(248,113,113,0.18)' : 'rgba(186,26,26,0.1)',
-      border: isDark ? 'rgba(248,113,113,0.4)' : 'rgba(186,26,26,0.25)',
+      tint: isDark ? '#94a3b8' : '#727785',
+      bg: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(114,119,133,0.12)',
+      border: isDark ? 'rgba(148,163,184,0.34)' : 'rgba(114,119,133,0.25)',
+    };
+  }
+
+  if (value.includes('不紧急重要')) {
+    return {
+      tint: isDark ? '#60a5fa' : '#0058be',
+      bg: isDark ? 'rgba(96,165,250,0.2)' : 'rgba(0,88,190,0.1)',
+      border: isDark ? 'rgba(96,165,250,0.4)' : 'rgba(0,88,190,0.24)',
     };
   }
 
@@ -317,11 +325,11 @@ function getPriorityColor(priorityText: string, isDark: boolean) {
     };
   }
 
-  if (value.includes('不紧急重要')) {
+  if (value.includes('紧急重要')) {
     return {
-      tint: isDark ? '#60a5fa' : '#0058be',
-      bg: isDark ? 'rgba(96,165,250,0.2)' : 'rgba(0,88,190,0.1)',
-      border: isDark ? 'rgba(96,165,250,0.4)' : 'rgba(0,88,190,0.24)',
+      tint: isDark ? '#f87171' : '#ba1a1a',
+      bg: isDark ? 'rgba(248,113,113,0.18)' : 'rgba(186,26,26,0.1)',
+      border: isDark ? 'rgba(248,113,113,0.4)' : 'rgba(186,26,26,0.25)',
     };
   }
 

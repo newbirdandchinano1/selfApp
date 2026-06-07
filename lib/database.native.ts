@@ -183,9 +183,15 @@ async function repairDatabaseReferentialIntegrity(db: SQLite.SQLiteDatabase): Pr
      WHERE flow_category_id IS NOT NULL
        AND flow_category_id NOT IN (SELECT id FROM finance_flow_categories)`,
   );
-  await db.runAsync(
-    `DELETE FROM finance_transactions WHERE account_id NOT IN (SELECT id FROM finance_accounts)`,
+  // 仅在本地已有账户行时才清理孤儿流水，避免账户表尚未同步时误删全部历史流水
+  const financeAccountCountRow = await db.getFirstAsync<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM finance_accounts`,
   );
+  if ((financeAccountCountRow?.c ?? 0) > 0) {
+    await db.runAsync(
+      `DELETE FROM finance_transactions WHERE account_id NOT IN (SELECT id FROM finance_accounts)`,
+    );
+  }
   await db.runAsync(
     `DELETE FROM savings_plan_deposits WHERE savings_plan_id NOT IN (SELECT id FROM savings_plans)`,
   );

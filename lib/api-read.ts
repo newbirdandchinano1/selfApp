@@ -94,6 +94,16 @@ export async function fetchApiTablePage<T extends Record<string, unknown>>(
   return { list, pagination };
 }
 
+/**
+ * 是否继续拉取下一页（配合 fetchApiTableAll 内按主键去重使用）。
+ * - 空页 / 重复页（无新主键）→ 停止
+ * - 不单独依赖 totalPages（接口缺字段或 totalPages 偏小会导致只拉一页）
+ * - 服务端每页条数可能小于请求的 limit（如 50），仍会继续翻页
+ */
+export function shouldFetchNextApiTablePage(listLength: number, newRowCount: number): boolean {
+  return listLength > 0 && newRowCount > 0;
+}
+
 /** 拉取全表（自动翻页，limit 最大 200） */
 export async function fetchApiTableAll<T extends Record<string, unknown>>(
   table: string,
@@ -108,17 +118,32 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
   const fetchPromise = (async (): Promise<T[]> => {
     const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 200);
     const maxPages = opts?.maxPages ?? 500;
+    const pkCol = getApiTablePrimaryKey(table);
+    const seenPk = new Set<string>();
     const all: T[] = [];
     let page = 1;
 
     while (page <= maxPages) {
-      const { list, pagination } = await fetchApiTablePage<T>(table, {
+      const { list } = await fetchApiTablePage<T>(table, {
         ...opts,
         page,
         limit,
       });
-      all.push(...list);
-      if (page >= pagination.totalPages || list.length === 0) break;
+      let newRowCount = 0;
+      for (const row of list) {
+        const pkRaw = (row as Record<string, unknown>)[pkCol];
+        const pk = pkRaw == null || pkRaw === '' ? '' : String(pkRaw).trim();
+        if (!pk) {
+          all.push(row);
+          newRowCount += 1;
+          continue;
+        }
+        if (seenPk.has(pk)) continue;
+        seenPk.add(pk);
+        all.push(row);
+        newRowCount += 1;
+      }
+      if (!shouldFetchNextApiTablePage(list.length, newRowCount)) break;
       page += 1;
     }
 

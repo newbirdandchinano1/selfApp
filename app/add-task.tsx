@@ -175,10 +175,10 @@ function extractDueDateFromDeadlineText(deadlineText: string) {
 
 function labelToTaskPriority(value?: string): TaskPriority {
   const text = (value ?? '').toLowerCase();
-  if (text.includes('紧急重要')) return 4;
-  if (text.includes('紧急不重要')) return 3;
-  if (text.includes('不紧急重要')) return 2;
   if (text.includes('不紧急不重要')) return 1;
+  if (text.includes('不紧急重要')) return 2;
+  if (text.includes('紧急不重要')) return 3;
+  if (text.includes('紧急重要')) return 4;
   return 0;
 }
 

@@ -10,8 +10,7 @@ import {
   deleteFinanceAccount,
   financeBalanceInputTextFromLedger,
   financeTargetLedgerFromUserBalanceInput,
-  getFinanceAccountsWithBalance,
-  getFinanceTransactionsByAccountId,
+  loadFinanceAccountDetail,
   updateFinanceAccount,
 } from '@/lib/repositories/finance/finance';
 import {
@@ -136,21 +135,21 @@ export default function AccountDetailScreen() {
     return `¥${Math.abs(amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }, []);
 
-  const loadAccountDetail = React.useCallback(async () => {
+  const loadAccountDetailSeqRef = React.useRef(0);
+
+  const loadAccountDetail = React.useCallback(async (forceRefresh = false) => {
+    const seq = ++loadAccountDetailSeqRef.current;
     try {
-      const allAccounts = await getFinanceAccountsWithBalance();
-      const target =
-        allAccounts.find((item) => item.id === routeAccountId) ??
-        (routeAccountName ? allAccounts.find((item) => item.name === routeAccountName) : null) ??
-        null;
+      const { account: target, transactions: txRows } = await loadFinanceAccountDetail({
+        accountId: routeAccountId,
+        accountName: routeAccountName,
+        forceRefresh,
+      });
+      if (seq !== loadAccountDetailSeqRef.current) return;
       setAccount(target);
-      if (!target) {
-        setTransactions([]);
-        return;
-      }
-      const txRows = await getFinanceTransactionsByAccountId(target.id);
-      setTransactions(txRows);
+      setTransactions(target ? txRows : []);
     } catch (error) {
+      if (seq !== loadAccountDetailSeqRef.current) return;
       console.warn('Failed to load account detail:', error);
       setAccount(null);
       setTransactions([]);
@@ -160,7 +159,7 @@ export default function AccountDetailScreen() {
   const reloadAccountDetail = React.useCallback(
     async (forceApi = false) => {
       await wrapLoad(async () => {
-        await loadAccountDetail();
+        await loadAccountDetail(forceApi);
       }, forceApi);
     },
     [loadAccountDetail, wrapLoad],
@@ -320,6 +319,17 @@ export default function AccountDetailScreen() {
     ]);
   }, [account, deleting, routeAccountId, routeAccountName, router]);
 
+  const [expandedMonthIds, setExpandedMonthIds] = React.useState<Set<string>>(() => new Set());
+
+  const toggleMonthExpanded = React.useCallback((monthId: string) => {
+    setExpandedMonthIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(monthId)) next.delete(monthId);
+      else next.add(monthId);
+      return next;
+    });
+  }, []);
+
   const monthSections = React.useMemo<MonthSection[]>(() => {
     if (transactions.length === 0) return [];
     const monthMap = new Map<string, FinanceTransactionRow[]>();
@@ -330,7 +340,10 @@ export default function AccountDetailScreen() {
       else monthMap.set(monthKey, [tx]);
     }
 
-    return Array.from(monthMap.entries()).map(([monthKey, rows], monthIndex) => {
+    const sortedMonthKeys = Array.from(monthMap.keys()).sort((a, b) => b.localeCompare(a));
+
+    return sortedMonthKeys.map((monthKey, monthIndex) => {
+      const rows = monthMap.get(monthKey)!;
       const [year, month] = monthKey.split('-');
       const incomeTotal = rows.reduce((sum, tx) => {
         const displayAmount = getDisplayAmount(tx);
@@ -377,11 +390,15 @@ export default function AccountDetailScreen() {
         monthLabel: `${year}年${Number(month)}月`,
         expense: formatMoney(expenseTotal),
         income: formatMoney(incomeTotal),
-        expanded: monthIndex === 0,
+        expanded: expandedMonthIds.size === 0 ? monthIndex === 0 : expandedMonthIds.has(monthKey),
         details,
       };
     });
-  }, [formatMoney, getDisplayAmount, transactions]);
+  }, [expandedMonthIds, formatMoney, getDisplayAmount, transactions]);
+
+  React.useEffect(() => {
+    setExpandedMonthIds(new Set());
+  }, [routeAccountId, routeAccountName]);
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['left', 'right']}>
@@ -502,13 +519,18 @@ export default function AccountDetailScreen() {
 
           {monthSections.map((section) => (
             <View key={section.id} style={styles.monthSection}>
-              <View
-                style={[
+              <Pressable
+                onPress={() => toggleMonthExpanded(section.id)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: section.expanded }}
+                accessibilityLabel={`${section.monthLabel}，${section.expanded ? '收起' : '展开'}明细`}
+                style={({ pressed }) => [
                   styles.monthHeaderRow,
                   {
                     borderBottomColor: colors.outline,
                     borderBottomWidth: section.expanded ? StyleSheet.hairlineWidth : 0,
                     paddingBottom: section.expanded ? Spacing['2xl'] : Spacing.lg,
+                    opacity: pressed ? 0.82 : 1,
                   },
                 ]}>
                 <View style={styles.monthHeaderTextCol}>
@@ -526,7 +548,7 @@ export default function AccountDetailScreen() {
                   size={22}
                   color={colors.textMuted}
                 />
-              </View>
+              </Pressable>
 
               {section.expanded && section.details && section.details.length > 0 ? (
                 <View style={styles.dayDetailBlock}>

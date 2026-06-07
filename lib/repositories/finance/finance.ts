@@ -23,6 +23,47 @@ async function getFinanceAccountById(id: string) {
   return readApiRecord<FinanceAccountRow>('finance_accounts', id, { offlineFallback: false });
 }
 
+const financeReadOpts = { offlineFallback: false as const };
+
+/** 读本地可见账户（排除 pending_delete） */
+async function readFinanceAccountsLocalVisible(): Promise<FinanceAccountRow[]> {
+  const db = await getDatabase();
+  if (!db) return [];
+  const rows = await db.getAllAsync<FinanceAccountRow>(
+    `SELECT * FROM finance_accounts WHERE sync_status != 'pending_delete'`,
+  );
+  return rows ?? [];
+}
+
+/** 读本地可见流水（排除 pending_delete） */
+async function readFinanceTransactionsLocalVisible(): Promise<FinanceTransactionRow[]> {
+  const db = await getDatabase();
+  if (!db) return [];
+  const rows = await db.getAllAsync<FinanceTransactionRow>(
+    `SELECT * FROM finance_transactions WHERE sync_status != 'pending_delete'`,
+  );
+  return rows ?? [];
+}
+
+/** 先同步账户再同步流水，避免账户未就绪时流水被启动修复误删或过滤 */
+async function ensureFinanceTablesSyncedFromApi(opts?: {
+  forceRefresh?: boolean;
+}): Promise<void> {
+  const readOpts = opts?.forceRefresh
+    ? { ...financeReadOpts, forceRefresh: true as const }
+    : financeReadOpts;
+  await readApiTable<FinanceAccountRow>('finance_accounts', readOpts);
+  await readApiTable<FinanceTransactionRow>('finance_transactions', readOpts);
+}
+
+function sortFinanceTransactionsDesc(rows: FinanceTransactionRow[]): FinanceTransactionRow[] {
+  return [...rows].sort((a, b) => {
+    const h = compareDatetimeDesc(a.happened_at, b.happened_at);
+    if (h !== 0) return h;
+    return compareDatetimeDesc(a.updated_at, b.updated_at);
+  });
+}
+
 function isFinanceTransactionVisible(t: FinanceTransactionRow): boolean {
   const syncStatus = (t as FinanceTransactionRow & { sync_status?: string }).sync_status;
   return syncStatus !== 'pending_delete';
@@ -240,10 +281,7 @@ export async function validateFinanceTransactionBeforeSave(input: {
     Math.abs(currentBalance) < FINANCE_BALANCE_EPS &&
     Math.abs(uiBal ?? 0) > FINANCE_BALANCE_EPS
   ) {
-    await Promise.all([
-      readApiTable<FinanceAccountRow>('finance_accounts', { offlineFallback: false }),
-      readApiTable<FinanceTransactionRow>('finance_transactions', { offlineFallback: false }),
-    ]);
+    await ensureFinanceTablesSyncedFromApi();
     currentBalance = await getFinanceAccountLedgerBalance(input.accountId);
     txnCount = await countFinanceAccountLedgerTransactions(input.accountId);
   }
@@ -267,9 +305,8 @@ export async function validateFinanceTransactionBeforeSave(input: {
 }
 
 async function countFinanceAccountLedgerTransactions(accountId: string): Promise<number> {
-  const transactions = await readApiTable<FinanceTransactionRow>('finance_transactions', {
-    offlineFallback: false,
-  });
+  await ensureFinanceTablesSyncedFromApi();
+  const transactions = await readFinanceTransactionsLocalVisible();
   return countLedgerTransactionsFromList(accountId, transactions);
 }
 
@@ -283,9 +320,8 @@ export async function resolveFinanceAccountLedgerBalance(accountId: string): Pro
 
 /** 与 `getFinanceAccountsWithBalance` 一致：基于 REST 流水汇总，排除待删除行。 */
 export async function getFinanceAccountLedgerBalance(accountId: string): Promise<number> {
-  const transactions = await readApiTable<FinanceTransactionRow>('finance_transactions', {
-    offlineFallback: false,
-  });
+  await ensureFinanceTablesSyncedFromApi();
+  const transactions = await readFinanceTransactionsLocalVisible();
   return computeLedgerBalanceFromTransactions(accountId, transactions);
 }
 
@@ -334,7 +370,8 @@ export async function createFinanceAccount(input: CreateFinanceAccountInput) {
 }
 
 async function loadFinanceAccounts(): Promise<FinanceAccountRow[]> {
-  const rows = await readApiTable<FinanceAccountRow>('finance_accounts', { offlineFallback: true });
+  await readApiTable<FinanceAccountRow>('finance_accounts', { offlineFallback: true });
+  const rows = await readFinanceAccountsLocalVisible();
   return [...rows].sort((a, b) => {
     const c = compareDatetimeDesc(a.created_at, b.created_at) * -1;
     if (c !== 0) return c;
@@ -342,20 +379,16 @@ async function loadFinanceAccounts(): Promise<FinanceAccountRow[]> {
   });
 }
 
-async function loadFinanceTransactionsForActiveAccounts(): Promise<FinanceTransactionRow[]> {
-  const readOpts = { offlineFallback: false as const };
+async function loadFinanceTransactionsForActiveAccounts(opts?: {
+  forceRefresh?: boolean;
+}): Promise<FinanceTransactionRow[]> {
+  await ensureFinanceTablesSyncedFromApi(opts);
   const [accounts, transactions] = await Promise.all([
-    readApiTable<FinanceAccountRow>('finance_accounts', readOpts),
-    readApiTable<FinanceTransactionRow>('finance_transactions', readOpts),
+    readFinanceAccountsLocalVisible(),
+    readFinanceTransactionsLocalVisible(),
   ]);
   const accountIds = new Set(accounts.map(a => a.id));
-  return transactions
-    .filter(t => accountIds.has(t.account_id))
-    .sort((a, b) => {
-      const h = compareDatetimeDesc(a.happened_at, b.happened_at);
-      if (h !== 0) return h;
-      return compareDatetimeDesc(a.updated_at, b.updated_at);
-    });
+  return sortFinanceTransactionsDesc(transactions.filter(t => accountIds.has(t.account_id)));
 }
 
 export async function getFinanceAccounts() {
@@ -363,10 +396,10 @@ export async function getFinanceAccounts() {
 }
 
 export async function getFinanceAccountsWithBalance(_opts?: { localOnly?: boolean }) {
-  const readOpts = { offlineFallback: false as const };
+  await ensureFinanceTablesSyncedFromApi();
   const [accounts, transactions] = await Promise.all([
-    loadFinanceAccounts(),
-    readApiTable<FinanceTransactionRow>('finance_transactions', readOpts),
+    readFinanceAccountsLocalVisible(),
+    readFinanceTransactionsLocalVisible(),
   ]);
 
   const result: FinanceAccountBalanceRow[] = [];
@@ -677,13 +710,49 @@ export async function getFinanceTransactionById(id: string) {
   return readApiRecord<FinanceTransactionRow>('finance_transactions', id, { offlineFallback: true });
 }
 
-export async function getFinanceTransactions(_opts?: { localOnly?: boolean }) {
-  return loadFinanceTransactionsForActiveAccounts();
+export async function getFinanceTransactions(opts?: { forceRefresh?: boolean }) {
+  return loadFinanceTransactionsForActiveAccounts(opts);
 }
 
 export async function getFinanceTransactionsByAccountId(accountId: string) {
   const rows = await loadFinanceTransactionsForActiveAccounts();
   return rows.filter(t => t.account_id === accountId);
+}
+
+/** 账户详情：先账户后流水同步，再从 SQLite 按 account_id 读取，避免 REST 分页/竞态丢历史 */
+export async function loadFinanceAccountDetail(input: {
+  accountId?: string;
+  accountName?: string;
+  forceRefresh?: boolean;
+}): Promise<{ account: FinanceAccountBalanceRow | null; transactions: FinanceTransactionRow[] }> {
+  await ensureFinanceTablesSyncedFromApi({ forceRefresh: input.forceRefresh });
+
+  const accounts = await readFinanceAccountsLocalVisible();
+  const allTransactions = await readFinanceTransactionsLocalVisible();
+
+  const target =
+    (input.accountId ? accounts.find((item) => item.id === input.accountId) : null) ??
+    (input.accountName?.trim()
+      ? accounts.find((item) => item.name === input.accountName.trim())
+      : null) ??
+    null;
+
+  if (!target) {
+    return { account: null, transactions: [] };
+  }
+
+  const balance = computeLedgerBalanceFromTransactions(target.id, allTransactions);
+  const account: FinanceAccountBalanceRow = {
+    ...target,
+    sign_rule: normalizeFinanceSignRule(target.sign_rule, target.account_type),
+    balance,
+  };
+
+  const transactions = sortFinanceTransactionsDesc(
+    allTransactions.filter((t) => t.account_id === target.id),
+  );
+
+  return { account, transactions };
 }
 
 export async function getFinanceTransactionsByYmd(ymd: string) {
