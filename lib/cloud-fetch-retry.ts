@@ -2,6 +2,8 @@
  * Cloud API 调用的网络层：超时、指数退避重试、AbortSignal（进入后台中止）。
  */
 
+import { logHttpFetchDebug } from '@/lib/api-debug';
+
 const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_BASE_DELAY_MS = 500;
 const DEFAULT_MAX_DELAY_MS = 12_000;
@@ -102,6 +104,8 @@ export async function fetchWithTimeoutAndRetry(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     throwIfAborted(outerSignal);
+    const startedAt = Date.now();
+    const method = (init.method ?? 'GET').toUpperCase();
 
     const combined = new AbortController();
     const onOuterAbort = () => combined.abort();
@@ -133,6 +137,15 @@ export async function fetchWithTimeoutAndRetry(
         continue;
       }
 
+      void logHttpFetchDebug({
+        url,
+        method,
+        status: res.status,
+        durationMs: Date.now() - startedAt,
+        requestBody: init.body ?? null,
+        response: res,
+      });
+
       return res;
     } catch (e) {
       clearTimeout(timeoutId);
@@ -142,7 +155,17 @@ export async function fetchWithTimeoutAndRetry(
         if (outerSignal?.aborted) throw new DOMException('Aborted', 'AbortError');
         /* 单次超时：视为可重试 */
         lastError = e;
-        if (attempt >= maxAttempts) throw e;
+        if (attempt >= maxAttempts) {
+          void logHttpFetchDebug({
+            url,
+            method,
+            status: 0,
+            durationMs: Date.now() - startedAt,
+            requestBody: init.body ?? null,
+            error: e instanceof Error ? e.message : String(e),
+          });
+          throw e;
+        }
         const wait = clampDelay(baseDelayMs, attempt, maxDelayMs);
         await sleep(wait, outerSignal);
         continue;
@@ -154,6 +177,15 @@ export async function fetchWithTimeoutAndRetry(
         await sleep(wait, outerSignal);
         continue;
       }
+
+      void logHttpFetchDebug({
+        url,
+        method,
+        status: 0,
+        durationMs: Date.now() - startedAt,
+        requestBody: init.body ?? null,
+        error: e instanceof Error ? e.message : String(e),
+      });
 
       throw e;
     }

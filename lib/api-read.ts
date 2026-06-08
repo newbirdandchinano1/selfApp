@@ -37,11 +37,19 @@ let allTablesMetaCache: ApiTableMeta[] | null = null;
 /** 同表并发全量拉取去重，避免 reconcileSnapshot 竞态 */
 const inflightTableFetchAll = new Map<string, Promise<Record<string, unknown>[]>>();
 
-/** 本地写入后丢弃进行中的全量拉取缓存，避免 UI 读到写入前的 REST 快照 */
+/**
+ * 本地写入后递增代数；进行中的全量拉取若代数已变则跳过 reconcile 并自动重拉。
+ * 不删除 inflight，避免正式包内并行两次全量拉取 + reconcile 互相覆盖（大表常见）。
+ */
+const tableFetchGeneration = new Map<string, number>();
+
+const MAX_FETCH_ATTEMPTS_AFTER_INVALIDATE = 4;
+
+/** 本地写入后标记进行中的全量拉取已过期，避免 UI 读到写入前的 REST 快照 */
 export function invalidateInflightApiTableFetch(table: string): void {
   const t = table.trim();
   if (!t) return;
-  inflightTableFetchAll.delete(t);
+  tableFetchGeneration.set(t, (tableFetchGeneration.get(t) ?? 0) + 1);
 }
 
 function assertApiReadable(table: string): void {
@@ -94,14 +102,81 @@ export async function fetchApiTablePage<T extends Record<string, unknown>>(
   return { list, pagination };
 }
 
+export type ApiTablePageFetchProgress = {
+  knownTotal?: number;
+  fetchedUnique?: number;
+};
+
 /**
  * 是否继续拉取下一页（配合 fetchApiTableAll 内按主键去重使用）。
- * - 空页 / 重复页（无新主键）→ 停止
+ * - 本页有新行 → 继续
+ * - 接口返回 total 且尚未拉满 → 继续（空页/重复页也再试，避免正式包只拿到前 50 条）
  * - 不单独依赖 totalPages（接口缺字段或 totalPages 偏小会导致只拉一页）
- * - 服务端每页条数可能小于请求的 limit（如 50），仍会继续翻页
  */
-export function shouldFetchNextApiTablePage(listLength: number, newRowCount: number): boolean {
-  return listLength > 0 && newRowCount > 0;
+export function shouldFetchNextApiTablePage(
+  listLength: number,
+  newRowCount: number,
+  progress?: ApiTablePageFetchProgress,
+): boolean {
+  if (listLength > 0 && newRowCount > 0) return true;
+  const total = progress?.knownTotal ?? 0;
+  const fetched = progress?.fetchedUnique ?? 0;
+  if (total > 0 && fetched < total) return true;
+  return false;
+}
+
+async function pullAllApiTablePages<T extends Record<string, unknown>>(
+  table: string,
+  opts?: Omit<ApiListOptions, 'page'> & { maxPages?: number },
+): Promise<T[]> {
+  const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 200);
+  const maxPages = opts?.maxPages ?? 500;
+  const pkCol = getApiTablePrimaryKey(table);
+  const seenPk = new Set<string>();
+  const all: T[] = [];
+  let knownTotal = 0;
+  let page = 1;
+
+  while (page <= maxPages) {
+    const { list, pagination } = await fetchApiTablePage<T>(table, {
+      ...opts,
+      page,
+      limit,
+    });
+    if (pagination.total > knownTotal) knownTotal = pagination.total;
+
+    let newRowCount = 0;
+    for (const row of list) {
+      const pkRaw = (row as Record<string, unknown>)[pkCol];
+      const pk = pkRaw == null || pkRaw === '' ? '' : String(pkRaw).trim();
+      if (!pk) {
+        all.push(row);
+        newRowCount += 1;
+        continue;
+      }
+      if (seenPk.has(pk)) continue;
+      seenPk.add(pk);
+      all.push(row);
+      newRowCount += 1;
+    }
+
+    const progress: ApiTablePageFetchProgress = {
+      knownTotal: knownTotal > 0 ? knownTotal : undefined,
+      fetchedUnique: seenPk.size,
+    };
+
+    if (knownTotal > 0 && seenPk.size >= knownTotal) break;
+    if (!shouldFetchNextApiTablePage(list.length, newRowCount, progress)) break;
+    page += 1;
+  }
+
+  if (knownTotal > 0 && seenPk.size < knownTotal) {
+    console.warn(
+      `[api-read] 表「${table}」分页可能不完整：已拉 ${seenPk.size}/${knownTotal} 条（page limit=${limit}）`,
+    );
+  }
+
+  return all;
 }
 
 /** 拉取全表（自动翻页，limit 最大 200） */
@@ -110,54 +185,34 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
   opts?: Omit<ApiListOptions, 'page'> & { maxPages?: number },
 ): Promise<T[]> {
   assertApiReadable(table);
+
   const existingInflight = inflightTableFetchAll.get(table);
-  if (!opts?.forceRefresh) {
-    if (existingInflight) return existingInflight as Promise<T[]>;
-  } else if (existingInflight) {
-    /** forceRefresh 也须等当前全量拉取结束，避免 reconcileSnapshot 交叉删行 */
-    try {
-      await existingInflight;
-    } catch {
-      /* 上一轮失败不阻塞本次刷新 */
-    }
+  if (opts?.forceRefresh && existingInflight) {
+    invalidateInflightApiTableFetch(table);
+    return existingInflight as Promise<T[]>;
+  }
+  if (existingInflight) {
+    return existingInflight as Promise<T[]>;
   }
 
   const fetchPromise = (async (): Promise<T[]> => {
-    const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 200);
-    const maxPages = opts?.maxPages ?? 500;
-    const pkCol = getApiTablePrimaryKey(table);
-    const seenPk = new Set<string>();
-    const all: T[] = [];
-    let page = 1;
-
-    while (page <= maxPages) {
-      const { list } = await fetchApiTablePage<T>(table, {
-        ...opts,
-        page,
-        limit,
-      });
-      let newRowCount = 0;
-      for (const row of list) {
-        const pkRaw = (row as Record<string, unknown>)[pkCol];
-        const pk = pkRaw == null || pkRaw === '' ? '' : String(pkRaw).trim();
-        if (!pk) {
-          all.push(row);
-          newRowCount += 1;
-          continue;
-        }
-        if (seenPk.has(pk)) continue;
-        seenPk.add(pk);
-        all.push(row);
-        newRowCount += 1;
+    for (let attempt = 0; attempt < MAX_FETCH_ATTEMPTS_AFTER_INVALIDATE; attempt += 1) {
+      const startGen = tableFetchGeneration.get(table) ?? 0;
+      const all = await pullAllApiTablePages<T>(table, opts);
+      const endGen = tableFetchGeneration.get(table) ?? 0;
+      if (startGen !== endGen) {
+        continue;
       }
-      if (!shouldFetchNextApiTablePage(list.length, newRowCount)) break;
-      page += 1;
+      await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
+        reconcileSnapshot: true,
+      });
+      return all;
     }
 
+    const all = await pullAllApiTablePages<T>(table, opts);
     await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
       reconcileSnapshot: true,
     });
-
     return all;
   })();
 

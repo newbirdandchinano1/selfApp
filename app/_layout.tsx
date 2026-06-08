@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
 import { ApiContentTransition } from '@/components/api-content-transition';
+import { ApiDebugOverlay } from '@/components/api-debug-overlay';
 import { ApiLoadingIndicator } from '@/components/api-loading-indicator';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
@@ -20,6 +21,7 @@ import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
 import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
+import { loadApiDebugEnabled } from '@/lib/api-debug';
 import { initDatabase, repairLocalDatabase } from '@/lib/database';
 import { loadCloudBackupTokenCache } from '@/lib/cloud-backup-config';
 import { hydrateCloudDirtyFromStorage } from '@/lib/cloud-sql-dirty-track';
@@ -60,6 +62,7 @@ function RootLayoutInner() {
           await loadPersistedIntakeAssistantSelections();
           await loadThemePreference();
           await loadAiLlmProviderPreference();
+          await loadApiDebugEnabled();
           await loadCloudBackupTokenCache();
           if (Platform.OS !== 'web') {
             startCloudPeriodicAlignScheduler();
@@ -78,6 +81,7 @@ function RootLayoutInner() {
         await hydrateCloudDirtyFromStorage();
         await hydrateApiDirtyFromStorage();
         await markAllPendingTablesDirty();
+        await loadApiDebugEnabled();
         if (mounted) {
           setDbError(null);
           setIsDbReady(true);
@@ -284,6 +288,7 @@ function RootLayoutInner() {
             <ApiLoadingIndicator />
           </View>
         )}
+        <ApiDebugOverlay />
         <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
       </ThemeProvider>
   );

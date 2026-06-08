@@ -1,4 +1,5 @@
 import { AppInput } from '@/components/ui/app-input';
+import { ApiDebugLogViewer } from '@/components/api-debug-log-viewer';
 import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
@@ -14,6 +15,7 @@ import {
     setCloudUserToken,
 } from '@/lib/cloud-backup-config';
 import { getLastApiIncrementalSyncAtIso } from '@/lib/api-backup-meta';
+import { loadApiDebugEnabled, setApiDebugEnabled } from '@/lib/api-debug';
 import {
     DEFAULT_API_BASE_URL,
     DEFAULT_API_USERNAME,
@@ -148,6 +150,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [apiPasswordDraft, setApiPasswordDraft] = useState('');
   const [apiCredentialsConfigured, setApiCredentialsConfigured] = useState(false);
   const [apiCredentialsSaving, setApiCredentialsSaving] = useState(false);
+  const [apiDebugEnabled, setApiDebugEnabledState] = useState(false);
   const cloudOpAbortRef = useRef<AbortController | null>(null);
   /** 同步标记：备份/同步进行中（不依赖 setState，避免连点竞态） */
   const cloudOpInFlightRef = useRef(false);
@@ -206,7 +209,13 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     void loadAiLlmProviderPreference();
     void refreshCloudTokenFromStorage();
     void refreshApiCredentialsFromStorage();
+    void loadApiDebugEnabled().then(setApiDebugEnabledState);
   }, [loadLastApiSyncMeta, loadLastFullCloudBackupMeta, refreshApiCredentialsFromStorage, refreshCloudTokenFromStorage]);
+
+  const onApiDebugToggle = useCallback(async (next: boolean) => {
+    setApiDebugEnabledState(next);
+    await setApiDebugEnabled(next);
+  }, []);
 
   const saveCloudToken = useCallback(async () => {
     setCloudTokenSaving(true);
@@ -926,6 +935,33 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                 )}
               </Pressable>
             </View>
+            <View style={[styles.rowBetween, { marginTop: 4 }]}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={[styles.rowTitle, { color: text }]}>接口调试模式</Text>
+                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                  开启后下方立即显示请求日志，并自动探测 /health；右上角也会出现「API」按钮。
+                </Text>
+              </View>
+              <Switch
+                value={apiDebugEnabled}
+                onValueChange={v => {
+                  void onApiDebugToggle(v);
+                }}
+                trackColor={{ false: outlineVariant, true: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.35)' }}
+                thumbColor={apiDebugEnabled ? primary : isDark ? '#94a3b8' : '#f8fafc'}
+              />
+            </View>
+            {apiDebugEnabled ? (
+              <ApiDebugLogViewer
+                textColor={text}
+                mutedColor={outline}
+                borderColor={cardBorder}
+                cardBg={isDark ? 'rgba(15,23,42,0.55)' : '#f8fafc'}
+                primary={primary}
+                maxHeight={320}
+                emptyHint="正在等待请求… 若一直为空，请检查网络或服务器地址。"
+              />
+            ) : null}
           </View>
 
         </View>
