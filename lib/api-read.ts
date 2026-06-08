@@ -110,9 +110,16 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
   opts?: Omit<ApiListOptions, 'page'> & { maxPages?: number },
 ): Promise<T[]> {
   assertApiReadable(table);
+  const existingInflight = inflightTableFetchAll.get(table);
   if (!opts?.forceRefresh) {
-    const inflight = inflightTableFetchAll.get(table);
-    if (inflight) return inflight as Promise<T[]>;
+    if (existingInflight) return existingInflight as Promise<T[]>;
+  } else if (existingInflight) {
+    /** forceRefresh 也须等当前全量拉取结束，避免 reconcileSnapshot 交叉删行 */
+    try {
+      await existingInflight;
+    } catch {
+      /* 上一轮失败不阻塞本次刷新 */
+    }
   }
 
   const fetchPromise = (async (): Promise<T[]> => {

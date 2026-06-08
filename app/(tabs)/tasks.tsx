@@ -39,6 +39,7 @@ import {
   countIncompleteTasksByProjectId,
   createTask,
   deleteTask,
+  getProjectTaskTreeMap,
   getTasks,
   getTasksByProjectId,
   type TaskTreeNode,
@@ -1653,6 +1654,8 @@ export default function TasksScreen() {
   const frogDoneBounceMap = React.useRef<Record<string, Animated.Value>>({});
   const projectSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
   const standaloneTodoSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
+  /** 丢弃过期的整页 reload，避免并发 focus 刷新互相覆盖项目任务 */
+  const reloadGenerationRef = React.useRef(0);
   const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
   const [activatingShelvedTodoId, setActivatingShelvedTodoId] = React.useState<string | null>(null);
 
@@ -1849,27 +1852,32 @@ export default function TasksScreen() {
     }
   }, []);
 
-  const loadProjectTasks = React.useCallback(async (rows: ProjectRow[]): Promise<Record<string, TaskTreeNode[]>> => {
-    if (rows.length === 0) {
-      setProjectTaskTreeMap({});
-      return {};
-    }
-    try {
-      const entries = await Promise.all(
-        rows.map(async (project) => {
-          const tree = await getTasksByProjectId(project.id);
-          return [project.id, tree] as const;
-        })
-      );
-      const map = Object.fromEntries(entries);
-      setProjectTaskTreeMap(map);
-      return map;
-    } catch (err) {
-      console.warn('加载项目任务失败', err);
-      setProjectTaskTreeMap({});
-      return {};
-    }
-  }, []);
+  const loadProjectTasks = React.useCallback(
+    async (
+      rows: ProjectRow[],
+      opts?: { forceRefresh?: boolean; generation?: number },
+    ): Promise<Record<string, TaskTreeNode[]>> => {
+      const shouldApply = () =>
+        opts?.generation == null || opts.generation === reloadGenerationRef.current;
+
+      if (rows.length === 0) {
+        if (shouldApply()) setProjectTaskTreeMap({});
+        return {};
+      }
+      try {
+        const map = await getProjectTaskTreeMap(
+          rows.map((p) => p.id),
+          opts?.forceRefresh ? { forceRefresh: true } : undefined,
+        );
+        if (shouldApply()) setProjectTaskTreeMap(map);
+        return map;
+      } catch (err) {
+        console.warn('加载项目任务失败', err);
+        throw err;
+      }
+    },
+    [],
+  );
 
   React.useEffect(() => {
     Animated.sequence([
@@ -2022,13 +2030,25 @@ export default function TasksScreen() {
   }, [categoryModalVisible, loadProjectCategories]);
 
   const reload = React.useCallback(async (forceApi = false) => {
+    const generation = ++reloadGenerationRef.current;
+    const isStale = () => generation !== reloadGenerationRef.current;
+    const taskLoadOpts = forceApi ? { forceRefresh: true as const } : undefined;
+    const projectTaskOpts = (extra?: { forceRefresh?: boolean }) => ({
+      ...extra,
+      generation,
+    });
+
     const logicalToday = logicalTodayYmd;
     const [storedExpanded, storedHideCompleted, storedMainListView] = await Promise.all([
       loadExpandedProjectState(),
       loadHideCompletedProjectTasks(),
       loadMainListView(),
     ]);
+    if (isStale()) return;
+
     const rows = await loadProjects();
+    if (isStale()) return;
+
     if (!storedExpanded) {
       const allCollapsed = Object.fromEntries(rows.map((p) => [p.id, false] as const));
       setExpandedProjectIds(allCollapsed);
@@ -2047,37 +2067,54 @@ export default function TasksScreen() {
     if (storedMainListView != null) {
       setMainListView(storedMainListView);
     }
-    let treeMap = await loadProjectTasks(rows);
+    let treeMap = await loadProjectTasks(rows, projectTaskOpts(taskLoadOpts));
+    if (isStale()) return;
+
     const archived = await autoArchiveProjectsPastDueIfNeeded(rows, treeMap, logicalToday);
     let workingRows = rows;
     if (archived > 0) {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       workingRows = await loadProjects();
-      treeMap = await loadProjectTasks(workingRows);
+      if (isStale()) return;
+      treeMap = await loadProjectTasks(workingRows, projectTaskOpts(taskLoadOpts));
+      if (isStale()) return;
     }
     const catRows = await loadProjectCategories();
+    if (isStale()) return;
+
     const reactivated = await reactivateInboxCompletedProjectsWithOpenTasks(workingRows, treeMap, catRows);
     if (reactivated > 0) {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       const refreshed = await loadProjects();
-      await loadProjectTasks(refreshed);
+      if (isStale()) return;
+      await loadProjectTasks(refreshed, projectTaskOpts(taskLoadOpts));
+      if (isStale()) return;
     }
     const purgedInbox = await deleteInboxProjectsPastRetentionDays(INBOX_PROJECT_RETENTION_DAYS);
     if (purgedInbox > 0) {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       const afterPurge = await loadProjects();
-      await loadProjectTasks(afterPurge);
+      if (isStale()) return;
+      await loadProjectTasks(afterPurge, projectTaskOpts(taskLoadOpts));
+      if (isStale()) return;
     }
-    const taskRolled = await loadTasks();
+    const taskRolled = await loadTasks(taskLoadOpts);
+    if (isStale()) return;
+
     if (taskRolled > 0) {
-      await loadProjectTasks(workingRows);
+      await loadProjectTasks(workingRows, projectTaskOpts(taskLoadOpts));
+      if (isStale()) return;
     }
     await loadHabits();
+    if (isStale()) return;
+
     try {
       const wishRows = await listWishItems();
-      setWishNameById(new Map(wishRows.map((r) => [r.id, r.name])));
+      if (!isStale()) {
+        setWishNameById(new Map(wishRows.map((r) => [r.id, r.name])));
+      }
     } catch {
-      setWishNameById(new Map());
+      if (!isStale()) setWishNameById(new Map());
     }
   }, [
     loadExpandedProjectState,

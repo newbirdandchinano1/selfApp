@@ -322,11 +322,39 @@ export async function getTaskDueDayAggregatesForRange(startYmd: string, endYmd: 
     .map(([day, v]) => ({ day, total: v.total, done: v.done }));
 }
 
-export async function getTasksByProjectId(projectId: string) {
-  const rows = sortTasksForProjectList(
-    (await loadAllTasks()).filter(t => t.project_id === projectId),
-  );
-  return buildTaskTree(rows);
+function buildProjectTaskTree(rows: TaskRow[]): TaskTreeNode[] {
+  return buildTaskTree(sortTasksForProjectList(rows));
+}
+
+export async function getTasksByProjectId(projectId: string, opts?: { forceRefresh?: boolean }) {
+  const all = await loadAllTasks(opts);
+  return buildProjectTaskTree(all.filter(t => t.project_id === projectId));
+}
+
+/** 一次拉取全表任务，再按项目 id 批量构建任务树（避免 N 次并发全量读导致 reconcile 竞态） */
+export async function getProjectTaskTreeMap(
+  projectIds: string[],
+  opts?: { forceRefresh?: boolean },
+): Promise<Record<string, TaskTreeNode[]>> {
+  const uniqueIds = [...new Set(projectIds.map(id => id.trim()).filter(Boolean))];
+  if (uniqueIds.length === 0) return {};
+
+  const all = await loadAllTasks(opts);
+  const idSet = new Set(uniqueIds);
+  const byProject = new Map<string, TaskRow[]>();
+  for (const t of all) {
+    const pid = t.project_id;
+    if (!pid || !idSet.has(pid)) continue;
+    const arr = byProject.get(pid) ?? [];
+    arr.push(t);
+    byProject.set(pid, arr);
+  }
+
+  const map: Record<string, TaskTreeNode[]> = {};
+  for (const id of uniqueIds) {
+    map[id] = buildProjectTaskTree(byProject.get(id) ?? []);
+  }
+  return map;
 }
 
 export async function getChildTasksByParentTaskId(parentTaskId: string): Promise<TaskTreeNode[]> {
