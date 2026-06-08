@@ -1,5 +1,5 @@
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
-import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import {
   compareDatetimeDesc,
   matchesOverviewScope,
@@ -326,9 +326,42 @@ function buildProjectTaskTree(rows: TaskRow[]): TaskTreeNode[] {
   return buildTaskTree(sortTasksForProjectList(rows));
 }
 
+function normalizeTaskProjectId(projectId: string | null | undefined): string {
+  return typeof projectId === 'string' ? projectId.trim() : '';
+}
+
+/** 含 project_id 直接归属 + 父链挂接的子任务（接口子行可能缺 project_id） */
+function collectTasksForProject(all: TaskRow[], projectId: string): TaskRow[] {
+  const pid = projectId.trim();
+  if (!pid) return [];
+
+  const included = new Set<string>();
+  for (const t of all) {
+    if (normalizeTaskProjectId(t.project_id) === pid) {
+      included.add(String(t.id));
+    }
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const t of all) {
+      const id = String(t.id);
+      if (included.has(id)) continue;
+      const parentId = t.parent_task_id ? String(t.parent_task_id).trim() : '';
+      if (parentId && included.has(parentId)) {
+        included.add(id);
+        changed = true;
+      }
+    }
+  }
+
+  return all.filter(t => included.has(String(t.id)));
+}
+
 export async function getTasksByProjectId(projectId: string, opts?: { forceRefresh?: boolean }) {
   const all = await loadAllTasks(opts);
-  return buildProjectTaskTree(all.filter(t => t.project_id === projectId));
+  return buildProjectTaskTree(collectTasksForProject(all, projectId));
 }
 
 /** 一次拉取全表任务，再按项目 id 批量构建任务树（避免 N 次并发全量读导致 reconcile 竞态） */
@@ -340,19 +373,9 @@ export async function getProjectTaskTreeMap(
   if (uniqueIds.length === 0) return {};
 
   const all = await loadAllTasks(opts);
-  const idSet = new Set(uniqueIds);
-  const byProject = new Map<string, TaskRow[]>();
-  for (const t of all) {
-    const pid = t.project_id;
-    if (!pid || !idSet.has(pid)) continue;
-    const arr = byProject.get(pid) ?? [];
-    arr.push(t);
-    byProject.set(pid, arr);
-  }
-
   const map: Record<string, TaskTreeNode[]> = {};
   for (const id of uniqueIds) {
-    map[id] = buildProjectTaskTree(byProject.get(id) ?? []);
+    map[id] = buildProjectTaskTree(collectTasksForProject(all, id));
   }
   return map;
 }
@@ -442,6 +465,7 @@ export async function deleteTask(id: string) {
       WHERE id IN (SELECT id FROM subtree)`,
     [id],
   );
+  invalidateInflightApiTableFetch('tasks');
 }
 
 export async function createTaskCategory(input: CreateTaskCategoryInput) {

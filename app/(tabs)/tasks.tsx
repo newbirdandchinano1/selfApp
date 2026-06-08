@@ -1869,7 +1869,15 @@ export default function TasksScreen() {
           rows.map((p) => p.id),
           opts?.forceRefresh ? { forceRefresh: true } : undefined,
         );
-        if (shouldApply()) setProjectTaskTreeMap(map);
+        if (shouldApply()) {
+          setProjectTaskTreeMap(map);
+        } else {
+          setProjectTaskTreeMap((prev) => {
+            const prevCount = Object.values(prev).reduce((n, nodes) => n + nodes.length, 0);
+            const nextCount = Object.values(map).reduce((n, nodes) => n + nodes.length, 0);
+            return prevCount === 0 && nextCount > 0 ? map : prev;
+          });
+        }
         return map;
       } catch (err) {
         console.warn('加载项目任务失败', err);

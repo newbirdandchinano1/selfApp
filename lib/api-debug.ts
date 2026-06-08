@@ -3,7 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const API_DEBUG_ENABLED_KEY = '@selfapp/api_debug_enabled_v1';
 
 const MAX_LOG_ENTRIES = 100;
-const MAX_TEXT_CHARS = 12_000;
+/** 单条请求/响应最大保留字符（调试用途，尽量完整；超大响应才截断） */
+const MAX_STORE_CHARS = 512_000;
 
 const SENSITIVE_KEY = /password|passwd|token|authorization|secret|credential/i;
 
@@ -82,9 +83,9 @@ export function clearApiDebugLogs(): void {
   notifyListeners();
 }
 
-function truncateText(text: string): string {
-  if (text.length <= MAX_TEXT_CHARS) return text;
-  return `${text.slice(0, MAX_TEXT_CHARS)}\n… [已截断 ${text.length - MAX_TEXT_CHARS} 字符]`;
+function capStoredText(text: string): string {
+  if (text.length <= MAX_STORE_CHARS) return text;
+  return `${text.slice(0, MAX_STORE_CHARS)}\n… [存储截断，原长 ${text.length} 字符]`;
 }
 
 function redactSensitiveValue(value: unknown): unknown {
@@ -102,9 +103,9 @@ export function formatBodyForApiDebug(body: unknown): string | null {
   if (body == null) return null;
   try {
     const normalized = typeof body === 'string' ? JSON.parse(body) : body;
-    return truncateText(JSON.stringify(redactSensitiveValue(normalized), null, 2));
+    return capStoredText(JSON.stringify(redactSensitiveValue(normalized), null, 2));
   } catch {
-    return truncateText(String(body));
+    return capStoredText(String(body));
   }
 }
 
@@ -114,10 +115,10 @@ function formatRequestBodyFromFetch(body: BodyInit | null | undefined): string |
     try {
       return formatBodyForApiDebug(JSON.parse(body));
     } catch {
-      return truncateText(body);
+      return capStoredText(body);
     }
   }
-  return truncateText(String(body));
+  return capStoredText(String(body));
 }
 
 /** 为列表接口响应附加 pagination 摘要，便于排查分页问题 */
@@ -135,13 +136,13 @@ export function formatResponseForApiDebug(text: string): string {
     const pagination = data?.pagination as Record<string, unknown> | undefined;
     if (Array.isArray(list) && pagination) {
       const summary = `[list=${list.length} total=${String(pagination.total ?? '?')} page=${String(pagination.page ?? '?')}/${String(pagination.totalPages ?? '?')} limit=${String(pagination.limit ?? '?')}]`;
-      return `${summary}\n${truncateText(trimmed)}`;
+      return capStoredText(`${summary}\n${trimmed}`);
     }
   } catch {
     /* 非 JSON */
   }
 
-  return truncateText(trimmed);
+  return capStoredText(trimmed);
 }
 
 function appendApiDebugLog(partial: Omit<ApiDebugLogEntry, 'id' | 'at'>): void {

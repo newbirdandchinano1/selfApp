@@ -9,6 +9,10 @@ import {
   syncApiReadResultToLocal,
 } from '@/lib/api-read-local-sync';
 import { isApiOnlyReads } from '@/lib/api-data-mode';
+import {
+  overlayLocalPendingOnApiRecord,
+  overlayLocalPendingOnApiTableRows,
+} from '@/lib/api-read-pending-overlay';
 import { getDatabase } from '@/lib/database';
 import { resolveReadLocalOnly } from '@/lib/page-api-session';
 
@@ -248,8 +252,8 @@ export async function fetchApiRecordByPk<T extends Record<string, unknown>>(
 }
 
 /**
- * 统一读表：API_ONLY_READS 时 REST 全量 + 本地 pending 覆盖；
- * 否则先拉 REST 写入 SQLite 再读本地（兼容旧模式）。
+ * 统一读表：API_ONLY_READS 时优先用内存中的 REST 结果，再叠加本地 pending（含 pending_delete 剔除）；
+ * 接口失败且 offlineFallback 时最后回退 SQLite。非 API_ONLY 模式仍先 REST 再读本地。
  */
 export async function readApiTable<T extends Record<string, unknown>>(
   table: string,
@@ -263,14 +267,13 @@ export async function readApiTable<T extends Record<string, unknown>>(
   const skipNetwork = resolveReadLocalOnly(opts);
   if (!skipNetwork) {
     try {
-      await withApiLoading(() => fetchApiTableAll<T>(table, opts));
+      const apiRows = await withApiLoading(() => fetchApiTableAll<T>(table, opts));
       if (isApiOnlyReads()) {
-        /** 已 sync 到 SQLite（含 extra_data 合并）；以本地为准，避免 REST 缺字段时 UI 读到旧快照 */
-        return readLocalTableVisible<T>(table);
+        return overlayLocalPendingOnApiTableRows(table, apiRows);
       }
     } catch (e) {
-      if (opts?.offlineFallback && !isApiOnlyReads()) {
-        if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, e);
+      if (opts?.offlineFallback) {
+        console.warn('[api-read] 接口不可用，回退本地 SQLite', table, e);
         return readLocalTableVisible<T>(table);
       }
       throw e;
@@ -309,14 +312,13 @@ export async function readApiRecord<T extends Record<string, unknown>>(
   const skipNetwork = resolveReadLocalOnly(opts);
   if (!skipNetwork) {
     try {
-      await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
+      const apiRow = await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
       if (isApiOnlyReads()) {
-        /** 已 sync 到 SQLite（含 extra_data 合并）；以本地为准，避免 REST 缺字段时编辑页读到旧值 */
-        return readLocalRecordVisible<T>(table, pkValue);
+        return overlayLocalPendingOnApiRecord(table, pkValue, apiRow);
       }
     } catch (e) {
       if (opts?.offlineFallback) {
-        if (__DEV__) console.warn('[api-read] 回退本地 SQLite', table, pkValue, e);
+        console.warn('[api-read] 接口不可用，回退本地 SQLite', table, pkValue, e);
         return readLocalRecordVisible<T>(table, pkValue);
       }
       throw e;

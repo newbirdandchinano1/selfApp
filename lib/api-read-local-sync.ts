@@ -248,8 +248,6 @@ export async function syncApiReadResultToLocal(
     }
     await applyApiRowsToLocalTable(table, [rows], opts);
   } catch (e) {
-    if (__DEV__) {
-      console.warn('[api-read-local-sync] 写入本地失败', table, e);
-    }
+    console.warn('[api-read-local-sync] 写入本地失败', table, e);
   }
 }
