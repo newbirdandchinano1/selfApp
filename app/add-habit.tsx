@@ -5,6 +5,14 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
 import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { ensureBreakHabitCycleExtra } from '@/lib/repositories/habits/habit-break-success';
+import {
+  isBuildHabitSucceeded,
+  mergeBuildHabitCycleExtra,
+} from '@/lib/repositories/habits/habit-build-success';
+import {
+  type BuildHabitExpectedGoalType,
+  parseBuildHabitExpectedGoal,
+} from '@/lib/repositories/habits/habit-goal';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { type HabitKind, parseHabitKind } from '@/lib/repositories/habits/habit-kind';
@@ -17,9 +25,16 @@ import React from 'react';
 import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+type ExpectedGoalTab = 'none' | BuildHabitExpectedGoalType;
+
 type CycleTab = '每天' | '每周定期' | '每周N天' | '每月定期' | '每月N天';
 
 const CYCLE_TABS: CycleTab[] = ['每天', '每周N天', '每月N天', '每周定期', '每月定期'];
+const EXPECTED_GOAL_TABS: { key: ExpectedGoalTab; label: string }[] = [
+  { key: 'none', label: '不限' },
+  { key: 'days', label: '按天数' },
+  { key: 'times', label: '按次数' },
+];
 
 const WORK_DAYS = ['周一', '周二', '周三', '周四', '周五'];
 const WEEKEND_DAYS = ['周六', '周日'];
@@ -185,6 +200,8 @@ export default function AddHabitScreen() {
   const [eachPlus, setEachPlus] = React.useState(1);
   const [dailyGoal, setDailyGoal] = React.useState<number | null>(null);
   const [consecutiveTargetDays, setConsecutiveTargetDays] = React.useState(7);
+  const [expectedGoalTab, setExpectedGoalTab] = React.useState<ExpectedGoalTab>('none');
+  const [expectedGoalValue, setExpectedGoalValue] = React.useState(7);
   const [habitNote, setHabitNote] = React.useState('');
   const [habitKind, setHabitKind] = React.useState<HabitKind>('build');
   const [iconPickerOpen, setIconPickerOpen] = React.useState(false);
@@ -310,6 +327,13 @@ export default function AddHabitScreen() {
               if (typeof quantify.consecutiveTargetDays === 'number') {
                 setConsecutiveTargetDays(Math.min(999, Math.max(1, Math.round(quantify.consecutiveTargetDays))));
               }
+              const expected = parseBuildHabitExpectedGoal(row.extra_data);
+              if (expected) {
+                setExpectedGoalTab(expected.type);
+                setExpectedGoalValue(expected.value);
+              } else {
+                setExpectedGoalTab('none');
+              }
             }
 
             const rem = parsed?.reminder;
@@ -355,6 +379,7 @@ export default function AddHabitScreen() {
     if (habitKind === 'break') {
       setQuantifyEnabled(true);
       setDailyGoal((v) => (v === null ? 0 : v));
+      setExpectedGoalTab('none');
     } else {
       setDailyGoal((v) => (v === 0 ? null : v));
     }
@@ -408,6 +433,24 @@ export default function AddHabitScreen() {
           ? null
           : dailyGoal;
 
+    const prevExpectedGoal =
+      isEditMode && habitId
+        ? parseBuildHabitExpectedGoal(JSON.stringify(existingExtra))
+        : null;
+    const nextExpectedGoal =
+      habitKind === 'build' && expectedGoalTab !== 'none'
+        ? {
+            type: expectedGoalTab,
+            value: Math.min(
+              expectedGoalTab === 'days' ? 999 : 9999,
+              Math.max(1, Math.round(expectedGoalValue))
+            ),
+          }
+        : null;
+
+    const buildQuantifyExtra =
+      habitKind === 'build' && nextExpectedGoal ? { expectedGoal: nextExpectedGoal } : {};
+
     const extraDataRaw = JSON.stringify({
       ...existingExtra,
       habitKind,
@@ -419,9 +462,11 @@ export default function AddHabitScreen() {
             dailyGoal: resolvedDailyGoal,
             ...(habitKind === 'break'
               ? { consecutiveTargetDays: Math.min(999, Math.max(1, consecutiveTargetDays)) }
-              : {}),
+              : buildQuantifyExtra),
           }
-        : null,
+        : habitKind === 'build' && nextExpectedGoal
+          ? { expectedGoal: nextExpectedGoal }
+          : null,
       schedule: {
         activeTab,
         selectedDays,
@@ -444,6 +489,23 @@ export default function AddHabitScreen() {
         }
       }
       extraData = ensureBreakHabitCycleExtra(extraDataRaw, cycleStartedAt);
+      const extraObj = JSON.parse(extraData) as Record<string, unknown>;
+      delete extraObj.buildHabitCycle;
+      extraData = JSON.stringify(extraObj);
+    } else if (habitKind === 'build') {
+      const extraObj = JSON.parse(extraData) as Record<string, unknown>;
+      delete extraObj.breakHabitCycle;
+      let merged = JSON.stringify(extraObj);
+      const goalRemoved = nextExpectedGoal == null;
+      const goalChanged =
+        prevExpectedGoal != null &&
+        nextExpectedGoal != null &&
+        (prevExpectedGoal.type !== nextExpectedGoal.type ||
+          prevExpectedGoal.value !== nextExpectedGoal.value);
+      if (goalRemoved || goalChanged || (goalRemoved && isBuildHabitSucceeded(merged))) {
+        merged = mergeBuildHabitCycleExtra(merged, { completedAt: null, completedValue: null });
+      }
+      extraData = merged;
     }
 
     const note = habitNote.trim() || null;
@@ -495,6 +557,8 @@ export default function AddHabitScreen() {
     activeTab,
     consecutiveTargetDays,
     dailyGoal,
+    expectedGoalTab,
+    expectedGoalValue,
     deriveTagByCycle,
     deriveToneByContext,
     habitIcon,
@@ -793,6 +857,69 @@ export default function AddHabitScreen() {
                           mutedColor={colors.textSecondary}
                         />
                       </>
+                    ) : null}
+                  </View>
+                ) : null}
+                {habitKind === 'build' ? (
+                  <View
+                    style={[
+                      styles.expectedGoalBlock,
+                      quantifyEnabled && { borderTopColor: colors.outline, borderTopWidth: StyleSheet.hairlineWidth },
+                    ]}>
+                    <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>
+                      预期目标
+                      <Text style={[styles.numberLabelHint, { color: colors.textSecondary }]}>（可选）</Text>
+                    </Text>
+                    <Text style={[Typography.caption, styles.expectedGoalHint, { color: colors.textSecondary }]}>
+                      达成后习惯自动完成并关闭；不选则持续进行，直至手动删除
+                    </Text>
+                    <View style={styles.expectedGoalTabs}>
+                      {EXPECTED_GOAL_TABS.map((tab) => {
+                        const active = expectedGoalTab === tab.key;
+                        return (
+                          <Pressable
+                            key={tab.key}
+                            onPress={() => {
+                              setExpectedGoalTab(tab.key);
+                              if (tab.key === 'days') {
+                                setExpectedGoalValue((v) => Math.max(1, v));
+                              } else if (tab.key === 'times') {
+                                setExpectedGoalValue((v) => (v < 1 ? 30 : v));
+                              }
+                            }}
+                            style={[
+                              styles.expectedGoalTab,
+                              active
+                                ? { backgroundColor: colors.primary, borderColor: colors.primary }
+                                : { backgroundColor: colors.surface, borderColor: colors.outline },
+                            ]}>
+                            <Text
+                              style={[
+                                Typography.bodyStrong,
+                                styles.expectedGoalTabText,
+                                { color: active ? colors.onPrimary : colors.textSecondary },
+                              ]}>
+                              {tab.label}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    {expectedGoalTab !== 'none' ? (
+                      <NumberControl
+                        label={expectedGoalTab === 'days' ? '目标天数' : '目标次数'}
+                        value={expectedGoalValue}
+                        onMinus={() =>
+                          setExpectedGoalValue((v) => Math.max(1, v - (expectedGoalTab === 'days' ? 1 : 1)))
+                        }
+                        onPlus={() =>
+                          setExpectedGoalValue((v) =>
+                            Math.min(expectedGoalTab === 'days' ? 999 : 9999, v + 1)
+                          )
+                        }
+                        textColor={colors.text}
+                        mutedColor={colors.textSecondary}
+                      />
                     ) : null}
                   </View>
                 ) : null}
@@ -1374,6 +1501,17 @@ const styles = StyleSheet.create({
   quantifyTitle: { fontSize: 15 },
   quantifyHint: { marginTop: 2 },
   quantifyBreakHint: { marginTop: -4, marginBottom: 8, paddingHorizontal: 2 },
+  expectedGoalBlock: { marginTop: Spacing.sm, paddingTop: Spacing.md, gap: Spacing.sm },
+  expectedGoalHint: { paddingHorizontal: 2, lineHeight: 18 },
+  expectedGoalTabs: { flexDirection: 'row', gap: Spacing.md },
+  expectedGoalTab: {
+    flex: 1,
+    borderRadius: Radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+  },
+  expectedGoalTabText: { fontSize: 13 },
   switchTrack: {
     width: 48,
     height: 26,

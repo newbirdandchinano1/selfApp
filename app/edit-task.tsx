@@ -52,6 +52,15 @@ import {
   parseCompletionRewardFromExtraData,
 } from '@/lib/completion-reward/completion-reward-extra';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
+import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
+import { getHabits } from '@/lib/repositories/habits/habit';
+import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
+import type { HabitRow } from '@/lib/repositories/habits/habit.types';
+import {
+  mergeBoundHabitIdsIntoExtraData,
+  parseBoundHabitIdsFromExtraData,
+  tryCompleteTaskByBoundHabits,
+} from '@/lib/repositories/tasks/task-habit-binding';
 
 type PriorityKey =
   | 'urgent-important'
@@ -257,6 +266,7 @@ type EditTaskFormSnapshot = {
   repeatText: string;
   scheduleMeta: TaskScheduleMeta | null;
   completionReward: CompletionReward;
+  boundHabitIds: string[];
 };
 
 function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
@@ -288,6 +298,7 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
     repeatText,
     scheduleMeta,
     completionReward: parseCompletionRewardFromExtraData(task.extra_data),
+    boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
   };
 }
 
@@ -300,6 +311,7 @@ function buildFormSnapshotFromFields(input: {
   repeatText: string;
   scheduleMeta: TaskScheduleMeta | null;
   completionReward: CompletionReward;
+  boundHabitIds: string[];
 }): EditTaskFormSnapshot {
   return {
     title: input.title.trim(),
@@ -310,6 +322,7 @@ function buildFormSnapshotFromFields(input: {
     repeatText: input.repeatText,
     scheduleMeta: input.scheduleMeta,
     completionReward: input.completionReward,
+    boundHabitIds: input.boundHabitIds,
   };
 }
 
@@ -356,6 +369,11 @@ export default function EditTaskScreen() {
   const [parentDateLimit, setParentDateLimit] = React.useState<DateLimitYmd>({});
   const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
   const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
+  const [boundHabitIds, setBoundHabitIds] = React.useState<string[]>([]);
+  const [habitSections, setHabitSections] = React.useState<
+    Array<{ contextId: string; contextName: string; habits: HabitRow[] }>
+  >([]);
+  const [habitsLoading, setHabitsLoading] = React.useState(true);
 
   const skipAutoSaveRef = React.useRef(false);
   const exitingAfterSaveRef = React.useRef(false);
@@ -369,6 +387,7 @@ export default function EditTaskScreen() {
   const scheduleMetaRef = React.useRef(scheduleMeta);
   const taskSnapshotRef = React.useRef(taskSnapshot);
   const completionRewardRef = React.useRef(completionReward);
+  const boundHabitIdsRef = React.useRef(boundHabitIds);
   titleRef.current = title;
   notesRef.current = notes;
   priorityRef.current = priority;
@@ -378,6 +397,7 @@ export default function EditTaskScreen() {
   scheduleMetaRef.current = scheduleMeta;
   taskSnapshotRef.current = taskSnapshot;
   completionRewardRef.current = completionReward;
+  boundHabitIdsRef.current = boundHabitIds;
 
   const subtaskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const selfLimit = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
@@ -426,9 +446,10 @@ export default function EditTaskScreen() {
       repeatText,
       scheduleMeta,
       completionReward,
+      boundHabitIds,
     });
     return !formSnapshotsEqual(loadedFormSnapshot, current);
-  }, [completionReward, deadlineText, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
+  }, [boundHabitIds, completionReward, deadlineText, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
 
   const reload = React.useCallback(async (forceApi = false) => {
     if (!taskId) return;
@@ -607,6 +628,30 @@ export default function EditTaskScreen() {
         setRepeatText(repeat);
       }
       setCompletionReward(parseCompletionRewardFromExtraData(task.extra_data));
+      setBoundHabitIds(parseBoundHabitIdsFromExtraData(task.extra_data));
+
+      try {
+        setHabitsLoading(true);
+        const [contexts, habits] = await Promise.all([getHabitContexts(), getHabits()]);
+        const habitsByContext = new Map<string, HabitRow[]>();
+        for (const habit of habits) {
+          const list = habitsByContext.get(habit.context) ?? [];
+          list.push(habit);
+          habitsByContext.set(habit.context, list);
+        }
+        setHabitSections(
+          contexts.map((ctx) => ({
+            contextId: ctx.id,
+            contextName: ctx.name,
+            habits: habitsByContext.get(ctx.id) ?? [],
+          })),
+        );
+      } catch (error) {
+        console.warn('加载小习惯列表失败', error);
+        setHabitSections([]);
+      } finally {
+        setHabitsLoading(false);
+      }
 
       let parentLimit: DateLimitYmd = {};
       if (task.parent_task_id) {
@@ -679,14 +724,17 @@ export default function EditTaskScreen() {
       setSaving(true);
       const meta = scheduleMetaRef.current;
       const dueDate = dueDateFromScheduleMeta(meta, extractDueDate(deadlineTextRef.current));
-      const mergedExtra = mergeCompletionRewardIntoExtraData(
-        JSON.stringify({
-          ...parseTaskExtraData(snapshot.extra_data),
-          reminder: reminderTextRef.current,
-          repeat: repeatTextRef.current,
-          schedule: meta,
-        }),
-        completionRewardRef.current,
+      const mergedExtra = mergeBoundHabitIdsIntoExtraData(
+        mergeCompletionRewardIntoExtraData(
+          JSON.stringify({
+            ...parseTaskExtraData(snapshot.extra_data),
+            reminder: reminderTextRef.current,
+            repeat: repeatTextRef.current,
+            schedule: meta,
+          }),
+          completionRewardRef.current,
+        ),
+        boundHabitIdsRef.current,
       );
       await updateTask(taskId, {
         title: trimmedTitle,
@@ -711,8 +759,16 @@ export default function EditTaskScreen() {
         repeatText: repeatTextRef.current,
         scheduleMeta: meta,
         completionReward: completionRewardRef.current,
+        boundHabitIds: boundHabitIdsRef.current,
       });
       setLoadedFormSnapshot(nextSnapshot);
+      if (boundHabitIdsRef.current.length > 0) {
+        try {
+          await tryCompleteTaskByBoundHabits(taskId);
+        } catch (syncErr) {
+          console.warn('同步习惯绑定任务完成状态失败', syncErr);
+        }
+      }
       setTaskSnapshot((prev) =>
         prev
           ? {
@@ -742,8 +798,12 @@ export default function EditTaskScreen() {
 
   const handleSavePress = React.useCallback(() => {
     if (saving || loading) return;
-    void persistTask();
-  }, [loading, persistTask, saving]);
+    void (async () => {
+      const ok = await persistTask();
+      if (!ok) return;
+      performLeave();
+    })();
+  }, [loading, performLeave, persistTask, saving]);
 
   /** 从详情→编辑离开（保存或删除）时跳过详情页，直接回到任务 Tab */
   const navigateAfterLeaveEdit = React.useCallback(() => {
@@ -1087,6 +1147,24 @@ export default function EditTaskScreen() {
                 </View>
               )}
             </View>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>绑定小习惯</Text>
+            <BoundHabitPickerField
+              selectedHabitIds={boundHabitIds}
+              sections={habitSections}
+              loading={habitsLoading}
+              disabled={loading}
+              onChange={setBoundHabitIds}
+              textColor={theme.text}
+              outline={outline}
+              placeholderColor={outlineVariant}
+              primary={primary}
+              surfaceLow={surfaceLow}
+              surfaceLowest={surfaceLowest}
+              isDark={isDark}
+            />
           </View>
 
           <View style={styles.section}>

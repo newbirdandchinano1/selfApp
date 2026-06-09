@@ -1,25 +1,82 @@
 import { type HabitKind, parseHabitKind } from './habit-kind';
 
+export type BuildHabitExpectedGoalType = 'days' | 'times';
+
+export type BuildHabitExpectedGoal = {
+  type: BuildHabitExpectedGoalType;
+  value: number;
+};
+
 export type HabitQuantifyMeta = {
   /** 养成：null 表示不限；戒除：必为 0–99 的整数阈值 */
   dailyGoal: number | null;
   /** 戒除习惯：连续满足目标的天数目标 */
   consecutiveTargetDays: number | null;
+  /** 养成习惯：预期总目标（天数或总次数），null 表示不设上限 */
+  expectedGoal: BuildHabitExpectedGoal | null;
 };
 
 function parseQuantifyRaw(extraData: string | null): {
   dailyGoal?: unknown;
   consecutiveTargetDays?: unknown;
+  expectedGoal?: unknown;
 } | null {
   if (!extraData) return null;
   try {
     const p = JSON.parse(extraData) as { quantify?: unknown };
     const q = p?.quantify;
     if (!q || typeof q !== 'object' || Array.isArray(q)) return null;
-    return q as { dailyGoal?: unknown; consecutiveTargetDays?: unknown };
+    return q as {
+      dailyGoal?: unknown;
+      consecutiveTargetDays?: unknown;
+      expectedGoal?: unknown;
+    };
   } catch {
     return null;
   }
+}
+
+/** 养成习惯预期目标：按累计达标天数或累计打卡次数 */
+export function parseBuildHabitExpectedGoal(extraData: string | null): BuildHabitExpectedGoal | null {
+  const q = parseQuantifyRaw(extraData);
+  const raw = q?.expectedGoal;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const obj = raw as { type?: unknown; value?: unknown };
+  const type = obj.type;
+  if (type !== 'days' && type !== 'times') return null;
+  if (typeof obj.value !== 'number' || !Number.isFinite(obj.value)) return null;
+  const value = Math.round(obj.value);
+  if (value < 1) return null;
+  return { type, value: Math.min(type === 'days' ? 999 : 9999, value) };
+}
+
+/** 累计达标天数（每日目标达成计 1 天；不限每日目标时 count > 0 计 1 天） */
+export function countBuildAchievedDays(
+  checkIns: Record<string, number>,
+  dailyGoal: number | null
+): number {
+  return Object.values(checkIns).filter((c) =>
+    isHabitDayGoalMet({ kind: 'build', todayCount: c, dailyGoal })
+  ).length;
+}
+
+/** 累计打卡总次数 */
+export function computeTotalCheckInCount(checkIns: Record<string, number>): number {
+  return Object.values(checkIns).reduce((sum, c) => sum + Math.max(0, Math.floor(c)), 0);
+}
+
+/** 养成习惯预期目标当前进度 */
+export function computeBuildExpectedGoalProgress(params: {
+  expectedGoal: BuildHabitExpectedGoal;
+  checkIns: Record<string, number>;
+  dailyGoal?: number | null;
+}): number {
+  const { expectedGoal, checkIns } = params;
+  const dailyGoal = params.dailyGoal ?? null;
+  if (expectedGoal.type === 'days') {
+    return countBuildAchievedDays(checkIns, dailyGoal);
+  }
+  return computeTotalCheckInCount(checkIns);
 }
 
 /** 解析每日目标：戒除习惯允许 0；养成习惯 null 表示不限 */
@@ -53,6 +110,7 @@ export function parseHabitQuantifyMeta(extraData: string | null, kind?: HabitKin
     dailyGoal: parseHabitDailyGoal(extraData, resolvedKind),
     consecutiveTargetDays:
       resolvedKind === 'break' ? parseHabitConsecutiveTargetDays(extraData) : null,
+    expectedGoal: resolvedKind === 'build' ? parseBuildHabitExpectedGoal(extraData) : null,
   };
 }
 
@@ -82,6 +140,21 @@ export function isHabitDayGoalMet(params: {
 
 /** 戒除习惯任务页三态：未破戒 / 破戒未超限 / 已破戒未达标 */
 export type BreakHabitDayUiState = 'clean' | 'slipping' | 'failed';
+
+/** 戒除习惯当日是否视为完成：默认完成，破戒（次数 > 0）则未完成 */
+export function isBreakHabitDayCompleted(todayCount: number): boolean {
+  return Math.max(0, Math.floor(todayCount)) === 0;
+}
+
+/** 任务页展示 / 习惯绑定：养成看达标，戒除看未破戒 */
+export function isHabitDayDisplayCompleted(params: {
+  kind: HabitKind;
+  todayCount: number;
+  dailyGoal?: number | null;
+}): boolean {
+  if (params.kind === 'break') return isBreakHabitDayCompleted(params.todayCount);
+  return isHabitDayGoalMet(params);
+}
 
 export function getBreakHabitDayUiState(todayCount: number, dailyGoal: number | null): BreakHabitDayUiState {
   const count = Math.max(0, Math.floor(todayCount));

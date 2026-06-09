@@ -1,5 +1,6 @@
 import { isHabitScheduledOnLogicalYmd } from '@/lib/habit-schedule';
 import { isBreakHabitSucceeded } from '@/lib/repositories/habits/habit-break-success';
+import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
 import { isHabitDayGoalMet, parseHabitDailyGoal } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { isTaskRepeatDueOnLogicalDay, parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
@@ -276,6 +277,7 @@ export function buildTasksCalendarSummaries(params: {
 
     for (const habit of habits) {
       if (parseHabitKind(habit.extra_data) === 'break' && isBreakHabitSucceeded(habit.extra_data)) continue;
+      if (parseHabitKind(habit.extra_data) === 'build' && isBuildHabitSucceeded(habit.extra_data)) continue;
       if (!isHabitScheduledOnLogicalYmd(habit.extra_data, ymd)) continue;
       const count = checkMap.get(habit.id) ?? 0;
       const kind = parseHabitKind(habit.extra_data);

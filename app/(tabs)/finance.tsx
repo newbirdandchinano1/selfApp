@@ -95,6 +95,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import {
     ActivityIndicator,
     Alert,
@@ -444,6 +445,8 @@ export default function FinanceScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
+  /** 用户在本页做过写操作后调用，下次聚焦时再从后端全量拉取 */
+  const markPageDirty = resetSync;
   const colorScheme = useColorScheme();
   const themeKey: keyof typeof Colors = colorScheme === 'dark' ? 'dark' : 'light';
   const baseTheme = Colors[themeKey];
@@ -658,17 +661,19 @@ export default function FinanceScreen() {
 
   React.useEffect(() => {
     return subscribeAutoLedgerCompleted(() => {
+      markPageDirty();
       void reloadFinanceTransactions();
       void reloadFinanceAccounts();
     });
-  }, [reloadFinanceAccounts, reloadFinanceTransactions]);
+  }, [markPageDirty, reloadFinanceAccounts, reloadFinanceTransactions]);
 
   React.useEffect(() => {
     return subscribeFinanceSheetSaved(() => {
+      markPageDirty();
       void loadFinanceTransactions();
       void loadFinanceAccounts();
     });
-  }, [loadFinanceAccounts, loadFinanceTransactions]);
+  }, [loadFinanceAccounts, loadFinanceTransactions, markPageDirty]);
 
   const handleDeleteFinanceTxn = React.useCallback(
     (txnId: string, displayTitle: string) => {
@@ -679,6 +684,7 @@ export default function FinanceScreen() {
           text: '删除',
           style: 'destructive',
           onPress: async () => {
+            markPageDirty();
             try {
               await deleteFinanceTransaction(txnId);
               await Promise.all([reloadFinanceTransactions(), reloadFinanceAccounts()]);
@@ -690,7 +696,7 @@ export default function FinanceScreen() {
         },
       ]);
     },
-    [loadFinanceAccounts, loadFinanceTransactions],
+    [loadFinanceAccounts, loadFinanceTransactions, markPageDirty],
   );
 
   React.useEffect(() => {
@@ -1881,6 +1887,7 @@ export default function FinanceScreen() {
                 attachments: [{ type: 'image', uri: imageDataUri }],
               }),
             });
+            markPageDirty();
             await Promise.all([reloadFinanceTransactions(), reloadFinanceAccounts()]);
             return;
           } catch (error) {
@@ -1915,6 +1922,7 @@ export default function FinanceScreen() {
       isAutoLedgerHandoffSession,
       loadFinanceAccounts,
       loadFinanceTransactions,
+      markPageDirty,
       pickAccountForAutoLedger,
     ],
   );
@@ -2081,6 +2089,7 @@ export default function FinanceScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
+      if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
       let cancelled = false;
       const run = async (forceApi = false) => {
         await wrapLoad(async () => {
@@ -2113,7 +2122,7 @@ export default function FinanceScreen() {
         }
         }, forceApi);
       };
-      void run(true);
+      void run(false);
       return () => {
         cancelled = true;
       };
@@ -2214,6 +2223,7 @@ export default function FinanceScreen() {
 
       fixedExpenseQuickPayLockRef.current.add(item.id);
       setPayingFixedExpenseId(item.id);
+      markPageDirty();
 
       void (async () => {
         try {
@@ -2290,6 +2300,7 @@ export default function FinanceScreen() {
       getDefaultSheetAccountIdForTab,
       loadFinanceAccounts,
       loadFinanceTransactions,
+      markPageDirty,
     ],
   );
 
@@ -2376,6 +2387,7 @@ export default function FinanceScreen() {
     }
     const fixedExpenses = sanitizeFixedExpensesDraft();
     const nextRefresh = clampBudgetRefreshDay(budgetRefreshDayDraft);
+    markPageDirty();
     void persistBudgetRefreshDay(nextRefresh);
     setBudgetRefreshDay(nextRefresh);
     setMonthBudgetSettings((prev) => {
@@ -2396,11 +2408,13 @@ export default function FinanceScreen() {
     budgetRefreshDayDraft,
     currentMonthKey,
     fixedExpensesDraft,
+    markPageDirty,
     modalIncludeLast,
     sanitizeFixedExpensesDraft,
   ]);
 
   const handleResetBudgetAdjust = React.useCallback(() => {
+    markPageDirty();
     setMonthBudgetSettings((prev) => {
       if (!(currentMonthKey in prev)) return prev;
       const next = { ...prev };
@@ -2409,7 +2423,7 @@ export default function FinanceScreen() {
       return next;
     });
     setIsBudgetAdjustVisible(false);
-  }, [currentMonthKey]);
+  }, [currentMonthKey, markPageDirty]);
 
   const handleSelectAccount = React.useCallback(
     (accountId: string) => {
@@ -2553,6 +2567,7 @@ export default function FinanceScreen() {
 
   const handleSaveTransaction = React.useCallback(async () => {
     if (isSavingTransaction || isParsingSentence) return;
+    markPageDirty();
     if (activeSheetTab === 'transfer') {
       if (!transferFromAccount || !transferToAccount) {
         Alert.alert('请选择账户', '需要选择扣款账户与入账账户。');
@@ -2832,6 +2847,7 @@ export default function FinanceScreen() {
     isSavingTransaction,
     loadFinanceAccounts,
     loadFinanceTransactions,
+    markPageDirty,
     pickAccountForAutoLedger,
     resetSheetForm,
     resolveFinanceSentenceLine,
@@ -3874,7 +3890,10 @@ export default function FinanceScreen() {
                   onChangeNewCategoryIcon={setNewCategoryIcon}
                   isSavingCategory={isSavingCategory}
                   onCloseAddModal={closeAddCategoryModal}
-                  onSaveNewCategory={() => void saveNewCategory(setSelectedCategoryKey)}
+                  onSaveNewCategory={() => {
+                    markPageDirty();
+                    void saveNewCategory(setSelectedCategoryKey);
+                  }}
                 />
                 ) : (
                   <View style={styles.sentenceHintBox}>

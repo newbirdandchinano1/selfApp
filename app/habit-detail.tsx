@@ -8,8 +8,10 @@ import {
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import {
+  computeBuildExpectedGoalProgress,
   computeConsecutiveGoalMetDays,
   isHabitDayGoalMet,
+  parseBuildHabitExpectedGoal,
   parseHabitConsecutiveTargetDays,
   parseHabitDailyGoal,
   parseHabitIncrementCap,
@@ -20,6 +22,12 @@ import {
   resolveBreakCycleStartYmd,
   syncBreakHabitCompletions,
 } from '@/lib/repositories/habits/habit-break-success';
+import {
+  isBuildHabitSucceeded,
+  parseBuildHabitCycle,
+  syncBuildHabitCompletions,
+  tryMarkBuildHabitCompleted,
+} from '@/lib/repositories/habits/habit-build-success';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
@@ -255,6 +263,7 @@ export default function HabitDetailScreen() {
           const boundary = await loadTasksDayBoundary();
           setLogicalTodayYmd(getLogicalLocalYmd(new Date(), boundary));
           await syncBreakHabitCompletions();
+          await syncBuildHabitCompletions();
           const row = await getHabitById(habitId);
           setHabit(row ?? null);
           if (!row) {
@@ -323,6 +332,13 @@ export default function HabitDetailScreen() {
 
   const breakCycle = habit ? parseBreakHabitCycle(habit.extra_data) : null;
   const breakSucceeded = habit ? isBreakHabitSucceeded(habit.extra_data) : false;
+  const buildCycle = habit ? parseBuildHabitCycle(habit.extra_data) : null;
+  const buildSucceeded = habit ? isBuildHabitSucceeded(habit.extra_data) : false;
+  const buildExpectedGoal = habit ? parseBuildHabitExpectedGoal(habit.extra_data) : null;
+  const buildExpectedProgress =
+    buildExpectedGoal != null
+      ? computeBuildExpectedGoalProgress({ expectedGoal: buildExpectedGoal, checkIns, dailyGoal })
+      : 0;
 
   const consecutiveStreak = React.useMemo(
     () =>
@@ -440,6 +456,11 @@ export default function HabitDetailScreen() {
         return;
       }
       void playHabitCheckInDing();
+      if (habit && parseHabitKind(habit.extra_data) === 'build') {
+        const boundary = await loadTasksDayBoundary();
+        const todayYmd = getLogicalLocalYmd(new Date(), boundary);
+        await tryMarkBuildHabitCompleted(habit, todayYmd);
+      }
       await reload();
     } catch (e) {
       console.warn('习惯补卡失败', e);
@@ -587,8 +608,23 @@ export default function HabitDetailScreen() {
                   : ` · 已连续 ${consecutiveStreak} 天`}
               </Text>
             )
+          ) : buildExpectedGoal != null ? (
+            buildSucceeded ? (
+              <Text style={[styles.makeUpSub, { color: GREEN_TEXT }]}>
+                已达成预期目标{' '}
+                {buildExpectedGoal.type === 'days'
+                  ? `${buildExpectedGoal.value} 天`
+                  : `${buildExpectedGoal.value} 次`}
+                {buildCycle?.completedAt ? ` · ${buildCycle.completedAt} 养成完成` : ' · 养成完成'}
+              </Text>
+            ) : (
+              <Text style={styles.makeUpSub}>
+                预期目标进度 {buildExpectedProgress} / {buildExpectedGoal.value}{' '}
+                {buildExpectedGoal.type === 'days' ? '天' : '次'}
+              </Text>
+            )
           ) : null}
-          {focusYmd >= logicalTodayYmd ? (
+          {focusYmd >= logicalTodayYmd && !buildSucceeded ? (
             <Text style={styles.makeUpSub}>补卡、取消补卡仅针对「逻辑日」之前的日期（与应用日界设置一致）。</Text>
           ) : null}
           <View style={styles.makeUpBtnRow}>
@@ -596,9 +632,9 @@ export default function HabitDetailScreen() {
               style={[
                 styles.makeUpBtn,
                 styles.makeUpBtnPrimary,
-                (makeUpSaving || focusYmd >= logicalTodayYmd) && styles.makeUpBtnDisabled,
+                (makeUpSaving || focusYmd >= logicalTodayYmd || buildSucceeded) && styles.makeUpBtnDisabled,
               ]}
-              disabled={makeUpSaving || focusYmd >= logicalTodayYmd}
+              disabled={makeUpSaving || focusYmd >= logicalTodayYmd || buildSucceeded}
               onPress={() => void handleMakeUpCheckIn()}>
               {makeUpSaving ? (
                 <ActivityIndicator color="#fff" size="small" />
@@ -613,9 +649,9 @@ export default function HabitDetailScreen() {
               style={[
                 styles.makeUpBtn,
                 styles.makeUpBtnCancel,
-                (cancelMakeUpSaving || focusYmd >= logicalTodayYmd) && styles.makeUpBtnCancelDisabled,
+                (cancelMakeUpSaving || focusYmd >= logicalTodayYmd || buildSucceeded) && styles.makeUpBtnCancelDisabled,
               ]}
-              disabled={cancelMakeUpSaving || focusYmd >= logicalTodayYmd}
+              disabled={cancelMakeUpSaving || focusYmd >= logicalTodayYmd || buildSucceeded}
               onPress={() => void handleCancelMakeUpCheckIn()}>
               {cancelMakeUpSaving ? (
                 <ActivityIndicator color={RED_TEXT} size="small" />

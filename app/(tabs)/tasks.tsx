@@ -4,6 +4,7 @@ import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design
 import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import {
   INBOX_PROJECT_CATEGORY_ID,
@@ -45,6 +46,12 @@ import {
   type TaskTreeNode,
   updateTask,
 } from '@/lib/repositories/tasks/task';
+import {
+  completeTasksBoundToHabitIfGoalMet,
+  parseBoundHabitIdsFromExtraData,
+  syncAllHabitBoundTaskCompletions,
+  type CompleteTasksBoundToHabitResult,
+} from '@/lib/repositories/tasks/task-habit-binding';
 import {
   backfillFrogCompletionEventsFromTasks,
   getFrogCompletionCountsByDayRange,
@@ -91,6 +98,11 @@ import {
   syncBreakHabitCompletions,
   tryMarkBreakHabitCompleted,
 } from '@/lib/repositories/habits/habit-break-success';
+import {
+  isBuildHabitSucceeded,
+  syncBuildHabitCompletions,
+  tryMarkBuildHabitCompleted,
+} from '@/lib/repositories/habits/habit-build-success';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
@@ -99,6 +111,7 @@ import {
   buildProgressBadgeColor,
   buildProgressBorderColor,
   getBreakHabitDayUiState,
+  isHabitDayDisplayCompleted,
   isHabitDayGoalMet,
   parseHabitDailyGoal,
   parseHabitIncrementCap,
@@ -803,7 +816,6 @@ function TaskCompletionHeatmap({
   reloadToken: number;
 }) {
   const router = useRouter();
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const scrollRef = React.useRef<ScrollView>(null);
   const colors = isDark ? COMPLETION_HEAT_LEVEL_COLORS_DARK : COMPLETION_HEAT_LEVEL_COLORS_LIGHT;
   const [selectedYmd, setSelectedYmd] = React.useState<string | null>(null);
@@ -845,8 +857,9 @@ function TaskCompletionHeatmap({
 
   useFocusEffect(
     React.useCallback(() => {
+      if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
       let cancelled = false;
-      void wrapLoad(async () => {
+      void (async () => {
         try {
           await loadCompletionHeatmap();
         } catch (e) {
@@ -856,11 +869,11 @@ function TaskCompletionHeatmap({
             setTodoCountByYmd(new Map());
           }
         }
-      });
+      })();
       return () => {
         cancelled = true;
       };
-    }, [loadCompletionHeatmap, wrapLoad])
+    }, [loadCompletionHeatmap])
   );
 
   React.useEffect(() => {
@@ -1495,7 +1508,9 @@ async function reactivateInboxCompletedProjectsWithOpenTasks(
 }
 
 export default function TasksScreen() {
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
+  /** 用户在本页做过写操作后调用，下次聚焦时再从后端全量拉取 */
+  const markPageDirty = resetSync;
   /** Measured width of the habit grid row — avoids guessing padding (tabs / safe area / web max-width). */
   const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
   const habitGridItemWidth = React.useMemo(() => {
@@ -1536,6 +1551,9 @@ export default function TasksScreen() {
   const [activeCategoryLabel, setActiveCategoryLabel] = React.useState('全部');
   const [activeCategoryId, setActiveCategoryId] = React.useState<string | null>(null);
   const [habitSections, setHabitSections] = React.useState<HabitSection[]>([]);
+  const [habitLookupById, setHabitLookupById] = React.useState<
+    Map<string, { name: string; icon: string }>
+  >(() => new Map());
   const [expandedHabitSections, setExpandedHabitSections] = React.useState<Record<string, boolean>>({});
   /** 底部「无项目待办」快捷输入框内容 */
   const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
@@ -1671,6 +1689,7 @@ export default function TasksScreen() {
         Alert.alert('无法分析', '该项目下尚无任务，请先添加任务。');
         return;
       }
+      markPageDirty();
       setProjectAiTriggerLoadingId(projectId);
       try {
         const r = await runProjectAiReview(projectId, { force: true });
@@ -1681,7 +1700,7 @@ export default function TasksScreen() {
         setProjectAiTriggerLoadingId(null);
       }
     },
-    [projectAiPendingIds, projectAiTriggerLoadingId, projectTaskTreeMap, zhipuReady],
+    [markPageDirty, projectAiPendingIds, projectAiTriggerLoadingId, projectTaskTreeMap, zhipuReady],
   );
 
   const loadProjects = React.useCallback(async () => {
@@ -1797,16 +1816,20 @@ export default function TasksScreen() {
   const loadHabits = React.useCallback(async () => {
     try {
       await syncBreakHabitCompletions();
+      await syncBuildHabitCompletions();
       const [contexts, rows, checkStats] = await Promise.all([
         getHabitContexts(),
         getHabits(),
         getHabitCheckInListStats(),
       ]);
+      setHabitLookupById(new Map(rows.map((r) => [r.id, { name: r.name, icon: r.icon }])));
+
       const itemsByContext = new Map<string, HabitSection['items']>();
 
       for (const r of rows) {
         const kind = parseHabitKind(r.extra_data);
         if (kind === 'break' && isBreakHabitSucceeded(r.extra_data)) continue;
+        if (kind === 'build' && isBuildHabitSucceeded(r.extra_data)) continue;
 
         const arr = itemsByContext.get(r.context) ?? [];
         const todayCount = checkStats.get(r.id)?.todayCount ?? 0;
@@ -1849,6 +1872,7 @@ export default function TasksScreen() {
     } catch (err) {
       console.warn('加载习惯失败', err);
       setHabitSections([]);
+      setHabitLookupById(new Map());
     }
   }, []);
 
@@ -2109,6 +2133,17 @@ export default function TasksScreen() {
     const taskRolled = await loadTasks(taskLoadOpts);
     if (isStale()) return;
 
+    try {
+      await syncAllHabitBoundTaskCompletions();
+      if (isStale()) return;
+      await loadTasks(taskLoadOpts);
+      if (isStale()) return;
+      await loadProjectTasks(workingRows, projectTaskOpts(taskLoadOpts));
+      if (isStale()) return;
+    } catch (err) {
+      console.warn('批量同步习惯绑定任务失败', err);
+    }
+
     if (taskRolled > 0) {
       await loadProjectTasks(workingRows, projectTaskOpts(taskLoadOpts));
       if (isStale()) return;
@@ -2147,10 +2182,9 @@ export default function TasksScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
+      if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
       void reloadPage();
-    }, [
-      reloadPage,
-    ])
+    }, [reloadPage])
   );
 
   const taskTitleById = React.useMemo(() => {
@@ -2369,6 +2403,49 @@ export default function TasksScreen() {
     []
   );
 
+  const applyHabitBoundTaskSyncResult = React.useCallback(
+    (result: CompleteTasksBoundToHabitResult) => {
+      const changes = [...result.completedTasks, ...result.cascadeChanges];
+      if (changes.length === 0) return;
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setTasks((prev) =>
+        prev.map((task) => {
+          const change = changes.find((item) => item.id === task.id);
+          if (!change) return task;
+          return {
+            ...task,
+            status: change.status,
+            completed_at: change.completed_at,
+          };
+        }),
+      );
+      setProjectTaskTreeMap((prev) => {
+        let next = prev;
+        for (const change of changes) {
+          next = updateTaskInProjectTree(next, change.id, (node) => ({
+            ...node,
+            status: change.status,
+            completed_at: change.completed_at,
+          }));
+        }
+        return next;
+      });
+    },
+    [updateTaskInProjectTree],
+  );
+
+  const syncHabitBoundTasksForHabit = React.useCallback(
+    async (habitId: string, todayCount?: number) => {
+      try {
+        const result = await completeTasksBoundToHabitIfGoalMet(habitId, { todayCount });
+        applyHabitBoundTaskSyncResult(result);
+      } catch (err) {
+        console.warn('同步习惯绑定任务完成状态失败', err);
+      }
+    },
+    [applyHabitBoundTaskSyncResult],
+  );
+
   const getFrogDoneBounce = React.useCallback((taskId: string) => {
     if (!frogDoneBounceMap.current[taskId]) {
       frogDoneBounceMap.current[taskId] = new Animated.Value(1);
@@ -2413,6 +2490,7 @@ export default function TasksScreen() {
           style: 'destructive',
           onPress: () => {
             void (async () => {
+              markPageDirty();
               const nextExtra = clearFrogAssignedOn(frog.extra_data);
               LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
               setTasks((prev) =>
@@ -2434,10 +2512,11 @@ export default function TasksScreen() {
         },
       ]);
     },
-    [loadProjectTasks, loadTasks, projects, projectTaskTreeMap, tasks, updateTaskInProjectTree]
+    [loadProjectTasks, loadTasks, markPageDirty, projects, projectTaskTreeMap, tasks, updateTaskInProjectTree]
   );
 
   const moveProjectToInboxById = React.useCallback(async (projectId: string) => {
+    markPageDirty();
     try {
       const proj = projects.find((p) => p.id === projectId) ?? (await getProjectById(projectId));
       await updateProject(projectId, {
@@ -2454,7 +2533,7 @@ export default function TasksScreen() {
       console.warn('收纳项目失败', err);
       Alert.alert('操作失败', '未能将项目移至收集箱，请稍后重试。');
     }
-  }, [loadProjects, projects]);
+  }, [loadProjects, markPageDirty, projects]);
 
   const handleProjectSwipeArchive = React.useCallback(
     (project: ProjectRow) => {
@@ -2491,6 +2570,7 @@ export default function TasksScreen() {
             text: '删除',
             style: 'destructive',
             onPress: async () => {
+              markPageDirty();
               try {
                 LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                 await deleteProject(project.id);
@@ -2506,7 +2586,7 @@ export default function TasksScreen() {
         ]);
       })();
     },
-    [loadProjectTasks, loadProjects]
+    [loadProjectTasks, loadProjects, markPageDirty]
   );
 
   const activateShelvedTodo = React.useCallback(
@@ -2516,6 +2596,7 @@ export default function TasksScreen() {
       if (!current || !isTaskShelvedStatus(current.status)) return;
 
       standaloneTodoSwipeableRefs.current[taskId]?.close();
+      markPageDirty();
       setActivatingShelvedTodoId(taskId);
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setTasks((prev) =>
@@ -2537,7 +2618,7 @@ export default function TasksScreen() {
         setActivatingShelvedTodoId(null);
       }
     },
-    [activatingShelvedTodoId, loadTasks, tasks, upgradingStandaloneTodoId]
+    [activatingShelvedTodoId, loadTasks, markPageDirty, tasks, upgradingStandaloneTodoId]
   );
 
   const confirmActivateShelvedTodo = React.useCallback(
@@ -2569,6 +2650,8 @@ export default function TasksScreen() {
         alertProjectTaskLocked(projectLockMap.get(current.project_id));
         return;
       }
+
+      markPageDirty();
 
       const wasDone = isTaskTerminalStatus(current.status);
       const nextStatus: TaskRow['status'] = wasDone ? 'todo' : 'done';
@@ -2729,6 +2812,7 @@ export default function TasksScreen() {
       loadTasks,
       lockedProjectIds,
       logicalTodayYmd,
+      markPageDirty,
       moveProjectToInboxById,
       projectLockMap,
       projectTaskTreeMap,
@@ -2746,6 +2830,7 @@ export default function TasksScreen() {
       return;
     }
     if (quickTodoSaving) return;
+    markPageDirty();
     setQuickTodoSaving(true);
     const id = makeTimestampEntityId('tsk_', 8);
     const now = new Date().toISOString();
@@ -2791,12 +2876,13 @@ export default function TasksScreen() {
     } finally {
       setQuickTodoSaving(false);
     }
-  }, [loadTasks, quickTodoDraft, quickTodoSaving]);
+  }, [loadTasks, markPageDirty, quickTodoDraft, quickTodoSaving]);
 
   /** 左滑删除：软删除整棵子树，并刷新列表（与 DB deleteTask 行为一致） */
   const handleUpgradeStandaloneTodo = React.useCallback(
     async (taskId: string) => {
       if (upgradingStandaloneTodoId) return;
+      markPageDirty();
       standaloneTodoSwipeableRefs.current[taskId]?.close();
       setUpgradingStandaloneTodoId(taskId);
       try {
@@ -2827,6 +2913,7 @@ export default function TasksScreen() {
       loadProjectTasks,
       loadProjects,
       loadTasks,
+      markPageDirty,
       saveExpandedProjectState,
       upgradingStandaloneTodoId,
     ]
@@ -2841,6 +2928,7 @@ export default function TasksScreen() {
           text: '删除',
           style: 'destructive',
           onPress: async () => {
+            markPageDirty();
             try {
               LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
               await deleteTask(taskId);
@@ -2855,7 +2943,7 @@ export default function TasksScreen() {
         },
       ]);
     },
-    [loadProjectTasks, loadTasks, projects]
+    [loadProjectTasks, loadTasks, markPageDirty, projects]
   );
 
   const openStandaloneTaskComposer = React.useCallback(() => {
@@ -2916,39 +3004,67 @@ export default function TasksScreen() {
         if (isBreakHabitSucceeded(habit.extra_data)) return;
         const todayYmd = getLogicalLocalYmd(new Date(), dayBoundary);
         const marked = await tryMarkBreakHabitCompleted(habit, todayYmd);
-        if (marked) await loadHabits();
+        if (marked) {
+          await loadHabits();
+          await syncHabitBoundTasksForHabit(habitId);
+        }
       } catch (err) {
         console.warn('检测戒除习惯完成状态失败', err);
       }
     },
-    [dayBoundary, loadHabits]
+    [dayBoundary, loadHabits, syncHabitBoundTasksForHabit]
+  );
+
+  const maybeCompleteBuildHabit = React.useCallback(
+    async (habitId: string) => {
+      try {
+        const habit = await getHabitById(habitId);
+        if (!habit || parseHabitKind(habit.extra_data) !== 'build') return;
+        if (isBuildHabitSucceeded(habit.extra_data)) return;
+        const todayYmd = getLogicalLocalYmd(new Date(), dayBoundary);
+        const marked = await tryMarkBuildHabitCompleted(habit, todayYmd);
+        if (marked) {
+          await loadHabits();
+          await syncHabitBoundTasksForHabit(habitId);
+        }
+      } catch (err) {
+        console.warn('检测养成习惯完成状态失败', err);
+      }
+    },
+    [dayBoundary, loadHabits, syncHabitBoundTasksForHabit]
   );
 
   const handleHabitIncrement = React.useCallback(
     async (habitId: string, incrementCap: number | null) => {
+      markPageDirty();
       try {
         const { nextCount, increased } = await incrementTodayHabitCheckIn(habitId, incrementCap);
         patchHabitTodayCount(habitId, nextCount);
         if (increased) void playHabitCheckInDing();
         await maybeCompleteBreakHabit(habitId);
+        await maybeCompleteBuildHabit(habitId);
+        await syncHabitBoundTasksForHabit(habitId, nextCount);
       } catch (err) {
         console.warn('习惯打卡失败', err);
       }
     },
-    [maybeCompleteBreakHabit, patchHabitTodayCount]
+    [maybeCompleteBreakHabit, maybeCompleteBuildHabit, markPageDirty, patchHabitTodayCount, syncHabitBoundTasksForHabit]
   );
 
   const handleHabitUndoOnce = React.useCallback(
     async (habitId: string) => {
+      markPageDirty();
       try {
         const nextCount = await decrementTodayHabitCheckIn(habitId);
         patchHabitTodayCount(habitId, nextCount);
         await maybeCompleteBreakHabit(habitId);
+        await maybeCompleteBuildHabit(habitId);
+        await syncHabitBoundTasksForHabit(habitId, nextCount);
       } catch (err) {
         console.warn('撤销打卡失败', err);
       }
     },
-    [maybeCompleteBreakHabit, patchHabitTodayCount]
+    [maybeCompleteBreakHabit, maybeCompleteBuildHabit, markPageDirty, patchHabitTodayCount, syncHabitBoundTasksForHabit]
   );
 
   const handleHabitIconPress = React.useCallback(
@@ -3049,6 +3165,7 @@ export default function TasksScreen() {
     }
 
     try {
+      markPageDirty();
       if (categoryEditorTitle.includes('新建')) {
         await createProjectCategory({ id: buildCategoryId('project'), name });
         await loadProjectCategories();
@@ -3072,6 +3189,7 @@ export default function TasksScreen() {
     categoryInputValue,
     closeCategoryEditor,
     loadProjectCategories,
+    markPageDirty,
     scopedCategories,
   ]);
 
@@ -3103,6 +3221,7 @@ export default function TasksScreen() {
         text: '删除',
         style: 'destructive',
         onPress: async () => {
+          markPageDirty();
           try {
             await deleteProjectCategory(activeCategoryId);
             await loadProjectCategories();
@@ -3121,6 +3240,7 @@ export default function TasksScreen() {
     activeCategoryLabel,
     closeCategoryMenu,
     loadProjectCategories,
+    markPageDirty,
     projects,
     projectTab,
     scopedCategories,
@@ -3888,13 +4008,14 @@ export default function TasksScreen() {
                           const breakUi = isBreak
                             ? getBreakHabitDayUiState(item.todayCount, item.dailyGoal)
                             : null;
-                          const goalMet =
-                            !isBreak &&
-                            isHabitDayGoalMet({
-                              kind: item.kind,
-                              todayCount: item.todayCount,
-                              dailyGoal: item.dailyGoal,
-                            });
+                          const displayCompleted = isHabitDayDisplayCompleted({
+                            kind: item.kind,
+                            todayCount: item.todayCount,
+                            dailyGoal: item.dailyGoal,
+                          });
+                          const goalMet = isBreak
+                            ? scheduleAllowsToday && displayCompleted
+                            : displayCompleted;
                           const goalFailed = isBreak && scheduleAllowsToday && breakUi === 'failed';
                           const breakSlipping = isBreak && scheduleAllowsToday && breakUi === 'slipping';
                           const buildProgressing =
@@ -3959,9 +4080,11 @@ export default function TasksScreen() {
                                             ? failBorder
                                             : breakSlipping && slipBorder
                                               ? slipBorder
-                                              : isDark
-                                                ? 'rgba(148,163,184,0.42)'
-                                                : 'rgba(148,163,184,0.5)'
+                                              : goalMet
+                                                ? secondary
+                                                : isDark
+                                                  ? 'rgba(148,163,184,0.42)'
+                                                  : 'rgba(148,163,184,0.5)'
                                           : goalMet
                                             ? secondary
                                             : buildProgressing && buildBorder
@@ -4303,6 +4426,13 @@ export default function TasksScreen() {
                       const dueOverdue = isTaskDueOverdue(dueDate, isDone, logicalTodayYmd);
                       const effectivePriority = getEffectiveTaskPriority(node, logicalTodayYmd);
                       const hintPaddingLeft = 10 + 22 + 8 + (isChildRow ? 28 : 0) + 14 + 8;
+                      const boundHabitIds = parseBoundHabitIdsFromExtraData(node.extra_data);
+                      const boundHabits = boundHabitIds
+                        .map((id) => habitLookupById.get(id))
+                        .filter((h): h is { name: string; icon: string } => !!h);
+                      const boundHabitLabel = boundHabitIds
+                        .map((id) => habitLookupById.get(id)?.name?.trim() || '已删除')
+                        .join('、');
                       return (
                         <View key={node.id}>
                           <View
@@ -4404,21 +4534,46 @@ export default function TasksScreen() {
                                 </View>
                               ) : null}
                               <View style={styles.taskTitleRow}>
-                                <Text
-                                  style={[
-                                    styles.projectTaskText,
-                                    level > 1 && styles.projectTaskTextChild,
-                                    {
-                                      color: isDone ? colors.textMuted : dueOverdue ? error : colors.text,
-                                      fontWeight: dueOverdue && !isDone ? '800' : level > 1 ? '600' : '700',
-                                      textDecorationLine: isDone ? 'line-through' : 'none',
-                                      opacity: isDone ? 0.85 : 1,
-                                    },
-                                  ]}
-                                  numberOfLines={1}>
-                                  {node.title}
-                                </Text>
-                                {level === 1 && isDone ? <Text style={styles.taskDoneTag}>已完成</Text> : null}
+                                <View style={styles.projectTaskTitleMain}>
+                                  {boundHabits.length === 1 ? (
+                                    <Text
+                                      style={styles.projectTaskHabitBindEmoji}
+                                      accessibilityLabel={`已绑定小习惯：${boundHabits[0].name}`}>
+                                      {boundHabits[0].icon}
+                                    </Text>
+                                  ) : boundHabits.length > 1 ? (
+                                    <Text
+                                      style={styles.projectTaskHabitBindEmoji}
+                                      accessibilityLabel={`已绑定 ${boundHabits.length} 个小习惯`}>
+                                      {boundHabits
+                                        .slice(0, 2)
+                                        .map((h) => h.icon)
+                                        .join('')}
+                                    </Text>
+                                  ) : null}
+                                  <Text
+                                    style={[
+                                      styles.projectTaskText,
+                                      level > 1 && styles.projectTaskTextChild,
+                                      {
+                                        color: isDone ? colors.textMuted : dueOverdue ? error : colors.text,
+                                        fontWeight: dueOverdue && !isDone ? '800' : level > 1 ? '600' : '700',
+                                        textDecorationLine: isDone ? 'line-through' : 'none',
+                                        opacity: isDone ? 0.85 : 1,
+                                      },
+                                    ]}
+                                    numberOfLines={1}>
+                                    {node.title}
+                                  </Text>
+                                </View>
+                                <View style={styles.projectTaskTitleTags}>
+                                  {boundHabitIds.length > 0 ? (
+                                    <Text style={[styles.projectTaskHabitBindPillText, { color: outline }]}>
+                                      {boundHabitIds.length > 1 ? `${boundHabitIds.length}项习惯` : '习惯'}
+                                    </Text>
+                                  ) : null}
+                                  {level === 1 && isDone ? <Text style={styles.taskDoneTag}>已完成</Text> : null}
+                                </View>
                               </View>
                               {(() => {
                                 const meta = parseTaskMeta(node.extra_data);
@@ -4428,6 +4583,18 @@ export default function TasksScreen() {
                                 const repeat = (meta.repeat ?? '').trim();
                                 return (
                                   <View style={styles.projectTaskMetaRow}>
+                                    {boundHabitIds.length > 0 ? (
+                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
+                                        <MaterialIcons name="repeat" size={11} color={outline} />
+                                        <Text style={[styles.projectTaskMetaText, { color: outline }]} numberOfLines={2}>
+                                          {boundHabitIds.length > 1
+                                            ? `绑定「${boundHabitLabel}」· 全部达成即完成`
+                                            : boundHabits.length === 1
+                                              ? `绑定「${boundHabits[0].name}」· 达成即完成`
+                                              : '绑定习惯（已删除）'}
+                                        </Text>
+                                      </View>
+                                    ) : null}
                                     {!!priorityLabel && (
                                       <View style={[styles.projectTaskMetaChip, { backgroundColor: `${priorityColor}14`, borderColor: `${priorityColor}40` }]}>
                                         <MaterialIcons name="flag" size={11} color={priorityColor} />
@@ -5721,12 +5888,16 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   taskTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  projectTaskTitleMain: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  projectTaskTitleTags: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
   taskTitleDoneMain: { color: '#6b7280', textDecorationLine: 'line-through' },
   taskDoneTag: { color: '#6b7280', fontSize: 12, fontWeight: '700' },
   projectTaskMain: { flex: 1, gap: 4, paddingTop: 1 },
   projectTaskText: { flex: 1, fontSize: 13, fontWeight: '600' },
   projectTaskTextDone: { textDecorationLine: 'line-through' },
-  projectTaskMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  projectTaskMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', paddingRight: 10 },
+  projectTaskHabitBindEmoji: { fontSize: 13, lineHeight: 16 },
+  projectTaskHabitBindPillText: { fontSize: 10, fontWeight: '700' },
   projectTaskMetaChip: {
     flexDirection: 'row',
     alignItems: 'center',

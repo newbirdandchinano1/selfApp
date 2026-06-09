@@ -7,6 +7,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Directory, File, Paths } from 'expo-file-system';
 import React from 'react';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
@@ -129,6 +130,30 @@ function formatLocalYmd(d: Date) {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function sumHealthRecordsDayTotals(rows: HealthRecordRow[]): HealthIntakeDayTotals {
+  let hydration = 0;
+  let protein = 0;
+  let carbohydrate = 0;
+  let sodium = 0;
+  for (const r of rows) {
+    hydration += Number(r.hydration ?? 0);
+    protein += Number(r.protein ?? 0);
+    carbohydrate += Number(r.carbohydrate ?? 0);
+    sodium += Number(r.sodium ?? 0);
+  }
+  return { hydration, protein, carbohydrate, sodium };
+}
+
+function pickHealthRecordsForYmd(
+  ymd: string,
+  week: HealthRecordRow[],
+  prevWeek: HealthRecordRow[],
+): HealthRecordRow[] {
+  return [...week, ...prevWeek]
+    .filter((r) => r.record_date === ymd)
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
 }
 
 /** 将拍照/选图的临时 URI 复制到应用目录，便于详情页长期展示 */
@@ -696,8 +721,11 @@ export default function HealthScreen() {
   const weekDaysPrev = React.useMemo(() => getWeekDaysFromAnchor(addDays(weekAnchorDate, -7)), [weekAnchorDate]);
   const weekDaysNext = React.useMemo(() => getWeekDaysFromAnchor(addDays(weekAnchorDate, 7)), [weekAnchorDate]);
 
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
-  const focusLoadGenRef = React.useRef(0);
+  const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
+  /** 用户在本页做过写操作后调用，下次聚焦时再从后端全量拉取 */
+  const markPageDirty = resetSync;
+  const reloadPageRef = React.useRef<((forceApi?: boolean) => Promise<void>) | null>(null);
+  const weekAnchorYmdRef = React.useRef(formatLocalYmd(weekAnchorDate));
 
   // 获取用户信息
   const [user, setUser] = React.useState<UserRow | null>(null);
@@ -716,7 +744,9 @@ export default function HealthScreen() {
         }
       };
 
-      void loadUser();
+      if (!shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) {
+        void loadUser();
+      }
       const unsubscribe = subscribeDefaultUserUpdates(() => {
         void refreshUser();
       });
@@ -799,14 +829,34 @@ export default function HealthScreen() {
       await reload(forceApi);
     }, forceApi);
   }, [reload, wrapLoad]);
+  reloadPageRef.current = reloadPage;
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
   useFocusEffect(
     React.useCallback(() => {
-      void reloadPage().catch((e) => console.warn('刷新健康页数据失败', e));
-    }, [reloadPage]),
+      if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
+      void reloadPageRef.current?.().catch((e) => console.warn('刷新健康页数据失败', e));
+    }, []),
   );
+
+  /** 切换周视图时重新拉取该周数据（不依赖 focus，避免切 Tab 误触发） */
+  React.useEffect(() => {
+    if (!user?.id) return;
+    const ymd = formatLocalYmd(weekAnchorDate);
+    if (weekAnchorYmdRef.current === ymd) return;
+    weekAnchorYmdRef.current = ymd;
+    if (!shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
+    void reloadPageRef.current?.();
+  }, [user?.id, weekAnchorDate]);
+
+  /** 切换选中日时从已加载的周数据中切日视图，无需重复请求 REST */
+  React.useEffect(() => {
+    const ymd = formatLocalYmd(selectedDate);
+    const dayRecords = pickHealthRecordsForYmd(ymd, healthRecords, prevWeekHealthRecords);
+    setSelectedDayRecords(dayRecords);
+    setSelectedDayIntakeTotals(dayRecords.length > 0 ? sumHealthRecordsDayTotals(dayRecords) : null);
+  }, [selectedDate, healthRecords, prevWeekHealthRecords]);
 
   const dayIntakeDisplay = React.useMemo(() => {
     const hydrationCurrent = selectedDayIntakeTotals?.hydration ?? 0;
@@ -952,6 +1002,7 @@ export default function HealthScreen() {
       if (!user?.id || !Number.isFinite(amount) || amount <= 0) return;
       const ymd = formatLocalYmd(selectedDate);
       try {
+        markPageDirty();
         await appendManualIntakeToDay({
           userId: user.id,
           recordDateYmd: ymd,
@@ -973,7 +1024,7 @@ export default function HealthScreen() {
         /* 忽略写入失败 */
       }
     },
-    [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation, pendingIntake]
+    [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation, pendingIntake, markPageDirty]
   );
 
   const persistFoodPhotoIntake = React.useCallback(
@@ -991,6 +1042,7 @@ export default function HealthScreen() {
       if (p + c + s <= 0) return false;
       const ymd = formatLocalYmd(selectedDate);
       try {
+        markPageDirty();
         const id = makeTimestampEntityId('h_', 8);
         const storedImageUri = await copyIntakePhotoToDocuments(id, sourceImageUri);
         await createHealthRecord({
@@ -1021,7 +1073,7 @@ export default function HealthScreen() {
         return false;
       }
     },
-    [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation]
+    [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation, markPageDirty]
   );
 
   const persistAiTextIntake = React.useCallback(
@@ -1040,6 +1092,7 @@ export default function HealthScreen() {
       if (h + p + c + s <= 0) return false;
       const ymd = formatLocalYmd(selectedDate);
       try {
+        markPageDirty();
         const id = makeTimestampEntityId('h_', 8);
         await createHealthRecord({
           id,
@@ -1069,7 +1122,7 @@ export default function HealthScreen() {
         return false;
       }
     },
-    [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation]
+    [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation, markPageDirty]
   );
 
   const persistQuickAddIntake = React.useCallback(
@@ -1087,6 +1140,7 @@ export default function HealthScreen() {
     async (recordId: string) => {
       if (!user?.id) return;
       try {
+        markPageDirty();
         await deleteHealthRecord(recordId);
         const { week, prevWeek, dayTotals, dayRecords } = await loadHomeHealthSliceForUser(user.id, weekAnchorDate, selectedDate);
         setHealthRecords(week);
@@ -1098,7 +1152,7 @@ export default function HealthScreen() {
         /* 忽略删除失败 */
       }
     },
-    [user?.id, selectedDate, weekAnchorDate, playIntakeFeedbackAnimation]
+    [user?.id, selectedDate, weekAnchorDate, playIntakeFeedbackAnimation, markPageDirty]
   );
 
   const confirmDeleteIntakeRecord = React.useCallback(
@@ -1627,6 +1681,9 @@ export default function HealthScreen() {
     const n = parseGoalInput(manualGoal);
     if (n !== null) {
       const rounded = Math.round(n);
+      if (rounded !== globalIntakeTargetForTab(assistantTab)) {
+        markPageDirty();
+      }
       if (assistantTab === '水分') setGlobalHydrationTargetMl(rounded);
       if (assistantTab === '蛋白质') setGlobalProteinTargetG(rounded);
       if (assistantTab === '碳水') setGlobalCarbohydrateTargetG(rounded);
@@ -1637,7 +1694,7 @@ export default function HealthScreen() {
       setIntakeTargetTick((t) => t + 1);
     }
     setAssistantOpen(false);
-  }, [assistantSuggestSelection, assistantTab, manualGoal]);
+  }, [assistantSuggestSelection, assistantTab, manualGoal, markPageDirty]);
 
   const onWeekPagerEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;

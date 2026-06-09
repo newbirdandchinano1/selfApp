@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 
 import { usePullToRefresh, type UsePullToRefreshResult } from '@/hooks/use-pull-to-refresh';
+import { isApiOnlyReads } from '@/lib/api-data-mode';
 import {
   beginPageApiRead,
   endPageApiRead,
@@ -28,7 +29,7 @@ export function usePageApiSync(pageKey: string) {
       beginPageApiRead(readOpts);
       try {
         const ok = await fn();
-        if (!readOpts.localOnly && ok !== false) {
+        if (ok !== false && (isApiOnlyReads() || !readOpts.localOnly)) {
           markPageSyncedWithApi(pageKey);
           setSynced(true);
         }

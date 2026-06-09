@@ -13,7 +13,12 @@ import {
   restartBreakHabit,
   syncBreakHabitCompletions,
 } from '@/lib/repositories/habits/habit-break-success';
-import { parseHabitConsecutiveTargetDays } from '@/lib/repositories/habits/habit-goal';
+import {
+  isBuildHabitSucceeded,
+  parseBuildHabitCycle,
+  syncBuildHabitCompletions,
+} from '@/lib/repositories/habits/habit-build-success';
+import { parseBuildHabitExpectedGoal, parseHabitConsecutiveTargetDays } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -34,10 +39,15 @@ type HabitItem = {
   breakCompletedAt: string | null;
   breakCompletedStreak: number | null;
   consecutiveTargetDays: number | null;
+  buildSucceeded: boolean;
+  buildCompletedAt: string | null;
+  buildCompletedValue: number | null;
+  buildExpectedGoal: ReturnType<typeof parseBuildHabitExpectedGoal>;
 };
 
 const HABIT_KIND_BREAK_ACCENT = '#ea580c';
 const HABIT_KIND_BREAK_SUCCESS = '#059669';
+const HABIT_KIND_BUILD_SUCCESS = '#0d9488';
 
 type HabitGroup = {
   category: string;
@@ -67,6 +77,7 @@ export default function HabitManageScreen() {
     await wrapLoad(async () => {
     try {
       await syncBreakHabitCompletions();
+      await syncBuildHabitCompletions();
       const [rows, checkStats] = await Promise.all([getHabits(), getHabitCheckInListStats()]);
       const byCtx = new Map<string, HabitItem[]>();
 
@@ -75,7 +86,9 @@ export default function HabitManageScreen() {
         const st = checkStats.get(r.id);
         const kind = parseHabitKind(r.extra_data);
         const cycle = parseBreakHabitCycle(r.extra_data);
+        const buildCycle = parseBuildHabitCycle(r.extra_data);
         const breakSucceeded = kind === 'break' && isBreakHabitSucceeded(r.extra_data);
+        const buildSucceeded = kind === 'build' && isBuildHabitSucceeded(r.extra_data);
         items.push({
           id: r.id,
           name: r.name,
@@ -88,6 +101,10 @@ export default function HabitManageScreen() {
           breakCompletedAt: cycle.completedAt,
           breakCompletedStreak: cycle.completedStreak,
           consecutiveTargetDays: kind === 'break' ? parseHabitConsecutiveTargetDays(r.extra_data) : null,
+          buildSucceeded,
+          buildCompletedAt: buildCycle.completedAt,
+          buildCompletedValue: buildCycle.completedValue,
+          buildExpectedGoal: kind === 'build' ? parseBuildHabitExpectedGoal(r.extra_data) : null,
         });
         byCtx.set(r.context, items);
       });
@@ -296,11 +313,18 @@ export default function HabitManageScreen() {
                 {group.items.map((item) => {
                   const isBreak = item.kind === 'break';
                   const isRestarting = restartingId === item.id;
-                  const leftAccent = item.breakSucceeded
+                  const succeeded = item.breakSucceeded || item.buildSucceeded;
+                  const leftAccent = succeeded
                     ? HABIT_KIND_BREAK_SUCCESS
                     : isBreak
                       ? HABIT_KIND_BREAK_ACCENT
                       : colors.primary;
+                  const buildGoalLabel =
+                    item.buildExpectedGoal?.type === 'times'
+                      ? `${item.buildExpectedGoal.value} 次`
+                      : item.buildExpectedGoal?.type === 'days'
+                        ? `${item.buildExpectedGoal.value} 天`
+                        : null;
                   return (
                   <View
                     key={item.id}
@@ -312,7 +336,7 @@ export default function HabitManageScreen() {
                         borderColor: colors.outline,
                         borderLeftColor: leftAccent,
                       },
-                      item.breakSucceeded && {
+                      succeeded && {
                         backgroundColor: isDark ? 'rgba(5,150,105,0.08)' : 'rgba(5,150,105,0.06)',
                       },
                     ]}>
@@ -359,6 +383,21 @@ export default function HabitManageScreen() {
                                   {item.breakSucceeded ? '戒除成功' : '戒坏习惯'}
                                 </Text>
                               </View>
+                            ) : item.buildSucceeded ? (
+                              <View
+                                style={[
+                                  styles.itemKindPill,
+                                  {
+                                    backgroundColor: isDark
+                                      ? 'rgba(13,148,136,0.22)'
+                                      : 'rgba(13,148,136,0.12)',
+                                    borderColor: isDark ? 'rgba(13,148,136,0.45)' : 'rgba(13,148,136,0.35)',
+                                  },
+                                ]}>
+                                <Text style={[styles.itemKindPillText, { color: HABIT_KIND_BUILD_SUCCESS }]}>
+                                  养成完成
+                                </Text>
+                              </View>
                             ) : null}
                           </View>
                           <View style={styles.itemTagRow}>
@@ -370,6 +409,11 @@ export default function HabitManageScreen() {
                             <Text style={[styles.itemStats, { color: HABIT_KIND_BREAK_SUCCESS }]}>
                               已连续 {item.breakCompletedStreak ?? item.consecutiveTargetDays ?? '—'} 天达标
                               {item.breakCompletedAt ? ` · ${item.breakCompletedAt} 完成` : ''}
+                            </Text>
+                          ) : item.buildSucceeded ? (
+                            <Text style={[styles.itemStats, { color: HABIT_KIND_BUILD_SUCCESS }]}>
+                              已达成预期目标 {buildGoalLabel ?? ''}
+                              {item.buildCompletedAt ? ` · ${item.buildCompletedAt} 完成` : ''}
                             </Text>
                           ) : item.achievedDays > 0 || item.todayCount > 0 ? (
                             <Text style={[styles.itemStats, { color: colors.textSecondary }]}>

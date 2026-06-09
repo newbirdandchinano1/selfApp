@@ -58,6 +58,8 @@ import {
   mergeCompletionRewardIntoExtraData,
   parseCompletionRewardFromExtraData,
 } from '@/lib/completion-reward/completion-reward-extra';
+import { getHabits } from '@/lib/repositories/habits/habit';
+import { parseBoundHabitIdsFromExtraData } from '@/lib/repositories/tasks/task-habit-binding';
 
 type Subtask = {
   id: string;
@@ -73,6 +75,7 @@ type Subtask = {
   repeatText?: string;
   note?: string;
   schedule?: ProjectScheduleMeta | null;
+  boundHabitIds?: string[];
 };
 
 type SubtaskNode = Subtask & { children: SubtaskNode[] };
@@ -189,6 +192,22 @@ function formatSaveError(error: unknown): string {
   return '未知错误，请稍后重试。';
 }
 
+function normalizeProjectCategoryId(categoryId: string | null | undefined): string | null {
+  return !categoryId || categoryId === INBOX_PROJECT_CATEGORY_ID ? null : categoryId;
+}
+
+/** 未在弹窗中改分类时保留加载时的 category_id，避免 focus 重载把 selectedCategoryId 置空后误保存为未分类 */
+function resolveProjectCategoryIdForSave(
+  selectedId: string | null,
+  snapshotCategoryId: string | null | undefined,
+  categoryTouched: boolean,
+): string | null {
+  if (categoryTouched) {
+    return normalizeProjectCategoryId(selectedId);
+  }
+  return normalizeProjectCategoryId(snapshotCategoryId ?? selectedId);
+}
+
 function parseProjectExtraData(raw: string | null): ProjectExtraData {
   if (!raw) return {};
   try {
@@ -250,6 +269,7 @@ function mapTaskRowToSubtask(task: TaskRow): Subtask {
     repeat,
     repeatText: repeat,
     note: task.note ?? '',
+    boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
   };
 }
 
@@ -392,8 +412,10 @@ export default function EditProjectScreen() {
   const [persistedTaskIds, setPersistedTaskIds] = React.useState<Set<string>>(new Set());
   const [categories, setCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
-  /** 供 readAddTaskResult 读取，避免将其列入依赖导致改分类时 useFocusEffect 整页重载 */
+  /** 供 readAddTaskResult / saveProject 读取，避免 focus 重载与闭包竞态 */
   const selectedCategoryIdRef = React.useRef<string | null>(null);
+  const projectSnapshotRef = React.useRef<ProjectRow | null>(null);
+  const categoryTouchedRef = React.useRef(false);
   React.useEffect(() => {
     selectedCategoryIdRef.current = selectedCategoryId;
   }, [selectedCategoryId]);
@@ -402,6 +424,7 @@ export default function EditProjectScreen() {
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
   const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
+  const [habitNameById, setHabitNameById] = React.useState<Map<string, string>>(() => new Map());
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [toastVisible, setToastVisible] = React.useState(false);
@@ -447,9 +470,9 @@ export default function EditProjectScreen() {
     };
   }, []);
 
-  const readScheduleResult = React.useCallback(() => {
+  const readScheduleResult = React.useCallback((): boolean => {
     const picked = consumeSchedulePickerResult(scheduleSource);
-    if (!picked) return;
+    if (!picked) return false;
 
     if (picked.repeatOption !== '不重复') {
       setDeadlineText('');
@@ -491,7 +514,7 @@ export default function EditProjectScreen() {
       startTime: picked.startTime,
       endTime: picked.endTime,
     });
-
+    return true;
   }, [scheduleSource]);
 
   const readAddTaskResult = React.useCallback(async () => {
@@ -503,9 +526,11 @@ export default function EditProjectScreen() {
     }
 
     const task = payload.task;
-    const categoryId = selectedCategoryIdRef.current;
-    const normalizedCategoryId =
-      !categoryId || categoryId === INBOX_PROJECT_CATEGORY_ID ? null : categoryId;
+    const normalizedCategoryId = resolveProjectCategoryIdForSave(
+      selectedCategoryIdRef.current,
+      projectSnapshotRef.current?.category_id,
+      categoryTouchedRef.current,
+    );
 
     try {
       const taskSchedule = task.schedule ?? null;
@@ -555,10 +580,10 @@ export default function EditProjectScreen() {
         router.back();
         return;
       }
+      projectSnapshotRef.current = project;
+      categoryTouchedRef.current = false;
       setTitle(project.name);
-      setSelectedCategoryId(
-        !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? null : project.category_id
-      );
+      setSelectedCategoryId(normalizeProjectCategoryId(project.category_id));
       setNotes(project.note ?? '');
       const extraData = parseProjectExtraDataWithAi(project.extra_data) as ProjectExtraData;
       setProjectExtraData(extraData);
@@ -573,6 +598,13 @@ export default function EditProjectScreen() {
       const tree = mapTaskTreeToSubtaskNodes(projectTasks);
       setSubtasks(tree);
       setPersistedTaskIds(new Set(collectAllSubtaskIds(tree)));
+      try {
+        const habits = await getHabits();
+        setHabitNameById(new Map(habits.map((h) => [h.id, h.name])));
+      } catch (habitErr) {
+        console.warn('加载小习惯名称失败', habitErr);
+        setHabitNameById(new Map());
+      }
     } catch (error) {
       console.warn('加载项目详情失败', error);
       Alert.alert('加载失败', '无法读取项目详情，请稍后重试。');
@@ -652,25 +684,43 @@ export default function EditProjectScreen() {
     void readAddTaskResult();
   }, [readAddTaskResult]);
 
+  const reloadSubtasksOnly = React.useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const projectTasks = await getTasksByProjectId(projectId);
+      const tree = mapTaskTreeToSubtaskNodes(projectTasks);
+      setSubtasks(tree);
+      setPersistedTaskIds(new Set(collectAllSubtaskIds(tree)));
+    } catch (error) {
+      console.warn('刷新项目任务失败', error);
+    }
+  }, [projectId]);
+
   const reloadProjectPageRef = React.useRef(reloadProjectPage);
   reloadProjectPageRef.current = reloadProjectPage;
+  const reloadSubtasksOnlyRef = React.useRef(reloadSubtasksOnly);
+  reloadSubtasksOnlyRef.current = reloadSubtasksOnly;
   const readScheduleResultRef = React.useRef(readScheduleResult);
   readScheduleResultRef.current = readScheduleResult;
   const readAddTaskResultRef = React.useRef(readAddTaskResult);
   readAddTaskResultRef.current = readAddTaskResult;
 
+  React.useEffect(() => {
+    categoryTouchedRef.current = false;
+    projectSnapshotRef.current = null;
+    void reloadProjectPageRef.current();
+  }, [projectId]);
+
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
       void (async () => {
-        try {
-          await reloadProjectPageRef.current();
-        } catch (e) {
-          console.warn('加载项目页失败', e);
-        }
-        if (cancelled) return;
-        readScheduleResultRef.current();
+        const consumedSchedule = readScheduleResultRef.current();
         await readAddTaskResultRef.current();
+        if (cancelled) return;
+        if (!consumedSchedule) {
+          await reloadSubtasksOnlyRef.current();
+        }
       })();
       return () => {
         cancelled = true;
@@ -793,8 +843,11 @@ export default function EditProjectScreen() {
     try {
       const db = await getDatabase();
       await db.execAsync('BEGIN IMMEDIATE');
-      const normalizedCategoryId =
-        !selectedCategoryId || selectedCategoryId === INBOX_PROJECT_CATEGORY_ID ? null : selectedCategoryId;
+      const normalizedCategoryId = resolveProjectCategoryIdForSave(
+        selectedCategoryIdRef.current,
+        projectSnapshotRef.current?.category_id,
+        categoryTouchedRef.current,
+      );
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
       const mergedExtra = mergePrerequisiteIdsIntoExtraData(
         { ...projectExtraData, schedule: scheduleToSave },
@@ -813,9 +866,19 @@ export default function EditProjectScreen() {
       });
       const existingTasks = await getTasksByProjectId(projectId);
       const existingTaskIds = new Set(collectAllSubtaskIds(mapTaskTreeToSubtaskNodes(existingTasks)));
+      const existingTaskById = new Map<string, TaskRow>();
+      const walkExistingTasks = (nodes: TaskTreeNode[]) => {
+        for (const node of nodes) {
+          existingTaskById.set(node.id, node);
+          if (node.children.length > 0) walkExistingTasks(node.children);
+        }
+      };
+      walkExistingTasks(existingTasks);
 
       const flatWithParents = flattenSubtasksWithParents(subtasks, null);
       for (const { subtask, parent_task_id } of flatWithParents) {
+        const existingTask = existingTaskById.get(subtask.id);
+        const existingExtra = existingTask ? parseTaskExtraData(existingTask.extra_data) : parseTaskExtraData(null);
         const payload = {
           project_id: projectId,
           category_id: normalizedCategoryId,
@@ -826,6 +889,7 @@ export default function EditProjectScreen() {
           priority: toTaskPriority(subtask.priority || subtask.priorityLabel),
           due_date: extractDueDate(subtask.deadline || subtask.deadlineText || ''),
           extra_data: JSON.stringify({
+            ...existingExtra,
             reminder: subtask.reminder || subtask.reminderText || '',
             repeat: subtask.repeat || subtask.repeatText || '',
           }),
@@ -887,7 +951,6 @@ export default function EditProjectScreen() {
     router,
     saving,
     scheduleMeta,
-    selectedCategoryId,
     subtasks,
     title,
   ]);
@@ -1005,7 +1068,8 @@ export default function EditProjectScreen() {
                     s.reminderText ||
                     s.repeat ||
                     s.repeatText ||
-                    s.note
+                    s.note ||
+                    (s.boundHabitIds?.length ?? 0) > 0
                   ) && (
                     <>
                       <View style={styles.subtaskMetaRow}>
@@ -1040,6 +1104,16 @@ export default function EditProjectScreen() {
                             <Text style={[styles.metaTagText, { color: theme.text }]}>{s.repeat || s.repeatText}</Text>
                           </View>
                         )}
+                        {(s.boundHabitIds ?? []).map((habitId) => (
+                          <View
+                            key={habitId}
+                            style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
+                            <MaterialIcons name="repeat" size={14} color={primary} />
+                            <Text style={[styles.metaTagText, { color: theme.text }]} numberOfLines={1}>
+                              {habitNameById.get(habitId)?.trim() || '已绑定习惯'}
+                            </Text>
+                          </View>
+                        ))}
                       </View>
                       {!!s.note && (
                         <Text style={[styles.subtaskNote, { color: outline }]} numberOfLines={2}>
@@ -1323,6 +1397,7 @@ export default function EditProjectScreen() {
             <Text style={[styles.modalTitle, { color: theme.text }]}>选择项目分类</Text>
             <Pressable
               onPress={() => {
+                categoryTouchedRef.current = true;
                 setSelectedCategoryId(null);
                 setCategoryModalVisible(false);
               }}
@@ -1334,6 +1409,7 @@ export default function EditProjectScreen() {
               <Pressable
                 key={item.id}
                 onPress={() => {
+                  categoryTouchedRef.current = true;
                   setSelectedCategoryId(item.id);
                   setCategoryModalVisible(false);
                 }}

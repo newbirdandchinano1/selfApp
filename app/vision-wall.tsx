@@ -192,11 +192,15 @@ const VisionCard = ({
       : undefined;
 
   return (
-    <View
-      style={[
+    <Pressable
+      onPress={onOpenDetail}
+      accessibilityRole="button"
+      accessibilityLabel={`查看总目标 ${card.title}`}
+      style={({ pressed }) => [
         styles.card,
         targetCardMinHeight != null ? styles.cardExpandable : null,
         targetCardMinHeight != null ? { minHeight: targetCardMinHeight } : null,
+        pressed && { opacity: 0.94 },
       ]}
     >
       <Image source={card.imageSource} style={styles.cardBgImg} contentFit="cover" transition={120} />
@@ -207,10 +211,7 @@ const VisionCard = ({
       {isTargetCard && card.simpleComplete ? (
         <View style={styles.cardTitleTop} pointerEvents="box-none">
           <View style={styles.simpleCompleteRow}>
-            <Pressable
-              onPress={onOpenDetail}
-              style={({ pressed }) => [styles.simpleCompleteTitleTap, pressed && { opacity: 0.9 }]}
-            >
+            <View style={styles.simpleCompleteTitleTap}>
               <Text
                 style={[styles.cardTitle, styles.simpleCompleteTitle, card.isComplete && styles.cardTitleDone]}
                 numberOfLines={2}
@@ -223,7 +224,7 @@ const VisionCard = ({
                   <Text style={styles.completeBadgeText}>已完成</Text>
                 </View>
               ) : null}
-            </Pressable>
+            </View>
             <Pressable
               onPress={() => onToggleTargetComplete(visionId, !!card.isComplete)}
               style={({ pressed }) => [
@@ -243,14 +244,11 @@ const VisionCard = ({
       ) : null}
 
       {isTargetCard && !card.simpleComplete ? (
-        <Pressable
-          onPress={onOpenDetail}
-          style={({ pressed }) => [styles.cardTitleTop, { opacity: pressed ? 0.92 : 1 }]}
-        >
+        <View style={styles.cardTitleTop}>
           <Text style={[styles.cardTitle, styles.cardTitlePinned]} numberOfLines={2}>
             {card.title}
           </Text>
-        </Pressable>
+        </View>
       ) : null}
 
       <View
@@ -262,7 +260,7 @@ const VisionCard = ({
         pointerEvents="box-none"
       >
         {!(card.kind === 'target' && card.simpleComplete) ? (
-          <Pressable onPress={onOpenDetail} style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+          <>
           {card.kind === 'progress' && (
             <>
               <Text style={styles.cardTitle}>{card.title}</Text>
@@ -369,7 +367,7 @@ const VisionCard = ({
               </View>
             </>
           )}
-          </Pressable>
+          </>
         ) : null}
 
         {showCountAdjust && card.wallAdjust ? (
@@ -465,7 +463,7 @@ const VisionCard = ({
           </View>
         ) : null}
       </View>
-    </View>
+    </Pressable>
   );
 };
 

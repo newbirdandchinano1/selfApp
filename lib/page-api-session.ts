@@ -10,6 +10,11 @@ export function hasPageSyncedWithApi(pageKey: string): boolean {
   return syncedPages.has(pageKey);
 }
 
+/** 页面 focus 时是否可跳过 REST 全量刷新（本会话已成功加载且未被 reset） */
+export function shouldSkipPageFocusApiRefresh(pageKey: string): boolean {
+  return hasPageSyncedWithApi(pageKey);
+}
+
 export function markPageSyncedWithApi(pageKey: string): void {
   if (!pageKey.trim()) return;
   syncedPages.add(pageKey);
@@ -79,7 +84,7 @@ export async function runPageApiLoad(
   beginPageApiRead(readOpts);
   try {
     const ok = await fn();
-    if (!readOpts.localOnly && ok !== false) markPageSyncedWithApi(pageKey);
+    if (ok !== false && (isApiOnlyReads() || !readOpts.localOnly)) markPageSyncedWithApi(pageKey);
   } finally {
     endPageApiRead();
   }

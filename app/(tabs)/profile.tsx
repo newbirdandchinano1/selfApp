@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { getRollingSevenDayRange } from '@/lib/repositories/insights/weekly-review';
 import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
 import { getWeeklyReviewConfiguredWeekday, WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/lib/weekly-review-settings';
@@ -74,7 +75,10 @@ const PAGE_API_KEY = 'tabs/profile';
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
+  /** 用户在本页做过操作后调用，下次聚焦时再从后端全量拉取 */
+  const markPageDirty = resetSync;
+  const reloadPageRef = useRef<((forceApi?: boolean) => Promise<void>) | null>(null);
   const colorScheme = useColorScheme();
   const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
   const theme = Colors[scheme];
@@ -270,15 +274,26 @@ export default function ProfileScreen() {
     loadProfileWishItems,
     loadWeeklyJournal,
   ]);
+  reloadPageRef.current = reload;
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
+  const onProfileAction = useCallback(
+    (action: () => void) => {
+      markPageDirty();
+      action();
+    },
+    [markPageDirty],
+  );
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      void reload().catch((e) => {
-        if (__DEV__) console.warn('[profile] reload failed', e);
-      });
+      if (!shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) {
+        void reloadPageRef.current?.().catch((e) => {
+          if (__DEV__) console.warn('[profile] reload failed', e);
+        });
+      }
       const unsubscribe = subscribeDefaultUserUpdates(() => {
         if (cancelled) return;
         void loadUser();
@@ -287,7 +302,7 @@ export default function ProfileScreen() {
         cancelled = true;
         unsubscribe();
       };
-    }, [loadUser, reload]),
+    }, [loadUser]),
   );
 
   const healthBgUrl = require('../../assets/profile/health.png');
@@ -383,7 +398,7 @@ export default function ProfileScreen() {
               <View style={styles.nameRow}>
                 <Text style={[styles.name, { color: text }]}>{displayName}</Text>
                 <Pressable
-                  onPress={() => router.push('/edit-profile')}
+                  onPress={() => onProfileAction(() => router.push('/edit-profile'))}
                   style={[styles.iconBtn, { borderColor: `${primary}30` }]}
                 >
                   <MaterialIcons name="edit" size={18} color={primary} />
@@ -428,7 +443,7 @@ export default function ProfileScreen() {
               <Text style={[styles.kicker, { color: outline }]}>YEAR GOALS</Text>
               <Text style={[styles.sectionTitle, { color: text }]}>{visionSectionYear}年总目标</Text>
             </View>
-            <Pressable onPress={() => router.push('/vision-wall')}>
+            <Pressable onPress={() => onProfileAction(() => router.push('/vision-wall'))}>
               <Text style={[styles.moreText, { color: primary }]}>查看全部</Text>
             </Pressable>
           </View>
@@ -469,7 +484,7 @@ export default function ProfileScreen() {
                   暂无总目标，可在此创建第一条。
                 </Text>
                 <Pressable
-                  onPress={() => router.push('/vision-create')}
+                  onPress={() => onProfileAction(() => router.push('/vision-create'))}
                   style={({ pressed }) => [{ marginTop: 16, opacity: pressed ? 0.85 : 1 }]}
                 >
                   <Text style={{ color: primary, fontSize: 15, fontWeight: '800' }}>创建总目标</Text>
@@ -531,7 +546,11 @@ export default function ProfileScreen() {
                     return (
                       <Pressable
                         style={{ width: VISION_CARD_WIDTH }}
-                        onPress={() => router.push({ pathname: '/vision-detail/[id]', params: { id: item.id } })}
+                        onPress={() =>
+                          onProfileAction(() =>
+                            router.push({ pathname: '/vision-detail/[id]', params: { id: item.id } }),
+                          )
+                        }
                       >
                         <Animated.View
                           style={[
@@ -597,7 +616,7 @@ export default function ProfileScreen() {
               <Text style={[styles.kicker, { color: outline }]}>WISHES</Text>
               <Text style={[styles.sectionTitle, { color: text }]}>心愿单</Text>
             </View>
-            <Pressable onPress={() => router.push('/wish-list')}>
+            <Pressable onPress={() => onProfileAction(() => router.push('/wish-list'))}>
               <Text style={[styles.moreText, { color: primary }]}>查看全部</Text>
             </Pressable>
           </View>
@@ -619,7 +638,7 @@ export default function ProfileScreen() {
                 暂无心愿条目，可在心愿单中添加。
               </Text>
               <Pressable
-                onPress={() => router.push('/add-wish-item')}
+                onPress={() => onProfileAction(() => router.push('/add-wish-item'))}
                 style={({ pressed }) => [{ marginTop: 14, opacity: pressed ? 0.85 : 1 }]}
               >
                 <Text style={{ color: primary, fontSize: 15, fontWeight: '800' }}>添加好物</Text>
@@ -638,7 +657,7 @@ export default function ProfileScreen() {
                 return (
                   <Pressable
                     key={row.id}
-                    onPress={() => router.push('/wish-list')}
+                    onPress={() => onProfileAction(() => router.push('/wish-list'))}
                     style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}
                   >
                     <View
@@ -678,13 +697,13 @@ export default function ProfileScreen() {
               <Text style={[styles.kicker, { color: outline }]}>WEEKLY REVIEW</Text>
               <Text style={[styles.sectionTitle, { color: text }]}>每周复盘</Text>
             </View>
-            <Pressable onPress={() => router.push('/weekly-review')} hitSlop={8}>
+            <Pressable onPress={() => onProfileAction(() => router.push('/weekly-review'))} hitSlop={8}>
               <Text style={[styles.moreText, { color: primary }]}>去填写</Text>
             </Pressable>
           </View>
 
           <Pressable
-            onPress={() => router.push('/weekly-review')}
+            onPress={() => onProfileAction(() => router.push('/weekly-review'))}
             style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
             <View
               style={[
@@ -730,7 +749,11 @@ export default function ProfileScreen() {
 
           <View style={styles.gridWrap}>
             <Pressable
-              onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'plan-completion' } })}
+              onPress={() =>
+                onProfileAction(() =>
+                  router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'plan-completion' } }),
+                )
+              }
               style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
             >
               <View style={[styles.bigCard, { shadowColor: isDark ? '#000' : '#6c63ff' }]}>
@@ -748,7 +771,11 @@ export default function ProfileScreen() {
             </Pressable>
 
             <Pressable
-              onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'health' } })}
+              onPress={() =>
+                onProfileAction(() =>
+                  router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'health' } }),
+                )
+              }
               style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
             >
               <View style={styles.healthPersonaCard}>
@@ -769,7 +796,11 @@ export default function ProfileScreen() {
             </Pressable>
 
             <Pressable
-              onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'savings' } })}
+              onPress={() =>
+                onProfileAction(() =>
+                  router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'savings' } }),
+                )
+              }
               style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
             >
               <View style={styles.savingCard}>
@@ -787,7 +818,11 @@ export default function ProfileScreen() {
             </Pressable>
 
             <Pressable
-              onPress={() => router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'ai-insight' } })}
+              onPress={() =>
+                onProfileAction(() =>
+                  router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'ai-insight' } }),
+                )
+              }
               style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
             >
               <View style={[styles.aiCard, { backgroundColor: surface, borderColor: `${primary}1A` }]}>

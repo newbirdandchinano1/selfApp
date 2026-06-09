@@ -209,7 +209,7 @@ export default function VisionCreateScreen() {
     try {
       const id = makeTimestampEntityId('gd_', 8);
       await createGoalDimension({ id, title: t });
-      await loadGoalDimensions();
+      await reload(true);
       setSelectedDimensionId(id);
       setNewDimModalVisible(false);
       setNewDimTitle('');
@@ -219,7 +219,7 @@ export default function VisionCreateScreen() {
     } finally {
       setNewDimBusy(false);
     }
-  }, [loadGoalDimensions, newDimTitle]);
+  }, [reload, newDimTitle]);
 
   useEffect(() => {
     if (trackType !== 1) return;
