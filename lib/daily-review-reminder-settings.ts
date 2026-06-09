@@ -23,6 +23,18 @@ export function formatDailyReviewReminderClock(hour: number, minute: number): st
   return `${h < 10 ? `0${h}` : h}:${m < 10 ? `0${m}` : m}`;
 }
 
+/** 固定本地日历日，避免 RN 时间选择器在 UTC+8 等时区把「仅时间」解析成 8:00。 */
+export function dailyReviewReminderTimeToDate(hour: number, minute: number): Date {
+  return new Date(2000, 0, 1, clampHour(hour), clampMinute(minute), 0, 0);
+}
+
+export function readDailyReviewReminderTimeFromDate(date: Date): { hour: number; minute: number } {
+  return {
+    hour: clampHour(date.getHours()),
+    minute: clampMinute(date.getMinutes()),
+  };
+}
+
 export async function getDailyReviewReminderSettings(): Promise<DailyReviewReminderSettings> {
   const [enabledRaw, hourRaw, minuteRaw] = await Promise.all([
     getAppSettingRaw(AppSettingKey.dailyReviewReminderEnabled),

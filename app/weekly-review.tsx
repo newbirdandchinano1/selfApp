@@ -31,8 +31,10 @@ import {
 } from '@/lib/repositories/insights/weekly-review-journal';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
 import {
+  dailyReviewReminderTimeToDate,
   formatDailyReviewReminderClock,
   getDailyReviewReminderSettings,
+  readDailyReviewReminderTimeFromDate,
   setDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
@@ -111,11 +113,7 @@ export default function WeeklyReviewScreen() {
   const [canEdit, setCanEdit] = useState(false);
 
   const [dailyReminderEnabled, setDailyReminderEnabled] = useState(false);
-  const [dailyReminderTime, setDailyReminderTime] = useState(() => {
-    const d = new Date();
-    d.setHours(21, 0, 0, 0);
-    return d;
-  });
+  const [dailyReminderTime, setDailyReminderTime] = useState(() => dailyReviewReminderTimeToDate(21, 0));
   const [dailyReminderTimePickerOpen, setDailyReminderTimePickerOpen] = useState(false);
   const [dailyReminderBusy, setDailyReminderBusy] = useState(false);
 
@@ -160,9 +158,7 @@ export default function WeeklyReviewScreen() {
       ]);
       setConfiguredDow(dow);
       setDailyReminderEnabled(reminderSettings.enabled);
-      const reminderDate = new Date();
-      reminderDate.setHours(reminderSettings.hour, reminderSettings.minute, 0, 0);
-      setDailyReminderTime(reminderDate);
+      setDailyReminderTime(dailyReviewReminderTimeToDate(reminderSettings.hour, reminderSettings.minute));
 
       const rolling =
         dow !== null ? getRollingSevenDayRangeEndingOnNextReviewDay(today, dow) : getRollingSevenDayRange(today);
@@ -428,20 +424,22 @@ export default function WeeklyReviewScreen() {
 
   const onToggleDailyReminder = useCallback(() => {
     const nextEnabled = !dailyReminderEnabled;
+    const { hour, minute } = readDailyReviewReminderTimeFromDate(dailyReminderTime);
     setDailyReminderEnabled(nextEnabled);
     void persistDailyReminder({
       enabled: nextEnabled,
-      hour: dailyReminderTime.getHours(),
-      minute: dailyReminderTime.getMinutes(),
+      hour,
+      minute,
     });
   }, [dailyReminderEnabled, dailyReminderTime, persistDailyReminder]);
 
   const onConfirmDailyReminderTime = useCallback(() => {
+    const { hour, minute } = readDailyReviewReminderTimeFromDate(dailyReminderTime);
     setDailyReminderTimePickerOpen(false);
     void persistDailyReminder({
       enabled: dailyReminderEnabled,
-      hour: dailyReminderTime.getHours(),
-      minute: dailyReminderTime.getMinutes(),
+      hour,
+      minute,
     });
   }, [dailyReminderEnabled, dailyReminderTime, persistDailyReminder]);
 
@@ -452,12 +450,14 @@ export default function WeeklyReviewScreen() {
       }
       if (event.type === 'dismissed') return;
       if (!date) return;
-      setDailyReminderTime(date);
+      const { hour, minute } = readDailyReviewReminderTimeFromDate(date);
+      const normalized = dailyReviewReminderTimeToDate(hour, minute);
+      setDailyReminderTime(normalized);
       if (Platform.OS === 'android') {
         void persistDailyReminder({
           enabled: dailyReminderEnabled,
-          hour: date.getHours(),
-          minute: date.getMinutes(),
+          hour,
+          minute,
         });
       }
     },
@@ -951,6 +951,7 @@ export default function WeeklyReviewScreen() {
               value={dailyReminderTime}
               mode="time"
               display="spinner"
+              is24Hour
               themeVariant={isDark ? 'dark' : 'light'}
               locale="zh_CN"
               onChange={onDailyReminderTimePickerChange}
