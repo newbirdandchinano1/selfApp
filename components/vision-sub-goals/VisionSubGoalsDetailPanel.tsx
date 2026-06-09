@@ -1,7 +1,10 @@
 import {
   getTaskCompletionStatsByProjectId,
   getTaskCompletionStatsByProjectIds,
+  getTasksByProjectId,
+  type TaskTreeNode,
 } from '@/lib/repositories/tasks/task';
+import type { TaskStatus } from '@/lib/repositories/tasks/task.types';
 import type { VisionSubGoal } from '@/lib/repositories/visions/vision.types';
 import {
   collectLinkedProjectsFromSubGoal,
@@ -50,6 +53,24 @@ function progressFromStats(stats: { total: number; completed: number }): SubGoal
   return { ...stats, percent };
 }
 
+function formatTaskStatusLabel(status: TaskStatus | string): string {
+  if (status === 'doing') return '进行中';
+  if (status === 'done') return '已完成';
+  if (status === 'blocked') return '受阻';
+  if (status === 'cancelled') return '已取消';
+  if (status === 'shelved') return '暂时搁置';
+  return '待办';
+}
+
+function filterTaskTreeForDisplay(nodes: TaskTreeNode[]): TaskTreeNode[] {
+  return nodes
+    .filter(n => n.status !== 'cancelled')
+    .map(n => ({
+      ...n,
+      children: filterTaskTreeForDisplay(n.children),
+    }));
+}
+
 function ProgressBar({
   percent,
   trackBg,
@@ -94,6 +115,7 @@ export function VisionSubGoalsDetailPanel({
   const [loading, setLoading] = useState(true);
   const [progressById, setProgressById] = useState<Record<string, SubGoalProgress>>({});
   const [progressByProjectId, setProgressByProjectId] = useState<Record<string, ProjectProgress>>({});
+  const [tasksByProjectId, setTasksByProjectId] = useState<Record<string, TaskTreeNode[]>>({});
   const [overallProgress, setOverallProgress] = useState<SubGoalProgress>({
     total: 0,
     completed: 0,
@@ -119,6 +141,13 @@ export function VisionSubGoalsDetailPanel({
     [router]
   );
 
+  const openTask = useCallback(
+    (taskId: string) => {
+      router.push({ pathname: '/task/[id]', params: { id: taskId } });
+    },
+    [router]
+  );
+
   const loadProgress = useCallback(async () => {
     setLoading(true);
     try {
@@ -128,7 +157,7 @@ export function VisionSubGoalsDetailPanel({
         ...new Set(subGoals.flatMap(sg => collectLinkedProjectsFromSubGoal(sg).map(p => p.id))),
       ];
 
-      const [overallStats, projectEntries, sgEntries] = await Promise.all([
+      const [overallStats, projectEntries, sgEntries, taskTreeEntries] = await Promise.all([
         getTaskCompletionStatsByProjectIds(allProjectIds),
         Promise.all(
           allProjectIds.map(async id => {
@@ -144,6 +173,12 @@ export function VisionSubGoalsDetailPanel({
             const ids = collectLinkedProjectsFromSubGoal(sg).map(p => p.id);
             const stats = await getTaskCompletionStatsByProjectIds(ids);
             return [sg.id, progressFromStats(stats)] as const;
+          })
+        ),
+        Promise.all(
+          allProjectIds.map(async id => {
+            const tree = await getTasksByProjectId(id);
+            return [id, filterTaskTreeForDisplay(tree)] as const;
           })
         ),
       ]);
@@ -164,16 +199,19 @@ export function VisionSubGoalsDetailPanel({
       setOverallProgress(progressFromStats(mergedOverall));
           setProgressByProjectId(Object.fromEntries(projectEntries));
           setProgressById(Object.fromEntries(sgEntries));
+          setTasksByProjectId(Object.fromEntries(taskTreeEntries));
         } catch {
           setOverallProgress({ total: 0, completed: 0, percent: 0 });
           setProgressByProjectId({});
           setProgressById({});
+          setTasksByProjectId({});
         }
       });
     } catch {
       setOverallProgress({ total: 0, completed: 0, percent: 0 });
       setProgressByProjectId({});
       setProgressById({});
+      setTasksByProjectId({});
     } finally {
       setLoading(false);
     }
@@ -252,6 +290,72 @@ export function VisionSubGoalsDetailPanel({
       ]);
     },
     [loadProgress, onPersistSubGoals, subGoals]
+  );
+
+  const renderProjectTaskNodes = useCallback(
+    (nodes: TaskTreeNode[], depth = 0): React.ReactNode =>
+      nodes.map(node => {
+        const isDone = node.status === 'done';
+        const doneColor = isDark ? '#34d399' : '#006c49';
+        const statusLabel = formatTaskStatusLabel(node.status);
+        const iconName =
+          isDone
+            ? 'check-circle'
+            : node.status === 'blocked'
+              ? 'lock'
+              : node.status === 'shelved'
+                ? 'pause-circle-outline'
+                : node.status === 'doing'
+                  ? 'play-circle-outline'
+                  : 'radio-button-unchecked';
+        const iconColor = isDone
+          ? doneColor
+          : node.status === 'blocked'
+            ? outline
+            : node.status === 'doing'
+              ? visionPrimary
+              : outline;
+
+        return (
+          <View key={node.id}>
+            <Pressable
+              onPress={() => openTask(node.id)}
+              accessibilityRole="button"
+              accessibilityLabel={`查看任务 ${node.title}`}
+              style={({ pressed }) => [
+                styles.taskRow,
+                {
+                  marginLeft: depth * 12,
+                  backgroundColor: projectRowBg,
+                  borderColor: projectRowBorder,
+                  opacity: pressed ? 0.86 : 1,
+                },
+              ]}
+            >
+              <MaterialIcons name={iconName} size={18} color={iconColor} />
+              <View style={styles.taskRowBody}>
+                <Text
+                  style={[
+                    styles.taskTitle,
+                    {
+                      color: textColor,
+                      opacity: isDone ? 0.82 : 1,
+                      textDecorationLine: isDone ? 'line-through' : 'none',
+                    },
+                  ]}
+                  numberOfLines={2}
+                >
+                  {node.title}
+                </Text>
+                <Text style={[styles.taskStatus, { color: outline }]}>{statusLabel}</Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={18} color={outline} />
+            </Pressable>
+            {node.children.length > 0 ? renderProjectTaskNodes(node.children, depth + 1) : null}
+          </View>
+        );
+      }),
+    [isDark, openTask, outline, projectRowBg, projectRowBorder, textColor, visionPrimary]
   );
 
   if (subGoals.length === 0) return null;
@@ -458,91 +562,104 @@ export function VisionSubGoalsDetailPanel({
                           const isUnbinding = unbindingKey === bindKey;
                           const isLastProject = pIdx === bound.length - 1;
 
+                          const projectTasks = tasksByProjectId[p.id] ?? [];
+
                           return (
                             <View
                               key={p.id}
                               style={[
-                                styles.projectRowWrap,
+                                styles.projectBlock,
                                 {
                                   borderColor: projectRowBorder,
                                   marginBottom: isLastProject ? 0 : 8,
                                 },
                               ]}
                             >
-                              <Pressable
-                                onPress={() => openProject(p.id)}
-                                accessibilityRole="button"
-                                accessibilityLabel={`打开项目 ${p.name}`}
-                                style={({ pressed }) => [
-                                  styles.projectRowMain,
-                                  {
-                                    backgroundColor: projectRowBg,
-                                    opacity: pressed ? 0.88 : 1,
-                                  },
-                                ]}
-                              >
-                                <View
-                                  style={[
-                                    styles.projectIconWrap,
+                              <View style={styles.projectRowWrap}>
+                                <Pressable
+                                  onPress={() => openProject(p.id)}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`打开项目 ${p.name}`}
+                                  style={({ pressed }) => [
+                                    styles.projectRowMain,
                                     {
-                                      backgroundColor: isDark
-                                        ? 'rgba(0,88,190,0.22)'
-                                        : 'rgba(0,88,190,0.08)',
+                                      backgroundColor: projectRowBg,
+                                      opacity: pressed ? 0.88 : 1,
                                     },
                                   ]}
                                 >
-                                  <MaterialIcons name="folder-special" size={18} color={visionPrimary} />
-                                </View>
-                                <View style={styles.projectRowBody}>
-                                  <View style={styles.projectTitleLine}>
-                                    <Text
-                                      style={[styles.projectName, { color: textColor }]}
-                                      numberOfLines={1}
-                                    >
-                                      {p.name || '未命名项目'}
-                                    </Text>
-                                    <Text style={[styles.projectPct, { color: visionPrimary }]}>
-                                      {pPct}
+                                  <View
+                                    style={[
+                                      styles.projectIconWrap,
+                                      {
+                                        backgroundColor: isDark
+                                          ? 'rgba(0,88,190,0.22)'
+                                          : 'rgba(0,88,190,0.08)',
+                                      },
+                                    ]}
+                                  >
+                                    <MaterialIcons name="folder-special" size={18} color={visionPrimary} />
+                                  </View>
+                                  <View style={styles.projectRowBody}>
+                                    <View style={styles.projectTitleLine}>
+                                      <Text
+                                        style={[styles.projectName, { color: textColor }]}
+                                        numberOfLines={1}
+                                      >
+                                        {p.name || '未命名项目'}
+                                      </Text>
+                                      <Text style={[styles.projectPct, { color: visionPrimary }]}>
+                                        {pPct}
+                                      </Text>
+                                    </View>
+                                    <ProgressBar
+                                      percent={pProg.percent}
+                                      trackBg={trackBg}
+                                      fillColor={visionPrimary}
+                                      height={4}
+                                    />
+                                    <Text style={[styles.projectMeta, { color: outline }]}>
+                                      {pProg.total > 0
+                                        ? `${pProg.completed} / ${pProg.total} 任务`
+                                        : '暂无任务'}
                                     </Text>
                                   </View>
-                                  <ProgressBar
-                                    percent={pProg.percent}
-                                    trackBg={trackBg}
-                                    fillColor={visionPrimary}
-                                    height={4}
-                                  />
-                                  <Text style={[styles.projectMeta, { color: outline }]}>
-                                    {pProg.total > 0
-                                      ? `${pProg.completed} / ${pProg.total} 任务`
-                                      : '暂无任务'}
-                                  </Text>
-                                </View>
-                                <MaterialIcons name="chevron-right" size={22} color={outline} />
-                              </Pressable>
-
-                              {canUnbind ? (
-                                <Pressable
-                                  onPress={() => requestUnbind(sg, p.id, p.name)}
-                                  disabled={isUnbinding}
-                                  hitSlop={8}
-                                  accessibilityLabel="解绑项目"
-                                  style={({ pressed }) => [
-                                    styles.unbindBtn,
-                                    {
-                                      borderLeftColor: projectRowBorder,
-                                      backgroundColor: isDark
-                                        ? 'rgba(30,41,59,0.9)'
-                                        : 'rgba(248,250,252,0.98)',
-                                      opacity: isUnbinding ? 0.45 : pressed ? 0.7 : 1,
-                                    },
-                                  ]}
-                                >
-                                  {isUnbinding ? (
-                                    <ActivityIndicator size="small" color={outline} />
-                                  ) : (
-                                    <MaterialIcons name="link-off" size={20} color={outline} />
-                                  )}
+                                  <MaterialIcons name="chevron-right" size={22} color={outline} />
                                 </Pressable>
+
+                                {canUnbind ? (
+                                  <Pressable
+                                    onPress={() => requestUnbind(sg, p.id, p.name)}
+                                    disabled={isUnbinding}
+                                    hitSlop={8}
+                                    accessibilityLabel="解绑项目"
+                                    style={({ pressed }) => [
+                                      styles.unbindBtn,
+                                      {
+                                        borderLeftColor: projectRowBorder,
+                                        backgroundColor: isDark
+                                          ? 'rgba(30,41,59,0.9)'
+                                          : 'rgba(248,250,252,0.98)',
+                                        opacity: isUnbinding ? 0.45 : pressed ? 0.7 : 1,
+                                      },
+                                    ]}
+                                  >
+                                    {isUnbinding ? (
+                                      <ActivityIndicator size="small" color={outline} />
+                                    ) : (
+                                      <MaterialIcons name="link-off" size={20} color={outline} />
+                                    )}
+                                  </Pressable>
+                                ) : null}
+                              </View>
+
+                              {projectTasks.length > 0 ? (
+                                <View style={[styles.taskListSection, { borderTopColor: projectRowBorder }]}>
+                                  <Text style={[styles.taskListLabel, { color: outline }]}>任务与子任务</Text>
+                                  <View style={styles.taskList}>
+                                    {renderProjectTaskNodes(projectTasks)}
+                                  </View>
+                                </View>
                               ) : null}
                             </View>
                           );
@@ -719,12 +836,53 @@ const styles = StyleSheet.create({
   projectList: {
     gap: 0,
   },
-  projectRowWrap: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
+  projectBlock: {
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
+  },
+  projectRowWrap: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  taskListSection: {
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  taskListLabel: {
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: 0.5,
+    marginLeft: 2,
+  },
+  taskList: {
+    gap: 6,
+  },
+  taskRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  taskRowBody: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
+  },
+  taskTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  taskStatus: {
+    fontSize: 11,
+    fontWeight: '600',
   },
   projectRowMain: {
     flex: 1,

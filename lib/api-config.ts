@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 /** REST 后端根地址 */
 export const DEFAULT_API_BASE_URL = 'http://47.109.78.229:3000';
 
-/** 内置管理员账号（可在设置中覆盖） */
+/** 内置管理员账号（应用内固定，不可在设置中修改） */
 export const DEFAULT_API_USERNAME = 'admin';
 export const DEFAULT_API_PASSWORD = 'zhen8907146';
 
@@ -13,7 +13,7 @@ const PASSWORD_STORAGE_KEY = '@selfapp/api-password';
 const TOKEN_STORAGE_KEY = '@selfapp/api-auth-token';
 
 export const API_NOT_CONFIGURED_MSG =
-  '未配置服务器登录信息：请在「设置 → 服务器同步」中填写账号密码，或使用应用内置默认值。';
+  '无法连接服务器：请检查网络，或确认内置 REST 服务可用。';
 
 let cachedToken: string | null = null;
 

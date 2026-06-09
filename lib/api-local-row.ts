@@ -27,8 +27,8 @@ export async function readLocalRowForWrite<T extends Record<string, unknown>>(
 
 /**
  * 写入/更新/删除前确保本地有对应行。
- * 正式包首次安装时本地库为空，REST 只读不回填会导致 update 直接 return。
- * 本地无行时从 REST 拉取并写入 SQLite（synced），不覆盖 pending_* 行。
+ * API_ONLY_READS 下 UI 数据来自 REST，本地 SQLite 可能尚无该行；
+ * 此时从 REST 拉取并写入 staging 行（不覆盖 pending_*），供后续 UPDATE/推送使用。
  */
 export async function ensureLocalRowForWrite<T extends Record<string, unknown>>(
   table: string,
@@ -41,5 +41,11 @@ export async function ensureLocalRowForWrite<T extends Record<string, unknown>>(
   const fromApi = await fetchApiRecordByPk<T>(table, pkValue);
   if (!fromApi) return null;
 
-  return readLocalRowForWrite<T>(table, pkValue);
+  let seeded = await readLocalRowForWrite<T>(table, pkValue);
+  if (!seeded) {
+    const { applyApiRowsToLocalTable } = await import('@/lib/api-read-local-sync');
+    await applyApiRowsToLocalTable(table, [fromApi as Record<string, unknown>]);
+    seeded = await readLocalRowForWrite<T>(table, pkValue);
+  }
+  return seeded ?? fromApi;
 }

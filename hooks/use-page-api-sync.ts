@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 
+import { useRegisterApiLoadingRetry } from '@/hooks/use-register-api-loading-retry';
 import { usePullToRefresh, type UsePullToRefreshResult } from '@/hooks/use-pull-to-refresh';
 import { isApiOnlyReads } from '@/lib/api-data-mode';
 import {
@@ -67,6 +68,8 @@ export function usePagePullRefresh(
   pageKey: string,
   reload: (forceApi?: boolean) => Promise<void>,
 ): UsePullToRefreshResult {
+  useRegisterApiLoadingRetry(reload);
+
   const refreshFromApi = useCallback(async () => {
     resetPageApiSession(pageKey);
     await reload(true);

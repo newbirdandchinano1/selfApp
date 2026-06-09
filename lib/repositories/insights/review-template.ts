@@ -1,3 +1,4 @@
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
@@ -85,7 +86,7 @@ export async function createReviewDimension(input: CreateReviewDimensionInput): 
 }
 
 export async function updateReviewDimension(id: string, input: UpdateReviewDimensionInput): Promise<boolean> {
-  const current = await getReviewDimensionById(id);
+  const current = await ensureLocalRowForWrite<ReviewDimensionRow>('review_dimensions', id);
   if (!current) return false;
   const title = input.title !== undefined ? input.title.trim() : current.title;
   if (!title) throw new Error('title required');
@@ -104,6 +105,7 @@ export async function updateReviewDimension(id: string, input: UpdateReviewDimen
 }
 
 export async function deleteReviewDimension(id: string): Promise<void> {
+  await ensureLocalRowForWrite('review_dimensions', id);
   const db = await getDatabase();
   if (!db) throw new Error('database not available');
   await db.runAsync(
@@ -145,7 +147,7 @@ export async function createReviewColumn(input: CreateReviewColumnInput): Promis
 }
 
 export async function updateReviewColumn(id: string, input: UpdateReviewColumnInput): Promise<boolean> {
-  const current = await getReviewColumnById(id);
+  const current = await ensureLocalRowForWrite<ReviewColumnRow>('review_columns', id);
   if (!current) return false;
   const title = input.title !== undefined ? input.title.trim() : current.title;
   if (!title) throw new Error('title required');
@@ -165,6 +167,7 @@ export async function updateReviewColumn(id: string, input: UpdateReviewColumnIn
 }
 
 export async function deleteReviewColumn(id: string): Promise<void> {
+  await ensureLocalRowForWrite('review_columns', id);
   const db = await getDatabase();
   if (!db) throw new Error('database not available');
   await db.runAsync(

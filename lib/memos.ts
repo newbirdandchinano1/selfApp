@@ -443,10 +443,7 @@ export async function updateMemoDimension(id: string, patch: { name: string }): 
   await migrateMemosStorageToSqliteIfNeeded(db);
   const name = clampDimension(patch.name);
   if (!name) throw new Error('维度名称不能为空');
-  const prev = await db.getFirstAsync<MemoDimensionRow>(
-    'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
-    [id],
-  );
+  const prev = await ensureLocalRowForWrite<MemoDimensionRow>('memo_dimensions', id);
   if (!prev) return null;
   const now = new Date().toISOString();
   await db.runAsync(

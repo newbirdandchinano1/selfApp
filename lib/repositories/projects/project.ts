@@ -160,7 +160,7 @@ export async function reorderProjectCategories(orderedIds: string[]) {
 export async function updateProjectCategory(id: string, input: UpdateProjectCategoryInput) {
   if (id === INBOX_PROJECT_CATEGORY_ID) return;
   const db = await getDatabase();
-  const current = await db.getFirstAsync<ProjectCategoryRow>('SELECT * FROM project_categories WHERE id = ? LIMIT 1', [id]);
+  const current = await ensureLocalRowForWrite<ProjectCategoryRow>('project_categories', id);
   if (!current) return;
   await db.runAsync(
     `UPDATE project_categories
@@ -173,6 +173,7 @@ export async function updateProjectCategory(id: string, input: UpdateProjectCate
 
 export async function deleteProjectCategory(id: string) {
   if (id === INBOX_PROJECT_CATEGORY_ID) return;
+  await ensureLocalRowForWrite('project_categories', id);
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE project_categories

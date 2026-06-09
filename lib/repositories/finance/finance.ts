@@ -535,10 +535,7 @@ export async function getFinanceFlowCategories() {
 
 export async function updateFinanceFlowCategory(id: string, input: UpdateFinanceFlowCategoryInput) {
   const db = await getDatabase();
-  const current = await db.getFirstAsync<FinanceFlowCategoryRow>(
-    'SELECT * FROM finance_flow_categories WHERE id = ? LIMIT 1',
-    [id]
-  );
+  const current = await ensureLocalRowForWrite<FinanceFlowCategoryRow>('finance_flow_categories', id);
   if (!current) return;
 
   await db.runAsync(
@@ -780,10 +777,7 @@ export async function getFinanceDailySummariesByDateRange(startYmd: string, endY
 
 export async function updateFinanceTransaction(id: string, input: UpdateFinanceTransactionInput) {
   const db = await getDatabase();
-  const current = await db.getFirstAsync<FinanceTransactionRow>(
-    'SELECT * FROM finance_transactions WHERE id = ? LIMIT 1',
-    [id]
-  );
+  const current = await ensureLocalRowForWrite<FinanceTransactionRow>('finance_transactions', id);
   if (!current) return;
 
   const nextAccountId = input.account_id ?? current.account_id;

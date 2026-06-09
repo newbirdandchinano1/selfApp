@@ -150,6 +150,34 @@ export function previewTextFromFields(
   return bits.join(' · ');
 }
 
+export type FilledReviewField = {
+  columnId: string;
+  columnTitle: string;
+  dimensionTitle: string;
+  value: string;
+};
+
+/** 按模板顺序提取已填写的栏目，便于结构化展示 */
+export function getFilledFieldsFromTemplate(
+  fields: ReviewFieldValues,
+  template: ReviewDimensionTemplate[],
+): FilledReviewField[] {
+  const result: FilledReviewField[] = [];
+  for (const dim of template) {
+    for (const col of dim.columns) {
+      const value = (fields[col.id] ?? '').trim();
+      if (!value) continue;
+      result.push({
+        columnId: col.id,
+        columnTitle: col.title,
+        dimensionTitle: dim.title,
+        value,
+      });
+    }
+  }
+  return result;
+}
+
 export function totalFilledLength(fields: ReviewFieldValues): number {
   return Object.values(fields).reduce((n, v) => n + v.length, 0);
 }

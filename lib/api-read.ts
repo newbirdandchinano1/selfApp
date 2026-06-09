@@ -56,6 +56,18 @@ export function invalidateInflightApiTableFetch(table: string): void {
   tableFetchGeneration.set(t, (tableFetchGeneration.get(t) ?? 0) + 1);
 }
 
+/** 加载超时重试：作废全部进行中的全量拉取，避免继续等待陈旧 Promise */
+export function invalidateAllInflightApiTableFetches(): void {
+  const tables = new Set<string>([
+    ...inflightTableFetchAll.keys(),
+    ...tableFetchGeneration.keys(),
+  ]);
+  for (const table of tables) {
+    invalidateInflightApiTableFetch(table);
+  }
+  inflightTableFetchAll.clear();
+}
+
 function assertApiReadable(table: string): void {
   if (!isApiReadableTable(table)) {
     throw new Error(`表「${table}」不允许通过 REST 读取`);

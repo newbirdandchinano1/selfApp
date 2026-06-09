@@ -120,7 +120,7 @@ function areAllDirectChildrenTerminal(rows: TaskRow[], parentId: string): boolea
 }
 
 /**
- * 子任务勾选完成/恢复后，沿父链自动完成或恢复父任务（仅看直接子任务，与项目列表进度条一致）。
+ * 子任务勾选完成/恢复后，沿父链自动完成或恢复父任务（仅看直接子任务）。
  */
 export async function cascadeParentTaskStatusAfterChildChange(
   childTaskId: string,
@@ -251,10 +251,6 @@ export async function createTask(input: CreateTaskInput) {
       input.extra_data ?? null,
     ]
   );
-}
-
-async function getTaskRowForWrite(id: string): Promise<TaskRow | null> {
-  return ensureLocalRowForWrite<TaskRow>('tasks', id);
 }
 
 export async function getTaskById(id: string) {
@@ -400,10 +396,8 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
   if (!db) {
     throw new Error('本地数据库不可用，无法保存任务');
   }
-  const current = await getTaskRowForWrite(id);
-  if (!current) {
-    throw new Error('任务尚未同步到本地，请下拉刷新后重试');
-  }
+  const current = await ensureLocalRowForWrite<TaskRow>('tasks', id);
+  if (!current) return;
   await db.runAsync(
     `UPDATE tasks
      SET project_id = ?, category_id = ?, parent_task_id = ?, title = ?, description = ?, note = ?, status = ?, priority = ?, due_date = ?,
@@ -504,7 +498,7 @@ export async function reorderTaskCategories(orderedIds: string[]) {
 
 export async function updateTaskCategory(id: string, input: UpdateTaskCategoryInput) {
   const db = await getDatabase();
-  const current = await db.getFirstAsync<TaskCategoryRow>('SELECT * FROM task_categories WHERE id = ? LIMIT 1', [id]);
+  const current = await ensureLocalRowForWrite<TaskCategoryRow>('task_categories', id);
   if (!current) return;
   await db.runAsync(
     `UPDATE task_categories

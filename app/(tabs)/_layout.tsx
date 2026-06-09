@@ -67,6 +67,14 @@ export default function TabLayout() {
             }}
           />
           <Tabs.Screen
+            name="review"
+            options={{
+              title: '复盘',
+              tabBarHideOnKeyboard: true,
+              tabBarIcon: ({ color }) => <MaterialIcons size={24} name="edit-note" color={color} />,
+            }}
+          />
+          <Tabs.Screen
             name="profile"
             options={{
               title: '我的',

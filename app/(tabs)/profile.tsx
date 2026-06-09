@@ -2,10 +2,6 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
-import { getRollingSevenDayRange } from '@/lib/repositories/insights/weekly-review';
-import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
-import { getWeeklyReviewConfiguredWeekday, WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/lib/weekly-review-settings';
-import type { WeeklyReviewJournalRow } from '@/lib/repositories/insights/weekly-review-journal.types';
 import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { listVisions } from '@/lib/repositories/visions/vision';
@@ -43,20 +39,6 @@ const WISH_PROFILE_PREVIEW_MAX = 12;
 function formatWishCny(value: number): string {
   if (!Number.isFinite(value) || value < 0) return '¥ 0';
   return `¥ ${Math.round(value).toLocaleString('zh-CN')}`;
-}
-
-function weeklyJournalStatusText(row: WeeklyReviewJournalRow | null): string {
-  if (!row) return '尚未记录本周复盘';
-  const anyText = [
-    row.section_summary,
-    row.section_plans,
-    row.section_reflect,
-    row.section_learnings,
-    row.section_next_week,
-  ].some(s => (s ?? '').trim().length > 0);
-  if ((row.ai_coaching ?? '').trim()) return '已生成 AI 建议，可随时回去修改';
-  if (anyText) return '草稿已保存，可继续填写并生成建议';
-  return '点开写下你的本周故事';
 }
 
 function wishListIconForRow(row: WishItemRow): ComponentProps<typeof MaterialIcons>['name'] {
@@ -121,46 +103,6 @@ export default function ProfileScreen() {
   }, []);
 
   const [wishPreviewRows, setWishPreviewRows] = useState<WishItemRow[]>([]);
-
-  const [weeklyJournal, setWeeklyJournal] = useState<WeeklyReviewJournalRow | null | undefined>(undefined);
-  const [weeklyJournalLoading, setWeeklyJournalLoading] = useState(true);
-  const [weeklyProfileRangeLabel, setWeeklyProfileRangeLabel] = useState('');
-  const [weeklyProfileGate, setWeeklyProfileGate] = useState<'loading' | 'ok' | 'no_setting' | 'wrong_day'>('loading');
-
-  const loadWeeklyJournal = useCallback(async () => {
-    setWeeklyJournalLoading(true);
-    setWeeklyProfileGate('loading');
-    setWeeklyProfileRangeLabel('');
-    try {
-      const dow = await getWeeklyReviewConfiguredWeekday();
-      const today = new Date();
-      if (dow === null) {
-        setWeeklyJournal(null);
-        setWeeklyProfileRangeLabel('待设置复盘日');
-        setWeeklyProfileGate('no_setting');
-        return;
-      }
-      if (today.getDay() !== dow) {
-        setWeeklyJournal(null);
-        setWeeklyProfileRangeLabel(`每周「${WEEKLY_REVIEW_WEEKDAY_LABELS[dow]}」`);
-        setWeeklyProfileGate('wrong_day');
-        return;
-      }
-      const r = getRollingSevenDayRange(today);
-      setWeeklyProfileRangeLabel(
-        `${r.start.getMonth() + 1}月${r.start.getDate()}日 – ${r.end.getMonth() + 1}月${r.end.getDate()}日`,
-      );
-      const row = await getWeeklyReviewJournalByWeek(r.startYmd);
-      setWeeklyJournal(row ?? null);
-      setWeeklyProfileGate('ok');
-    } catch {
-      setWeeklyJournal(null);
-      setWeeklyProfileRangeLabel('');
-      setWeeklyProfileGate('ok');
-    } finally {
-      setWeeklyJournalLoading(false);
-    }
-  }, []);
 
   const loadProfileWishItems = useCallback(async () => {
     try {
@@ -264,7 +206,6 @@ export default function ProfileScreen() {
       await loadHealthCardPreview();
       await loadProfileVisions();
       await loadProfileWishItems();
-      await loadWeeklyJournal();
     }, forceApi);
   }, [
     wrapLoad,
@@ -272,7 +213,6 @@ export default function ProfileScreen() {
     loadHealthCardPreview,
     loadProfileVisions,
     loadProfileWishItems,
-    loadWeeklyJournal,
   ]);
   reloadPageRef.current = reload;
 
@@ -691,54 +631,6 @@ export default function ProfileScreen() {
               })}
             </ScrollView>
           )}
-
-          <View style={styles.sectionHead}>
-            <View>
-              <Text style={[styles.kicker, { color: outline }]}>WEEKLY REVIEW</Text>
-              <Text style={[styles.sectionTitle, { color: text }]}>每周复盘</Text>
-            </View>
-            <Pressable onPress={() => onProfileAction(() => router.push('/weekly-review'))} hitSlop={8}>
-              <Text style={[styles.moreText, { color: primary }]}>去填写</Text>
-            </Pressable>
-          </View>
-
-          <Pressable
-            onPress={() => onProfileAction(() => router.push('/weekly-review'))}
-            style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
-            <View
-              style={[
-                styles.weeklyEntryCard,
-                {
-                  backgroundColor: isDark ? 'rgba(30,41,59,0.55)' : '#ffffff',
-                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)',
-                },
-              ]}>
-              <View style={[styles.weeklyEntryAccent, { backgroundColor: primary }]} />
-              <View style={styles.weeklyEntryBody}>
-                <MaterialIcons name="edit-note" size={28} color={primary} />
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Text style={[styles.weeklyEntryRange, { color: outline }]}>
-                    {weeklyJournalLoading ? '加载中…' : weeklyProfileRangeLabel || '近七天复盘'}
-                  </Text>
-                  {weeklyJournalLoading ? (
-                    <Text style={[styles.weeklyEntryMeta, { color: outline }]}>加载中…</Text>
-                  ) : weeklyProfileGate === 'no_setting' ? (
-                    <Text style={[styles.weeklyEntryMeta, { color: text }]}>请先在复盘页设置「每周复盘日」</Text>
-                  ) : weeklyProfileGate === 'wrong_day' ? (
-                    <Text style={[styles.weeklyEntryMeta, { color: text }]}>今天不可填写，请在设定的星期打开</Text>
-                  ) : (
-                    <Text style={[styles.weeklyEntryMeta, { color: text }]}>
-                      {weeklyJournalStatusText(weeklyJournal ?? null)}
-                    </Text>
-                  )}
-                  <Text style={[styles.weeklyEntryHint, { color: outline }]}>
-                    按五大板块书写复盘，自评执行分后可生成 AI 建议，并记录是否调整任务、存钱与时间分配。
-                  </Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={26} color={outline} />
-              </View>
-            </View>
-          </Pressable>
 
           <View style={styles.sectionHead}>
             <View>
@@ -1312,43 +1204,5 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontStyle: 'italic',
     opacity: 0.92,
-  },
-  weeklyEntryCard: {
-    marginHorizontal: 4,
-    borderRadius: 22,
-    borderWidth: 1,
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  weeklyEntryAccent: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 4,
-  },
-  weeklyEntryBody: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    paddingVertical: 18,
-    paddingHorizontal: 18,
-    paddingLeft: 20,
-  },
-  weeklyEntryRange: {
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 1.4,
-    textTransform: 'uppercase',
-  },
-  weeklyEntryMeta: {
-    fontSize: 16,
-    fontWeight: '800',
-    lineHeight: 22,
-  },
-  weeklyEntryHint: {
-    fontSize: 13,
-    fontWeight: '600',
-    lineHeight: 19,
   },
 });

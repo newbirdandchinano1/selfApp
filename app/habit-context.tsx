@@ -126,7 +126,7 @@ export default function HabitContextScreen() {
               await deleteHabitContexts(ids);
               setSelectedIds(new Set());
               setEditMode(false);
-              await loadContextCounts();
+              await reload();
             } catch (err) {
               console.warn('删除情境失败', err);
             }
@@ -134,7 +134,7 @@ export default function HabitContextScreen() {
         },
       },
     ]);
-  }, [contextData, loadContextCounts, selectedIds]);
+  }, [contextData, reload, selectedIds]);
 
   const openAdd = () => {
     setNewContextName('');
@@ -149,12 +149,12 @@ export default function HabitContextScreen() {
       try {
         await createHabitContext(name);
         setAddVisible(false);
-        await loadContextCounts();
+        await reload();
       } catch (err) {
         Alert.alert('添加失败', err instanceof Error ? err.message : '添加情境失败');
       }
     })();
-  }, [loadContextCounts, newContextName]);
+  }, [reload, newContextName]);
 
   const renderItem = React.useCallback(
     ({ item, drag, isActive }: RenderItemParams<ContextRow>) => {

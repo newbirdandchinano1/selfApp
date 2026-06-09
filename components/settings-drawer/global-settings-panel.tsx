@@ -14,17 +14,7 @@ import {
     loadCloudBackupTokenCache,
     setCloudUserToken,
 } from '@/lib/cloud-backup-config';
-import { getLastApiIncrementalSyncAtIso } from '@/lib/api-backup-meta';
 import { loadApiDebugEnabled, setApiDebugEnabled } from '@/lib/api-debug';
-import {
-    DEFAULT_API_BASE_URL,
-    DEFAULT_API_USERNAME,
-    clearApiAuthToken,
-    clearApiCredentials,
-    getApiUsername,
-    hasCustomApiCredentials,
-    setApiCredentials,
-} from '@/lib/api-config';
 import { getLastFullCloudBackupAtIso } from '@/lib/cloud-backup-meta';
 import {
     triggerCloudFullBackup,
@@ -146,10 +136,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [cloudBackupProgress, setCloudBackupProgress] = useState<CloudSyncProgress | null>(null);
   const [cloudRestoreBusy, setCloudRestoreBusy] = useState(false);
   const [localDbRepairBusy, setLocalDbRepairBusy] = useState(false);
-  const [apiUsernameDraft, setApiUsernameDraft] = useState(DEFAULT_API_USERNAME);
-  const [apiPasswordDraft, setApiPasswordDraft] = useState('');
-  const [apiCredentialsConfigured, setApiCredentialsConfigured] = useState(false);
-  const [apiCredentialsSaving, setApiCredentialsSaving] = useState(false);
   const [apiDebugEnabled, setApiDebugEnabledState] = useState(false);
   const cloudOpAbortRef = useRef<AbortController | null>(null);
   /** 同步标记：备份/同步进行中（不依赖 setState，避免连点竞态） */
@@ -158,7 +144,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
   const cloudOpBusy = cloudBackupBusy || cloudRestoreBusy || localDbRepairBusy;
   const [lastFullCloudBackupAtIso, setLastFullCloudBackupAtIso] = useState<string | null>(null);
-  const [lastApiSyncAtIso, setLastApiSyncAtIso] = useState<string | null>(null);
   const [cloudDiagModal, setCloudDiagModal] = useState<{
     visible: boolean;
     title: string;
@@ -175,15 +160,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     }
   }, []);
 
-  const loadLastApiSyncMeta = useCallback(async () => {
-    try {
-      const iso = await getLastApiIncrementalSyncAtIso();
-      setLastApiSyncAtIso(iso);
-    } catch {
-      setLastApiSyncAtIso(null);
-    }
-  }, []);
-
   useEffect(() => {
     setDraftBoundary(dayBoundary);
   }, [dayBoundary]);
@@ -195,22 +171,12 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     setCloudTokenDraft(custom ?? '');
   }, []);
 
-  const refreshApiCredentialsFromStorage = useCallback(async () => {
-    const username = await getApiUsername();
-    const hasCustom = await hasCustomApiCredentials();
-    setApiCredentialsConfigured(hasCustom);
-    setApiUsernameDraft(username);
-    if (!hasCustom) setApiPasswordDraft('');
-  }, []);
-
   useEffect(() => {
     void loadLastFullCloudBackupMeta();
-    void loadLastApiSyncMeta();
     void loadAiLlmProviderPreference();
     void refreshCloudTokenFromStorage();
-    void refreshApiCredentialsFromStorage();
     void loadApiDebugEnabled().then(setApiDebugEnabledState);
-  }, [loadLastApiSyncMeta, loadLastFullCloudBackupMeta, refreshApiCredentialsFromStorage, refreshCloudTokenFromStorage]);
+  }, [loadLastFullCloudBackupMeta, refreshCloudTokenFromStorage]);
 
   const onApiDebugToggle = useCallback(async (next: boolean) => {
     setApiDebugEnabledState(next);
@@ -247,48 +213,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
             await clearCloudUserToken();
             setCloudTokenConfigured(false);
             setCloudTokenDraft('');
-          })();
-        },
-      },
-    ]);
-  }, []);
-
-  const saveApiCredentials = useCallback(async () => {
-    setApiCredentialsSaving(true);
-    try {
-      const username = apiUsernameDraft.trim() || DEFAULT_API_USERNAME;
-      if (!apiPasswordDraft.trim()) {
-        await clearApiCredentials();
-        await clearApiAuthToken();
-        setApiCredentialsConfigured(false);
-        setApiUsernameDraft(DEFAULT_API_USERNAME);
-        Alert.alert('已恢复默认', '将使用应用内置服务器账号。');
-        return;
-      }
-      await setApiCredentials(username, apiPasswordDraft);
-      await clearApiAuthToken();
-      setApiCredentialsConfigured(true);
-      Alert.alert('已保存', '服务器账号已写入本机，后续自动同步将使用新账号登录。');
-    } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : String(e));
-    } finally {
-      setApiCredentialsSaving(false);
-    }
-  }, [apiPasswordDraft, apiUsernameDraft]);
-
-  const clearApiCredentialsUi = useCallback(() => {
-    Alert.alert('恢复默认账号', '清除后将使用应用内置服务器账号与密码。', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '清除',
-        style: 'destructive',
-        onPress: () => {
-          void (async () => {
-            await clearApiCredentials();
-            await clearApiAuthToken();
-            setApiCredentialsConfigured(false);
-            setApiUsernameDraft(DEFAULT_API_USERNAME);
-            setApiPasswordDraft('');
           })();
         },
       },
@@ -877,103 +801,16 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
             </Pressable>
           ) : null}
 
-          <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 12, marginTop: 14 }]}>
-            <Text style={[styles.rowTitle, { color: text }]}>REST 服务器同步</Text>
-            <Text style={[styles.rowHint, { color: outline, lineHeight: 18 }]}>
-              服务器：{DEFAULT_API_BASE_URL}。本地 SQLite 变更后约 4.5 秒自动增量同步到后端 MySQL（保留本地 id 与外键）。
-            </Text>
-            <Text style={[styles.rowHint, { color: apiCredentialsConfigured ? primary : outline, fontWeight: '700' }]}>
-              {apiCredentialsConfigured ? '已使用自定义服务器账号' : '将使用内置默认账号'}
-            </Text>
-            <Text style={[styles.rowHint, { color: outline, fontSize: 11 }]}>
-              {lastApiSyncAtIso
-                ? `上次自动同步：${formatZhFullBackupTime(lastApiSyncAtIso)}`
-                : '尚未记录自动同步时间（有变更后会自动同步）。'}
-            </Text>
-            <AppInput
-              value={apiUsernameDraft}
-              onChangeText={setApiUsernameDraft}
-              placeholder={`账号，默认 ${DEFAULT_API_USERNAME}`}
-              autoCapitalize="none"
-              autoCorrect={false}
-              spellCheck={false}
-            />
-            <AppInput
-              value={apiPasswordDraft}
-              onChangeText={setApiPasswordDraft}
-              placeholder="密码，留空则使用内置默认"
-              autoCapitalize="none"
-              autoCorrect={false}
-              spellCheck={false}
-              secureTextEntry
-            />
-            <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'flex-end' }}>
-              {apiCredentialsConfigured ? (
-                <Pressable
-                  onPress={clearApiCredentialsUi}
-                  disabled={apiCredentialsSaving}
-                  style={({ pressed }) => [{ opacity: pressed || apiCredentialsSaving ? 0.7 : 1, paddingVertical: 8, paddingHorizontal: 4 }]}>
-                  <Text style={{ color: isDark ? '#f87171' : '#b91c1c', fontWeight: '700' }}>恢复默认</Text>
-                </Pressable>
-              ) : null}
-              <Pressable
-                onPress={() => void saveApiCredentials()}
-                disabled={apiCredentialsSaving}
-                style={({ pressed }) => [
-                  styles.probeBtn,
-                  {
-                    borderColor: cardBorder,
-                    opacity: pressed || apiCredentialsSaving ? 0.75 : 1,
-                    paddingHorizontal: 16,
-                    flex: 0,
-                  },
-                ]}>
-                {apiCredentialsSaving ? (
-                  <ActivityIndicator size="small" color={primary} />
-                ) : (
-                  <Text style={[styles.rowTitle, { color: primary, fontSize: 14 }]}>保存账号</Text>
-                )}
-              </Pressable>
-            </View>
-            <View style={[styles.rowBetween, { marginTop: 4 }]}>
-              <View style={{ flex: 1, paddingRight: 12 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>接口调试模式</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  开启后下方立即显示请求日志，并自动探测 /health；右上角也会出现「API」按钮。
-                </Text>
-              </View>
-              <Switch
-                value={apiDebugEnabled}
-                onValueChange={v => {
-                  void onApiDebugToggle(v);
-                }}
-                trackColor={{ false: outlineVariant, true: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.35)' }}
-                thumbColor={apiDebugEnabled ? primary : isDark ? '#94a3b8' : '#f8fafc'}
-              />
-            </View>
-            {apiDebugEnabled ? (
-              <ApiDebugLogViewer
-                textColor={text}
-                mutedColor={outline}
-                borderColor={cardBorder}
-                cardBg={isDark ? 'rgba(15,23,42,0.55)' : '#f8fafc'}
-                primary={primary}
-                maxHeight={320}
-                emptyHint="正在等待请求… 若一直为空，请检查网络或服务器地址。"
-              />
-            ) : null}
-          </View>
-
         </View>
 
         <View onLayout={ev => onSectionLayout('ai', ev.nativeEvent.layout.y)} style={styles.section}>
           {renderSectionHead('AI', '文本与识图引擎')}
           <View style={[styles.card, { backgroundColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(0,88,190,0.04)', borderColor: cardBorder, gap: 10 }]}>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 19 }]}>
-              记账、备忘、心愿、饮食识图等 AI 能力由「服务器同步」所配置的后端统一代理（智谱 Key 仅存服务端）。
+              记账、备忘、心愿、饮食识图等 AI 能力由内置 REST 后端统一代理（智谱 Key 仅存服务端）。
             </Text>
             <Text style={[styles.rowHint, { color: outline, fontSize: 11 }]}>
-              请先保存上方服务器账号；下方按钮可探测后端 → 智谱链路是否正常。
+              下方按钮可探测后端 → 智谱链路是否正常。
             </Text>
 
             <Pressable
@@ -1017,6 +854,34 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                   <MaterialIcons name="chevron-right" size={20} color={outline} />
                 </View>
               </Pressable>
+            ) : null}
+
+            <View style={[styles.rowBetween, { marginTop: 4 }]}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={[styles.rowTitle, { color: text }]}>接口调试模式</Text>
+                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                  开启后下方立即显示请求日志，并自动探测 /health；右上角也会出现「API」按钮。
+                </Text>
+              </View>
+              <Switch
+                value={apiDebugEnabled}
+                onValueChange={v => {
+                  void onApiDebugToggle(v);
+                }}
+                trackColor={{ false: outlineVariant, true: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.35)' }}
+                thumbColor={apiDebugEnabled ? primary : isDark ? '#94a3b8' : '#f8fafc'}
+              />
+            </View>
+            {apiDebugEnabled ? (
+              <ApiDebugLogViewer
+                textColor={text}
+                mutedColor={outline}
+                borderColor={cardBorder}
+                cardBg={isDark ? 'rgba(15,23,42,0.55)' : '#f8fafc'}
+                primary={primary}
+                maxHeight={320}
+                emptyHint="正在等待请求… 若一直为空，请检查网络或服务器地址。"
+              />
             ) : null}
           </View>
         </View>

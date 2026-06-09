@@ -1325,10 +1325,26 @@ function areAllTasksInProjectTreeDone(nodes: TaskTreeNode[]): boolean {
   return true;
 }
 
-/** 与项目列表卡片「进度」一致：仅统计第一层子任务 */
+/** 项目列表卡片「进度」：递归统计任务树中全部任务（已取消视为完成） */
+function getProjectTreeTaskProgress(nodes: TaskTreeNode[]): { total: number; done: number; ratio: number } {
+  let total = 0;
+  let done = 0;
+  const walk = (list: TaskTreeNode[]) => {
+    for (const n of list) {
+      total += 1;
+      if (n.status === 'done' || n.status === 'cancelled') done += 1;
+      const ch = Array.isArray(n.children) ? n.children : [];
+      if (ch.length > 0) walk(ch);
+    }
+  };
+  walk(nodes);
+  return { total, done, ratio: total > 0 ? done / total : 0 };
+}
+
+/** 与项目列表卡片「进度」一致：任务树中全部任务均完成或取消 */
 function isProjectListProgressComplete(nodes: TaskTreeNode[]): boolean {
   if (nodes.length === 0) return false;
-  return nodes.every((n) => n.status === 'done' || n.status === 'cancelled');
+  return areAllTasksInProjectTreeDone(nodes);
 }
 
 function isTaskNodeDoneOrCancelled(node: TaskTreeNode): boolean {
@@ -4389,16 +4405,7 @@ export default function TasksScreen() {
                   const displayTaskTree = filterProjectListTaskTree(taskTree, hideCompletedProjectTasks);
                   const taskNodeById = buildProjectTaskNodeById(taskTree);
                   const isExpanded = !!expandedProjectIds[project.id];
-                  const progress = (() => {
-                    // 只统计项目的直接子任务（第一层），不递归统计更深层级
-                    const total = taskTree.length;
-                    const done = taskTree.reduce((acc, n) => {
-                      if (n.status === 'done' || n.status === 'cancelled') return acc + 1;
-                      return acc;
-                    }, 0);
-                    const ratio = total > 0 ? done / total : 0;
-                    return { total, done, ratio };
-                  })();
+                  const progress = getProjectTreeTaskProgress(taskTree);
 
                   const openEditTask = (id: string) => {
                     router.push({ pathname: '/edit-task', params: { id } });

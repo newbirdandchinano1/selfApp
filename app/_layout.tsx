@@ -272,6 +272,11 @@ function RootLayoutInner() {
             <Stack.Screen name="edit-wish-item/[id]" />
             <Stack.Screen name="persona-detail/[slug]" />
             <Stack.Screen name="weekly-review" />
+            <Stack.Screen name="weekly-review-form" />
+            <Stack.Screen name="daily-review" />
+            <Stack.Screen name="daily-review/[ymd]" />
+            <Stack.Screen name="review-settings" />
+            <Stack.Screen name="review-calendar" />
             <Stack.Screen name="review-template-settings" />
             <Stack.Screen name="my-skills" />
             <Stack.Screen name="my-recipes" />
