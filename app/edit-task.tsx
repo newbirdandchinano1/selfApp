@@ -377,6 +377,7 @@ export default function EditTaskScreen() {
 
   const skipAutoSaveRef = React.useRef(false);
   const exitingAfterSaveRef = React.useRef(false);
+  const creatingSubtaskIdRef = React.useRef<string | null>(null);
   const [skipRemoveGuard, setSkipRemoveGuard] = React.useState(false);
   const titleRef = React.useRef(title);
   const notesRef = React.useRef(notes);
@@ -549,12 +550,16 @@ export default function EditTaskScreen() {
   const readAddSubtaskResult = React.useCallback(async () => {
     const payload = globalThis.__addSubtaskResult as { source: string; task: SubtaskDraft } | undefined;
     if (!payload || payload.source !== addSubtaskSource) return;
-    globalThis.__addSubtaskResult = undefined;
+    if (creatingSubtaskIdRef.current === payload.task.id) return;
 
-    if (!taskSnapshot) {
+    const parentTask = taskSnapshotRef.current;
+    if (!parentTask) {
       Alert.alert('添加失败', '父任务尚未加载完成，请稍后重试。');
       return;
     }
+
+    creatingSubtaskIdRef.current = payload.task.id;
+    globalThis.__addSubtaskResult = undefined;
 
     try {
       const subtaskSchedule = payload.task.schedule ?? null;
@@ -564,8 +569,8 @@ export default function EditTaskScreen() {
       );
       await createTask({
         id: payload.task.id,
-        project_id: taskSnapshot.project_id,
-        category_id: taskSnapshot.category_id,
+        project_id: parentTask.project_id,
+        category_id: parentTask.category_id,
         parent_task_id: taskId,
         title: payload.task.title.trim() || '未命名任务',
         note: payload.task.note?.trim() || null,
@@ -582,9 +587,17 @@ export default function EditTaskScreen() {
       await reload();
     } catch (error) {
       console.warn('创建子任务失败', error);
-      Alert.alert('添加失败', '子任务创建失败，请稍后重试。');
+      const message =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : '子任务创建失败，请稍后重试。';
+      Alert.alert('添加失败', message);
+    } finally {
+      if (creatingSubtaskIdRef.current === payload.task.id) {
+        creatingSubtaskIdRef.current = null;
+      }
     }
-  }, [addSubtaskSource, reload, taskId, taskSnapshot]);
+  }, [addSubtaskSource, reload, taskId]);
 
   const loadTask = React.useCallback(async () => {
     if (!taskId) {
@@ -697,10 +710,6 @@ export default function EditTaskScreen() {
       }
     }, [readAddSubtaskResult, readScheduleResult, reload])
   );
-
-  React.useEffect(() => {
-    void readAddSubtaskResult();
-  }, [readAddSubtaskResult]);
 
   const openEditSubtask = React.useCallback(
     (id: string) => {

@@ -49,3 +49,11 @@ export async function ensureLocalRowForWrite<T extends Record<string, unknown>>(
   }
   return seeded ?? fromApi;
 }
+
+/** 写入前确认本地 SQLite 中已有该行（外键 INSERT 依赖此条件）。 */
+export async function ensureLocalRowPresent(table: string, pkValue: string): Promise<boolean> {
+  if (!pkValue.trim()) return false;
+  if (await readLocalRowForWrite(table, pkValue)) return true;
+  await ensureLocalRowForWrite(table, pkValue);
+  return (await readLocalRowForWrite(table, pkValue)) != null;
+}

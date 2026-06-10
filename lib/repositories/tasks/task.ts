@@ -1,4 +1,4 @@
-import { ensureLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite, ensureLocalRowPresent, readLocalRowForWrite } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import {
   compareDatetimeDesc,
@@ -228,27 +228,70 @@ export async function deleteTasksByProjectId(projectId: string) {
   );
 }
 
+async function resolveCreateTaskForeignKeys(input: CreateTaskInput): Promise<CreateTaskInput> {
+  let projectId = input.project_id ?? null;
+  let categoryId = input.category_id ?? null;
+  const parentTaskId = input.parent_task_id ?? null;
+
+  if (parentTaskId) {
+    const parentReady = await ensureLocalRowPresent('tasks', parentTaskId);
+    if (!parentReady) {
+      throw new Error('父任务尚未同步到本地，请返回任务列表刷新后重试');
+    }
+  }
+
+  if (projectId) {
+    const projectReady = await ensureLocalRowPresent('projects', projectId);
+    if (!projectReady) {
+      throw new Error('所属项目尚未同步到本地，请返回任务列表刷新后重试');
+    }
+  }
+
+  if (categoryId) {
+    const categoryReady = await ensureLocalRowPresent('task_categories', categoryId);
+    if (!categoryReady) {
+      categoryId = null;
+    }
+  }
+
+  return {
+    ...input,
+    project_id: projectId,
+    category_id: categoryId,
+    parent_task_id: parentTaskId,
+  };
+}
+
 export async function createTask(input: CreateTaskInput) {
   const db = await getDatabase();
-  const sortOrder = await getNextTaskSortOrderForSiblings(db, input.project_id ?? null, input.parent_task_id ?? null);
+  const resolved = await resolveCreateTaskForeignKeys(input);
+
+  const existing = await readLocalRowForWrite<TaskRow>('tasks', resolved.id);
+  if (existing) return;
+
+  const sortOrder = await getNextTaskSortOrderForSiblings(
+    db,
+    resolved.project_id ?? null,
+    resolved.parent_task_id ?? null,
+  );
   await db.runAsync(
     `INSERT INTO tasks (
       id, project_id, category_id, parent_task_id, title, description, note, status, priority, due_date, completed_at,
       sort_order, created_at, updated_at, sync_status, extra_data
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [
-      input.id,
-      input.project_id ?? null,
-      input.category_id ?? null,
-      input.parent_task_id ?? null,
-      input.title,
-      input.description ?? null,
-      input.note ?? null,
-      input.status ?? 'todo',
-      input.priority ?? 0,
-      input.due_date ?? null,
+      resolved.id,
+      resolved.project_id ?? null,
+      resolved.category_id ?? null,
+      resolved.parent_task_id ?? null,
+      resolved.title,
+      resolved.description ?? null,
+      resolved.note ?? null,
+      resolved.status ?? 'todo',
+      resolved.priority ?? 0,
+      resolved.due_date ?? null,
       sortOrder,
-      input.extra_data ?? null,
+      resolved.extra_data ?? null,
     ]
   );
 }
