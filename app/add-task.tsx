@@ -27,6 +27,7 @@ import {
   resolveInheritedDefaultSchedule,
 } from '@/lib/schedule-inherit';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
+import { formatWriteError } from '@/lib/format-write-error';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { createTask, getTaskById, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
@@ -562,7 +563,7 @@ export default function AddTaskScreen() {
         router.back();
       } catch (error) {
         console.warn('保存待办失败', error);
-        Alert.alert('保存失败', '请稍后重试。');
+        Alert.alert('保存失败', formatWriteError(error, '请稍后重试。'));
       } finally {
         setIsSubmitting(false);
       }
@@ -594,7 +595,7 @@ export default function AddTaskScreen() {
         router.back();
       } catch (error) {
         console.warn('创建任务失败', error);
-        Alert.alert('保存失败', '任务未能写入，请稍后重试。');
+        Alert.alert('保存失败', formatWriteError(error, '任务未能写入，请稍后重试。'));
       } finally {
         setIsSubmitting(false);
       }

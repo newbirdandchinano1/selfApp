@@ -6,6 +6,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { formatWriteError } from '@/lib/format-write-error';
 import {
   INBOX_PROJECT_CATEGORY_ID,
   INBOX_PROJECT_CATEGORY_NAME,
@@ -2594,7 +2595,7 @@ export default function TasksScreen() {
                 await loadProjectTasks(rows);
               } catch (err) {
                 console.warn('删除收集箱项目失败', err);
-                Alert.alert('删除失败', '项目删除失败，请稍后重试。');
+                Alert.alert('删除失败', formatWriteError(err, '项目删除失败，请稍后重试。'));
                 await loadProjects();
               }
             },
@@ -2887,7 +2888,7 @@ export default function TasksScreen() {
       await loadTasks({ forceRefresh: true });
     } catch (err) {
       console.warn('创建无项目待办失败', err);
-      Alert.alert('保存失败', '待办未能写入，请稍后重试。');
+      Alert.alert('保存失败', formatWriteError(err, '待办未能写入，请稍后重试。'));
       await loadTasks({ forceRefresh: true });
     } finally {
       setQuickTodoSaving(false);
@@ -2952,7 +2953,7 @@ export default function TasksScreen() {
               await loadProjectTasks(projects);
             } catch (err) {
               console.warn('删除待办失败', err);
-              Alert.alert('删除失败', '请稍后重试。');
+              Alert.alert('删除失败', formatWriteError(err, '任务删除失败，请稍后重试。'));
               await loadTasks();
             }
           },
@@ -3196,7 +3197,7 @@ export default function TasksScreen() {
       closeCategoryEditor();
     } catch (err) {
       console.warn('保存分类失败', err);
-      Alert.alert('保存失败', '分类保存失败，请稍后重试。');
+      Alert.alert('保存失败', formatWriteError(err, '分类保存失败，请稍后重试。'));
     }
   }, [
     activeCategoryId,
@@ -3246,7 +3247,7 @@ export default function TasksScreen() {
             closeCategoryMenu();
           } catch (err) {
             console.warn('删除分类失败', err);
-            Alert.alert('删除失败', '分类删除失败，请稍后重试。');
+            Alert.alert('删除失败', formatWriteError(err, '分类删除失败，请稍后重试。'));
           }
         },
       },

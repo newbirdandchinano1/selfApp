@@ -1,3 +1,4 @@
+import { ensureLocalRowPresent } from '@/lib/api-local-row';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, isYmdInRange, matchesOverviewScope, ymdFromDatetime } from '@/lib/api-read-helpers';
@@ -67,6 +68,10 @@ export async function insertTaskExecutionEvent(
   action: TaskExecutionEventAction,
   taskTitle: string | null
 ): Promise<void> {
+  const taskReady = await ensureLocalRowPresent('tasks', taskId);
+  if (!taskReady) {
+    throw new Error('任务尚未同步到本地，无法记录执行事件');
+  }
   const db = await getDatabase();
   const id = makeTimestampEntityId('tevt_', 8);
   await db.runAsync(

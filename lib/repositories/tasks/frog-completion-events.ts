@@ -1,3 +1,4 @@
+import { ensureLocalRowPresent } from '@/lib/api-local-row';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, isYmdInRange } from '@/lib/api-read-helpers';
@@ -41,6 +42,10 @@ export async function insertFrogCompletionEvent(
 ): Promise<void> {
   const ymd = assignedYmd.trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return;
+  const taskReady = await ensureLocalRowPresent('tasks', taskId);
+  if (!taskReady) {
+    throw new Error('任务尚未同步到本地，无法记录青蛙完成事件');
+  }
   const db = await getDatabase();
   const id = makeTimestampEntityId('fevt_', 8);
   await db.runAsync(

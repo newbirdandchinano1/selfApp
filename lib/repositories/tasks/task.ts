@@ -1,4 +1,4 @@
-import { ensureLocalRowForWrite, ensureLocalRowPresent, readLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite, ensureLocalRowPresent, readLocalRowForWrite, requireLocalRowForWrite } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import {
   compareDatetimeDesc,
@@ -80,6 +80,7 @@ export async function reorderProjectTaskSiblings(
   const pKey = parentTaskId ?? '';
   for (let i = 0; i < orderedTaskIds.length; i += 1) {
     const id = orderedTaskIds[i];
+    await requireLocalRowForWrite('tasks', id);
     const found = await db.getFirstAsync<{ id: string }>(
       `SELECT id FROM tasks
         WHERE id = ?
@@ -228,10 +229,18 @@ export async function deleteTasksByProjectId(projectId: string) {
   );
 }
 
-async function resolveCreateTaskForeignKeys(input: CreateTaskInput): Promise<CreateTaskInput> {
-  let projectId = input.project_id ?? null;
-  let categoryId = input.category_id ?? null;
-  const parentTaskId = input.parent_task_id ?? null;
+async function resolveTaskForeignKeys(fields: {
+  project_id?: string | null;
+  category_id?: string | null;
+  parent_task_id?: string | null;
+}): Promise<{
+  project_id: string | null;
+  category_id: string | null;
+  parent_task_id: string | null;
+}> {
+  let projectId = fields.project_id ?? null;
+  let categoryId = fields.category_id ?? null;
+  const parentTaskId = fields.parent_task_id ?? null;
 
   if (parentTaskId) {
     const parentReady = await ensureLocalRowPresent('tasks', parentTaskId);
@@ -255,11 +264,15 @@ async function resolveCreateTaskForeignKeys(input: CreateTaskInput): Promise<Cre
   }
 
   return {
-    ...input,
     project_id: projectId,
     category_id: categoryId,
     parent_task_id: parentTaskId,
   };
+}
+
+async function resolveCreateTaskForeignKeys(input: CreateTaskInput): Promise<CreateTaskInput> {
+  const foreignKeys = await resolveTaskForeignKeys(input);
+  return { ...input, ...foreignKeys };
 }
 
 export async function createTask(input: CreateTaskInput) {
@@ -439,18 +452,22 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
   if (!db) {
     throw new Error('本地数据库不可用，无法保存任务');
   }
-  const current = await ensureLocalRowForWrite<TaskRow>('tasks', id);
-  if (!current) return;
-  await db.runAsync(
+  const current = await requireLocalRowForWrite<TaskRow>('tasks', id);
+  const foreignKeys = await resolveTaskForeignKeys({
+    project_id: input.project_id ?? current.project_id,
+    category_id: input.category_id ?? current.category_id,
+    parent_task_id: input.parent_task_id ?? current.parent_task_id,
+  });
+  const result = await db.runAsync(
     `UPDATE tasks
      SET project_id = ?, category_id = ?, parent_task_id = ?, title = ?, description = ?, note = ?, status = ?, priority = ?, due_date = ?,
          completed_at = ?, extra_data = ?, sort_order = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
-      input.project_id ?? current.project_id,
-      input.category_id ?? current.category_id,
-      input.parent_task_id ?? current.parent_task_id,
+      foreignKeys.project_id,
+      foreignKeys.category_id,
+      foreignKeys.parent_task_id,
       input.title ?? current.title,
       input.description ?? current.description,
       input.note ?? current.note,
@@ -463,12 +480,20 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
       id,
     ]
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('任务保存失败，请返回列表刷新后重试');
+  }
 }
 
 /** 将根任务及其所有子任务挂到同一项目（用于待办升级为项目等场景） */
 export async function assignProjectIdToTaskSubtree(rootTaskId: string, projectId: string): Promise<void> {
+  await requireLocalRowForWrite('tasks', rootTaskId);
+  const projectReady = await ensureLocalRowPresent('projects', projectId);
+  if (!projectReady) {
+    throw new Error('所属项目尚未同步到本地，请返回任务列表刷新后重试');
+  }
   const db = await getDatabase();
-  await db.runAsync(
+  const result = await db.runAsync(
     `WITH RECURSIVE subtree(id) AS (
         SELECT id FROM tasks WHERE id = ?
         UNION ALL
@@ -483,12 +508,23 @@ export async function assignProjectIdToTaskSubtree(rootTaskId: string, projectId
       WHERE id IN (SELECT id FROM subtree)`,
     [rootTaskId, projectId],
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('任务尚未同步到本地，请返回列表刷新后重试');
+  }
 }
 
 export async function deleteTask(id: string) {
-  await ensureLocalRowForWrite('tasks', id);
+  await requireLocalRowForWrite('tasks', id);
+
+  const all = await loadAllTasks();
+  const subtreeIds = collectSubtreeIds(all, id);
+  for (const tid of subtreeIds) {
+    if (tid === id) continue;
+    await ensureLocalRowForWrite('tasks', tid);
+  }
+
   const db = await getDatabase();
-  await db.runAsync(
+  const result = await db.runAsync(
     `WITH RECURSIVE subtree(id) AS (
         SELECT id FROM tasks WHERE id = ?
         UNION ALL
@@ -502,6 +538,9 @@ export async function deleteTask(id: string) {
       WHERE id IN (SELECT id FROM subtree)`,
     [id],
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('任务尚未同步到本地，请返回列表刷新后重试');
+  }
   invalidateInflightApiTableFetch('tasks');
 }
 
@@ -529,6 +568,7 @@ export async function reorderTaskCategories(orderedIds: string[]) {
   const ids = orderedIds.filter(Boolean);
   for (let i = 0; i < ids.length; i += 1) {
     const id = ids[i];
+    await requireLocalRowForWrite('task_categories', id);
     await db.runAsync(
       `UPDATE task_categories
        SET sort_order = ?, updated_at = datetime('now'),
@@ -541,26 +581,31 @@ export async function reorderTaskCategories(orderedIds: string[]) {
 
 export async function updateTaskCategory(id: string, input: UpdateTaskCategoryInput) {
   const db = await getDatabase();
-  const current = await ensureLocalRowForWrite<TaskCategoryRow>('task_categories', id);
-  if (!current) return;
-  await db.runAsync(
+  const current = await requireLocalRowForWrite<TaskCategoryRow>('task_categories', id);
+  const result = await db.runAsync(
     `UPDATE task_categories
      SET name = ?, extra_data = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [input.name ?? current.name, input.extra_data ?? current.extra_data, id]
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('分类保存失败，请返回列表刷新后重试');
+  }
 }
 
 export async function deleteTaskCategory(id: string) {
-  await ensureLocalRowForWrite('task_categories', id);
+  await requireLocalRowForWrite('task_categories', id);
   const db = await getDatabase();
-  await db.runAsync(
+  const result = await db.runAsync(
     `UPDATE task_categories
      SET updated_at = datetime('now'), sync_status = 'pending_delete'
      WHERE id = ?`,
     [id]
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('分类删除失败，请返回列表刷新后重试');
+  }
 }
 
 function buildTaskTree(rows: TaskRow[]) {

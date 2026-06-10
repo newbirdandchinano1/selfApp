@@ -13,6 +13,7 @@ import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-rem
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getDatabase } from '@/lib/database.native';
+import { formatWriteError } from '@/lib/format-write-error';
 import { parseProjectExtraDataWithAi } from '@/lib/repositories/projects/project-ai-review';
 import {
   mergePrerequisiteIdsIntoExtraData,
@@ -177,19 +178,6 @@ function extractDueDate(deadlineText: string) {
   const all = deadlineText.match(/\d{4}-\d{2}-\d{2}/g);
   if (!all?.length) return null;
   return all[all.length - 1] ?? null;
-}
-
-/** 保存失败时展示底层原因（SQLite / 约束等），避免笼统提示 */
-function formatSaveError(error: unknown): string {
-  if (error instanceof Error) {
-    const m = error.message.trim();
-    if (m) return m;
-  }
-  if (typeof error === 'string') {
-    const m = error.trim();
-    if (m) return m;
-  }
-  return '未知错误，请稍后重试。';
 }
 
 function normalizeProjectCategoryId(categoryId: string | null | undefined): string | null {
@@ -561,7 +549,7 @@ export default function EditProjectScreen() {
     } catch (error) {
       console.warn('添加任务写入失败', error);
       globalThis.__addTaskResult = undefined;
-      Alert.alert('任务保存失败', '任务未能写入数据库，请返回重新添加或稍后重试。');
+      Alert.alert('任务保存失败', formatWriteError(error, '任务未能写入数据库，请返回重新添加或稍后重试。'));
     }
   }, [addTaskSource, projectId, showToast]);
 
@@ -915,7 +903,7 @@ export default function EditProjectScreen() {
         /* 无活动事务时 ROLLBACK 可能失败，忽略 */
       }
       console.warn('保存项目失败', error);
-      Alert.alert('保存失败', formatSaveError(error));
+      Alert.alert('保存失败', formatWriteError(error));
       setSaving(false);
     }
 
@@ -977,7 +965,7 @@ export default function EditProjectScreen() {
                 router.back();
               } catch (error) {
                 console.warn('删除项目失败', error);
-                Alert.alert('删除失败', '项目删除失败，请稍后重试。');
+                Alert.alert('删除失败', formatWriteError(error, '项目删除失败，请稍后重试。'));
               } finally {
                 setSaving(false);
               }
@@ -998,7 +986,7 @@ export default function EditProjectScreen() {
                 router.back();
               } catch (err) {
                 console.warn('删除项目失败', err);
-                Alert.alert('删除失败', '项目删除失败，请稍后重试。');
+                Alert.alert('删除失败', formatWriteError(err, '项目删除失败，请稍后重试。'));
               } finally {
                 setSaving(false);
               }

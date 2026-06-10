@@ -1,4 +1,4 @@
-import { ensureLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowPresent, requireLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortBySortOrderAsc, sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
@@ -14,13 +14,20 @@ import type {
 
 export async function createProject(input: CreateProjectInput) {
   const db = await getDatabase();
-  const inStrictInbox = input.category_id === INBOX_PROJECT_CATEGORY_ID;
+  let categoryId = input.category_id ?? null;
+  if (categoryId) {
+    const categoryReady = await ensureLocalRowPresent('project_categories', categoryId);
+    if (!categoryReady) {
+      categoryId = null;
+    }
+  }
+  const inStrictInbox = categoryId === INBOX_PROJECT_CATEGORY_ID;
   const inboxAtSql = inStrictInbox ? `datetime('now')` : 'NULL';
   await db.runAsync(
     `INSERT INTO projects (
       id, category_id, name, status, note, due_date, created_at, updated_at, sync_status, extra_data, inbox_entered_at
     ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?, ${inboxAtSql})`,
-    [input.id, input.category_id ?? null, input.name, input.status ?? 'active', input.note ?? null, input.due_date ?? null, input.extra_data ?? null]
+    [input.id, categoryId, input.name, input.status ?? 'active', input.note ?? null, input.due_date ?? null, input.extra_data ?? null]
   );
 }
 
@@ -49,10 +56,15 @@ export async function isProjectNameDuplicate(name: string, excludeId?: string) {
 
 export async function updateProject(id: string, input: UpdateProjectInput) {
   const db = await getDatabase();
-  const current = await ensureLocalRowForWrite<ProjectRow>('projects', id);
-  if (!current) return;
+  const current = await requireLocalRowForWrite<ProjectRow>('projects', id);
 
-  const nextCategoryId = input.category_id !== undefined ? input.category_id : current.category_id;
+  let nextCategoryId = input.category_id !== undefined ? input.category_id : current.category_id;
+  if (nextCategoryId) {
+    const categoryReady = await ensureLocalRowPresent('project_categories', nextCategoryId);
+    if (!categoryReady) {
+      nextCategoryId = null;
+    }
+  }
   const wasStrictInbox = current.category_id === INBOX_PROJECT_CATEGORY_ID;
   const willStrictInbox = nextCategoryId === INBOX_PROJECT_CATEGORY_ID;
 
@@ -66,7 +78,7 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
     nextInboxEnteredAt = current.inbox_entered_at ?? null;
   }
 
-  await db.runAsync(
+  const result = await db.runAsync(
     `UPDATE projects
      SET category_id = ?, name = ?, status = ?, note = ?, due_date = ?, extra_data = ?, inbox_entered_at = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
@@ -82,10 +94,13 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
       id,
     ]
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('项目保存失败，请返回列表刷新后重试');
+  }
 }
 
 export async function deleteProject(id: string) {
-  await ensureLocalRowForWrite('projects', id);
+  await requireLocalRowForWrite('projects', id);
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE tasks
@@ -93,12 +108,15 @@ export async function deleteProject(id: string) {
      WHERE project_id = ?`,
     [id]
   );
-  await db.runAsync(
+  const result = await db.runAsync(
     `UPDATE projects
      SET updated_at = datetime('now'), sync_status = 'pending_delete'
      WHERE id = ?`,
     [id]
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('项目删除失败，请返回列表刷新后重试');
+  }
 }
 
 /** 收集箱内（`category_id` 为内置收集箱）且 `inbox_entered_at` 超过 `retentionDays` 的项目删除（含下属任务）。 */
@@ -141,6 +159,7 @@ export async function reorderProjectCategories(orderedIds: string[]) {
   const ids = orderedIds.filter((id) => id && id !== INBOX_PROJECT_CATEGORY_ID);
   for (let i = 0; i < ids.length; i += 1) {
     const id = ids[i];
+    await requireLocalRowForWrite('project_categories', id);
     await db.runAsync(
       `UPDATE project_categories
        SET sort_order = ?, updated_at = datetime('now'),
@@ -160,25 +179,30 @@ export async function reorderProjectCategories(orderedIds: string[]) {
 export async function updateProjectCategory(id: string, input: UpdateProjectCategoryInput) {
   if (id === INBOX_PROJECT_CATEGORY_ID) return;
   const db = await getDatabase();
-  const current = await ensureLocalRowForWrite<ProjectCategoryRow>('project_categories', id);
-  if (!current) return;
-  await db.runAsync(
+  const current = await requireLocalRowForWrite<ProjectCategoryRow>('project_categories', id);
+  const result = await db.runAsync(
     `UPDATE project_categories
      SET name = ?, extra_data = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [input.name ?? current.name, input.extra_data ?? current.extra_data, id]
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('分类保存失败，请返回列表刷新后重试');
+  }
 }
 
 export async function deleteProjectCategory(id: string) {
   if (id === INBOX_PROJECT_CATEGORY_ID) return;
-  await ensureLocalRowForWrite('project_categories', id);
+  await requireLocalRowForWrite('project_categories', id);
   const db = await getDatabase();
-  await db.runAsync(
+  const result = await db.runAsync(
     `UPDATE project_categories
      SET updated_at = datetime('now'), sync_status = 'pending_delete'
      WHERE id = ?`,
     [id]
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('分类删除失败，请返回列表刷新后重试');
+  }
 }

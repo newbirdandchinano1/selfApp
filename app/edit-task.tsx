@@ -14,6 +14,7 @@ import {
   type DateLimitYmd,
 } from '@/lib/schedule-inherit';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { formatWriteError } from '@/lib/format-write-error';
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
@@ -587,10 +588,7 @@ export default function EditTaskScreen() {
       await reload();
     } catch (error) {
       console.warn('创建子任务失败', error);
-      const message =
-        error instanceof Error && error.message.trim()
-          ? error.message
-          : '子任务创建失败，请稍后重试。';
+      const message = formatWriteError(error, '子任务创建失败，请稍后重试。');
       Alert.alert('添加失败', message);
     } finally {
       if (creatingSubtaskIdRef.current === payload.task.id) {
@@ -793,8 +791,7 @@ export default function EditTaskScreen() {
       return true;
     } catch (error) {
       console.warn('更新任务失败', error);
-      const detail =
-        error instanceof Error && error.message.trim() ? error.message : '任务保存失败，请稍后重试。';
+      const detail = formatWriteError(error, '任务保存失败，请稍后重试。');
       const syncHint = /同步|服务器|网络|登录/i.test(detail)
         ? detail
         : `${detail}\n\n若仅本机已保存，请检查网络与服务器登录状态后重试。`;
@@ -908,7 +905,7 @@ export default function EditTaskScreen() {
                 navigateAfterDeleteTask();
               } catch (error) {
                 console.warn('删除任务失败', error);
-                Alert.alert('删除失败', '任务删除失败，请稍后重试。');
+                Alert.alert('删除失败', formatWriteError(error, '任务删除失败，请稍后重试。'));
               } finally {
                 setSaving(false);
               }
@@ -931,7 +928,7 @@ export default function EditTaskScreen() {
                 navigateAfterDeleteTask();
               } catch (err) {
                 console.warn('删除任务失败', err);
-                Alert.alert('删除失败', '任务删除失败，请稍后重试。');
+                Alert.alert('删除失败', formatWriteError(err, '任务删除失败，请稍后重试。'));
               } finally {
                 setSaving(false);
               }
