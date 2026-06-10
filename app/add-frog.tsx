@@ -610,23 +610,33 @@ export default function AddFrogScreen() {
         Alert.alert('无法指派', '所选任务所属项目仍被前置项目锁定，请先完成前置项目。');
         return;
       }
-      await Promise.all(
-        ids.map(async (id) => {
-          const row = taskMap[id];
-          const currentExtra = parseTaskExtraData(row?.extra_data ?? null);
-          const nextExtra: FrogTaskMeta & Record<string, unknown> = {
-            ...currentExtra,
-            frogAssignedOn: today,
-          };
-          await updateTask(id, { extra_data: JSON.stringify(nextExtra) });
-        })
-      );
+      const { applyApiRowsToLocalTable } = await import('@/lib/api-read-local-sync');
+      for (const id of ids) {
+        const row = taskMap[id];
+        if (!row) {
+          throw new Error('任务数据已过期，请下拉刷新后重试');
+        }
+        // 写入前先落本地行，避免并发 update 时重复拉接口或 SQLite 锁冲突
+        await applyApiRowsToLocalTable('tasks', [row as Record<string, unknown>]);
+        const currentExtra = parseTaskExtraData(row.extra_data ?? null);
+        const nextExtra: FrogTaskMeta & Record<string, unknown> = {
+          ...currentExtra,
+          frogAssignedOn: today,
+        };
+        await updateTask(id, { extra_data: JSON.stringify(nextExtra) });
+      }
       await pushLocalChangesToApi({ awaitSync: true });
       Alert.alert('已指派', `已将 ${ids.length} 个任务指派为今日青蛙。`);
       router.back();
     } catch (e) {
       console.warn('指派青蛙失败', e);
-      Alert.alert('指派失败', '未能保存青蛙指派状态，请稍后重试。');
+      const detail = e instanceof Error ? e.message.trim() : '';
+      Alert.alert(
+        '指派失败',
+        detail && /本地数据库|网络|登录|服务器|同步|过期|刷新/i.test(detail)
+          ? detail
+          : '未能保存青蛙指派状态，请稍后重试。',
+      );
     } finally {
       setSaving(false);
     }
