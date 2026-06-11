@@ -14,6 +14,7 @@ import { PrerequisiteProjectPickerField } from '@/components/projects/Prerequisi
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getDatabase } from '@/lib/database.native';
 import { formatWriteError } from '@/lib/format-write-error';
+import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
 import { parseProjectExtraDataWithAi } from '@/lib/repositories/projects/project-ai-review';
 import {
   mergePrerequisiteIdsIntoExtraData,
@@ -75,8 +76,10 @@ type Subtask = {
   repeat?: string;
   repeatText?: string;
   note?: string;
+  acceptanceCriteria?: string;
   schedule?: ProjectScheduleMeta | null;
   boundHabitIds?: string[];
+  isLongTermTask?: boolean;
 };
 
 type SubtaskNode = Subtask & { children: SubtaskNode[] };
@@ -257,6 +260,7 @@ function mapTaskRowToSubtask(task: TaskRow): Subtask {
     repeat,
     repeatText: repeat,
     note: task.note ?? '',
+    acceptanceCriteria: task.description ?? '',
     boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
   };
 }
@@ -532,15 +536,19 @@ export default function EditProjectScreen() {
         category_id: normalizedCategoryId,
         parent_task_id: null,
         title: task.title.trim() || '未命名任务',
+        description: task.acceptanceCriteria?.trim() || null,
         note: task.note?.trim() || null,
         status: (task.done ? 'done' : 'todo') as TaskRow['status'],
         priority: toTaskPriority(task.priority || task.priorityLabel),
         due_date: dueDate,
-        extra_data: JSON.stringify({
-          reminder: task.reminder || task.reminderText || '',
-          repeat: task.repeat || task.repeatText || '',
-          schedule: taskSchedule,
-        }),
+        extra_data: mergeLongTermTaskIntoExtraData(
+          JSON.stringify({
+            reminder: task.reminder || task.reminderText || '',
+            repeat: task.repeat || task.repeatText || '',
+            schedule: taskSchedule,
+          }),
+          task.isLongTermTask === true,
+        ),
       });
       globalThis.__addTaskResult = undefined;
       setSubtasks((prev) => [...prev, { ...task, children: [] }]);
@@ -872,6 +880,7 @@ export default function EditProjectScreen() {
           category_id: normalizedCategoryId,
           parent_task_id,
           title: subtask.title.trim() || '未命名任务',
+          description: subtask.acceptanceCriteria?.trim() || null,
           note: subtask.note?.trim() || null,
           status: (subtask.done ? 'done' : 'todo') as TaskRow['status'],
           priority: toTaskPriority(subtask.priority || subtask.priorityLabel),

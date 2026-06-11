@@ -11,12 +11,45 @@ export const FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_ID = 'budget_fixed_expense_i
 /** 标记流水由固定支出快速支付创建（与 `budget_fixed_expense_id` 成对出现）。 */
 export const FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_PAY = 'budget_fixed_expense_pay' as const;
 
+/** 由定时支出自动创建的流水，值为对应 `ScheduledFinanceExpense.id`。 */
+export const FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_ID = 'scheduled_expense_id' as const;
+
+/** 定时支出槽位：`YYYY-MM-DD:slotIndex`，用于去重。 */
+export const FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_SLOT = 'scheduled_expense_slot' as const;
+
+/** 标记流水由定时支出自动创建。 */
+export const FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_AUTO = 'scheduled_expense_auto' as const;
+
 export function getBudgetFixedExpenseIdFromTxnExtra(extraData: string | null): string | null {
   if (!extraData) return null;
   try {
     const raw = JSON.parse(extraData) as unknown;
     if (!raw || typeof raw !== 'object') return null;
     const id = (raw as Record<string, unknown>)[FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_ID];
+    return typeof id === 'string' && id.trim() ? id.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getScheduledExpenseSlotFromTxnExtra(extraData: string | null): string | null {
+  if (!extraData) return null;
+  try {
+    const raw = JSON.parse(extraData) as unknown;
+    if (!raw || typeof raw !== 'object') return null;
+    const slot = (raw as Record<string, unknown>)[FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_SLOT];
+    return typeof slot === 'string' && slot.trim() ? slot.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getScheduledExpenseIdFromTxnExtra(extraData: string | null): string | null {
+  if (!extraData) return null;
+  try {
+    const raw = JSON.parse(extraData) as unknown;
+    if (!raw || typeof raw !== 'object') return null;
+    const id = (raw as Record<string, unknown>)[FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_ID];
     return typeof id === 'string' && id.trim() ? id.trim() : null;
   } catch {
     return null;

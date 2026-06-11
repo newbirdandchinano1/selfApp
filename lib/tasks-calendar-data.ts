@@ -3,6 +3,7 @@ import { isBreakHabitSucceeded } from '@/lib/repositories/habits/habit-break-suc
 import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
 import { isHabitDayGoalMet, parseHabitDailyGoal } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import { isTaskHabitPeriodGoalMet } from '@/lib/repositories/habits/habit-task-period';
 import { isTaskRepeatDueOnLogicalDay, parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getLogicalLocalYmd } from '@/lib/tasks-logical-day';
@@ -271,16 +272,36 @@ export function buildTasksCalendarSummaries(params: {
     }
   }
 
+  const habitCheckInsByHabit = new Map<string, Record<string, number>>();
+  for (const [dayYmd, dayMap] of habitCheckInsByDay) {
+    for (const [habitId, count] of dayMap) {
+      const prev = habitCheckInsByHabit.get(habitId) ?? {};
+      prev[dayYmd] = count;
+      habitCheckInsByHabit.set(habitId, prev);
+    }
+  }
+
   for (let ymd = startYmd; ymd <= endYmd; ymd = addDaysToYmd(ymd, 1)) {
     const day = map.get(ymd)!;
     const checkMap = habitCheckInsByDay.get(ymd) ?? new Map<string, number>();
 
     for (const habit of habits) {
-      if (parseHabitKind(habit.extra_data) === 'break' && isBreakHabitSucceeded(habit.extra_data)) continue;
-      if (parseHabitKind(habit.extra_data) === 'build' && isBuildHabitSucceeded(habit.extra_data)) continue;
+      const kind = parseHabitKind(habit.extra_data);
+      if (kind === 'break' && isBreakHabitSucceeded(habit.extra_data)) continue;
+      if (kind === 'build' && isBuildHabitSucceeded(habit.extra_data)) continue;
+      if (
+        kind === 'task' &&
+        isTaskHabitPeriodGoalMet({
+          extraData: habit.extra_data,
+          checkIns: habitCheckInsByHabit.get(habit.id) ?? {},
+          logicalYmd: ymd,
+          asOfYmd: ymd,
+        })
+      ) {
+        continue;
+      }
       if (!isHabitScheduledOnLogicalYmd(habit.extra_data, ymd)) continue;
       const count = checkMap.get(habit.id) ?? 0;
-      const kind = parseHabitKind(habit.extra_data);
       const dailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
       day.habits.push({
         id: habit.id,

@@ -19,6 +19,7 @@ export const AppSettingKey = {
   financeMonthlyBudget: '@finance_monthly_budget_settings_v2',
   financeBudgetRefreshDay: '@finance_budget_refresh_day_v1',
   financeMonthlyBudgetLegacy: '@finance_monthly_budget_override_v1',
+  financeScheduledExpenses: '@finance_scheduled_expenses_v1',
   savingsOverview: '@selfapp/savings_overview_settings_v2',
   savingsOverviewLegacy: '@selfapp/savings_overview_settings_v1',
   globalIntakeTargets: '@global_intake_targets_v1',

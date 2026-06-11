@@ -179,6 +179,18 @@ export type HabitCheckInListStat = {
   todayCount: number;
 };
 
+/** 批量加载各习惯打卡记录（YMD → 次数） */
+export async function getAllHabitCheckInsMaps(): Promise<Map<string, Record<string, number>>> {
+  const checkIns = await loadActiveCheckIns();
+  const map = new Map<string, Record<string, number>>();
+  for (const r of checkIns) {
+    const prev = map.get(r.habit_id) ?? {};
+    prev[r.record_date] = r.count;
+    map.set(r.habit_id, prev);
+  }
+  return map;
+}
+
 /** 列表页批量统计：累计打卡天数、今日次数 */
 export async function getHabitCheckInListStats(): Promise<Map<string, HabitCheckInListStat>> {
   const boundary = await loadTasksDayBoundary();

@@ -29,6 +29,12 @@ import {
   tryMarkBuildHabitCompleted,
 } from '@/lib/repositories/habits/habit-build-success';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import {
+  computeTaskPeriodGoalProgress,
+  isTaskHabitPeriodGoalMet,
+  parseTaskHabitExpectedGoal,
+  parseTaskRepeatPeriod,
+} from '@/lib/repositories/habits/habit-task-period';
 import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -339,6 +345,25 @@ export default function HabitDetailScreen() {
     buildExpectedGoal != null
       ? computeBuildExpectedGoalProgress({ expectedGoal: buildExpectedGoal, checkIns, dailyGoal })
       : 0;
+  const taskExpectedGoal = habit ? parseTaskHabitExpectedGoal(habit.extra_data) : null;
+  const taskRepeatPeriod = habit ? parseTaskRepeatPeriod(habit.extra_data) : '每月';
+  const taskPeriodProgress =
+    taskExpectedGoal != null
+      ? computeTaskPeriodGoalProgress({
+          expectedGoal: taskExpectedGoal,
+          checkIns,
+          dailyGoal,
+          logicalYmd: focusYmd,
+          period: taskRepeatPeriod,
+        })
+      : 0;
+  const taskPeriodMet =
+    habit != null &&
+    isTaskHabitPeriodGoalMet({
+      extraData: habit.extra_data,
+      checkIns,
+      logicalYmd: focusYmd,
+    });
 
   const consecutiveStreak = React.useMemo(
     () =>
@@ -590,9 +615,11 @@ export default function HabitDetailScreen() {
               ? dailyGoal != null
                 ? ` / 每日阈值 ${dailyGoal}（低于即达标）`
                 : ''
-              : dailyGoal != null
-                ? ` / 日目标 ${dailyGoal}`
-                : ''}
+              : habitKind === 'task'
+                ? ''
+                : dailyGoal != null
+                  ? ` / 日目标 ${dailyGoal}`
+                  : ''}
           </Text>
           {habitKind === 'break' ? (
             breakSucceeded ? (
@@ -606,6 +633,18 @@ export default function HabitDetailScreen() {
                 {consecutiveTargetDays != null
                   ? ` · 已连续 ${consecutiveStreak} / ${consecutiveTargetDays} 天`
                   : ` · 已连续 ${consecutiveStreak} 天`}
+              </Text>
+            )
+          ) : habitKind === 'task' && taskExpectedGoal != null ? (
+            taskPeriodMet ? (
+              <Text style={[styles.makeUpSub, { color: GREEN_TEXT }]}>
+                本{taskRepeatPeriod.replace('每', '')}已达成 {taskExpectedGoal.value}{' '}
+                {taskExpectedGoal.type === 'days' ? '天' : '次'}，任务页本周期内不再展示
+              </Text>
+            ) : (
+              <Text style={styles.makeUpSub}>
+                本{taskRepeatPeriod.replace('每', '')}进度 {taskPeriodProgress} / {taskExpectedGoal.value}{' '}
+                {taskExpectedGoal.type === 'days' ? '天' : '次'}
               </Text>
             )
           ) : buildExpectedGoal != null ? (

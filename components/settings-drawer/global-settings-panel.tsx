@@ -112,7 +112,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const primary = isDark ? '#60a5fa' : '#0058be';
   const secondary = isDark ? '#34d399' : '#006c49';
   const memoAccent = isDark ? '#fbbf24' : '#825100';
-  const weaknessAccent = isDark ? '#fb923c' : '#c2410c';
   const cardBg = isDark ? 'rgba(30,41,59,0.55)' : '#ffffff';
   const cardBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)';
 
@@ -531,24 +530,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           <Pressable
             onPress={() => {
               closeSettingsDrawer();
-              router.push('/weakness-list');
-            }}
-            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <MaterialIcons name="psychology-alt" size={26} color={weaknessAccent} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>我的缺点</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  自我觉察 · 本机保存；记录缺点与表现后自动生成 AI 分析与建议。
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
-
-          <Pressable
-            onPress={() => {
-              closeSettingsDrawer();
               router.push('/my-skills');
             }}
             style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
@@ -557,7 +538,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               <View style={{ flex: 1 }}>
                 <Text style={[styles.rowTitle, { color: text }]}>我的技能</Text>
                 <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  记录现有技能与自评，还可添加学习目标；填写描述后可一键请求 AI 评估。
+                  记录现有技能、学习目标与待改进缺点；填写描述后可请求 AI 评估或分析。
                 </Text>
               </View>
               <MaterialIcons name="chevron-right" size={22} color={outline} />

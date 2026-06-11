@@ -54,6 +54,7 @@ import { CompletionRewardField } from '@/components/completion-reward/Completion
 import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
 import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
 import { mergeCompletionRewardIntoExtraData } from '@/lib/completion-reward/completion-reward-extra';
+import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
 import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 
 type Subtask = {
@@ -69,7 +70,9 @@ type Subtask = {
   repeat?: string;
   repeatText?: string;
   note?: string;
+  acceptanceCriteria?: string;
   schedule?: TaskScheduleMeta | null;
+  isLongTermTask?: boolean;
 };
 type MainTask = { id: string; title: string; due: string };
 type SchedulePickerResult = {
@@ -242,6 +245,7 @@ export default function AddTaskScreen() {
   const { colors, isDark } = useAppTheme();
 
   const [title, setTitle] = React.useState('');
+  const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
   const [notes, setNotes] = React.useState('');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [mainTaskOpen, setMainTaskOpen] = React.useState(false);
@@ -254,6 +258,7 @@ export default function AddTaskScreen() {
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
+  const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [projectName, setProjectName] = React.useState<string | null>(null);
   /** 独立待办：正常待办 vs 暂时搁置（时间未定，不可直接完成） */
   const [standaloneIntent, setStandaloneIntent] = React.useState<'active' | 'shelved'>('active');
@@ -329,6 +334,7 @@ export default function AddTaskScreen() {
 
   const applyLoadedStandaloneTask = React.useCallback((task: TaskRow) => {
     setTitle(task.title ?? '');
+    setAcceptanceCriteria(task.description ?? '');
     setNotes(task.note ?? '');
     setPriority(taskPriorityToKey(task.priority ?? 0));
     editTaskStatusRef.current = task.status;
@@ -536,9 +542,11 @@ export default function AddTaskScreen() {
               repeat: repeatText || '',
               schedule: scheduleMeta,
             });
+        const trimmedAcceptanceCriteria = acceptanceCriteria.trim() || null;
         if (isEditStandalone) {
           await updateTask(editTaskId, {
             title: trimmedTitle,
+            description: trimmedAcceptanceCriteria,
             note: notes.trim() || null,
             status: resolveStandaloneStatusOnSave(editTaskStatusRef.current, standaloneIntent),
             priority: labelToTaskPriority(priorityLabel),
@@ -553,6 +561,7 @@ export default function AddTaskScreen() {
             category_id: null,
             parent_task_id: null,
             title: trimmedTitle,
+            description: trimmedAcceptanceCriteria,
             note: notes.trim() || null,
             status: shelved ? 'shelved' : 'todo',
             priority: labelToTaskPriority(priorityLabel),
@@ -579,17 +588,21 @@ export default function AddTaskScreen() {
           category_id: quickTaskCategoryId,
           parent_task_id: null,
           title: trimmedTitle,
+          description: acceptanceCriteria.trim() || null,
           note: notes.trim() || null,
           status: 'todo',
           priority: labelToTaskPriority(priorityLabel),
           due_date: dueDateFromScheduleMeta(scheduleMeta, extractDueDateFromDeadlineText(deadlineText)),
-          extra_data: mergeCompletionRewardIntoExtraData(
-            JSON.stringify({
-              reminder: reminderText || '',
-              repeat: repeatText || '',
-              schedule: scheduleMeta,
-            }),
-            completionReward,
+          extra_data: mergeLongTermTaskIntoExtraData(
+            mergeCompletionRewardIntoExtraData(
+              JSON.stringify({
+                reminder: reminderText || '',
+                repeat: repeatText || '',
+                schedule: scheduleMeta,
+              }),
+              completionReward,
+            ),
+            isLongTermTask,
           ),
         });
         router.back();
@@ -616,7 +629,9 @@ export default function AddTaskScreen() {
         repeat: repeatText,
         repeatText: repeatText,
         note: notes.trim(),
+        acceptanceCriteria: acceptanceCriteria.trim(),
         schedule: scheduleMeta,
+        isLongTermTask,
       },
     };
     router.back();
@@ -743,6 +758,43 @@ export default function AddTaskScreen() {
             {!isStandalone ? (
               <ComposerSection>
                 <ComposerSectionHead
+                  accentColor={colors.primary}
+                  title="长期任务"
+                  description="指派为青蛙后，完成时可仅结束今日会话"
+                  rightIcon="timeline"
+                />
+                <ComposerEditorialCard>
+                  <Pressable
+                    onPress={() => setIsLongTermTask((v) => !v)}
+                    accessibilityRole="switch"
+                    accessibilityState={{ checked: isLongTermTask }}
+                    style={({ pressed }) => [
+                      styles.longTermRow,
+                      {
+                        backgroundColor: isLongTermTask ? `${colors.primary}12` : colors.surfaceSubtle,
+                        borderColor: isLongTermTask ? colors.primary : colors.outline,
+                        opacity: pressed ? 0.88 : 1,
+                      },
+                    ]}>
+                    <View style={styles.longTermTextWrap}>
+                      <Text style={[Typography.bodyStrong, { color: colors.text }]}>标记为长期任务</Text>
+                      <Text style={[Typography.caption, { color: colors.textSecondary }]}>
+                        完成青蛙时会询问是否已完成整个任务
+                      </Text>
+                    </View>
+                    <MaterialIcons
+                      name={isLongTermTask ? 'check-box' : 'check-box-outline-blank'}
+                      size={24}
+                      color={isLongTermTask ? colors.primary : colors.textSecondary}
+                    />
+                  </Pressable>
+                </ComposerEditorialCard>
+              </ComposerSection>
+            ) : null}
+
+            {!isStandalone ? (
+              <ComposerSection>
+                <ComposerSectionHead
                   accentColor={colors.secondary}
                   title="完成奖励"
                   description="完成后可领取的小激励"
@@ -763,6 +815,13 @@ export default function AddTaskScreen() {
                 </ComposerEditorialCard>
               </ComposerSection>
             ) : null}
+
+            <ComposerNoteSection
+              value={acceptanceCriteria}
+              onChangeText={setAcceptanceCriteria}
+              title="验收标准"
+              placeholder="怎样算完成？可写可验证的标准…（可选）"
+            />
 
             <ComposerNoteSection
               value={notes}
@@ -879,6 +938,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
     marginTop: -Spacing.sm,
+  },
+  longTermRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.md,
+    padding: Spacing.lg,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+  },
+  longTermTextWrap: {
+    flex: 1,
+    gap: Spacing.xs,
   },
   mainTaskOverlay: {
     flex: 1,

@@ -108,7 +108,7 @@ export function isHabitGoalMetForTaskBinding(habit: HabitRow, todayCount: number
     if (parseHabitConsecutiveTargetDays(habit.extra_data) != null) return false;
     return isBreakHabitDayCompleted(todayCount);
   }
-  if (isBuildHabitSucceeded(habit.extra_data)) return true;
+  if (kind === 'build' && isBuildHabitSucceeded(habit.extra_data)) return true;
   const dailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
   return isHabitDayGoalMet({ kind, todayCount, dailyGoal });
 }

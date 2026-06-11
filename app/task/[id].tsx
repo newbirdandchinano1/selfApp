@@ -326,6 +326,7 @@ export default function TaskDetailScreen() {
   const isDark = colorScheme === 'dark';
 
   const [title, setTitle] = React.useState('');
+  const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
   const [note, setNote] = React.useState('');
   const [status, setStatus] = React.useState('todo');
   const [priority, setPriority] = React.useState<number>(0);
@@ -405,6 +406,7 @@ export default function TaskDetailScreen() {
     if (row) {
       setTaskLoaded(true);
       setTitle(row.title);
+      setAcceptanceCriteria(row.description ?? '');
       setNote(row.note ?? '');
       setStatus(row.status);
       setPriority(row.priority ?? 0);
@@ -439,6 +441,7 @@ export default function TaskDetailScreen() {
     } else {
       setTaskLoaded(false);
       setTitle('');
+      setAcceptanceCriteria('');
       setNote('');
       setStatus('todo');
       setPriority(0);
@@ -624,6 +627,16 @@ export default function TaskDetailScreen() {
                 <Text style={[styles.badgeText, { color: priorityColor }]}>{priorityLabel}</Text>
               </View>
             )}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={[styles.sectionLabel, { color: outline }]}>验收标准</Text>
+          <View style={[styles.noteCard, { backgroundColor: surfaceLow, borderColor: border }]}>
+            <View style={[styles.noteAccent, { backgroundColor: secondary }]} />
+            <Text style={[styles.noteText, { color: theme.textSecondary }]}>
+              {acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : '暂无验收标准'}
+            </Text>
           </View>
         </View>
 

@@ -51,6 +51,7 @@ import {
     type BudgetFixedExpense,
     type MonthBudgetSetting,
 } from '@/lib/finance-monthly-budget';
+import { scheduleRunScheduledFinanceExpenses } from '@/lib/finance-scheduled-expense-runner';
 import { setFinanceSheetBridge } from '@/lib/finance-sheet-bridge';
 import { notifyFinanceSheetSaved, subscribeFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import {
@@ -2092,6 +2093,7 @@ export default function FinanceScreen() {
       if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
       let cancelled = false;
       const run = async (forceApi = false) => {
+        scheduleRunScheduledFinanceExpenses('finance-tab-focus');
         await wrapLoad(async () => {
         try {
           await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
@@ -3316,6 +3318,19 @@ export default function FinanceScreen() {
                       accessibilityLabel="资产">
                       <MaterialIcons name="account-balance" size={18} color={primary} />
                       <Text style={[styles.assetsBtnText, { color: primary }]}>资产</Text>
+                      <MaterialIcons name="arrow-forward-ios" size={14} color={primary} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => router.push('/scheduled-expenses')}
+                      style={({ pressed }) => [
+                        styles.assetsBtn,
+                        { backgroundColor: `${primary}14`, borderColor: `${primary}33` },
+                        pressed && { opacity: 0.9 },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="定时支出">
+                      <MaterialIcons name="event-repeat" size={18} color={primary} />
+                      <Text style={[styles.assetsBtnText, { color: primary }]}>定时支出</Text>
                       <MaterialIcons name="arrow-forward-ios" size={14} color={primary} />
                     </Pressable>
                     <Pressable

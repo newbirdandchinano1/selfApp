@@ -3,15 +3,17 @@ import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, InteractionManager, Platform, Pressable, Text, View } from 'react-native';
+import { InteractionManager, Platform, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
+import { AppSplashScreen } from '@/components/app-splash-screen';
 import { ApiContentTransition } from '@/components/api-content-transition';
 import { ApiDebugOverlay } from '@/components/api-debug-overlay';
 import { ApiLoadingIndicator } from '@/components/api-loading-indicator';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
+import { ScheduledExpenseCoordinator } from '@/components/scheduled-expense-coordinator';
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
 import { DailyReviewReminderNotificationListener } from '@/components/daily-review-reminder-notification-listener';
@@ -50,12 +52,12 @@ export const unstable_settings = {
 function RootLayoutInner() {
   const colorScheme = useColorScheme();
   const [isDbReady, setIsDbReady] = useState(false);
+  const [showMainApp, setShowMainApp] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
   const [dbRepairBusy, setDbRepairBusy] = useState(false);
 
-  useEffect(() => {
-    let mounted = true;
-    const runDeferredBootstrap = () => {
+  const runDeferredBootstrap = () => {
+    InteractionManager.runAfterInteractions(() => {
       void (async () => {
         try {
           await loadPersistedIntakeTargets();
@@ -73,7 +75,55 @@ function RootLayoutInner() {
           console.warn('后台初始化失败', e);
         }
       })();
-    };
+    });
+  };
+
+  const handleDbRetry = async () => {
+    setDbError(null);
+    try {
+      await initDatabase();
+      await hydrateCloudDirtyFromStorage();
+      setIsDbReady(true);
+      runDeferredBootstrap();
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      console.warn('数据库初始化失败', detail, e);
+      setDbError(
+        __DEV__ && detail.trim()
+          ? `数据库初始化失败，请重试。\n${detail}`
+          : '数据库初始化失败，请重试。',
+      );
+    }
+  };
+
+  const handleDbRepair = async () => {
+    if (dbRepairBusy) return;
+    setDbRepairBusy(true);
+    setDbError(null);
+    try {
+      const repair = await repairLocalDatabase();
+      await initDatabase();
+      await hydrateCloudDirtyFromStorage();
+      setIsDbReady(true);
+      runDeferredBootstrap();
+      if (repair.remainingFkIssues > 0) {
+        console.warn(`本地库修复后仍有 ${repair.remainingFkIssues} 条外键异常`);
+      }
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      console.warn('数据库修复失败', detail, e);
+      setDbError(
+        __DEV__ && detail.trim()
+          ? `修复后仍无法启动。\n${detail}`
+          : '修复后仍无法启动，请到设置中尝试「从云同步到本机」。',
+      );
+    } finally {
+      setDbRepairBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    let mounted = true;
 
     const run = async () => {
       try {
@@ -86,7 +136,7 @@ function RootLayoutInner() {
           setDbError(null);
           setIsDbReady(true);
         }
-        InteractionManager.runAfterInteractions(runDeferredBootstrap);
+        runDeferredBootstrap();
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);
         console.warn('数据库初始化失败', detail, e);
@@ -109,118 +159,11 @@ function RootLayoutInner() {
 
   return (
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-        {!isDbReady ? (
-          <View
-            style={{
-              flex: 1,
-              alignItems: 'center',
-              justifyContent: 'center',
-              backgroundColor: colorScheme === 'dark' ? '#000000' : '#ffffff',
-            }}
-          >
-            <ActivityIndicator size="large" />
-            {dbError ? (
-              <View style={{ marginTop: 14, alignItems: 'center', paddingHorizontal: 24 }}>
-                <Text style={{ fontSize: 14, fontWeight: '700', opacity: 0.8 }}>{dbError}</Text>
-                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-                  <Pressable
-                    onPress={async () => {
-                      setDbError(null);
-                      try {
-                        await initDatabase();
-                        await hydrateCloudDirtyFromStorage();
-                        setIsDbReady(true);
-                        InteractionManager.runAfterInteractions(() => {
-                          void loadPersistedIntakeTargets();
-                          void loadThemePreference();
-                          void loadAiLlmProviderPreference();
-                          void loadCloudBackupTokenCache();
-                          if (Platform.OS !== 'web') {
-                            startCloudPeriodicAlignScheduler();
-                            void ensurePersonaPortraitsForTodayInBackground();
-                          }
-                        });
-                      } catch (e) {
-                        const detail = e instanceof Error ? e.message : String(e);
-                        console.warn('数据库初始化失败', detail, e);
-                        setDbError(
-                          __DEV__ && detail.trim()
-                            ? `数据库初始化失败，请重试。\n${detail}`
-                            : '数据库初始化失败，请重试。',
-                        );
-                      }
-                    }}
-                    disabled={dbRepairBusy}
-                    style={({ pressed }) => ({
-                      paddingHorizontal: 14,
-                      paddingVertical: 10,
-                      borderRadius: 12,
-                      borderWidth: 1,
-                      opacity: dbRepairBusy ? 0.5 : pressed ? 0.8 : 1,
-                    })}
-                  >
-                    <Text style={{ fontSize: 14, fontWeight: '800' }}>重试</Text>
-                  </Pressable>
-                  {Platform.OS !== 'web' ? (
-                    <Pressable
-                      onPress={async () => {
-                        if (dbRepairBusy) return;
-                        setDbRepairBusy(true);
-                        setDbError(null);
-                        try {
-                          const repair = await repairLocalDatabase();
-                          await initDatabase();
-                          await hydrateCloudDirtyFromStorage();
-                          setIsDbReady(true);
-                          InteractionManager.runAfterInteractions(() => {
-                            void loadPersistedIntakeTargets();
-                            void loadThemePreference();
-                            void loadAiLlmProviderPreference();
-                            void loadCloudBackupTokenCache();
-                            if (Platform.OS !== 'web') {
-                              startCloudPeriodicAlignScheduler();
-                            }
-                            void ensurePersonaPortraitsForTodayInBackground();
-                          });
-                          if (repair.remainingFkIssues > 0) {
-                            console.warn(
-                              `本地库修复后仍有 ${repair.remainingFkIssues} 条外键异常`,
-                            );
-                          }
-                        } catch (e) {
-                          const detail = e instanceof Error ? e.message : String(e);
-                          console.warn('数据库修复失败', detail, e);
-                          setDbError(
-                            __DEV__ && detail.trim()
-                              ? `修复后仍无法启动。\n${detail}`
-                              : '修复后仍无法启动，请到设置中尝试「从云同步到本机」。',
-                          );
-                        } finally {
-                          setDbRepairBusy(false);
-                        }
-                      }}
-                      disabled={dbRepairBusy}
-                      style={({ pressed }) => ({
-                        paddingHorizontal: 14,
-                        paddingVertical: 10,
-                        borderRadius: 12,
-                        borderWidth: 1,
-                        opacity: dbRepairBusy ? 0.5 : pressed ? 0.8 : 1,
-                      })}
-                    >
-                      <Text style={{ fontSize: 14, fontWeight: '800' }}>
-                        {dbRepairBusy ? '修复中…' : '修复数据库'}
-                      </Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              </View>
-            ) : null}
-          </View>
-        ) : (
+        {showMainApp && isDbReady ? (
           <View style={{ flex: 1 }}>
             <ScreenshotDeepLinkListener />
             <AutoLedgerCoordinator dbReady={isDbReady} />
+            <ScheduledExpenseCoordinator dbReady={isDbReady} />
             <TaskReminderNotificationListener />
             <DailyReviewReminderNotificationListener />
             <FinanceSheetHost />
@@ -252,6 +195,8 @@ function RootLayoutInner() {
             <Stack.Screen name="health-calendar" />
             <Stack.Screen name="intake-history" />
             <Stack.Screen name="finance-calendar" />
+            <Stack.Screen name="scheduled-expenses" />
+            <Stack.Screen name="add-scheduled-expense" />
             <Stack.Screen name="tasks-calendar" />
             <Stack.Screen name="tasks-overview" />
             <Stack.Screen name="edit-finance-transaction/[id]" />
@@ -292,7 +237,21 @@ function RootLayoutInner() {
             </AppErrorBoundary>
             <ApiLoadingIndicator />
           </View>
-        )}
+        ) : null}
+        {!showMainApp ? (
+          <AppSplashScreen
+            exitReady={isDbReady && !dbError}
+            onFinish={() => setShowMainApp(true)}
+            dbError={dbError}
+            dbRepairBusy={dbRepairBusy}
+            onRetry={() => {
+              void handleDbRetry();
+            }}
+            onRepair={() => {
+              void handleDbRepair();
+            }}
+          />
+        ) : null}
         <ApiDebugOverlay />
         <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
       </ThemeProvider>

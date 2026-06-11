@@ -91,7 +91,7 @@ export function parseHabitDailyGoal(extraData: string | null, kind?: HabitKind):
     return resolvedKind === 'break' ? 0 : null;
   }
   const rounded = Math.min(99, Math.max(0, Math.round(g)));
-  if (resolvedKind === 'build' && rounded <= 0) return null;
+  if ((resolvedKind === 'build' || resolvedKind === 'task') && rounded <= 0) return null;
   return rounded;
 }
 
@@ -110,7 +110,12 @@ export function parseHabitQuantifyMeta(extraData: string | null, kind?: HabitKin
     dailyGoal: parseHabitDailyGoal(extraData, resolvedKind),
     consecutiveTargetDays:
       resolvedKind === 'break' ? parseHabitConsecutiveTargetDays(extraData) : null,
-    expectedGoal: resolvedKind === 'build' ? parseBuildHabitExpectedGoal(extraData) : null,
+    expectedGoal:
+      resolvedKind === 'task'
+        ? parseBuildHabitExpectedGoal(extraData)
+        : resolvedKind === 'build'
+          ? parseBuildHabitExpectedGoal(extraData)
+          : null,
   };
 }
 
@@ -146,7 +151,7 @@ export function isBreakHabitDayCompleted(todayCount: number): boolean {
   return Math.max(0, Math.floor(todayCount)) === 0;
 }
 
-/** 任务页展示 / 习惯绑定：养成看达标，戒除看未破戒 */
+/** 任务页展示 / 习惯绑定：养成/完成任务看达标，戒除看未破戒 */
 export function isHabitDayDisplayCompleted(params: {
   kind: HabitKind;
   todayCount: number;
@@ -216,11 +221,11 @@ export function buildProgressBadgeColor(todayCount: number, dailyGoal: number | 
   return `rgba(0,108,73,${0.6 + strength * 0.35})`;
 }
 
-/** 养成习惯打卡递增上限；戒除习惯不设上限（记录每次破戒） */
+/** 养成/完成任务打卡递增上限；戒除习惯不设上限（记录每次破戒） */
 export function parseHabitIncrementCap(extraData: string | null, kind?: HabitKind): number | null {
   const resolvedKind = kind ?? parseHabitKind(extraData);
   if (resolvedKind === 'break') return null;
-  const goal = parseHabitDailyGoal(extraData, 'build');
+  const goal = parseHabitDailyGoal(extraData, resolvedKind);
   return goal != null && goal > 0 ? goal : null;
 }
 

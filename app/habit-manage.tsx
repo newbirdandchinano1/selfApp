@@ -20,6 +20,10 @@ import {
 } from '@/lib/repositories/habits/habit-build-success';
 import { parseBuildHabitExpectedGoal, parseHabitConsecutiveTargetDays } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import {
+  parseTaskHabitExpectedGoal,
+  parseTaskRepeatPeriod,
+} from '@/lib/repositories/habits/habit-task-period';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -43,6 +47,8 @@ type HabitItem = {
   buildCompletedAt: string | null;
   buildCompletedValue: number | null;
   buildExpectedGoal: ReturnType<typeof parseBuildHabitExpectedGoal>;
+  taskExpectedGoal: ReturnType<typeof parseTaskHabitExpectedGoal>;
+  taskRepeatPeriod: ReturnType<typeof parseTaskRepeatPeriod>;
 };
 
 const HABIT_KIND_BREAK_ACCENT = '#ea580c';
@@ -105,6 +111,8 @@ export default function HabitManageScreen() {
           buildCompletedAt: buildCycle.completedAt,
           buildCompletedValue: buildCycle.completedValue,
           buildExpectedGoal: kind === 'build' ? parseBuildHabitExpectedGoal(r.extra_data) : null,
+          taskExpectedGoal: kind === 'task' ? parseTaskHabitExpectedGoal(r.extra_data) : null,
+          taskRepeatPeriod: kind === 'task' ? parseTaskRepeatPeriod(r.extra_data) : '每月',
         });
         byCtx.set(r.context, items);
       });
@@ -312,8 +320,15 @@ export default function HabitManageScreen() {
               <View style={styles.groupItems}>
                 {group.items.map((item) => {
                   const isBreak = item.kind === 'break';
+                  const isTask = item.kind === 'task';
                   const isRestarting = restartingId === item.id;
                   const succeeded = item.breakSucceeded || item.buildSucceeded;
+                  const taskGoalLabel =
+                    item.taskExpectedGoal?.type === 'times'
+                      ? `${item.taskExpectedGoal.value} 次`
+                      : item.taskExpectedGoal?.type === 'days'
+                        ? `${item.taskExpectedGoal.value} 天`
+                        : null;
                   const leftAccent = succeeded
                     ? HABIT_KIND_BREAK_SUCCESS
                     : isBreak
@@ -349,6 +364,10 @@ export default function HabitManageScreen() {
                           {isBreak ? (
                             <View style={[styles.itemKindBadge, { borderColor: colors.surface }]}>
                               <Text style={styles.itemKindBadgeText}>戒</Text>
+                            </View>
+                          ) : isTask ? (
+                            <View style={[styles.itemKindBadge, styles.itemKindBadgeTask, { borderColor: colors.surface }]}>
+                              <Text style={styles.itemKindBadgeText}>任</Text>
                             </View>
                           ) : null}
                         </View>
@@ -398,6 +417,19 @@ export default function HabitManageScreen() {
                                   养成完成
                                 </Text>
                               </View>
+                            ) : isTask ? (
+                              <View
+                                style={[
+                                  styles.itemKindPill,
+                                  {
+                                    backgroundColor: isDark
+                                      ? 'rgba(59,130,246,0.22)'
+                                      : 'rgba(59,130,246,0.12)',
+                                    borderColor: isDark ? 'rgba(59,130,246,0.45)' : 'rgba(59,130,246,0.35)',
+                                  },
+                                ]}>
+                                <Text style={[styles.itemKindPillText, { color: '#3b82f6' }]}>完成任务</Text>
+                              </View>
                             ) : null}
                           </View>
                           <View style={styles.itemTagRow}>
@@ -414,6 +446,11 @@ export default function HabitManageScreen() {
                             <Text style={[styles.itemStats, { color: HABIT_KIND_BUILD_SUCCESS }]}>
                               已达成预期目标 {buildGoalLabel ?? ''}
                               {item.buildCompletedAt ? ` · ${item.buildCompletedAt} 完成` : ''}
+                            </Text>
+                          ) : isTask && taskGoalLabel ? (
+                            <Text style={[styles.itemStats, { color: colors.textSecondary }]}>
+                              {item.taskRepeatPeriod}目标 {taskGoalLabel}
+                              {item.todayCount > 0 ? ` · 今日 ${item.todayCount} 次` : ''}
                             </Text>
                           ) : item.achievedDays > 0 || item.todayCount > 0 ? (
                             <Text style={[styles.itemStats, { color: colors.textSecondary }]}>
@@ -606,6 +643,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: HABIT_KIND_BREAK_ACCENT,
     borderWidth: 2,
+  },
+  itemKindBadgeTask: {
+    backgroundColor: '#3b82f6',
   },
   itemKindBadgeText: { color: '#fff', fontSize: 9, fontWeight: '900' },
   itemTextWrap: { gap: Spacing.xs, flex: 1, minWidth: 0 },

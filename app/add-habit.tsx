@@ -15,6 +15,15 @@ import {
 } from '@/lib/repositories/habits/habit-goal';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
+import {
+  DEFAULT_TASK_REPEAT_PERIOD,
+  describeTaskExpectedGoalConstraints,
+  getTaskExpectedGoalMaxValue,
+  getTaskExpectedGoalTypeOptions,
+  normalizeTaskExpectedGoal,
+  TASK_REPEAT_PERIODS,
+  type TaskRepeatPeriod,
+} from '@/lib/repositories/habits/habit-task-period';
 import { type HabitKind, parseHabitKind } from '@/lib/repositories/habits/habit-kind';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -30,6 +39,7 @@ type ExpectedGoalTab = 'none' | BuildHabitExpectedGoalType;
 type CycleTab = '每天' | '每周定期' | '每周N天' | '每月定期' | '每月N天';
 
 const CYCLE_TABS: CycleTab[] = ['每天', '每周N天', '每月N天', '每周定期', '每月定期'];
+const TASK_CYCLE_TABS: TaskRepeatPeriod[] = [...TASK_REPEAT_PERIODS];
 const EXPECTED_GOAL_TABS: { key: ExpectedGoalTab; label: string }[] = [
   { key: 'none', label: '不限' },
   { key: 'days', label: '按天数' },
@@ -45,6 +55,7 @@ const DEFAULT_QUANTIFY_UNIT = '次';
 /** Habit kind accents — semantic (not global primary) */
 const HABIT_KIND_BUILD = '#14b8a6';
 const HABIT_KIND_BREAK_BORDER = '#ea580c';
+const HABIT_KIND_TASK = '#3b82f6';
 
 function defaultReminderTime(): Date {
   const d = new Date();
@@ -188,7 +199,7 @@ export default function AddHabitScreen() {
   const [contextOptions, setContextOptions] = React.useState<string[]>(() => [...FALLBACK_CONTEXT_OPTIONS]);
   /** 新建时不预设「起床」，避免用户删光情境后仍被选中被注入列表 */
   const [selectedContext, setSelectedContext] = React.useState(() => initialContext?.trim() ?? '');
-  const [activeTab, setActiveTab] = React.useState<CycleTab>('每周N天');
+  const [activeTab, setActiveTab] = React.useState<CycleTab | TaskRepeatPeriod>('每周N天');
   const [selectedDays, setSelectedDays] = React.useState<string[]>(['周一', '周二', '周三', '周四', '周五']);
   const [weeklyNDays, setWeeklyNDays] = React.useState(1);
   const [monthlyNDays, setMonthlyNDays] = React.useState(5);
@@ -285,9 +296,14 @@ export default function AddHabitScreen() {
             const quantifyEnabledRaw = parsed?.quantifyEnabled;
             const quantify = parsed?.quantify;
 
+            const kindFromExtra = parseHabitKind(row.extra_data);
             if (schedule?.activeTab && typeof schedule.activeTab === 'string') {
-              const v = schedule.activeTab as CycleTab;
-              setActiveTab(v);
+              const v = schedule.activeTab;
+              if (kindFromExtra === 'task' && (TASK_CYCLE_TABS as string[]).includes(v)) {
+                setActiveTab(v as TaskRepeatPeriod);
+              } else if (kindFromExtra !== 'task') {
+                setActiveTab(v as CycleTab);
+              }
             }
             if (Array.isArray(schedule?.selectedDays)) {
               const next = schedule.selectedDays.filter((d: unknown): d is string => typeof d === 'string');
@@ -312,7 +328,9 @@ export default function AddHabitScreen() {
               if (typeof quantify.unit === 'string') setUnitInput(quantify.unit);
               if (typeof quantify.eachPlus === 'number') setEachPlus(Math.max(1, Math.min(99, Math.round(quantify.eachPlus))));
               const kindFromExtra = parseHabitKind(row.extra_data);
-              if (quantify.dailyGoal === null) {
+              if (kindFromExtra === 'task') {
+                setDailyGoal(null);
+              } else if (quantify.dailyGoal === null) {
                 setDailyGoal(kindFromExtra === 'break' ? 0 : null);
               } else if (typeof quantify.dailyGoal === 'number') {
                 const g = Math.round(quantify.dailyGoal);
@@ -362,6 +380,39 @@ export default function AddHabitScreen() {
     };
   }, [habitId, isEditMode]);
 
+  const taskRepeatPeriod = React.useMemo((): TaskRepeatPeriod => {
+    if (habitKind !== 'task') return DEFAULT_TASK_REPEAT_PERIOD;
+    return (TASK_CYCLE_TABS as string[]).includes(activeTab)
+      ? (activeTab as TaskRepeatPeriod)
+      : DEFAULT_TASK_REPEAT_PERIOD;
+  }, [habitKind, activeTab]);
+
+  const taskGoalTypeOptions = React.useMemo(
+    () => getTaskExpectedGoalTypeOptions(taskRepeatPeriod),
+    [taskRepeatPeriod]
+  );
+
+  const taskGoalMaxValue = React.useMemo(() => {
+    if (expectedGoalTab !== 'days' && expectedGoalTab !== 'times') return 1;
+    return getTaskExpectedGoalMaxValue(taskRepeatPeriod, expectedGoalTab);
+  }, [expectedGoalTab, taskRepeatPeriod]);
+
+  React.useEffect(() => {
+    if (habitKind !== 'task') return;
+    if (
+      expectedGoalTab === 'none' ||
+      !taskGoalTypeOptions.includes(expectedGoalTab)
+    ) {
+      setExpectedGoalTab(taskGoalTypeOptions[0]);
+    }
+  }, [habitKind, expectedGoalTab, taskGoalTypeOptions]);
+
+  React.useEffect(() => {
+    if (habitKind !== 'task') return;
+    if (expectedGoalTab === 'none') return;
+    setExpectedGoalValue((v) => Math.min(taskGoalMaxValue, Math.max(1, v)));
+  }, [habitKind, expectedGoalTab, taskGoalMaxValue]);
+
   const deriveToneByContext = React.useCallback((context: string): string => {
     const map: Record<string, string> = {
       起床: '#EFE5E9',
@@ -380,19 +431,36 @@ export default function AddHabitScreen() {
       setQuantifyEnabled(true);
       setDailyGoal((v) => (v === null ? 0 : v));
       setExpectedGoalTab('none');
+    } else if (habitKind === 'task') {
+      setDailyGoal(null);
+      setExpectedGoalTab((tab) => {
+        if (tab === 'none') return taskRepeatPeriod === '每日' ? 'times' : 'days';
+        return tab;
+      });
+      setExpectedGoalValue((v) => (v < 1 ? (taskRepeatPeriod === '每日' ? 1 : 7) : v));
+      if (!(TASK_CYCLE_TABS as string[]).includes(activeTab)) {
+        setActiveTab(DEFAULT_TASK_REPEAT_PERIOD);
+      }
     } else {
       setDailyGoal((v) => (v === 0 ? null : v));
+      setExpectedGoalTab('none');
+      if ((TASK_CYCLE_TABS as string[]).includes(activeTab)) {
+        setActiveTab('每周N天');
+      }
     }
-  }, [habitKind]);
+  }, [activeTab, habitKind]);
 
   const deriveTagByCycle = React.useCallback((): string => {
+    if (habitKind === 'task') {
+      return (TASK_CYCLE_TABS as string[]).includes(activeTab) ? activeTab : DEFAULT_TASK_REPEAT_PERIOD;
+    }
     if (activeTab === '每天') return '每天';
     if (activeTab === '每周N天') return `每周${weeklyNDays}天`;
     if (activeTab === '每月N天') return `每月${monthlyNDays}天`;
     if (activeTab === '每周定期') return '每周定期';
     if (activeTab === '每月定期') return '每月定期';
     return '每天';
-  }, [activeTab, monthlyNDays, weeklyNDays]);
+  }, [activeTab, habitKind, monthlyNDays, weeklyNDays]);
 
   const handleSave = React.useCallback(async () => {
     const name = habitName.trim();
@@ -427,29 +495,28 @@ export default function AddHabitScreen() {
       : { enabled: false as const };
 
     const resolvedDailyGoal =
-      habitKind === 'break'
-        ? Math.min(99, Math.max(0, dailyGoal ?? 0))
-        : dailyGoal !== null && dailyGoal < 1
-          ? null
-          : dailyGoal;
+      habitKind === 'task'
+        ? null
+        : habitKind === 'break'
+          ? Math.min(99, Math.max(0, dailyGoal ?? 0))
+          : dailyGoal !== null && dailyGoal < 1
+            ? null
+            : dailyGoal;
 
     const prevExpectedGoal =
       isEditMode && habitId
         ? parseBuildHabitExpectedGoal(JSON.stringify(existingExtra))
         : null;
     const nextExpectedGoal =
-      habitKind === 'build' && expectedGoalTab !== 'none'
-        ? {
+      habitKind === 'task' && expectedGoalTab !== 'none'
+        ? normalizeTaskExpectedGoal(taskRepeatPeriod, {
             type: expectedGoalTab,
-            value: Math.min(
-              expectedGoalTab === 'days' ? 999 : 9999,
-              Math.max(1, Math.round(expectedGoalValue))
-            ),
-          }
+            value: expectedGoalValue,
+          })
         : null;
 
-    const buildQuantifyExtra =
-      habitKind === 'build' && nextExpectedGoal ? { expectedGoal: nextExpectedGoal } : {};
+    const taskQuantifyExtra =
+      habitKind === 'task' && nextExpectedGoal ? { expectedGoal: nextExpectedGoal } : {};
 
     const extraDataRaw = JSON.stringify({
       ...existingExtra,
@@ -462,19 +529,22 @@ export default function AddHabitScreen() {
             dailyGoal: resolvedDailyGoal,
             ...(habitKind === 'break'
               ? { consecutiveTargetDays: Math.min(999, Math.max(1, consecutiveTargetDays)) }
-              : buildQuantifyExtra),
+              : taskQuantifyExtra),
           }
-        : habitKind === 'build' && nextExpectedGoal
+        : habitKind === 'task' && nextExpectedGoal
           ? { expectedGoal: nextExpectedGoal }
           : null,
-      schedule: {
-        activeTab,
-        selectedDays,
-        weeklyNDays,
-        monthlyFilter: activeMonthlyFilter,
-        monthlySpecificDays,
-        monthlyNDays,
-      },
+      schedule:
+        habitKind === 'task'
+          ? { activeTab: (TASK_CYCLE_TABS as string[]).includes(activeTab) ? activeTab : DEFAULT_TASK_REPEAT_PERIOD }
+          : {
+              activeTab,
+              selectedDays,
+              weeklyNDays,
+              monthlyFilter: activeMonthlyFilter,
+              monthlySpecificDays,
+              monthlyNDays,
+            },
       reminder: reminderPayload,
     });
     let extraData = extraDataRaw;
@@ -506,6 +576,11 @@ export default function AddHabitScreen() {
         merged = mergeBuildHabitCycleExtra(merged, { completedAt: null, completedValue: null });
       }
       extraData = merged;
+    } else if (habitKind === 'task') {
+      const extraObj = JSON.parse(extraData) as Record<string, unknown>;
+      delete extraObj.breakHabitCycle;
+      delete extraObj.buildHabitCycle;
+      extraData = JSON.stringify(extraObj);
     }
 
     const note = habitNote.trim() || null;
@@ -559,6 +634,7 @@ export default function AddHabitScreen() {
     dailyGoal,
     expectedGoalTab,
     expectedGoalValue,
+    taskRepeatPeriod,
     deriveTagByCycle,
     deriveToneByContext,
     habitIcon,
@@ -712,6 +788,26 @@ export default function AddHabitScreen() {
                 <Text style={[Typography.bodyStrong, styles.kindCardTitle, { color: colors.text }]}>戒坏习惯</Text>
                 <Text style={[Typography.label, styles.kindCardSub, { color: colors.textSecondary }]}>坚持不去做某事</Text>
               </Pressable>
+              <Pressable
+                onPress={() => setHabitKind('task')}
+                style={({ pressed }) => [
+                  styles.kindCard,
+                  {
+                    backgroundColor:
+                      habitKind === 'task'
+                        ? isDark
+                          ? 'rgba(59,130,246,0.22)'
+                          : 'rgba(59,130,246,0.12)'
+                        : colors.surfaceSubtle,
+                    borderColor: habitKind === 'task' ? HABIT_KIND_TASK : colors.outline,
+                    borderWidth: habitKind === 'task' ? 2 : StyleSheet.hairlineWidth,
+                  },
+                  pressed && { opacity: 0.88 },
+                ]}>
+                <Text style={styles.kindCardEmoji}>🎯</Text>
+                <Text style={[Typography.bodyStrong, styles.kindCardTitle, { color: colors.text }]}>完成任务</Text>
+                <Text style={[Typography.label, styles.kindCardSub, { color: colors.textSecondary }]}>周期内达成目标</Text>
+              </Pressable>
             </View>
           </View>
 
@@ -813,36 +909,38 @@ export default function AddHabitScreen() {
                       textColor={colors.text}
                       mutedColor={colors.textSecondary}
                     />
-                    <NumberControl
-                      label="每日目标"
-                      value={habitKind === 'break' ? (dailyGoal ?? 0) : dailyGoal}
-                      displayValue={
-                        habitKind === 'break'
-                          ? String(dailyGoal ?? 0)
-                          : dailyGoal === null
-                            ? '不限'
-                            : String(dailyGoal)
-                      }
-                      onMinus={() =>
-                        setDailyGoal((v) => {
-                          if (habitKind === 'break') {
-                            return Math.max(0, (v ?? 0) - 1);
-                          }
-                          if (v === null) return null;
-                          if (v <= 1) return null;
-                          return v - 1;
-                        })
-                      }
-                      onPlus={() =>
-                        setDailyGoal((v) => {
-                          if (habitKind === 'break') return Math.min(99, (v ?? 0) + 1);
-                          return v === null ? 1 : Math.min(99, v + 1);
-                        })
-                      }
-                      showOptional={habitKind !== 'break'}
-                      textColor={colors.text}
-                      mutedColor={colors.textSecondary}
-                    />
+                    {habitKind !== 'task' ? (
+                      <NumberControl
+                        label="每日目标"
+                        value={habitKind === 'break' ? (dailyGoal ?? 0) : dailyGoal}
+                        displayValue={
+                          habitKind === 'break'
+                            ? String(dailyGoal ?? 0)
+                            : dailyGoal === null
+                              ? '不限'
+                              : String(dailyGoal)
+                        }
+                        onMinus={() =>
+                          setDailyGoal((v) => {
+                            if (habitKind === 'break') {
+                              return Math.max(0, (v ?? 0) - 1);
+                            }
+                            if (v === null) return null;
+                            if (v <= 1) return null;
+                            return v - 1;
+                          })
+                        }
+                        onPlus={() =>
+                          setDailyGoal((v) => {
+                            if (habitKind === 'break') return Math.min(99, (v ?? 0) + 1);
+                            return v === null ? 1 : Math.min(99, v + 1);
+                          })
+                        }
+                        showOptional={habitKind !== 'break'}
+                        textColor={colors.text}
+                        mutedColor={colors.textSecondary}
+                      />
+                    ) : null}
                     {habitKind === 'break' ? (
                       <>
                         <Text style={[Typography.caption, styles.quantifyBreakHint, { color: colors.textSecondary }]}>
@@ -860,7 +958,7 @@ export default function AddHabitScreen() {
                     ) : null}
                   </View>
                 ) : null}
-                {habitKind === 'build' ? (
+                {habitKind === 'task' ? (
                   <View
                     style={[
                       styles.expectedGoalBlock,
@@ -868,24 +966,28 @@ export default function AddHabitScreen() {
                     ]}>
                     <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>
                       预期目标
-                      <Text style={[styles.numberLabelHint, { color: colors.textSecondary }]}>（可选）</Text>
                     </Text>
                     <Text style={[Typography.caption, styles.expectedGoalHint, { color: colors.textSecondary }]}>
-                      达成后习惯自动完成并关闭；不选则持续进行，直至手动删除
+                      在当前重复周期内达成后，本周期内不再展示；下一周期重新出现
+                    </Text>
+                    <Text style={[Typography.caption, styles.expectedGoalHint, { color: colors.textSecondary }]}>
+                      {describeTaskExpectedGoalConstraints(taskRepeatPeriod)}
                     </Text>
                     <View style={styles.expectedGoalTabs}>
-                      {EXPECTED_GOAL_TABS.map((tab) => {
+                      {EXPECTED_GOAL_TABS.filter(
+                        (tab) => tab.key !== 'none' && taskGoalTypeOptions.includes(tab.key)
+                      ).map((tab) => {
                         const active = expectedGoalTab === tab.key;
                         return (
                           <Pressable
                             key={tab.key}
                             onPress={() => {
                               setExpectedGoalTab(tab.key);
-                              if (tab.key === 'days') {
-                                setExpectedGoalValue((v) => Math.max(1, v));
-                              } else if (tab.key === 'times') {
-                                setExpectedGoalValue((v) => (v < 1 ? 30 : v));
-                              }
+                              const max = getTaskExpectedGoalMaxValue(taskRepeatPeriod, tab.key);
+                              setExpectedGoalValue((v) => {
+                                const next = tab.key === 'times' && v < 1 ? 1 : Math.max(1, v);
+                                return Math.min(max, next);
+                              });
                             }}
                             style={[
                               styles.expectedGoalTab,
@@ -905,22 +1007,16 @@ export default function AddHabitScreen() {
                         );
                       })}
                     </View>
-                    {expectedGoalTab !== 'none' ? (
-                      <NumberControl
-                        label={expectedGoalTab === 'days' ? '目标天数' : '目标次数'}
-                        value={expectedGoalValue}
-                        onMinus={() =>
-                          setExpectedGoalValue((v) => Math.max(1, v - (expectedGoalTab === 'days' ? 1 : 1)))
-                        }
-                        onPlus={() =>
-                          setExpectedGoalValue((v) =>
-                            Math.min(expectedGoalTab === 'days' ? 999 : 9999, v + 1)
-                          )
-                        }
-                        textColor={colors.text}
-                        mutedColor={colors.textSecondary}
-                      />
-                    ) : null}
+                    <NumberControl
+                      label={expectedGoalTab === 'times' ? '目标次数' : '目标天数'}
+                      value={expectedGoalValue}
+                      onMinus={() => setExpectedGoalValue((v) => Math.max(1, v - 1))}
+                      onPlus={() =>
+                        setExpectedGoalValue((v) => Math.min(taskGoalMaxValue, v + 1))
+                      }
+                      textColor={colors.text}
+                      mutedColor={colors.textSecondary}
+                    />
                   </View>
                 ) : null}
               </AppCard>
@@ -980,16 +1076,21 @@ export default function AddHabitScreen() {
           </View>
 
           <View>
-            {renderSectionHeader('calendar-month', '循环模式', cycleOpen, () => setCycleOpen((v) => !v))}
+            {renderSectionHeader(
+              'calendar-month',
+              habitKind === 'task' ? '重复设置' : '循环模式',
+              cycleOpen,
+              () => setCycleOpen((v) => !v)
+            )}
             {cycleOpen ? (
               <AppCard variant="muted" padded={false} style={styles.cycleSectionOuter}>
                 <View style={[styles.tabWrap, { backgroundColor: colors.capsule }]}>
-                  {CYCLE_TABS.map((tab) => {
+                  {(habitKind === 'task' ? TASK_CYCLE_TABS : CYCLE_TABS).map((tab) => {
                     const active = tab === activeTab;
                     return (
                       <Pressable
                         key={tab}
-                        onPress={() => setActiveTab(tab)}
+                        onPress={() => setActiveTab(tab as CycleTab & TaskRepeatPeriod)}
                         style={({ pressed }) => [
                           styles.tabItem,
                           active && [{ backgroundColor: colors.surface }, shadows.card],
@@ -1009,13 +1110,25 @@ export default function AddHabitScreen() {
                 </View>
 
                 <View style={[styles.cycleBody, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
-                  {activeTab === '每天' ? (
+                  {habitKind === 'task' ? (
+                    <Text style={[Typography.body, styles.cycleHintText, { color: colors.textSecondary }]}>
+                      在
+                      <Text style={[Typography.h3, styles.cycleHintStrong, { color: colors.text }]}>
+                        {' '}
+                        {(TASK_CYCLE_TABS as string[]).includes(activeTab) ? activeTab : DEFAULT_TASK_REPEAT_PERIOD}
+                        {' '}
+                      </Text>
+                      周期内完成预期目标后，本周期内不再展示
+                    </Text>
+                  ) : null}
+
+                  {habitKind !== 'task' && activeTab === '每天' ? (
                     <Text style={[Typography.body, styles.cycleHintText, { color: colors.textSecondary }]}>
                       每天都可打卡，全年无休
                     </Text>
                   ) : null}
 
-                  {activeTab === '每周定期' ? (
+                  {habitKind !== 'task' && activeTab === '每周定期' ? (
                     <>
                       <Text style={[Typography.caption, styles.cycleLabel, { color: colors.textSecondary }]}>工作日</Text>
                       <View style={styles.dayRow}>
@@ -1079,7 +1192,7 @@ export default function AddHabitScreen() {
                     </>
                   ) : null}
 
-                  {activeTab === '每周N天' ? (
+                  {habitKind !== 'task' && activeTab === '每周N天' ? (
                     <>
                       <Text style={[Typography.body, styles.cycleHintText, { color: colors.textSecondary }]}>
                         每周完成任意{' '}
@@ -1113,7 +1226,7 @@ export default function AddHabitScreen() {
                     </>
                   ) : null}
 
-                  {activeTab === '每月定期' ? (
+                  {habitKind !== 'task' && activeTab === '每月定期' ? (
                     <>
                       <View style={styles.monthFilterGrid}>
                         {MONTH_FILTERS.map((filter) => {
@@ -1168,7 +1281,7 @@ export default function AddHabitScreen() {
                     </>
                   ) : null}
 
-                  {activeTab === '每月N天' ? (
+                  {habitKind !== 'task' && activeTab === '每月N天' ? (
                     <>
                       <Text style={[Typography.body, styles.cycleHintText, { color: colors.textSecondary }]}>
                         每月完成任意{' '}
@@ -1461,9 +1574,11 @@ const styles = StyleSheet.create({
   },
   kindBlock: { gap: Spacing.md },
   kindBlockLabel: { paddingLeft: Spacing.xs },
-  kindRow: { flexDirection: 'row', gap: Spacing.lg },
+  kindRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
   kindCard: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: '30%',
+    minWidth: 96,
     borderRadius: Radius.lg,
     paddingVertical: Spacing.xl,
     paddingHorizontal: Spacing.lg,

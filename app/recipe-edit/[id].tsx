@@ -4,6 +4,11 @@ import {
   linesFromLegacyText,
   trimRecipeLines,
 } from '@/components/recipe/dynamic-line-inputs';
+import {
+  ensureMinIngredientRows,
+  IngredientInputs,
+  trimIngredientRows,
+} from '@/components/recipe/ingredient-inputs';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
@@ -14,6 +19,7 @@ import {
   RECIPE_NOTES_MAX,
   RECIPE_TITLE_MAX,
   updateRecipe,
+  type RecipeIngredient,
 } from '@/lib/recipes';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
@@ -69,7 +75,7 @@ export default function RecipeEditScreen() {
 
   const [categoryName, setCategoryName] = useState('');
   const [title, setTitle] = useState('');
-  const [ingredientLines, setIngredientLines] = useState<string[]>(['']);
+  const [ingredientRows, setIngredientRows] = useState<RecipeIngredient[]>([{ name: '', amount: '' }]);
   const [stepLines, setStepLines] = useState<string[]>(['']);
   const [notes, setNotes] = useState('');
   const [finishedImageUri, setFinishedImageUri] = useState<string | null>(null);
@@ -100,8 +106,8 @@ export default function RecipeEditScreen() {
       const cat = await getRecipeCategory(row.category_id);
       setCategoryName(cat?.name ?? '');
       setTitle(row.title);
-      setIngredientLines(
-        ensureMinLines(row.ingredients.length > 0 ? row.ingredients : linesFromLegacyText('')),
+      setIngredientRows(
+        ensureMinIngredientRows(row.ingredients.length > 0 ? row.ingredients : [{ name: '', amount: '' }]),
       );
       setStepLines(ensureMinLines(row.steps.length > 0 ? row.steps : linesFromLegacyText('')));
       setNotes(row.notes ?? '');
@@ -159,7 +165,7 @@ export default function RecipeEditScreen() {
 
   const onSave = useCallback(async () => {
     const t = title.trim();
-    const ingredients = trimRecipeLines(ingredientLines);
+    const ingredients = trimIngredientRows(ingredientRows);
     const steps = trimRecipeLines(stepLines);
     if (!t && ingredients.length === 0 && steps.length === 0) {
       Alert.alert('无法保存', '请至少填写菜名、食材或步骤之一');
@@ -209,7 +215,7 @@ export default function RecipeEditScreen() {
     finishedImageUri,
     id,
     initialImageUri,
-    ingredientLines,
+    ingredientRows,
     isNew,
     notes,
     router,
@@ -343,12 +349,9 @@ export default function RecipeEditScreen() {
             </View>
 
             <View style={[styles.formSection, { backgroundColor: cardBg, borderColor: borderSoft }]}>
-              <DynamicLineInputs
-                label="食材"
-                hint="填写一项后出现下一项，也可点「添加一项」"
-                lines={ingredientLines}
-                onChange={setIngredientLines}
-                placeholder="例如：鸡蛋 2 个"
+              <IngredientInputs
+                rows={ingredientRows}
+                onChange={setIngredientRows}
                 textColor={text}
                 outlineColor={outline}
                 borderColor={borderSoft}

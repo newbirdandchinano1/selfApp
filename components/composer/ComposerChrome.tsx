@@ -336,16 +336,18 @@ export function ComposerNoteSection({
   value,
   onChangeText,
   placeholder,
+  title = '备注',
 }: {
   value: string;
   onChangeText: (text: string) => void;
   placeholder?: string;
+  title?: string;
 }) {
   const { colors } = useAppTheme();
 
   return (
     <View style={s.section}>
-      <ComposerSectionHead accentColor={colors.textMuted} title="备注" />
+      <ComposerSectionHead accentColor={colors.textMuted} title={title} />
       <View
         style={[
           s.notePanel,

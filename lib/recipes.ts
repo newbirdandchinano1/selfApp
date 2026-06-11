@@ -26,11 +26,16 @@ export type RecipeCategory = {
   created_at: string;
 };
 
+export type RecipeIngredient = {
+  name: string;
+  amount: string;
+};
+
 export type RecipeItem = {
   id: string;
   category_id: string;
   title: string;
-  ingredients: string[];
+  ingredients: RecipeIngredient[];
   steps: string[];
   notes?: string;
   finished_image_uri?: string;
@@ -117,6 +122,55 @@ function decodeLines(json: string | null | undefined, legacyText?: string): stri
   return normalizeLineArray(undefined, legacyText);
 }
 
+function normalizeIngredients(raw: unknown, legacyText?: string): RecipeIngredient[] {
+  if (Array.isArray(raw)) {
+    const out: RecipeIngredient[] = [];
+    for (const x of raw) {
+      if (typeof x === 'string') {
+        const t = x.trim();
+        if (!t) continue;
+        out.push({ name: t.length > 200 ? t.slice(0, 200) : t, amount: '' });
+      } else if (x && typeof x === 'object') {
+        const o = x as Record<string, unknown>;
+        const name = typeof o.name === 'string' ? o.name.trim() : '';
+        const amount = typeof o.amount === 'string' ? o.amount.trim() : '';
+        if (!name && !amount) continue;
+        out.push({
+          name: name.length > 200 ? name.slice(0, 200) : name,
+          amount: amount.length > 200 ? amount.slice(0, 200) : amount,
+        });
+      }
+      if (out.length >= 80) break;
+    }
+    return out;
+  }
+  if (typeof legacyText === 'string' && legacyText.trim()) {
+    return legacyText
+      .split(/\n/)
+      .map(s => s.trim())
+      .filter(Boolean)
+      .slice(0, 80)
+      .map(name => ({ name: name.length > 200 ? name.slice(0, 200) : name, amount: '' }));
+  }
+  return [];
+}
+
+function encodeIngredients(items: RecipeIngredient[]): string {
+  return JSON.stringify(normalizeIngredients(items));
+}
+
+function decodeIngredients(json: string | null | undefined, legacyText?: string): RecipeIngredient[] {
+  if (json != null && json !== '') {
+    try {
+      const parsed = JSON.parse(json) as unknown;
+      return normalizeIngredients(parsed);
+    } catch {
+      /* fall through */
+    }
+  }
+  return normalizeIngredients(undefined, legacyText);
+}
+
 function rowToCategory(row: CategoryRow): RecipeCategory {
   return { id: row.id, name: row.name, created_at: row.created_at };
 }
@@ -126,7 +180,7 @@ function rowToRecipe(row: RecipeRow): RecipeItem {
     id: row.id,
     category_id: row.category_id,
     title: row.title,
-    ingredients: decodeLines(row.ingredients_json),
+    ingredients: decodeIngredients(row.ingredients_json),
     steps: decodeLines(row.steps_json),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -169,7 +223,7 @@ function parseLegacyRecipeRow(row: Record<string, unknown>): RecipeItem | null {
     id,
     category_id: typeof row.category_id === 'string' ? row.category_id : '',
     title,
-    ingredients: normalizeLineArray(row.ingredients, ingredientsText),
+    ingredients: normalizeIngredients(row.ingredients, ingredientsText),
     steps: normalizeLineArray(row.steps, stepsText),
     created_at,
     updated_at,
@@ -263,7 +317,7 @@ async function importStoreToDb(db: SQLite.SQLiteDatabase, store: RecipeStore): P
           item.id,
           item.category_id,
           clampTitle(item.title),
-          encodeLines(item.ingredients),
+          encodeIngredients(item.ingredients),
           encodeLines(item.steps),
           item.notes?.trim() ? clampNotes(item.notes.trim()) : null,
           item.finished_image_uri ?? null,
@@ -470,7 +524,7 @@ export async function deleteRecipeCategory(id: string): Promise<boolean> {
 export type CreateRecipeInput = {
   category_id: string;
   title: string;
-  ingredients: string[];
+  ingredients: RecipeIngredient[];
   steps: string[];
   notes?: string;
   finished_image_uri?: string | null;
@@ -493,7 +547,7 @@ export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem
     id,
     category_id: input.category_id,
     title: clampTitle(input.title),
-    ingredients: normalizeLineArray(input.ingredients),
+    ingredients: normalizeIngredients(input.ingredients),
     steps: normalizeLineArray(input.steps),
     created_at: now,
     updated_at: now,
@@ -509,7 +563,7 @@ export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem
       item.id,
       item.category_id,
       item.title,
-      encodeLines(item.ingredients),
+      encodeIngredients(item.ingredients),
       encodeLines(item.steps),
       item.notes ?? null,
       item.finished_image_uri ?? null,
@@ -536,7 +590,7 @@ export async function updateRecipe(id: string, patch: UpdateRecipeInput): Promis
   if (!prev) return null;
 
   const title = patch.title !== undefined ? clampTitle(patch.title) : prev.title;
-  const ingredients = patch.ingredients !== undefined ? normalizeLineArray(patch.ingredients) : prev.ingredients;
+  const ingredients = patch.ingredients !== undefined ? normalizeIngredients(patch.ingredients) : prev.ingredients;
   const steps = patch.steps !== undefined ? normalizeLineArray(patch.steps) : prev.steps;
   const now = new Date().toISOString();
 
@@ -559,7 +613,7 @@ export async function updateRecipe(id: string, patch: UpdateRecipeInput): Promis
       title = ?, ingredients_json = ?, steps_json = ?, notes = ?, finished_image_uri = ?, updated_at = ?,
       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
-    [title, encodeLines(ingredients), encodeLines(steps), notes, finished_image_uri, now, id],
+    [title, encodeIngredients(ingredients), encodeLines(steps), notes, finished_image_uri, now, id],
   );
   markRecipesDirty();
 
@@ -599,7 +653,7 @@ export async function deleteRecipe(id: string): Promise<boolean> {
 export function recipeListPreviewTitle(row: RecipeItem): string {
   const t = row.title.trim();
   if (t) return t;
-  const firstIng = row.ingredients[0]?.trim() ?? '';
+  const firstIng = row.ingredients[0]?.name.trim() ?? '';
   if (firstIng) return firstIng.length > 48 ? `${firstIng.slice(0, 48)}…` : firstIng;
   return '未命名菜谱';
 }

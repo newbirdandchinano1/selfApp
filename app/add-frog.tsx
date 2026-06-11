@@ -222,16 +222,6 @@ function resolveFrogTimeBucket(
   return timeBucketForDueYmd(placement.anchorYmd, todayYmd, soonEndYmd, weekEndYmd, sevenEndYmd);
 }
 
-function taskOverlapsFrogPickWindow(t: TaskRow, todayYmd: string, lastIncludedYmd: string): boolean {
-  const placement = getFrogPlacement(t, todayYmd);
-  if (placement.bucket === 'expired') return true;
-  if (placement.bucket === 'nodate') return true;
-  if (placement.bucket === 'today') return true;
-  const anchor = placement.anchorYmd;
-  if (!anchor) return true;
-  return anchor <= lastIncludedYmd;
-}
-
 function getTaskDueSortMsForFrog(t: TaskRow, todayYmd: string): number | null {
   const { anchorYmd } = getFrogPlacement(t, todayYmd);
   if (anchorYmd) {
@@ -270,7 +260,7 @@ function formatDueCaption(dueDate: string, now: Date): string {
   return `截止 ${dueYmd}`;
 }
 
-type TimeBucket = 'expired' | 'today' | 'soon' | 'week' | 'seven' | 'nodate' | 'exclude' | 'pending';
+type TimeBucket = 'expired' | 'today' | 'soon' | 'week' | 'seven' | 'later' | 'nodate' | 'pending';
 
 function timeBucketForDueYmd(
   dueYmd: string | null,
@@ -285,7 +275,7 @@ function timeBucketForDueYmd(
   if (dueYmd <= soonEndYmd) return 'soon';
   if (dueYmd <= weekEndYmd) return 'week';
   if (dueYmd <= sevenEndYmd) return 'seven';
-  return 'exclude';
+  return 'later';
 }
 
 function getTaskContextLabels(
@@ -312,7 +302,6 @@ function groupTasksToSections(
   const soonEndYmd = addDaysToYmd(todayYmd, 3);
   const weekEndYmd = weekEndSundayYmd(now);
   const sevenEndYmd = addDaysToYmd(todayYmd, 7);
-  const lastIncludedYmd = [soonEndYmd, weekEndYmd, sevenEndYmd].reduce((m, x) => (x > m ? x : m), soonEndYmd);
 
   const hasUnfinishedChild = new Set<string>();
   rows.forEach((t) => {
@@ -330,21 +319,20 @@ function groupTasksToSections(
       const extra = parseTaskExtraData(t.extra_data);
       const assignedOn = typeof extra.frogAssignedOn === 'string' ? extra.frogAssignedOn : '';
       return assignedOn !== todayYmd;
-    })
-    .filter((t) => taskOverlapsFrogPickWindow(t, todayYmd, lastIncludedYmd));
+    });
 
   const secExpired: Item[] = [];
   const secToday: Item[] = [];
   const secSoon: Item[] = [];
   const secWeek: Item[] = [];
   const secSeven: Item[] = [];
+  const secLater: Item[] = [];
   const secNodate: Item[] = [];
 
   eligible.forEach((t) => {
     const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
     const placement = getFrogPlacement(t, todayYmd);
     const bucket = resolveFrogTimeBucket(placement, todayYmd, soonEndYmd, weekEndYmd, sevenEndYmd);
-    if (bucket === 'exclude') return;
 
     const anchorYmd = placement.anchorYmd;
     const dueSortKey = getTaskDueSortMsForFrog(t, todayYmd);
@@ -389,6 +377,7 @@ function groupTasksToSections(
     else if (bucket === 'soon') secSoon.push(item);
     else if (bucket === 'week') secWeek.push(item);
     else if (bucket === 'seven') secSeven.push(item);
+    else if (bucket === 'later') secLater.push(item);
     else secNodate.push(item);
   });
 
@@ -410,6 +399,7 @@ function groupTasksToSections(
   secSoon.sort(sortDated);
   secWeek.sort(sortDated);
   secSeven.sort(sortDated);
+  secLater.sort(sortDated);
   secNodate.sort(sortNodate);
 
   const sections: Section[] = [];
@@ -428,6 +418,7 @@ function groupTasksToSections(
     { key: 'soon', title: '近三天', badge: '截止较近', tone: 'primary', items: secSoon },
     { key: 'week', title: '本周', badge: '本周末前', tone: 'tertiary', items: secWeek },
     { key: 'seven', title: '近七天', badge: '今起7日内', tone: 'outline', items: secSeven },
+    { key: 'later', title: '更晚', badge: '7日之后', tone: 'outline', items: secLater },
     { key: 'nodate', title: '无截止日期', badge: '可选', tone: 'outline', items: secNodate },
   );
 
@@ -738,7 +729,7 @@ export default function AddFrogScreen() {
             <View style={[styles.section, { opacity: 0.85 }]}>
               <Text style={[styles.sectionTitle, { color: theme.text }]}>暂无可选青蛙</Text>
               <Text style={[styles.itemSubtitle, { color: theme.textSecondary, marginTop: 8 }]}>
-                可选范围：已过期任务、今日到期/时段内、今起三天内、本周日内、再往后至「今起第7天」内的任务，或未设置截止日期的任务。请先在任务中设置截止时间，或稍后再试。
+                可选范围：已过期任务、今日到期/时段内、今起三天内、本周日内、近七天内、更晚的已设日期任务，或未设置截止日期的任务。请先在任务中设置截止时间，或稍后再试。
               </Text>
             </View>
           ) : null}
@@ -797,7 +788,9 @@ export default function AddFrogScreen() {
                                   ? '没有仍在本周末前、且不属于近三天的待办'
                                   : sec.key === 'seven'
                                     ? '没有落在「本周结束之后、今起7天内」的待办'
-                                    : '没有未设置截止日期的待办'}
+                                    : sec.key === 'later'
+                                      ? '没有截止日在7天之后的待办'
+                                      : '没有未设置截止日期的待办'}
                           </Text>
                         </View>
                       </View>

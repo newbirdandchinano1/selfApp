@@ -34,6 +34,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { MySkillsWeaknessSection } from '@/components/my-skills/weakness-section';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const AI_SKILL_DIMENSION = '现有技能';
@@ -77,6 +78,7 @@ export default function MySkillsScreen() {
   const [snapshot, setSnapshot] = useState<UserSkillsSnapshot>(createEmptyUserSkillsSnapshot());
   const [displayName, setDisplayName] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
+  const [weaknessRefreshSignal, setWeaknessRefreshSignal] = useState(0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async (silent = false) => {
@@ -85,6 +87,7 @@ export default function MySkillsScreen() {
       const [skills, user] = await Promise.all([loadUserSkills(), getDefaultUser()]);
       setSnapshot(ensureUserSkillsSnapshot(skills));
       setDisplayName(user?.name?.trim() || '默认用户');
+      setWeaknessRefreshSignal(s => s + 1);
     } catch {
       setSnapshot(createEmptyUserSkillsSnapshot());
     } finally {
@@ -252,8 +255,8 @@ export default function MySkillsScreen() {
             keyboardDismissMode="on-drag"
             contentContainerStyle={[styles.scroll, { paddingBottom: 32 + insets.bottom }]}>
             <Text style={[styles.intro, { color: outline }]}>
-              添加你现有的技能并写下自我描述。保存后点击「请求 AI
-              评估」：将逐条给出评估与建议，并在底部输出综合建议与总体能力分析（基于智谱 GLM，与记账等功能共用密钥配置）。
+              记录现有技能、学习目标与待改进缺点。技能填写名称与自我描述后，可点击「请求 AI
+              评估」逐条评估并生成综合建议；缺点保存后会自动生成 AI 分析与改进建议（基于智谱 GLM，与记账等功能共用密钥配置）。
             </Text>
 
             <View style={[styles.statRow, { borderColor: outlineVariant }]}>
@@ -399,6 +402,8 @@ export default function MySkillsScreen() {
                 />
               </View>
             ))}
+
+            <MySkillsWeaknessSection refreshSignal={weaknessRefreshSignal} />
 
             <Pressable
               onPress={() => void onRunAi()}

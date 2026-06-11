@@ -62,6 +62,7 @@ import {
   parseBoundHabitIdsFromExtraData,
   tryCompleteTaskByBoundHabits,
 } from '@/lib/repositories/tasks/task-habit-binding';
+import { getIsLongTermTask, mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
 
 type PriorityKey =
   | 'urgent-important'
@@ -260,6 +261,7 @@ function priorityKeyToLabel(key: PriorityKey): string {
 
 type EditTaskFormSnapshot = {
   title: string;
+  acceptanceCriteria: string;
   notes: string;
   priority: PriorityKey;
   deadlineText: string;
@@ -268,6 +270,7 @@ type EditTaskFormSnapshot = {
   scheduleMeta: TaskScheduleMeta | null;
   completionReward: CompletionReward;
   boundHabitIds: string[];
+  isLongTermTask: boolean;
 };
 
 function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
@@ -292,6 +295,7 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
 
   return {
     title: (task.title ?? '').trim(),
+    acceptanceCriteria: (task.description ?? '').trim(),
     notes: (task.note ?? '').trim(),
     priority: mapPriorityTextToKey(priorityLabel),
     deadlineText,
@@ -300,11 +304,13 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
     scheduleMeta,
     completionReward: parseCompletionRewardFromExtraData(task.extra_data),
     boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
+    isLongTermTask: getIsLongTermTask(task.extra_data),
   };
 }
 
 function buildFormSnapshotFromFields(input: {
   title: string;
+  acceptanceCriteria: string;
   notes: string;
   priority: PriorityKey;
   deadlineText: string;
@@ -313,9 +319,11 @@ function buildFormSnapshotFromFields(input: {
   scheduleMeta: TaskScheduleMeta | null;
   completionReward: CompletionReward;
   boundHabitIds: string[];
+  isLongTermTask: boolean;
 }): EditTaskFormSnapshot {
   return {
     title: input.title.trim(),
+    acceptanceCriteria: input.acceptanceCriteria.trim(),
     notes: input.notes.trim(),
     priority: input.priority,
     deadlineText: input.deadlineText,
@@ -324,6 +332,7 @@ function buildFormSnapshotFromFields(input: {
     scheduleMeta: input.scheduleMeta,
     completionReward: input.completionReward,
     boundHabitIds: input.boundHabitIds,
+    isLongTermTask: input.isLongTermTask,
   };
 }
 
@@ -355,6 +364,7 @@ export default function EditTaskScreen() {
   const addSubtaskSource = `${scheduleSource}-add-subtask`;
 
   const [title, setTitle] = React.useState('');
+  const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
   const [notes, setNotes] = React.useState('');
   const [priority, setPriority] = React.useState<PriorityKey>('urgent-important');
   const [priorityOpen, setPriorityOpen] = React.useState(false);
@@ -371,6 +381,7 @@ export default function EditTaskScreen() {
   const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
   const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
   const [boundHabitIds, setBoundHabitIds] = React.useState<string[]>([]);
+  const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [habitSections, setHabitSections] = React.useState<
     Array<{ contextId: string; contextName: string; habits: HabitRow[] }>
   >([]);
@@ -381,6 +392,7 @@ export default function EditTaskScreen() {
   const creatingSubtaskIdRef = React.useRef<string | null>(null);
   const [skipRemoveGuard, setSkipRemoveGuard] = React.useState(false);
   const titleRef = React.useRef(title);
+  const acceptanceCriteriaRef = React.useRef(acceptanceCriteria);
   const notesRef = React.useRef(notes);
   const priorityRef = React.useRef(priority);
   const deadlineTextRef = React.useRef(deadlineText);
@@ -390,7 +402,9 @@ export default function EditTaskScreen() {
   const taskSnapshotRef = React.useRef(taskSnapshot);
   const completionRewardRef = React.useRef(completionReward);
   const boundHabitIdsRef = React.useRef(boundHabitIds);
+  const isLongTermTaskRef = React.useRef(isLongTermTask);
   titleRef.current = title;
+  acceptanceCriteriaRef.current = acceptanceCriteria;
   notesRef.current = notes;
   priorityRef.current = priority;
   deadlineTextRef.current = deadlineText;
@@ -400,6 +414,7 @@ export default function EditTaskScreen() {
   taskSnapshotRef.current = taskSnapshot;
   completionRewardRef.current = completionReward;
   boundHabitIdsRef.current = boundHabitIds;
+  isLongTermTaskRef.current = isLongTermTask;
 
   const subtaskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const selfLimit = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
@@ -441,6 +456,7 @@ export default function EditTaskScreen() {
     if (!loadedFormSnapshot || loading) return false;
     const current = buildFormSnapshotFromFields({
       title,
+      acceptanceCriteria,
       notes,
       priority,
       deadlineText,
@@ -451,7 +467,7 @@ export default function EditTaskScreen() {
       boundHabitIds,
     });
     return !formSnapshotsEqual(loadedFormSnapshot, current);
-  }, [boundHabitIds, completionReward, deadlineText, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
+  }, [acceptanceCriteria, boundHabitIds, completionReward, deadlineText, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
 
   const reload = React.useCallback(async (forceApi = false) => {
     if (!taskId) return;
@@ -620,6 +636,7 @@ export default function EditTaskScreen() {
       setTaskSnapshot(task);
       setLoadedFormSnapshot(buildFormSnapshotFromTask(task));
       setTitle(task.title ?? '');
+      setAcceptanceCriteria(task.description ?? '');
       setNotes(task.note ?? '');
       setDeadlineText(task.due_date ? formatDate(task.due_date) : '');
       setScheduleMeta(null);
@@ -640,6 +657,7 @@ export default function EditTaskScreen() {
       }
       setCompletionReward(parseCompletionRewardFromExtraData(task.extra_data));
       setBoundHabitIds(parseBoundHabitIdsFromExtraData(task.extra_data));
+      setIsLongTermTask(getIsLongTermTask(task.extra_data));
 
       try {
         setHabitsLoading(true);
@@ -731,20 +749,24 @@ export default function EditTaskScreen() {
       setSaving(true);
       const meta = scheduleMetaRef.current;
       const dueDate = dueDateFromScheduleMeta(meta, extractDueDate(deadlineTextRef.current));
-      const mergedExtra = mergeBoundHabitIdsIntoExtraData(
-        mergeCompletionRewardIntoExtraData(
-          JSON.stringify({
-            ...parseTaskExtraData(snapshot.extra_data),
-            reminder: reminderTextRef.current,
-            repeat: repeatTextRef.current,
-            schedule: meta,
-          }),
-          completionRewardRef.current,
+      const mergedExtra = mergeLongTermTaskIntoExtraData(
+        mergeBoundHabitIdsIntoExtraData(
+          mergeCompletionRewardIntoExtraData(
+            JSON.stringify({
+              ...parseTaskExtraData(snapshot.extra_data),
+              reminder: reminderTextRef.current,
+              repeat: repeatTextRef.current,
+              schedule: meta,
+            }),
+            completionRewardRef.current,
+          ),
+          boundHabitIdsRef.current,
         ),
-        boundHabitIdsRef.current,
+        isLongTermTaskRef.current,
       );
       await updateTask(taskId, {
         title: trimmedTitle,
+        description: acceptanceCriteriaRef.current.trim() || null,
         note: notesRef.current.trim() || null,
         priority: toTaskPriority(priorityKeyToLabel(priorityRef.current)),
         due_date: dueDate,
@@ -759,6 +781,7 @@ export default function EditTaskScreen() {
 
       const nextSnapshot = buildFormSnapshotFromFields({
         title: trimmedTitle,
+        acceptanceCriteria: acceptanceCriteriaRef.current,
         notes: notesRef.current,
         priority: priorityRef.current,
         deadlineText: deadlineTextRef.current,
@@ -767,6 +790,7 @@ export default function EditTaskScreen() {
         scheduleMeta: meta,
         completionReward: completionRewardRef.current,
         boundHabitIds: boundHabitIdsRef.current,
+        isLongTermTask: isLongTermTaskRef.current,
       });
       setLoadedFormSnapshot(nextSnapshot);
       if (boundHabitIdsRef.current.length > 0) {
@@ -781,6 +805,7 @@ export default function EditTaskScreen() {
           ? {
               ...prev,
               title: trimmedTitle,
+              description: acceptanceCriteriaRef.current.trim() || null,
               note: notesRef.current.trim() || null,
               priority: toTaskPriority(priorityKeyToLabel(priorityRef.current)),
               due_date: dueDate,
@@ -1156,6 +1181,35 @@ export default function EditTaskScreen() {
           </View>
 
           <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>长期任务</Text>
+            <Pressable
+              onPress={() => setIsLongTermTask((v) => !v)}
+              disabled={loading}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: isLongTermTask }}
+              style={({ pressed }) => [
+                styles.longTermRow,
+                {
+                  backgroundColor: isLongTermTask ? `${primary}12` : surfaceLow,
+                  borderColor: isLongTermTask ? primary : `${outlineVariant}70`,
+                  opacity: loading ? 0.65 : pressed ? 0.88 : 1,
+                },
+              ]}>
+              <View style={styles.longTermTextWrap}>
+                <Text style={[styles.longTermTitle, { color: theme.text }]}>标记为长期任务</Text>
+                <Text style={[styles.longTermHint, { color: outline }]}>
+                  指派为青蛙后，完成时会询问是否已完成整个任务
+                </Text>
+              </View>
+              <MaterialIcons
+                name={isLongTermTask ? 'check-box' : 'check-box-outline-blank'}
+                size={24}
+                color={isLongTermTask ? primary : outline}
+              />
+            </Pressable>
+          </View>
+
+          <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>绑定小习惯</Text>
             <BoundHabitPickerField
               selectedHabitIds={boundHabitIds}
@@ -1187,6 +1241,24 @@ export default function EditTaskScreen() {
               surfaceLowest={surfaceLowest}
               isDark={isDark}
             />
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>验收标准</Text>
+            <View style={[styles.notesWrap, { backgroundColor: surfaceLow }]}>
+              <TextInput
+                value={acceptanceCriteria}
+                onChangeText={setAcceptanceCriteria}
+                placeholder="怎样算完成？可写可验证的标准…（可选）"
+                placeholderTextColor={outline}
+                multiline
+                editable={!loading}
+                style={[styles.notesInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
+              />
+              <View style={styles.notesIcon} pointerEvents="none">
+                <MaterialIcons name="fact-check" size={20} color={outlineVariant} />
+              </View>
+            </View>
           </View>
 
           <View style={styles.section}>
@@ -1300,6 +1372,18 @@ const styles = StyleSheet.create({
   headerActionText: { fontSize: 15, fontWeight: '800' },
   content: { paddingTop: 92, paddingHorizontal: 18, gap: 22 },
   section: { gap: 10 },
+  longTermRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  longTermTextWrap: { flex: 1, gap: 4 },
+  longTermTitle: { fontSize: 15, fontWeight: '700' },
+  longTermHint: { fontSize: 12, lineHeight: 17 },
   sectionLabel: {
     fontSize: 10,
     fontWeight: '700',

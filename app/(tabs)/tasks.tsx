@@ -60,7 +60,13 @@ import {
   insertFrogCompletionEvent,
   type FrogCompletionDayItem,
 } from '@/lib/repositories/tasks/frog-completion-events';
-import { clearFrogAssignedOn } from '@/lib/frog-assignment';
+import { clearFrogAssignedOn, getFrogAssignedOn } from '@/lib/frog-assignment';
+import {
+  clearFrogSessionCompletedOn,
+  getIsLongTermTask,
+  isFrogDoneForToday,
+  setFrogSessionCompletedOn,
+} from '@/lib/long-term-task';
 import {
   getTaskCompletionCountsByDayRange,
   getNetCompletedTaskEventsForLocalDay,
@@ -90,6 +96,8 @@ import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import {
   decrementTodayHabitCheckIn,
+  getAllHabitCheckInsMaps,
+  getCheckInsMapByHabitId,
   getHabitCheckInListStats,
   incrementTodayHabitCheckIn,
 } from '@/lib/repositories/habits/habit-check-in';
@@ -106,6 +114,7 @@ import {
 } from '@/lib/repositories/habits/habit-build-success';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import { isTaskHabitPeriodGoalMet } from '@/lib/repositories/habits/habit-task-period';
 import {
   breakSlipBadgeColor,
   breakSlipBorderColor,
@@ -1229,6 +1238,10 @@ function isTaskRowOverdue(task: TaskRow, logicalTodayYmd: string): boolean {
   return isTaskDueOverdue(due, isDone, logicalTodayYmd);
 }
 
+function trimTaskAcceptanceCriteria(task: Pick<TaskRow, 'description'>): string {
+  return (task.description ?? '').trim();
+}
+
 function isStandaloneTodoOpen(task: TaskRow): boolean {
   return isTaskActiveStatus(task.status);
 }
@@ -1834,10 +1847,12 @@ export default function TasksScreen() {
     try {
       await syncBreakHabitCompletions();
       await syncBuildHabitCompletions();
-      const [contexts, rows, checkStats] = await Promise.all([
+      const logicalToday = getLogicalLocalYmd(new Date(), dayBoundary);
+      const [contexts, rows, checkStats, checkInsMaps] = await Promise.all([
         getHabitContexts(),
         getHabits(),
         getHabitCheckInListStats(),
+        getAllHabitCheckInsMaps(),
       ]);
       setHabitLookupById(new Map(rows.map((r) => [r.id, { name: r.name, icon: r.icon }])));
 
@@ -1847,6 +1862,16 @@ export default function TasksScreen() {
         const kind = parseHabitKind(r.extra_data);
         if (kind === 'break' && isBreakHabitSucceeded(r.extra_data)) continue;
         if (kind === 'build' && isBuildHabitSucceeded(r.extra_data)) continue;
+        if (
+          kind === 'task' &&
+          isTaskHabitPeriodGoalMet({
+            extraData: r.extra_data,
+            checkIns: checkInsMaps.get(r.id) ?? {},
+            logicalYmd: logicalToday,
+          })
+        ) {
+          continue;
+        }
 
         const arr = itemsByContext.get(r.context) ?? [];
         const todayCount = checkStats.get(r.id)?.todayCount ?? 0;
@@ -1891,7 +1916,7 @@ export default function TasksScreen() {
       setHabitSections([]);
       setHabitLookupById(new Map());
     }
-  }, []);
+  }, [dayBoundary]);
 
   const loadProjectTasks = React.useCallback(
     async (
@@ -2284,8 +2309,8 @@ export default function TasksScreen() {
       })
       .slice()
       .sort((a, b) => {
-        const doneA = a.status === 'done' || a.status === 'cancelled';
-        const doneB = b.status === 'done' || b.status === 'cancelled';
+        const doneA = isFrogDoneForToday(a.extra_data, a.status, today);
+        const doneB = isFrogDoneForToday(b.extra_data, b.status, today);
         if (doneA !== doneB) return doneA ? 1 : -1;
         if (a.priority !== b.priority) return b.priority - a.priority;
         const updA = a.updated_at ? Date.parse(a.updated_at) : 0;
@@ -2681,6 +2706,9 @@ export default function TasksScreen() {
           nextExtraData = patchExtraDataOnRepeatTaskReopen(current.extra_data);
         }
       }
+      if (nextStatus === 'done' || wasDone) {
+        nextExtraData = clearFrogSessionCompletedOn(nextExtraData);
+      }
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
@@ -2836,6 +2864,167 @@ export default function TasksScreen() {
       projects,
       tasks,
       updateTaskInProjectTree,
+    ]
+  );
+
+  const completeFrogSessionOnly = React.useCallback(
+    async (taskId: string) => {
+      const current =
+        tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      if (!current) return;
+
+      if (current.project_id && lockedProjectIds.has(current.project_id)) {
+        alertProjectTaskLocked(projectLockMap.get(current.project_id));
+        return;
+      }
+
+      const frogAssigned = getFrogAssignedOn(current.extra_data);
+      if (frogAssigned !== logicalTodayYmd) return;
+
+      markPageDirty();
+      const nextExtraData = setFrogSessionCompletedOn(current.extra_data, logicalTodayYmd);
+
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtraData } : t))
+      );
+      setProjectTaskTreeMap((prev) =>
+        updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtraData }))
+      );
+
+      try {
+        await updateTask(taskId, { extra_data: nextExtraData });
+        try {
+          await insertFrogCompletionEvent(taskId, frogAssigned, 'completed', current.title ?? null);
+        } catch (frogLogErr) {
+          console.warn('记录青蛙完成事件失败', frogLogErr);
+        }
+        setCompletionHeatmapReloadToken((n) => n + 1);
+      } catch (err) {
+        console.warn('完成青蛙会话失败', err);
+        await loadTasks();
+        await loadProjectTasks(projects);
+      }
+    },
+    [
+      loadProjectTasks,
+      loadTasks,
+      lockedProjectIds,
+      logicalTodayYmd,
+      markPageDirty,
+      projectLockMap,
+      projectTaskTreeMap,
+      projects,
+      tasks,
+      updateTaskInProjectTree,
+    ]
+  );
+
+  const reopenFrogSessionOnly = React.useCallback(
+    async (taskId: string) => {
+      const current =
+        tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      if (!current) return;
+
+      const frogAssigned = getFrogAssignedOn(current.extra_data);
+      if (frogAssigned !== logicalTodayYmd) return;
+
+      markPageDirty();
+      const nextExtraData = clearFrogSessionCompletedOn(current.extra_data);
+
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtraData } : t))
+      );
+      setProjectTaskTreeMap((prev) =>
+        updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtraData }))
+      );
+
+      try {
+        await updateTask(taskId, { extra_data: nextExtraData });
+        try {
+          await insertFrogCompletionEvent(taskId, frogAssigned, 'reopened', current.title ?? null);
+        } catch (frogLogErr) {
+          console.warn('记录青蛙重开事件失败', frogLogErr);
+        }
+        setCompletionHeatmapReloadToken((n) => n + 1);
+      } catch (err) {
+        console.warn('恢复青蛙会话失败', err);
+        await loadTasks();
+        await loadProjectTasks(projects);
+      }
+    },
+    [
+      loadProjectTasks,
+      loadTasks,
+      logicalTodayYmd,
+      markPageDirty,
+      projectTaskTreeMap,
+      projects,
+      tasks,
+      updateTaskInProjectTree,
+    ]
+  );
+
+  const toggleFrogDone = React.useCallback(
+    (taskId: string) => {
+      const current =
+        tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      if (!current || isTaskShelvedStatus(current.status)) return;
+
+      const frogAssigned = getFrogAssignedOn(current.extra_data);
+      const isAssignedToday = frogAssigned === logicalTodayYmd;
+      const frogDone = isFrogDoneForToday(current.extra_data, current.status, logicalTodayYmd);
+
+      if (frogDone && !isTaskTerminalStatus(current.status)) {
+        playFrogDoneBounce(taskId);
+        void reopenFrogSessionOnly(taskId);
+        return;
+      }
+
+      if (frogDone) {
+        playFrogDoneBounce(taskId);
+        void toggleTaskDone(taskId);
+        return;
+      }
+
+      if (isAssignedToday && getIsLongTermTask(current.extra_data)) {
+        const titleLabel = (current.title ?? '').trim() || '该任务';
+        Alert.alert(
+          '完成长期任务？',
+          `「${titleLabel}」是长期任务。是否已完成此任务？`,
+          [
+            { text: '取消', style: 'cancel' },
+            {
+              text: '还未完成',
+              onPress: () => {
+                playFrogDoneBounce(taskId);
+                void completeFrogSessionOnly(taskId);
+              },
+            },
+            {
+              text: '完成',
+              onPress: () => {
+                playFrogDoneBounce(taskId);
+                void toggleTaskDone(taskId);
+              },
+            },
+          ]
+        );
+        return;
+      }
+
+      playFrogDoneBounce(taskId);
+      void toggleTaskDone(taskId);
+    },
+    [
+      completeFrogSessionOnly,
+      logicalTodayYmd,
+      playFrogDoneBounce,
+      projectTaskTreeMap,
+      reopenFrogSessionOnly,
+      tasks,
+      toggleTaskDone,
     ]
   );
 
@@ -3051,6 +3240,29 @@ export default function TasksScreen() {
     [dayBoundary, loadHabits, syncHabitBoundTasksForHabit]
   );
 
+  const maybeRefreshTaskHabitVisibility = React.useCallback(
+    async (habitId: string) => {
+      try {
+        const habit = await getHabitById(habitId);
+        if (!habit || parseHabitKind(habit.extra_data) !== 'task') return;
+        const checkIns = await getCheckInsMapByHabitId(habitId);
+        const todayYmd = getLogicalLocalYmd(new Date(), dayBoundary);
+        if (
+          isTaskHabitPeriodGoalMet({
+            extraData: habit.extra_data,
+            checkIns,
+            logicalYmd: todayYmd,
+          })
+        ) {
+          await loadHabits();
+        }
+      } catch (err) {
+        console.warn('检测完成任务周期状态失败', err);
+      }
+    },
+    [dayBoundary, loadHabits]
+  );
+
   const handleHabitIncrement = React.useCallback(
     async (habitId: string, incrementCap: number | null) => {
       markPageDirty();
@@ -3060,12 +3272,20 @@ export default function TasksScreen() {
         if (increased) void playHabitCheckInDing();
         await maybeCompleteBreakHabit(habitId);
         await maybeCompleteBuildHabit(habitId);
+        await maybeRefreshTaskHabitVisibility(habitId);
         await syncHabitBoundTasksForHabit(habitId, nextCount);
       } catch (err) {
         console.warn('习惯打卡失败', err);
       }
     },
-    [maybeCompleteBreakHabit, maybeCompleteBuildHabit, markPageDirty, patchHabitTodayCount, syncHabitBoundTasksForHabit]
+    [
+      maybeCompleteBreakHabit,
+      maybeCompleteBuildHabit,
+      maybeRefreshTaskHabitVisibility,
+      markPageDirty,
+      patchHabitTodayCount,
+      syncHabitBoundTasksForHabit,
+    ]
   );
 
   const handleHabitUndoOnce = React.useCallback(
@@ -3076,12 +3296,20 @@ export default function TasksScreen() {
         patchHabitTodayCount(habitId, nextCount);
         await maybeCompleteBreakHabit(habitId);
         await maybeCompleteBuildHabit(habitId);
+        await loadHabits();
         await syncHabitBoundTasksForHabit(habitId, nextCount);
       } catch (err) {
         console.warn('撤销打卡失败', err);
       }
     },
-    [maybeCompleteBreakHabit, maybeCompleteBuildHabit, markPageDirty, patchHabitTodayCount, syncHabitBoundTasksForHabit]
+    [
+      loadHabits,
+      maybeCompleteBreakHabit,
+      maybeCompleteBuildHabit,
+      markPageDirty,
+      patchHabitTodayCount,
+      syncHabitBoundTasksForHabit,
+    ]
   );
 
   const handleHabitIconPress = React.useCallback(
@@ -3271,6 +3499,7 @@ export default function TasksScreen() {
     const due = t.due_date?.slice(0, 10) ?? '';
     const repeat = (meta.repeat ?? '').trim();
     const reminder = (meta.reminder ?? '').trim();
+    const acceptanceText = trimTaskAcceptanceCriteria(t);
     const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
     const overdue = isTaskDueOverdue(due, isDone, logicalTodayYmd);
     return (
@@ -3302,6 +3531,14 @@ export default function TasksScreen() {
               numberOfLines={1}>
               {t.title}
             </Text>
+            {!!acceptanceText ? (
+              <View style={styles.metaRow}>
+                <MaterialIcons name="fact-check" size={12} color={outline} />
+                <Text style={[styles.metaHint, { color: outline }]} numberOfLines={2}>
+                  {acceptanceText}
+                </Text>
+              </View>
+            ) : null}
             {!!due ? (
               <View style={styles.deadlineRow}>
                 <View
@@ -3483,7 +3720,8 @@ export default function TasksScreen() {
                     style={styles.frogCarousel}
                     contentContainerStyle={styles.frogCarouselContent}>
                     {todayFrogs.map((frog) => {
-                      const isDone = frog.status === 'done' || frog.status === 'cancelled';
+                      const isDone = isFrogDoneForToday(frog.extra_data, frog.status, logicalTodayYmd);
+                      const isLongTerm = getIsLongTermTask(frog.extra_data);
                       return (
                         <ScalePressable
                           key={frog.id}
@@ -3507,7 +3745,9 @@ export default function TasksScreen() {
                                 <MaterialIcons name="eco" size={18} color={primary} />
                               </View>
                               <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
-                                <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>今日已指派</Text>
+                                <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>
+                                  {isLongTerm ? '长期 · 今日已指派' : '今日已指派'}
+                                </Text>
                               </View>
                             </View>
                             <View style={styles.frogCardActions}>
@@ -3524,8 +3764,7 @@ export default function TasksScreen() {
                               <Pressable
                                 onPress={(e) => {
                                   e.stopPropagation?.();
-                                  playFrogDoneBounce(frog.id);
-                                  void toggleTaskDone(frog.id);
+                                  toggleFrogDone(frog.id);
                                 }}
                                 hitSlop={10}
                                 style={({ pressed }) => [styles.inlineDoneBtn, pressed && { opacity: 0.75 }]}>
@@ -3736,6 +3975,7 @@ export default function TasksScreen() {
                     const isDone = isTaskTerminalStatus(t.status);
                     const isShelved = isTaskShelvedStatus(t.status);
                     const noteText = (t.note ?? '').trim();
+                    const acceptanceText = trimTaskAcceptanceCriteria(t);
                     const meta = parseTaskMeta(t.extra_data);
                     const due = t.due_date?.slice(0, 10) ?? '';
                     const repeat = (meta.repeat ?? '').trim();
@@ -3880,6 +4120,23 @@ export default function TasksScreen() {
                                 <Text style={[styles.shelvedPillText, { color: outline }]}>暂时搁置</Text>
                               </View>
                             ) : null}
+                            {!!acceptanceText ? (
+                              <View style={styles.standaloneTodoAcceptanceRow}>
+                                <MaterialIcons name="fact-check" size={13} color={outline} />
+                                <Text
+                                  style={[
+                                    styles.standaloneTodoAcceptance,
+                                    {
+                                      color: colors.textSecondary,
+                                      textDecorationLine: isDone ? 'line-through' : 'none',
+                                      opacity: isDone ? 0.42 : 1,
+                                    },
+                                  ]}
+                                  numberOfLines={3}>
+                                  {acceptanceText}
+                                </Text>
+                              </View>
+                            ) : null}
                             {!!noteText ? (
                               <Text
                                 style={[
@@ -4022,6 +4279,7 @@ export default function TasksScreen() {
                           const scheduleAllowsToday = isHabitScheduledToday(item.extraData, habitScheduleAnchorDate);
                           const hasProgress = item.todayCount > 0;
                           const isBreak = item.kind === 'break';
+                          const isTask = item.kind === 'task';
                           const breakUi = isBreak
                             ? getBreakHabitDayUiState(item.todayCount, item.dailyGoal)
                             : null;
@@ -4086,6 +4344,10 @@ export default function TasksScreen() {
                                   {isBreak ? (
                                     <View style={[styles.habitKindBadge, { borderColor: card }]}>
                                       <Text style={styles.habitKindBadgeText}>戒</Text>
+                                    </View>
+                                  ) : isTask ? (
+                                    <View style={[styles.habitKindBadge, styles.habitKindBadgeTask, { borderColor: card }]}>
+                                      <Text style={styles.habitKindBadgeText}>任</Text>
                                     </View>
                                   ) : null}
                                   <View
@@ -4430,6 +4692,7 @@ export default function TasksScreen() {
                       const isExpandedTask = canToggleCollapse ? !isCollapsed : true;
                       const isChildRow = level > 1;
                       const noteText = (node.note ?? '').trim();
+                      const acceptanceText = trimTaskAcceptanceCriteria(node);
                       const dueDate = node.due_date?.slice(0, 10) ?? '';
                       const dueOverdue = isTaskDueOverdue(dueDate, isDone, logicalTodayYmd);
                       const effectivePriority = getEffectiveTaskPriority(node, logicalTodayYmd);
@@ -4677,6 +4940,16 @@ export default function TasksScreen() {
                                   </>
                                 );
                               })() : null}
+                              {!!acceptanceText && (
+                                <View style={[styles.projectTaskNoteRow, { borderTopColor: hairlineColor }]}>
+                                  <MaterialIcons name="fact-check" size={13} color={secondary} style={styles.projectTaskNoteIcon} />
+                                  <Text
+                                    style={[styles.projectTaskAcceptanceText, { color: colors.textSecondary }]}
+                                    numberOfLines={3}>
+                                    {acceptanceText}
+                                  </Text>
+                                </View>
+                              )}
                               {!!noteText && (
                                 <View style={[styles.projectTaskNoteRow, { borderTopColor: hairlineColor }]}>
                                   <MaterialIcons name="sticky-note-2" size={13} color={outline} style={styles.projectTaskNoteIcon} />
@@ -5930,6 +6203,7 @@ const styles = StyleSheet.create({
   },
   projectTaskNoteIcon: { marginTop: 1 },
   projectTaskNoteText: { flex: 1, fontSize: 12, fontWeight: '500', lineHeight: 18, fontStyle: 'italic' },
+  projectTaskAcceptanceText: { flex: 1, fontSize: 12, fontWeight: '600', lineHeight: 18 },
   projectTaskEmpty: { fontSize: 12, fontWeight: '700' },
   projectTaskEllipsis: { marginTop: 2, fontSize: 11, fontWeight: '700' },
   projectTaskEllipsisInline: { marginTop: 2, fontSize: 11, fontWeight: '700' },
@@ -6045,6 +6319,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#ea580c',
     borderWidth: 2,
   },
+  habitKindBadgeTask: {
+    backgroundColor: '#3b82f6',
+  },
   habitKindBadgeText: { color: '#fff', fontSize: 10, fontWeight: '900' },
   habitIconCircle: {
     position: 'relative',
@@ -6097,6 +6374,8 @@ const styles = StyleSheet.create({
 
   standaloneTodoSubtitle: { fontSize: 12, fontWeight: '600' },
   standaloneTodoNote: { fontSize: 12, fontWeight: '500', lineHeight: 16 },
+  standaloneTodoAcceptanceRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 4 },
+  standaloneTodoAcceptance: { flex: 1, fontSize: 12, fontWeight: '600', lineHeight: 16 },
   quickTodoShell: {
     flexDirection: 'row',
     alignItems: 'center',
