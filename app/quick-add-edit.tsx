@@ -24,7 +24,7 @@ const metricMetaMap = {
   hydration: { label: '水分', unit: 'ml' },
   protein: { label: '蛋白质', unit: 'g' },
   carbohydrate: { label: '碳水', unit: 'g' },
-  sodium: { label: '钠', unit: 'mg' },
+  calories: { label: '热量', unit: 'kcal' },
 } satisfies Record<NonNullable<QuickAddCardItem['metricTypes']>[number], { label: string; unit: string }>;
 
 function getMetricLabels(item: QuickAddCardItem): string[] {

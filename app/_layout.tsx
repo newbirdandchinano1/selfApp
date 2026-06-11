@@ -31,7 +31,6 @@ import { hydrateApiDirtyFromStorage, markAllPendingTablesDirty } from '@/lib/api
 import { startCloudPeriodicAlignScheduler } from '@/lib/cloud-sync-scheduler';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-selection';
-import { ensurePersonaPortraitsForTodayInBackground } from '@/lib/persona-portrait-sync';
 import { loadThemePreference } from '@/lib/theme-preference';
 
 if (Platform.OS !== 'web') {
@@ -68,7 +67,6 @@ function RootLayoutInner() {
           await loadCloudBackupTokenCache();
           if (Platform.OS !== 'web') {
             startCloudPeriodicAlignScheduler();
-            void ensurePersonaPortraitsForTodayInBackground();
             void syncDailyReviewReminderNotification();
           }
         } catch (e) {
@@ -202,7 +200,6 @@ function RootLayoutInner() {
             <Stack.Screen name="edit-finance-transaction/[id]" />
             <Stack.Screen name="savings-plan" />
             <Stack.Screen name="cash-flow" />
-            <Stack.Screen name="ai-finance-analysis" />
             <Stack.Screen name="schedule-picker" />
             <Stack.Screen name="edit-profile" />
             <Stack.Screen name="quick-add-edit" />
@@ -215,7 +212,6 @@ function RootLayoutInner() {
             <Stack.Screen name="memo-edit/[id]" />
             <Stack.Screen name="add-wish-item" />
             <Stack.Screen name="edit-wish-item/[id]" />
-            <Stack.Screen name="persona-detail/[slug]" />
             <Stack.Screen name="weekly-review" />
             <Stack.Screen name="weekly-review-form" />
             <Stack.Screen name="daily-review" />

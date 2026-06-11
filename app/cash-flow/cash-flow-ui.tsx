@@ -38,6 +38,11 @@ import type {
   IncomeItem,
   Quadrant,
 } from '@/lib/repositories/cash-flow/cash-flow.types';
+import {
+  CashFlowFinanceInsightsProvider,
+  CashFlowForecastSection,
+  CashFlowHealthScoreCard,
+} from './cash-flow-finance-insights';
 
 type ExpenseFlowType = CashFlowExpenseBucket;
 type ActiveTab =
@@ -210,9 +215,12 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
   const subtle = isDark ? theme.textSecondary : '#64748b';
   const border = isDark ? 'rgba(148,163,184,0.2)' : '#e2e8f0';
 
+  const [financeInsightsRefresh, setFinanceInsightsRefresh] = React.useState(0);
+
   const reloadCashFlow = React.useCallback(async () => {
     const loaded = await loadCashFlowState();
     setState(loaded);
+    setFinanceInsightsRefresh((t) => t + 1);
   }, [setState]);
 
   const { refreshControl } = usePullToRefresh(reloadCashFlow);
@@ -300,6 +308,7 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
             subtle={subtle}
             border={border}
             isDark={isDark}
+            financeInsightsRefresh={financeInsightsRefresh}
           />
         ) : null}
         {route === 'entry' ? (
@@ -411,6 +420,7 @@ function MobileDashboard({
   subtle,
   border,
   isDark,
+  financeInsightsRefresh,
 }: {
   state: CashFlowState;
   metrics: Metrics;
@@ -420,6 +430,7 @@ function MobileDashboard({
   subtle: string;
   border: string;
   isDark: boolean;
+  financeInsightsRefresh: number;
 }) {
   const card = [styles.card, { backgroundColor: surface, borderColor: border }];
   const statCard = [styles.card, { backgroundColor: surface, borderColor: border, flex: 1 }];
@@ -632,6 +643,10 @@ function MobileDashboard({
   }, [aiFingerprint, aiSummaryText, zhipuReady, aiRefreshTick]);
 
   return (
+    <CashFlowFinanceInsightsProvider
+      cashFlowState={state}
+      cashFlowMetrics={metrics}
+      refreshSignal={financeInsightsRefresh}>
     <View style={styles.section}>
       <View style={[styles.heroCard, { backgroundColor: surface, borderColor: border }]}>
         <View style={styles.heroTop}>
@@ -673,6 +688,8 @@ function MobileDashboard({
           </View>
         </View>
       </View>
+
+      <CashFlowHealthScoreCard surface={surface} text={text} subtle={subtle} border={border} isDark={isDark} />
 
       <View style={styles.grid2}>
         <View style={statCard}>
@@ -902,6 +919,8 @@ function MobileDashboard({
         </View>
       </View>
 
+      <CashFlowForecastSection surface={surface} text={text} subtle={subtle} border={border} isDark={isDark} />
+
       <View style={[styles.aiAdviceCard, { backgroundColor: surface, borderColor: border }]}>
         <View style={styles.aiAdviceHeaderRow}>
           <View style={styles.aiAdviceTitleRow}>
@@ -942,6 +961,7 @@ function MobileDashboard({
         ) : null}
       </View>
     </View>
+    </CashFlowFinanceInsightsProvider>
   );
 }
 

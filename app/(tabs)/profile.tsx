@@ -6,9 +6,6 @@ import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { listVisions } from '@/lib/repositories/visions/vision';
 import { visionRowToProfileCarouselItem } from '@/lib/repositories/visions/vision-present';
-import { getHealthRecordsLast7Days } from '@/lib/repositories/health/health';
-import { computeHealthCardPreview, getIntakeTargetsSnapshot } from '@/lib/persona-health-context';
-import { localLogicalTodayYmd } from '@/lib/persona-portrait-sync';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import type { ProfileVisionCarouselItem } from '@/lib/visions-registry';
 import type { UserRow } from '@/lib/repositories/users/user.types';
@@ -77,7 +74,6 @@ export default function ProfileScreen() {
   const tertiary = isDark ? '#fbbf24' : '#825100';
   const wishAccent = isDark ? '#f472b6' : '#b42375';
   const avatarUrl = user?.avatar_uri ? { uri: user.avatar_uri } : require('../../assets/profile/avatar.png');
-  const progressBgUrl = require('../../assets/profile/progress.png');
   const visionSectionYear = new Date().getFullYear();
   const displayName = user?.name?.trim() || '默认用户';
   const heightText = user?.height ? String(user.height) : '0';
@@ -170,27 +166,6 @@ export default function ProfileScreen() {
     };
   }, [visionCards]);
 
-  const [healthCardPreview, setHealthCardPreview] = useState({
-    heroMain: '健康',
-    heroSub: '身体 · 饮水 · 营养',
-    tag: '记录解锁侧写',
-  });
-
-  const loadHealthCardPreview = useCallback(async () => {
-    try {
-      const u = await getDefaultUser();
-      if (!u?.id) {
-        setHealthCardPreview(computeHealthCardPreview(null, []));
-        return;
-      }
-      const today = localLogicalTodayYmd();
-      const rows = await getHealthRecordsLast7Days(u.id, today);
-      setHealthCardPreview(computeHealthCardPreview(u, rows, getIntakeTargetsSnapshot()));
-    } catch {
-      setHealthCardPreview(computeHealthCardPreview(null, []));
-    }
-  }, []);
-
   const loadUser = useCallback(async () => {
     try {
       const currentUser = await getDefaultUser();
@@ -203,14 +178,12 @@ export default function ProfileScreen() {
   const reload = useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
       await loadUser();
-      await loadHealthCardPreview();
       await loadProfileVisions();
       await loadProfileWishItems();
     }, forceApi);
   }, [
     wrapLoad,
     loadUser,
-    loadHealthCardPreview,
     loadProfileVisions,
     loadProfileWishItems,
   ]);
@@ -244,9 +217,6 @@ export default function ProfileScreen() {
       };
     }, [loadUser]),
   );
-
-  const healthBgUrl = require('../../assets/profile/health.png');
-  const savingsBgUrl = require('../../assets/profile/savings.png');
 
   const headerFadeAnim = useRef(new Animated.Value(0)).current;
   const headerLiftAnim = useRef(new Animated.Value(12)).current;
@@ -631,111 +601,6 @@ export default function ProfileScreen() {
               })}
             </ScrollView>
           )}
-
-          <View style={styles.sectionHead}>
-            <View>
-              <Text style={[styles.kicker, { color: outline }]}>DIGITAL IDENTITY</Text>
-              <Text style={[styles.sectionTitle, { color: text }]}>AI 人格画像</Text>
-            </View>
-          </View>
-
-          <View style={styles.gridWrap}>
-            <Pressable
-              onPress={() =>
-                onProfileAction(() =>
-                  router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'plan-completion' } }),
-                )
-              }
-              style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
-            >
-              <View style={[styles.bigCard, { shadowColor: isDark ? '#000' : '#6c63ff' }]}>
-                <Image source={progressBgUrl} style={styles.bgImage} contentFit="cover" />
-                <View style={[styles.tintLayer, { backgroundColor: `${primary}66` }]} />
-                <View style={styles.bigCardTop}>
-                  <Text style={styles.cardKicker}>计划完成情况</Text>
-                  <Text style={styles.percentText}>85%</Text>
-                </View>
-                <View style={styles.bigCardBottom}>
-                  <Text style={styles.whiteHint}>本周目标达成率 · 卓越</Text>
-                  <MaterialIcons name="trending-up" size={30} color="rgba(255,255,255,0.9)" />
-                </View>
-              </View>
-            </Pressable>
-
-            <Pressable
-              onPress={() =>
-                onProfileAction(() =>
-                  router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'health' } }),
-                )
-              }
-              style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
-            >
-              <View style={styles.healthPersonaCard}>
-                <Image source={healthBgUrl} style={styles.bgImage} contentFit="cover" />
-                <View style={[styles.tintLayer, { backgroundColor: `${secondary}66` }]} />
-                <View style={styles.healthPersonaTop}>
-                  <View>
-                    <Text style={styles.cardKicker}>健康与营养</Text>
-                    <Text style={styles.healthPersonaValue}>{healthCardPreview.heroMain}</Text>
-                    <Text style={styles.healthPersonaSub}>{healthCardPreview.heroSub}</Text>
-                  </View>
-                  <View style={styles.tagPill}>
-                    <Text style={styles.tagPillText}>{healthCardPreview.tag}</Text>
-                  </View>
-                </View>
-                <Text style={styles.healthPersonaHint}>身体档案 · 四营养维度 · AI 侧写</Text>
-              </View>
-            </Pressable>
-
-            <Pressable
-              onPress={() =>
-                onProfileAction(() =>
-                  router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'savings' } }),
-                )
-              }
-              style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
-            >
-              <View style={styles.savingCard}>
-                <Image source={savingsBgUrl} style={styles.bgImage} contentFit="cover" />
-                <View style={[styles.tintLayer, { backgroundColor: `${tertiary}66` }]} />
-                <View style={styles.savingLeft}>
-                  <Text style={styles.cardKicker}>储蓄状态</Text>
-                  <Text style={styles.savingTitle}>资产稳步增长</Text>
-                  <Text style={styles.savingSub}>目标进度: 30,000 CNY</Text>
-                </View>
-                <View style={styles.glassIcon}>
-                  <MaterialIcons name="account-balance" size={30} color="rgba(255,221,184,0.95)" />
-                </View>
-              </View>
-            </Pressable>
-
-            <Pressable
-              onPress={() =>
-                onProfileAction(() =>
-                  router.push({ pathname: '/persona-detail/[slug]', params: { slug: 'ai-insight' } }),
-                )
-              }
-              style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
-            >
-              <View style={[styles.aiCard, { backgroundColor: surface, borderColor: `${primary}1A` }]}>
-                <View style={[styles.aiTopLine, { backgroundColor: `${primary}66` }]} />
-                <View style={styles.aiBody}>
-                  <View style={[styles.aiIcon, { backgroundColor: primary }]}>
-                    <MaterialIcons name="auto-awesome" size={24} color="#fff" />
-                  </View>
-                  <View style={styles.aiTextWrap}>
-                    <View style={styles.aiTitleRow}>
-                      <Text style={[styles.aiTitleKicker, { color: primary }]}>AI 智能人格洞察</Text>
-                      <View style={[styles.aiDivider, { backgroundColor: `${primary}1A` }]} />
-                    </View>
-                    <Text style={[styles.aiQuote, { color: text }]}>
-                      “你这周的饮水量提升了 15%，非常棒。考虑增加 10g 蛋白质摄入以支持健身训练。在执行储蓄计划方面你做得也很出色，请继续保持你的节奏！”
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            </Pressable>
-          </View>
         </Animated.View>
       </ScrollView>
     </SafeAreaView>
@@ -981,9 +846,6 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '900',
   },
-  gridWrap: {
-    gap: 14,
-  },
   wishEntryCard: {
     borderWidth: 1,
     borderRadius: 24,
@@ -1023,186 +885,5 @@ const styles = StyleSheet.create({
   wishEntryDesc: {
     fontSize: 13,
     fontWeight: '600',
-  },
-  bigCard: {
-    borderRadius: 22,
-    overflow: 'hidden',
-    minHeight: 190,
-    padding: 18,
-    justifyContent: 'space-between',
-  },
-  tintLayer: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  bigCardTop: {
-    gap: 5,
-  },
-  percentText: {
-    color: '#fff',
-    fontSize: 56,
-    fontWeight: '900',
-    letterSpacing: -1.2,
-  },
-  bigCardBottom: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-  },
-  whiteHint: {
-    color: 'rgba(255,255,255,0.92)',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  twoColRow: {
-    flexDirection: SCREEN_WIDTH >= 768 ? 'row' : 'column',
-    gap: 14,
-  },
-  smallCard: {
-    flex: 1,
-    borderRadius: 22,
-    overflow: 'hidden',
-    minHeight: 178,
-    padding: 18,
-    justifyContent: 'space-between',
-  },
-  healthPersonaCard: {
-    borderRadius: 22,
-    overflow: 'hidden',
-    minHeight: 168,
-    padding: 18,
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  healthPersonaTop: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  healthPersonaValue: {
-    color: '#fff',
-    fontSize: 40,
-    fontWeight: '900',
-    letterSpacing: -0.8,
-    marginTop: 4,
-  },
-  healthPersonaSub: {
-    color: 'rgba(255,255,255,0.9)',
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: 4,
-  },
-  healthPersonaHint: {
-    color: 'rgba(255,255,255,0.82)',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  smallValue: {
-    color: '#fff',
-    fontSize: 36,
-    fontWeight: '900',
-    letterSpacing: -0.6,
-  },
-  tagPill: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-  },
-  tagPillText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  smallHint: {
-    color: 'rgba(255,255,255,0.82)',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  savingCard: {
-    borderRadius: 22,
-    overflow: 'hidden',
-    minHeight: 162,
-    padding: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  savingLeft: {
-    flex: 1,
-    gap: 5,
-    paddingRight: 16,
-  },
-  savingTitle: {
-    color: '#fff',
-    fontSize: 32,
-    fontWeight: '900',
-    letterSpacing: -0.8,
-    lineHeight: 36,
-  },
-  savingSub: {
-    color: 'rgba(255,255,255,0.76)',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  glassIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.75)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.35)',
-  },
-  aiCard: {
-    borderWidth: 1,
-    borderRadius: 24,
-    overflow: 'hidden',
-  },
-  aiTopLine: {
-    height: 3,
-    width: '100%',
-  },
-  aiBody: {
-    padding: 20,
-    flexDirection: 'row',
-    gap: 12,
-  },
-  aiIcon: {
-    width: 54,
-    height: 54,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    transform: [{ rotate: '-3deg' }],
-  },
-  aiTextWrap: {
-    flex: 1,
-    gap: 10,
-  },
-  aiTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  aiTitleKicker: {
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 2.2,
-  },
-  aiDivider: {
-    flex: 1,
-    height: 1,
-  },
-  aiQuote: {
-    fontSize: 17,
-    lineHeight: 25,
-    fontWeight: '600',
-    fontStyle: 'italic',
-    opacity: 0.92,
   },
 });

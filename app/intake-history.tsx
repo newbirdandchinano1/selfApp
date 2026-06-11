@@ -17,7 +17,7 @@ import React from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-type FilterKey = 'all' | 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
+type FilterKey = 'all' | 'hydration' | 'protein' | 'carbohydrate' | 'calories';
 
 /** AI 文本一次写入多营时与 createHealthRecord.quick_add_key 对齐（与首页一致） */
 const HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY = 'ai_text_intake';
@@ -33,14 +33,14 @@ function singleHistoryLineTitle(row: HealthRecordRow, fallback: string): string 
 }
 
 function positiveNutrientKindsCount(row: HealthRecordRow): number {
-  return [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.sodium > 0].filter(Boolean).length;
+  return [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.calories > 0].filter(Boolean).length;
 }
 
 function firstPositiveIntakeMetric(row: HealthRecordRow): Exclude<FilterKey, 'all'> {
   if (row.hydration > 0) return 'hydration';
   if (row.protein > 0) return 'protein';
   if (row.carbohydrate > 0) return 'carbohydrate';
-  return 'sodium';
+  return 'calories';
 }
 
 function combinedHistoryTitle(row: HealthRecordRow, quickAddByKey: ReturnType<typeof createQuickAddItemMap>): string {
@@ -58,7 +58,7 @@ function formatCombinedHistoryAmount(row: HealthRecordRow): string {
   if (row.hydration > 0) parts.push(`水 ${formatIntakeAmount(row.hydration, 'ml')}`);
   if (row.protein > 0) parts.push(`蛋白 ${formatIntakeAmount(row.protein, 'g')}`);
   if (row.carbohydrate > 0) parts.push(`碳水 ${formatIntakeAmount(row.carbohydrate, 'g')}`);
-  if (row.sodium > 0) parts.push(`钠 ${formatIntakeAmount(row.sodium, 'mg')}`);
+  if (row.calories > 0) parts.push(`热量 ${formatIntakeAmount(row.calories, 'kcal')}`);
   return parts.join(' · ');
 }
 
@@ -67,7 +67,7 @@ function filterCategoriesForRow(row: HealthRecordRow): Exclude<FilterKey, 'all'>
   if (row.hydration > 0) out.push('hydration');
   if (row.protein > 0) out.push('protein');
   if (row.carbohydrate > 0) out.push('carbohydrate');
-  if (row.sodium > 0) out.push('sodium');
+  if (row.calories > 0) out.push('calories');
   return out;
 }
 
@@ -117,7 +117,7 @@ function formatRecordTime(createdAt: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'mg'): string {
+function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'kcal'): string {
   const formatted = Number(value.toFixed(2)).toString();
   return `${formatted}${unit}`;
 }
@@ -215,23 +215,23 @@ function buildHistoryLines(rows: HealthRecordRow[], quickAddCatalog: QuickAddCar
         iconColor: '#eab308',
       });
     }
-    if (row.sodium > 0) {
+    if (row.calories > 0) {
       const qa = row.quick_add_key ? quickAddByKey.get(row.quick_add_key) : undefined;
       lines.push({
         key: `${row.id}-s`,
         recordId: row.id,
-        title: singleHistoryLineTitle(row, includesMetric(qa, 'sodium') ? qa.label : '钠'),
-        amount: formatIntakeAmount(row.sodium, 'mg'),
+        title: singleHistoryLineTitle(row, includesMetric(qa, 'calories') ? qa.label : '热量'),
+        amount: formatIntakeAmount(row.calories, 'kcal'),
         time,
         note: '备注：暂无备注',
         aiComment: intakeHistoryAiComment(row),
-        icon: includesMetric(qa, 'sodium') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
-        category: 'sodium',
-        filterCategories: ['sodium'],
-        metric: 'sodium',
-        iconBgLight: 'rgba(168,85,247,0.14)',
-        iconBgDark: 'rgba(88,28,135,0.32)',
-        iconColor: '#a855f7',
+        icon: includesMetric(qa, 'calories') ? (qa.icon as keyof typeof MaterialIcons.glyphMap) : 'local-fire-department',
+        category: 'calories',
+        filterCategories: ['calories'],
+        metric: 'calories',
+        iconBgLight: 'rgba(239,68,68,0.14)',
+        iconBgDark: 'rgba(127,29,29,0.32)',
+        iconColor: '#ef4444',
       });
     }
   }
@@ -243,7 +243,7 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'hydration', label: '水分' },
   { key: 'protein', label: '蛋白质' },
   { key: 'carbohydrate', label: '碳水' },
-  { key: 'sodium', label: '钠' },
+  { key: 'calories', label: '热量' },
 ];
 
 const PAGE_API_KEY = 'intake-history';

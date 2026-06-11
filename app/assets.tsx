@@ -375,7 +375,7 @@ export default function AssetsScreen() {
               {formatSignedMoneyTrunc2(netWorth)}
             </Text>
             <Pressable
-              onPress={() => router.push('/ai-finance-analysis')}
+              onPress={() => router.push('/cash-flow')}
               style={({ pressed }) => [
                 styles.trendPill,
                 { backgroundColor: isDark ? 'rgba(52,211,153,0.2)' : 'rgba(0,108,73,0.1)' },
@@ -435,29 +435,6 @@ export default function AssetsScreen() {
               </View>
             </View>
           </AppCard>
-
-          <View style={[styles.growthCard, { backgroundColor: colors.accentCard }]}>
-            <View style={styles.growthTop}>
-              <Text style={[Typography.kicker, styles.growthKicker, { color: colors.onAccent }]}>增长预测</Text>
-              <Text style={[Typography.h2, styles.growthTitle, { color: colors.onAccent }]}>预计下月增长 +¥12k</Text>
-            </View>
-            <Pressable
-              onPress={() => router.push('/ai-finance-analysis')}
-              style={({ pressed }) => [
-                styles.growthBtn,
-                { borderColor: 'rgba(255,255,255,0.16)', backgroundColor: 'rgba(255,255,255,0.12)' },
-                pressed && { opacity: 0.8 },
-              ]}>
-              <Text style={[Typography.bodyStrong, { color: colors.onAccent }]}>查看分析</Text>
-              <MaterialIcons name="arrow-forward" size={16} color={colors.onAccent} />
-            </Pressable>
-            <View
-              style={[
-                styles.growthGlow,
-                { backgroundColor: isDark ? 'rgba(96,165,250,0.4)' : 'rgba(59,130,246,0.32)' },
-              ]}
-            />
-          </View>
         </View>
 
         <AppCard style={[shadows.card, styles.defaultAccountsCard]}>
@@ -911,36 +888,6 @@ const styles = StyleSheet.create({
   legend: { flex: 1, gap: Spacing.lg },
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
-  growthCard: {
-    borderRadius: Radius['2xl'],
-    padding: Spacing['4xl'],
-    overflow: 'hidden',
-    minHeight: 160,
-    justifyContent: 'space-between',
-  },
-  growthTop: { gap: Spacing.sm, zIndex: 2 },
-  growthKicker: { opacity: 0.88 },
-  growthTitle: {},
-  growthBtn: {
-    zIndex: 2,
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  growthGlow: {
-    position: 'absolute',
-    right: -60,
-    bottom: -60,
-    width: 220,
-    height: 220,
-    borderRadius: Radius.pill,
-    opacity: 0.55,
-  },
   defaultAccountsCard: { gap: Spacing.lg },
   defaultAccountsHint: { lineHeight: 18 },
   defaultAccountRow: {

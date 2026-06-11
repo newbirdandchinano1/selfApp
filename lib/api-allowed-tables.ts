@@ -1,4 +1,4 @@
-/** 服务端 ALLOWED_TABLES（44 张），与 src/config/tables.ts 对齐 */
+/** 服务端 ALLOWED_TABLES（43 张），与 src/config/tables.ts 对齐 */
 export const API_ALLOWED_TABLES = new Set([
   'account_transactions',
   'accounts',
@@ -23,7 +23,6 @@ export const API_ALLOWED_TABLES = new Set([
   'health_records',
   'memo_dimensions',
   'memos',
-  'persona_portrait_cache',
   'project_categories',
   'projects',
   'recipe_categories',
@@ -50,7 +49,6 @@ export const API_ALLOWED_TABLES = new Set([
 export const API_TABLE_PRIMARY_KEY: Record<string, string> = {
   app_meta: 'key',
   app_settings: 'key',
-  persona_portrait_cache: 'slug',
 };
 
 /** 始终从本地 SQLite 读取（迁移标记等，不走 REST） */

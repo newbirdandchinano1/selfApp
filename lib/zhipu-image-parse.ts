@@ -13,7 +13,6 @@ export type {
   DailyIntakeTargetsEstimateJson,
   FoodNutritionJson,
   FoodTextIntakeJson,
-  PersonaPortraitAiData,
   UserSkillAiPortfolioPayload,
   UserSkillAiPortfolioSkillRow,
   VisionWallAiAssessmentPayload,
@@ -26,7 +25,6 @@ import type {
   DailyIntakeTargetsEstimateJson,
   FoodNutritionJson,
   FoodTextIntakeJson,
-  PersonaPortraitAiData,
   UserSkillAiPortfolioPayload,
   VisionWallAiAssessmentPayload,
 } from '@/lib/ai-types';
@@ -38,18 +36,12 @@ const FOOD_NUTRITION_FALLBACK: FoodNutritionJson = {
   ai_evaluation: '',
   protein_g: 0,
   carbohydrate_g: 0,
-  sodium_mg: 0,
+  calories_kcal: 0,
 };
 
 /** 极小 JPEG（约几十字节），用于调试页连通性测试 */
 export const TINY_TEST_JPEG_BASE64 =
   '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAA8A/9k=';
-
-export const PERSONA_PORTRAIT_OVERVIEW_MIN_LEN = 280;
-export const PERSONA_PORTRAIT_OVERVIEW_TARGET_MAX_LEN = 420;
-export const PERSONA_PORTRAIT_BULLET_MIN_COUNT = 4;
-export const PERSONA_PORTRAIT_BULLET_MAX_COUNT = 6;
-export const PERSONA_PORTRAIT_BULLET_MIN_EACH = 28;
 
 /** @deprecated 智谱 Key 已迁至服务端；保留兼容，恒为空 */
 export function getZhipuApiKeyFromEnv(): string {
@@ -119,6 +111,57 @@ export type ParseFoodIntakeFromTextResult =
   | { ok: true; data: FoodTextIntakeJson; rawContent: string; attempts: number }
   | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
 
+function resolveCaloriesKcal(raw: Record<string, unknown>, protein_g: number, carbohydrate_g: number): number {
+  let calories_kcal = toNonNegativeFiniteNumber(raw.calories_kcal ?? raw.calories ?? raw.sodium_mg ?? raw.sodium);
+  if (!calories_kcal && (protein_g > 0 || carbohydrate_g > 0)) {
+    calories_kcal = Math.round(protein_g * 4 + carbohydrate_g * 4);
+  }
+  return calories_kcal;
+}
+
+export function normalizeFoodTextIntakePayload(raw: unknown): FoodTextIntakeJson {
+  if (typeof raw !== 'object' || raw === null) {
+    return {
+      food_summary: '',
+      hydration_ml: 0,
+      protein_g: 0,
+      carbohydrate_g: 0,
+      calories_kcal: 0,
+      ai_evaluation: '',
+    };
+  }
+  const o = raw as Record<string, unknown>;
+  const protein_g = toNonNegativeFiniteNumber(o.protein_g);
+  const carbohydrate_g = toNonNegativeFiniteNumber(o.carbohydrate_g ?? o.carb_g ?? o.carbs_g);
+  return {
+    food_summary: typeof o.food_summary === 'string' ? o.food_summary.trim() : String(o.food_summary ?? '').trim(),
+    hydration_ml: toNonNegativeFiniteNumber(o.hydration_ml),
+    protein_g,
+    carbohydrate_g,
+    calories_kcal: resolveCaloriesKcal(o, protein_g, carbohydrate_g),
+    ai_evaluation:
+      typeof o.ai_evaluation === 'string' ? o.ai_evaluation.trim() : String(o.ai_evaluation ?? '').trim(),
+  };
+}
+
+export function normalizeDailyIntakeTargetsPayload(raw: unknown): DailyIntakeTargetsEstimateJson {
+  if (typeof raw !== 'object' || raw === null) {
+    return { hydration_ml: 0, protein_g: 0, carbohydrate_g: 0, calories_kcal: 0 };
+  }
+  const o = raw as Record<string, unknown>;
+  const protein_g = toNonNegativeFiniteNumber(o.protein_g);
+  const carbohydrate_g = toNonNegativeFiniteNumber(o.carbohydrate_g ?? o.carb_g ?? o.carbs_g);
+  const rationale =
+    typeof o.rationale_zh === 'string' && o.rationale_zh.trim() ? o.rationale_zh.trim() : undefined;
+  return {
+    hydration_ml: Math.round(toNonNegativeFiniteNumber(o.hydration_ml)),
+    protein_g: Math.round(protein_g),
+    carbohydrate_g: Math.round(carbohydrate_g),
+    calories_kcal: Math.round(resolveCaloriesKcal(o, protein_g, carbohydrate_g)),
+    rationale_zh: rationale,
+  };
+}
+
 export async function parseFoodIntakeFromText(
   options: ParseFoodIntakeFromTextOptions,
 ): Promise<ParseFoodIntakeFromTextResult> {
@@ -126,8 +169,9 @@ export async function parseFoodIntakeFromText(
   const text = options.text.trim();
   if (!text) return { ok: false, error: '描述为空', attempts: 0 };
   try {
-    const data = await aiApi.aiFoodIntakeFromText({ text, question: options.question });
-    return { ok: true, data, rawContent: JSON.stringify(data), attempts: 1 };
+    const raw = await aiApi.aiFoodIntakeFromText({ text, question: options.question });
+    const data = normalizeFoodTextIntakePayload(raw);
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
   } catch (e) {
     const err = mapApiError(e);
     return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
@@ -152,8 +196,9 @@ export async function estimateDailyIntakeTargetsFromContext(
   const context = options.contextBlock.trim();
   if (!context) return { ok: false, error: '上下文为空', attempts: 0 };
   try {
-    const data = await aiApi.aiFoodDailyTargets({ context_block: context });
-    return { ok: true, data, rawContent: JSON.stringify(data), attempts: 1 };
+    const raw = await aiApi.aiFoodDailyTargets({ context_block: context });
+    const data = normalizeDailyIntakeTargetsPayload(raw);
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
   } catch (e) {
     const err = mapApiError(e);
     return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
@@ -226,7 +271,8 @@ export function normalizeFoodNutritionPayload(raw: unknown): { data: FoodNutriti
   let protein_g = toNonNegativeFiniteNumber(o.protein_g);
   let carbohydrate_g = toNonNegativeFiniteNumber(o.carbohydrate_g ?? o.carb_g ?? o.carbs_g);
   if (o.carbohydrate_g === undefined && (o.carb_g !== undefined || o.carbs_g !== undefined)) repaired = true;
-  let sodium_mg = toNonNegativeFiniteNumber(o.sodium_mg ?? o.sodium);
+  let calories_kcal = resolveCaloriesKcal(o, protein_g, carbohydrate_g);
+  if (o.calories_kcal === undefined && (o.sodium_mg !== undefined || o.sodium !== undefined)) repaired = true;
 
   if (is_food === 1) {
     if (non_food_code !== 0) repaired = true;
@@ -238,13 +284,13 @@ export function normalizeFoodNutritionPayload(raw: unknown): { data: FoodNutriti
     }
     protein_g = 0;
     carbohydrate_g = 0;
-    sodium_mg = 0;
+    calories_kcal = 0;
     food_name = '';
     ai_evaluation = '';
   }
 
   return {
-    data: { is_food, non_food_code, food_name, ai_evaluation, protein_g, carbohydrate_g, sodium_mg },
+    data: { is_food, non_food_code, food_name, ai_evaluation, protein_g, carbohydrate_g, calories_kcal },
     repaired,
   };
 }
@@ -369,98 +415,6 @@ export async function analyzeWishListRationalReviewFromText(
       rawContent: JSON.stringify(data),
       attempts: 1,
     };
-  } catch (e) {
-    const err = mapApiError(e);
-    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
-  }
-}
-
-export type GeneratePersonaPortraitOptions = {
-  apiKey: string;
-  personaSlug: string;
-  contextText: string;
-  maxAttempts?: number;
-  retryDelayMs?: number;
-};
-
-export type GeneratePersonaPortraitResult =
-  | { ok: true; data: PersonaPortraitAiData; rawContent: string; attempts: number }
-  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
-
-function personaTextLen(s: string): number {
-  return s.trim().length;
-}
-
-function personaBulletsOk(d: PersonaPortraitAiData, minItems: number, maxItems: number, minEach: number): boolean {
-  const items = d.bullets.map(b => b.trim()).filter(b => personaTextLen(b) >= minEach);
-  return items.length >= minItems && items.length <= maxItems;
-}
-
-export function validatePersonaPortraitForSlug(
-  slug: string,
-  d: PersonaPortraitAiData,
-): { ok: true } | { ok: false; error: string } {
-  const min = PERSONA_PORTRAIT_BULLET_MIN_COUNT;
-  const max = PERSONA_PORTRAIT_BULLET_MAX_COUNT;
-  const each = PERSONA_PORTRAIT_BULLET_MIN_EACH;
-
-  if (!personaBulletsOk(d, min, max, each)) {
-    const n = d.bullets.map(b => b.trim()).filter(b => personaTextLen(b) >= each).length;
-    return {
-      ok: false,
-      error: `bullets 须 ${min}～${max} 条且每条 ≥${each} 字（当前有效 ${n} 条）`,
-    };
-  }
-
-  if (personaTextLen(d.overview) > 160) {
-    return { ok: false, error: 'overview 须为 0～160 字短导语，勿写长段落（主内容放在 bullets）' };
-  }
-
-  switch (slug) {
-    case 'savings':
-      if (d.milestones.filter(m => m.trim()).length < 2) {
-        return { ok: false, error: 'milestones 须至少 2 条' };
-      }
-      break;
-    case 'ai-insight': {
-      const dims = d.dims.filter(x => x.title.trim() && x.sub.trim());
-      if (dims.length < 3) {
-        return { ok: false, error: 'dims 须 3 条且含 title/sub' };
-      }
-      for (const dim of dims) {
-        if (personaTextLen(dim.sub) < 24) {
-          return { ok: false, error: 'dims.sub 每条须 ≥24 字（分点式一句）' };
-        }
-        if (personaTextLen(dim.sub) > 100) {
-          return { ok: false, error: 'dims.sub 每条勿超过 100 字' };
-        }
-      }
-      if (personaTextLen(d.ai_quote) > 120) {
-        return { ok: false, error: 'ai_quote 须 ≤120 字或留空（主解读用 bullets）' };
-      }
-      break;
-    }
-    default:
-      break;
-  }
-  return { ok: true };
-}
-
-export async function generatePersonaPortraitFromContext(
-  options: GeneratePersonaPortraitOptions,
-): Promise<GeneratePersonaPortraitResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
-  const slug = options.personaSlug.trim();
-  if (!slug) return { ok: false, error: 'personaSlug 为空', attempts: 0 };
-  const text = options.contextText.trim();
-  if (!text) return { ok: false, error: '数据摘要为空', attempts: 0 };
-  try {
-    const data = await aiApi.aiPersonaPortrait({ persona_slug: slug, context_text: text });
-    const check = validatePersonaPortraitForSlug(slug, data);
-    if (!check.ok) {
-      return { ok: false, error: check.error, attempts: 1, details: data };
-    }
-    return { ok: true, data, rawContent: JSON.stringify(data), attempts: 1 };
   } catch (e) {
     const err = mapApiError(e);
     return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };

@@ -25,7 +25,7 @@ export type DailyAiIntakeTargetsRow = {
   hydration_ml: number;
   protein_g: number;
   carbohydrate_g: number;
-  sodium_mg: number;
+  calories_kcal: number;
   rationale_zh: string | null;
 };
 
@@ -46,15 +46,15 @@ function buildProfileFingerprint(user: UserRow, todayYmd: string): string {
   });
 }
 
-function aggregateIntakeByDate(records: HealthRecordRow[]): Map<string, { h: number; p: number; c: number; s: number }> {
-  const map = new Map<string, { h: number; p: number; c: number; s: number }>();
+function aggregateIntakeByDate(records: HealthRecordRow[]): Map<string, { h: number; p: number; c: number; k: number }> {
+  const map = new Map<string, { h: number; p: number; c: number; k: number }>();
   for (const r of records) {
     const key = r.record_date;
-    const cur = map.get(key) ?? { h: 0, p: 0, c: 0, s: 0 };
+    const cur = map.get(key) ?? { h: 0, p: 0, c: 0, k: 0 };
     cur.h += Number(r.hydration) || 0;
     cur.p += Number(r.protein) || 0;
     cur.c += Number(r.carbohydrate) || 0;
-    cur.s += Number(r.sodium) || 0;
+    cur.k += Number(r.calories) || 0;
     map.set(key, cur);
   }
   return map;
@@ -72,7 +72,7 @@ function buildSevenDayDigest(records: HealthRecordRow[], endYmd: string): string
   if (Number.isNaN(end.getTime())) {
     for (const [d, v] of [...byDate.entries()].sort()) {
       lines.push(
-        `${d}：水分 ${Math.round(v.h)} ml，蛋白质 ${Math.round(v.p)} g，碳水 ${Math.round(v.c)} g，钠 ${Math.round(v.s)} mg`,
+        `${d}：水分 ${Math.round(v.h)} ml，蛋白质 ${Math.round(v.p)} g，碳水 ${Math.round(v.c)} g，热量 ${Math.round(v.k)} kcal`,
       );
     }
     return lines.length ? lines.join('\n') : '（近7日无摄入记录）';
@@ -84,9 +84,9 @@ function buildSevenDayDigest(records: HealthRecordRow[], endYmd: string): string
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     const ymd = `${y}-${m}-${day}`;
-    const v = byDate.get(ymd) ?? { h: 0, p: 0, c: 0, s: 0 };
+    const v = byDate.get(ymd) ?? { h: 0, p: 0, c: 0, k: 0 };
     lines.push(
-      `${ymd}：水分 ${Math.round(v.h)} ml，蛋白质 ${Math.round(v.p)} g，碳水 ${Math.round(v.c)} g，钠 ${Math.round(v.s)} mg`,
+      `${ymd}：水分 ${Math.round(v.h)} ml，蛋白质 ${Math.round(v.p)} g，碳水 ${Math.round(v.c)} g，热量 ${Math.round(v.k)} kcal`,
     );
   }
   return lines.join('\n');
@@ -104,21 +104,21 @@ function buildContextBlock(params: {
   const w = Number(user.weight) || 0;
   const h = Number(user.height) || 0;
   const age = Number(user.age) || 0;
-  const recentSodium = aggregateIntakeByDate(records).get(todayYmd)?.s ?? 0;
-  const baseHeuristic = calculateNutritionV2(w, h, age, gender, activity, g, recentSodium);
+  const recentCalories = aggregateIntakeByDate(records).get(todayYmd)?.k ?? 0;
+  const baseHeuristic = calculateNutritionV2(w, h, age, gender, activity, g, recentCalories);
   const daySchedule = getUserDayScheduleKind(user, todayYmd);
   const heuristic = adjustNutritionMetricsForDaySchedule(baseHeuristic, daySchedule);
   const weekdayLabel = getChineseWeekdayLabelFromYmd(todayYmd);
   const scheduleLine =
     daySchedule === 'sedentary'
       ? '【今日日程】静坐习惯，无周训练/休息日划分。'
-      : `【今日日程】${weekdayLabel ?? todayYmd} 为${getUserDayScheduleLabelZh(daySchedule)}。周计划：${formatUserWorkoutWeekPlanZh(user)}。请按今日类型调整四项摄入目标：健身日适度提高蛋白质、碳水、水分与钠以支持训练与出汗；休息日温和降低训练日定量（尤其碳水与钠），仍保证基础营养。`;
+      : `【今日日程】${weekdayLabel ?? todayYmd} 为${getUserDayScheduleLabelZh(daySchedule)}。周计划：${formatUserWorkoutWeekPlanZh(user)}。请按今日类型调整四项摄入目标：健身日适度提高蛋白质、碳水、水分与热量以支持训练；休息日温和降低训练日定量（尤其碳水与热量），仍保证基础营养。`;
 
   return [
     `【今日日期】${todayYmd}`,
     `【用户档案】称呼：${user.name ?? '用户'}；性别：${user.gender}；生日：${user.birthday ?? '未填'}；年龄(档案)：${age}；身高 cm：${h}；体重 kg：${w}；生活方式：${user.lifestyle}；目标：${user.goal}`,
     scheduleLine,
-    `【本地公式参考目标（已按今日${getUserDayScheduleLabelZh(daySchedule)}微调，供你对齐数量级）】水分 ${heuristic.Water_ml} ml；蛋白质 ${heuristic.Protein_g} g；碳水 ${heuristic.Carbohydrate_g} g；钠 ${heuristic.Sodium_mg} mg`,
+    `【本地公式参考目标（已按今日${getUserDayScheduleLabelZh(daySchedule)}微调，供你对齐数量级）】水分 ${heuristic.Water_ml} ml；蛋白质 ${heuristic.Protein_g} g；碳水 ${heuristic.Carbohydrate_g} g；热量 ${heuristic.Calories_kcal} kcal`,
     `【近7日（含今日）每日摄入合计】`,
     buildSevenDayDigest(records, todayYmd),
   ].join('\n\n');
@@ -137,8 +137,8 @@ async function readCache(): Promise<DailyAiIntakeTargetsRow | null> {
     const hydration_ml = Number(o.hydration_ml);
     const protein_g = Number(o.protein_g);
     const carbohydrate_g = Number(o.carbohydrate_g);
-    const sodium_mg = Number(o.sodium_mg);
-    if (![hydration_ml, protein_g, carbohydrate_g, sodium_mg].every((x) => Number.isFinite(x) && x >= 0)) return null;
+    const calories_kcal = Number(o.calories_kcal ?? o.sodium_mg);
+    if (![hydration_ml, protein_g, carbohydrate_g, calories_kcal].every((x) => Number.isFinite(x) && x >= 0)) return null;
     const rationale_zh = typeof o.rationale_zh === 'string' && o.rationale_zh.trim() ? o.rationale_zh.trim() : null;
     return {
       dateYmd,
@@ -147,7 +147,7 @@ async function readCache(): Promise<DailyAiIntakeTargetsRow | null> {
       hydration_ml: Math.round(hydration_ml),
       protein_g: Math.round(protein_g),
       carbohydrate_g: Math.round(carbohydrate_g),
-      sodium_mg: Math.round(sodium_mg),
+      calories_kcal: Math.round(calories_kcal),
       rationale_zh,
     };
   } catch {
@@ -212,7 +212,7 @@ export async function ensureDailyAiIntakeTargetsForToday(params: {
     hydration_ml: ai.data.hydration_ml,
     protein_g: ai.data.protein_g,
     carbohydrate_g: ai.data.carbohydrate_g,
-    sodium_mg: ai.data.sodium_mg,
+    calories_kcal: ai.data.calories_kcal,
     rationale_zh: ai.data.rationale_zh?.trim() ?? null,
   };
   await writeCache(row);

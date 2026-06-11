@@ -1,7 +1,7 @@
 # selfApp AI 接口使用说明书（App 端）
 
 > 版本：1.0.0  
-> 更新日期：2026-06-03  
+> 更新日期：2026-06-11  
 > 适用对象：React Native / Expo 客户端开发者  
 > 服务端实现：`src/services/zhipu/zhipu-image-parse.ts`（与 App 原 `lib/zhipu-image-parse.ts` 同源）
 
@@ -23,9 +23,8 @@
    - [6.6 项目任务](#66-项目任务)
    - [6.7 自我觉察（缺点）](#67-自我觉察缺点)
    - [6.8 每周复盘](#68-每周复盘)
-   - [6.9 人格画像](#69-人格画像)
-   - [6.10 目标墙](#610-目标墙)
-   - [6.11 技能档案](#611-技能档案)
+   - [6.9 目标墙](#69-目标墙)
+   - [6.10 技能档案](#610-技能档案)
 7. [TypeScript 类型定义](#7-typescript-类型定义)
 8. [从客户端直连智谱迁移](#8-从客户端直连智谱迁移)
 9. [错误处理与重试](#9-错误处理与重试)
@@ -144,7 +143,7 @@ Token 有效期 **7 天**（与数据接口一致），过期返回 HTTP `401`�
 | 类型 | 方法 |
 |------|------|
 | 连通性探测 | `GET` |
-| 其余 18 个业务接口 | `POST` |
+| 其余 17 个业务接口 | `POST` |
 
 请求体均为 JSON（`Content-Type: application/json`），UTF-8。
 
@@ -154,7 +153,7 @@ Token 有效期 **7 天**（与数据接口一致），过期返回 HTTP `401`�
 
 ### 3.4 上下文由 App 组装
 
-服务端 **不** 读取用户 SQLite，只接收 App 拼好的中文摘要字符串（与迁移前传给 `parseXxxFromText({ summaryText / contextText / ... })` 的内容相同）。请继续复用现有 `build*SummaryText`、`buildPersonaContextText` 等函数。
+服务端 **不** 读取用户 SQLite，只接收 App 拼好的中文摘要字符串（与迁移前传给 `parseXxxFromText({ summaryText / contextText / ... })` 的内容相同）。请继续复用现有 `build*SummaryText` 等函数。
 
 ### 3.5 耗时预期
 
@@ -236,9 +235,8 @@ const { analysis } = await apiRequest<{ analysis: string }>(
 | 14 | POST | `/api/ai/project/tasks-review` | `analyzeProjectTasksReviewFromText` | 项目任务点评 |
 | 15 | POST | `/api/ai/weakness/review` | `analyzeWeaknessReviewFromText` | 缺点分析 |
 | 16 | POST | `/api/ai/weekly-review/coaching` | `generateWeeklyReviewCoachingFromText` | 周复盘教练 |
-| 17 | POST | `/api/ai/persona/portrait` | `generatePersonaPortraitFromContext` | 人格画像 |
-| 18 | POST | `/api/ai/vision-wall/assessment` | `analyzeVisionWallGoalsFromText` | 目标墙评估 |
-| 19 | POST | `/api/ai/skills/portfolio` | `analyzeUserSkillsPortfolioFromText` | 技能组合评估 |
+| 17 | POST | `/api/ai/vision-wall/assessment` | `analyzeVisionWallGoalsFromText` | 目标墙评估 |
+| 18 | POST | `/api/ai/skills/portfolio` | `analyzeUserSkillsPortfolioFromText` | 技能组合评估 |
 
 ---
 
@@ -742,51 +740,7 @@ const { analysis } = await apiRequest<{ analysis: string }>(
 
 ---
 
-### 6.9 人格画像
-
-#### POST `/api/ai/persona/portrait`
-
-**原函数：** `generatePersonaPortraitFromContext`
-
-**App 调用位置：** `lib/persona-portrait-sync.ts`、`app/persona-detail/[slug].tsx`
-
-**请求体：**
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `persona_slug` | string | 是 | 见下表 |
-| `context_text` | string | 是 | 本地数据摘要（中文） |
-
-**`persona_slug` 取值：**
-
-| slug | 侧重点 |
-|------|--------|
-| `plan-completion` | 任务完成、习惯、青蛙优先级 |
-| `health` | 身体档案、四营养维度、周环比 |
-| `savings` | 储蓄、记账、延迟满足 |
-| `ai-insight` | 综合总评式洞察 |
-
-**成功 `data`（`PersonaPortraitAiData`）：**
-
-```json
-{
-  "hero_kicker": "",
-  "hero_main": "",
-  "hero_caption": "",
-  "overview": "",
-  "bullets": ["（4～6 条，每条 35～90 字）"],
-  "stats": [{ "label": "", "value": "", "hint": "" }],
-  "milestones": [],
-  "dims": [{ "title": "", "sub": "" }],
-  "ai_quote": ""
-}
-```
-
-**缓存：** SQLite `persona_portrait_cache`（按 slug + 档案指纹）。
-
----
-
-### 6.10 目标墙
+### 6.9 目标墙
 
 #### POST `/api/ai/vision-wall/assessment`
 
@@ -831,7 +785,7 @@ const { analysis } = await apiRequest<{ analysis: string }>(
 
 ---
 
-### 6.11 技能档案
+### 6.10 技能档案
 
 #### POST `/api/ai/skills/portfolio`
 
@@ -929,18 +883,6 @@ export type AiFinanceDashboardPayload = {
   surplus_forecast_12: number[];
 };
 
-export type PersonaPortraitAiData = {
-  hero_kicker: string;
-  hero_main: string;
-  hero_caption: string;
-  overview: string;
-  bullets: string[];
-  stats: { label: string; value: string; hint: string }[];
-  milestones: string[];
-  dims: { title: string; sub: string }[];
-  ai_quote: string;
-};
-
 export type VisionWallAiAssessmentPayload = {
   feasibility_score: number;
   headline: string;
@@ -985,7 +927,7 @@ export type UserSkillAiPortfolioPayload = {
 ### 8.3 推荐迁移顺序
 
 1. **P0：** 一句话记账、截图记账、流水短评、饮食文字/识图  
-2. **P1：** 备忘、缺点、心愿短评、人格画像、首页摄入目标  
+2. **P1：** 备忘、缺点、心愿短评、首页摄入目标  
 3. **P2：** 账单分析、AI 财务页、现金流、目标墙、技能、周复盘、项目点评  
 
 ### 8.4 curl 自测示例
@@ -1091,7 +1033,6 @@ try {
 | `POST .../project/tasks-review` | `analyzeProjectTasksReviewFromText` | `project-ai-review-background.ts`, `edit-project.tsx` |
 | `POST .../weakness/review` | `analyzeWeaknessReviewFromText` | `weakness-ai-background.ts` |
 | `POST .../weekly-review/coaching` | `generateWeeklyReviewCoachingFromText` | `weekly-review-coaching.ts` |
-| `POST .../persona/portrait` | `generatePersonaPortraitFromContext` | `persona-portrait-sync.ts` |
 | `POST .../vision-wall/assessment` | `analyzeVisionWallGoalsFromText` | `vision-wall.tsx` |
 | `POST .../skills/portfolio` | `analyzeUserSkillsPortfolioFromText` | `my-skills.tsx` |
 

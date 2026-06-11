@@ -43,8 +43,6 @@ export const REST_SKIP_TABLES = new Set([
   'admin_users',
   /** 本地迁移/回填标记，仅设备内有效，见 API_LOCAL_READ_ONLY_TABLES */
   'app_meta',
-  /** AI 画像缓存，体积大且可重新生成 */
-  'persona_portrait_cache',
 ]);
 
 const API_DIRTY_STATE_KEY = 'selfapp:api-dirty-tables-v1';

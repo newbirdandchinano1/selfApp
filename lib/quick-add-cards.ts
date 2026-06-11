@@ -1,7 +1,7 @@
 import { AppSettingKey, getAppSettingRaw, setAppSetting } from '@/lib/app-settings-store';
 
-export type QuickAddVolumeUnit = 'ml' | 'g' | 'mg';
-export type QuickAddMetricType = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
+export type QuickAddVolumeUnit = 'ml' | 'g' | 'kcal';
+export type QuickAddMetricType = 'hydration' | 'protein' | 'carbohydrate' | 'calories';
 
 export type QuickAddMetricAmounts = Partial<Record<QuickAddMetricType, number>>;
 
@@ -73,24 +73,24 @@ function sanitizeCustomItem(raw: unknown): QuickAddCardItem | null {
   const displayAmountRaw = typeof o.displayAmount === 'number' ? Math.round(o.displayAmount) : Math.round(hydrationMl);
   const displayUnitRaw = o.displayUnit;
   const displayUnit: QuickAddVolumeUnit =
-    displayUnitRaw === 'ml' || displayUnitRaw === 'g' || displayUnitRaw === 'mg' ? displayUnitRaw : 'ml';
+    displayUnitRaw === 'ml' || displayUnitRaw === 'g' || displayUnitRaw === 'kcal' ? displayUnitRaw : 'ml';
   const metricTypeRaw = o.metricType;
   const metricType: QuickAddMetricType | undefined =
-    metricTypeRaw === 'hydration' || metricTypeRaw === 'protein' || metricTypeRaw === 'carbohydrate' || metricTypeRaw === 'sodium'
+    metricTypeRaw === 'hydration' || metricTypeRaw === 'protein' || metricTypeRaw === 'carbohydrate' || metricTypeRaw === 'calories'
       ? metricTypeRaw
       : undefined;
   const metricTypesRaw = o.metricTypes;
   const metricTypes = Array.isArray(metricTypesRaw)
     ? metricTypesRaw.filter(
         (v): v is QuickAddMetricType =>
-          v === 'hydration' || v === 'protein' || v === 'carbohydrate' || v === 'sodium'
+          v === 'hydration' || v === 'protein' || v === 'carbohydrate' || v === 'calories'
       )
     : [];
   const metricAmountsRaw = o.metricAmounts;
   const metricAmounts: QuickAddMetricAmounts = {};
   if (metricAmountsRaw && typeof metricAmountsRaw === 'object') {
     const amountRecord = metricAmountsRaw as Record<string, unknown>;
-    for (const metric of ['hydration', 'protein', 'carbohydrate', 'sodium'] as const) {
+    for (const metric of ['hydration', 'protein', 'carbohydrate', 'calories'] as const) {
       const amount = sanitizeMetricAmount(amountRecord[metric]);
       if (amount !== undefined) metricAmounts[metric] = amount;
     }
@@ -144,7 +144,7 @@ export function formatQuickAddAmount(item: QuickAddCardItem): string {
   if (item.metricTypes && item.metricTypes.length > 1) {
     return `${Math.round(item.displayAmount)}`;
   }
-  const unitLabel = item.displayUnit === 'mg' ? 'MG' : item.displayUnit;
+  const unitLabel = item.displayUnit === 'kcal' ? 'KCAL' : item.displayUnit;
   return `${Math.round(item.displayAmount)}${unitLabel}`;
 }
 
@@ -184,7 +184,7 @@ export async function addCustomQuickAddItem(input: {
   const metricTypes = Array.isArray(input.metricTypes)
     ? Array.from(new Set(input.metricTypes)).filter(
         (v): v is QuickAddMetricType =>
-          v === 'hydration' || v === 'protein' || v === 'carbohydrate' || v === 'sodium'
+          v === 'hydration' || v === 'protein' || v === 'carbohydrate' || v === 'calories'
       )
     : [];
   const metricAmounts: QuickAddMetricAmounts = {};
@@ -199,14 +199,14 @@ export async function addCustomQuickAddItem(input: {
     !label ||
     !Number.isFinite(displayAmount) ||
     displayAmount <= 0 ||
-    (displayUnit !== 'ml' && displayUnit !== 'g' && displayUnit !== 'mg') ||
+    (displayUnit !== 'ml' && displayUnit !== 'g' && displayUnit !== 'kcal') ||
     !Number.isFinite(hydrationMl) ||
     hydrationMl <= 0 ||
     (metricType !== undefined &&
       metricType !== 'hydration' &&
       metricType !== 'protein' &&
       metricType !== 'carbohydrate' &&
-      metricType !== 'sodium') ||
+      metricType !== 'calories') ||
     !icon ||
     metricTypes.length === 0 ||
     metricTypes.some((metric) => metricAmounts[metric] === undefined)
@@ -233,7 +233,7 @@ export async function addCustomQuickAddItem(input: {
 export function getQuickAddMetricType(item: Pick<QuickAddCardItem, 'displayUnit' | 'metricType'>): QuickAddMetricType {
   if (item.metricType) return item.metricType;
   if (item.displayUnit === 'g') return 'protein';
-  if (item.displayUnit === 'mg') return 'sodium';
+  if (item.displayUnit === 'kcal') return 'calories';
   return 'hydration';
 }
 

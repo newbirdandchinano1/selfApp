@@ -177,7 +177,7 @@ export const HealthNutrientAccents = {
   hydration: '#10b981',
   protein: '#f59e0b',
   carbohydrate: '#eab308',
-  sodium: '#a855f7',
+  calories: '#ef4444',
 } as const;
 
 /** 供 NativeWind / Tailwind 预设参考（本项目主路径为 RN StyleSheet） */

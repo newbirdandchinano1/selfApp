@@ -51,7 +51,7 @@ const metricOptions: { key: QuickAddMetricType; label: string; unit: QuickAddVol
   { key: 'hydration', label: '水分', unit: 'ml', placeholder: '250' },
   { key: 'protein', label: '蛋白质', unit: 'g', placeholder: '20' },
   { key: 'carbohydrate', label: '碳水', unit: 'g', placeholder: '30' },
-  { key: 'sodium', label: '钠', unit: 'mg', placeholder: '100' },
+  { key: 'calories', label: '热量', unit: 'kcal', placeholder: '500' },
 ];
 
 function SectionLabel({ children }: { children: string }) {
@@ -76,7 +76,7 @@ export default function AddItemScreen() {
     hydration: '250',
     protein: '',
     carbohydrate: '',
-    sodium: '',
+    calories: '',
   });
   const [selectedIconKey, setSelectedIconKey] = React.useState(iconOptions[0].key);
   const [metricTypes, setMetricTypes] = React.useState<QuickAddMetricType[]>(['hydration']);
@@ -120,7 +120,7 @@ export default function AddItemScreen() {
     const firstMetric = metricTypes[0];
     const firstAmount = selectedMetricAmounts[firstMetric] ?? 0;
     const displayUnit: QuickAddVolumeUnit =
-      metricTypes.length > 1 ? 'g' : firstMetric === 'hydration' ? 'ml' : firstMetric === 'sodium' ? 'mg' : 'g';
+      metricTypes.length > 1 ? 'g' : firstMetric === 'hydration' ? 'ml' : firstMetric === 'calories' ? 'kcal' : 'g';
     setSaving(true);
     try {
       await addCustomQuickAddItem({

@@ -9,8 +9,8 @@ export type HealthRecordRow = {
   target_protein: number;
   carbohydrate: number;
   target_carbohydrate: number;
-  sodium: number;
-  target_sodium: number;
+  calories: number;
+  target_calories: number;
   record_date: string;
   quick_add_key: string | null;
   /** 列表/详情展示标题（如 AI 用户原文、拍照识别的食物名） */
@@ -33,8 +33,8 @@ export type CreateHealthRecordInput = {
   target_protein?: number;
   carbohydrate?: number;
   target_carbohydrate?: number;
-  sodium?: number;
-  target_sodium?: number;
+  calories?: number;
+  target_calories?: number;
   record_date: string;
   quick_add_key?: string | null;
   intake_display_title?: string | null;
@@ -51,8 +51,8 @@ export type UpdateHealthRecordInput = Partial<
     | 'target_protein'
     | 'carbohydrate'
     | 'target_carbohydrate'
-    | 'sodium'
-    | 'target_sodium'
+    | 'calories'
+    | 'target_calories'
     | 'record_date'
     | 'quick_add_key'
     | 'intake_display_title'
@@ -66,5 +66,5 @@ export type HealthIntakeDayTotals = {
   hydration: number;
   protein: number;
   carbohydrate: number;
-  sodium: number;
+  calories: number;
 };

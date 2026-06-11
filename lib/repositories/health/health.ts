@@ -15,7 +15,7 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO health_records (
-      id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, sodium, target_sodium, record_date, quick_add_key, intake_display_title, intake_ai_comment, source_image_uri,
+      id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, calories, target_calories, record_date, quick_add_key, intake_display_title, intake_ai_comment, source_image_uri,
       created_at, updated_at, sync_status
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create')`,
     [
@@ -27,8 +27,8 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
       input.target_protein ?? 0,
       input.carbohydrate ?? 0,
       input.target_carbohydrate ?? 0,
-      input.sodium ?? 0,
-      input.target_sodium ?? 0,
+      input.calories ?? 0,
+      input.target_calories ?? 0,
       input.record_date,
       input.quick_add_key ?? null,
       input.intake_display_title ?? null,
@@ -99,14 +99,14 @@ function sumHealthIntakeDayTotals(dayRows: HealthRecordRow[]): HealthIntakeDayTo
   let hydration = 0;
   let protein = 0;
   let carbohydrate = 0;
-  let sodium = 0;
+  let calories = 0;
   for (const r of dayRows) {
     hydration += Number(r.hydration ?? 0);
     protein += Number(r.protein ?? 0);
     carbohydrate += Number(r.carbohydrate ?? 0);
-    sodium += Number(r.sodium ?? 0);
+    calories += Number(r.calories ?? 0);
   }
-  return { hydration, protein, carbohydrate, sodium };
+  return { hydration, protein, carbohydrate, calories };
 }
 
 export async function getHealthIntakeTotalsForUserOnDate(
@@ -223,10 +223,10 @@ function getDayCompletionLevelFromTotals(
   const hMet = latest.target_hydration > 0 ? totals.hydration >= latest.target_hydration : false;
   const pMet = latest.target_protein > 0 ? totals.protein >= latest.target_protein : false;
   const cMet = latest.target_carbohydrate > 0 ? totals.carbohydrate >= latest.target_carbohydrate : false;
-  const sMet = latest.target_sodium > 0 ? totals.sodium <= latest.target_sodium : false;
-  const metCount = [hMet, pMet, cMet, sMet].filter(Boolean).length;
+  const calMet = latest.target_calories > 0 ? totals.calories <= latest.target_calories : false;
+  const metCount = [hMet, pMet, cMet, calMet].filter(Boolean).length;
   if (metCount >= 4) return 'full';
-  if (metCount > 0 || totals.hydration > 0 || totals.protein > 0 || totals.carbohydrate > 0 || totals.sodium > 0) {
+  if (metCount > 0 || totals.hydration > 0 || totals.protein > 0 || totals.carbohydrate > 0 || totals.calories > 0) {
     return 'partial';
   }
   return 'empty';
@@ -242,7 +242,7 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
 
   await db.runAsync(
     `UPDATE health_records
-     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, carbohydrate = ?, target_carbohydrate = ?, sodium = ?, target_sodium = ?, record_date = ?, quick_add_key = ?, intake_display_title = ?, intake_ai_comment = ?, source_image_uri = ?, updated_at = datetime('now'),
+     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, carbohydrate = ?, target_carbohydrate = ?, calories = ?, target_calories = ?, record_date = ?, quick_add_key = ?, intake_display_title = ?, intake_ai_comment = ?, source_image_uri = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
@@ -252,8 +252,8 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
       input.target_protein ?? current.target_protein,
       input.carbohydrate ?? current.carbohydrate,
       input.target_carbohydrate ?? current.target_carbohydrate,
-      input.sodium ?? current.sodium,
-      input.target_sodium ?? current.target_sodium,
+      input.calories ?? current.calories,
+      input.target_calories ?? current.target_calories,
       input.record_date ?? current.record_date,
       input.quick_add_key !== undefined ? input.quick_add_key : current.quick_add_key,
       input.intake_display_title !== undefined ? input.intake_display_title : current.intake_display_title ?? null,

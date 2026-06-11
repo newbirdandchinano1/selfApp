@@ -1,7 +1,7 @@
 import { AppSettingKey, getAppSetting, setAppSetting } from '@/lib/app-settings-store';
 
-export type IntakeAssistantUiTab = '水分' | '蛋白质' | '碳水' | '钠';
-export type IntakeAssistantTabKey = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
+export type IntakeAssistantUiTab = '水分' | '蛋白质' | '碳水' | '热量';
+export type IntakeAssistantTabKey = 'hydration' | 'protein' | 'carbohydrate' | 'calories';
 export type IntakeAssistantSuggestKind = 'best' | 'community' | 'manual';
 
 export type IntakeAssistantTabSelection = {
@@ -16,7 +16,7 @@ const TAB_TO_KEY: Record<IntakeAssistantUiTab, IntakeAssistantTabKey> = {
   水分: 'hydration',
   蛋白质: 'protein',
   碳水: 'carbohydrate',
-  钠: 'sodium',
+  热量: 'calories',
 };
 
 const DEFAULT_SELECTION: IntakeAssistantTabSelection = { kind: 'best' };
@@ -46,6 +46,9 @@ function sanitizeState(raw: unknown): IntakeAssistantSelectionState {
     const sel = sanitizeTabSelection(o[key]);
     if (sel) next[key] = sel;
   }
+  // 兼容旧版 sodium 键
+  const legacySodium = sanitizeTabSelection(o.sodium);
+  if (legacySodium && !next.calories) next.calories = legacySodium;
   return next;
 }
 

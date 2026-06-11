@@ -28,15 +28,15 @@ import {
 const { height: screenHeight } = Dimensions.get('window');
 
 type TabKey = 'ai' | 'photo' | 'manual';
-type ManualType = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
-type ConfirmUnit = 'ml' | 'g' | 'mg';
+type ManualType = 'hydration' | 'protein' | 'carbohydrate' | 'calories';
+type ConfirmUnit = 'ml' | 'g' | 'kcal';
 
 type AiIntakeFieldTexts = {
   food_summary: string;
   hydration_ml: string;
   protein_g: string;
   carbohydrate_g: string;
-  sodium_mg: string;
+  calories_kcal: string;
   ai_evaluation: string;
 };
 
@@ -46,7 +46,7 @@ function foodTextIntakeFromFieldTexts(fields: AiIntakeFieldTexts): FoodTextIntak
     hydration_ml: parseNonNegMetricInput(fields.hydration_ml),
     protein_g: parseNonNegMetricInput(fields.protein_g),
     carbohydrate_g: parseNonNegMetricInput(fields.carbohydrate_g),
-    sodium_mg: parseNonNegMetricInput(fields.sodium_mg),
+    calories_kcal: parseNonNegMetricInput(fields.calories_kcal),
     ai_evaluation: fields.ai_evaluation.trim(),
   };
 }
@@ -57,7 +57,7 @@ function aiIntakeFieldTextsFromData(data: FoodTextIntakeJson): AiIntakeFieldText
     hydration_ml: String(data.hydration_ml ?? 0),
     protein_g: String(data.protein_g ?? 0),
     carbohydrate_g: String(data.carbohydrate_g ?? 0),
-    sodium_mg: String(data.sodium_mg ?? 0),
+    calories_kcal: String(data.calories_kcal ?? 0),
     ai_evaluation: data.ai_evaluation ?? '',
   };
 }
@@ -87,7 +87,7 @@ function getUnitByType(type: ManualType): ConfirmUnit {
   if (type === 'hydration') return 'ml';
   if (type === 'protein') return 'g';
   if (type === 'carbohydrate') return 'g';
-  return 'mg';
+  return 'kcal';
 }
 
 function getManualMeta(type: ManualType) {
@@ -100,7 +100,7 @@ function getManualMeta(type: ManualType) {
   if (type === 'carbohydrate') {
     return { label: '碳水', icon: 'rice-bowl' as const, unitText: 'G', convertHint: (n: number) => `约 ${(n / 1000).toFixed(3)} 千克` };
   }
-  return { label: '钠', icon: 'science' as const, unitText: 'MG', convertHint: (n: number) => `约 ${(n / 1000).toFixed(2)} 克` };
+  return { label: '热量', icon: 'local-fire-department' as const, unitText: 'KCAL', convertHint: (n: number) => `约 ${(n / 1000).toFixed(2)} 千卡` };
 }
 
 export function RecordIntakeSheet({
@@ -493,7 +493,7 @@ export function RecordIntakeSheet({
                           { key: 'hydration_ml' as const, label: '水分 (ml)' },
                           { key: 'protein_g' as const, label: '蛋白质 (g)' },
                           { key: 'carbohydrate_g' as const, label: '碳水 (g)' },
-                          { key: 'sodium_mg' as const, label: '钠 (mg)' },
+                          { key: 'calories_kcal' as const, label: '热量 (kcal)' },
                         ] as const
                       ).map((row) => (
                         <View key={row.key} style={styles.aiMetricRow}>
@@ -595,7 +595,7 @@ export function RecordIntakeSheet({
                       { key: 'hydration' as const, label: '水分', icon: 'water-drop' as const },
                       { key: 'protein' as const, label: '蛋白质', icon: 'fitness-center' as const },
                       { key: 'carbohydrate' as const, label: '碳水', icon: 'rice-bowl' as const },
-                      { key: 'sodium' as const, label: '钠', icon: 'science' as const },
+                      { key: 'calories' as const, label: '热量', icon: 'local-fire-department' as const },
                     ].map((item) => {
                       const selected = manualType === item.key;
                       return (

@@ -8,8 +8,20 @@ export type NutritionV2Metrics = {
   Water_ml: number;
   Protein_g: number;
   Carbohydrate_g: number;
-  Sodium_mg: number;
+  Calories_kcal: number;
 };
+
+/** 1 斤脂肪约 3850 kcal（0.5 kg × 7700 kcal/kg） */
+export const KCAL_PER_JIN = 3850;
+
+export function calcCalorieDeficit(budgetKcal: number, consumedKcal: number): number {
+  return Math.round(budgetKcal - consumedKcal);
+}
+
+export function estimateWeightLossJinFromDeficit(deficitKcal: number): number {
+  if (deficitKcal <= 0) return 0;
+  return Math.round((deficitKcal / KCAL_PER_JIN) * 100) / 100;
+}
 
 /** 在基础公式目标上按今日健身日/休息日微调（仅健身/高强度档案生效） */
 export function adjustNutritionMetricsForDaySchedule(
@@ -22,14 +34,14 @@ export function adjustNutritionMetricsForDaySchedule(
       Water_ml: Math.round(metrics.Water_ml * 1.08),
       Protein_g: Math.round(metrics.Protein_g * 1.12),
       Carbohydrate_g: Math.round(metrics.Carbohydrate_g * 1.1),
-      Sodium_mg: Math.round(metrics.Sodium_mg * 1.1),
+      Calories_kcal: Math.round(metrics.Calories_kcal * 1.08),
     };
   }
   return {
     Water_ml: Math.round(metrics.Water_ml * 0.98),
     Protein_g: Math.round(metrics.Protein_g * 0.92),
     Carbohydrate_g: Math.round(metrics.Carbohydrate_g * 0.88),
-    Sodium_mg: Math.round(metrics.Sodium_mg * 0.9),
+    Calories_kcal: Math.round(metrics.Calories_kcal * 0.92),
   };
 }
 
@@ -49,6 +61,12 @@ export function mapGenderToNutritionGender(gender?: string | null): NutritionV2G
   return gender === '男' ? 'Male' : 'Female';
 }
 
+function activityMultiplier(activityLevel: NutritionV2ActivityLevel): number {
+  if (activityLevel === 'Fitness') return 1.55;
+  if (activityLevel === 'High-Intensity') return 1.725;
+  return 1.2;
+}
+
 export function calculateNutritionV2(
   weight: number,
   height: number,
@@ -56,13 +74,13 @@ export function calculateNutritionV2(
   gender: NutritionV2Gender,
   activityLevel: NutritionV2ActivityLevel,
   goal: NutritionV2Goal,
-  actualSodium: number
+  actualCalories: number,
 ) {
-  void height;
+  void actualCalories;
   const PROTEIN_MULTIPLIER_CAP = 1.8;
   const PROTEIN_GRAMS_CAP = 130;
   const WATER_ML_CAP = 4000;
-  const SODIUM_MG_CAP = 2500;
+  const CALORIES_KCAL_CAP = 4500;
   const CARBOHYDRATE_G_CAP = 420;
 
   let proteinMultiplier = 1.0;
@@ -83,13 +101,15 @@ export function calculateNutritionV2(
   carbohydrateMultiplier = Math.max(2.2, carbohydrateMultiplier);
   const totalCarbohydrateG = Math.min(weight * carbohydrateMultiplier, CARBOHYDRATE_G_CAP);
 
-  const baseSodium = 1500;
-  let sodiumActivityBonus = activityLevel === 'Sedentary' ? 0 : activityLevel === 'Fitness' ? 500 : 1000;
-  if (activityLevel === 'High-Intensity' && gender === 'Male') {
-    sodiumActivityBonus += 200;
-  }
-  const sodiumGoalBonus = goal === 'Muscle Gain' ? 200 : 0;
-  const totalSodiumMg = Math.min(baseSodium + sodiumActivityBonus + sodiumGoalBonus, SODIUM_MG_CAP);
+  const safeWeight = Math.max(weight, 40);
+  const safeHeight = Math.max(height, 140);
+  const safeAge = Math.max(age, 18);
+  let bmr = 10 * safeWeight + 6.25 * safeHeight - 5 * safeAge;
+  bmr += gender === 'Male' ? 5 : -161;
+  let tdee = bmr * activityMultiplier(activityLevel);
+  if (goal === 'Fat Loss') tdee *= 0.85;
+  if (goal === 'Muscle Gain') tdee *= 1.1;
+  const totalCaloriesKcal = Math.min(Math.max(Math.round(tdee), 1200), CALORIES_KCAL_CAP);
 
   const waterMultiplier = age < 30 ? 35 : age <= 55 ? 30 : 25;
   let totalWaterMl = weight * waterMultiplier;
@@ -97,16 +117,12 @@ export function calculateNutritionV2(
   if (activityLevel === 'High-Intensity') totalWaterMl += 600;
   if (goal === 'Fat Loss') totalWaterMl += 300;
   if (goal === 'Muscle Gain') totalWaterMl += 200;
-  if (actualSodium > totalSodiumMg) {
-    const excessSodium = actualSodium - totalSodiumMg;
-    totalWaterMl += excessSodium * 0.282;
-  }
   totalWaterMl = Math.min(totalWaterMl, WATER_ML_CAP);
 
   return {
     Water_ml: Math.round(totalWaterMl),
     Protein_g: Math.round(totalProteinG),
     Carbohydrate_g: Math.round(totalCarbohydrateG),
-    Sodium_mg: Math.round(totalSodiumMg),
+    Calories_kcal: totalCaloriesKcal,
   } satisfies NutritionV2Metrics;
 }

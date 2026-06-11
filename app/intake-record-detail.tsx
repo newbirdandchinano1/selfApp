@@ -21,17 +21,17 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-type IntakeMetric = 'hydration' | 'protein' | 'carbohydrate' | 'sodium';
+type IntakeMetric = 'hydration' | 'protein' | 'carbohydrate' | 'calories';
 
 const HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY = 'ai_text_intake';
 
-const METRIC_ORDER: IntakeMetric[] = ['hydration', 'protein', 'carbohydrate', 'sodium'];
+const METRIC_ORDER: IntakeMetric[] = ['hydration', 'protein', 'carbohydrate', 'calories'];
 
 const METRIC_META: Record<
   IntakeMetric,
   {
     label: string;
-    unit: 'ml' | 'g' | 'mg';
+    unit: 'ml' | 'g' | 'kcal';
     icon: keyof typeof MaterialIcons.glyphMap;
     color: string;
     bgLight: string;
@@ -62,17 +62,17 @@ const METRIC_META: Record<
     bgLight: 'rgba(234,179,8,0.14)',
     bgDark: 'rgba(113,63,18,0.32)',
   },
-  sodium: {
-    label: '钠',
-    unit: 'mg',
-    icon: 'science',
-    color: '#a855f7',
-    bgLight: 'rgba(168,85,247,0.14)',
-    bgDark: 'rgba(88,28,135,0.32)',
+  calories: {
+    label: '热量',
+    unit: 'kcal',
+    icon: 'local-fire-department',
+    color: '#ef4444',
+    bgLight: 'rgba(239,68,68,0.14)',
+    bgDark: 'rgba(127,29,29,0.32)',
   },
 };
 
-function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'mg'): string {
+function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'kcal'): string {
   const formatted = Number(value.toFixed(2)).toString();
   return `${formatted}${unit}`;
 }
@@ -94,19 +94,20 @@ function getAmount(row: HealthRecordRow, metric: IntakeMetric): number {
   if (metric === 'hydration') return row.hydration;
   if (metric === 'protein') return row.protein;
   if (metric === 'carbohydrate') return row.carbohydrate;
-  return row.sodium;
+  return row.calories;
 }
 
 function getTarget(row: HealthRecordRow, metric: IntakeMetric): number {
   if (metric === 'hydration') return row.target_hydration;
   if (metric === 'protein') return row.target_protein;
   if (metric === 'carbohydrate') return row.target_carbohydrate;
-  return row.target_sodium;
+  return row.target_calories;
 }
 
 function parseMetricParam(raw: string | string[] | undefined): IntakeMetric | null {
   const v = Array.isArray(raw) ? raw[0] : raw;
-  if (v === 'hydration' || v === 'protein' || v === 'carbohydrate' || v === 'sodium') return v;
+  if (v === 'hydration' || v === 'protein' || v === 'carbohydrate' || v === 'calories') return v;
+  if (v === 'sodium') return 'calories';
   return null;
 }
 
@@ -129,7 +130,7 @@ function sourceLabel(row: HealthRecordRow, catalog: QuickAddCardItem[]): string 
   if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) return 'AI 文字记录';
   if (!row.quick_add_key) {
     const hasMulti =
-      [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.sodium > 0].filter(Boolean).length > 1;
+      [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.calories > 0].filter(Boolean).length > 1;
     if (hasMulti && row.hydration === 0) return '拍照 / 合并记录';
     return '手动或其它方式';
   }

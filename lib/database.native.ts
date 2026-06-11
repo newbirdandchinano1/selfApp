@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 32;
+export const DB_VERSION = 33;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -35,6 +35,21 @@ async function ensureColumn(db: SQLite.SQLiteDatabase, table: string, column: st
  * 云恢复或历史数据漂移后，清理无法满足外键的孤儿行/字段。
  * 调用方应已 `PRAGMA foreign_keys = OFF`。
  */
+
+async function migrateDropPersonaPortraitCache(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['drop_persona_portrait_cache_v33'],
+  );
+  if (done) return;
+
+  await db.execAsync('DROP TABLE IF EXISTS persona_portrait_cache');
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'drop_persona_portrait_cache_v33',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
 
 async function migrateDropDeletedAtAndVersionColumns(db: SQLite.SQLiteDatabase): Promise<void> {
   const done = await db.getFirstAsync<{ value: string }>(
@@ -446,8 +461,8 @@ export async function initDatabase() {
       target_protein REAL NOT NULL DEFAULT 0,
       carbohydrate REAL NOT NULL DEFAULT 0,
       target_carbohydrate REAL NOT NULL DEFAULT 0,
-      sodium REAL NOT NULL DEFAULT 0,
-      target_sodium REAL NOT NULL DEFAULT 0,
+      calories REAL NOT NULL DEFAULT 0,
+      target_calories REAL NOT NULL DEFAULT 0,
       record_date TEXT NOT NULL,
       quick_add_key TEXT,
       created_at TEXT NOT NULL,
@@ -660,13 +675,6 @@ export async function initDatabase() {
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
       extra_data TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS persona_portrait_cache (
-      slug TEXT PRIMARY KEY NOT NULL,
-      cache_date_ymd TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS recipe_categories (
@@ -909,6 +917,18 @@ export async function initDatabase() {
   await ensureColumn(db, 'health_records', 'source_image_uri', 'TEXT');
   await ensureColumn(db, 'health_records', 'intake_display_title', 'TEXT');
   await ensureColumn(db, 'health_records', 'intake_ai_comment', 'TEXT');
+  await ensureColumn(db, 'health_records', 'calories', 'REAL NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'health_records', 'target_calories', 'REAL NOT NULL DEFAULT 0');
+  try {
+    await db.runAsync(
+      `UPDATE health_records
+       SET calories = sodium,
+           target_calories = target_sodium
+       WHERE calories = 0 AND target_calories = 0 AND (sodium != 0 OR target_sodium != 0)`,
+    );
+  } catch {
+    /* 旧库无 sodium 列时忽略 */
+  }
   await ensureColumn(db, 'finance_flow_categories', 'extra_data', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'name', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'happened_at', 'TEXT');
@@ -1205,6 +1225,7 @@ export async function initDatabase() {
   await ensureReviewTemplateDefaults();
 
   await migrateDropDeletedAtAndVersionColumns(db);
+  await migrateDropPersonaPortraitCache(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);
@@ -1269,6 +1290,7 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS review_dimensions;
     DROP TABLE IF EXISTS weekly_review_journal;
     DROP TABLE IF EXISTS daily_review_journal;
+    DROP TABLE IF EXISTS persona_portrait_cache;
     DROP TABLE IF EXISTS goal_dimensions;
     DROP TABLE IF EXISTS visions;
     DROP TABLE IF EXISTS users;

@@ -10,7 +10,6 @@ import type {
   DailyIntakeTargetsEstimateJson,
   FoodNutritionJson,
   FoodTextIntakeJson,
-  PersonaPortraitAiData,
   UserSkillAiPortfolioPayload,
   VisionWallAiAssessmentPayload,
 } from '@/lib/ai-types';
@@ -136,13 +135,6 @@ export async function aiWeaknessReview(body: { weakness_context_text: string }):
 
 export async function aiWeeklyReviewCoaching(body: { user_prompt: string }): Promise<{ text: string }> {
   return apiRequest(`${AI_PREFIX}/weekly-review/coaching`, { method: 'POST', body });
-}
-
-export async function aiPersonaPortrait(body: {
-  persona_slug: string;
-  context_text: string;
-}): Promise<PersonaPortraitAiData> {
-  return apiRequest(`${AI_PREFIX}/persona/portrait`, { method: 'POST', body });
 }
 
 export async function aiVisionWallAssessment(body: {

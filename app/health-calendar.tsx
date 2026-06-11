@@ -29,8 +29,8 @@ type SelectedDayMetrics = {
   proteinTarget: number;
   carbohydrate: number;
   carbohydrateTarget: number;
-  sodium: number;
-  sodiumTarget: number;
+  calories: number;
+  caloriesTarget: number;
 };
 
 function normalizeDate(d: Date) {
@@ -175,11 +175,11 @@ export default function HealthCalendarScreen() {
           hydration: totals.hydration,
           protein: totals.protein,
           carbohydrate: totals.carbohydrate,
-          sodium: totals.sodium,
+          calories: totals.calories,
           hydrationTarget: Math.max(0, latest.target_hydration ?? 0),
           proteinTarget: Math.max(0, latest.target_protein ?? 0),
           carbohydrateTarget: Math.max(0, latest.target_carbohydrate ?? 0),
-          sodiumTarget: Math.max(0, latest.target_sodium ?? 0),
+          caloriesTarget: Math.max(0, latest.target_calories ?? 0),
         });
       } catch (error) {
         console.warn('加载选中日指标失败', error);
@@ -203,7 +203,7 @@ export default function HealthCalendarScreen() {
         (calcPercent(selectedMetrics.hydration, selectedMetrics.hydrationTarget) +
           calcPercent(selectedMetrics.protein, selectedMetrics.proteinTarget) +
           calcPercent(selectedMetrics.carbohydrate, selectedMetrics.carbohydrateTarget) +
-          calcPercent(selectedMetrics.sodium, selectedMetrics.sodiumTarget)) /
+          calcPercent(selectedMetrics.calories, selectedMetrics.caloriesTarget)) /
           4
       )
     : 0;
@@ -383,13 +383,13 @@ export default function HealthCalendarScreen() {
               unit: 'G',
             },
             {
-              key: 'sodium',
-              label: '钠',
-              icon: 'science' as const,
-              color: '#a855f7',
-              value: selectedMetrics.sodium,
-              target: selectedMetrics.sodiumTarget,
-              unit: 'MG',
+              key: 'calories',
+              label: '热量',
+              icon: 'local-fire-department' as const,
+              color: '#ef4444',
+              value: selectedMetrics.calories,
+              target: selectedMetrics.caloriesTarget,
+              unit: 'KCAL',
             },
           ].map((metric) => {
             const pct = calcPercent(metric.value, metric.target);

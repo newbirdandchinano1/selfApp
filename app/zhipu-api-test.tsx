@@ -75,7 +75,7 @@ export default function ZhipuApiTestScreen() {
       if (r.data.is_food === 1) {
         const name = r.data.food_name?.trim();
         lines.push(
-          `判定: 食物${name ? ` — ${name}` : ''} — 蛋白质 ${r.data.protein_g} g · 碳水 ${r.data.carbohydrate_g} g · 钠 ${r.data.sodium_mg} mg`,
+          `判定: 食物${name ? ` — ${name}` : ''} — 蛋白质 ${r.data.protein_g} g · 碳水 ${r.data.carbohydrate_g} g · 热量 ${r.data.calories_kcal} kcal`,
         );
         if (r.data.ai_evaluation?.trim()) lines.push(`点评: ${r.data.ai_evaluation.trim()}`);
       } else {
@@ -156,7 +156,7 @@ export default function ZhipuApiTestScreen() {
 
       <ScrollView contentContainerStyle={stylesMemo.body} keyboardShouldPersistTaps="handled">
         <Text style={stylesMemo.hint}>
-          调用智谱视觉模型，估算图中食物的蛋白质（g）、碳水化合物（g）、钠（mg）。接口强制 JSON，字段均为数字；非食物时
+          调用智谱视觉模型，估算图中食物的蛋白质（g）、碳水化合物（g）、热量（kcal）。接口强制 JSON，字段均为数字；非食物时
           is_food=0 并用 non_food_code 1～3 表示原因。含 1305 重试、空图与解析失败兜底、字段类型容错（如字符串数字转数值）。
         </Text>
 
