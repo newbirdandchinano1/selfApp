@@ -29,6 +29,7 @@ export type RecipeCategory = {
 export type RecipeIngredient = {
   name: string;
   amount: string;
+  remark?: string;
 };
 
 export type RecipeItem = {
@@ -134,11 +135,14 @@ function normalizeIngredients(raw: unknown, legacyText?: string): RecipeIngredie
         const o = x as Record<string, unknown>;
         const name = typeof o.name === 'string' ? o.name.trim() : '';
         const amount = typeof o.amount === 'string' ? o.amount.trim() : '';
-        if (!name && !amount) continue;
-        out.push({
+        const remark = typeof o.remark === 'string' ? o.remark.trim() : '';
+        if (!name && !amount && !remark) continue;
+        const item: RecipeIngredient = {
           name: name.length > 200 ? name.slice(0, 200) : name,
           amount: amount.length > 200 ? amount.slice(0, 200) : amount,
-        });
+        };
+        if (remark) item.remark = remark.length > 200 ? remark.slice(0, 200) : remark;
+        out.push(item);
       }
       if (out.length >= 80) break;
     }
@@ -577,7 +581,8 @@ export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem
 
 export type UpdateRecipeInput = {
   title?: string;
-  ingredients?: string[];
+  category_id?: string;
+  ingredients?: RecipeIngredient[];
   steps?: string[];
   notes?: string | null;
   finished_image_uri?: string | null;
@@ -592,6 +597,15 @@ export async function updateRecipe(id: string, patch: UpdateRecipeInput): Promis
   const title = patch.title !== undefined ? clampTitle(patch.title) : prev.title;
   const ingredients = patch.ingredients !== undefined ? normalizeIngredients(patch.ingredients) : prev.ingredients;
   const steps = patch.steps !== undefined ? normalizeLineArray(patch.steps) : prev.steps;
+  let category_id = prev.category_id;
+  if (patch.category_id !== undefined) {
+    const cat = await db.getFirstAsync<{ id: string }>(
+      `SELECT id FROM recipe_categories WHERE id = ?`,
+      [patch.category_id],
+    );
+    if (!cat) throw new Error('分类不存在');
+    category_id = patch.category_id;
+  }
   const now = new Date().toISOString();
 
   let notes: string | null = prev.notes ?? null;
@@ -610,16 +624,16 @@ export async function updateRecipe(id: string, patch: UpdateRecipeInput): Promis
 
   await db.runAsync(
     `UPDATE recipe_items SET
-      title = ?, ingredients_json = ?, steps_json = ?, notes = ?, finished_image_uri = ?, updated_at = ?,
+      title = ?, category_id = ?, ingredients_json = ?, steps_json = ?, notes = ?, finished_image_uri = ?, updated_at = ?,
       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
-    [title, encodeIngredients(ingredients), encodeLines(steps), notes, finished_image_uri, now, id],
+    [title, category_id, encodeIngredients(ingredients), encodeLines(steps), notes, finished_image_uri, now, id],
   );
   markRecipesDirty();
 
   const next: RecipeItem = {
     id: prev.id,
-    category_id: prev.category_id,
+    category_id,
     title,
     ingredients,
     steps,

@@ -5,9 +5,10 @@ import type { RecipeIngredient } from '@/lib/recipes';
 
 export const RECIPE_INGREDIENT_NAME_MAX = 200;
 export const RECIPE_INGREDIENT_AMOUNT_MAX = 200;
+export const RECIPE_INGREDIENT_REMARK_MAX = 200;
 export const RECIPE_INGREDIENTS_MAX = 80;
 
-const EMPTY_ROW: RecipeIngredient = { name: '', amount: '' };
+const EMPTY_ROW: RecipeIngredient = { name: '', amount: '', remark: '' };
 
 type Props = {
   rows: RecipeIngredient[];
@@ -27,13 +28,22 @@ function clampAmount(value: string): string {
   return value.length > RECIPE_INGREDIENT_AMOUNT_MAX ? value.slice(0, RECIPE_INGREDIENT_AMOUNT_MAX) : value;
 }
 
+function clampRemark(value: string): string {
+  return value.length > RECIPE_INGREDIENT_REMARK_MAX ? value.slice(0, RECIPE_INGREDIENT_REMARK_MAX) : value;
+}
+
 export function ensureMinIngredientRows(rows: RecipeIngredient[]): RecipeIngredient[] {
   return rows.length > 0 ? rows : [{ ...EMPTY_ROW }];
 }
 
 export function trimIngredientRows(rows: RecipeIngredient[]): RecipeIngredient[] {
   return rows
-    .map(r => ({ name: r.name.trim(), amount: r.amount.trim() }))
+    .map(r => {
+      const item: RecipeIngredient = { name: r.name.trim(), amount: r.amount.trim() };
+      const remark = (r.remark ?? '').trim();
+      if (remark) item.remark = remark;
+      return item;
+    })
     .filter(r => r.name.length > 0);
 }
 
@@ -52,13 +62,13 @@ export function IngredientInputs({
     (index: number, field: keyof RecipeIngredient, value: string) => {
       const next = safeRows.map((row, i) => {
         if (i !== index) return row;
-        return field === 'name'
-          ? { ...row, name: clampName(value) }
-          : { ...row, amount: clampAmount(value) };
+        if (field === 'name') return { ...row, name: clampName(value) };
+        if (field === 'amount') return { ...row, amount: clampAmount(value) };
+        return { ...row, remark: clampRemark(value) };
       });
       const row = next[index];
       const isLast = index === next.length - 1;
-      const hasContent = row.name.trim() || row.amount.trim();
+      const hasContent = row.name.trim() || row.amount.trim() || (row.remark ?? '').trim();
       if (isLast && hasContent && next.length < RECIPE_INGREDIENTS_MAX) {
         next.push({ ...EMPTY_ROW });
       }
@@ -69,7 +79,6 @@ export function IngredientInputs({
 
   const removeRow = useCallback(
     (index: number) => {
-      const row = safeRows[index];
       if (safeRows.length <= 1) {
         onChange([{ ...EMPTY_ROW }]);
         return;
@@ -83,7 +92,7 @@ export function IngredientInputs({
   const addRow = useCallback(() => {
     if (safeRows.length >= RECIPE_INGREDIENTS_MAX) return;
     const last = safeRows[safeRows.length - 1];
-    if (!last?.name.trim() && !last?.amount.trim()) return;
+    if (!last?.name.trim() && !last?.amount.trim() && !(last?.remark ?? '').trim()) return;
     onChange([...safeRows, { ...EMPTY_ROW }]);
   }, [onChange, safeRows]);
 
@@ -91,56 +100,81 @@ export function IngredientInputs({
     <View style={styles.wrap}>
       <Text style={[styles.label, { color: outlineColor }]}>食材</Text>
       <Text style={[styles.hint, { color: outlineColor }]}>
-        填写食材名称与用量，填写一项后出现下一项，也可点「添加一项」
+        每项单独填写，食材占满一行；用量与备注并排。填写一项后出现下一项，也可点「添加一项」
       </Text>
-      <View style={[styles.headerRow, { borderBottomColor: borderColor }]}>
-        <Text style={[styles.colHeader, styles.nameCol, { color: outlineColor }]}>食材</Text>
-        <Text style={[styles.colHeader, styles.amountCol, { color: outlineColor }]}>用量</Text>
-        <View style={styles.removePlaceholder} />
-      </View>
       <View style={styles.list}>
         {safeRows.map((row, index) => {
-          const canRemove = safeRows.length > 1 || row.name.trim().length > 0 || row.amount.trim().length > 0;
+          const canRemove =
+            safeRows.length > 1 ||
+            row.name.trim().length > 0 ||
+            row.amount.trim().length > 0 ||
+            (row.remark ?? '').trim().length > 0;
           return (
-            <View key={`ing-${index}`} style={styles.row}>
-              <TextInput
-                value={row.name}
-                onChangeText={v => setField(index, 'name', v)}
-                placeholder="例如：鸡蛋"
-                placeholderTextColor={outlineColor}
-                textAlignVertical="center"
-                style={[
-                  styles.input,
-                  styles.nameCol,
-                  Platform.OS === 'android' && styles.inputAndroid,
-                  { color: textColor, borderColor, backgroundColor: inputBg },
-                ]}
-              />
-              <TextInput
-                value={row.amount}
-                onChangeText={v => setField(index, 'amount', v)}
-                placeholder="例如：2 个"
-                placeholderTextColor={outlineColor}
-                textAlignVertical="center"
-                style={[
-                  styles.input,
-                  styles.amountCol,
-                  Platform.OS === 'android' && styles.inputAndroid,
-                  { color: textColor, borderColor, backgroundColor: inputBg },
-                ]}
-              />
-              {canRemove ? (
-                <Pressable
-                  onPress={() => removeRow(index)}
-                  hitSlop={8}
-                  style={({ pressed }) => [styles.removeBtn, { opacity: pressed ? 0.65 : 1 }]}
-                  accessibilityLabel="删除此项"
-                >
-                  <MaterialIcons name="remove-circle-outline" size={22} color={outlineColor} />
-                </Pressable>
-              ) : (
-                <View style={styles.removePlaceholder} />
-              )}
+            <View key={`ing-${index}`} style={[styles.itemCard, { borderColor }]}>
+              <View style={styles.itemHead}>
+                <Text style={[styles.itemIndex, { color: outlineColor }]}>第 {index + 1} 项</Text>
+                {canRemove ? (
+                  <Pressable
+                    onPress={() => removeRow(index)}
+                    hitSlop={8}
+                    style={({ pressed }) => [styles.removeBtn, { opacity: pressed ? 0.65 : 1 }]}
+                    accessibilityLabel="删除此项"
+                  >
+                    <MaterialIcons name="remove-circle-outline" size={22} color={outlineColor} />
+                  </Pressable>
+                ) : (
+                  <View style={styles.removePlaceholder} />
+                )}
+              </View>
+
+              <View style={styles.fieldBlock}>
+                <Text style={[styles.fieldLabel, { color: outlineColor }]}>食材</Text>
+                <TextInput
+                  value={row.name}
+                  onChangeText={v => setField(index, 'name', v)}
+                  placeholder="例如：鸡蛋"
+                  placeholderTextColor={outlineColor}
+                  textAlignVertical="center"
+                  style={[
+                    styles.input,
+                    Platform.OS === 'android' && styles.inputAndroid,
+                    { color: textColor, borderColor, backgroundColor: inputBg },
+                  ]}
+                />
+              </View>
+
+              <View style={styles.fieldRow}>
+                <View style={styles.fieldHalf}>
+                  <Text style={[styles.fieldLabel, { color: outlineColor }]}>用量</Text>
+                  <TextInput
+                    value={row.amount}
+                    onChangeText={v => setField(index, 'amount', v)}
+                    placeholder="例如：2 个"
+                    placeholderTextColor={outlineColor}
+                    textAlignVertical="center"
+                    style={[
+                      styles.input,
+                      Platform.OS === 'android' && styles.inputAndroid,
+                      { color: textColor, borderColor, backgroundColor: inputBg },
+                    ]}
+                  />
+                </View>
+                <View style={styles.fieldHalf}>
+                  <Text style={[styles.fieldLabel, { color: outlineColor }]}>备注</Text>
+                  <TextInput
+                    value={row.remark ?? ''}
+                    onChangeText={v => setField(index, 'remark', v)}
+                    placeholder="可选"
+                    placeholderTextColor={outlineColor}
+                    textAlignVertical="center"
+                    style={[
+                      styles.input,
+                      Platform.OS === 'android' && styles.inputAndroid,
+                      { color: textColor, borderColor, backgroundColor: inputBg },
+                    ]}
+                  />
+                </View>
+              </View>
             </View>
           );
         })}
@@ -165,19 +199,23 @@ const styles = StyleSheet.create({
   wrap: { gap: 6 },
   label: { fontSize: 12, fontWeight: '700' },
   hint: { fontSize: 11, lineHeight: 16 },
-  headerRow: {
+  list: { gap: 10 },
+  itemCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    gap: 10,
+  },
+  itemHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingBottom: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    marginTop: 2,
+    justifyContent: 'space-between',
   },
-  colHeader: { fontSize: 11, fontWeight: '700' },
-  list: { gap: 8 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  nameCol: { flex: 1.2 },
-  amountCol: { flex: 1 },
+  itemIndex: { fontSize: 11, fontWeight: '700' },
+  fieldBlock: { gap: 6 },
+  fieldRow: { flexDirection: 'row', gap: 10 },
+  fieldHalf: { flex: 1, gap: 6 },
+  fieldLabel: { fontSize: 11, fontWeight: '700' },
   input: {
     borderWidth: 1,
     borderRadius: 10,

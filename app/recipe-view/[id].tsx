@@ -192,19 +192,26 @@ export default function RecipeViewScreen() {
                 </View>
                 <Text style={[styles.sectionTitle, { color: text }]}>食材</Text>
               </View>
-              <View style={[styles.ingHeaderRow, { borderBottomColor: borderSoft }]}>
-                <Text style={[styles.ingColHeader, styles.ingNameCol, { color: outlineMuted }]}>食材</Text>
-                <Text style={[styles.ingColHeader, styles.ingAmountCol, { color: outlineMuted }]}>用量</Text>
-              </View>
               {row.ingredients.map((item, i) => (
                 <View
                   key={`ing-${i}`}
-                  style={[styles.ingRow, i < row.ingredients.length - 1 && { borderBottomColor: borderSoft, borderBottomWidth: StyleSheet.hairlineWidth }]}
+                  style={[
+                    styles.ingCard,
+                    { borderColor: borderSoft },
+                    i < row.ingredients.length - 1 && styles.ingCardSpacing,
+                  ]}
                 >
-                  <Text style={[styles.ingName, styles.ingNameCol, { color: text }]}>{item.name}</Text>
-                  <Text style={[styles.ingAmount, styles.ingAmountCol, { color: item.amount ? text : outlineMuted }]}>
-                    {item.amount || '—'}
-                  </Text>
+                  <View style={styles.ingMainRow}>
+                    <Text style={[styles.ingName, { color: text }]}>{item.name}</Text>
+                    <Text style={[styles.ingAmount, { color: item.amount ? text : outlineMuted }]}>
+                      {item.amount || '—'}
+                    </Text>
+                  </View>
+                  {item.remark?.trim() ? (
+                    <Text style={[styles.ingRemarkLine, { color: outline }]}>
+                      备注：{item.remark.trim()}
+                    </Text>
+                  ) : null}
                 </View>
               ))}
             </View>
@@ -328,25 +335,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sectionTitle: { fontSize: 17, fontWeight: '900' },
-  ingHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingBottom: 8,
-    marginBottom: 2,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+  ingCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 6,
   },
-  ingColHeader: { fontSize: 12, fontWeight: '800' },
-  ingRow: {
+  ingCardSpacing: { marginBottom: 8 },
+  ingMainRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    justifyContent: 'space-between',
     gap: 12,
-    paddingVertical: 10,
   },
-  ingNameCol: { flex: 1.2 },
-  ingAmountCol: { flex: 1 },
-  ingName: { fontSize: 15, lineHeight: 24, fontWeight: '600' },
-  ingAmount: { fontSize: 15, lineHeight: 24, fontWeight: '500' },
+  ingName: { flex: 1, fontSize: 15, lineHeight: 22, fontWeight: '700' },
+  ingAmount: { fontSize: 15, lineHeight: 22, fontWeight: '600', textAlign: 'right', maxWidth: '42%' },
+  ingRemarkLine: { fontSize: 13, lineHeight: 20, fontWeight: '500' },
   listRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',

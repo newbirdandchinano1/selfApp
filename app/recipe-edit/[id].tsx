@@ -15,21 +15,23 @@ import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import {
   createRecipe,
   getRecipe,
-  getRecipeCategory,
+  listRecipeCategories,
   RECIPE_NOTES_MAX,
   RECIPE_TITLE_MAX,
   updateRecipe,
+  type RecipeCategory,
   type RecipeIngredient,
 } from '@/lib/recipes';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -70,12 +72,13 @@ export default function RecipeEditScreen() {
   const inputBg = isDark ? 'rgba(15,23,42,0.5)' : '#ffffff';
   const headerBg = isDark ? 'rgba(15,23,42,0.96)' : 'rgba(255,255,255,0.96)';
   const accent = isDark ? '#fb923c' : '#ea580c';
-  const accentSoft = isDark ? 'rgba(251,146,60,0.18)' : 'rgba(234,88,12,0.1)';
   const cardBg = isDark ? '#1e293b' : '#ffffff';
 
-  const [categoryName, setCategoryName] = useState('');
+  const [categories, setCategories] = useState<RecipeCategory[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState('');
+  const [categoryModalVisible, setCategoryModalVisible] = useState(false);
   const [title, setTitle] = useState('');
-  const [ingredientRows, setIngredientRows] = useState<RecipeIngredient[]>([{ name: '', amount: '' }]);
+  const [ingredientRows, setIngredientRows] = useState<RecipeIngredient[]>([{ name: '', amount: '', remark: '' }]);
   const [stepLines, setStepLines] = useState<string[]>(['']);
   const [notes, setNotes] = useState('');
   const [finishedImageUri, setFinishedImageUri] = useState<string | null>(null);
@@ -83,31 +86,38 @@ export default function RecipeEditScreen() {
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
 
+  const selectedCategoryName = useMemo(() => {
+    if (!selectedCategoryId) return '';
+    return categories.find(c => c.id === selectedCategoryId)?.name ?? '';
+  }, [categories, selectedCategoryId]);
+
   const reload = useCallback(async () => {
-    if (isNew) {
-      if (!categoryId) return;
-      setLoading(true);
-      try {
-        const cat = await getRecipeCategory(categoryId);
-        setCategoryName(cat?.name ?? '');
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-    if (!id) return;
     setLoading(true);
     try {
+      const cats = await listRecipeCategories();
+      setCategories(cats);
+
+      if (isNew) {
+        if (categoryId) {
+          setSelectedCategoryId(categoryId);
+        } else if (cats.length > 0) {
+          setSelectedCategoryId(cats[0].id);
+        } else {
+          setSelectedCategoryId('');
+        }
+        return;
+      }
+
+      if (!id) return;
       const row = await getRecipe(id);
       if (!row) {
         Alert.alert('未找到', '该菜谱可能已删除', [{ text: '确定', onPress: () => router.back() }]);
         return;
       }
-      const cat = await getRecipeCategory(row.category_id);
-      setCategoryName(cat?.name ?? '');
+      setSelectedCategoryId(row.category_id);
       setTitle(row.title);
       setIngredientRows(
-        ensureMinIngredientRows(row.ingredients.length > 0 ? row.ingredients : [{ name: '', amount: '' }]),
+        ensureMinIngredientRows(row.ingredients.length > 0 ? row.ingredients : [{ name: '', amount: '', remark: '' }]),
       );
       setStepLines(ensureMinLines(row.steps.length > 0 ? row.steps : linesFromLegacyText('')));
       setNotes(row.notes ?? '');
@@ -124,16 +134,20 @@ export default function RecipeEditScreen() {
   const { refreshControl } = usePullToRefresh(reload);
 
   useEffect(() => {
-    if (isNew) {
-      if (!categoryId) {
-        Alert.alert('请先选择分类', '请从「我的菜谱」某个分类下新建菜谱', [
-          { text: '确定', onPress: () => router.back() },
-        ]);
-        setLoading(false);
-        return;
-      }
-      void reload();
-      return;
+    if (isNew && !categoryId) {
+      void (async () => {
+        setLoading(true);
+        try {
+          const cats = await listRecipeCategories();
+          if (cats.length === 0) {
+            Alert.alert('请先创建分类', '请先在「我的菜谱」中创建分类，再添加菜谱', [
+              { text: '确定', onPress: () => router.back() },
+            ]);
+          }
+        } finally {
+          setLoading(false);
+        }
+      })();
     }
     if (!id) {
       setLoading(false);
@@ -172,15 +186,15 @@ export default function RecipeEditScreen() {
       return;
     }
     const imageChanged = finishedImageUri !== initialImageUri;
+    if (!selectedCategoryId) {
+      Alert.alert('无法保存', '请选择菜谱分类');
+      return;
+    }
     setSaving(true);
     try {
       if (isNew) {
-        if (!categoryId) {
-          Alert.alert('无法保存', '缺少分类');
-          return;
-        }
         await createRecipe({
-          category_id: categoryId,
+          category_id: selectedCategoryId,
           title,
           ingredients,
           steps,
@@ -190,6 +204,7 @@ export default function RecipeEditScreen() {
       } else {
         const patch: Parameters<typeof updateRecipe>[1] = {
           title,
+          category_id: selectedCategoryId,
           ingredients,
           steps,
           notes: notes.trim() || null,
@@ -211,7 +226,6 @@ export default function RecipeEditScreen() {
       setSaving(false);
     }
   }, [
-    categoryId,
     finishedImageUri,
     id,
     initialImageUri,
@@ -219,6 +233,7 @@ export default function RecipeEditScreen() {
     isNew,
     notes,
     router,
+    selectedCategoryId,
     stepLines,
     title,
   ]);
@@ -291,13 +306,6 @@ export default function RecipeEditScreen() {
             ]}
             showsVerticalScrollIndicator={false}
           >
-            {categoryName ? (
-              <View style={[styles.categoryBadge, { borderColor: borderSoft, backgroundColor: accentSoft }]}>
-                <MaterialIcons name="folder" size={16} color={accent} />
-                <Text style={[styles.categoryBadgeText, { color: accent }]}>{categoryName}</Text>
-              </View>
-            ) : null}
-
             <View style={[styles.formSection, { backgroundColor: cardBg, borderColor: borderSoft }]}>
             <Text style={[styles.sectionLabel, { color: text }]}>成品图</Text>
             {finishedImageUri ? (
@@ -338,7 +346,34 @@ export default function RecipeEditScreen() {
 
             <View style={[styles.formSection, { backgroundColor: cardBg, borderColor: borderSoft }]}>
             <Text style={[styles.sectionLabel, { color: text }]}>基本信息</Text>
-            <Text style={[styles.label, { color: outline }]}>菜名</Text>
+            <Text style={[styles.label, { color: outline }]}>分类</Text>
+            <Pressable
+              onPress={() => {
+                if (categories.length === 0) {
+                  Alert.alert('暂无分类', '请先在「我的菜谱」中创建分类');
+                  return;
+                }
+                setCategoryModalVisible(true);
+              }}
+              disabled={saving || categories.length === 0}
+              style={({ pressed }) => [
+                styles.categoryPicker,
+                {
+                  borderColor: borderSoft,
+                  backgroundColor: inputBg,
+                  opacity: pressed || saving || categories.length === 0 ? 0.75 : 1,
+                },
+              ]}
+            >
+              <View style={styles.categoryPickerLeft}>
+                <MaterialIcons name="folder" size={18} color={accent} />
+                <Text style={[styles.categoryPickerText, { color: selectedCategoryName ? text : outline }]}>
+                  {selectedCategoryName || '请选择分类'}
+                </Text>
+              </View>
+              <MaterialIcons name="expand-more" size={22} color={outline} />
+            </Pressable>
+            <Text style={[styles.label, { color: outline, marginTop: 4 }]}>菜名</Text>
             <TextInput
               value={title}
               onChangeText={x => setTitle(x.length > RECIPE_TITLE_MAX ? x.slice(0, RECIPE_TITLE_MAX) : x)}
@@ -392,6 +427,46 @@ export default function RecipeEditScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       )}
+
+      <Modal
+        transparent
+        visible={categoryModalVisible}
+        animationType="fade"
+        onRequestClose={() => setCategoryModalVisible(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setCategoryModalVisible(false)}>
+          <Pressable
+            onPress={() => {}}
+            style={[styles.modalCard, { backgroundColor: cardBg, borderColor: borderSoft }]}
+          >
+            <Text style={[styles.modalTitle, { color: text }]}>选择菜谱分类</Text>
+            <ScrollView style={styles.modalList} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              {categories.map(cat => (
+                <Pressable
+                  key={cat.id}
+                  onPress={() => {
+                    setSelectedCategoryId(cat.id);
+                    setCategoryModalVisible(false);
+                  }}
+                  style={({ pressed }) => [
+                    styles.modalItem,
+                    { borderBottomColor: borderSoft },
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <View style={styles.modalItemLeft}>
+                    <MaterialIcons name="folder" size={18} color={accent} />
+                    <Text style={[styles.modalItemText, { color: text }]}>{cat.name}</Text>
+                  </View>
+                  {selectedCategoryId === cat.id ? (
+                    <MaterialIcons name="check" size={20} color={primary} />
+                  ) : null}
+                </Pressable>
+              ))}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -433,19 +508,44 @@ const styles = StyleSheet.create({
   sectionLabel: { fontSize: 16, fontWeight: '900', marginBottom: 4 },
   loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scrollInner: { paddingHorizontal: 18, paddingTop: 16 },
-  categoryBadge: {
+  categoryPicker: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
+    justifyContent: 'space-between',
     borderWidth: 1,
-    marginBottom: 4,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    minHeight: 44,
   },
-  categoryBadgeText: { fontSize: 14, fontWeight: '700' },
+  categoryPickerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
+  categoryPickerText: { fontSize: 15, fontWeight: '600', flex: 1 },
   label: { fontSize: 12, fontWeight: '700', marginBottom: 6 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  modalCard: {
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
+    maxHeight: '70%',
+  },
+  modalTitle: { fontSize: 17, fontWeight: '900', marginBottom: 12 },
+  modalList: { maxHeight: 360 },
+  modalItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  modalItemLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  modalItemText: { fontSize: 15, fontWeight: '600', flex: 1 },
   inputSingle: {
     borderWidth: 1,
     borderRadius: 10,
