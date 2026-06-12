@@ -1,3 +1,4 @@
+import { addDaysToLogicalYmd } from '@/lib/tasks-logical-day';
 import { startOfWeekMonday } from '@/lib/tasks-global-heatmap';
 import {
   computeBuildExpectedGoalProgress,
@@ -130,6 +131,58 @@ export function isTaskHabitPeriodGoalMet(params: {
     asOfYmd: params.asOfYmd,
   });
   return progress >= expectedGoal.value;
+}
+
+export type TaskHabitTasksViewState = {
+  periodProgress: number;
+  periodGoal: number;
+  /** 周期目标在「查看日」当天达成（展示打钩，次日隐藏） */
+  showPeriodCheckOnViewDay: boolean;
+  /** 周期目标在查看日之前已达成（任务页/日历不再展示） */
+  hiddenOnViewDay: boolean;
+};
+
+/** 任务页 / 日历：周期型完成任务在指定逻辑日的展示与隐藏状态 */
+export function getTaskHabitTasksViewState(params: {
+  extraData: string | null;
+  checkIns: Record<string, number>;
+  logicalYmd: string;
+}): TaskHabitTasksViewState | null {
+  if (parseHabitKind(params.extraData) !== 'task') return null;
+  const expectedGoal = parseTaskHabitExpectedGoal(params.extraData);
+  if (expectedGoal == null) return null;
+  const period = parseTaskRepeatPeriod(params.extraData);
+  const dailyGoal = parseHabitDailyGoal(params.extraData, 'task');
+  const periodProgress = computeTaskPeriodGoalProgress({
+    expectedGoal,
+    checkIns: params.checkIns,
+    dailyGoal,
+    logicalYmd: params.logicalYmd,
+    period,
+    asOfYmd: params.logicalYmd,
+  });
+  const { startYmd } = getTaskPeriodRange(params.logicalYmd, period);
+  const yesterday = addDaysToLogicalYmd(params.logicalYmd, -1);
+  const progressAsOfYesterday =
+    yesterday >= startYmd
+      ? computeTaskPeriodGoalProgress({
+          expectedGoal,
+          checkIns: params.checkIns,
+          dailyGoal,
+          logicalYmd: params.logicalYmd,
+          period,
+          asOfYmd: yesterday,
+        })
+      : 0;
+  const goalValue = expectedGoal.value;
+  const periodGoalMet = periodProgress >= goalValue;
+  const wasMetBeforeViewDay = progressAsOfYesterday >= goalValue;
+  return {
+    periodProgress,
+    periodGoal: goalValue,
+    showPeriodCheckOnViewDay: periodGoalMet && !wasMetBeforeViewDay,
+    hiddenOnViewDay: wasMetBeforeViewDay,
+  };
 }
 
 export function formatTaskPeriodGoalLabel(period: TaskRepeatPeriod, goal: BuildHabitExpectedGoal): string {

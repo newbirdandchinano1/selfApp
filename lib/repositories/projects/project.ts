@@ -59,10 +59,11 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
   const current = await requireLocalRowForWrite<ProjectRow>('projects', id);
 
   let nextCategoryId = input.category_id !== undefined ? input.category_id : current.category_id;
-  if (nextCategoryId) {
+  if (input.category_id !== undefined && nextCategoryId) {
     const categoryReady = await ensureLocalRowPresent('project_categories', nextCategoryId);
     if (!categoryReady) {
-      nextCategoryId = null;
+      // 分类尚未同步到本地时不应静默清空，保留数据库中的原分类
+      nextCategoryId = current.category_id;
     }
   }
   const wasStrictInbox = current.category_id === INBOX_PROJECT_CATEGORY_ID;

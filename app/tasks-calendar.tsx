@@ -196,8 +196,16 @@ function HabitRowItem({
   borderColor: string;
 }) {
   const goal = item.dailyGoal;
-  const met = isHabitDayGoalMet({ kind: item.kind, todayCount: item.todayCount, dailyGoal: goal });
+  const isTask = item.kind === 'task';
+  const taskPeriodProgress = item.periodProgress ?? 0;
+  const met = isTask
+    ? !!item.taskShowPeriodCheck
+    : isHabitDayGoalMet({ kind: item.kind, todayCount: item.todayCount, dailyGoal: goal });
   const isBreak = item.kind === 'break';
+  const progressLabel =
+    isTask && item.periodGoal != null
+      ? `本周期 ${taskPeriodProgress} / ${item.periodGoal}`
+      : `${isBreak ? '记录' : '打卡'} ${item.todayCount}${goal != null ? ` / 阈值 ${goal}` : ''}`;
   return (
     <Pressable
       onPress={onPress}
@@ -215,9 +223,8 @@ function HabitRowItem({
           {item.name}
         </Text>
         <Text style={[styles.listMeta, { color: met ? success : muted }]}>
-          {isBreak ? '记录' : '打卡'} {item.todayCount}
-          {goal != null ? ` / 阈值 ${goal}` : ''}
-          {isBreak ? (met ? ' · 达标' : ' · 未达标') : ''}
+          {progressLabel}
+          {isBreak ? (met ? ' · 达标' : ' · 未达标') : isTask && met ? ' · 已完成' : ''}
         </Text>
       </View>
       <MaterialIcons name="chevron-right" size={18} color={muted} />

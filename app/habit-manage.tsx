@@ -166,6 +166,13 @@ export default function HabitManageScreen() {
     setMenuTarget(null);
   };
 
+  const goHabitDetail = (item: HabitItem) => {
+    router.push({
+      pathname: '/habit-detail',
+      params: { habitId: item.id },
+    });
+  };
+
   const goEditHabit = (groupCategory: string, item: HabitItem) => {
     closeItemMenu();
     router.push({
@@ -356,7 +363,7 @@ export default function HabitManageScreen() {
                       },
                     ]}>
                     <Pressable
-                      onPress={() => goEditHabit(group.category, item)}
+                      onPress={() => goHabitDetail(item)}
                       style={({ pressed }) => [styles.itemMainPressable, pressed && { opacity: 0.92 }]}>
                       <View style={styles.itemMain}>
                         <View style={styles.itemEmojiWrap}>

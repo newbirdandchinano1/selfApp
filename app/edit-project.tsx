@@ -692,10 +692,27 @@ export default function EditProjectScreen() {
     }
   }, [projectId]);
 
+  /** 从子任务编辑页返回后刷新项目快照与分类展示，不重置 categoryTouched */
+  const reloadProjectSnapshotOnly = React.useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const project = await getProjectById(projectId);
+      if (!project) return;
+      projectSnapshotRef.current = project;
+      if (!categoryTouchedRef.current) {
+        setSelectedCategoryId(normalizeProjectCategoryId(project.category_id));
+      }
+    } catch (error) {
+      console.warn('刷新项目快照失败', error);
+    }
+  }, [projectId]);
+
   const reloadProjectPageRef = React.useRef(reloadProjectPage);
   reloadProjectPageRef.current = reloadProjectPage;
   const reloadSubtasksOnlyRef = React.useRef(reloadSubtasksOnly);
   reloadSubtasksOnlyRef.current = reloadSubtasksOnly;
+  const reloadProjectSnapshotOnlyRef = React.useRef(reloadProjectSnapshotOnly);
+  reloadProjectSnapshotOnlyRef.current = reloadProjectSnapshotOnly;
   const readScheduleResultRef = React.useRef(readScheduleResult);
   readScheduleResultRef.current = readScheduleResult;
   const readAddTaskResultRef = React.useRef(readAddTaskResult);
@@ -715,6 +732,7 @@ export default function EditProjectScreen() {
         await readAddTaskResultRef.current();
         if (cancelled) return;
         if (!consumedSchedule) {
+          await reloadProjectSnapshotOnlyRef.current();
           await reloadSubtasksOnlyRef.current();
         }
       })();
@@ -839,10 +857,16 @@ export default function EditProjectScreen() {
     try {
       const db = await getDatabase();
       await db.execAsync('BEGIN IMMEDIATE');
-      const normalizedCategoryId = resolveProjectCategoryIdForSave(
-        selectedCategoryIdRef.current,
-        projectSnapshotRef.current?.category_id,
-        categoryTouchedRef.current,
+      const categoryTouched = categoryTouchedRef.current;
+      const normalizedCategoryId = categoryTouched
+        ? resolveProjectCategoryIdForSave(
+            selectedCategoryIdRef.current,
+            projectSnapshotRef.current?.category_id,
+            true,
+          )
+        : null;
+      const categoryIdForNewTask = normalizeProjectCategoryId(
+        projectSnapshotRef.current?.category_id ?? selectedCategoryIdRef.current,
       );
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
       const mergedExtra = mergePrerequisiteIdsIntoExtraData(
@@ -851,7 +875,7 @@ export default function EditProjectScreen() {
       );
       const projectDueDate = dueDateFromScheduleMeta(scheduleToSave, extractDueDate(deadlineText));
       await updateProject(projectId, {
-        category_id: normalizedCategoryId,
+        ...(categoryTouched ? { category_id: normalizedCategoryId } : {}),
         name: trimmedTitle,
         note: notes.trim() || null,
         due_date: projectDueDate,
@@ -877,7 +901,6 @@ export default function EditProjectScreen() {
         const existingExtra = existingTask ? parseTaskExtraData(existingTask.extra_data) : parseTaskExtraData(null);
         const payload = {
           project_id: projectId,
-          category_id: normalizedCategoryId,
           parent_task_id,
           title: subtask.title.trim() || '未命名任务',
           description: subtask.acceptanceCriteria?.trim() || null,
@@ -890,6 +913,7 @@ export default function EditProjectScreen() {
             reminder: subtask.reminder || subtask.reminderText || '',
             repeat: subtask.repeat || subtask.repeatText || '',
           }),
+          ...(categoryTouched ? { category_id: normalizedCategoryId } : {}),
         };
 
         if (existingTaskIds.has(subtask.id)) {
@@ -898,6 +922,7 @@ export default function EditProjectScreen() {
           await createTask({
             id: subtask.id,
             ...payload,
+            category_id: categoryTouched ? normalizedCategoryId : categoryIdForNewTask,
           });
         }
       }

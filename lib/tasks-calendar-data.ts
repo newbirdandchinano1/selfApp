@@ -3,7 +3,7 @@ import { isBreakHabitSucceeded } from '@/lib/repositories/habits/habit-break-suc
 import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
 import { isHabitDayGoalMet, parseHabitDailyGoal } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
-import { isTaskHabitPeriodGoalMet } from '@/lib/repositories/habits/habit-task-period';
+import { getTaskHabitTasksViewState } from '@/lib/repositories/habits/habit-task-period';
 import { isTaskRepeatDueOnLogicalDay, parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getLogicalLocalYmd } from '@/lib/tasks-logical-day';
@@ -27,6 +27,9 @@ export type TasksCalendarHabitItem = {
   todayCount: number;
   dailyGoal: number | null;
   kind: HabitKind;
+  periodProgress?: number | null;
+  periodGoal?: number | null;
+  taskShowPeriodCheck?: boolean;
 };
 
 export type TasksCalendarProjectItem = {
@@ -289,17 +292,16 @@ export function buildTasksCalendarSummaries(params: {
       const kind = parseHabitKind(habit.extra_data);
       if (kind === 'break' && isBreakHabitSucceeded(habit.extra_data)) continue;
       if (kind === 'build' && isBuildHabitSucceeded(habit.extra_data)) continue;
-      if (
-        kind === 'task' &&
-        isTaskHabitPeriodGoalMet({
-          extraData: habit.extra_data,
-          checkIns: habitCheckInsByHabit.get(habit.id) ?? {},
-          logicalYmd: ymd,
-          asOfYmd: ymd,
-        })
-      ) {
-        continue;
-      }
+      const checkIns = habitCheckInsByHabit.get(habit.id) ?? {};
+      const taskViewState =
+        kind === 'task'
+          ? getTaskHabitTasksViewState({
+              extraData: habit.extra_data,
+              checkIns,
+              logicalYmd: ymd,
+            })
+          : null;
+      if (taskViewState?.hiddenOnViewDay) continue;
       if (!isHabitScheduledOnLogicalYmd(habit.extra_data, ymd)) continue;
       const count = checkMap.get(habit.id) ?? 0;
       const dailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
@@ -310,6 +312,9 @@ export function buildTasksCalendarSummaries(params: {
         todayCount: count,
         dailyGoal,
         kind,
+        periodProgress: taskViewState?.periodProgress ?? null,
+        periodGoal: taskViewState?.periodGoal ?? null,
+        taskShowPeriodCheck: taskViewState?.showPeriodCheckOnViewDay ?? false,
       });
     }
 
