@@ -1,13 +1,13 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { clearFrogAssignedOn, getFrogAssignedOn } from '@/lib/frog-assignment';
-import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { ApiRequestError } from '@/lib/api-client';
+import { assignFrogToApi, getFrogAssignedOn, unassignFrogFromApi } from '@/lib/frog-assignment';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { isLogicalDayInYmdRange } from '@/lib/repositories/projects/project-schedule-status';
 import { buildProjectLockMap } from '@/lib/repositories/projects/project-prerequisites';
 import { getProjects } from '@/lib/repositories/projects/project';
-import { getTasks, getTasksByProjectId, updateTask, type TaskTreeNode } from '@/lib/repositories/tasks/task';
+import { getTasks, getTasksByProjectId, type TaskTreeNode } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -37,10 +37,6 @@ type Section = {
   items: Item[];
   /** 过期栏：标题标红加粗 */
   emphasize?: boolean;
-};
-
-type FrogTaskMeta = {
-  frogAssignedOn?: string;
 };
 
 type TaskScheduleMeta = {
@@ -569,12 +565,17 @@ export default function AddFrogScreen() {
               if (!row) return;
               setSaving(true);
               try {
-                const nextExtra = clearFrogAssignedOn(row.extra_data);
-                await updateTask(id, { extra_data: nextExtra });
-                await reload();
+                await unassignFrogFromApi(id, row.extra_data, row as Record<string, unknown>);
+                await reload(true);
               } catch (e) {
                 console.warn('取消青蛙指派失败', e);
-                Alert.alert('操作失败', '未能取消指派，请稍后重试。');
+                const detail =
+                  e instanceof ApiRequestError
+                    ? e.message
+                    : e instanceof Error
+                      ? e.message.trim()
+                      : '';
+                Alert.alert('操作失败', detail || '未能取消指派，请检查网络后重试。');
               } finally {
                 setSaving(false);
               }
@@ -601,33 +602,24 @@ export default function AddFrogScreen() {
         Alert.alert('无法指派', '所选任务所属项目仍被前置项目锁定，请先完成前置项目。');
         return;
       }
-      const { applyApiRowsToLocalTable } = await import('@/lib/api-read-local-sync');
       for (const id of ids) {
         const row = taskMap[id];
         if (!row) {
           throw new Error('任务数据已过期，请下拉刷新后重试');
         }
-        // 写入前先落本地行，避免并发 update 时重复拉接口或 SQLite 锁冲突
-        await applyApiRowsToLocalTable('tasks', [row as Record<string, unknown>]);
-        const currentExtra = parseTaskExtraData(row.extra_data ?? null);
-        const nextExtra: FrogTaskMeta & Record<string, unknown> = {
-          ...currentExtra,
-          frogAssignedOn: today,
-        };
-        await updateTask(id, { extra_data: JSON.stringify(nextExtra) });
+        await assignFrogToApi(id, row.extra_data ?? null, today, row as Record<string, unknown>);
       }
-      await pushLocalChangesToApi({ awaitSync: true });
       Alert.alert('已指派', `已将 ${ids.length} 个任务指派为今日青蛙。`);
       router.back();
     } catch (e) {
       console.warn('指派青蛙失败', e);
-      const detail = e instanceof Error ? e.message.trim() : '';
-      Alert.alert(
-        '指派失败',
-        detail && /本地数据库|网络|登录|服务器|同步|过期|刷新/i.test(detail)
-          ? detail
-          : '未能保存青蛙指派状态，请稍后重试。',
-      );
+      const detail =
+        e instanceof ApiRequestError
+          ? e.message
+          : e instanceof Error
+            ? e.message.trim()
+            : '';
+      Alert.alert('指派失败', detail || '未能保存青蛙指派状态，请检查网络后重试。');
     } finally {
       setSaving(false);
     }
