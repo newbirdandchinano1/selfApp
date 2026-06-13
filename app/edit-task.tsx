@@ -465,9 +465,10 @@ export default function EditTaskScreen() {
       scheduleMeta,
       completionReward,
       boundHabitIds,
+      isLongTermTask,
     });
     return !formSnapshotsEqual(loadedFormSnapshot, current);
-  }, [acceptanceCriteria, boundHabitIds, completionReward, deadlineText, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
+  }, [acceptanceCriteria, boundHabitIds, completionReward, deadlineText, isLongTermTask, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
 
   const reload = React.useCallback(async (forceApi = false) => {
     if (!taskId) return;

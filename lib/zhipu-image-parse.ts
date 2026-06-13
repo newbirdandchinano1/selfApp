@@ -144,6 +144,98 @@ export function normalizeFoodTextIntakePayload(raw: unknown): FoodTextIntakeJson
   };
 }
 
+const FOOD_TEXT_INTAKE_RETRY_QUESTION =
+  '用户输入的是饮食记录。只要描述的是食物或饮品（含简写如「一碗饭」「一碗冒菜」），必须给出大于 0 的蛋白质、碳水化合物、热量估算；仅当完全不是食物时才将全部数值设为 0，并在 food_summary 中明确写「非食物」。';
+
+export function foodTextIntakeNutrientSum(data: FoodTextIntakeJson): number {
+  return data.hydration_ml + data.protein_g + data.carbohydrate_g + data.calories_kcal;
+}
+
+const NON_FOOD_TEXT_INTAKE_MARKERS =
+  /非食物|不是食物|并非食物|无法按食物|无法识别为食物|不属于食物|非餐饮|非饮食/i;
+
+const OBVIOUS_NON_FOOD_INPUT =
+  /^(跑步|走路|健身|游泳|骑车|骑行|瑜伽|拉伸|开会|上班|加班|睡觉|洗澡|刷牙|洗脸|通勤|地铁|公交|打车|开车|学习|看书|写代码|编程|开会)/;
+
+function isClearlyNonFoodTextIntake(text: string, data: FoodTextIntakeJson): boolean {
+  const summaryBlock = `${data.food_summary} ${data.ai_evaluation}`.trim();
+  if (NON_FOOD_TEXT_INTAKE_MARKERS.test(summaryBlock)) return true;
+  const t = text.trim();
+  if (!t) return true;
+  return OBVIOUS_NON_FOOD_INPUT.test(t);
+}
+
+function fallbackFoodTextIntakeEstimate(text: string, base: FoodTextIntakeJson): FoodTextIntakeJson {
+  const t = text.trim();
+  const isDrink = /杯|瓶|罐|毫升|ml|水|茶|咖啡|奶|汁|汤|啤酒|可乐|雪碧|饮料|豆浆/.test(t);
+  let hydration_ml = 0;
+  let protein_g = 0;
+  let carbohydrate_g = 0;
+  let calories_kcal = 0;
+
+  if (isDrink) {
+    hydration_ml = /大杯|特大|500/.test(t) ? 500 : /小杯|迷你|250/.test(t) ? 250 : 350;
+    calories_kcal = /牛奶|拿铁|奶茶|果汁|可乐|雪碧|啤酒|酒| latte/i.test(t) ? 180 : /水|清茶|无糖/.test(t) ? 0 : 80;
+    protein_g = /牛奶|奶|豆浆|拿铁/.test(t) ? 6 : 0;
+    carbohydrate_g = /奶茶|果汁|可乐|雪碧|啤酒|豆浆/.test(t) ? 25 : /牛奶|拿铁/.test(t) ? 10 : 0;
+    if (!calories_kcal && (protein_g > 0 || carbohydrate_g > 0)) {
+      calories_kcal = Math.round(protein_g * 4 + carbohydrate_g * 4);
+    }
+  } else if (/饭|米饭|白饭|盖饭|炒饭/.test(t) && !/大碗|两份|双份|火锅|烧烤|冒菜|麻辣烫|汉堡|披萨/.test(t)) {
+    protein_g = 5;
+    carbohydrate_g = 58;
+    calories_kcal = 280;
+  } else if (/小菜|水果|苹果|香蕉|一个/.test(t)) {
+    protein_g = 2;
+    carbohydrate_g = 20;
+    calories_kcal = 120;
+  } else if (/大碗|两份|双份|汉堡|披萨|火锅|烧烤|冒菜|麻辣烫/.test(t)) {
+    protein_g = 28;
+    carbohydrate_g = 60;
+    calories_kcal = 650;
+  } else {
+    protein_g = 18;
+    carbohydrate_g = 55;
+    calories_kcal = 450;
+  }
+
+  if (!calories_kcal && (protein_g > 0 || carbohydrate_g > 0)) {
+    calories_kcal = Math.round(protein_g * 4 + carbohydrate_g * 4);
+  }
+
+  const fallbackNote = '模型未给出可靠数值，已按常见份量作保守估算；如需更精确可补充做法与份量后重新解析。';
+  const ai_evaluation = base.ai_evaluation?.trim()
+    ? `${base.ai_evaluation.trim()}（${fallbackNote}）`
+    : `根据「${t}」${fallbackNote}`;
+
+  return {
+    food_summary: base.food_summary || t,
+    hydration_ml: base.hydration_ml > 0 ? base.hydration_ml : hydration_ml,
+    protein_g,
+    carbohydrate_g,
+    calories_kcal,
+    ai_evaluation,
+  };
+}
+
+export type FinalizeFoodTextIntakeResult =
+  | { ok: true; data: FoodTextIntakeJson }
+  | { ok: false; error: string };
+
+/** 确保文字饮食记录有可落库的摄入量；仅明确非食物时拒绝。 */
+export function finalizeFoodTextIntakeForRecord(
+  text: string,
+  data: FoodTextIntakeJson,
+): FinalizeFoodTextIntakeResult {
+  if (foodTextIntakeNutrientSum(data) > 0) {
+    return { ok: true, data };
+  }
+  if (isClearlyNonFoodTextIntake(text, data)) {
+    return { ok: false, error: '描述似乎不是食物，无法记录摄入。' };
+  }
+  return { ok: true, data: fallbackFoodTextIntakeEstimate(text, data) };
+}
+
 export function normalizeDailyIntakeTargetsPayload(raw: unknown): DailyIntakeTargetsEstimateJson {
   if (typeof raw !== 'object' || raw === null) {
     return { hydration_ml: 0, protein_g: 0, carbohydrate_g: 0, calories_kcal: 0 };
@@ -169,9 +261,23 @@ export async function parseFoodIntakeFromText(
   const text = options.text.trim();
   if (!text) return { ok: false, error: '描述为空', attempts: 0 };
   try {
+    let attempts = 1;
     const raw = await aiApi.aiFoodIntakeFromText({ text, question: options.question });
-    const data = normalizeFoodTextIntakePayload(raw);
-    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
+    let data = normalizeFoodTextIntakePayload(raw);
+    if (foodTextIntakeNutrientSum(data) <= 0) {
+      attempts += 1;
+      try {
+        const retryRaw = await aiApi.aiFoodIntakeFromText({ text, question: FOOD_TEXT_INTAKE_RETRY_QUESTION });
+        data = normalizeFoodTextIntakePayload(retryRaw);
+      } catch {
+        /* 保留首次解析结果，由 finalize 兜底 */
+      }
+    }
+    const finalized = finalizeFoodTextIntakeForRecord(text, data);
+    if (!finalized.ok) {
+      return { ok: false, error: finalized.error, attempts };
+    }
+    return { ok: true, data: finalized.data, rawContent: JSON.stringify(finalized.data), attempts };
   } catch (e) {
     const err = mapApiError(e);
     return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };

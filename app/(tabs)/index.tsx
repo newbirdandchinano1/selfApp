@@ -47,6 +47,7 @@ import {
 import { getUserDayScheduleKind, getUserDayScheduleLabelZh } from '@/lib/user-workout-schedule';
 import {
   analyzeFoodNutritionFromImage,
+  finalizeFoodTextIntakeForRecord,
   getActiveAiLlmApiKey,
   isActiveAiLlmConfigured,
   parseFoodIntakeFromText,
@@ -1226,15 +1227,12 @@ export default function HealthScreen() {
         const text = payload.text.trim();
         if (!text) return;
         if (payload.parsed) {
-          const d = payload.parsed;
-          const sum = d.hydration_ml + d.protein_g + d.carbohydrate_g + d.calories_kcal;
-          if (!Number.isFinite(sum) || sum <= 0) {
-            Alert.alert(
-              '无法记录',
-              '摄入量需大于 0，请修改预解析数值或写得更具体后重新预解析。'
-            );
+          const finalized = finalizeFoodTextIntakeForRecord(text, payload.parsed);
+          if (!finalized.ok) {
+            Alert.alert('无法记录', finalized.error);
             return;
           }
+          const d = finalized.data;
           const ok = await persistAiTextIntake(d.hydration_ml, d.protein_g, d.carbohydrate_g, d.calories_kcal, {
             displayTitle: text,
             aiComment: d.ai_evaluation?.trim(),
@@ -1247,18 +1245,10 @@ export default function HealthScreen() {
           try {
             const r = await parseFoodIntakeFromText({ apiKey: getActiveAiLlmApiKey(), text });
             if (!r.ok) {
-              Alert.alert('解析失败', r.error);
+              Alert.alert('无法记录', r.error);
               return;
             }
             const d = r.data;
-            const sum = d.hydration_ml + d.protein_g + d.carbohydrate_g + d.calories_kcal;
-            if (!Number.isFinite(sum) || sum <= 0) {
-              Alert.alert(
-                '无法记录',
-                '未能估算出有效摄入量，请写得更具体一些（如「一碗牛肉面、一杯牛奶」）。'
-              );
-              return;
-            }
             const ok = await persistAiTextIntake(d.hydration_ml, d.protein_g, d.carbohydrate_g, d.calories_kcal, {
               displayTitle: text,
               aiComment: d.ai_evaluation?.trim(),
