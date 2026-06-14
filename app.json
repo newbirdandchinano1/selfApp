@@ -53,6 +53,7 @@
           "image": "./assets/images/start.png",
           "resizeMode": "cover",
           "backgroundColor": "#ffffff",
+          "enableFullScreenImage_legacy": true,
           "dark": {
             "image": "./assets/images/start.png",
             "resizeMode": "cover",

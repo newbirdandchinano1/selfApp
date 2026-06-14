@@ -3,9 +3,18 @@ import {
   Field,
   LinkChip,
   SectionTitle,
+  WeeklyDailyReviewsReferenceCard,
   WeeklyMetricsReferenceCard,
+  WeeklyReviewQuickRefBar,
 } from '@/components/review/review-ui-parts';
-import { loadReviewPeriodSnapshot, WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/components/review/review-utils';
+import {
+  countEditableDailyEntries,
+  countFilledDailyEntries,
+  dailyEntryHasContent,
+  getYesterdayYmd,
+  loadReviewPeriodSnapshot,
+  WEEKLY_REVIEW_WEEKDAY_LABELS,
+} from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
 import { Colors } from '@/constants/theme';
 import { Layout, Radius, Spacing } from '@/constants/design-tokens';
@@ -35,7 +44,8 @@ import { resetPageApiSession, shouldSkipPageFocusApiRefresh } from '@/lib/page-a
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import * as Clipboard from 'expo-clipboard';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -46,6 +56,7 @@ import {
   StyleSheet,
   Text,
   View,
+  type LayoutChangeEvent,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -74,6 +85,7 @@ export function WeeklyReviewFormScreen() {
   const [saving, setSaving] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
+  const [dailyReviewsOpen, setDailyReviewsOpen] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
   const [configuredDow, setConfiguredDow] = useState<number | null>(null);
   const [periodStartYmd, setPeriodStartYmd] = useState('');
@@ -89,6 +101,35 @@ export function WeeklyReviewFormScreen() {
   const [adjustTasks, setAdjustTasks] = useState(false);
   const [adjustSavings, setAdjustSavings] = useState(false);
   const [adjustPlans, setAdjustPlans] = useState(false);
+
+  const scrollRef = useRef<ScrollView>(null);
+  const refsSectionY = useRef(0);
+
+  const scrollToRefs = useCallback(() => {
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ y: Math.max(0, refsSectionY.current - 12), animated: true });
+    });
+  }, []);
+
+  const toggleDailyRefs = useCallback(() => {
+    setDailyReviewsOpen(v => {
+      const next = !v;
+      if (next) scrollToRefs();
+      return next;
+    });
+  }, [scrollToRefs]);
+
+  const toggleMetricsRefs = useCallback(() => {
+    setMetricsOpen(v => {
+      const next = !v;
+      if (next) scrollToRefs();
+      return next;
+    });
+  }, [scrollToRefs]);
+
+  const onRefsSectionLayout = useCallback((e: LayoutChangeEvent) => {
+    refsSectionY.current = e.nativeEvent.layout.y;
+  }, []);
 
   const reload = useCallback(
     async (forceApi = false) => {
@@ -176,7 +217,7 @@ export function WeeklyReviewFormScreen() {
     return () => resetPageApiSession(PAGE_API_KEY);
   }, []);
 
-  const persistDraft = useCallback(async () => {
+  const persistDraft = useCallback(async (): Promise<boolean> => {
     setSaving(true);
     try {
       await upsertWeeklyReviewJournal({
@@ -187,9 +228,11 @@ export function WeeklyReviewFormScreen() {
         adjust_savings: adjustSavings,
         adjust_plans: adjustPlans,
       });
+      return true;
     } catch (e) {
       console.warn('weekly review save', e);
       Alert.alert('保存失败', '请稍后再试');
+      return false;
     } finally {
       setSaving(false);
     }
@@ -200,8 +243,8 @@ export function WeeklyReviewFormScreen() {
       Alert.alert('暂不可保存', '仅在已设定的「每周复盘日」当天可填写与保存；请先设置复盘日，并在对应日期打开本页。');
       return;
     }
-    await persistDraft();
-    Alert.alert('已保存', '复盘草稿已写入本地。');
+    const ok = await persistDraft();
+    if (ok) Alert.alert('已保存', '复盘草稿已写入本地。');
   }, [canEdit, periodStartYmd, persistDraft]);
 
   const onGenerateAi = useCallback(async () => {
@@ -219,17 +262,15 @@ export function WeeklyReviewFormScreen() {
     }
     setAiBusy(true);
     try {
-      await persistDraft();
+      const saved = await persistDraft();
+      if (!saved) return;
       const coaching = await generateWeeklyReviewCoaching({
         weekRangeLabel,
         template: weeklyTemplate,
         fields: weeklyFields,
         executionScore,
         metrics,
-        dailyReviewsDigest: buildDailyDigest(
-          dailyEntries.filter(e => !isDailyReviewSkippedOnWeeklyReviewDay(e.ymd, reviewCycleEndYmd, configuredDow)),
-          dailyTemplate,
-        ),
+        dailyReviewsDigest: dailyDigest,
       });
       await setWeeklyReviewCoachingText(periodStartYmd, coaching);
       setAiCoaching(coaching);
@@ -243,15 +284,12 @@ export function WeeklyReviewFormScreen() {
     executionScore,
     weeklyFields,
     weeklyTemplate,
-    dailyTemplate,
     weekRangeLabel,
     metrics,
     periodStartYmd,
     persistDraft,
     canEdit,
-    dailyEntries,
-    reviewCycleEndYmd,
-    configuredDow,
+    dailyDigest,
   ]);
 
   const onSaveAdjustIntent = useCallback(async () => {
@@ -275,6 +313,77 @@ export function WeeklyReviewFormScreen() {
     setWeeklyFields(prev => ({ ...prev, [columnId]: value }));
   }, []);
 
+  const yesterdayYmd = useMemo(() => getYesterdayYmd(todayYmd), [todayYmd]);
+
+  const visibleDailyEntries = useMemo(
+    () => dailyEntries.filter(e => !isDailyReviewSkippedOnWeeklyReviewDay(e.ymd, reviewCycleEndYmd, configuredDow)),
+    [dailyEntries, reviewCycleEndYmd, configuredDow],
+  );
+
+  const dailyFilledCount = useMemo(
+    () => countFilledDailyEntries(dailyEntries, reviewCycleEndYmd, configuredDow),
+    [dailyEntries, reviewCycleEndYmd, configuredDow],
+  );
+
+  const dailyEditableCount = useMemo(
+    () => countEditableDailyEntries(dailyEntries, reviewCycleEndYmd, configuredDow, todayYmd),
+    [dailyEntries, reviewCycleEndYmd, configuredDow, todayYmd],
+  );
+
+  const filledDailyEntries = useMemo(
+    () => visibleDailyEntries.filter(e => dailyEntryHasContent(e.fields)),
+    [visibleDailyEntries],
+  );
+
+  const dailyDigest = useMemo(
+    () => buildDailyDigest(filledDailyEntries, dailyTemplate),
+    [filledDailyEntries, dailyTemplate],
+  );
+
+  const isDailySkipped = useCallback(
+    (ymd: string) => isDailyReviewSkippedOnWeeklyReviewDay(ymd, reviewCycleEndYmd, configuredDow),
+    [reviewCycleEndYmd, configuredDow],
+  );
+
+  const goDailyReview = useCallback(
+    (ymd: string) => router.push({ pathname: '/daily-review/[ymd]', params: { ymd } }),
+    [router],
+  );
+
+  const onCopyDailyDigest = useCallback(async () => {
+    if (!dailyDigest.trim()) {
+      Alert.alert('暂无内容', '本周期还没有已填写的日复盘。');
+      return;
+    }
+    await Clipboard.setStringAsync(dailyDigest);
+    Alert.alert('已复制', '本周期日复盘摘要已复制到剪贴板，可粘贴到周复盘任一栏目。');
+  }, [dailyDigest]);
+
+  const onInsertDailyDigest = useCallback(() => {
+    if (!dailyDigest.trim()) {
+      Alert.alert('暂无内容', '本周期还没有已填写的日复盘。');
+      return;
+    }
+    const colIds = collectColumnIds(weeklyTemplate);
+    const targetId = colIds.find(id => !(weeklyFields[id] ?? '').trim());
+    if (!targetId) {
+      Alert.alert('栏目已满', '所有周复盘栏目都已有内容；你可以使用「复制摘要」后手动粘贴到需要的位置。');
+      return;
+    }
+    let colTitle = targetId;
+    for (const dim of weeklyTemplate) {
+      const col = dim.columns.find(c => c.id === targetId);
+      if (col) {
+        colTitle = col.title;
+        break;
+      }
+    }
+    const existing = (weeklyFields[targetId] ?? '').trim();
+    const next = existing ? `${existing}\n\n---\n\n${dailyDigest}` : dailyDigest;
+    setWeeklyFields(prev => ({ ...prev, [targetId]: next }));
+    Alert.alert('已插入', `已将本周期日复盘摘要插入到「${colTitle}」。`);
+  }, [dailyDigest, weeklyFields, weeklyTemplate]);
+
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right']}>
       <ScreenHeader title="每周复盘" subtitle={weekRangeLabel || undefined} onBack={() => router.back()} />
@@ -285,6 +394,7 @@ export function WeeklyReviewFormScreen() {
           </View>
         ) : (
           <ScrollView
+            ref={scrollRef}
             refreshControl={refreshControl}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
@@ -313,36 +423,26 @@ export function WeeklyReviewFormScreen() {
               </View>
             ) : (
               <>
-                <Text style={[styles.intro, { color: outline }]}>
-                  由你亲自书写。保存后可一键生成 AI 建议；智谱可配 EXPO_PUBLIC_ZHIPU_API_KEY（未设置环境变量时使用应用内置密钥兜底）。
-                </Text>
-
-                <WeeklyMetricsReferenceCard
-                  open={metricsOpen}
-                  onToggle={() => setMetricsOpen(v => !v)}
-                  metrics={metrics}
+                <WeeklyReviewQuickRefBar
+                  filledCount={dailyFilledCount}
+                  editableCount={dailyEditableCount}
+                  hasDigest={dailyDigest.trim().length > 0}
+                  dailyOpen={dailyReviewsOpen}
+                  metricsOpen={metricsOpen}
                   isDark={isDark}
-                  surface={surface}
-                  text={text}
                   outline={outline}
                   outlineVariant={outlineVariant}
                   primary={primary}
                   secondary={secondary}
-                  tertiary={tertiary}
+                  onToggleDaily={toggleDailyRefs}
+                  onToggleMetrics={toggleMetricsRefs}
+                  onCopyDigest={() => void onCopyDailyDigest()}
+                  onInsertDigest={onInsertDailyDigest}
+                  onTemplateSettings={() => router.push('/review-template-settings?scope=weekly')}
                 />
 
-                <Pressable
-                  onPress={() => router.push('/review-template-settings?scope=weekly')}
-                  style={({ pressed }) => [
-                    styles.templateLinkBtn,
-                    { borderColor: outlineVariant, opacity: pressed ? 0.88 : 1 },
-                  ]}>
-                  <MaterialIcons name="tune" size={18} color={primary} />
-                  <Text style={[styles.templateLinkText, { color: primary }]}>管理周复盘维度与栏目</Text>
-                </Pressable>
-
                 {weeklyTemplate.length === 0 ? (
-                  <Text style={[styles.intro, { color: outline }]}>尚未配置周复盘维度，请先管理模板。</Text>
+                  <Text style={[styles.emptyHint, { color: outline }]}>尚未配置周复盘维度，请点右上角齿轮管理模板。</Text>
                 ) : (
                   weeklyTemplate.map((dim, dimIdx) => {
                     const nLabels = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
@@ -462,6 +562,48 @@ export function WeeklyReviewFormScreen() {
                     </View>
                   </View>
                 ) : null}
+
+                <View style={styles.refsSection} onLayout={onRefsSectionLayout}>
+                  <Text style={[styles.refsSectionTitle, { color: outline }]}>参考资料（可选）</Text>
+                  <WeeklyDailyReviewsReferenceCard
+                    open={dailyReviewsOpen}
+                    onToggle={() => setDailyReviewsOpen(v => !v)}
+                    entries={dailyEntries}
+                    dailyTemplate={dailyTemplate}
+                    todayYmd={todayYmd}
+                    yesterdayYmd={yesterdayYmd}
+                    filledCount={dailyFilledCount}
+                    editableCount={dailyEditableCount}
+                    isSkipped={isDailySkipped}
+                    digestPreview={dailyDigest}
+                    hasDigest={dailyDigest.trim().length > 0}
+                    isDark={isDark}
+                    surface={surface}
+                    text={text}
+                    outline={outline}
+                    outlineVariant={outlineVariant}
+                    primary={primary}
+                    secondary={secondary}
+                    onDayPress={goDailyReview}
+                    onListPress={() => router.push('/daily-review')}
+                    onCopyDigest={() => void onCopyDailyDigest()}
+                    onInsertDigest={onInsertDailyDigest}
+                    showEntryCards={false}
+                  />
+                  <WeeklyMetricsReferenceCard
+                    open={metricsOpen}
+                    onToggle={() => setMetricsOpen(v => !v)}
+                    metrics={metrics}
+                    isDark={isDark}
+                    surface={surface}
+                    text={text}
+                    outline={outline}
+                    outlineVariant={outlineVariant}
+                    primary={primary}
+                    secondary={secondary}
+                    tertiary={tertiary}
+                  />
+                </View>
               </>
             )}
           </ScrollView>
@@ -476,8 +618,8 @@ const styles = StyleSheet.create({
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: {
     paddingHorizontal: Layout.pagePaddingX,
-    paddingTop: Spacing.xl,
-    gap: Spacing.xl,
+    paddingTop: Spacing.lg,
+    gap: Spacing.lg,
     maxWidth: Layout.contentMaxWidth,
     alignSelf: 'center',
     width: '100%',
@@ -499,20 +641,16 @@ const styles = StyleSheet.create({
     marginTop: Spacing.sm,
   },
   gateBtnText: { fontSize: 14, fontWeight: '800' },
-  intro: { fontSize: 13, lineHeight: 20, fontWeight: '600' },
-  templateLinkBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    borderWidth: 1,
+  emptyHint: { fontSize: 13, lineHeight: 20, fontWeight: '600' },
+  refsSection: { gap: Spacing.md, marginTop: Spacing.sm },
+  refsSectionTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
   },
-  templateLinkText: { fontSize: 13, fontWeight: '800' },
   fieldLabel: { fontSize: 12, fontWeight: '800' },
-  scoreTitle: { fontSize: 16, fontWeight: '900', marginTop: 14 },
+  scoreTitle: { fontSize: 16, fontWeight: '900', marginTop: 4 },
   scoreHint: { fontSize: 12, fontWeight: '600', marginBottom: 6 },
   starsRow: { flexDirection: 'row', gap: 10, alignItems: 'center', marginTop: 4 },
   btnRow: { flexDirection: 'row', gap: 12, marginTop: 8 },

@@ -104,7 +104,7 @@ export async function upsertWeeklyReviewJournal(input: UpsertWeeklyReviewJournal
       section_summary, section_plans, section_reflect, section_learnings, section_next_week,
       execution_score, ai_coaching, adjust_tasks, adjust_savings, adjust_plans,
       created_at, updated_at, sync_status, extra_data
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [
       id,
       input.week_start_ymd,

@@ -322,6 +322,300 @@ export function WeeklyMetricsReferenceCard({
   );
 }
 
+export function WeeklyReviewQuickRefBar({
+  filledCount,
+  editableCount,
+  hasDigest,
+  dailyOpen,
+  metricsOpen,
+  isDark,
+  outline,
+  outlineVariant,
+  primary,
+  secondary,
+  onToggleDaily,
+  onToggleMetrics,
+  onCopyDigest,
+  onInsertDigest,
+  onTemplateSettings,
+}: {
+  filledCount: number;
+  editableCount: number;
+  hasDigest: boolean;
+  dailyOpen: boolean;
+  metricsOpen: boolean;
+  isDark: boolean;
+  outline: string;
+  outlineVariant: string;
+  primary: string;
+  secondary: string;
+  onToggleDaily: () => void;
+  onToggleMetrics: () => void;
+  onCopyDigest: () => void;
+  onInsertDigest: () => void;
+  onTemplateSettings: () => void;
+}) {
+  const chip = (active: boolean, color: string) => ({
+    borderColor: active ? color : outlineVariant,
+    backgroundColor: active ? (isDark ? `${color}22` : `${color}10`) : isDark ? 'rgba(15,23,42,0.4)' : 'rgba(255,255,255,0.92)',
+  });
+
+  return (
+    <View style={[styles.quickRefBar, { borderColor: outlineVariant }]}>
+      <Pressable
+        onPress={onToggleDaily}
+        style={({ pressed }) => [
+          styles.quickRefChip,
+          chip(dailyOpen, secondary),
+          { opacity: pressed ? 0.88 : 1 },
+        ]}>
+        <MaterialIcons name="menu-book" size={15} color={secondary} />
+        <Text style={[styles.quickRefChipText, { color: secondary }]}>
+          日复盘 {filledCount}/{editableCount || 7}
+        </Text>
+      </Pressable>
+      <Pressable
+        onPress={onToggleMetrics}
+        style={({ pressed }) => [
+          styles.quickRefChip,
+          chip(metricsOpen, primary),
+          { opacity: pressed ? 0.88 : 1 },
+        ]}>
+        <MaterialIcons name="insights" size={15} color={primary} />
+        <Text style={[styles.quickRefChipText, { color: primary }]}>数据</Text>
+      </Pressable>
+      {hasDigest ? (
+        <>
+          <Pressable
+            onPress={onCopyDigest}
+            style={({ pressed }) => [
+              styles.quickRefChip,
+              chip(false, primary),
+              { opacity: pressed ? 0.88 : 1 },
+            ]}>
+            <MaterialIcons name="content-copy" size={15} color={outline} />
+            <Text style={[styles.quickRefChipText, { color: outline }]}>复制</Text>
+          </Pressable>
+          <Pressable
+            onPress={onInsertDigest}
+            style={({ pressed }) => [
+              styles.quickRefChip,
+              chip(false, secondary),
+              { opacity: pressed ? 0.88 : 1 },
+            ]}>
+            <MaterialIcons name="playlist-add" size={15} color={outline} />
+            <Text style={[styles.quickRefChipText, { color: outline }]}>插入</Text>
+          </Pressable>
+        </>
+      ) : null}
+      <Pressable
+        onPress={onTemplateSettings}
+        hitSlop={6}
+        style={({ pressed }) => [
+          styles.quickRefIconBtn,
+          { borderColor: outlineVariant, opacity: pressed ? 0.88 : 1 },
+        ]}
+        accessibilityLabel="管理周复盘模板">
+        <MaterialIcons name="tune" size={18} color={outline} />
+      </Pressable>
+    </View>
+  );
+}
+
+export function WeeklyDailyReviewsReferenceCard({
+  open,
+  onToggle,
+  entries,
+  dailyTemplate,
+  todayYmd,
+  yesterdayYmd,
+  filledCount,
+  editableCount,
+  isSkipped,
+  digestPreview,
+  hasDigest,
+  isDark,
+  surface,
+  text,
+  outline,
+  outlineVariant,
+  primary,
+  secondary,
+  onDayPress,
+  onListPress,
+  onCopyDigest,
+  onInsertDigest,
+  showEntryCards = true,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  entries: { ymd: string; label: string; fields: ReviewFieldValues }[];
+  dailyTemplate: ReviewDimensionTemplate[];
+  todayYmd: string;
+  yesterdayYmd: string;
+  filledCount: number;
+  editableCount: number;
+  isSkipped: (ymd: string) => boolean;
+  digestPreview: string;
+  hasDigest: boolean;
+  isDark: boolean;
+  surface: string;
+  text: string;
+  outline: string;
+  outlineVariant: string;
+  primary: string;
+  secondary: string;
+  onDayPress: (ymd: string) => void;
+  onListPress: () => void;
+  onCopyDigest: () => void;
+  onInsertDigest: () => void;
+  /** false 时仅展示周期条与摘要，不渲染逐日大卡（周复盘页用） */
+  showEntryCards?: boolean;
+}) {
+  const cardBg = isDark ? 'rgba(30,41,59,0.65)' : surface;
+  const preview =
+    filledCount === 0
+      ? '点开展开 · 本周期尚无已填写的日复盘'
+      : `${filledCount}/${editableCount || entries.length} 天已填写 · 点开展开逐日查看`;
+
+  return (
+    <View
+      style={[
+        styles.metricsCard,
+        {
+          backgroundColor: cardBg,
+          borderColor: outlineVariant,
+          shadowColor: isDark ? '#000' : secondary,
+        },
+      ]}>
+      <View style={[styles.metricsCardAccent, { backgroundColor: secondary }]} />
+      <View style={styles.metricsCardInner}>
+        <Pressable
+          onPress={onToggle}
+          style={({ pressed }) => [styles.metricsCardHead, { opacity: pressed ? 0.88 : 1 }]}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open }}
+          accessibilityLabel={open ? '收起本周期日复盘' : '展开本周期日复盘'}>
+          <View
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 12,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: isDark ? `${secondary}28` : `${secondary}14`,
+            }}>
+            <MaterialIcons name="menu-book" size={22} color={secondary} />
+          </View>
+          <View style={styles.metricsCardHeadText}>
+            <Text style={[styles.metricsCardTitle, { color: text }]}>本周期日复盘</Text>
+            <Text style={[styles.metricsCardSubtitle, { color: outline }]} numberOfLines={open ? 2 : 1}>
+              {open ? '对照下方每日记录撰写周复盘；可一键复制或插入摘要。' : preview}
+            </Text>
+          </View>
+          <View style={[styles.metricsChevronWrap, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : `${secondary}10` }]}>
+            <MaterialIcons name={open ? 'expand-less' : 'expand-more'} size={26} color={secondary} />
+          </View>
+        </Pressable>
+
+        {open ? (
+          <View style={[styles.metricsExpanded, { borderTopColor: outlineVariant }]}>
+            <ReviewWeekStrip
+              entries={entries}
+              todayYmd={todayYmd}
+              yesterdayYmd={yesterdayYmd}
+              filledCount={filledCount}
+              editableCount={editableCount}
+              isDark={isDark}
+              isSkipped={isSkipped}
+              colors={{
+                primary,
+                success: secondary,
+                text,
+                textMuted: outline,
+                outline: outlineVariant,
+                surface,
+              }}
+              onDayPress={onDayPress}
+              onListPress={onListPress}
+            />
+
+            {showEntryCards
+              ? entries.map(entry => {
+                  const skipped = isSkipped(entry.ymd);
+                  if (skipped) return null;
+                  const hasContent = Object.values(entry.fields).some(v => (v ?? '').trim().length > 0);
+                  const isToday = entry.ymd === todayYmd;
+                  const isYesterday = entry.ymd === yesterdayYmd;
+                  return (
+                    <DailyReviewContentCard
+                      key={entry.ymd}
+                      dateLabel={entry.label}
+                      tagLabel={isToday ? '今天' : isYesterday ? '昨天' : undefined}
+                      fields={entry.fields}
+                      template={dailyTemplate}
+                      hasContent={hasContent}
+                      emptyHint="这一天还没有写下复盘，点这里补记"
+                      accentColor={isToday ? secondary : isYesterday ? primary : outline}
+                      isDark={isDark}
+                      surface={surface}
+                      textColor={text}
+                      mutedColor={outline}
+                      borderColor={outlineVariant}
+                      onPress={() => onDayPress(entry.ymd)}
+                    />
+                  );
+                })
+              : (
+                <Pressable onPress={onListPress} style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
+                  <Text style={[styles.dailyStripHint, { color: primary }]}>
+                    点周期条上的日期可补记/查看；查看全部日复盘 →
+                  </Text>
+                </Pressable>
+              )}
+
+            {hasDigest ? (
+              <View style={[styles.dailyDigestBox, { backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : 'rgba(0,108,73,0.06)', borderColor: outlineVariant }]}>
+                <Text style={[styles.dailyDigestTitle, { color: text }]}>本周期摘要预览</Text>
+                <Text style={[styles.dailyDigestBody, { color: outline }]} numberOfLines={6}>
+                  {digestPreview}
+                </Text>
+                <View style={styles.dailyDigestActions}>
+                  <Pressable
+                    onPress={onCopyDigest}
+                    style={({ pressed }) => [
+                      styles.dailyDigestBtn,
+                      { borderColor: outlineVariant, opacity: pressed ? 0.88 : 1 },
+                    ]}>
+                    <MaterialIcons name="content-copy" size={16} color={primary} />
+                    <Text style={[styles.dailyDigestBtnText, { color: primary }]}>复制摘要</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={onInsertDigest}
+                    style={({ pressed }) => [
+                      styles.dailyDigestBtn,
+                      { borderColor: outlineVariant, backgroundColor: isDark ? `${secondary}22` : `${secondary}12`, opacity: pressed ? 0.88 : 1 },
+                    ]}>
+                    <MaterialIcons name="playlist-add" size={16} color={secondary} />
+                    <Text style={[styles.dailyDigestBtnText, { color: secondary }]}>插入首个空白栏</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              <View style={[styles.metricsEmpty, { borderColor: outlineVariant }]}>
+                <MaterialIcons name="edit-note" size={32} color={outline} />
+                <Text style={[styles.metricsEmptyText, { color: outline }]}>
+                  本周期还没有已填写的日复盘，可点上方日期补记后再回来写周复盘
+                </Text>
+              </View>
+            )}
+          </View>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 export function DailyReviewContentCard({
   dateLabel,
   tagLabel,
@@ -812,6 +1106,81 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     textAlign: 'center',
+  },
+  dailyDigestBox: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
+    gap: 10,
+  },
+  dailyDigestTitle: {
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  dailyDigestBody: {
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: '600',
+  },
+  dailyDigestActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 2,
+  },
+  dailyDigestBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    minWidth: 0,
+  },
+  dailyDigestBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  dailyStripHint: {
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 18,
+    textAlign: 'center',
+    paddingVertical: 2,
+  },
+  quickRefBar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  quickRefChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  quickRefChipText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  quickRefIconBtn: {
+    marginLeft: 'auto',
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   navRow: {
     flexDirection: 'row',
