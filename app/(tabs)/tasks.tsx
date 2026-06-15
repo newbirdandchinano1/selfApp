@@ -151,6 +151,8 @@ import {
   saveTasksProjectExpandedState,
   type TasksMainListView,
 } from '@/lib/tasks-ui-settings';
+import { isYmdInRange } from '@/lib/api-read-helpers';
+import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 import {
   getLogicalLocalYmd,
   type TasksDayBoundary,
@@ -182,7 +184,7 @@ const PAGE_API_KEY = 'tabs/tasks';
 
 const MAIN_LIST_VIEW_TABS: Array<{ key: TasksMainListView; label: string }> = [
   { key: 'projects', label: '项目列表' },
-  { key: 'tasks', label: '任务列表' },
+  { key: 'tasks', label: '本周列表' },
 ];
 
 /** Tasks「小习惯」网格：固定每行列数，单元宽度按行宽均分 */
@@ -1401,6 +1403,33 @@ function isMatrixScopeTask(task: TaskRow): boolean {
   return !!task.project_id || !!task.parent_task_id;
 }
 
+/** 本周列表：截止日/计划日落在当前自然周，或时段计划与本周有交集 */
+function isMatrixTaskInCurrentWeek(
+  task: TaskRow,
+  weekStartYmd: string,
+  weekEndYmd: string,
+): boolean {
+  const schedule = parseProjectSchedule(task.extra_data);
+
+  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    const start = formatScheduleDateToYMD(schedule.range.start);
+    const end = formatScheduleDateToYMD(schedule.range.end);
+    if (start && end) return start <= weekEndYmd && weekStartYmd <= end;
+  }
+
+  if (schedule?.date) {
+    const schedYmd = formatScheduleDateToYMD(schedule.date);
+    if (schedYmd) return isYmdInRange(schedYmd, weekStartYmd, weekEndYmd);
+  }
+
+  const dueYmd = task.due_date?.trim().slice(0, 10) ?? '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dueYmd)) {
+    return isYmdInRange(dueYmd, weekStartYmd, weekEndYmd);
+  }
+
+  return false;
+}
+
 /**
  * 任务列表分类 Tab 与项目列表对齐：任务行未写 category_id 时回落到所属项目（或父任务链）分类。
  */
@@ -2254,17 +2283,25 @@ export default function TasksScreen() {
     return map;
   }, [tasks]);
 
+  const currentWeekRange = React.useMemo(
+    () => getCurrentWeekRange(logicalYmdToLocalDate(logicalTodayYmd)),
+    [logicalTodayYmd],
+  );
+
   const filteredTasks = React.useMemo(() => {
     const matrixScoped = tasks.filter(isMatrixScopeTask);
+    const inCurrentWeek = matrixScoped.filter((t) =>
+      isMatrixTaskInCurrentWeek(t, currentWeekRange.startYmd, currentWeekRange.endYmd),
+    );
     if (taskTab === 'all') {
-      return matrixScoped.filter(
+      return inCurrentWeek.filter(
         (t) => !isProjectInInboxCategory(resolveTaskListCategoryId(t, projectById, taskById)),
       );
     }
-    return matrixScoped.filter(
+    return inCurrentWeek.filter(
       (t) => resolveTaskListCategoryId(t, projectById, taskById) === taskTab,
     );
-  }, [taskTab, tasks, projectById, taskById]);
+  }, [taskTab, tasks, projectById, taskById, currentWeekRange.startYmd, currentWeekRange.endYmd]);
 
   /**
    * 架构意图：「待办」区块只展示未挂 `project_id` 的顶层任务；「任务列表」四象限只展示挂项目或带父任务的行，
@@ -4525,7 +4562,7 @@ export default function TasksScreen() {
 
             {mainListView === 'tasks' ? (
               <>
-            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: Spacing.md, marginTop: Spacing.md }]}>任务列表</Text>
+            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: Spacing.md, marginTop: Spacing.md }]}>本周列表</Text>
             <SegmentTabs
               tabs={taskTabs}
               active={taskTab}

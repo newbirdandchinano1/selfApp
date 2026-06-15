@@ -1,6 +1,14 @@
 import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
+import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
+import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
+import {
+  hasCompletionReward,
+  mergeCompletionRewardIntoExtraData,
+  parseCompletionRewardFromExtraData,
+} from '@/lib/completion-reward/completion-reward-extra';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
 import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
@@ -11,6 +19,7 @@ import {
 } from '@/lib/repositories/habits/habit-build-success';
 import {
   type BuildHabitExpectedGoalType,
+  normalizeBuildHabitExpectedGoal,
   parseBuildHabitExpectedGoal,
 } from '@/lib/repositories/habits/habit-goal';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
@@ -44,6 +53,17 @@ const EXPECTED_GOAL_TABS: { key: ExpectedGoalTab; label: string }[] = [
   { key: 'none', label: '不限' },
   { key: 'days', label: '按天数' },
   { key: 'times', label: '按次数' },
+];
+
+const BUILD_REWARD_GOAL_TABS: { key: BuildHabitExpectedGoalType; label: string }[] = [
+  { key: 'days', label: '累计天数' },
+  { key: 'times', label: '累计次数' },
+  { key: 'consecutive_days', label: '连续天数' },
+];
+
+const BUILD_REWARD_CONDITION_TABS: { key: ExpectedGoalTab; label: string }[] = [
+  { key: 'none', label: '不设' },
+  ...BUILD_REWARD_GOAL_TABS,
 ];
 
 const WORK_DAYS = ['周一', '周二', '周三', '周四', '周五'];
@@ -220,6 +240,8 @@ export default function AddHabitScreen() {
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
+  const [rewardOpen, setRewardOpen] = React.useState(false);
+  const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
 
   const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
@@ -367,6 +389,7 @@ export default function AddHabitScreen() {
             } else {
               setReminderEnabled(false);
             }
+            setCompletionReward(parseCompletionRewardFromExtraData(row.extra_data));
           } catch {
             // ignore extra_data parse errors
           }
@@ -397,6 +420,12 @@ export default function AddHabitScreen() {
     return getTaskExpectedGoalMaxValue(taskRepeatPeriod, expectedGoalTab);
   }, [expectedGoalTab, taskRepeatPeriod]);
 
+  const buildGoalMaxValue = React.useMemo(() => {
+    if (expectedGoalTab === 'times') return 9999;
+    if (expectedGoalTab === 'days' || expectedGoalTab === 'consecutive_days') return 999;
+    return 1;
+  }, [expectedGoalTab]);
+
   React.useEffect(() => {
     if (habitKind !== 'task') return;
     if (
@@ -408,10 +437,10 @@ export default function AddHabitScreen() {
   }, [habitKind, expectedGoalTab, taskGoalTypeOptions]);
 
   React.useEffect(() => {
-    if (habitKind !== 'task') return;
+    if (habitKind !== 'build') return;
     if (expectedGoalTab === 'none') return;
-    setExpectedGoalValue((v) => Math.min(taskGoalMaxValue, Math.max(1, v)));
-  }, [habitKind, expectedGoalTab, taskGoalMaxValue]);
+    setExpectedGoalValue((v) => Math.min(buildGoalMaxValue, Math.max(1, v)));
+  }, [habitKind, expectedGoalTab, buildGoalMaxValue]);
 
   const deriveToneByContext = React.useCallback((context: string): string => {
     const map: Record<string, string> = {
@@ -434,7 +463,9 @@ export default function AddHabitScreen() {
     } else if (habitKind === 'task') {
       setDailyGoal(null);
       setExpectedGoalTab((tab) => {
-        if (tab === 'none') return taskRepeatPeriod === '每日' ? 'times' : 'days';
+        if (tab === 'consecutive_days' || tab === 'none') {
+          return taskRepeatPeriod === '每日' ? 'times' : 'days';
+        }
         return tab;
       });
       setExpectedGoalValue((v) => (v < 1 ? (taskRepeatPeriod === '每日' ? 1 : 7) : v));
@@ -443,12 +474,14 @@ export default function AddHabitScreen() {
       }
     } else {
       setDailyGoal((v) => (v === 0 ? null : v));
-      setExpectedGoalTab('none');
+      setExpectedGoalTab((tab) =>
+        tab === 'none' || tab === 'days' || tab === 'times' || tab === 'consecutive_days' ? tab : 'days'
+      );
       if ((TASK_CYCLE_TABS as string[]).includes(activeTab)) {
         setActiveTab('每周N天');
       }
     }
-  }, [activeTab, habitKind]);
+  }, [activeTab, habitKind, taskRepeatPeriod]);
 
   const deriveTagByCycle = React.useCallback((): string => {
     if (habitKind === 'task') {
@@ -488,6 +521,18 @@ export default function AddHabitScreen() {
       }
     }
 
+    if (
+      habitKind === 'build' &&
+      hasCompletionReward(completionReward) &&
+      (expectedGoalTab === 'none' ||
+        (expectedGoalTab !== 'days' &&
+          expectedGoalTab !== 'times' &&
+          expectedGoalTab !== 'consecutive_days'))
+    ) {
+      Alert.alert('提示', '设置完成奖励前，请先选择达成条件：累计天数、累计次数或连续天数。');
+      return;
+    }
+
     const unitResolved = unitInput.trim() || DEFAULT_QUANTIFY_UNIT;
 
     const reminderPayload = reminderEnabled
@@ -507,16 +552,31 @@ export default function AddHabitScreen() {
       isEditMode && habitId
         ? parseBuildHabitExpectedGoal(JSON.stringify(existingExtra))
         : null;
-    const nextExpectedGoal =
-      habitKind === 'task' && expectedGoalTab !== 'none'
+    const nextTaskExpectedGoal =
+      habitKind === 'task' &&
+      expectedGoalTab !== 'none' &&
+      (expectedGoalTab === 'days' || expectedGoalTab === 'times')
         ? normalizeTaskExpectedGoal(taskRepeatPeriod, {
+            type: expectedGoalTab,
+            value: expectedGoalValue,
+          })
+        : null;
+    const nextBuildExpectedGoal =
+      habitKind === 'build' &&
+      expectedGoalTab !== 'none' &&
+      (expectedGoalTab === 'days' ||
+        expectedGoalTab === 'times' ||
+        expectedGoalTab === 'consecutive_days')
+        ? normalizeBuildHabitExpectedGoal({
             type: expectedGoalTab,
             value: expectedGoalValue,
           })
         : null;
 
     const taskQuantifyExtra =
-      habitKind === 'task' && nextExpectedGoal ? { expectedGoal: nextExpectedGoal } : {};
+      habitKind === 'task' && nextTaskExpectedGoal ? { expectedGoal: nextTaskExpectedGoal } : {};
+    const buildQuantifyExtra =
+      habitKind === 'build' && nextBuildExpectedGoal ? { expectedGoal: nextBuildExpectedGoal } : {};
 
     const extraDataRaw = JSON.stringify({
       ...existingExtra,
@@ -529,11 +589,15 @@ export default function AddHabitScreen() {
             dailyGoal: resolvedDailyGoal,
             ...(habitKind === 'break'
               ? { consecutiveTargetDays: Math.min(999, Math.max(1, consecutiveTargetDays)) }
-              : taskQuantifyExtra),
+              : {}),
+            ...taskQuantifyExtra,
+            ...buildQuantifyExtra,
           }
-        : habitKind === 'task' && nextExpectedGoal
-          ? { expectedGoal: nextExpectedGoal }
-          : null,
+        : habitKind === 'task' && nextTaskExpectedGoal
+          ? { expectedGoal: nextTaskExpectedGoal }
+          : habitKind === 'build' && nextBuildExpectedGoal
+            ? { expectedGoal: nextBuildExpectedGoal }
+            : null,
       schedule:
         habitKind === 'task'
           ? { activeTab: (TASK_CYCLE_TABS as string[]).includes(activeTab) ? activeTab : DEFAULT_TASK_REPEAT_PERIOD }
@@ -561,26 +625,28 @@ export default function AddHabitScreen() {
       extraData = ensureBreakHabitCycleExtra(extraDataRaw, cycleStartedAt);
       const extraObj = JSON.parse(extraData) as Record<string, unknown>;
       delete extraObj.buildHabitCycle;
-      extraData = JSON.stringify(extraObj);
+      extraData = mergeCompletionRewardIntoExtraData(JSON.stringify(extraObj), completionReward);
     } else if (habitKind === 'build') {
       const extraObj = JSON.parse(extraData) as Record<string, unknown>;
       delete extraObj.breakHabitCycle;
       let merged = JSON.stringify(extraObj);
-      const goalRemoved = nextExpectedGoal == null;
+      const goalRemoved = nextBuildExpectedGoal == null;
       const goalChanged =
         prevExpectedGoal != null &&
-        nextExpectedGoal != null &&
-        (prevExpectedGoal.type !== nextExpectedGoal.type ||
-          prevExpectedGoal.value !== nextExpectedGoal.value);
+        nextBuildExpectedGoal != null &&
+        (prevExpectedGoal.type !== nextBuildExpectedGoal.type ||
+          prevExpectedGoal.value !== nextBuildExpectedGoal.value);
       if (goalRemoved || goalChanged || (goalRemoved && isBuildHabitSucceeded(merged))) {
         merged = mergeBuildHabitCycleExtra(merged, { completedAt: null, completedValue: null });
       }
-      extraData = merged;
+      extraData = mergeCompletionRewardIntoExtraData(merged, completionReward);
     } else if (habitKind === 'task') {
       const extraObj = JSON.parse(extraData) as Record<string, unknown>;
       delete extraObj.breakHabitCycle;
       delete extraObj.buildHabitCycle;
-      extraData = JSON.stringify(extraObj);
+      extraData = mergeCompletionRewardIntoExtraData(JSON.stringify(extraObj), completionReward);
+    } else {
+      extraData = mergeCompletionRewardIntoExtraData(extraData, completionReward);
     }
 
     const note = habitNote.trim() || null;
@@ -631,6 +697,7 @@ export default function AddHabitScreen() {
     activeMonthlyFilter,
     activeTab,
     consecutiveTargetDays,
+    completionReward,
     dailyGoal,
     expectedGoalTab,
     expectedGoalValue,
@@ -983,7 +1050,10 @@ export default function AddHabitScreen() {
                             key={tab.key}
                             onPress={() => {
                               setExpectedGoalTab(tab.key);
-                              const max = getTaskExpectedGoalMaxValue(taskRepeatPeriod, tab.key);
+                              const max = getTaskExpectedGoalMaxValue(
+                                taskRepeatPeriod,
+                                tab.key as BuildHabitExpectedGoalType,
+                              );
                               setExpectedGoalValue((v) => {
                                 const next = tab.key === 'times' && v < 1 ? 1 : Math.max(1, v);
                                 return Math.min(max, next);
@@ -1022,6 +1092,83 @@ export default function AddHabitScreen() {
               </AppCard>
             ) : null}
           </View>
+
+          {habitKind === 'build' ? (
+            <View>
+              {renderSectionHeader('emoji-events', '完成奖励', rewardOpen, () => setRewardOpen((v) => !v))}
+              {rewardOpen ? (
+                <AppCard variant="default" padded style={styles.sectionCardInner}>
+                  <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>达成条件</Text>
+                  <Text style={[Typography.caption, styles.expectedGoalHint, { color: colors.textSecondary }]}>
+                    选择用累计天数、累计次数或连续天数作为完成与发奖依据
+                  </Text>
+                  <View style={styles.expectedGoalTabs}>
+                    {BUILD_REWARD_CONDITION_TABS.map((tab) => {
+                      const active = expectedGoalTab === tab.key;
+                      return (
+                        <Pressable
+                          key={tab.key}
+                          onPress={() => {
+                            setExpectedGoalTab(tab.key);
+                            if (tab.key === 'none') return;
+                            const max = tab.key === 'times' ? 9999 : 999;
+                            setExpectedGoalValue((v) => Math.min(max, Math.max(1, v)));
+                          }}
+                          style={[
+                            styles.expectedGoalTab,
+                            active
+                              ? { backgroundColor: colors.primary, borderColor: colors.primary }
+                              : { backgroundColor: colors.surface, borderColor: colors.outline },
+                          ]}>
+                          <Text
+                            style={[
+                              Typography.bodyStrong,
+                              styles.expectedGoalTabText,
+                              { color: active ? colors.onPrimary : colors.textSecondary },
+                            ]}>
+                            {tab.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  {expectedGoalTab !== 'none' &&
+                  (expectedGoalTab === 'days' ||
+                    expectedGoalTab === 'times' ||
+                    expectedGoalTab === 'consecutive_days') ? (
+                    <NumberControl
+                      label={
+                        expectedGoalTab === 'times'
+                          ? '目标次数'
+                          : expectedGoalTab === 'consecutive_days'
+                            ? '连续天数'
+                            : '累计天数'
+                      }
+                      value={expectedGoalValue}
+                      onMinus={() => setExpectedGoalValue((v) => Math.max(1, v - 1))}
+                      onPlus={() => setExpectedGoalValue((v) => Math.min(buildGoalMaxValue, v + 1))}
+                      textColor={colors.text}
+                      mutedColor={colors.textSecondary}
+                    />
+                  ) : null}
+                  <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text, marginTop: Spacing.sm }]}>
+                    奖励内容
+                  </Text>
+                  <CompletionRewardField
+                    value={completionReward}
+                    onChange={setCompletionReward}
+                    textColor={colors.text}
+                    outline={colors.textSecondary}
+                    placeholderColor={colors.textMuted}
+                    primary={colors.primary}
+                    surfaceLow={colors.input}
+                    surfaceLowest={colors.surfaceSubtle}
+                    isDark={isDark}
+                  />
+                </AppCard>
+              ) : null}
+            </View>
+          ) : null}
 
           <View>
             {renderSectionHeader('notifications-active', '打卡提醒', reminderOpen, () => setReminderOpen((v) => !v))}

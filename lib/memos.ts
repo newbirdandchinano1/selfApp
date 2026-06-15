@@ -155,10 +155,12 @@ export function parseMemoItemsFromJson(raw: string | null): MemoItem[] {
 
 function markMemosDirty(): void {
   markCloudSqliteTableDirty('memos');
+  void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
 }
 
 function markMemoDimensionsDirty(): void {
   markCloudSqliteTableDirty('memo_dimensions');
+  void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
 }
 
 async function readAsyncStorageMemosForMigration(): Promise<MemoItem[]> {

@@ -6,7 +6,7 @@ import type { CompletionReward } from '@/lib/completion-reward/completion-reward
 import { parseCompletionRewardFromExtraData } from '@/lib/completion-reward/completion-reward-extra';
 import { getWishItemById } from '../wish-list/wish-list';
 import { setWishItemFulfilled } from '../wish-list/wish-list';
-import type { EarnedRewardRow } from './earned-reward.types';
+import type { EarnedRewardRow, EarnedRewardSourceType } from './earned-reward.types';
 
 export function createEarnedRewardId(): string {
   return makeTimestampEntityId('erwd_', 8);
@@ -26,7 +26,7 @@ async function resolveRewardLabel(reward: CompletionReward): Promise<{ label: st
 }
 
 export async function hasEarnedRewardForSource(
-  sourceType: 'task' | 'project',
+  sourceType: EarnedRewardSourceType,
   sourceId: string,
 ): Promise<boolean> {
   const rows = await readApiTable<EarnedRewardRow>('earned_rewards', { offlineFallback: true });
@@ -34,7 +34,7 @@ export async function hasEarnedRewardForSource(
 }
 
 export async function grantEarnedRewardFromExtraData(input: {
-  sourceType: 'task' | 'project';
+  sourceType: EarnedRewardSourceType;
   sourceId: string;
   sourceTitle: string;
   extraData: string | null;

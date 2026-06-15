@@ -24,7 +24,9 @@ function formatEarnedTime(iso: string): string {
 }
 
 function sourceTypeLabel(type: EarnedRewardRow['source_type']): string {
-  return type === 'project' ? '项目' : '任务';
+  if (type === 'project') return '项目';
+  if (type === 'habit') return '小习惯';
+  return '任务';
 }
 
 const PAGE_API_KEY = 'earned-rewards';
@@ -222,7 +224,7 @@ export default function EarnedRewardsScreen() {
           <MaterialIcons name="emoji-events" size={48} color={outline} />
           <Text style={[styles.emptyTitle, { color: text }]}>还没有奖励</Text>
           <Text style={[styles.emptySub, { color: outline }]}>
-            在任务或项目中设置完成奖励，完成后会自动记录在这里。
+            在任务、项目或小习惯中设置完成奖励，完成后会自动记录在这里。
           </Text>
         </View>
       ) : (

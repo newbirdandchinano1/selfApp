@@ -1,6 +1,6 @@
 import { type HabitKind, parseHabitKind } from './habit-kind';
 
-export type BuildHabitExpectedGoalType = 'days' | 'times';
+export type BuildHabitExpectedGoalType = 'days' | 'times' | 'consecutive_days';
 
 export type BuildHabitExpectedGoal = {
   type: BuildHabitExpectedGoalType;
@@ -43,11 +43,31 @@ export function parseBuildHabitExpectedGoal(extraData: string | null): BuildHabi
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const obj = raw as { type?: unknown; value?: unknown };
   const type = obj.type;
-  if (type !== 'days' && type !== 'times') return null;
+  if (type !== 'days' && type !== 'times' && type !== 'consecutive_days') return null;
   if (typeof obj.value !== 'number' || !Number.isFinite(obj.value)) return null;
   const value = Math.round(obj.value);
   if (value < 1) return null;
-  return { type, value: Math.min(type === 'days' ? 999 : 9999, value) };
+  return normalizeBuildHabitExpectedGoal({ type, value });
+}
+
+/** 养成习惯：规范化预期目标数值 */
+export function normalizeBuildHabitExpectedGoal(goal: {
+  type: BuildHabitExpectedGoalType;
+  value: number;
+}): BuildHabitExpectedGoal {
+  const max = goal.type === 'times' ? 9999 : 999;
+  const value = Math.min(max, Math.max(1, Math.round(goal.value)));
+  return { type: goal.type, value };
+}
+
+export function formatBuildExpectedGoalProgressUnit(type: BuildHabitExpectedGoalType): string {
+  return type === 'times' ? '次' : '天';
+}
+
+export function formatBuildExpectedGoalShort(goal: BuildHabitExpectedGoal): string {
+  if (goal.type === 'times') return `${goal.value} 次`;
+  if (goal.type === 'consecutive_days') return `连续 ${goal.value} 天`;
+  return `${goal.value} 天`;
 }
 
 /** 累计达标天数（每日目标达成计 1 天；不限每日目标时 count > 0 计 1 天） */
@@ -70,11 +90,28 @@ export function computeBuildExpectedGoalProgress(params: {
   expectedGoal: BuildHabitExpectedGoal;
   checkIns: Record<string, number>;
   dailyGoal?: number | null;
+  /** 连续天数统计截止日（默认取 checkIns 中最晚日期） */
+  endYmd?: string;
+  kind?: HabitKind;
 }): number {
   const { expectedGoal, checkIns } = params;
   const dailyGoal = params.dailyGoal ?? null;
+  const kind = params.kind ?? 'build';
   if (expectedGoal.type === 'days') {
     return countBuildAchievedDays(checkIns, dailyGoal);
+  }
+  if (expectedGoal.type === 'consecutive_days') {
+    let endYmd = params.endYmd?.trim() ?? '';
+    if (!endYmd) {
+      endYmd = Object.keys(checkIns).sort().at(-1) ?? '';
+    }
+    if (!endYmd) return 0;
+    return computeConsecutiveGoalMetDays({
+      checkIns,
+      endYmd,
+      kind,
+      dailyGoal,
+    });
   }
   return computeTotalCheckInCount(checkIns);
 }

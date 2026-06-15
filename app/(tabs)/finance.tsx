@@ -35,7 +35,9 @@ import {
     budgetDaysLeftIncludingToday,
     budgetPeriodLengthDays,
     clampBudgetRefreshDay,
+    computeDailyBudgetFromPeriodSurplus,
     DEFAULT_BUDGET_REFRESH_DAY,
+    resolvePeriodBudgetSurplus,
     formatBudgetPeriodCountdownLabel,
     formatBudgetPeriodEndDateLabel,
     getBudgetMonthKeyForDate,
@@ -540,6 +542,7 @@ export default function FinanceScreen() {
   const [isBudgetAdjustVisible, setIsBudgetAdjustVisible] = React.useState(false);
   const [isTodayBudgetHintVisible, setIsTodayBudgetHintVisible] = React.useState(false);
   const [budgetBaseDraft, setBudgetBaseDraft] = React.useState('');
+  const [periodSurplusDraft, setPeriodSurplusDraft] = React.useState('');
   const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
   const [fixedExpensesDraft, setFixedExpensesDraft] = React.useState<BudgetFixedExpense[]>([]);
   const [payingFixedExpenseId, setPayingFixedExpenseId] = React.useState<string | null>(null);
@@ -568,6 +571,7 @@ export default function FinanceScreen() {
   /** 手动记账弹窗内键盘高度，用于整体上移弹层并收缩可滚动区域，避免一句话输入框被 IME 遮挡 */
   const [sheetKeyboardInset, setSheetKeyboardInset] = React.useState(0);
   const budgetBaseInputRef = React.useRef<TextInput>(null);
+  const periodSurplusInputRef = React.useRef<TextInput>(null);
 
   const baseBottomAnim = React.useRef(new Animated.Value(collapsedBottom)).current;
   const revealAnim = React.useRef(new Animated.Value(0)).current;
@@ -1408,16 +1412,28 @@ export default function FinanceScreen() {
   const previewFixedExpensesTotal = sumBudgetFixedExpenses(fixedExpensesDraft);
   const budgetPreviewGross = modalIncludeLast ? baseForBudgetPreview + lastMonthRemaining : baseForBudgetPreview;
   const budgetPreviewTotal = Math.max(0, budgetPreviewGross - previewFixedExpensesTotal);
-  const budgetSurplusAmount = budgetTotalAmount - monthlyBudgetExpense;
+  const autoPeriodSurplus = budgetTotalAmount - monthlyBudgetExpense;
+  const autoPeriodSurplusPreview = budgetPreviewTotal - monthlyBudgetExpense;
+  const budgetSurplusAmount = resolvePeriodBudgetSurplus(
+    budgetTotalAmount,
+    monthlyBudgetExpense,
+    persistedBudgetSetting?.periodSurplusOverride,
+  );
+  const parsedPeriodSurplusDraft = parseFloat(periodSurplusDraft.trim().replace(/,/g, ''));
   const budgetUsedPercentRaw = budgetTotalAmount > 0 ? (monthlyBudgetExpense / budgetTotalAmount) * 100 : 0;
   const budgetUsedPercent = Math.min(100, Math.max(0, budgetUsedPercentRaw));
-  /** 调整预算弹层打开时用草稿预览，使「今日可用」与固定支出/基数编辑同步。 */
+  /** 调整预算弹层打开时用草稿预览，使「今日可用」与固定支出/基数/结余编辑同步。 */
   const todayBudgetTotalAmount = isBudgetAdjustVisible ? budgetPreviewTotal : budgetTotalAmount;
-  const todayBudgetSurplusAmount = todayBudgetTotalAmount - monthlyBudgetExpense;
-  const dailyBudgetFromRemaining =
-    todayBudgetSurplusAmount > 0
-      ? todayBudgetSurplusAmount / daysLeftIncludingToday
-      : todayBudgetTotalAmount / daysLeftIncludingToday;
+  const todayBudgetSurplusAmount = isBudgetAdjustVisible
+    ? Number.isFinite(parsedPeriodSurplusDraft)
+      ? parsedPeriodSurplusDraft
+      : autoPeriodSurplusPreview
+    : budgetSurplusAmount;
+  const dailyBudgetFromRemaining = computeDailyBudgetFromPeriodSurplus(
+    todayBudgetSurplusAmount,
+    todayBudgetTotalAmount,
+    daysLeftIncludingToday,
+  );
   const dailyBudgetFromIncome =
     budgetPeriodIncome > 0 ? budgetPeriodIncome / budgetPeriodTotalDays : 0;
   const hasConfiguredMonthBudget = isBudgetAdjustVisible || currentMonthKey in monthBudgetSettings;
@@ -1427,8 +1443,13 @@ export default function FinanceScreen() {
       ? dailyBudgetFromIncome
       : dailyBudgetFromRemaining;
   const todayAvailableAmount = Math.max(0, dailyBudgetAmount - todayBudgetExpenseTotal);
+  const isPeriodBudgetDepleted = todayBudgetSurplusAmount <= 0;
   const todayBudgetOverAmount =
-    dailyBudgetAmount > 0 ? Math.max(0, todayBudgetExpenseTotal - dailyBudgetAmount) : 0;
+    isPeriodBudgetDepleted && todayBudgetExpenseTotal > 0
+      ? todayBudgetExpenseTotal
+      : dailyBudgetAmount > 0
+        ? Math.max(0, todayBudgetExpenseTotal - dailyBudgetAmount)
+        : 0;
   const isTodayBudgetOver = todayBudgetOverAmount > 0;
   const todayBudgetUsagePct = dailyBudgetAmount > 0 ? Math.min(1, todayBudgetExpenseTotal / dailyBudgetAmount) : 0;
 
@@ -2171,12 +2192,28 @@ export default function FinanceScreen() {
     const row = monthBudgetSettings[currentMonthKey];
     const base = row ? row.baseAmount : 0;
     const inc = row?.includeLastBalance ?? false;
+    const fixedTotal = sumBudgetFixedExpenses(row?.fixedExpenses);
+    const gross = inc ? base + lastMonthRemaining : base;
+    const total = Math.max(0, gross - fixedTotal);
+    const autoSurplus = total - monthlyBudgetExpense;
+    const surplusOverride = row?.periodSurplusOverride;
     setBudgetBaseDraft(base.toFixed(2));
+    setPeriodSurplusDraft(
+      typeof surplusOverride === 'number' && Number.isFinite(surplusOverride)
+        ? surplusOverride.toFixed(2)
+        : autoSurplus.toFixed(2),
+    );
     setModalIncludeLast(inc);
     setFixedExpensesDraft(row?.fixedExpenses ? row.fixedExpenses.map((item) => ({ ...item })) : []);
     setBudgetRefreshDayDraft(budgetRefreshDay);
     setIsBudgetAdjustVisible(true);
-  }, [monthBudgetSettings, currentMonthKey, budgetRefreshDay]);
+  }, [
+    budgetRefreshDay,
+    currentMonthKey,
+    lastMonthRemaining,
+    monthBudgetSettings,
+    monthlyBudgetExpense,
+  ]);
 
   const handleAddFixedExpense = React.useCallback(() => {
     setFixedExpensesDraft((prev) => [...prev, { id: newBudgetFixedExpenseId(), name: '', amount: 0 }]);
@@ -2387,7 +2424,18 @@ export default function FinanceScreen() {
       Alert.alert('固定支出未填完整', '请为每条固定支出填写名称和大于 0 的金额，或删除空白行。');
       return;
     }
+    const surplusNormalized = periodSurplusDraft.trim().replace(/,/g, '');
+    const surplusN = parseFloat(surplusNormalized);
+    if (!Number.isFinite(surplusN)) {
+      Alert.alert('金额无效', '请输入有效的本周期预算结余。');
+      return;
+    }
     const fixedExpenses = sanitizeFixedExpensesDraft();
+    const previewGross = modalIncludeLast ? n + lastMonthRemaining : n;
+    const previewFixedTotal = sumBudgetFixedExpenses(fixedExpenses);
+    const previewTotal = Math.max(0, previewGross - previewFixedTotal);
+    const autoSurplus = previewTotal - monthlyBudgetExpense;
+    const hasSurplusOverride = Math.abs(surplusN - autoSurplus) >= 0.005;
     const nextRefresh = clampBudgetRefreshDay(budgetRefreshDayDraft);
     markPageDirty();
     void persistBudgetRefreshDay(nextRefresh);
@@ -2399,6 +2447,7 @@ export default function FinanceScreen() {
           baseAmount: n,
           includeLastBalance: modalIncludeLast,
           ...(fixedExpenses.length > 0 ? { fixedExpenses } : {}),
+          ...(hasSurplusOverride ? { periodSurplusOverride: surplusN } : {}),
         },
       };
       void persistMonthBudgetSettings(next);
@@ -2410,8 +2459,11 @@ export default function FinanceScreen() {
     budgetRefreshDayDraft,
     currentMonthKey,
     fixedExpensesDraft,
+    lastMonthRemaining,
     markPageDirty,
     modalIncludeLast,
+    monthlyBudgetExpense,
+    periodSurplusDraft,
     sanitizeFixedExpensesDraft,
   ]);
 
@@ -4490,6 +4542,48 @@ export default function FinanceScreen() {
                 </View>
               </View>
 
+              <View style={styles.budgetPeriodSurplusBlock}>
+                <View style={styles.budgetPeriodSurplusHeader}>
+                  <Text style={[styles.budgetPeriodSurplusTitle, { color: text }]}>
+                    {budgetUiScopeShort}预算结余
+                  </Text>
+                  <Text style={[styles.budgetPeriodSurplusHint, { color: subtle }]}>
+                    可手动校正；与下方自动值一致时随记账自动更新
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => periodSurplusInputRef.current?.focus()}
+                  style={({ pressed }) => [
+                    styles.budgetPeriodSurplusInputCard,
+                    {
+                      backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb',
+                      borderColor: outlineVariant,
+                      opacity: pressed ? 0.92 : 1,
+                    },
+                  ]}>
+                  <View style={styles.budgetDetailsBreakdownLabelRow}>
+                    <Text style={[styles.budgetDetailsBreakdownLabel, { color: subtle }]}>当前结余</Text>
+                    <MaterialIcons name="edit" size={12} color={primary} style={{ opacity: 0.85 }} />
+                  </View>
+                  <View style={styles.budgetDetailsBaseInputWrap}>
+                    <Text style={[styles.budgetDetailsBreakdownYuan, { color: text }]}>¥</Text>
+                    <TextInput
+                      ref={periodSurplusInputRef}
+                      value={periodSurplusDraft}
+                      onChangeText={setPeriodSurplusDraft}
+                      keyboardType="decimal-pad"
+                      placeholder="0.00"
+                      placeholderTextColor={subtle}
+                      style={[styles.budgetDetailsBreakdownInput, { color: text }]}
+                      selectTextOnFocus
+                    />
+                  </View>
+                  <Text style={[styles.budgetPeriodSurplusAutoHint, { color: subtle }]}>
+                    自动计算 {formatCurrencyWithDecimals(autoPeriodSurplusPreview)}
+                  </Text>
+                </Pressable>
+              </View>
+
               <View style={styles.budgetFixedExpensesBlock}>
                 <View style={styles.budgetFixedExpensesHeader}>
                   <View style={styles.budgetFixedExpensesTitleCol}>
@@ -4629,7 +4723,7 @@ export default function FinanceScreen() {
                     {showNetAmounts ? formatCurrencyWithDecimals(todayBudgetSurplusAmount) : hiddenAmountText}
                   </Text>
                   <Text style={[styles.budgetHintExplain, { color: subtle }]}>
-                    {budgetUiScopeShort}真实可支配预算减去本周期已计入预算的支出。标记为「不计入预算」的支出不会减少剩余预算。
+                    {budgetUiScopeShort}真实可支配预算减去本周期已计入预算的支出；可在预算详情中手动校正结余。标记为「不计入预算」的支出不会减少剩余预算。
                   </Text>
                 </View>
               </View>
@@ -6385,6 +6479,31 @@ const styles = StyleSheet.create({
     fontWeight: '300',
     alignSelf: 'center',
     paddingHorizontal: 6,
+  },
+  budgetPeriodSurplusBlock: {
+    gap: 8,
+    marginTop: 8,
+  },
+  budgetPeriodSurplusHeader: {
+    gap: 4,
+  },
+  budgetPeriodSurplusTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  budgetPeriodSurplusHint: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  budgetPeriodSurplusInputCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
+  },
+  budgetPeriodSurplusAutoHint: {
+    fontSize: 12,
   },
   budgetFixedExpensesBlock: {
     gap: 12,

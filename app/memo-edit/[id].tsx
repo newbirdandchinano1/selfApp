@@ -47,8 +47,12 @@ export default function MemoEditScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
-  const { id: idParam } = useLocalSearchParams<{ id: string }>();
+  const { id: idParam, dimensionId: dimensionIdParam } = useLocalSearchParams<{
+    id: string;
+    dimensionId?: string;
+  }>();
   const id = normalizeId(idParam);
+  const dimensionId = normalizeId(dimensionIdParam);
   const isNew = id === 'new';
 
   const colorScheme = useColorScheme();
@@ -131,7 +135,12 @@ export default function MemoEditScreen() {
     setSaving(true);
     try {
       if (isNew) {
-        const created = await createMemo({ title, body });
+        if (!dimensionId) {
+          Alert.alert('无法保存', '缺少维度信息，请从备忘录列表选择维度后再新建。');
+          setSaving(false);
+          return;
+        }
+        const created = await createMemo({ title, body, dimensionId });
         startMemoAiReviewInBackground(created);
       } else {
         const ok = await updateMemo(id, { title, body });
@@ -147,7 +156,7 @@ export default function MemoEditScreen() {
     } finally {
       setSaving(false);
     }
-  }, [bodyModel, id, isNew, router, title]);
+  }, [bodyModel, dimensionId, id, isNew, router, title]);
 
   if (!id || (!isNew && id === '')) {
     return (

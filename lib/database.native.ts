@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 33;
+export const DB_VERSION = 34;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -49,6 +49,50 @@ async function migrateDropPersonaPortraitCache(db: SQLite.SQLiteDatabase): Promi
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+async function migrateEarnedRewardsHabitSource(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['earned_rewards_habit_source_v34'],
+  );
+  if (done) return;
+
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS earned_rewards_new (
+      id TEXT PRIMARY KEY NOT NULL,
+      source_type TEXT NOT NULL CHECK (source_type IN ('task', 'project', 'habit')),
+      source_id TEXT NOT NULL,
+      source_title TEXT NOT NULL,
+      reward_kind TEXT NOT NULL CHECK (reward_kind IN ('wish', 'custom')),
+      wish_item_id TEXT,
+      label TEXT NOT NULL,
+      earned_at TEXT NOT NULL,
+      redeemed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT,
+      FOREIGN KEY (wish_item_id) REFERENCES wish_items(id) ON DELETE SET NULL
+    );
+
+    INSERT INTO earned_rewards_new (
+      id, source_type, source_id, source_title, reward_kind, wish_item_id, label,
+      earned_at, redeemed_at, created_at, updated_at, sync_status, extra_data
+    )
+    SELECT
+      id, source_type, source_id, source_title, reward_kind, wish_item_id, label,
+      earned_at, redeemed_at, created_at, updated_at, sync_status, extra_data
+    FROM earned_rewards;
+
+    DROP TABLE earned_rewards;
+    ALTER TABLE earned_rewards_new RENAME TO earned_rewards;
+  `);
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'earned_rewards_habit_source_v34',
+    '1',
+  ]);
 }
 
 async function migrateDropDeletedAtAndVersionColumns(db: SQLite.SQLiteDatabase): Promise<void> {
@@ -701,7 +745,7 @@ export async function initDatabase() {
 
     CREATE TABLE IF NOT EXISTS earned_rewards (
       id TEXT PRIMARY KEY NOT NULL,
-      source_type TEXT NOT NULL CHECK (source_type IN ('task', 'project')),
+      source_type TEXT NOT NULL CHECK (source_type IN ('task', 'project', 'habit')),
       source_id TEXT NOT NULL,
       source_title TEXT NOT NULL,
       reward_kind TEXT NOT NULL CHECK (reward_kind IN ('wish', 'custom')),
@@ -1226,6 +1270,7 @@ export async function initDatabase() {
 
   await migrateDropDeletedAtAndVersionColumns(db);
   await migrateDropPersonaPortraitCache(db);
+  await migrateEarnedRewardsHabitSource(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);

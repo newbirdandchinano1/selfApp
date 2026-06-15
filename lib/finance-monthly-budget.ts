@@ -128,7 +128,40 @@ export type MonthBudgetSetting = {
   baseAmount: number;
   includeLastBalance: boolean;
   fixedExpenses?: BudgetFixedExpense[];
+  /** 手工设定的本周期预算结余，覆盖「总预算 − 已用」的自动计算。 */
+  periodSurplusOverride?: number;
 };
+
+/** 本周期剩余可支配预算；有手工覆盖时优先生效。 */
+export function resolvePeriodBudgetSurplus(
+  periodTotalBudget: number,
+  periodExpense: number,
+  override?: number,
+): number {
+  if (typeof override === 'number' && Number.isFinite(override)) {
+    return override;
+  }
+  return periodTotalBudget - periodExpense;
+}
+
+/**
+ * 由周期剩余预算计算日均可支配。
+ * 剩余超过周期总预算时，日均可支配不超过「总预算 ÷ 剩余天数」。
+ * 周期已超支时返回负值，今日可用应为 0。
+ */
+export function computeDailyBudgetFromPeriodSurplus(
+  periodSurplus: number,
+  periodTotalBudget: number,
+  daysLeftIncludingToday: number,
+): number {
+  const days = Math.max(1, daysLeftIncludingToday);
+  const dailyFromSurplus = periodSurplus / days;
+  if (periodSurplus > 0) {
+    const dailyCap = periodTotalBudget / days;
+    return Math.min(dailyFromSurplus, dailyCap);
+  }
+  return dailyFromSurplus;
+}
 
 export function sumBudgetFixedExpenses(items: BudgetFixedExpense[] | undefined): number {
   if (!items?.length) return 0;
@@ -164,10 +197,15 @@ function normalizeSettings(parsed: unknown): Record<string, MonthBudgetSetting> 
       const inc = o.includeLastBalance;
       if (typeof base === 'number' && Number.isFinite(base) && base >= 0 && typeof inc === 'boolean') {
         const fixedExpenses = normalizeFixedExpenses(o.fixedExpenses);
+        const surplusOverride = o.periodSurplusOverride;
         out[k] = {
           baseAmount: base,
           includeLastBalance: inc,
           ...(fixedExpenses.length > 0 ? { fixedExpenses } : {}),
+          ...(typeof surplusOverride === 'number' &&
+          Number.isFinite(surplusOverride)
+            ? { periodSurplusOverride: surplusOverride }
+            : {}),
         };
       }
     }

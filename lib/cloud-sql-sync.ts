@@ -328,7 +328,8 @@ async function prepareRowsForCloudInsert(
     // projects/tasks 的 category_id 由 upsert*CategoriesReferenced* 先上传父表，勿在此提前置空
     if (
       (table === 'projects' && fk.fromColumn === 'category_id' && fk.parentTable === 'project_categories') ||
-      (table === 'tasks' && fk.fromColumn === 'category_id' && fk.parentTable === 'task_categories')
+      (table === 'tasks' && fk.fromColumn === 'category_id' && fk.parentTable === 'task_categories') ||
+      (table === 'memos' && fk.fromColumn === 'dimension_id' && fk.parentTable === 'memo_dimensions')
     ) {
       continue;
     }

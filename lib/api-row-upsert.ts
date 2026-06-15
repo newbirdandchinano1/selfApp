@@ -36,10 +36,12 @@ function isMissingParentRecordApiError(err: unknown): boolean {
     (/请先同步\s*projects/i.test(err.message) ||
       /请先同步\s*project_categories/i.test(err.message) ||
       /请先同步\s*habits/i.test(err.message) ||
+      /请先同步\s*memo_dimensions/i.test(err.message) ||
       /请先.*task_categories/i.test(err.message) ||
       /任务分类.*不存在/i.test(err.message) ||
       /项目分类.*不存在/i.test(err.message) ||
       /习惯.*不存在/i.test(err.message) ||
+      /备忘.*维度.*不存在/i.test(err.message) ||
       /引用的\s*项目[\s（(]*projects/i.test(err.message) ||
       /projects[\s）)]*不存在/i.test(err.message))
   );
@@ -163,7 +165,8 @@ function shouldPreserveCategoryFkOnUpload(
 ): boolean {
   return (
     (table === 'projects' && fk.fromColumn === 'category_id' && fk.parentTable === 'project_categories') ||
-    (table === 'tasks' && fk.fromColumn === 'category_id' && fk.parentTable === 'task_categories')
+    (table === 'tasks' && fk.fromColumn === 'category_id' && fk.parentTable === 'task_categories') ||
+    (table === 'memos' && fk.fromColumn === 'dimension_id' && fk.parentTable === 'memo_dimensions')
   );
 }
 
@@ -341,6 +344,22 @@ export async function upsertRowToApi(
     opts.uploadedPkByTable?.get('task_categories')?.add(cid);
   };
 
+  const tryUpsertReferencedMemoDimension = async (payload: Record<string, unknown>): Promise<void> => {
+    if (table !== 'memos' || !opts?.rowsByTable) return;
+    const dimensionId = payload.dimension_id;
+    if (dimensionId == null || dimensionId === '') return;
+
+    await upsertMemoDimensionsReferencedByMemos(
+      [payload],
+      opts.rowsByTable,
+      opts.pkColsByTable ?? new Map(),
+      opts.uploadedPkByTable ?? new Map(),
+      opts.fkRefsByTable ?? new Map(),
+      opts?.signal,
+    );
+    opts.uploadedPkByTable?.get('memo_dimensions')?.add(String(dimensionId));
+  };
+
   try {
     return await runUpsert(body);
   } catch (e) {
@@ -363,6 +382,7 @@ export async function upsertRowToApi(
           await tryUpsertReferencedProject(body);
         }
         if (table === 'projects') await tryUpsertReferencedProjectCategory(body);
+        if (table === 'memos') await tryUpsertReferencedMemoDimension(body);
         return await runUpsert(body);
       } catch {
         /* 补传父表后仍失败，继续去掉外键重试 */
@@ -540,18 +560,36 @@ export async function upsertMemoDimensionsReferencedByMemos(
   const uploadedDimensions = uploadedPkByTable.get('memo_dimensions') ?? new Set<string>();
   uploadedPkByTable.set('memo_dimensions', uploadedDimensions);
 
+  const { getDatabase } = await import('@/lib/database');
+  const db = await getDatabase();
+
   for (const did of dimensionIds) {
-    const dimensionRow = dimensionRows.find(d => String(d.id) === did);
+    let dimensionRow = dimensionRows.find(d => String(d.id) === did);
+    if (!dimensionRow && db) {
+      dimensionRow =
+        (await db.getFirstAsync<Record<string, unknown>>(
+          'SELECT * FROM memo_dimensions WHERE id = ? LIMIT 1',
+          [did],
+        )) ?? undefined;
+    }
     if (!dimensionRow) continue;
-    await upsertRowToApi('memo_dimensions', dimensionRow, dimensionPkCols, {
-      signal,
-      uploadedPkByTable,
-      fkRefs: fkRefsByTable.get('memo_dimensions') ?? [],
-      rowsByTable,
-      pkColsByTable,
-      fkRefsByTable,
-    });
-    uploadedDimensions.add(did);
+    try {
+      await upsertRowToApi('memo_dimensions', dimensionRow, dimensionPkCols, {
+        signal,
+        uploadedPkByTable,
+        fkRefs: fkRefsByTable.get('memo_dimensions') ?? [],
+        rowsByTable,
+        pkColsByTable,
+        fkRefsByTable,
+      });
+      uploadedDimensions.add(did);
+    } catch (e) {
+      if (e instanceof ApiRowUploadSkippedError) {
+        if (__DEV__) console.warn('[api-sync] 预上传 memo_dimensions 跳过', did, e.message);
+        continue;
+      }
+      throw e;
+    }
   }
 }
 

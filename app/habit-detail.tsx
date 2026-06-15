@@ -10,6 +10,8 @@ import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import {
   computeBuildExpectedGoalProgress,
   computeConsecutiveGoalMetDays,
+  formatBuildExpectedGoalProgressUnit,
+  formatBuildExpectedGoalShort,
   isHabitDayGoalMet,
   parseBuildHabitExpectedGoal,
   parseHabitConsecutiveTargetDays,
@@ -343,7 +345,13 @@ export default function HabitDetailScreen() {
   const buildExpectedGoal = habit ? parseBuildHabitExpectedGoal(habit.extra_data) : null;
   const buildExpectedProgress =
     buildExpectedGoal != null
-      ? computeBuildExpectedGoalProgress({ expectedGoal: buildExpectedGoal, checkIns, dailyGoal })
+      ? computeBuildExpectedGoalProgress({
+          expectedGoal: buildExpectedGoal,
+          checkIns,
+          dailyGoal,
+          endYmd: focusYmd,
+          kind: 'build',
+        })
       : 0;
   const taskExpectedGoal = habit ? parseTaskHabitExpectedGoal(habit.extra_data) : null;
   const taskRepeatPeriod = habit ? parseTaskRepeatPeriod(habit.extra_data) : '每月';
@@ -650,16 +658,13 @@ export default function HabitDetailScreen() {
           ) : buildExpectedGoal != null ? (
             buildSucceeded ? (
               <Text style={[styles.makeUpSub, { color: GREEN_TEXT }]}>
-                已达成预期目标{' '}
-                {buildExpectedGoal.type === 'days'
-                  ? `${buildExpectedGoal.value} 天`
-                  : `${buildExpectedGoal.value} 次`}
+                已达成预期目标 {formatBuildExpectedGoalShort(buildExpectedGoal)}
                 {buildCycle?.completedAt ? ` · ${buildCycle.completedAt} 养成完成` : ' · 养成完成'}
               </Text>
             ) : (
               <Text style={styles.makeUpSub}>
                 预期目标进度 {buildExpectedProgress} / {buildExpectedGoal.value}{' '}
-                {buildExpectedGoal.type === 'days' ? '天' : '次'}
+                {formatBuildExpectedGoalProgressUnit(buildExpectedGoal.type)}
               </Text>
             )
           ) : null}

@@ -1,3 +1,4 @@
+import { tryGrantHabitCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
 import { getLogicalLocalYmd, loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getCheckInsMapByHabitId } from './habit-check-in';
 import { getHabitById, getHabits, updateHabit } from './habit';
@@ -95,7 +96,13 @@ export async function tryMarkBuildHabitCompleted(
 
   const dailyGoal = parseHabitDailyGoal(habit.extra_data, 'build');
   const map = checkIns ?? (await getCheckInsMapByHabitId(habit.id));
-  const progress = computeBuildExpectedGoalProgress({ expectedGoal, checkIns: map, dailyGoal });
+  const progress = computeBuildExpectedGoalProgress({
+    expectedGoal,
+    checkIns: map,
+    dailyGoal,
+    endYmd: todayYmd,
+    kind: 'build',
+  });
 
   if (progress < expectedGoal.value) return false;
 
@@ -104,6 +111,15 @@ export async function tryMarkBuildHabitCompleted(
     completedValue: progress,
   });
   await updateHabit(habit.id, { extra_data: extra });
+  try {
+    await tryGrantHabitCompletionReward({
+      id: habit.id,
+      name: habit.name,
+      extra_data: extra,
+    });
+  } catch (err) {
+    console.warn('发放养成习惯完成奖励失败', err);
+  }
   return true;
 }
 

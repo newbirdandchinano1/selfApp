@@ -8,13 +8,16 @@ export function mapTableRowForMysqlApiUpload(
   delete out.sync_status;
 
   if (table === 'memo_dimensions') {
+    /** 服务端用 title 存 App 的 name */
     const label =
       (typeof out.name === 'string' ? out.name.trim() : '') ||
       (typeof out.title === 'string' ? out.title.trim() : '') ||
       '未命名维度';
-    out.name = label;
     out.title = label;
+    delete out.name;
   }
+
+  /** memos.dimension_id / dimension 与服务端同名直传，须先同步 memo_dimensions */
 
   /** habit_check_ins.record_date 为逻辑日 YYYY-MM-DD，勿转成 DATETIME */
   if (table === 'habit_check_ins' && typeof out.record_date === 'string') {
