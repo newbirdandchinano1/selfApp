@@ -64,6 +64,7 @@ import {
 import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
 import {
     createFinanceTransaction,
+    createFinanceTransferTransactions,
     deleteFinanceTransaction,
     financeSignedAmountForSave,
     getFinanceAccountsWithBalance,
@@ -75,6 +76,7 @@ import {
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import {
     budgetExtraPatchForTransaction,
+    buildFinanceTransferTxnExtra,
     getBudgetFixedExpenseIdFromTxnExtra,
     isFinanceTransactionExcludedFromBudget,
 } from '@/lib/repositories/finance/finance-transaction-extra';
@@ -2652,22 +2654,18 @@ export default function FinanceScreen() {
       const noteTrim = sheetNote.trim() || null;
       const fromName = transferFromAccount.name;
       const toName = transferToAccount.name;
-      const titleOut = `转至「${toName}」`;
-      const titleIn = `转自「${fromName}」`;
 
-      const extraOut = JSON.stringify({
-        manual: true,
-        transfer_group_id: groupId,
-        transfer_leg: 'out',
-        counterparty_account_id: transferToAccount.id,
-        counterparty_account_name: toName,
+      const extraOut = buildFinanceTransferTxnExtra({
+        groupId,
+        leg: 'out',
+        counterpartyAccountId: transferToAccount.id,
+        counterpartyAccountName: toName,
       });
-      const extraIn = JSON.stringify({
-        manual: true,
-        transfer_group_id: groupId,
-        transfer_leg: 'in',
-        counterparty_account_id: transferFromAccount.id,
-        counterparty_account_name: fromName,
+      const extraIn = buildFinanceTransferTxnExtra({
+        groupId,
+        leg: 'in',
+        counterpartyAccountId: transferFromAccount.id,
+        counterpartyAccountName: fromName,
       });
       const errFrom = await validateFinanceTransactionBeforeSave({
         accountId: transferFromAccount.id,
@@ -2692,32 +2690,18 @@ export default function FinanceScreen() {
 
       try {
         setIsSavingTransaction(true);
-        await createFinanceTransaction(
-          {
-            id: idOut,
-            name: titleOut,
-            happened_at: happenedAt,
-            account_id: transferFromAccount.id,
-            transaction_type: 'transfer',
-            amount: absAmount,
-            note: noteTrim,
-            extra_data: extraOut,
-          },
-          { skipBalanceRecheck: true },
-        );
-        await createFinanceTransaction(
-          {
-            id: idIn,
-            name: titleIn,
-            happened_at: happenedAt,
-            account_id: transferToAccount.id,
-            transaction_type: 'transfer',
-            amount: absAmount,
-            note: noteTrim,
-            extra_data: extraIn,
-          },
-          { skipBalanceRecheck: true },
-        );
+        await createFinanceTransferTransactions({
+          idOut,
+          idIn,
+          groupId,
+          fromAccountId: transferFromAccount.id,
+          toAccountId: transferToAccount.id,
+          fromAccountName: fromName,
+          toAccountName: toName,
+          amount: absAmount,
+          happenedAt,
+          note: noteTrim,
+        });
         setIsSheetVisible(false);
         resetSheetForm('sentence');
         notifyFinanceSheetSaved();

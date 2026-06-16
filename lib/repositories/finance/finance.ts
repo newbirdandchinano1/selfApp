@@ -1,12 +1,14 @@
 import { makeTimestampEntityId } from '@/lib/entity-id';
-import { ensureLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite, readLocalRowForWrite } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, sortBySortOrderAsc, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
+import { buildFinanceTransferTxnExtra } from './finance-transaction-extra';
 import type {
   CreateFinanceAccountInput,
   CreateFinanceFlowCategoryInput,
   CreateFinanceTransactionInput,
+  CreateFinanceTransferInput,
   FinanceAccountTypeRow,
   FinanceDailySummaryRow,
   FinanceAccountBalanceRow,
@@ -19,8 +21,13 @@ import type {
   UpdateFinanceTransactionInput,
 } from './finance.types';
 
+/** 记账/校验优先读本地 SQLite（与资产列表同源），避免 API_ONLY 下单条 REST 404 导致写入失败。 */
 async function getFinanceAccountById(id: string) {
-  return readApiRecord<FinanceAccountRow>('finance_accounts', id, { offlineFallback: false });
+  const pk = id.trim();
+  if (!pk) return null;
+  const local = await readLocalRowForWrite<FinanceAccountRow>('finance_accounts', pk);
+  if (local) return local;
+  return readApiRecord<FinanceAccountRow>('finance_accounts', pk, { offlineFallback: true });
 }
 
 const financeReadOpts = { offlineFallback: false as const };
@@ -612,6 +619,73 @@ export async function createFinanceTransaction(
       input.extra_data ?? null,
     ]
   );
+  void pushFinanceChangesToApi();
+}
+
+/**
+ * 原子创建转账双流水（转出 leg=out + 转入 leg=in），避免仅写入一侧导致余额不一致。
+ */
+export async function createFinanceTransferTransactions(input: CreateFinanceTransferInput): Promise<void> {
+  const absAmount = Math.abs(input.amount);
+  if (!Number.isFinite(absAmount) || absAmount <= 0) {
+    throw new Error('finance transfer amount must be greater than 0');
+  }
+
+  const extraOut = buildFinanceTransferTxnExtra({
+    groupId: input.groupId,
+    leg: 'out',
+    counterpartyAccountId: input.toAccountId,
+    counterpartyAccountName: input.toAccountName,
+  });
+  const extraIn = buildFinanceTransferTxnExtra({
+    groupId: input.groupId,
+    leg: 'in',
+    counterpartyAccountId: input.fromAccountId,
+    counterpartyAccountName: input.fromAccountName,
+  });
+
+  await assertTransactionAmountSign(input.fromAccountId, absAmount);
+  await assertTransactionAmountSign(input.toAccountId, absAmount);
+
+  const db = await getDatabase();
+  const note = input.note ?? null;
+  const insertSql = `INSERT INTO finance_transactions (
+      id, name, happened_at, account_id, ai_comment, transaction_type, flow_category_id, amount, note,
+      created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`;
+
+  await db.execAsync('BEGIN IMMEDIATE');
+  try {
+    await db.runAsync(insertSql, [
+      input.idOut,
+      `转至「${input.toAccountName}」`,
+      input.happenedAt,
+      input.fromAccountId,
+      null,
+      'transfer',
+      null,
+      absAmount,
+      note,
+      extraOut,
+    ]);
+    await db.runAsync(insertSql, [
+      input.idIn,
+      `转自「${input.fromAccountName}」`,
+      input.happenedAt,
+      input.toAccountId,
+      null,
+      'transfer',
+      null,
+      absAmount,
+      note,
+      extraIn,
+    ]);
+    await db.execAsync('COMMIT');
+  } catch (e) {
+    await db.execAsync('ROLLBACK');
+    throw e;
+  }
+
   void pushFinanceChangesToApi();
 }
 

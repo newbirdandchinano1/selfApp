@@ -95,6 +95,32 @@ export function isExpenseIncludedInBudget(extraData: string | null): boolean {
   return !readExcludeFromBudgetFromExtraObject(parseFinanceTxnExtraObject(extraData));
 }
 
+const FINANCE_TXN_EXTRA_TRANSFER_FIELDS = [
+  'manual',
+  'transfer_group_id',
+  'transfer_leg',
+  'counterparty_account_id',
+  'counterparty_account_name',
+] as const;
+
+/**
+ * 构建转账流水 `extra_data`（转出/转入各一条，靠 `transfer_leg` 区分方向）。
+ */
+export function buildFinanceTransferTxnExtra(input: {
+  groupId: string;
+  leg: 'out' | 'in';
+  counterpartyAccountId: string;
+  counterpartyAccountName: string;
+}): string {
+  return JSON.stringify({
+    manual: true,
+    transfer_group_id: input.groupId,
+    transfer_leg: input.leg,
+    counterparty_account_id: input.counterpartyAccountId,
+    counterparty_account_name: input.counterpartyAccountName,
+  });
+}
+
 /**
  * REST 回写本地时合并 extra_data：预算标记以本地为准（服务端可能未持久化或回传默认值）。
  */
@@ -115,6 +141,15 @@ export function mergeFinanceTxnExtraOnApiSync(
     !(FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_ID in api)
   ) {
     merged[FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_ID] = local[FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_ID];
+  }
+
+  const localLeg = local.transfer_leg;
+  if (localLeg === 'out' || localLeg === 'in') {
+    for (const key of FINANCE_TXN_EXTRA_TRANSFER_FIELDS) {
+      if (key in local) {
+        merged[key] = local[key];
+      }
+    }
   }
 
   if (Object.keys(merged).length === 0) return null;

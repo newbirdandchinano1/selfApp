@@ -23,13 +23,14 @@ import { financeTransactionSheetStyles } from '@/lib/finance-transaction-sheet/s
 import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
 import {
     createFinanceTransaction,
+    createFinanceTransferTransactions,
     financeSignedAmountForSave,
     getFinanceAccountsWithBalance,
     getFinanceTransactions,
     normalizeFinanceSignRule,
     validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
-import { budgetExtraPatchForTransaction } from '@/lib/repositories/finance/finance-transaction-extra';
+import { budgetExtraPatchForTransaction, buildFinanceTransferTxnExtra } from '@/lib/repositories/finance/finance-transaction-extra';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
 import {
     getActiveAiLlmApiKey,
@@ -595,19 +596,17 @@ export function useFinanceTransactionSheetController({
       const happenedAt = selectedHappenedAt.toISOString();
       const noteTrim = sheetNote.trim() || null;
       const absAmount = amountNumber;
-      const extraOut = JSON.stringify({
-        manual: true,
-        transfer_group_id: groupId,
-        transfer_leg: 'out',
-        counterparty_account_id: transferToAccount.id,
-        counterparty_account_name: transferToAccount.name,
+      const extraOut = buildFinanceTransferTxnExtra({
+        groupId,
+        leg: 'out',
+        counterpartyAccountId: transferToAccount.id,
+        counterpartyAccountName: transferToAccount.name,
       });
-      const extraIn = JSON.stringify({
-        manual: true,
-        transfer_group_id: groupId,
-        transfer_leg: 'in',
-        counterparty_account_id: transferFromAccount.id,
-        counterparty_account_name: transferFromAccount.name,
+      const extraIn = buildFinanceTransferTxnExtra({
+        groupId,
+        leg: 'in',
+        counterpartyAccountId: transferFromAccount.id,
+        counterpartyAccountName: transferFromAccount.name,
       });
       const errFrom = await validateFinanceTransactionBeforeSave({
         accountId: transferFromAccount.id,
@@ -631,32 +630,18 @@ export function useFinanceTransactionSheetController({
       }
       try {
         setIsSavingTransaction(true);
-        await createFinanceTransaction(
-          {
-            id: `ft_${ts}_out_${rnd}`,
-            name: `转至「${transferToAccount.name}」`,
-            happened_at: happenedAt,
-            account_id: transferFromAccount.id,
-            transaction_type: 'transfer',
-            amount: absAmount,
-            note: noteTrim,
-            extra_data: extraOut,
-          },
-          { skipBalanceRecheck: true },
-        );
-        await createFinanceTransaction(
-          {
-            id: `ft_${ts}_in_${rnd}`,
-            name: `转自「${transferFromAccount.name}」`,
-            happened_at: happenedAt,
-            account_id: transferToAccount.id,
-            transaction_type: 'transfer',
-            amount: absAmount,
-            note: noteTrim,
-            extra_data: extraIn,
-          },
-          { skipBalanceRecheck: true },
-        );
+        await createFinanceTransferTransactions({
+          idOut: `ft_${ts}_out_${rnd}`,
+          idIn: `ft_${ts}_in_${rnd}`,
+          groupId,
+          fromAccountId: transferFromAccount.id,
+          toAccountId: transferToAccount.id,
+          fromAccountName: transferFromAccount.name,
+          toAccountName: transferToAccount.name,
+          amount: absAmount,
+          happenedAt,
+          note: noteTrim,
+        });
         finishSaved();
       } catch (error) {
         Alert.alert('保存失败', error instanceof Error && error.message.trim() ? error.message : '转账记录保存失败，请稍后重试。');

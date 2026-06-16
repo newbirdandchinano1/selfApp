@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
   getActiveAiLlmApiKey,
+  parseAiIntakeNumericValue,
   parseFoodIntakeFromText,
   type FoodTextIntakeJson,
 } from '@/lib/zhipu-image-parse';
@@ -63,11 +64,7 @@ function aiIntakeFieldTextsFromData(data: FoodTextIntakeJson): AiIntakeFieldText
 }
 
 function parseNonNegMetricInput(raw: string): number {
-  const t = raw.replace(/,/g, '').trim();
-  if (!t) return 0;
-  const n = Number(t);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return n;
+  return parseAiIntakeNumericValue(raw);
 }
 
 export type RecordIntakeConfirmPayload =

@@ -144,8 +144,31 @@ export function normalizeFoodTextIntakePayload(raw: unknown): FoodTextIntakeJson
   };
 }
 
+/** 摄入估算策略：不确定时一律取偏大值（与 parseAiIntakeNumericValue 区间取高值一致）。 */
+const FOOD_INTAKE_HIGH_ESTIMATE_DIRECTIVE =
+  '估算规则：份量、热量、蛋白质、碳水、水分有任何不确定时，一律按较大端/上限估算（区间取高值；单点估值取该份量合理范围内的偏高值，例如一碗饭按约 500 kcal 而非 300 kcal），禁止保守偏低估算。';
+
+const FOOD_TEXT_INTAKE_DEFAULT_QUESTION =
+  `${FOOD_INTAKE_HIGH_ESTIMATE_DIRECTIVE} 请完整分析这段饮食描述并估算 hydration_ml、protein_g、carbohydrate_g、calories_kcal。`;
+
 const FOOD_TEXT_INTAKE_RETRY_QUESTION =
-  '用户输入的是饮食记录。只要描述的是食物或饮品（含简写如「一碗饭」「一碗冒菜」），必须给出大于 0 的蛋白质、碳水化合物、热量估算；仅当完全不是食物时才将全部数值设为 0，并在 food_summary 中明确写「非食物」。';
+  `${FOOD_INTAKE_HIGH_ESTIMATE_DIRECTIVE} 用户输入的是饮食记录。只要描述的是食物或饮品（含简写如「一碗饭」「一碗冒菜」），必须给出大于 0 的蛋白质、碳水化合物、热量估算；仅当完全不是食物时才将全部数值设为 0，并在 food_summary 中明确写「非食物」。`;
+
+/**
+ * 拼接文字饮食解析的 question：始终附带偏大估算指令。
+ */
+function buildFoodIntakeQuestion(custom?: string): string {
+  const extra = custom?.trim();
+  return extra ? `${FOOD_INTAKE_HIGH_ESTIMATE_DIRECTIVE}\n${extra}` : FOOD_TEXT_INTAKE_DEFAULT_QUESTION;
+}
+
+/**
+ * 拼接识图补充说明：始终附带偏大估算指令。
+ */
+function buildFoodNutritionSupplementText(userNote?: string): string {
+  const note = userNote?.trim();
+  return note ? `${FOOD_INTAKE_HIGH_ESTIMATE_DIRECTIVE}\n${note}` : FOOD_INTAKE_HIGH_ESTIMATE_DIRECTIVE;
+}
 
 export function foodTextIntakeNutrientSum(data: FoodTextIntakeJson): number {
   return data.hydration_ml + data.protein_g + data.carbohydrate_g + data.calories_kcal;
@@ -174,36 +197,36 @@ function fallbackFoodTextIntakeEstimate(text: string, base: FoodTextIntakeJson):
   let calories_kcal = 0;
 
   if (isDrink) {
-    hydration_ml = /大杯|特大|500/.test(t) ? 500 : /小杯|迷你|250/.test(t) ? 250 : 350;
-    calories_kcal = /牛奶|拿铁|奶茶|果汁|可乐|雪碧|啤酒|酒| latte/i.test(t) ? 180 : /水|清茶|无糖/.test(t) ? 0 : 80;
-    protein_g = /牛奶|奶|豆浆|拿铁/.test(t) ? 6 : 0;
-    carbohydrate_g = /奶茶|果汁|可乐|雪碧|啤酒|豆浆/.test(t) ? 25 : /牛奶|拿铁/.test(t) ? 10 : 0;
+    hydration_ml = /大杯|特大|500/.test(t) ? 500 : /小杯|迷你|250/.test(t) ? 300 : 400;
+    calories_kcal = /牛奶|拿铁|奶茶|果汁|可乐|雪碧|啤酒|酒| latte/i.test(t) ? 250 : /水|清茶|无糖/.test(t) ? 0 : 120;
+    protein_g = /牛奶|奶|豆浆|拿铁/.test(t) ? 8 : 0;
+    carbohydrate_g = /奶茶|果汁|可乐|雪碧|啤酒|豆浆/.test(t) ? 35 : /牛奶|拿铁/.test(t) ? 14 : 0;
     if (!calories_kcal && (protein_g > 0 || carbohydrate_g > 0)) {
       calories_kcal = Math.round(protein_g * 4 + carbohydrate_g * 4);
     }
   } else if (/饭|米饭|白饭|盖饭|炒饭/.test(t) && !/大碗|两份|双份|火锅|烧烤|冒菜|麻辣烫|汉堡|披萨/.test(t)) {
-    protein_g = 5;
-    carbohydrate_g = 58;
-    calories_kcal = 280;
+    protein_g = 8;
+    carbohydrate_g = 75;
+    calories_kcal = 500;
   } else if (/小菜|水果|苹果|香蕉|一个/.test(t)) {
-    protein_g = 2;
-    carbohydrate_g = 20;
-    calories_kcal = 120;
+    protein_g = 3;
+    carbohydrate_g = 28;
+    calories_kcal = 180;
   } else if (/大碗|两份|双份|汉堡|披萨|火锅|烧烤|冒菜|麻辣烫/.test(t)) {
-    protein_g = 28;
-    carbohydrate_g = 60;
-    calories_kcal = 650;
+    protein_g = 35;
+    carbohydrate_g = 75;
+    calories_kcal = 750;
   } else {
-    protein_g = 18;
-    carbohydrate_g = 55;
-    calories_kcal = 450;
+    protein_g = 25;
+    carbohydrate_g = 65;
+    calories_kcal = 550;
   }
 
   if (!calories_kcal && (protein_g > 0 || carbohydrate_g > 0)) {
     calories_kcal = Math.round(protein_g * 4 + carbohydrate_g * 4);
   }
 
-  const fallbackNote = '模型未给出可靠数值，已按常见份量作保守估算；如需更精确可补充做法与份量后重新解析。';
+  const fallbackNote = '模型未给出可靠数值，已按常见份量作偏大估算；如需更精确可补充做法与份量后重新解析。';
   const ai_evaluation = base.ai_evaluation?.trim()
     ? `${base.ai_evaluation.trim()}（${fallbackNote}）`
     : `根据「${t}」${fallbackNote}`;
@@ -262,7 +285,7 @@ export async function parseFoodIntakeFromText(
   if (!text) return { ok: false, error: '描述为空', attempts: 0 };
   try {
     let attempts = 1;
-    const raw = await aiApi.aiFoodIntakeFromText({ text, question: options.question });
+    const raw = await aiApi.aiFoodIntakeFromText({ text, question: buildFoodIntakeQuestion(options.question) });
     let data = normalizeFoodTextIntakePayload(raw);
     if (foodTextIntakeNutrientSum(data) <= 0) {
       attempts += 1;
@@ -330,13 +353,32 @@ export type AnalyzeFoodNutritionResult =
       data: FoodNutritionJson;
     };
 
-function toNonNegativeFiniteNumber(v: unknown): number {
+/** AI 摄入区间字符串分隔符（如 300-500、300~500、300至500） */
+const INTAKE_NUMERIC_RANGE_RE = /(\d+(?:\.\d+)?)\s*[-~～—–－至到]\s*(\d+(?:\.\d+)?)/;
+
+/**
+ * 解析 AI 返回的摄入量：单值或区间字符串统一按较大端计算（如 `300-500` → `500`）。
+ */
+export function parseAiIntakeNumericValue(v: unknown): number {
   if (typeof v === 'number' && Number.isFinite(v)) return Math.max(0, v);
   if (typeof v === 'string' && v.trim() !== '') {
-    const n = Number(v.trim().replace(/,/g, ''));
+    const s = v.trim().replace(/,/g, '');
+    const rangeMatch = s.match(INTAKE_NUMERIC_RANGE_RE);
+    if (rangeMatch) {
+      const low = Number(rangeMatch[1]);
+      const high = Number(rangeMatch[2]);
+      if (Number.isFinite(low) && Number.isFinite(high)) {
+        return Math.max(0, Math.max(low, high));
+      }
+    }
+    const n = Number(s);
     if (Number.isFinite(n)) return Math.max(0, n);
   }
   return 0;
+}
+
+function toNonNegativeFiniteNumber(v: unknown): number {
+  return parseAiIntakeNumericValue(v);
 }
 
 function toIsFoodFlag(v: unknown): 0 | 1 {
@@ -419,7 +461,7 @@ export async function analyzeFoodNutritionFromImage(
     const raw = await aiApi.aiFoodNutritionFromImage({
       image_base64,
       image_mime_type,
-      supplement_text: options.supplementText?.trim() || undefined,
+      supplement_text: buildFoodNutritionSupplementText(options.supplementText),
     });
     const { data, repaired } = normalizeFoodNutritionPayload(raw);
     return {
