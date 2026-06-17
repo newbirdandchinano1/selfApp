@@ -3,7 +3,11 @@ import { ensureLocalRowForWrite, readLocalRowForWrite } from '@/lib/api-local-ro
 import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, sortBySortOrderAsc, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
-import { buildFinanceTransferTxnExtra } from './finance-transaction-extra';
+import {
+  buildFinanceTransferTxnExtra,
+  FINANCE_TXN_EXTRA_BALANCE_CORRECTION_REASON,
+  FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET,
+} from './finance-transaction-extra';
 import type {
   CreateFinanceAccountInput,
   CreateFinanceFlowCategoryInput,
@@ -693,6 +697,7 @@ const FINANCE_BALANCE_ADJUST_EPS = 1e-4;
 
 /**
  * 通过一笔「余额校正」流水把账户账本余额对齐到目标值（不改变账户元数据）。
+ * 支出类校正默认写入 `exclude_from_budget`，不计入月度/今日预算。
  */
 export async function applyFinanceAccountBalanceCorrection(input: {
   accountId: string;
@@ -714,8 +719,14 @@ export async function applyFinanceAccountBalanceCorrection(input: {
 
   const id = makeTimestampEntityId('ft_badj_', 6);
   const happened_at = new Date().toISOString();
-  const extra = JSON.stringify({ reason: 'balance_correction' });
   const note = input.note ?? null;
+
+  /** @param transactionType 流水类型，支出默认写入不计入预算标记 */
+  const buildBalanceCorrectionExtra = (transactionType: 'income' | 'expense') =>
+    JSON.stringify({
+      reason: FINANCE_TXN_EXTRA_BALANCE_CORRECTION_REASON,
+      ...(transactionType === 'expense' ? { [FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET]: true } : {}),
+    });
 
   if (account.sign_rule > 0) {
     if (delta > 0) {
@@ -727,7 +738,7 @@ export async function applyFinanceAccountBalanceCorrection(input: {
         transaction_type: 'income',
         amount: delta,
         note,
-        extra_data: extra,
+        extra_data: buildBalanceCorrectionExtra('income'),
       });
     } else {
       await createFinanceTransaction({
@@ -738,7 +749,7 @@ export async function applyFinanceAccountBalanceCorrection(input: {
         transaction_type: 'expense',
         amount: -delta,
         note,
-        extra_data: extra,
+        extra_data: buildBalanceCorrectionExtra('expense'),
       });
     }
     return;
@@ -753,7 +764,7 @@ export async function applyFinanceAccountBalanceCorrection(input: {
       transaction_type: 'income',
       amount: -delta,
       note,
-      extra_data: extra,
+      extra_data: buildBalanceCorrectionExtra('income'),
     });
   } else {
     await createFinanceTransaction({
@@ -764,7 +775,7 @@ export async function applyFinanceAccountBalanceCorrection(input: {
       transaction_type: 'expense',
       amount: delta,
       note,
-      extra_data: extra,
+      extra_data: buildBalanceCorrectionExtra('expense'),
     });
   }
 }

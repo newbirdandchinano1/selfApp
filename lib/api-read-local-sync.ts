@@ -84,6 +84,33 @@ async function readLocalColumnNames(table: string): Promise<string[]> {
   return cols.map(c => c.name).filter(Boolean);
 }
 
+/** API 返回 null 时保留本地已有外键，避免 PATCH extra_data 等局部同步误清空分类/项目归属 */
+function preserveLocalForeignKeysOnApiSync(
+  table: string,
+  obj: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  colNames: string[],
+): void {
+  const preserveWhenApiEmpty = (col: string) => {
+    if (!colNames.includes(col)) return;
+    const apiVal = obj[col];
+    const localVal = existing[col];
+    if ((apiVal == null || apiVal === '') && localVal != null && localVal !== '') {
+      obj[col] = localVal;
+    }
+  };
+
+  if (table === 'tasks') {
+    preserveWhenApiEmpty('category_id');
+    preserveWhenApiEmpty('project_id');
+    preserveWhenApiEmpty('parent_task_id');
+    return;
+  }
+  if (table === 'projects') {
+    preserveWhenApiEmpty('category_id');
+  }
+}
+
 async function upsertRowsToLocalTable(
   table: string,
   rows: Record<string, unknown>[],
@@ -120,6 +147,7 @@ async function upsertRowsToLocalTable(
               typeof existing.extra_data === 'string' ? existing.extra_data : null,
             );
           }
+          preserveLocalForeignKeysOnApiSync(table, obj, existing, colNames);
           for (const col of colNames) {
             if (Object.prototype.hasOwnProperty.call(obj, col)) continue;
             const prev = existing[col];

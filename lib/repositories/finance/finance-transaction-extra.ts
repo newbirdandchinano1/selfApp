@@ -20,6 +20,9 @@ export const FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_SLOT = 'scheduled_expense_slot'
 /** 标记流水由定时支出自动创建。 */
 export const FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_AUTO = 'scheduled_expense_auto' as const;
 
+/** 余额校正流水在 `extra_data.reason` 中的标记值。 */
+export const FINANCE_TXN_EXTRA_BALANCE_CORRECTION_REASON = 'balance_correction' as const;
+
 export function getBudgetFixedExpenseIdFromTxnExtra(extraData: string | null): string | null {
   if (!extraData) return null;
   try {
@@ -90,9 +93,14 @@ export function budgetExtraPatchForTransaction(
   return { [FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET]: !includeInBudget };
 }
 
-/** 支出是否计入预算（收入/转账恒为 true）。 */
+/** 支出是否计入预算（收入/转账恒为 true；余额校正支出默认不计入，可被用户显式覆盖）。 */
 export function isExpenseIncludedInBudget(extraData: string | null): boolean {
-  return !readExcludeFromBudgetFromExtraObject(parseFinanceTxnExtraObject(extraData));
+  const extra = parseFinanceTxnExtraObject(extraData);
+  if (FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET in extra) {
+    return !readExcludeFromBudgetFromExtraObject(extra);
+  }
+  if (extra.reason === FINANCE_TXN_EXTRA_BALANCE_CORRECTION_REASON) return false;
+  return true;
 }
 
 const FINANCE_TXN_EXTRA_TRANSFER_FIELDS = [
@@ -158,7 +166,12 @@ export function mergeFinanceTxnExtraOnApiSync(
 
 export function isFinanceTransactionExcludedFromBudget(extraData: string | null): boolean {
   if (getBudgetFixedExpenseIdFromTxnExtra(extraData) !== null) return true;
-  return readExcludeFromBudgetFromExtraObject(parseFinanceTxnExtraObject(extraData));
+  const extra = parseFinanceTxnExtraObject(extraData);
+  if (FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET in extra) {
+    return readExcludeFromBudgetFromExtraObject(extra);
+  }
+  if (extra.reason === FINANCE_TXN_EXTRA_BALANCE_CORRECTION_REASON) return true;
+  return false;
 }
 
 export type FinanceTransactionExtra = {
@@ -188,6 +201,16 @@ export function isInitialBalanceFinanceTransaction(
 ): boolean {
   if (parseFinanceTransactionExtra(txn.extra_data).reason === 'initial_balance') return true;
   return txn.name.trim() === '初始余额';
+}
+
+/** 是否为「余额校正」流水（用于对齐账户账本余额，默认不计入预算）。 */
+export function isBalanceCorrectionFinanceTransaction(
+  txn: Pick<{ name: string; extra_data: string | null }, 'name' | 'extra_data'>,
+): boolean {
+  if (parseFinanceTransactionExtra(txn.extra_data).reason === FINANCE_TXN_EXTRA_BALANCE_CORRECTION_REASON) {
+    return true;
+  }
+  return txn.name.trim() === '余额校正';
 }
 
 export const BUILTIN_SHEET_CATEGORY_LABELS: Record<string, string> = {

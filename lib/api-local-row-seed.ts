@@ -1,4 +1,5 @@
 import { readLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureTaskCategoryMirrorLocally } from '@/lib/repositories/tasks/task-category-mirror';
 
 function strId(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -45,10 +46,12 @@ async function sanitizeTaskRowForLocalSeed(row: Record<string, unknown>): Promis
   }
 
   if (categoryId) {
-    const categoryReady = await ensureFkPresent('task_categories', categoryId);
+    let categoryReady = await ensureFkPresent('task_categories', categoryId);
     if (!categoryReady) {
-      categoryId = '';
-      next.category_id = null;
+      categoryReady = await ensureTaskCategoryMirrorLocally(categoryId);
+    }
+    if (!categoryReady) {
+      next.category_id = categoryId;
     }
   } else {
     next.category_id = null;

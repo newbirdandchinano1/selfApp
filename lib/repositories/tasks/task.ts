@@ -16,6 +16,7 @@ import type {
   UpdateTaskCategoryInput,
   UpdateTaskInput,
 } from './task.types';
+import { ensureTaskCategoryMirrorLocally } from './task-category-mirror';
 import { isTaskShelvedStatus, isTaskTerminalStatus } from './task.types';
 
 export type TaskTreeNode = TaskRow & { children: TaskTreeNode[] };
@@ -229,11 +230,14 @@ export async function deleteTasksByProjectId(projectId: string) {
   );
 }
 
-async function resolveTaskForeignKeys(fields: {
-  project_id?: string | null;
-  category_id?: string | null;
-  parent_task_id?: string | null;
-}): Promise<{
+async function resolveTaskForeignKeys(
+  fields: {
+    project_id?: string | null;
+    category_id?: string | null;
+    parent_task_id?: string | null;
+  },
+  opts?: { preserveCategoryId?: string | null },
+): Promise<{
   project_id: string | null;
   category_id: string | null;
   parent_task_id: string | null;
@@ -257,9 +261,13 @@ async function resolveTaskForeignKeys(fields: {
   }
 
   if (categoryId) {
-    const categoryReady = await ensureLocalRowPresent('task_categories', categoryId);
+    let categoryReady = await ensureLocalRowPresent('task_categories', categoryId);
     if (!categoryReady) {
-      categoryId = null;
+      categoryReady = await ensureTaskCategoryMirrorLocally(categoryId);
+    }
+    if (!categoryReady) {
+      // 与 updateProject 一致：分类尚未同步到本地时不应静默清空
+      categoryId = opts?.preserveCategoryId ?? categoryId;
     }
   }
 
@@ -453,11 +461,14 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
     throw new Error('本地数据库不可用，无法保存任务');
   }
   const current = await requireLocalRowForWrite<TaskRow>('tasks', id);
-  const foreignKeys = await resolveTaskForeignKeys({
-    project_id: input.project_id ?? current.project_id,
-    category_id: input.category_id ?? current.category_id,
-    parent_task_id: input.parent_task_id ?? current.parent_task_id,
-  });
+  const foreignKeys = await resolveTaskForeignKeys(
+    {
+      project_id: input.project_id ?? current.project_id,
+      category_id: input.category_id ?? current.category_id,
+      parent_task_id: input.parent_task_id ?? current.parent_task_id,
+    },
+    { preserveCategoryId: current.category_id },
+  );
   const result = await db.runAsync(
     `UPDATE tasks
      SET project_id = ?, category_id = ?, parent_task_id = ?, title = ?, description = ?, note = ?, status = ?, priority = ?, due_date = ?,
