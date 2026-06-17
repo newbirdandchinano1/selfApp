@@ -59,7 +59,7 @@ App ──Bearer 业务 JWT──► 自建后端 /api/ai/*
 
 | 环境 | Base URL |
 |------|----------|
-| 生产默认 | `http://47.109.78.229:3000` |
+| 生产默认 | `http://1.14.76.59:3000` |
 | 开发 | `EXPO_PUBLIC_API_BASE_URL`（仅 `__DEV__`） |
 | 用户覆盖 | 设置 → 服务器同步（AsyncStorage） |
 
@@ -242,7 +242,7 @@ const { analysis } = await apiRequest<{ analysis: string }>(
 
 ## 6. 接口详细说明
 
-以下 `BASE` 表示：`{API_BASE_URL}`，例如 `http://47.109.78.229:3000`。
+以下 `BASE` 表示：`{API_BASE_URL}`，例如 `http://1.14.76.59:3000`。
 
 ---
 
