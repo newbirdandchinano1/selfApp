@@ -1,3 +1,4 @@
+import { shouldPreserveForeignKeyOnUpload } from '@/lib/api-fk-preserve';
 import { setLastCloudAlignAtIso, setLastFullCloudBackupAtIso } from '@/lib/cloud-backup-meta';
 import { CLOUD_BACKUP_NOT_CONFIGURED_MSG, getCloudAuthToken } from '@/lib/cloud-backup-config';
 import { executeCloudSql } from '@/lib/cloud-sql-client';
@@ -325,14 +326,7 @@ async function prepareRowsForCloudInsert(
 
   for (const fk of fks) {
     if (fk.parentTable === table) continue;
-    // projects/tasks 的 category_id 由 upsert*CategoriesReferenced* 先上传父表，勿在此提前置空
-    if (
-      (table === 'projects' && fk.fromColumn === 'category_id' && fk.parentTable === 'project_categories') ||
-      (table === 'tasks' && fk.fromColumn === 'category_id' && fk.parentTable === 'task_categories') ||
-      (table === 'memos' && fk.fromColumn === 'dimension_id' && fk.parentTable === 'memo_dimensions')
-    ) {
-      continue;
-    }
+    if (shouldPreserveForeignKeyOnUpload(table, fk)) continue;
     const parentRows = rowsByTable.get(fk.parentTable) ?? [];
     const parentIds = new Set<string>();
     for (const pr of parentRows) {

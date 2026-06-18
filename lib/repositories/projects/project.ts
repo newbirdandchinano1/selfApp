@@ -16,10 +16,7 @@ export async function createProject(input: CreateProjectInput) {
   const db = await getDatabase();
   let categoryId = input.category_id ?? null;
   if (categoryId) {
-    const categoryReady = await ensureLocalRowPresent('project_categories', categoryId);
-    if (!categoryReady) {
-      categoryId = null;
-    }
+    await ensureLocalRowPresent('project_categories', categoryId);
   }
   const inStrictInbox = categoryId === INBOX_PROJECT_CATEGORY_ID;
   const inboxAtSql = inStrictInbox ? `datetime('now')` : 'NULL';

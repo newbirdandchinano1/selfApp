@@ -1,3 +1,4 @@
+import { shouldPreserveForeignKeyOnUpload } from '@/lib/api-fk-preserve';
 import {
   apiCreateRecord,
   apiDeleteRecord,
@@ -163,11 +164,7 @@ function shouldPreserveCategoryFkOnUpload(
   table: string,
   fk: { fromColumn: string; parentTable: string },
 ): boolean {
-  return (
-    (table === 'projects' && fk.fromColumn === 'category_id' && fk.parentTable === 'project_categories') ||
-    (table === 'tasks' && fk.fromColumn === 'category_id' && fk.parentTable === 'task_categories') ||
-    (table === 'memos' && fk.fromColumn === 'dimension_id' && fk.parentTable === 'memo_dimensions')
-  );
+  return shouldPreserveForeignKeyOnUpload(table, fk);
 }
 
 function nullifyRowForeignKeys(

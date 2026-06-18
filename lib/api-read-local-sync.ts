@@ -6,6 +6,12 @@ import {
   endCloudSqliteDirtyIgnoreBatch,
 } from '@/lib/cloud-sql-dirty-track';
 import { getDatabase } from '@/lib/database';
+import {
+  isLocalParentRowStillReferenced,
+  preserveLocalForeignKeysOnEmptyApi,
+  readReferencedParentIdsForReconcile,
+} from '@/lib/api-fk-preserve';
+import { sanitizeRowForLocalSeed } from '@/lib/api-local-row-seed';
 import { dedupeRowsByPrimaryKey, readTablePrimaryKeyColumns } from '@/lib/sqlite-primary-key-dedupe';
 
 export type ApplyApiReadToLocalOptions = {
@@ -84,33 +90,6 @@ async function readLocalColumnNames(table: string): Promise<string[]> {
   return cols.map(c => c.name).filter(Boolean);
 }
 
-/** API 返回 null 时保留本地已有外键，避免 PATCH extra_data 等局部同步误清空分类/项目归属 */
-function preserveLocalForeignKeysOnApiSync(
-  table: string,
-  obj: Record<string, unknown>,
-  existing: Record<string, unknown>,
-  colNames: string[],
-): void {
-  const preserveWhenApiEmpty = (col: string) => {
-    if (!colNames.includes(col)) return;
-    const apiVal = obj[col];
-    const localVal = existing[col];
-    if ((apiVal == null || apiVal === '') && localVal != null && localVal !== '') {
-      obj[col] = localVal;
-    }
-  };
-
-  if (table === 'tasks') {
-    preserveWhenApiEmpty('category_id');
-    preserveWhenApiEmpty('project_id');
-    preserveWhenApiEmpty('parent_task_id');
-    return;
-  }
-  if (table === 'projects') {
-    preserveWhenApiEmpty('category_id');
-  }
-}
-
 async function upsertRowsToLocalTable(
   table: string,
   rows: Record<string, unknown>[],
@@ -147,7 +126,7 @@ async function upsertRowsToLocalTable(
               typeof existing.extra_data === 'string' ? existing.extra_data : null,
             );
           }
-          preserveLocalForeignKeysOnApiSync(table, obj, existing, colNames);
+          preserveLocalForeignKeysOnEmptyApi(table, obj, existing, colNames);
           for (const col of colNames) {
             if (Object.prototype.hasOwnProperty.call(obj, col)) continue;
             const prev = existing[col];
@@ -179,6 +158,7 @@ async function reconcileSyncedRowsNotInSnapshot(
 
   const safe = quoteIdent(table);
   const pkQ = quoteIdent(pkCol);
+  const referencedCategoryIds = await readReferencedParentIdsForReconcile(db, table);
 
   const localRows = await db.getAllAsync<Record<string, unknown>>(
     `SELECT ${pkQ} AS __pk, sync_status FROM ${safe} WHERE sync_status = 'synced'`,
@@ -187,6 +167,7 @@ async function reconcileSyncedRowsNotInSnapshot(
   for (const row of localRows) {
     const pk = row.__pk == null || row.__pk === '' ? '' : String(row.__pk);
     if (!pk || apiPkSet.has(pk)) continue;
+    if (referencedCategoryIds?.has(pk)) continue;
     await db.runAsync(`DELETE FROM ${safe} WHERE ${pkQ} = ?`, [pk]);
   }
 }
@@ -213,7 +194,7 @@ export async function applyApiRowsToLocalTable(
   const normalizedInput: Record<string, unknown>[] = [];
   for (const row of rows) {
     if (row === null || typeof row !== 'object' || Array.isArray(row)) continue;
-    normalizedInput.push(row);
+    normalizedInput.push(await sanitizeRowForLocalSeed(table, row));
   }
 
   beginCloudSqliteDirtyIgnoreBatch();
@@ -252,6 +233,7 @@ export async function applyApiRecordMissingToLocal(table: string, pkValue: strin
   );
   if (!local) return;
   if (colNames.includes('sync_status') && local.sync_status !== 'synced') return;
+  if (await isLocalParentRowStillReferenced(db, table, pkValue)) return;
 
   beginCloudSqliteDirtyIgnoreBatch();
   try {

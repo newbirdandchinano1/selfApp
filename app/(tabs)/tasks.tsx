@@ -60,7 +60,7 @@ import {
   insertFrogCompletionEvent,
   type FrogCompletionDayItem,
 } from '@/lib/repositories/tasks/frog-completion-events';
-import { clearFrogAssignedOn, getFrogAssignedOn } from '@/lib/frog-assignment';
+import { clearFrogAssignedOn, getFrogAssignedOn, unassignFrogFromApi } from '@/lib/frog-assignment';
 import {
   clearFrogSessionCompletedOn,
   getIsLongTermTask,
@@ -128,14 +128,26 @@ import {
 } from '@/lib/repositories/habits/habit-goal';
 import {
   applyRepeatingTaskRollovers,
-  isTaskRepeatDueOnLogicalDay,
-  parseTaskRepeatSchedule,
   patchExtraDataOnRepeatTaskComplete,
   patchExtraDataOnRepeatTaskReopen,
   taskHasRepeatingSchedule,
 } from '@/lib/task-repeat-rollover';
 import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
+import {
+  formatScheduleDateToYMD,
+  getStandaloneTodoOverdueDisplayYmd,
+  getStandaloneTodoOverdueSortMs,
+  isMatrixTaskInCurrentWeek,
+  isStandaloneTodoOpen,
+  isStandaloneTodoOverdue,
+  isTaskDueOverdue,
+  isTaskOverdueForList,
+  isTaskRowOverdue,
+  standaloneTodoPassesDayBoundaryFilter,
+  standaloneTodoPassesRepeatDayFilter,
+  standaloneTodoPassesScheduleWindowFilter,
+} from '@/lib/standalone-todo-visibility';
 import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
 import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -151,7 +163,6 @@ import {
   saveTasksProjectExpandedState,
   type TasksMainListView,
 } from '@/lib/tasks-ui-settings';
-import { isYmdInRange } from '@/lib/api-read-helpers';
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 import {
   getLogicalLocalYmd,
@@ -616,74 +627,6 @@ function getTaskPriorityColor(priority: number, isDark: boolean) {
   return isDark ? '#94a3b8' : '#727785';
 }
 
-/**
- * 首页「待办」条带：已完成/已取消项在完成时刻所属的逻辑日早于「当前逻辑日」时不再展示（跨日界进入新一天后自动收起）。
- * 无可靠时间戳的旧数据仍展示，避免误藏。
- */
-function standaloneTodoPassesDayBoundaryFilter(
-  task: TaskRow,
-  boundary: TasksDayBoundary,
-  logicalTodayYmd: string
-): boolean {
-  if (task.status !== 'done' && task.status !== 'cancelled') return true;
-  const raw = task.completed_at?.trim() || task.updated_at?.trim();
-  if (!raw) return true;
-  const ms = Date.parse(raw);
-  if (Number.isNaN(ms)) return true;
-  const doneLogicalYmd = getLogicalLocalYmd(new Date(ms), boundary);
-  return doneLogicalYmd >= logicalTodayYmd;
-}
-
-/** 设置了重复的独立待办：重复日展示；非重复日仅当截止/计划已过期时保留 */
-function standaloneTodoPassesRepeatDayFilter(task: TaskRow, logicalTodayYmd: string): boolean {
-  if (isTaskShelvedStatus(task.status)) return true;
-  const schedule = parseTaskRepeatSchedule(task.extra_data);
-  if (!schedule) return true;
-  if (isTaskRepeatDueOnLogicalDay(logicalTodayYmd, schedule)) return true;
-  if (!isStandaloneTodoOpen(task)) return false;
-  return isTaskRowOverdue(task, logicalTodayYmd) || isStandaloneTodoScheduleExpired(task, logicalTodayYmd);
-}
-
-function addDaysToYmd(ymd: string, days: number): string {
-  const d = ymdToLocalDate(ymd);
-  if (!d) return ymd;
-  d.setDate(d.getDate() + days);
-  return formatLocalYmd(d);
-}
-
-/**
- * 判断逻辑日是否落在日程区间内。
- * 单日「时刻」槽为 [start, end)（end 常为次日）；跨多日区间为 [start, end] 含首尾。
- */
-function isLogicalDayInYmdRange(todayYmd: string, startYmd: string, endYmd: string): boolean {
-  if (!startYmd || !endYmd) return true;
-  if (todayYmd < startYmd) return false;
-  if (startYmd === endYmd) return todayYmd === startYmd;
-  if (endYmd === addDaysToYmd(startYmd, 1)) return todayYmd < endYmd;
-  return todayYmd <= endYmd;
-}
-
-/** 独立待办：计划日/区间内展示；过期未完成仍保留在列表（重复规则由 repeat 过滤器处理） */
-function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalTodayYmd: string): boolean {
-  if (isTaskShelvedStatus(task.status)) return true;
-  if (parseTaskRepeatSchedule(task.extra_data)) return true;
-
-  const schedule = parseProjectSchedule(task.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
-    const end = formatScheduleDateToYMD(schedule.range.end);
-    if (isLogicalDayInYmdRange(logicalTodayYmd, start, end)) return true;
-    return isStandaloneTodoOpen(task) && isStandaloneTodoScheduleExpired(task, logicalTodayYmd);
-  }
-  if (schedule?.date) {
-    const schedYmd = formatScheduleDateToYMD(schedule.date);
-    if (logicalTodayYmd === schedYmd) return true;
-    return isStandaloneTodoOpen(task) && logicalTodayYmd > schedYmd;
-  }
-
-  return true;
-}
-
 function sortTaskTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
   const safeTime = (value: string | null | undefined) => {
     if (!value) return 0;
@@ -741,17 +684,6 @@ function findTaskRowInProjectTreeMap(
     if (hit) return hit;
   }
   return null;
-}
-
-function formatScheduleDateToYMD(value: string) {
-  const t = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
-  const d = new Date(t);
-  if (Number.isNaN(d.getTime())) return t.slice(0, 10);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
 }
 
 function ymdToLocalDate(ymd: string): Date | null {
@@ -1227,100 +1159,15 @@ function getTaskPriorityCheckColor(priority: number, isDark: boolean) {
   return isDark ? '#94a3b8' : '#727785';
 }
 
-/** 未完成且截止日期（本地日）早于今天。 */
-function isTaskDueOverdue(dueYmd: string, isDone: boolean, todayYmd: string): boolean {
-  if (isDone || !dueYmd.trim()) return false;
-  const due = ymdToLocalDate(dueYmd);
-  const today = ymdToLocalDate(todayYmd);
-  if (!due || !today) return false;
-  return due.getTime() < today.getTime();
-}
-
 const URGENT_IMPORTANT_PRIORITY = 4;
-
-function isTaskRowOverdue(task: TaskRow, logicalTodayYmd: string): boolean {
-  const isDone = task.status === 'done' || task.status === 'cancelled';
-  const due = task.due_date?.slice(0, 10) ?? '';
-  return isTaskDueOverdue(due, isDone, logicalTodayYmd);
-}
 
 function trimTaskAcceptanceCriteria(task: Pick<TaskRow, 'description'>): string {
   return (task.description ?? '').trim();
 }
 
-function isStandaloneTodoOpen(task: TaskRow): boolean {
-  return isTaskActiveStatus(task.status);
-}
-
-/** 独立待办：日程日/区间已结束且未完成（非重复任务） */
-function isStandaloneTodoScheduleExpired(task: TaskRow, logicalTodayYmd: string): boolean {
-  if (!isStandaloneTodoOpen(task)) return false;
-  if (parseTaskRepeatSchedule(task.extra_data)) return false;
-
-  const schedule = parseProjectSchedule(task.extra_data);
-  if (!schedule) return false;
-
-  if (schedule.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
-    const end = formatScheduleDateToYMD(schedule.range.end);
-    return !isLogicalDayInYmdRange(logicalTodayYmd, start, end);
-  }
-  if (schedule.date) {
-    const schedYmd = formatScheduleDateToYMD(schedule.date);
-    return logicalTodayYmd > schedYmd;
-  }
-  return false;
-}
-
-/** 独立待办在列表中是否算「过期」：截止日已过、计划日/区间已过，或重复日错过未完成 */
-function isStandaloneTodoOverdue(task: TaskRow, logicalTodayYmd: string): boolean {
-  if (isTaskShelvedStatus(task.status)) return false;
-  if (!isStandaloneTodoOpen(task)) return false;
-  if (isTaskRowOverdue(task, logicalTodayYmd)) return true;
-  if (isStandaloneTodoScheduleExpired(task, logicalTodayYmd)) return true;
-
-  const repeat = parseTaskRepeatSchedule(task.extra_data);
-  if (repeat && !isTaskRepeatDueOnLogicalDay(logicalTodayYmd, repeat)) {
-    return isTaskRowOverdue(task, logicalTodayYmd) || isStandaloneTodoScheduleExpired(task, logicalTodayYmd);
-  }
-
-  return false;
-}
-
-function getStandaloneTodoOverdueSortMs(task: TaskRow): number {
-  const due = task.due_date?.slice(0, 10) ?? '';
-  if (due) {
-    const d = ymdToLocalDate(due);
-    if (d) return d.getTime();
-  }
-  const schedule = parseProjectSchedule(task.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.end) {
-    const endYmd = formatScheduleDateToYMD(schedule.range.end);
-    const d = ymdToLocalDate(endYmd);
-    if (d) return d.getTime();
-  }
-  if (schedule?.date) {
-    const d = ymdToLocalDate(formatScheduleDateToYMD(schedule.date));
-    if (d) return d.getTime();
-  }
-  const ms = Date.parse(task.created_at);
-  return Number.isNaN(ms) ? 0 : ms;
-}
-
-function getStandaloneTodoOverdueDisplayYmd(task: TaskRow): string {
-  const due = task.due_date?.slice(0, 10) ?? '';
-  if (due.trim()) return due;
-  const schedule = parseProjectSchedule(task.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.end) {
-    return formatScheduleDateToYMD(schedule.range.end);
-  }
-  if (schedule?.date) return formatScheduleDateToYMD(schedule.date);
-  return '';
-}
-
 /** 过期未完成待办在列表/四象限中按「紧急重要」展示与分组。 */
 function getEffectiveTaskPriority(task: TaskRow, logicalTodayYmd: string): number {
-  if (isTaskRowOverdue(task, logicalTodayYmd)) return URGENT_IMPORTANT_PRIORITY;
+  if (isTaskOverdueForList(task, logicalTodayYmd)) return URGENT_IMPORTANT_PRIORITY;
   return task.priority;
 }
 
@@ -1401,33 +1248,6 @@ function buildProjectTaskNodeById(nodes: TaskTreeNode[]): Map<string, TaskTreeNo
 /** 四象限任务列表：仅含挂项目或带子任务层级的行（与顶部「待办」区数据源分离） */
 function isMatrixScopeTask(task: TaskRow): boolean {
   return !!task.project_id || !!task.parent_task_id;
-}
-
-/** 本周列表：截止日/计划日落在当前自然周，或时段计划与本周有交集 */
-function isMatrixTaskInCurrentWeek(
-  task: TaskRow,
-  weekStartYmd: string,
-  weekEndYmd: string,
-): boolean {
-  const schedule = parseProjectSchedule(task.extra_data);
-
-  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
-    const end = formatScheduleDateToYMD(schedule.range.end);
-    if (start && end) return start <= weekEndYmd && weekStartYmd <= end;
-  }
-
-  if (schedule?.date) {
-    const schedYmd = formatScheduleDateToYMD(schedule.date);
-    if (schedYmd) return isYmdInRange(schedYmd, weekStartYmd, weekEndYmd);
-  }
-
-  const dueYmd = task.due_date?.trim().slice(0, 10) ?? '';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dueYmd)) {
-    return isYmdInRange(dueYmd, weekStartYmd, weekEndYmd);
-  }
-
-  return false;
 }
 
 /**
@@ -2291,7 +2111,7 @@ export default function TasksScreen() {
   const filteredTasks = React.useMemo(() => {
     const matrixScoped = tasks.filter(isMatrixScopeTask);
     const inCurrentWeek = matrixScoped.filter((t) =>
-      isMatrixTaskInCurrentWeek(t, currentWeekRange.startYmd, currentWeekRange.endYmd),
+      isMatrixTaskInCurrentWeek(t, currentWeekRange.startYmd, currentWeekRange.endYmd, logicalTodayYmd),
     );
     if (taskTab === 'all') {
       return inCurrentWeek.filter(
@@ -2586,7 +2406,7 @@ export default function TasksScreen() {
                 updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtra }))
               );
               try {
-                await updateTask(taskId, { extra_data: nextExtra });
+                await unassignFrogFromApi(taskId, frog.extra_data, frog as Record<string, unknown>);
               } catch (err) {
                 console.warn('取消青蛙指派失败', err);
                 Alert.alert('操作失败', '未能取消指派，请稍后重试。');

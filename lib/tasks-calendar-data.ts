@@ -4,9 +4,15 @@ import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-suc
 import { isHabitDayGoalMet, parseHabitDailyGoal } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { getTaskHabitTasksViewState } from '@/lib/repositories/habits/habit-task-period';
-import { isTaskRepeatDueOnLogicalDay, parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
+import {
+  addDaysToYmd,
+  formatScheduleDateToYMD,
+  isLogicalDayInYmdRange,
+  isStandaloneTodoVisibleOnDay,
+} from '@/lib/standalone-todo-visibility';
+
+export { addDaysToYmd } from '@/lib/standalone-todo-visibility';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
-import { getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { isTaskActiveStatus, type TaskRow } from '@/lib/repositories/tasks/task.types';
@@ -63,22 +69,6 @@ function formatYmd(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-export function addDaysToYmd(ymd: string, days: number): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
-  if (!m) return ymd;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  d.setDate(d.getDate() + days);
-  return formatYmd(d);
-}
-
-function formatScheduleDateToYMD(value: string): string {
-  const t = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
-  const d = new Date(t);
-  if (Number.isNaN(d.getTime())) return t.slice(0, 10);
-  return formatYmd(d);
-}
-
 function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
   if (!extraData) return null;
   try {
@@ -100,90 +90,6 @@ function parseTaskMeta(extraData: string | null): TaskMetaExtra {
     /* ignore */
   }
   return {};
-}
-
-function isLogicalDayInYmdRange(todayYmd: string, startYmd: string, endYmd: string): boolean {
-  if (!startYmd || !endYmd) return true;
-  if (todayYmd < startYmd) return false;
-  if (startYmd === endYmd) return todayYmd === startYmd;
-  if (endYmd === addDaysToYmd(startYmd, 1)) return todayYmd < endYmd;
-  return todayYmd <= endYmd;
-}
-
-function standaloneTodoPassesDayBoundaryFilter(
-  task: TaskRow,
-  boundary: TasksDayBoundary,
-  logicalViewYmd: string
-): boolean {
-  if (task.status !== 'done' && task.status !== 'cancelled') return true;
-  const raw = task.completed_at?.trim() || task.updated_at?.trim();
-  if (!raw) return true;
-  const ms = Date.parse(raw);
-  if (Number.isNaN(ms)) return true;
-  const doneLogicalYmd = getLogicalLocalYmd(new Date(ms), boundary);
-  return doneLogicalYmd >= logicalViewYmd;
-}
-
-function isStandaloneTodoOpen(task: TaskRow): boolean {
-  return isTaskActiveStatus(task.status);
-}
-
-function isStandaloneTodoScheduleExpired(task: TaskRow, logicalViewYmd: string): boolean {
-  if (!isStandaloneTodoOpen(task)) return false;
-  if (parseTaskRepeatSchedule(task.extra_data)) return false;
-  const schedule = parseProjectSchedule(task.extra_data);
-  if (!schedule) return false;
-  if (schedule.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
-    const end = formatScheduleDateToYMD(schedule.range.end);
-    return !isLogicalDayInYmdRange(logicalViewYmd, start, end);
-  }
-  if (schedule.date) {
-    return logicalViewYmd > formatScheduleDateToYMD(schedule.date);
-  }
-  return false;
-}
-
-function standaloneTodoPassesRepeatDayFilter(task: TaskRow, logicalViewYmd: string): boolean {
-  if (task.status === 'shelved') return true;
-  const schedule = parseTaskRepeatSchedule(task.extra_data);
-  if (!schedule) return true;
-  if (isTaskRepeatDueOnLogicalDay(logicalViewYmd, schedule)) return true;
-  if (!isStandaloneTodoOpen(task)) return false;
-  const dueYmd = task.due_date?.trim().slice(0, 10) ?? '';
-  const dueOverdue =
-    !!dueYmd &&
-    logicalViewYmd > dueYmd &&
-    task.status !== 'done' &&
-    task.status !== 'cancelled';
-  return dueOverdue || isStandaloneTodoScheduleExpired(task, logicalViewYmd);
-}
-
-function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalViewYmd: string): boolean {
-  if (task.status === 'shelved') return true;
-  if (parseTaskRepeatSchedule(task.extra_data)) return true;
-  const schedule = parseProjectSchedule(task.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
-    const end = formatScheduleDateToYMD(schedule.range.end);
-    if (isLogicalDayInYmdRange(logicalViewYmd, start, end)) return true;
-    return isStandaloneTodoOpen(task) && isStandaloneTodoScheduleExpired(task, logicalViewYmd);
-  }
-  if (schedule?.date) {
-    const schedYmd = formatScheduleDateToYMD(schedule.date);
-    if (logicalViewYmd === schedYmd) return true;
-    return isStandaloneTodoOpen(task) && logicalViewYmd > schedYmd;
-  }
-  return true;
-}
-
-function isStandaloneTodoVisibleOnDay(task: TaskRow, logicalViewYmd: string, boundary: TasksDayBoundary): boolean {
-  if (task.project_id || task.parent_task_id) return false;
-  return (
-    standaloneTodoPassesDayBoundaryFilter(task, boundary, logicalViewYmd) &&
-    standaloneTodoPassesRepeatDayFilter(task, logicalViewYmd) &&
-    standaloneTodoPassesScheduleWindowFilter(task, logicalViewYmd)
-  );
 }
 
 function isMatrixTask(task: TaskRow): boolean {

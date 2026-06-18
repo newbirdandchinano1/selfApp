@@ -21,6 +21,15 @@ export async function sanitizeRowForLocalSeed(
   if (table === 'projects') {
     return sanitizeProjectRowForLocalSeed(row);
   }
+  if (table === 'finance_transactions') {
+    return sanitizeFinanceTransactionRowForLocalSeed(row);
+  }
+  if (table === 'memos') {
+    return sanitizeMemoRowForLocalSeed(row);
+  }
+  if (table === 'recipe_items') {
+    return sanitizeRecipeItemRowForLocalSeed(row);
+  }
   return row;
 }
 
@@ -39,7 +48,8 @@ async function sanitizeTaskRowForLocalSeed(row: Record<string, unknown>): Promis
   if (projectId) {
     const projectReady = await ensureFkPresent('projects', projectId);
     if (!projectReady) {
-      next.project_id = null;
+      // 项目尚未同步到本地时不应静默清空 project_id
+      next.project_id = projectId;
     }
   } else {
     next.project_id = null;
@@ -65,14 +75,52 @@ async function sanitizeProjectRowForLocalSeed(row: Record<string, unknown>): Pro
   const categoryId = strId(next.category_id);
 
   if (categoryId) {
-    const categoryReady = await ensureFkPresent('project_categories', categoryId);
+    let categoryReady = await ensureFkPresent('project_categories', categoryId);
     if (!categoryReady) {
-      next.category_id = null;
+      // 与任务行一致：分类尚未同步到本地时不应静默清空 category_id
+      next.category_id = categoryId;
     }
   } else {
     next.category_id = null;
   }
 
+  return next;
+}
+
+async function preserveFkColumnWhenMissing(
+  next: Record<string, unknown>,
+  column: string,
+  parentTable: string,
+): Promise<void> {
+  const id = strId(next[column]);
+  if (!id) {
+    next[column] = null;
+    return;
+  }
+  const ready = await ensureFkPresent(parentTable, id);
+  if (!ready) {
+    next[column] = id;
+  }
+}
+
+async function sanitizeFinanceTransactionRowForLocalSeed(
+  row: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const next = { ...row };
+  await preserveFkColumnWhenMissing(next, 'flow_category_id', 'finance_flow_categories');
+  await preserveFkColumnWhenMissing(next, 'account_id', 'finance_accounts');
+  return next;
+}
+
+async function sanitizeMemoRowForLocalSeed(row: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const next = { ...row };
+  await preserveFkColumnWhenMissing(next, 'dimension_id', 'memo_dimensions');
+  return next;
+}
+
+async function sanitizeRecipeItemRowForLocalSeed(row: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const next = { ...row };
+  await preserveFkColumnWhenMissing(next, 'category_id', 'recipe_categories');
   return next;
 }
 
