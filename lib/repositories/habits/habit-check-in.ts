@@ -1,5 +1,5 @@
 import { makeCompositeEntityId } from '@/lib/entity-id';
-import { readApiTable } from '@/lib/api-read';
+import { invalidateInflightApiTableFetch, readApiTable } from '@/lib/api-read';
 import { isYmdInRange } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '../../tasks-logical-day';
@@ -7,6 +7,36 @@ import { getLogicalLocalYmd, loadTasksDayBoundary } from '../../tasks-logical-da
 /** 打卡行 id：用 habitId 摘要避免 hci_{完整habitId}_{日期} 超过 MySQL VARCHAR(36) */
 export function habitCheckInRowId(habitId: string, recordDateYmd: string): string {
   return makeCompositeEntityId('hci_', habitId, recordDateYmd.replace(/-/g, ''));
+}
+
+let habitCheckInApiSyncChain: Promise<void> = Promise.resolve();
+
+/** 将 habit_check_ins 待同步行推送到 REST；补卡/撤销后应 `awaitSync: true` 再 reload */
+export async function pushHabitCheckInChangesToApi(opts?: { awaitSync?: boolean }): Promise<void> {
+  const { markApiTableDirty } = await import('@/lib/api-incremental-sync');
+  markApiTableDirty('habit_check_ins');
+
+  const run = async () => {
+    const { flushApiDirtyTablesNow } = await import('@/lib/api-incremental-sync');
+    await flushApiDirtyTablesNow({ rethrow: true });
+  };
+
+  const task = habitCheckInApiSyncChain.then(run);
+  habitCheckInApiSyncChain = task.catch(() => {});
+
+  if (opts?.awaitSync) {
+    try {
+      await task;
+    } catch (e) {
+      const detail = e instanceof Error && e.message.trim() ? e.message : '未知错误';
+      throw new Error(`本地已保存，但同步到服务器失败：${detail}\n请检查网络或登录状态后重试。`);
+    }
+    return;
+  }
+
+  void task.catch(e => {
+    if (__DEV__) console.warn('[habit-check-in] 后台同步到服务器失败', e);
+  });
 }
 
 async function loadActiveHabitIds(): Promise<Set<string>> {
@@ -26,12 +56,35 @@ async function loadActiveCheckIns(): Promise<
   return checkIns.filter(c => habitIds.has(c.habit_id) && (c.count ?? 0) >= 1);
 }
 
-/** 当前习惯所有有效打卡日 → YYYY-MM-DD → 次数（不含已软删） */
+/** 本地 SQLite 中该习惯的打卡次数（pending 覆盖 synced；pending_delete 视为无记录） */
+async function readLocalCheckInsForHabit(habitId: string): Promise<Record<string, number>> {
+  const db = await getDatabase();
+  if (!db) return {};
+  const rows = await db.getAllAsync<{ record_date: string; count: number; sync_status: string }>(
+    `SELECT record_date, count, sync_status FROM habit_check_ins WHERE habit_id = ?`,
+    [habitId],
+  );
+  const out: Record<string, number> = {};
+  for (const r of rows) {
+    if (r.sync_status === 'pending_delete') {
+      delete out[r.record_date];
+      continue;
+    }
+    const count = r.count ?? 0;
+    if (count >= 1) out[r.record_date] = count;
+  }
+  return out;
+}
+
+/** 当前习惯所有有效打卡日 → YYYY-MM-DD → 次数（REST + 本地 pending 合并，本地优先） */
 export async function getCheckInsMapByHabitId(habitId: string): Promise<Record<string, number>> {
-  const checkIns = await loadActiveCheckIns();
+  const [checkIns, fromLocal] = await Promise.all([loadActiveCheckIns(), readLocalCheckInsForHabit(habitId)]);
   const out: Record<string, number> = {};
   for (const r of checkIns.filter(c => c.habit_id === habitId)) {
     out[r.record_date] = r.count;
+  }
+  for (const [ymd, count] of Object.entries(fromLocal)) {
+    out[ymd] = count;
   }
   return out;
 }
@@ -41,6 +94,9 @@ export async function getCheckInsMapByHabitId(habitId: string): Promise<Record<s
  */
 export async function upsertHabitDayCount(habitId: string, recordDateYmd: string, count: number): Promise<void> {
   const db = await getDatabase();
+  if (!db) {
+    throw new Error('本地数据库不可用，无法保存打卡');
+  }
   if (count <= 0) {
     const existing = await db.getFirstAsync<{ id: string; sync_status: string }>(
       `SELECT id, sync_status FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
@@ -58,6 +114,7 @@ export async function upsertHabitDayCount(habitId: string, recordDateYmd: string
         [existing.id],
       );
     }
+    invalidateInflightApiTableFetch('habit_check_ins');
     return;
   }
 
@@ -75,6 +132,7 @@ export async function upsertHabitDayCount(habitId: string, recordDateYmd: string
         WHERE id = ?`,
       [count, existing.id]
     );
+    invalidateInflightApiTableFetch('habit_check_ins');
     return;
   }
 
@@ -86,6 +144,7 @@ export async function upsertHabitDayCount(habitId: string, recordDateYmd: string
     ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create')`,
     [id, habitId, recordDateYmd, count]
   );
+  invalidateInflightApiTableFetch('habit_check_ins');
 }
 
 export type IncrementTodayHabitCheckInResult = {

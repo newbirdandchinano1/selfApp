@@ -261,6 +261,9 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
   if ((rowsByTable.get('memo_dimensions')?.length ?? 0) > 0 && !seedWithRefs.includes('memo_dimensions')) {
     seedWithRefs.push('memo_dimensions');
   }
+  if ((rowsByTable.get('habit_check_ins')?.length ?? 0) > 0 && !seedWithRefs.includes('habits')) {
+    seedWithRefs.push('habits');
+  }
 
   const effectiveOrder = (await resolveApiPushInsertOrder(seedWithRefs)).filter(
     t => (rowsByTable.get(t)?.length ?? 0) > 0,

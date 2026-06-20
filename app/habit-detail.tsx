@@ -4,6 +4,7 @@ import {
   getCheckInsMapByHabitId,
   getHabitCheckInDbCountForDay,
   incrementHabitCheckInForDay,
+  pushHabitCheckInChangesToApi,
 } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
@@ -38,7 +39,13 @@ import {
   parseTaskRepeatPeriod,
 } from '@/lib/repositories/habits/habit-task-period';
 import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
-import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
+import {
+  addDaysToLogicalYmd,
+  DEFAULT_TASKS_DAY_BOUNDARY,
+  getLogicalLocalYmd,
+  logicalYmdToLocalDate,
+} from '@/lib/tasks-logical-day';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
@@ -229,6 +236,7 @@ export default function HabitDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const { logicalTodayYmd } = useDayBoundary();
   const scrollTopPad = insets.top + TOP_BAR_BODY_H;
   const params = useLocalSearchParams<{ habitId?: string }>();
   const habitId = pickParam(params.habitId);
@@ -237,11 +245,11 @@ export default function HabitDetailScreen() {
   const [habit, setHabit] = React.useState<HabitRow | null>(null);
   const [checkIns, setCheckIns] = React.useState<Record<string, number>>({});
 
-  const [focusDate, setFocusDate] = React.useState(() => {
-    const t = new Date();
-    t.setHours(0, 0, 0, 0);
-    return t;
-  });
+  const [focusDate, setFocusDate] = React.useState(() =>
+    logicalYmdToLocalDate(
+      addDaysToLogicalYmd(getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), -1)
+    )
+  );
   const [calendarMonth, setCalendarMonth] = React.useState(() => {
     const t = new Date();
     return new Date(t.getFullYear(), t.getMonth(), 1);
@@ -252,11 +260,16 @@ export default function HabitDetailScreen() {
   const [datePickerOpen, setDatePickerOpen] = React.useState(false);
   const [makeUpSaving, setMakeUpSaving] = React.useState(false);
   const [cancelMakeUpSaving, setCancelMakeUpSaving] = React.useState(false);
-  const [logicalTodayYmd, setLogicalTodayYmd] = React.useState(() =>
-    getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY)
-  );
 
   const focusYmd = React.useMemo(() => toYMD(focusDate), [focusDate]);
+
+  React.useEffect(() => {
+    setFocusDate((prev) => {
+      const ymd = toYMD(prev);
+      if (ymd < logicalTodayYmd) return prev;
+      return logicalYmdToLocalDate(addDaysToLogicalYmd(logicalTodayYmd, -1));
+    });
+  }, [logicalTodayYmd]);
 
   const reload = React.useCallback(
     async (forceApi = false) => {
@@ -268,8 +281,6 @@ export default function HabitDetailScreen() {
         }
         setLoading(true);
         try {
-          const boundary = await loadTasksDayBoundary();
-          setLogicalTodayYmd(getLogicalLocalYmd(new Date(), boundary));
           await syncBreakHabitCompletions();
           await syncBuildHabitCompletions();
           const row = await getHabitById(habitId);
@@ -468,17 +479,14 @@ export default function HabitDetailScreen() {
 
   const handleMakeUpCheckIn = React.useCallback(async () => {
     if (!habit) return;
-    const boundary = await loadTasksDayBoundary();
-    const todayYmd = getLogicalLocalYmd(new Date(), boundary);
-    setLogicalTodayYmd(todayYmd);
     const ymd = focusYmd;
-    if (ymd >= todayYmd) {
+    if (ymd >= logicalTodayYmd) {
       Alert.alert('提示', '补卡仅适用于已过去的日期；今天请在任务页打卡，或先选择更早的日期。');
       return;
     }
     setMakeUpSaving(true);
     try {
-      const { increased } = await incrementHabitCheckInForDay(habit.id, ymd, incrementCap);
+      const { increased, nextCount } = await incrementHabitCheckInForDay(habit.id, ymd, incrementCap);
       if (!increased) {
         Alert.alert(
           '已达上限',
@@ -488,28 +496,26 @@ export default function HabitDetailScreen() {
         );
         return;
       }
+      setCheckIns((prev) => ({ ...prev, [ymd]: nextCount }));
       void playHabitCheckInDing();
+      await pushHabitCheckInChangesToApi({ awaitSync: true });
       if (habit && parseHabitKind(habit.extra_data) === 'build') {
-        const boundary = await loadTasksDayBoundary();
-        const todayYmd = getLogicalLocalYmd(new Date(), boundary);
-        await tryMarkBuildHabitCompleted(habit, todayYmd);
+        await tryMarkBuildHabitCompleted(habit, logicalTodayYmd);
       }
-      await reload();
+      await reload(true);
     } catch (e) {
       console.warn('习惯补卡失败', e);
-      Alert.alert('操作失败', '补卡未保存，请稍后重试。');
+      const msg = e instanceof Error && e.message.trim() ? e.message : '补卡未保存，请稍后重试。';
+      Alert.alert('操作失败', msg);
     } finally {
       setMakeUpSaving(false);
     }
-  }, [habit, focusYmd, incrementCap, reload]);
+  }, [habit, focusYmd, incrementCap, logicalTodayYmd, reload]);
 
   const handleCancelMakeUpCheckIn = React.useCallback(async () => {
     if (!habit) return;
-    const boundary = await loadTasksDayBoundary();
-    const todayYmd = getLogicalLocalYmd(new Date(), boundary);
-    setLogicalTodayYmd(todayYmd);
     const ymd = focusYmd;
-    if (ymd >= todayYmd) {
+    if (ymd >= logicalTodayYmd) {
       Alert.alert('提示', '取消补卡仅适用于已过去的日期；今天的打卡请在任务页双击图标撤销。');
       return;
     }
@@ -528,15 +534,23 @@ export default function HabitDetailScreen() {
     }
     setCancelMakeUpSaving(true);
     try {
-      await decrementHabitCheckInForDay(habit.id, ymd);
-      await reload();
+      const nextCount = await decrementHabitCheckInForDay(habit.id, ymd);
+      setCheckIns((prev) => {
+        const next = { ...prev };
+        if (nextCount <= 0) delete next[ymd];
+        else next[ymd] = nextCount;
+        return next;
+      });
+      await pushHabitCheckInChangesToApi({ awaitSync: true });
+      await reload(true);
     } catch (e) {
       console.warn('取消补卡失败', e);
-      Alert.alert('操作失败', '未能撤销，请稍后重试。');
+      const msg = e instanceof Error && e.message.trim() ? e.message : '未能撤销，请稍后重试。';
+      Alert.alert('操作失败', msg);
     } finally {
       setCancelMakeUpSaving(false);
     }
-  }, [habit, focusYmd, checkIns, reload]);
+  }, [habit, focusYmd, checkIns, logicalTodayYmd, reload]);
 
   if (!habitId) {
     return (

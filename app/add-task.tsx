@@ -26,6 +26,7 @@ import {
   parseDefaultScheduleParam,
   resolveInheritedDefaultSchedule,
 } from '@/lib/schedule-inherit';
+import { setAddTaskResult } from '@/lib/add-task-bridge';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatWriteError } from '@/lib/format-write-error';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
@@ -133,15 +134,6 @@ type TaskScheduleMeta = Pick<
   | 'startTime'
   | 'endTime'
 >;
-declare global {
-  // eslint-disable-next-line no-var
-  var __addTaskResult:
-    | {
-        source: string;
-        task: Subtask;
-      }
-    | undefined;
-}
 const MAX_PROJECT_TASK_TITLE_LENGTH = 30;
 const MAX_STANDALONE_TODO_TITLE_LENGTH = 50;
 const STANDALONE_SCHEDULE_SOURCE = 'add-standalone-todo';
@@ -614,7 +606,7 @@ export default function AddTaskScreen() {
       }
       return;
     }
-    globalThis.__addTaskResult = {
+    setAddTaskResult({
       source: scheduleSource,
       task: {
         id: `task-${Date.now()}`,
@@ -633,7 +625,7 @@ export default function AddTaskScreen() {
         schedule: scheduleMeta,
         isLongTermTask,
       },
-    };
+    });
     router.back();
   };
 

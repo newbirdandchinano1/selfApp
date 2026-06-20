@@ -1,16 +1,15 @@
 import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
-import { makeTimestampEntityId } from '@/lib/entity-id';
 import { AppIconButton } from '@/components/ui';
 import { Layout, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { cancelAutoLedgerJob } from '@/lib/auto-ledger-runner';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { shouldSkipDuplicateAutoLedgerImage } from '@/lib/auto-ledger-dedupe';
 import {
     subscribeAutoLedgerCompleted,
     subscribeAutoLedgerUiState,
 } from '@/lib/auto-ledger-events';
-import { shouldSkipDuplicateAutoLedgerImage } from '@/lib/auto-ledger-dedupe';
 import { notifyAutoLedgerFailure, notifyAutoLedgerHint } from '@/lib/auto-ledger-notify';
 import {
     AUTO_LEDGER_HANDOFF_SPLASH_MS,
@@ -18,14 +17,16 @@ import {
     AUTO_LEDGER_RETRY_DELAY_MS,
     sleepMs,
 } from '@/lib/auto-ledger-retry';
+import { cancelAutoLedgerJob } from '@/lib/auto-ledger-runner';
 import {
     enterAutoLedgerSession,
     leaveAutoLedgerSession,
     runInAutoLedgerSession,
 } from '@/lib/auto-ledger-session';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
-import { resolveHappenedAtForBillLedger } from '@/lib/finance-bill-happened-at';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
+import { resolveHappenedAtForBillLedger } from '@/lib/finance-bill-happened-at';
 import {
     loadFinanceDefaultAccounts,
     sanitizeFinanceDefaultAccounts,
@@ -37,7 +38,6 @@ import {
     clampBudgetRefreshDay,
     computeDailyBudgetFromPeriodSurplus,
     DEFAULT_BUDGET_REFRESH_DAY,
-    resolvePeriodBudgetSurplus,
     formatBudgetPeriodCountdownLabel,
     formatBudgetPeriodEndDateLabel,
     getBudgetMonthKeyForDate,
@@ -49,6 +49,7 @@ import {
     loadMonthBudgetSettings,
     persistBudgetRefreshDay,
     persistMonthBudgetSettings,
+    resolvePeriodBudgetSurplus,
     sumBudgetFixedExpenses,
     type BudgetFixedExpense,
     type MonthBudgetSetting,
@@ -62,6 +63,7 @@ import {
     type FinanceSheetLaunchIntent,
 } from '@/lib/finance-sheet-launch-intent';
 import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
+import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import {
     createFinanceTransaction,
     createFinanceTransferTransactions,
@@ -99,8 +101,6 @@ import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import {
     ActivityIndicator,
     Alert,
@@ -545,6 +545,7 @@ export default function FinanceScreen() {
   const [isTodayBudgetHintVisible, setIsTodayBudgetHintVisible] = React.useState(false);
   const [budgetBaseDraft, setBudgetBaseDraft] = React.useState('');
   const [periodSurplusDraft, setPeriodSurplusDraft] = React.useState('');
+  const [periodSurplusLoadedFromBudget, setPeriodSurplusLoadedFromBudget] = React.useState<number | null>(null);
   const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
   const [fixedExpensesDraft, setFixedExpensesDraft] = React.useState<BudgetFixedExpense[]>([]);
   const [payingFixedExpenseId, setPayingFixedExpenseId] = React.useState<string | null>(null);
@@ -1415,13 +1416,16 @@ export default function FinanceScreen() {
   const budgetPreviewGross = modalIncludeLast ? baseForBudgetPreview + lastMonthRemaining : baseForBudgetPreview;
   const budgetPreviewTotal = Math.max(0, budgetPreviewGross - previewFixedExpensesTotal);
   const autoPeriodSurplus = budgetTotalAmount - monthlyBudgetExpense;
-  const autoPeriodSurplusPreview = budgetPreviewTotal - monthlyBudgetExpense;
-  const budgetSurplusAmount = resolvePeriodBudgetSurplus(
-    budgetTotalAmount,
-    monthlyBudgetExpense,
-    persistedBudgetSetting?.periodSurplusOverride,
-  );
+  /**
+   * 页面主展示始终按「预算总额 - 已用」实时计算，避免预算结余被手动草稿值或旧的覆盖值锁死。
+   * 预算详情弹层里的输入仍可用于手动校正，但不会影响主卡片的自动刷新。
+   */
+  const budgetSurplusAmount = budgetTotalAmount - monthlyBudgetExpense;
   const parsedPeriodSurplusDraft = parseFloat(periodSurplusDraft.trim().replace(/,/g, ''));
+  const isPeriodSurplusDirty =
+    periodSurplusLoadedFromBudget == null ||
+    !Number.isFinite(parsedPeriodSurplusDraft) ||
+    Math.abs(parsedPeriodSurplusDraft - periodSurplusLoadedFromBudget) >= 0.005;
   const budgetUsedPercentRaw = budgetTotalAmount > 0 ? (monthlyBudgetExpense / budgetTotalAmount) * 100 : 0;
   const budgetUsedPercent = Math.min(100, Math.max(0, budgetUsedPercentRaw));
   /** 调整预算弹层打开时用草稿预览，使「今日可用」与固定支出/基数/结余编辑同步。 */
@@ -2198,13 +2202,9 @@ export default function FinanceScreen() {
     const gross = inc ? base + lastMonthRemaining : base;
     const total = Math.max(0, gross - fixedTotal);
     const autoSurplus = total - monthlyBudgetExpense;
-    const surplusOverride = row?.periodSurplusOverride;
     setBudgetBaseDraft(base.toFixed(2));
-    setPeriodSurplusDraft(
-      typeof surplusOverride === 'number' && Number.isFinite(surplusOverride)
-        ? surplusOverride.toFixed(2)
-        : autoSurplus.toFixed(2),
-    );
+    setPeriodSurplusDraft(autoSurplus.toFixed(2));
+    setPeriodSurplusLoadedFromBudget(autoSurplus);
     setModalIncludeLast(inc);
     setFixedExpensesDraft(row?.fixedExpenses ? row.fixedExpenses.map((item) => ({ ...item })) : []);
     setBudgetRefreshDayDraft(budgetRefreshDay);
@@ -2437,7 +2437,8 @@ export default function FinanceScreen() {
     const previewFixedTotal = sumBudgetFixedExpenses(fixedExpenses);
     const previewTotal = Math.max(0, previewGross - previewFixedTotal);
     const autoSurplus = previewTotal - monthlyBudgetExpense;
-    const hasSurplusOverride = Math.abs(surplusN - autoSurplus) >= 0.005;
+    const surplusDelta = surplusN - autoSurplus;
+    const adjustedBase = Math.max(0, n + surplusDelta);
     const nextRefresh = clampBudgetRefreshDay(budgetRefreshDayDraft);
     markPageDirty();
     void persistBudgetRefreshDay(nextRefresh);
@@ -2446,10 +2447,9 @@ export default function FinanceScreen() {
       const next = {
         ...prev,
         [currentMonthKey]: {
-          baseAmount: n,
+          baseAmount: adjustedBase,
           includeLastBalance: modalIncludeLast,
           ...(fixedExpenses.length > 0 ? { fixedExpenses } : {}),
-          ...(hasSurplusOverride ? { periodSurplusOverride: surplusN } : {}),
         },
       };
       void persistMonthBudgetSettings(next);
@@ -4562,9 +4562,7 @@ export default function FinanceScreen() {
                       selectTextOnFocus
                     />
                   </View>
-                  <Text style={[styles.budgetPeriodSurplusAutoHint, { color: subtle }]}>
-                    自动计算 {formatCurrencyWithDecimals(autoPeriodSurplusPreview)}
-                  </Text>
+                  <Text style={[styles.budgetPeriodSurplusAutoHint, { color: subtle }]}>你修改结余后，会自动折算到月预算基数里</Text>
                 </Pressable>
               </View>
 

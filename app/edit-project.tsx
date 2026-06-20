@@ -8,6 +8,7 @@ import {
   scheduleMetaToDateLimit,
 } from '@/lib/schedule-inherit';
 import { tightenAllProjectTasks } from '@/lib/tighten-task-schedules';
+import { consumeAddTaskResult } from '@/lib/add-task-bridge';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
@@ -147,16 +148,6 @@ type DateLimitYmd = {
   start?: string;
   end?: string;
 };
-
-declare global {
-  // eslint-disable-next-line no-var
-  var __addTaskResult:
-    | {
-        source: string;
-        task: Subtask;
-      }
-    | undefined;
-}
 
 function formatDate(value: string): string {
   const v = value.trim();
@@ -509,15 +500,12 @@ export default function EditProjectScreen() {
     return true;
   }, [scheduleSource]);
 
-  const readAddTaskResult = React.useCallback(async () => {
-    const payload = globalThis.__addTaskResult as { source: string; task: Subtask } | undefined;
-    if (!payload || payload.source !== addTaskSource) return;
-    if (!projectId) {
-      globalThis.__addTaskResult = undefined;
-      return;
-    }
+  const readAddTaskResult = React.useCallback(async (): Promise<boolean> => {
+    const payload = consumeAddTaskResult(addTaskSource);
+    if (!payload) return false;
+    if (!projectId) return true;
 
-    const task = payload.task;
+    const task = payload.task as Subtask;
     const normalizedCategoryId = resolveProjectCategoryIdForSave(
       selectedCategoryIdRef.current,
       projectSnapshotRef.current?.category_id,
@@ -525,7 +513,7 @@ export default function EditProjectScreen() {
     );
 
     try {
-      const taskSchedule = task.schedule ?? null;
+      const taskSchedule = (task.schedule ?? null) as ProjectScheduleMeta | null;
       const dueDate = dueDateFromScheduleMeta(
         taskSchedule,
         extractDueDate(task.deadline || task.deadlineText || ''),
@@ -550,14 +538,14 @@ export default function EditProjectScreen() {
           task.isLongTermTask === true,
         ),
       });
-      globalThis.__addTaskResult = undefined;
       setSubtasks((prev) => [...prev, { ...task, children: [] }]);
       setPersistedTaskIds((prev) => new Set(prev).add(task.id));
       showToast('已加入项目');
+      return true;
     } catch (error) {
       console.warn('添加任务写入失败', error);
-      globalThis.__addTaskResult = undefined;
       Alert.alert('任务保存失败', formatWriteError(error, '任务未能写入数据库，请返回重新添加或稍后重试。'));
+      return true;
     }
   }, [addTaskSource, projectId, showToast]);
 
@@ -729,9 +717,9 @@ export default function EditProjectScreen() {
       let cancelled = false;
       void (async () => {
         const consumedSchedule = readScheduleResultRef.current();
-        await readAddTaskResultRef.current();
+        const consumedAddTask = await readAddTaskResultRef.current();
         if (cancelled) return;
-        if (!consumedSchedule) {
+        if (!consumedSchedule && !consumedAddTask) {
           await reloadProjectSnapshotOnlyRef.current();
           await reloadSubtasksOnlyRef.current();
         }

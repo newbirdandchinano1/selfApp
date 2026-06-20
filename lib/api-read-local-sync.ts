@@ -25,7 +25,12 @@ export type ApplyApiReadToLocalOptions = {
  * 财务账户/流水不做「快照差量物理删除」：后端若尚未收到初始余额等流水，
  * reconcile 会把本地已 synced 的流水删掉，导致账本余额归零。
  */
-const API_RECONCILE_SKIP_TABLES = new Set(['finance_accounts', 'finance_transactions']);
+const API_RECONCILE_SKIP_TABLES = new Set([
+  'finance_accounts',
+  'finance_transactions',
+  /** 打卡增量上传后 REST 列表可能尚未包含新行，reconcile 会误删本地已 synced 记录 */
+  'habit_check_ins',
+]);
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
