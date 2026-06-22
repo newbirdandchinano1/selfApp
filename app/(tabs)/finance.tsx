@@ -34,7 +34,6 @@ import {
 } from '@/lib/finance-default-accounts';
 import {
     budgetDaysLeftIncludingToday,
-    budgetPeriodLengthDays,
     clampBudgetRefreshDay,
     computeDailyBudgetFromPeriodSurplus,
     DEFAULT_BUDGET_REFRESH_DAY,
@@ -558,7 +557,7 @@ export default function FinanceScreen() {
   const [visibleDayCount, setVisibleDayCount] = React.useState(INITIAL_HISTORY_DAY_SLICES);
   const [isLoadingMoreDays, setIsLoadingMoreDays] = React.useState(false);
   const [sheetImageUris, setSheetImageUris] = React.useState<string[]>([]);
-  /** 支出是否计入本月预算（收入页不展示该项，保存时也不会写入排除标记） */
+  /** 支出/收入是否计入本月预算 */
   const [sheetIncludeInBudget, setSheetIncludeInBudget] = React.useState(true);
   const sheetIncludeInBudgetRef = React.useRef(true);
   const applySheetIncludeInBudget = React.useCallback((value: boolean | ((prev: boolean) => boolean)) => {
@@ -1335,6 +1334,17 @@ export default function FinanceScreen() {
     [getTxnDisplayAmount, budgetPeriodTransactions]
   );
 
+  const monthlyBudgetIncome = React.useMemo(
+    () =>
+      budgetPeriodTransactions.reduce((sum, txn) => {
+        if (txn.transaction_type !== 'income') return sum;
+        if (isFinanceTransactionExcludedFromBudget(txn.extra_data)) return sum;
+        const displayAmount = getTxnDisplayAmount(txn);
+        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
+      }, 0),
+    [getTxnDisplayAmount, budgetPeriodTransactions]
+  );
+
   /** 本预算周期内，各固定支出快速支付产生的全部流水 ID（含连点竞态产生的重复记录）。 */
   const budgetFixedExpenseTxnIdsByFixedId = React.useMemo(() => {
     const map = new Map<string, string[]>();
@@ -1377,15 +1387,6 @@ export default function FinanceScreen() {
   );
   const lastMonthRemaining = Math.max(0, prevBudgetPeriodIncome - prevBudgetPeriodExpense);
 
-  const budgetPeriodIncome = React.useMemo(
-    () =>
-      budgetPeriodTransactions.reduce((sum, txn) => {
-        const displayAmount = getTxnDisplayAmount(txn);
-        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
-      }, 0),
-    [getTxnDisplayAmount, budgetPeriodTransactions]
-  );
-
   const hiddenAmountText = '****';
   const monthlyIncomeText = showNetAmounts ? formatCurrencyWithDecimals(monthlyIncome) : hiddenAmountText;
   const monthlyExpenseText = showNetAmounts ? formatCurrencyWithDecimals(monthlyExpense) : hiddenAmountText;
@@ -1393,7 +1394,6 @@ export default function FinanceScreen() {
   const monthlySurplusColor = monthlySurplus > 0 ? secondary : monthlySurplus < 0 ? '#dc2626' : text;
   const savingRateText = showNetAmounts ? `${savingsRate.toFixed(1)}%` : '--';
 
-  const budgetPeriodTotalDays = budgetPeriodLengthDays(budgetPeriodStart, budgetPeriodEndExclusive);
   const daysLeftIncludingToday = budgetDaysLeftIncludingToday(today, budgetPeriodEndExclusive);
   const budgetPeriodLastDay = getBudgetPeriodLastInclusiveDay(budgetPeriodEndExclusive);
   const budgetPeriodCountdownLabel = formatBudgetPeriodCountdownLabel(daysLeftIncludingToday);
@@ -1408,14 +1408,17 @@ export default function FinanceScreen() {
   const grossBudgetAmount = includeLastBalanceEffective
     ? effectiveBaseBudget + lastMonthRemaining
     : effectiveBaseBudget;
-  const budgetTotalAmount = Math.max(0, grossBudgetAmount - persistedFixedExpensesTotal);
+  const budgetTotalAmount = Math.max(
+    0,
+    grossBudgetAmount - persistedFixedExpensesTotal + monthlyBudgetIncome,
+  );
   const parsedBudgetDraft = parseFloat(budgetBaseDraft.trim().replace(/,/g, ''));
   const baseForBudgetPreview =
     Number.isFinite(parsedBudgetDraft) && parsedBudgetDraft >= 0 ? parsedBudgetDraft : effectiveBaseBudget;
   const previewFixedExpensesTotal = sumBudgetFixedExpenses(fixedExpensesDraft);
   const budgetPreviewGross = modalIncludeLast ? baseForBudgetPreview + lastMonthRemaining : baseForBudgetPreview;
-  const budgetPreviewTotal = Math.max(0, budgetPreviewGross - previewFixedExpensesTotal);
-  const autoPeriodSurplus = budgetTotalAmount - monthlyBudgetExpense;
+  const budgetPreviewTotal = Math.max(0, budgetPreviewGross - previewFixedExpensesTotal + monthlyBudgetIncome);
+  const autoPeriodSurplusPreview = budgetPreviewTotal - monthlyBudgetExpense;
   /**
    * 页面主展示始终按「预算总额 - 已用」实时计算，避免预算结余被手动草稿值或旧的覆盖值锁死。
    * 预算详情弹层里的输入仍可用于手动校正，但不会影响主卡片的自动刷新。
@@ -1440,14 +1443,9 @@ export default function FinanceScreen() {
     todayBudgetTotalAmount,
     daysLeftIncludingToday,
   );
-  const dailyBudgetFromIncome =
-    budgetPeriodIncome > 0 ? budgetPeriodIncome / budgetPeriodTotalDays : 0;
-  const hasConfiguredMonthBudget = isBudgetAdjustVisible || currentMonthKey in monthBudgetSettings;
-  const dailyBudgetAmount = hasConfiguredMonthBudget
-    ? dailyBudgetFromRemaining
-    : dailyBudgetFromIncome > 0
-      ? dailyBudgetFromIncome
-      : dailyBudgetFromRemaining;
+  const hasConfiguredMonthBudget =
+    isBudgetAdjustVisible || currentMonthKey in monthBudgetSettings || monthlyBudgetIncome > 0;
+  const dailyBudgetAmount = dailyBudgetFromRemaining;
   const todayAvailableAmount = Math.max(0, dailyBudgetAmount - todayBudgetExpenseTotal);
   const isPeriodBudgetDepleted = todayBudgetSurplusAmount <= 0;
   const todayBudgetOverAmount =
@@ -1465,9 +1463,7 @@ export default function FinanceScreen() {
   const budgetUiIncludePrevLabel = budgetUiNaturalMonth ? '包含上月结余' : '包含上周期结余';
   const todayBudgetDailyExplain = hasConfiguredMonthBudget
     ? `剩余预算 ÷ 含今天在内的 ${daysLeftIncludingToday} 天`
-    : budgetPeriodIncome > 0
-      ? `本周期收入 ÷ ${budgetPeriodTotalDays} 天（未设置月预算时）`
-      : `${budgetUiScopeShort}预算 ÷ 含今天在内的 ${daysLeftIncludingToday} 天`;
+    : `${budgetUiScopeShort}预算 ÷ 含今天在内的 ${daysLeftIncludingToday} 天`;
 
   /** 净资产汇总：排除标记为「不计入总资产/总负债」的账户，与资产页 hero、账户详情开关一致 */
   const netTotalForTrend = React.useMemo(
@@ -2200,8 +2196,8 @@ export default function FinanceScreen() {
     const inc = row?.includeLastBalance ?? false;
     const fixedTotal = sumBudgetFixedExpenses(row?.fixedExpenses);
     const gross = inc ? base + lastMonthRemaining : base;
-    const total = Math.max(0, gross - fixedTotal);
-    const autoSurplus = total - monthlyBudgetExpense;
+    const totalWithIncome = Math.max(0, gross - fixedTotal + monthlyBudgetIncome);
+    const autoSurplus = totalWithIncome - monthlyBudgetExpense;
     setBudgetBaseDraft(base.toFixed(2));
     setPeriodSurplusDraft(autoSurplus.toFixed(2));
     setPeriodSurplusLoadedFromBudget(autoSurplus);
@@ -2215,6 +2211,7 @@ export default function FinanceScreen() {
     lastMonthRemaining,
     monthBudgetSettings,
     monthlyBudgetExpense,
+    monthlyBudgetIncome,
   ]);
 
   const handleAddFixedExpense = React.useCallback(() => {
@@ -2435,7 +2432,7 @@ export default function FinanceScreen() {
     const fixedExpenses = sanitizeFixedExpensesDraft();
     const previewGross = modalIncludeLast ? n + lastMonthRemaining : n;
     const previewFixedTotal = sumBudgetFixedExpenses(fixedExpenses);
-    const previewTotal = Math.max(0, previewGross - previewFixedTotal);
+    const previewTotal = Math.max(0, previewGross - previewFixedTotal + monthlyBudgetIncome);
     const autoSurplus = previewTotal - monthlyBudgetExpense;
     const surplusDelta = surplusN - autoSurplus;
     const adjustedBase = Math.max(0, n + surplusDelta);
@@ -2465,6 +2462,7 @@ export default function FinanceScreen() {
     markPageDirty,
     modalIncludeLast,
     monthlyBudgetExpense,
+    monthlyBudgetIncome,
     periodSurplusDraft,
     sanitizeFixedExpensesDraft,
   ]);
@@ -4022,7 +4020,7 @@ export default function FinanceScreen() {
                     </Pressable>
                   </View>
 
-                  {activeSheetTab === 'expense' || activeSheetTab === 'sentence' ? (
+                  {activeSheetTab === 'expense' || activeSheetTab === 'income' || activeSheetTab === 'sentence' ? (
                     <Pressable
                       accessibilityRole="switch"
                       accessibilityLabel="计入本月预算"
@@ -4047,8 +4045,12 @@ export default function FinanceScreen() {
                           <Text style={[styles.sheetBudgetTitle, { color: text }]}>计入本月预算</Text>
                           <Text style={[styles.sheetBudgetSubtitle, { color: subtle }]} numberOfLines={2}>
                             {sheetIncludeInBudget
-                              ? '占用本月预算与「今日可用」计算'
-                              : '仍记为支出，不参与预算与今日可用'}
+                              ? activeSheetTab === 'income'
+                                ? '增加本月预算与「今日可用」计算'
+                                : '占用本月预算与「今日可用」计算'
+                              : activeSheetTab === 'income'
+                                ? '仍记为收入，不参与预算与今日可用'
+                                : '仍记为支出，不参与预算与今日可用'}
                           </Text>
                         </View>
                       </View>
@@ -4705,7 +4707,7 @@ export default function FinanceScreen() {
                     {showNetAmounts ? formatCurrencyWithDecimals(todayBudgetSurplusAmount) : hiddenAmountText}
                   </Text>
                   <Text style={[styles.budgetHintExplain, { color: subtle }]}>
-                    {budgetUiScopeShort}真实可支配预算减去本周期已计入预算的支出；可在预算详情中手动校正结余。标记为「不计入预算」的支出不会减少剩余预算。
+                    {budgetUiScopeShort}预算总额含基数与计入预算的收入，减去本周期已计入预算的支出；可在预算详情中手动校正结余。计入预算的收入会增加总额；标记为「不计入预算」的支出不会减少剩余预算。
                   </Text>
                 </View>
               </View>

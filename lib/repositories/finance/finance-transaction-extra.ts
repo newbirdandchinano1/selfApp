@@ -1,6 +1,7 @@
 /**
  * 财务流水 `extra_data`（JSON）中与预算相关的字段。
- * `exclude_from_budget === true` 时，该笔支出不计入首页月度预算已用与今日可用计算。
+ * `exclude_from_budget === true` 时，该笔支出不计入首页月度预算已用与今日可用计算；
+ * 收入标记为排除时亦不计入预算总额增加。
  * 含 `budget_fixed_expense_id` 的固定支出快速支付流水亦不计入（该金额已在月预算中预扣）。
  */
 export const FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET = 'exclude_from_budget' as const;
@@ -84,16 +85,25 @@ export function readExcludeFromBudgetFromExtraObject(raw: Record<string, unknown
   return Boolean(v);
 }
 
-/** 新建/更新流水时写入 extra_data 的预算标记（仅支出有效）。 */
+/** 新建/更新流水时写入 extra_data 的预算标记（支出与收入有效）。 */
 export function budgetExtraPatchForTransaction(
   transactionType: string,
   includeInBudget: boolean,
 ): Record<string, boolean> {
-  if (transactionType !== 'expense') return {};
+  if (transactionType !== 'expense' && transactionType !== 'income') return {};
   return { [FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET]: !includeInBudget };
 }
 
-/** 支出是否计入预算（收入/转账恒为 true；余额校正支出默认不计入，可被用户显式覆盖）。 */
+/** 收入是否计入预算（默认计入；显式 exclude_from_budget 时排除）。 */
+export function isIncomeIncludedInBudget(extraData: string | null): boolean {
+  const extra = parseFinanceTxnExtraObject(extraData);
+  if (FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET in extra) {
+    return !readExcludeFromBudgetFromExtraObject(extra);
+  }
+  return true;
+}
+
+/** 支出是否计入预算（转账不适用；余额校正支出默认不计入，可被用户显式覆盖）。 */
 export function isExpenseIncludedInBudget(extraData: string | null): boolean {
   const extra = parseFinanceTxnExtraObject(extraData);
   if (FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET in extra) {

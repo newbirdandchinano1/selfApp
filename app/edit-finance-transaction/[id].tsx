@@ -13,6 +13,7 @@ import {
 import {
   budgetExtraPatchForTransaction,
   isExpenseIncludedInBudget,
+  isIncomeIncludedInBudget,
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import { notifyFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
@@ -190,7 +191,12 @@ export default function EditFinanceTransactionScreen() {
 
       if (silent) budgetTouchedByUserRef.current = false;
       if (!budgetTouchedByUserRef.current) {
-        const includedInBudget = ttype !== 'expense' ? true : isExpenseIncludedInBudget(txn.extra_data);
+        const includedInBudget =
+          ttype === 'expense'
+            ? isExpenseIncludedInBudget(txn.extra_data)
+            : ttype === 'income'
+              ? isIncomeIncludedInBudget(txn.extra_data)
+              : true;
         applyIncludeInBudget(includedInBudget);
       }
     } catch (e) {
@@ -462,7 +468,7 @@ export default function EditFinanceTransactionScreen() {
           </View>
         )}
 
-        {tab === 'expense' ? (
+        {tab === 'expense' || tab === 'income' ? (
           <Pressable
             accessibilityRole="switch"
             accessibilityLabel="计入本月预算"
@@ -488,8 +494,12 @@ export default function EditFinanceTransactionScreen() {
                 <Text style={[styles.budgetOptionTitle, { color: text }]}>计入本月预算</Text>
                 <Text style={[styles.budgetOptionSubtitle, { color: subtle }]} numberOfLines={2}>
                   {includeInBudget
-                    ? '占用本月预算与「今日可用」计算'
-                    : '仍记为支出，不参与预算与今日可用'}
+                    ? tab === 'income'
+                      ? '增加本月预算与「今日可用」计算'
+                      : '占用本月预算与「今日可用」计算'
+                    : tab === 'income'
+                      ? '仍记为收入，不参与预算与今日可用'
+                      : '仍记为支出，不参与预算与今日可用'}
                 </Text>
               </View>
             </View>

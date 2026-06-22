@@ -446,7 +446,7 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                     </Pressable>
                   </View>
 
-                  {activeSheetTab === 'expense' || activeSheetTab === 'sentence' ? (
+                  {activeSheetTab === 'expense' || activeSheetTab === 'income' || activeSheetTab === 'sentence' ? (
                     <Pressable
                       accessibilityRole="switch"
                       accessibilityLabel="计入本月预算"
@@ -471,8 +471,12 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                           <Text style={[styles.sheetBudgetTitle, { color: text }]}>计入本月预算</Text>
                           <Text style={[styles.sheetBudgetSubtitle, { color: subtle }]} numberOfLines={2}>
                             {sheetIncludeInBudget
-                              ? '占用本月预算与「今日可用」计算'
-                              : '仍记为支出，不参与预算与今日可用'}
+                              ? activeSheetTab === 'income'
+                                ? '增加本月预算与「今日可用」计算'
+                                : '占用本月预算与「今日可用」计算'
+                              : activeSheetTab === 'income'
+                                ? '仍记为收入，不参与预算与今日可用'
+                                : '仍记为支出，不参与预算与今日可用'}
                           </Text>
                         </View>
                       </View>
