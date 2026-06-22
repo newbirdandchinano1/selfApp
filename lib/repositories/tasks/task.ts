@@ -1,3 +1,4 @@
+import { persistTaskPatchToApi } from '@/lib/task-api-write';
 import { ensureLocalRowForWrite, ensureLocalRowPresent, readLocalRowForWrite, requireLocalRowForWrite } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import {
@@ -149,7 +150,11 @@ export async function cascadeParentTaskStatusAfterChildChange(
       if (!areAllDirectChildrenTerminal(all, parentId)) break;
 
       const completedAt = new Date().toISOString();
-      await updateTask(parentId, { status: 'done', completed_at: completedAt });
+      await persistTaskPatchToApi(
+        parentId,
+        { status: 'done', completed_at: completedAt },
+        parent as Record<string, unknown>,
+      );
       const nextParent = { ...parent, status: 'done' as const, completed_at: completedAt };
       byId.set(parentId, nextParent);
       const idx = all.findIndex(t => t.id === parentId);
@@ -167,7 +172,11 @@ export async function cascadeParentTaskStatusAfterChildChange(
 
     if (!isTaskTerminalStatus(parent.status)) break;
 
-    await updateTask(parentId, { status: 'todo', completed_at: null });
+    await persistTaskPatchToApi(
+      parentId,
+      { status: 'todo', completed_at: null },
+      parent as Record<string, unknown>,
+    );
     const nextParent = { ...parent, status: 'todo' as const, completed_at: null };
     byId.set(parentId, nextParent);
     const idx = all.findIndex(t => t.id === parentId);

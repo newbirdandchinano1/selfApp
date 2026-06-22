@@ -60,7 +60,13 @@ import {
   insertFrogCompletionEvent,
   type FrogCompletionDayItem,
 } from '@/lib/repositories/tasks/frog-completion-events';
-import { clearFrogAssignedOn, getFrogAssignedOn, unassignFrogFromApi } from '@/lib/frog-assignment';
+import {
+  clearFrogAssignedOn,
+  getFrogAssignedOn,
+  persistTaskFrogExtraToApi,
+  unassignFrogFromApi,
+} from '@/lib/frog-assignment';
+import { persistTaskPatchToApi } from '@/lib/task-api-write';
 import {
   clearFrogSessionCompletedOn,
   getIsLongTermTask,
@@ -2594,11 +2600,15 @@ export default function TasksScreen() {
       );
 
       try {
-        await updateTask(taskId, {
-          status: nextStatus,
-          completed_at: nextCompletedAt,
-          extra_data: nextExtraData,
-        });
+        await persistTaskPatchToApi(
+          taskId,
+          {
+            status: nextStatus,
+            completed_at: nextCompletedAt,
+            extra_data: nextExtraData,
+          },
+          current as Record<string, unknown>,
+        );
         try {
           await insertTaskExecutionEvent(taskId, wasDone ? 'reopened' : 'completed', current.title ?? null);
         } catch (logErr) {
@@ -2757,7 +2767,11 @@ export default function TasksScreen() {
       );
 
       try {
-        await updateTask(taskId, { extra_data: nextExtraData });
+        await persistTaskFrogExtraToApi(
+          taskId,
+          nextExtraData,
+          current as Record<string, unknown>,
+        );
         try {
           await insertFrogCompletionEvent(taskId, frogAssigned, 'completed', current.title ?? null);
         } catch (frogLogErr) {
@@ -2766,6 +2780,7 @@ export default function TasksScreen() {
         setCompletionHeatmapReloadToken((n) => n + 1);
       } catch (err) {
         console.warn('完成青蛙会话失败', err);
+        Alert.alert('操作失败', '未能完成今日青蛙，请稍后重试。');
         await loadTasks();
         await loadProjectTasks(projects);
       }
@@ -2805,7 +2820,11 @@ export default function TasksScreen() {
       );
 
       try {
-        await updateTask(taskId, { extra_data: nextExtraData });
+        await persistTaskFrogExtraToApi(
+          taskId,
+          nextExtraData,
+          current as Record<string, unknown>,
+        );
         try {
           await insertFrogCompletionEvent(taskId, frogAssigned, 'reopened', current.title ?? null);
         } catch (frogLogErr) {
@@ -2814,6 +2833,7 @@ export default function TasksScreen() {
         setCompletionHeatmapReloadToken((n) => n + 1);
       } catch (err) {
         console.warn('恢复青蛙会话失败', err);
+        Alert.alert('操作失败', '未能恢复今日青蛙，请稍后重试。');
         await loadTasks();
         await loadProjectTasks(projects);
       }

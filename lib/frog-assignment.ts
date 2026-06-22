@@ -1,7 +1,4 @@
-import { apiPatchRecord, ensureApiLoggedIn } from '@/lib/api-client';
-import { fetchApiRecordByPk, invalidateInflightApiTableFetch } from '@/lib/api-read';
-import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
-import { ensureTaskCategoryMirrorLocally } from '@/lib/repositories/tasks/task-category-mirror';
+import { persistTaskPatchToApi } from '@/lib/task-api-write';
 
 function parseTaskExtraObject(extraData: string | null): Record<string, unknown> {
   if (!extraData) return {};
@@ -46,72 +43,13 @@ export function getFrogAssignedOn(extraData: string | null): string {
   }
 }
 
-/**
- * API 写入成功后对齐本地 SQLite（不抛错、不阻断指派）。
- * 优先拉服务端最新行；失败则用页面快照 seed；再失败则仅更新已有行的 extra_data。
- */
-async function bestEffortSyncTaskFrogToLocal(
-  taskId: string,
-  extraData: string | null,
-  taskRowSnapshot?: Record<string, unknown> | null,
-): Promise<void> {
-  try {
-    await fetchApiRecordByPk('tasks', taskId);
-    return;
-  } catch (e) {
-    if (__DEV__) console.warn('[frog-assignment] 拉取服务端任务同步本地失败，尝试快照', e);
-  }
-
-  if (taskRowSnapshot) {
-    try {
-      const merged = { ...taskRowSnapshot, id: taskId, extra_data: extraData };
-      const { seedApiRowToLocalForWrite } = await import('@/lib/api-local-row-seed');
-      const seeded = await seedApiRowToLocalForWrite('tasks', merged);
-      if (seeded) return;
-      await syncApiReadResultToLocal('tasks', merged);
-      return;
-    } catch (e) {
-      if (__DEV__) console.warn('[frog-assignment] 快照写入本地失败', e);
-    }
-  }
-
-  try {
-    const { getDatabase } = await import('@/lib/database');
-    const db = await getDatabase();
-    if (!db) return;
-    await db.runAsync(
-      `UPDATE tasks SET extra_data = ?, updated_at = datetime('now'), sync_status = 'synced' WHERE id = ?`,
-      [extraData, taskId],
-    );
-  } catch (e) {
-    if (__DEV__) console.warn('[frog-assignment] 本地 extra_data 对齐失败', e);
-  }
-}
-
-async function ensureTaskCategoryMirrorFromSnapshot(
-  taskRowSnapshot?: Record<string, unknown> | null,
-): Promise<void> {
-  const categoryId =
-    typeof taskRowSnapshot?.category_id === 'string' ? taskRowSnapshot.category_id.trim() : '';
-  if (!categoryId) return;
-  try {
-    await ensureTaskCategoryMirrorLocally(categoryId);
-  } catch (e) {
-    if (__DEV__) console.warn('[frog-assignment] 补齐任务分类镜像失败', e);
-  }
-}
-
 /** 直接 PATCH 后端更新任务 extra_data；成功后 best-effort 同步本地库 */
 export async function persistTaskFrogExtraToApi(
   taskId: string,
   extraData: string | null,
   taskRowSnapshot?: Record<string, unknown> | null,
 ): Promise<void> {
-  await ensureTaskCategoryMirrorFromSnapshot(taskRowSnapshot);
-  await ensureApiLoggedIn();
-  await apiPatchRecord('tasks', taskId, { extra_data: extraData });
-  invalidateInflightApiTableFetch('tasks');
-  await bestEffortSyncTaskFrogToLocal(taskId, extraData, taskRowSnapshot);
+  await persistTaskPatchToApi(taskId, { extra_data: extraData }, taskRowSnapshot);
 }
 
 /** 指派为今日青蛙（API 写入 + 本地同步） */
