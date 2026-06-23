@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import type { InitialSyncProgress } from '@/lib/api-initial-sync';
+
 const MIN_SPLASH_MS = 1400;
 const FADE_IN_MS = 720;
 const FADE_OUT_MS = 420;
@@ -24,9 +26,21 @@ export type AppSplashScreenProps = {
   onFinish: () => void;
   dbError?: string | null;
   dbRepairBusy?: boolean;
+  /** 首启全量同步进度（可选） */
+  syncProgress?: InitialSyncProgress | null;
   onRetry?: () => void;
   onRepair?: () => void;
 };
+
+function formatSyncProgress(progress: InitialSyncProgress | null | undefined): string | null {
+  if (!progress) return null;
+  if (progress.phase === 'preparing') return '正在准备同步…';
+  if (progress.phase === 'syncing') {
+    const label = progress.tableLabel ? ` · ${progress.tableLabel}` : '';
+    return `正在同步数据 ${progress.tableIndex}/${progress.tableCount}${label}`;
+  }
+  return null;
+}
 
 /**
  * 全屏开屏：原生 Splash 与 JS 层使用同一张图，淡入缩放后等待初始化完成再淡出。
@@ -36,6 +50,7 @@ export function AppSplashScreen({
   onFinish,
   dbError,
   dbRepairBusy = false,
+  syncProgress,
   onRetry,
   onRepair,
 }: AppSplashScreenProps) {
@@ -109,6 +124,8 @@ export function AppSplashScreen({
 
   if (!visible) return null;
 
+  const syncStatusText = formatSyncProgress(syncProgress);
+
   return (
     <Animated.View style={[styles.root, { opacity: shellOpacity }]}>
       <Animated.View
@@ -139,6 +156,7 @@ export function AppSplashScreen({
         ]}
       >
         <Text style={styles.appName}>小郑的自我修养</Text>
+        {syncStatusText ? <Text style={styles.syncStatus}>{syncStatusText}</Text> : null}
       </Animated.View>
 
       {dbError ? (
@@ -202,6 +220,14 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: -0.4,
     color: '#131b2e',
+  },
+  syncStatus: {
+    marginTop: 8,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#131b2e',
+    opacity: 0.55,
+    textAlign: 'center',
   },
   errorOverlay: {
     ...StyleSheet.absoluteFillObject,

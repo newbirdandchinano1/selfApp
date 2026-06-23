@@ -222,6 +222,9 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
       await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
         reconcileSnapshot: true,
       });
+      if (isApiOnlyReads()) {
+        return readLocalTableVisible<T>(table);
+      }
       return all;
     }
 
@@ -229,6 +232,9 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
     await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
       reconcileSnapshot: true,
     });
+    if (isApiOnlyReads()) {
+      return readLocalTableVisible<T>(table);
+    }
     return all;
   })();
 
@@ -253,6 +259,9 @@ export async function fetchApiRecordByPk<T extends Record<string, unknown>>(
   try {
     const row = await apiGetRecord<T>(table, pkValue, opts);
     await syncApiReadResultToLocal(table, row as Record<string, unknown>);
+    if (isApiOnlyReads()) {
+      return readLocalRecordVisible<T>(table, pkValue);
+    }
     return row;
   } catch (e) {
     if (e instanceof Error && /404|不存在|not found/i.test(e.message)) {
@@ -264,8 +273,8 @@ export async function fetchApiRecordByPk<T extends Record<string, unknown>>(
 }
 
 /**
- * 统一读表：API_ONLY_READS 时优先用内存中的 REST 结果，再叠加本地 pending（含 pending_delete 剔除）；
- * 接口失败且 offlineFallback 时最后回退 SQLite。非 API_ONLY 模式仍先 REST 再读本地。
+ * 统一读表：local-first 时已同步页面直接读 SQLite；否则 REST 拉取并写入本地。
+ * 接口失败且 offlineFallback 时回退 SQLite。API_ONLY 模式下优先 REST 再叠加 pending。
  */
 export async function readApiTable<T extends Record<string, unknown>>(
   table: string,

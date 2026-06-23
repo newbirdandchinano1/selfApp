@@ -32,6 +32,8 @@ import { startCloudPeriodicAlignScheduler } from '@/lib/cloud-sync-scheduler';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-selection';
 import { loadThemePreference } from '@/lib/theme-preference';
+import { runInitialRestSyncIfNeeded, type InitialSyncProgress } from '@/lib/api-initial-sync';
+import { hydratePageApiSession } from '@/lib/page-api-session';
 
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
@@ -54,6 +56,7 @@ function RootLayoutInner() {
   const [showMainApp, setShowMainApp] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
   const [dbRepairBusy, setDbRepairBusy] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<InitialSyncProgress | null>(null);
 
   const runDeferredBootstrap = () => {
     InteractionManager.runAfterInteractions(() => {
@@ -80,6 +83,7 @@ function RootLayoutInner() {
     setDbError(null);
     try {
       await initDatabase();
+      await hydratePageApiSession();
       await hydrateCloudDirtyFromStorage();
       setIsDbReady(true);
       runDeferredBootstrap();
@@ -101,6 +105,7 @@ function RootLayoutInner() {
     try {
       const repair = await repairLocalDatabase();
       await initDatabase();
+      await hydratePageApiSession();
       await hydrateCloudDirtyFromStorage();
       setIsDbReady(true);
       runDeferredBootstrap();
@@ -126,11 +131,23 @@ function RootLayoutInner() {
     const run = async () => {
       try {
         await initDatabase();
+        await hydratePageApiSession();
         await hydrateCloudDirtyFromStorage();
         await hydrateApiDirtyFromStorage();
+
+        const syncResult = await runInitialRestSyncIfNeeded({
+          onProgress: progress => {
+            if (mounted) setSyncProgress(progress);
+          },
+        });
+        if (!syncResult.ok && syncResult.ran) {
+          console.warn('[bootstrap] 首启全量同步失败，将按需同步', syncResult.error);
+        }
+
         await markAllPendingTablesDirty();
         await loadApiDebugEnabled();
         if (mounted) {
+          setSyncProgress(null);
           setDbError(null);
           setIsDbReady(true);
         }
@@ -240,6 +257,7 @@ function RootLayoutInner() {
             onFinish={() => setShowMainApp(true)}
             dbError={dbError}
             dbRepairBusy={dbRepairBusy}
+            syncProgress={syncProgress}
             onRetry={() => {
               void handleDbRetry();
             }}

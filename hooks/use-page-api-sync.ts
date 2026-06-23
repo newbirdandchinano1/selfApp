@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 
 import { useRegisterApiLoadingRetry } from '@/hooks/use-register-api-loading-retry';
 import { usePullToRefresh, type UsePullToRefreshResult } from '@/hooks/use-pull-to-refresh';
-import { isApiOnlyReads } from '@/lib/api-data-mode';
+import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
 import {
   beginPageApiRead,
   endPageApiRead,
@@ -13,8 +13,8 @@ import {
 } from '@/lib/page-api-session';
 
 /**
- * 页面数据加载：每次进入均经 REST 拉取（API_ONLY_READS），结果已含本地 pending 覆盖。
- * markSynced 仅表示该页本会话内已成功加载过，便于 UI 状态。
+ * 页面数据加载：local-first 下已同步页面直接读 SQLite；
+ * 首次访问先展示本地（若有），再后台 REST 拉取并覆盖本地。
  */
 export function usePageApiSync(pageKey: string) {
   const [synced, setSynced] = useState(() => hasPageSyncedWithApi(pageKey));
@@ -27,6 +27,18 @@ export function usePageApiSync(pageKey: string) {
   const wrapLoad = useCallback(
     async (fn: () => Promise<boolean | void>, forceApi = false) => {
       const readOpts = resolvePageApiReadOpts(pageKey, forceApi);
+
+      if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
+        beginPageApiRead({ localOnly: true, offlineFallback: true });
+        try {
+          await fn();
+        } catch (e) {
+          console.warn('[usePageApiSync] 本地预读失败，继续尝试 REST', pageKey, e);
+        } finally {
+          endPageApiRead();
+        }
+      }
+
       beginPageApiRead(readOpts);
       try {
         const ok = await fn();
@@ -51,8 +63,10 @@ export function usePageApiSync(pageKey: string) {
     setSynced(false);
   }, [pageKey]);
 
+  const readOpts = resolvePageApiReadOpts(pageKey);
+
   return {
-    localOnly: false,
+    localOnly: readOpts.localOnly,
     getReadOpts,
     wrapLoad,
     markSynced,

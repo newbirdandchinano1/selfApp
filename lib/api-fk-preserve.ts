@@ -42,6 +42,33 @@ export function preserveLocalForeignKeysOnEmptyApi(
   }
 }
 
+function nonEmptyFkId(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** 将已知外键并入 PATCH，避免服务端局部更新误清空 project_id / parent_task_id 等 */
+export function mergePreservedForeignKeysIntoPatch(
+  table: string,
+  patch: Record<string, unknown>,
+  sources: Array<Record<string, unknown> | null | undefined>,
+): Record<string, unknown> {
+  const columns = PRESERVE_ON_EMPTY_API[table];
+  if (!columns?.length) return patch;
+
+  const out = { ...patch };
+  for (const col of columns) {
+    if (nonEmptyFkId(out[col])) continue;
+    for (const source of sources) {
+      const id = nonEmptyFkId(source?.[col]);
+      if (id) {
+        out[col] = id;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export function shouldPreserveForeignKeyOnUpload(table: string, fk: ForeignKeyRef): boolean {
   return UPLOAD_PRESERVE_FK.some(
     r => r.table === table && r.fromColumn === fk.fromColumn && r.parentTable === fk.parentTable,

@@ -1,13 +1,38 @@
 import { apiPatchRecord, ensureApiLoggedIn } from '@/lib/api-client';
+import { mergePreservedForeignKeysIntoPatch } from '@/lib/api-fk-preserve';
 import { fetchApiRecordByPk, invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
+import { readLocalRowForWrite } from '@/lib/api-local-row';
 import { ensureTaskCategoryMirrorLocally } from '@/lib/repositories/tasks/task-category-mirror';
 
 export type TaskApiPatch = {
   extra_data?: string | null;
   status?: string;
   completed_at?: string | null;
+  project_id?: string | null;
+  category_id?: string | null;
+  parent_task_id?: string | null;
 };
+
+function nonEmptyId(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** 子任务可能仅挂 parent_task_id；PATCH 前补齐 project_id 以免服务端清空归属 */
+async function resolveTaskForeignKeysForApiPatch(
+  taskId: string,
+  taskRowSnapshot?: Record<string, unknown> | null,
+): Promise<Record<string, unknown>> {
+  const local = await readLocalRowForWrite<Record<string, unknown>>('tasks', taskId);
+  const parentTaskId = [taskRowSnapshot, local]
+    .map(row => nonEmptyId(row?.parent_task_id))
+    .find(Boolean);
+  let parentRow: Record<string, unknown> | null = null;
+  if (parentTaskId) {
+    parentRow = await readLocalRowForWrite<Record<string, unknown>>('tasks', parentTaskId);
+  }
+  return { local, parentRow };
+}
 
 async function ensureTaskCategoryMirrorFromSnapshot(
   taskRowSnapshot?: Record<string, unknown> | null,
@@ -25,9 +50,10 @@ async function ensureTaskCategoryMirrorFromSnapshot(
 /** PATCH 前补齐所属项目及其分类，避免同步链路误清空 project.category_id */
 async function ensureProjectRefsFromTaskSnapshot(
   taskRowSnapshot?: Record<string, unknown> | null,
+  parentRow?: Record<string, unknown> | null,
 ): Promise<void> {
   const projectId =
-    typeof taskRowSnapshot?.project_id === 'string' ? taskRowSnapshot.project_id.trim() : '';
+    nonEmptyId(taskRowSnapshot?.project_id) || nonEmptyId(parentRow?.project_id);
   if (!projectId) return;
   try {
     const { ensureLocalRowPresent, readLocalRowForWrite } = await import('@/lib/api-local-row');
@@ -61,11 +87,18 @@ async function bestEffortSyncTaskPatchToLocal(
 
   if (taskRowSnapshot) {
     try {
-      const merged = { ...taskRowSnapshot, id: taskId, ...patch };
+      const { children: _children, ...snapshotRow } = taskRowSnapshot;
+      const merged = { ...snapshotRow, id: taskId, ...patch };
+      const existing = await readLocalRowForWrite<Record<string, unknown>>('tasks', taskId);
+      if (existing) {
+        await syncApiReadResultToLocal('tasks', merged);
+        return;
+      }
       const { seedApiRowToLocalForWrite } = await import('@/lib/api-local-row-seed');
       const seeded = await seedApiRowToLocalForWrite('tasks', merged);
-      if (seeded) return;
-      await syncApiReadResultToLocal('tasks', merged);
+      if (!seeded) {
+        await syncApiReadResultToLocal('tasks', merged);
+      }
       return;
     } catch (e) {
       if (__DEV__) console.warn('[task-api-write] 快照写入本地失败', e);
@@ -104,10 +137,17 @@ export async function persistTaskPatchToApi(
   patch: TaskApiPatch,
   taskRowSnapshot?: Record<string, unknown> | null,
 ): Promise<void> {
-  await ensureTaskCategoryMirrorFromSnapshot(taskRowSnapshot);
-  await ensureProjectRefsFromTaskSnapshot(taskRowSnapshot);
+  const { local, parentRow } = await resolveTaskForeignKeysForApiPatch(taskId, taskRowSnapshot);
+  const apiPatch = mergePreservedForeignKeysIntoPatch('tasks', patch, [
+    taskRowSnapshot,
+    local,
+    parentRow,
+  ]) as TaskApiPatch;
+
+  await ensureTaskCategoryMirrorFromSnapshot(apiPatch);
+  await ensureProjectRefsFromTaskSnapshot(apiPatch, parentRow);
   await ensureApiLoggedIn();
-  await apiPatchRecord('tasks', taskId, patch);
+  await apiPatchRecord('tasks', taskId, apiPatch);
   invalidateInflightApiTableFetch('tasks');
   await bestEffortSyncTaskPatchToLocal(taskId, patch, taskRowSnapshot);
 }
