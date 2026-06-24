@@ -5,6 +5,7 @@ import {
   apiListRecords,
   apiUpdateRecord,
   ApiRequestError,
+  isDuplicateRecordApiError,
 } from '@/lib/api-client';
 import {
   ensureProjectCategoryRefsForApiUpload,
@@ -45,13 +46,6 @@ function isMissingParentRecordApiError(err: unknown): boolean {
       /备忘.*维度.*不存在/i.test(err.message) ||
       /引用的\s*项目[\s（(]*projects/i.test(err.message) ||
       /projects[\s）)]*不存在/i.test(err.message))
-  );
-}
-
-function isDuplicateRecordApiError(err: unknown): boolean {
-  return (
-    err instanceof ApiRequestError &&
-    (err.httpStatus === 409 || /已存在|duplicate|冲突|unique/i.test(err.message))
   );
 }
 

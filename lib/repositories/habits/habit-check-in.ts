@@ -115,6 +115,7 @@ export async function upsertHabitDayCount(habitId: string, recordDateYmd: string
       );
     }
     invalidateInflightApiTableFetch('habit_check_ins');
+    await pushHabitCheckInChangesToApi({ awaitSync: true });
     return;
   }
 
@@ -133,6 +134,7 @@ export async function upsertHabitDayCount(habitId: string, recordDateYmd: string
       [count, existing.id]
     );
     invalidateInflightApiTableFetch('habit_check_ins');
+    await pushHabitCheckInChangesToApi({ awaitSync: true });
     return;
   }
 
@@ -145,6 +147,7 @@ export async function upsertHabitDayCount(habitId: string, recordDateYmd: string
     [id, habitId, recordDateYmd, count]
   );
   invalidateInflightApiTableFetch('habit_check_ins');
+  await pushHabitCheckInChangesToApi({ awaitSync: true });
 }
 
 export type IncrementTodayHabitCheckInResult = {

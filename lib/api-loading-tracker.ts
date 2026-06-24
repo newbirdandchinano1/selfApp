@@ -1,6 +1,7 @@
 import {
   formatApiErrorMessage,
   isApiErrorRetryable,
+  isDuplicateRecordApiError,
 } from '@/lib/api-client';
 
 type ApiLoadingListener = () => void;
@@ -72,7 +73,9 @@ export async function withApiLoading<T>(fn: () => Promise<T>): Promise<T> {
     clearApiLoadingError();
     return result;
   } catch (e) {
-    reportApiLoadingError(e);
+    if (!isDuplicateRecordApiError(e)) {
+      reportApiLoadingError(e);
+    }
     throw e;
   } finally {
     endApiLoading();

@@ -94,6 +94,14 @@ export function isApiErrorRetryable(err: unknown): boolean {
   return true;
 }
 
+/** upsert 流程中 POST 409 / 唯一约束冲突，上层会改走 PUT，不应弹全局错误 */
+export function isDuplicateRecordApiError(err: unknown): boolean {
+  return (
+    err instanceof ApiRequestError &&
+    (err.httpStatus === 409 || /已存在|duplicate|冲突|unique/i.test(err.message))
+  );
+}
+
 function serializeUnknownError(err: unknown): string {
   if (err instanceof Error) {
     const lines = [`${err.name}: ${err.message}`];

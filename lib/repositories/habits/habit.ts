@@ -1,11 +1,19 @@
-import { ensureLocalRowForWrite } from '@/lib/api-local-row';
-import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { requireLocalRowForWrite } from '@/lib/api-local-row';
+import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import type { CreateHabitInput, HabitRow, UpdateHabitInput } from './habit.types';
 
+async function pushHabitChangesToApi(): Promise<void> {
+  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+  await pushLocalChangesToApi({ awaitSync: true });
+}
+
 export async function createHabit(input: CreateHabitInput) {
   const db = await getDatabase();
+  if (!db) {
+    throw new Error('本地数据库不可用，无法保存习惯');
+  }
   await db.runAsync(
     `INSERT INTO habits (
       id, context, name, tag, icon, tone, note, extra_data,
@@ -23,6 +31,8 @@ export async function createHabit(input: CreateHabitInput) {
       input.extra_data ?? null,
     ]
   );
+  invalidateInflightApiTableFetch('habits');
+  await pushHabitChangesToApi();
 }
 
 export async function getHabitById(id: string) {
@@ -41,10 +51,12 @@ export async function getHabitsByContext(context: string) {
 
 export async function updateHabit(id: string, input: UpdateHabitInput) {
   const db = await getDatabase();
-  const current = await ensureLocalRowForWrite<HabitRow>('habits', id);
-  if (!current) return;
+  if (!db) {
+    throw new Error('本地数据库不可用，无法保存习惯');
+  }
+  const current = await requireLocalRowForWrite<HabitRow>('habits', id, '习惯');
 
-  await db.runAsync(
+  const result = await db.runAsync(
     `UPDATE habits
       SET context = ?, name = ?, tag = ?, icon = ?, tone = ?, note = ?, extra_data = ?,
           updated_at = datetime('now'),
@@ -61,18 +73,29 @@ export async function updateHabit(id: string, input: UpdateHabitInput) {
       id,
     ]
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('习惯保存失败，请返回列表刷新后重试');
+  }
+  invalidateInflightApiTableFetch('habits');
+  await pushHabitChangesToApi();
 }
 
 export async function deleteHabit(id: string) {
-  await ensureLocalRowForWrite('habits', id);
+  await requireLocalRowForWrite('habits', id, '习惯');
   const db = await getDatabase();
-  await db.runAsync(
+  if (!db) {
+    throw new Error('本地数据库不可用，无法删除习惯');
+  }
+  const result = await db.runAsync(
     `UPDATE habits
       SET updated_at = datetime('now'),
           sync_status = 'pending_delete'
       WHERE id = ?`,
     [id]
   );
+  if ((result.changes ?? 0) === 0) {
+    throw new Error('习惯尚未同步到本地，请返回列表刷新后重试');
+  }
   try {
     await db.runAsync(
       `UPDATE habit_check_ins
@@ -84,5 +107,8 @@ export async function deleteHabit(id: string) {
   } catch {
     /* 旧库尚无 habit_check_ins 表 */
   }
+  invalidateInflightApiTableFetch('habits');
+  invalidateInflightApiTableFetch('habit_check_ins');
+  await pushHabitChangesToApi();
 }
 
