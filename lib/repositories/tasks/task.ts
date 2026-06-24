@@ -324,6 +324,8 @@ export async function createTask(input: CreateTaskInput) {
       resolved.extra_data ?? null,
     ]
   );
+  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+  await pushLocalChangesToApi({ awaitSync: true });
 }
 
 export async function getTaskById(id: string) {
@@ -503,6 +505,8 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
   if ((result.changes ?? 0) === 0) {
     throw new Error('任务保存失败，请返回列表刷新后重试');
   }
+  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+  await pushLocalChangesToApi({ awaitSync: true });
 }
 
 /** 将根任务及其所有子任务挂到同一项目（用于待办升级为项目等场景） */
@@ -562,6 +566,8 @@ export async function deleteTask(id: string) {
     throw new Error('任务尚未同步到本地，请返回列表刷新后重试');
   }
   invalidateInflightApiTableFetch('tasks');
+  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+  await pushLocalChangesToApi({ awaitSync: true });
 }
 
 export async function createTaskCategory(input: CreateTaskCategoryInput) {

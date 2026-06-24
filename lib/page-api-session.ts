@@ -1,4 +1,6 @@
 import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
+import { collectAncestorPageKeys } from '@/lib/page-api-ancestry';
+import { runGuardedPageApiLoad } from '@/lib/page-api-load-guard';
 import {
   PAGE_SYNC_META_KEY,
   PREFER_LOCAL_READS_META_KEY,
@@ -65,8 +67,64 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   recipe_items: [TAB_PAGE_KEYS.profile],
 };
 
-/** 已完成「接口 → 本地」同步的页面（跨重启持久化） */
-const syncedPages = new Set<string>();
+/** 本会话内已完成首次加载的页面（切换 Tab 不再重复全量 REST/重载） */
+const sessionLoadedPages = new Set<string>();
+
+/** 子页面写入后标记需从服务端全量重拉的页面（含祖先链） */
+const pagesNeedingRestRefresh = new Set<string>();
+
+/** REST 读取失败但已回退本地（wrapLoad 不应标记 synced） */
+let pageLoadRestFailed = false;
+
+export function markPageLoadRestFailed(): void {
+  pageLoadRestFailed = true;
+}
+
+export function consumePageLoadRestFailed(): boolean {
+  const failed = pageLoadRestFailed;
+  pageLoadRestFailed = false;
+  return failed;
+}
+
+export function markPageLoadedInSession(pageKey: string): void {
+  const key = pageKey.trim();
+  if (key) sessionLoadedPages.add(key);
+}
+
+export function clearPageLoadedInSession(pageKey?: string): void {
+  if (pageKey?.trim()) {
+    sessionLoadedPages.delete(pageKey.trim());
+    return;
+  }
+  sessionLoadedPages.clear();
+}
+
+export function hasPageLoadedInSession(pageKey: string): boolean {
+  return sessionLoadedPages.has(pageKey.trim());
+}
+
+export function pageNeedsRestRefresh(pageKey: string): boolean {
+  return pagesNeedingRestRefresh.has(pageKey.trim());
+}
+
+/** 子页面数据变更：向所有祖先页面传递「下次聚焦需 REST 全量拉取」 */
+export function notifyPageDataChanged(pageKey: string): void {
+  const ancestors = collectAncestorPageKeys(pageKey);
+  if (__DEV__ && ancestors.length > 0) {
+    console.log('[page-api-session] 数据变更传递', pageKey, '→', ancestors);
+  }
+  for (const ancestor of ancestors) {
+    const key = ancestor.trim();
+    if (!key) continue;
+    pagesNeedingRestRefresh.add(key);
+    clearPageLoadedInSession(key);
+    resetPageApiSession(key, { force: true });
+  }
+}
+
+export function markPageRestRefreshCompleted(pageKey: string): void {
+  pagesNeedingRestRefresh.delete(pageKey.trim());
+}
 
 /** 首启全量同步完成或升级用户引导后，所有页面直接读本地 */
 let preferLocalReads = false;
@@ -128,11 +186,17 @@ export function hasPageSyncedWithApi(pageKey: string): boolean {
   return syncedPages.has(pageKey);
 }
 
-/** 页面 focus 时是否可跳过数据重载（local-first 下仍会从本地 SQLite 重载，仅跳过 REST） */
+/** 页面 focus 时是否可跳过数据重载（local-first：本会话已加载过则跳过；待 REST 刷新则不跳过） */
 export function shouldSkipPageFocusApiRefresh(pageKey: string): boolean {
-  if (isLocalFirstReads()) return false;
+  if (pageNeedsRestRefresh(pageKey)) return false;
+  if (isLocalFirstReads()) {
+    return hasPageLoadedInSession(pageKey);
+  }
   return hasPageSyncedWithApi(pageKey);
 }
+
+/** 已完成「接口 → 本地」同步的页面（跨重启持久化） */
+const syncedPages = new Set<string>();
 
 export function markPageSyncedWithApi(pageKey: string): void {
   const key = pageKey.trim();
@@ -141,7 +205,10 @@ export function markPageSyncedWithApi(pageKey: string): void {
   if (isLocalFirstReads()) schedulePersistSyncedPages();
 }
 
-export function resetPageApiSession(pageKey?: string): void {
+export function resetPageApiSession(pageKey?: string, opts?: { force?: boolean }): void {
+  if (isLocalFirstReads() && !opts?.force) {
+    return;
+  }
   if (pageKey) {
     syncedPages.delete(pageKey);
     if (isLocalFirstReads()) schedulePersistSyncedPages();
@@ -180,7 +247,7 @@ export function resolvePageApiReadOpts(
   if (isApiOnlyReads()) {
     return { localOnly: false, offlineFallback: false };
   }
-  if (forceApi) {
+  if (forceApi || pageNeedsRestRefresh(pageKey)) {
     return { localOnly: false, offlineFallback: true };
   }
   if (preferLocalReads || hasPageSyncedWithApi(pageKey)) {
@@ -224,25 +291,44 @@ export async function runPageApiLoad(
   forceApi = false,
 ): Promise<void> {
   const readOpts = resolvePageApiReadOpts(pageKey, forceApi);
+  const needsRest = isApiOnlyReads() || forceApi || !readOpts.localOnly;
 
-  if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
-    beginPageApiRead({ localOnly: true, offlineFallback: true });
+  const execute = async () => {
+    if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
+      beginPageApiRead({ localOnly: true, offlineFallback: true });
+      try {
+        await fn();
+      } catch (e) {
+        console.warn('[page-api-session] 本地预读失败，继续尝试 REST', pageKey, e);
+      } finally {
+        endPageApiRead();
+      }
+    }
+
+    beginPageApiRead(readOpts);
     try {
-      await fn();
-    } catch (e) {
-      console.warn('[page-api-session] 本地预读失败，继续尝试 REST', pageKey, e);
+      const ok = await fn();
+      const restFailed = consumePageLoadRestFailed();
+      if (ok !== false && !restFailed && (isApiOnlyReads() || !readOpts.localOnly)) {
+        markPageSyncedWithApi(pageKey);
+      }
+      if (ok !== false && !restFailed) {
+        markPageLoadedInSession(pageKey);
+      }
+      if (ok !== false && !restFailed && !readOpts.localOnly) {
+        markPageRestRefreshCompleted(pageKey);
+      }
     } finally {
       endPageApiRead();
     }
-  }
+  };
 
-  beginPageApiRead(readOpts);
-  try {
-    const ok = await fn();
-    if (ok !== false && (isApiOnlyReads() || !readOpts.localOnly)) {
-      markPageSyncedWithApi(pageKey);
-    }
-  } finally {
-    endPageApiRead();
+  if (needsRest) {
+    await runGuardedPageApiLoad(pageKey, execute, {
+      debounce: !forceApi,
+      force: forceApi,
+    });
+    return;
   }
+  await execute();
 }

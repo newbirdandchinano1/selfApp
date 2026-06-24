@@ -36,6 +36,8 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
       input.source_image_uri ?? null,
     ]
   );
+  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+  await pushLocalChangesToApi({ awaitSync: true });
 }
 
 export async function getHealthRecordById(id: string) {
@@ -262,6 +264,8 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
       id,
     ]
   );
+  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+  await pushLocalChangesToApi({ awaitSync: true });
 }
 
 export async function deleteHealthRecord(id: string) {
@@ -285,4 +289,6 @@ export async function deleteHealthRecord(id: string) {
      WHERE id = ?`,
     [id]
   );
+  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+  await pushLocalChangesToApi({ awaitSync: true });
 }
