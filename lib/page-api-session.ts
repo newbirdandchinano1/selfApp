@@ -1,6 +1,10 @@
 import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
+import { ApiRequestError } from '@/lib/api-client';
+import { getApiLoadingError, reportApiLoadingError } from '@/lib/api-loading-tracker';
+import { syncPageScopeFromApi } from '@/lib/api-page-sync';
 import { collectAncestorPageKeys } from '@/lib/page-api-ancestry';
 import { runGuardedPageApiLoad } from '@/lib/page-api-load-guard';
+import { listPageScopeTables } from '@/lib/page-api-scope';
 import {
   PAGE_SYNC_META_KEY,
   PREFER_LOCAL_READS_META_KEY,
@@ -182,8 +186,7 @@ export function isPreferLocalReads(): boolean {
 }
 
 export function hasPageSyncedWithApi(pageKey: string): boolean {
-  if (preferLocalReads) return true;
-  return syncedPages.has(pageKey);
+  return syncedPages.has(pageKey.trim());
 }
 
 /** 页面 focus 时是否可跳过数据重载（local-first：本会话已加载过则跳过；待 REST 刷新则不跳过） */
@@ -248,12 +251,12 @@ export function resolvePageApiReadOpts(
     return { localOnly: false, offlineFallback: false };
   }
   if (forceApi || pageNeedsRestRefresh(pageKey)) {
-    return { localOnly: false, offlineFallback: true };
+    return { localOnly: false, offlineFallback: false };
   }
-  if (preferLocalReads || hasPageSyncedWithApi(pageKey)) {
+  if (hasPageSyncedWithApi(pageKey)) {
     return { localOnly: true, offlineFallback: true };
   }
-  return { localOnly: false, offlineFallback: true };
+  return { localOnly: false, offlineFallback: false };
 }
 
 const activePageReadStack: PageApiReadOpts[] = [];
@@ -269,9 +272,7 @@ export function endPageApiRead(): void {
 
 export function getActivePageApiReadOpts(): PageApiReadOpts | undefined {
   if (activePageReadStack.length === 0) return undefined;
-  const localOnly = activePageReadStack.every(entry => entry.localOnly === true);
-  const offlineFallback = activePageReadStack.some(entry => entry.offlineFallback !== false);
-  return { localOnly, offlineFallback };
+  return activePageReadStack[activePageReadStack.length - 1];
 }
 
 export function resolveReadLocalOnly(explicit?: {
@@ -284,6 +285,96 @@ export function resolveReadLocalOnly(explicit?: {
   return Boolean(getActivePageApiReadOpts()?.localOnly);
 }
 
+/** 页面级读库上下文禁止离线回退时，覆盖仓库层显式 offlineFallback: true */
+export function resolveReadOfflineFallback(explicit?: boolean): boolean {
+  const pageOpts = getActivePageApiReadOpts();
+  if (pageOpts?.offlineFallback === false) return false;
+  if (explicit === true) return true;
+  if (explicit === false) return false;
+  return pageOpts?.offlineFallback ?? false;
+}
+
+export async function runPageLoadBody(
+  pageKey: string,
+  fn: () => Promise<boolean | void | Record<string, unknown>>,
+  readOpts: { localOnly: boolean; offlineFallback: boolean },
+  forceApi: boolean,
+): Promise<{ ok: boolean | void | Record<string, unknown>; restFailed: boolean }> {
+  const invokeLoadFn = async (): Promise<boolean | void | Record<string, unknown>> => {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!getApiLoadingError()) {
+        reportApiLoadingError(e);
+      }
+      return false;
+    }
+  };
+
+  beginPageApiRead(readOpts);
+  try {
+    let ok: boolean | void;
+    const scopeTables = listPageScopeTables(pageKey);
+
+    if (!readOpts.localOnly && scopeTables.length > 0 && isLocalFirstReads()) {
+      const sync = await syncPageScopeFromApi(pageKey);
+      if (!sync.ok) {
+        markPageLoadRestFailed();
+        if (!getApiLoadingError()) {
+          reportApiLoadingError(
+            new ApiRequestError(sync.error ?? '页面数据同步失败', 0, -1, { retryable: true }),
+          );
+        }
+        ok = false;
+      } else {
+        beginPageApiRead({ localOnly: true, offlineFallback: true });
+        try {
+          ok = await invokeLoadFn();
+        } finally {
+          endPageApiRead();
+        }
+      }
+    } else {
+      ok = await invokeLoadFn();
+    }
+
+    const restFailed = consumePageLoadRestFailed();
+    return { ok, restFailed };
+  } finally {
+    endPageApiRead();
+  }
+}
+
+export function finalizePageLoadSession(
+  pageKey: string,
+  readOpts: { localOnly: boolean },
+  ok: boolean | void,
+  restFailed: boolean,
+): void {
+  if (ok === false || restFailed) {
+    if (!getApiLoadingError()) {
+      reportApiLoadingError(
+        new ApiRequestError(
+          restFailed ? '网络请求失败，无法从服务端加载数据' : '页面数据加载失败',
+          0,
+          -1,
+          { retryable: true },
+        ),
+      );
+    }
+    resetPageApiSession(pageKey, { force: true });
+    return;
+  }
+
+  if (isApiOnlyReads() || !readOpts.localOnly) {
+    markPageSyncedWithApi(pageKey);
+  }
+  markPageLoadedInSession(pageKey);
+  if (!readOpts.localOnly) {
+    markPageRestRefreshCompleted(pageKey);
+  }
+}
+
 /** 非 React 组件内执行与 wrapLoad 等价的页面级读库策略 */
 export async function runPageApiLoad(
   pageKey: string,
@@ -294,38 +385,13 @@ export async function runPageApiLoad(
   const needsRest = isApiOnlyReads() || forceApi || !readOpts.localOnly;
 
   const execute = async () => {
-    if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
-      beginPageApiRead({ localOnly: true, offlineFallback: true });
-      try {
-        await fn();
-      } catch (e) {
-        console.warn('[page-api-session] 本地预读失败，继续尝试 REST', pageKey, e);
-      } finally {
-        endPageApiRead();
-      }
-    }
-
-    beginPageApiRead(readOpts);
-    try {
-      const ok = await fn();
-      const restFailed = consumePageLoadRestFailed();
-      if (ok !== false && !restFailed && (isApiOnlyReads() || !readOpts.localOnly)) {
-        markPageSyncedWithApi(pageKey);
-      }
-      if (ok !== false && !restFailed) {
-        markPageLoadedInSession(pageKey);
-      }
-      if (ok !== false && !restFailed && !readOpts.localOnly) {
-        markPageRestRefreshCompleted(pageKey);
-      }
-    } finally {
-      endPageApiRead();
-    }
+    const { ok, restFailed } = await runPageLoadBody(pageKey, fn, readOpts, forceApi);
+    finalizePageLoadSession(pageKey, readOpts, ok, restFailed);
   };
 
   if (needsRest) {
     await runGuardedPageApiLoad(pageKey, execute, {
-      debounce: !forceApi,
+      debounce: !forceApi && hasPageLoadedInSession(pageKey),
       force: forceApi,
     });
     return;

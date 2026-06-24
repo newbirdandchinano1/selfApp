@@ -103,10 +103,9 @@ import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import {
   decrementTodayHabitCheckIn,
-  getAllHabitCheckInsMaps,
   getCheckInsMapByHabitId,
-  getHabitCheckInListStats,
   incrementTodayHabitCheckIn,
+  loadHabitCheckInPageData,
 } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
 import {
@@ -181,6 +180,7 @@ import {
   Alert,
   Animated,
   Easing,
+  InteractionManager,
   Keyboard,
   LayoutAnimation,
   Modal,
@@ -793,46 +793,55 @@ function TaskCompletionHeatmap({
     return { startYmd: formatLocalYmd(gridStartMonday), endYmd: logicalTodayYmd };
   }, [logicalTodayYmd]);
 
-  const loadCompletionHeatmap = React.useCallback(async () => {
-    if (!backfillDoneRef.current) {
-      backfillDoneRef.current = true;
-      try {
-        await backfillFrogCompletionEventsFromTasks();
-      } catch (e) {
+  const scheduleFrogBackfillOnce = React.useCallback(() => {
+    if (backfillDoneRef.current) return;
+    backfillDoneRef.current = true;
+    InteractionManager.runAfterInteractions(() => {
+      void backfillFrogCompletionEventsFromTasks().catch((e) => {
         console.warn('青蛙完成记录回填失败', e);
-      }
-    }
+      });
+    });
+  }, []);
+
+  const loadCompletionHeatmap = React.useCallback(async () => {
+    scheduleFrogBackfillOnce();
     const [frogCounts, todoCounts] = await Promise.all([
       getFrogCompletionCountsByDayRange(heatmapRange.startYmd, heatmapRange.endYmd),
       getTaskCompletionCountsByDayRange(heatmapRange.startYmd, heatmapRange.endYmd),
     ]);
     setFrogCountByYmd(frogCounts);
     setTodoCountByYmd(todoCounts);
-  }, [heatmapRange.endYmd, heatmapRange.startYmd]);
+  }, [heatmapRange.endYmd, heatmapRange.startYmd, scheduleFrogBackfillOnce]);
 
   useFocusEffect(
     React.useCallback(() => {
       if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
       let cancelled = false;
-      void (async () => {
-        try {
-          await loadCompletionHeatmap();
-        } catch (e) {
-          console.warn('加载完成热力图失败', e);
-          if (!cancelled) {
-            setFrogCountByYmd(new Map());
-            setTodoCountByYmd(new Map());
+      const handle = InteractionManager.runAfterInteractions(() => {
+        void (async () => {
+          try {
+            await loadCompletionHeatmap();
+          } catch (e) {
+            console.warn('加载完成热力图失败', e);
+            if (!cancelled) {
+              setFrogCountByYmd(new Map());
+              setTodoCountByYmd(new Map());
+            }
           }
-        }
-      })();
+        })();
+      });
       return () => {
         cancelled = true;
+        handle.cancel();
       };
     }, [loadCompletionHeatmap])
   );
 
   React.useEffect(() => {
-    void loadCompletionHeatmap();
+    const handle = InteractionManager.runAfterInteractions(() => {
+      void loadCompletionHeatmap();
+    });
+    return () => handle.cancel();
   }, [loadCompletionHeatmap, reloadToken]);
 
   const { weekColumns, monthTickColIndexes } = React.useMemo(() => {
@@ -1723,9 +1732,9 @@ export default function TasksScreen() {
     }
   }, []);
 
-  const loadTasks = React.useCallback(async (opts?: { forceRefresh?: boolean }): Promise<number> => {
+  const loadTasks = React.useCallback(async (opts?: { forceRefresh?: boolean; preloadedTasks?: TaskRow[] }): Promise<number> => {
     try {
-      let rows = await getTasks(opts);
+      let rows = opts?.preloadedTasks ?? (await getTasks(opts));
       const logicalToday = getLogicalLocalYmd(new Date(), dayBoundary);
       const rolled = await applyRepeatingTaskRollovers(rows, logicalToday, dayBoundary);
       const overdueBumped = await applyOverdueTaskPriorityBump(rows, logicalToday);
@@ -1746,11 +1755,10 @@ export default function TasksScreen() {
       await syncBreakHabitCompletions();
       await syncBuildHabitCompletions();
       const logicalToday = getLogicalLocalYmd(new Date(), dayBoundary);
-      const [contexts, rows, checkStats, checkInsMaps] = await Promise.all([
+      const [contexts, rows, { checkStats, checkInsMaps }] = await Promise.all([
         getHabitContexts(),
         getHabits(),
-        getHabitCheckInListStats(),
-        getAllHabitCheckInsMaps(),
+        loadHabitCheckInPageData(),
       ]);
       setHabitLookupById(new Map(rows.map((r) => [r.id, { name: r.name, icon: r.icon }])));
 
@@ -1822,7 +1830,7 @@ export default function TasksScreen() {
   const loadProjectTasks = React.useCallback(
     async (
       rows: ProjectRow[],
-      opts?: { forceRefresh?: boolean; generation?: number },
+      opts?: { forceRefresh?: boolean; generation?: number; preloadedTasks?: TaskRow[] },
     ): Promise<Record<string, TaskTreeNode[]>> => {
       const shouldApply = () =>
         opts?.generation == null || opts.generation === reloadGenerationRef.current;
@@ -1834,7 +1842,10 @@ export default function TasksScreen() {
       try {
         const map = await getProjectTaskTreeMap(
           rows.map((p) => p.id),
-          opts?.forceRefresh ? { forceRefresh: true } : undefined,
+          {
+            ...(opts?.forceRefresh ? { forceRefresh: true } : {}),
+            ...(opts?.preloadedTasks ? { preloadedTasks: opts.preloadedTasks } : {}),
+          },
         );
         if (shouldApply()) {
           setProjectTaskTreeMap(map);
@@ -2008,7 +2019,7 @@ export default function TasksScreen() {
     const generation = ++reloadGenerationRef.current;
     const isStale = () => generation !== reloadGenerationRef.current;
     const taskLoadOpts = forceApi ? { forceRefresh: true as const } : undefined;
-    const projectTaskOpts = (extra?: { forceRefresh?: boolean }) => ({
+    const projectTaskOpts = (extra?: { forceRefresh?: boolean; preloadedTasks?: TaskRow[] }) => ({
       ...extra,
       generation,
     });
@@ -2042,7 +2053,11 @@ export default function TasksScreen() {
     if (storedMainListView != null) {
       setMainListView(storedMainListView);
     }
-    let treeMap = await loadProjectTasks(rows, projectTaskOpts(taskLoadOpts));
+
+    let cachedTasks = await getTasks(taskLoadOpts);
+    if (isStale()) return;
+
+    let treeMap = await loadProjectTasks(rows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
     if (isStale()) return;
 
     const archived = await autoArchiveProjectsPastDueIfNeeded(rows, treeMap, logicalToday);
@@ -2051,7 +2066,8 @@ export default function TasksScreen() {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       workingRows = await loadProjects();
       if (isStale()) return;
-      treeMap = await loadProjectTasks(workingRows, projectTaskOpts(taskLoadOpts));
+      cachedTasks = await getTasks(taskLoadOpts);
+      treeMap = await loadProjectTasks(workingRows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
     const catRows = await loadProjectCategories();
@@ -2062,7 +2078,8 @@ export default function TasksScreen() {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       const refreshed = await loadProjects();
       if (isStale()) return;
-      await loadProjectTasks(refreshed, projectTaskOpts(taskLoadOpts));
+      cachedTasks = await getTasks(taskLoadOpts);
+      await loadProjectTasks(refreshed, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
     const purgedInbox = await deleteInboxProjectsPastRetentionDays(INBOX_PROJECT_RETENTION_DAYS);
@@ -2070,25 +2087,32 @@ export default function TasksScreen() {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       const afterPurge = await loadProjects();
       if (isStale()) return;
-      await loadProjectTasks(afterPurge, projectTaskOpts(taskLoadOpts));
+      cachedTasks = await getTasks(taskLoadOpts);
+      await loadProjectTasks(afterPurge, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
-    const taskRolled = await loadTasks(taskLoadOpts);
+    const taskRolled = await loadTasks({ ...taskLoadOpts, preloadedTasks: cachedTasks });
     if (isStale()) return;
+    if (taskRolled > 0) {
+      cachedTasks = await getTasks(taskLoadOpts);
+    }
 
     try {
-      await syncAllHabitBoundTaskCompletions();
+      const habitSync = await syncAllHabitBoundTaskCompletions({ allTasks: cachedTasks });
       if (isStale()) return;
-      await loadTasks(taskLoadOpts);
-      if (isStale()) return;
-      await loadProjectTasks(workingRows, projectTaskOpts(taskLoadOpts));
-      if (isStale()) return;
+      if (habitSync.completedTasks.length > 0) {
+        cachedTasks = await getTasks(taskLoadOpts);
+        await loadTasks({ ...taskLoadOpts, preloadedTasks: cachedTasks });
+        if (isStale()) return;
+        await loadProjectTasks(workingRows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
+        if (isStale()) return;
+      }
     } catch (err) {
       console.warn('批量同步习惯绑定任务失败', err);
     }
 
     if (taskRolled > 0) {
-      await loadProjectTasks(workingRows, projectTaskOpts(taskLoadOpts));
+      await loadProjectTasks(workingRows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
     await loadHabits();

@@ -3,22 +3,27 @@ import { useFocusEffect } from '@react-navigation/native';
 
 import { useRegisterApiLoadingRetry } from '@/hooks/use-register-api-loading-retry';
 import { usePullToRefresh, type UsePullToRefreshResult } from '@/hooks/use-pull-to-refresh';
-import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
+import { isApiOnlyReads } from '@/lib/api-data-mode';
 import { clearActivePageApiKey, setActivePageApiKey } from '@/lib/page-api-active';
 import {
-  beginPageApiRead,
   clearPageLoadedInSession,
-  consumePageLoadRestFailed,
-  endPageApiRead,
+  finalizePageLoadSession,
+  hasPageLoadedInSession,
   hasPageSyncedWithApi,
-  markPageLoadedInSession,
-  markPageRestRefreshCompleted,
   markPageSyncedWithApi,
   notifyPageDataChanged,
   resetPageApiSession,
   resolvePageApiReadOpts,
+  runPageLoadBody,
 } from '@/lib/page-api-session';
 import { runGuardedPageApiLoad } from '@/lib/page-api-load-guard';
+
+export type PageWrapLoadResult = {
+  ok: boolean;
+  restFailed: boolean;
+  localOnly: boolean;
+  fnResult: boolean | void | Record<string, unknown>;
+};
 
 /**
  * 页面数据加载：local-first 下已同步页面直接读 SQLite；
@@ -40,50 +45,29 @@ export function usePageApiSync(pageKey: string) {
   );
 
   const wrapLoad = useCallback(
-    async (fn: () => Promise<boolean | void>, forceApi = false) => {
+    async (fn: () => Promise<boolean | void | Record<string, unknown>>, forceApi = false): Promise<PageWrapLoadResult> => {
       const readOpts = resolvePageApiReadOpts(pageKey, forceApi);
       const needsRest = isApiOnlyReads() || forceApi || !readOpts.localOnly;
 
-      const execute = async () => {
-        if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
-          beginPageApiRead({ localOnly: true, offlineFallback: true });
-          try {
-            await fn();
-          } catch (e) {
-            console.warn('[usePageApiSync] 本地预读失败，继续尝试 REST', pageKey, e);
-          } finally {
-            endPageApiRead();
-          }
+      const execute = async (): Promise<PageWrapLoadResult> => {
+        const { ok, restFailed } = await runPageLoadBody(pageKey, fn, readOpts, forceApi);
+        finalizePageLoadSession(pageKey, readOpts, ok, restFailed);
+        if (ok !== false && !restFailed && (isApiOnlyReads() || !readOpts.localOnly)) {
+          setSynced(true);
         }
-
-        beginPageApiRead(readOpts);
-        try {
-          const ok = await fn();
-          const restFailed = consumePageLoadRestFailed();
-          if (
-            ok !== false &&
-            !restFailed &&
-            (isApiOnlyReads() || !readOpts.localOnly)
-          ) {
-            markPageSyncedWithApi(pageKey);
-            setSynced(true);
-          }
-          if (ok !== false && !restFailed) {
-            markPageLoadedInSession(pageKey);
-          }
-          if (ok !== false && !restFailed && !readOpts.localOnly) {
-            markPageRestRefreshCompleted(pageKey);
-          }
-        } finally {
-          endPageApiRead();
-        }
+        return {
+          ok: ok !== false && !restFailed,
+          restFailed,
+          localOnly: readOpts.localOnly,
+          fnResult: ok === false ? false : ok,
+        };
       };
 
       if (needsRest) {
         return runGuardedPageApiLoad(pageKey, execute, {
-          debounce: !forceApi,
+          debounce: !forceApi && hasPageLoadedInSession(pageKey),
           force: forceApi,
-        });
+        }) as Promise<PageWrapLoadResult>;
       }
       return execute();
     },

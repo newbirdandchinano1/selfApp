@@ -1,3 +1,4 @@
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
@@ -114,6 +115,24 @@ export async function unredeemEarnedReward(id: string): Promise<void> {
   );
 
   if (row.wish_item_id) {
+    await setWishItemFulfilled(row.wish_item_id, false);
+  }
+}
+
+export async function deleteEarnedReward(id: string): Promise<void> {
+  const row = await ensureLocalRowForWrite<EarnedRewardRow>('earned_rewards', id);
+  if (!row) return;
+
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE earned_rewards SET
+      updated_at = datetime('now'),
+      sync_status = 'pending_delete'
+    WHERE id = ?`,
+    [id],
+  );
+
+  if (row.redeemed_at && row.wish_item_id) {
     await setWishItemFulfilled(row.wish_item_id, false);
   }
 }

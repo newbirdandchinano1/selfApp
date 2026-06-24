@@ -241,50 +241,82 @@ export type HabitCheckInListStat = {
   todayCount: number;
 };
 
-/** 批量加载各习惯打卡记录（YMD → 次数） */
-export async function getAllHabitCheckInsMaps(): Promise<Map<string, Record<string, number>>> {
+/** 一次读取打卡表，同时构建列表页所需的 maps 与 stats */
+export async function loadHabitCheckInPageData(): Promise<{
+  checkInsMaps: Map<string, Record<string, number>>;
+  checkStats: Map<string, HabitCheckInListStat>;
+}> {
+  const boundary = await loadTasksDayBoundary();
+  const today = getLogicalLocalYmd(new Date(), boundary);
   const checkIns = await loadActiveCheckIns();
-  const map = new Map<string, Record<string, number>>();
+  const checkInsMaps = new Map<string, Record<string, number>>();
+  const checkStats = new Map<string, HabitCheckInListStat>();
+
   for (const r of checkIns) {
-    const prev = map.get(r.habit_id) ?? {};
-    prev[r.record_date] = r.count;
-    map.set(r.habit_id, prev);
+    const prevMap = checkInsMaps.get(r.habit_id) ?? {};
+    prevMap[r.record_date] = r.count;
+    checkInsMaps.set(r.habit_id, prevMap);
+
+    const prevStat = checkStats.get(r.habit_id);
+    if (prevStat) {
+      prevStat.achievedDays += 1;
+    } else {
+      checkStats.set(r.habit_id, { habitId: r.habit_id, achievedDays: 1, todayCount: 0 });
+    }
+    if (r.record_date === today) {
+      checkStats.get(r.habit_id)!.todayCount = r.count;
+    }
+  }
+
+  return { checkInsMaps, checkStats };
+}
+
+/** 各习惯在指定逻辑日的打卡次数（单次全表扫描） */
+export async function getTodayHabitCountsMap(logicalTodayYmd?: string): Promise<Map<string, number>> {
+  const boundary = await loadTasksDayBoundary();
+  const today = logicalTodayYmd ?? getLogicalLocalYmd(new Date(), boundary);
+  const checkIns = await loadActiveCheckIns();
+  const map = new Map<string, number>();
+  for (const r of checkIns) {
+    if (r.record_date === today) {
+      map.set(r.habit_id, r.count);
+    }
   }
   return map;
 }
 
+/** 批量加载各习惯打卡记录（YMD → 次数） */
+export async function getAllHabitCheckInsMaps(): Promise<Map<string, Record<string, number>>> {
+  const { checkInsMaps } = await loadHabitCheckInPageData();
+  return checkInsMaps;
+}
+
 /** 列表页批量统计：累计打卡天数、今日次数 */
 export async function getHabitCheckInListStats(): Promise<Map<string, HabitCheckInListStat>> {
-  const boundary = await loadTasksDayBoundary();
-  const today = getLogicalLocalYmd(new Date(), boundary);
-  const checkIns = await loadActiveCheckIns();
-
-  const map = new Map<string, HabitCheckInListStat>();
-  for (const r of checkIns) {
-    const prev = map.get(r.habit_id);
-    if (prev) {
-      prev.achievedDays += 1;
-    } else {
-      map.set(r.habit_id, { habitId: r.habit_id, achievedDays: 1, todayCount: 0 });
-    }
-    if (r.record_date === today) {
-      const stat = map.get(r.habit_id)!;
-      stat.todayCount = r.count;
-    }
-  }
-  return map;
+  const { checkStats } = await loadHabitCheckInPageData();
+  return checkStats;
 }
 
 /** 日期区间内各习惯每日打卡次数（record_date → habitId → count） */
 export async function getHabitCheckInCountsByDateRange(
   startYmd: string,
-  endYmd: string
+  endYmd: string,
+  opts?: { habitIds?: Set<string> },
 ): Promise<Map<string, Map<string, number>>> {
-  const checkIns = await loadActiveCheckIns().then(rows =>
-    rows.filter(r => isYmdInRange(r.record_date, startYmd, endYmd)),
+  const habitIds = opts?.habitIds ?? (await loadActiveHabitIds());
+  const checkIns = await readApiTable<{ habit_id: string; record_date: string; count: number }>(
+    'habit_check_ins',
+    {
+      offlineFallback: true,
+      startDate: startYmd,
+      endDate: endYmd,
+    },
+  );
+  const rows = checkIns.filter(
+    c => habitIds.has(c.habit_id) && (c.count ?? 0) >= 1 && isYmdInRange(c.record_date, startYmd, endYmd),
   );
   const out = new Map<string, Map<string, number>>();
-  for (const r of checkIns) {
+  for (const r of rows) {
     let day = out.get(r.record_date);
     if (!day) {
       day = new Map();

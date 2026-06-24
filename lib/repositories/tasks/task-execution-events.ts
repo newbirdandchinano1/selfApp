@@ -138,6 +138,23 @@ export async function getRecentTaskExecutionEventsPage(
     .slice(offset, offset + limit);
 }
 
+/** 按本地日历日返回已完成待办的 task_id 集合（与热力图口径一致，仅计 net completed） */
+export async function getTaskCompletedTaskIdsByDayRange(
+  startYmd: string,
+  endYmd: string,
+): Promise<Map<string, Set<string>>> {
+  const events = await loadScopedExecutionEvents();
+  const m = new Map<string, Set<string>>();
+  for (const e of filterNetCompletedTaskEvents(events)) {
+    const day = ymdFromDatetime(e.created_at);
+    if (!day || !isYmdInRange(day, startYmd, endYmd)) continue;
+    const set = m.get(day) ?? new Set<string>();
+    set.add(e.task_id);
+    m.set(day, set);
+  }
+  return m;
+}
+
 /** 按本地日历日统计「标记完成」次数 */
 export async function getTaskCompletionCountsByDayRange(startYmd: string, endYmd: string): Promise<Map<string, number>> {
   const events = await loadScopedExecutionEvents();

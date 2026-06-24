@@ -374,7 +374,7 @@ function toYmd(value: string): string | null {
 const PAGE_API_KEY = 'edit-project';
 
 export default function EditProjectScreen() {
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string; source?: string }>();
   const insets = useSafeAreaInsets();
@@ -931,6 +931,7 @@ export default function EditProjectScreen() {
 
     if (!committed) return;
 
+    notifyAncestorsDataChanged();
     void pushLocalChangesToApi();
 
     try {
@@ -958,6 +959,7 @@ export default function EditProjectScreen() {
     completionReward,
     projectExtraData,
     projectId,
+    notifyAncestorsDataChanged,
     router,
     saving,
     scheduleMeta,

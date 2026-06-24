@@ -2,25 +2,23 @@ import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { getHabitCheckInCountsByDateRange } from '@/lib/repositories/habits/habit-check-in';
-import { getHabits } from '@/lib/repositories/habits/habit';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { useTasksCalendarSummaries } from '@/hooks/use-tasks-calendar-summaries';
 import { isHabitDayGoalMet } from '@/lib/repositories/habits/habit-goal';
-import { getProjects } from '@/lib/repositories/projects/project';
-import { getTasks } from '@/lib/repositories/tasks/task';
+import type { HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { isTaskActiveStatus } from '@/lib/repositories/tasks/task.types';
 import {
-  buildTasksCalendarSummaries,
+  formatTasksCalendarPriority,
   getTasksCalendarCellLevel,
-  monthGridBounds,
+  getTasksCalendarPriorityColor,
+  type FrogCalendarDayStatus,
   type TasksCalendarDaySummary,
   type TasksCalendarHabitItem,
   type TasksCalendarProjectItem,
   type TasksCalendarTaskItem,
 } from '@/lib/tasks-calendar-data';
-import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
@@ -123,16 +121,176 @@ function formatWeekday(d: Date) {
   return WEEKDAY_LABELS[d.getDay()];
 }
 
+function habitKindCornerBadge(kind: HabitKind, isDark: boolean): { text: string; color: string } {
+  if (kind === 'break') {
+    return { text: '戒', color: isDark ? '#ea580c' : '#ea580c' };
+  }
+  if (kind === 'task') {
+    return { text: '任', color: isDark ? '#3b82f6' : '#2563eb' };
+  }
+  return { text: '习', color: isDark ? '#059669' : '#047857' };
+}
+
 function daySummaryCounts(summary: TasksCalendarDaySummary | undefined) {
   if (!summary) {
-    return { frogs: 0, todos: 0, matrix: 0, habits: 0, projects: 0, total: 0 };
+    return { frogs: 0, todos: 0, habits: 0, projects: 0, total: 0 };
   }
   const todos = summary.standaloneTodos.length;
-  const matrix = summary.matrixTasks.length;
   const frogs = summary.frogs.length;
   const habits = summary.habits.length;
   const projects = summary.projectsDue.length;
-  return { frogs, todos, matrix, habits, projects, total: frogs + todos + matrix + habits + projects };
+  return { frogs, todos, habits, projects, total: frogs + todos + habits + projects };
+}
+
+function FrogTaskRowItem({
+  item,
+  onPress,
+  text,
+  muted,
+  success,
+  danger,
+  rowBg,
+  borderColor,
+  isDark,
+}: {
+  item: TasksCalendarTaskItem;
+  onPress: () => void;
+  text: string;
+  muted: string;
+  success: string;
+  danger: string;
+  rowBg: string;
+  borderColor: string;
+  isDark: boolean;
+}) {
+  const frogStatus = item.frogDayStatus ?? 'pending';
+  const visualDone = frogStatus === 'completed' || frogStatus === 'partial';
+  const isIncomplete = frogStatus === 'incomplete';
+  const isPartial = frogStatus === 'partial';
+  const pri = formatPriority(item.priority);
+  const frogStatusLabel = formatFrogDayStatus(frogStatus);
+  const partialBadgeBg = isDark ? 'rgba(59,130,246,0.18)' : 'rgba(59,130,246,0.12)';
+  const partialBadgeColor = isDark ? '#93c5fd' : '#2563eb';
+  const incompleteBg = isDark ? 'rgba(248,113,113,0.12)' : 'rgba(254,226,226,0.72)';
+  const incompleteBorder = isDark ? 'rgba(248,113,113,0.72)' : 'rgba(220,38,38,0.55)';
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.listRow,
+        {
+          backgroundColor: isIncomplete ? incompleteBg : rowBg,
+          borderColor: isIncomplete ? incompleteBorder : borderColor,
+          borderWidth: isIncomplete ? 1.5 : StyleSheet.hairlineWidth,
+        },
+        pressed && { opacity: 0.88 },
+      ]}
+      accessibilityRole="button">
+      <View
+        style={[
+          styles.listDot,
+          {
+            backgroundColor: isIncomplete ? danger : visualDone ? muted : success,
+            width: isIncomplete ? 8 : 7,
+            height: isIncomplete ? 8 : 7,
+          },
+        ]}
+      />
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text
+          style={[
+            styles.listTitle,
+            { color: isIncomplete ? danger : text },
+            visualDone && styles.listTitleDone,
+          ]}
+          numberOfLines={2}>
+          {item.title}
+        </Text>
+        <Text style={[styles.listMeta, { color: isIncomplete ? danger : visualDone ? success : muted }]}>
+          {frogStatusLabel ?? formatTaskStatus(item.status)}
+          {pri && frogStatus === 'pending' ? ` · ${pri}` : ''}
+          {visualDone && pri ? ` · ${pri}` : ''}
+        </Text>
+      </View>
+      {isPartial ? (
+        <View style={[styles.frogPartialBadge, { backgroundColor: partialBadgeBg }]}>
+          <Text style={[styles.frogPartialBadgeText, { color: partialBadgeColor }]}>部分完成</Text>
+        </View>
+      ) : null}
+      {isIncomplete ? (
+        <View style={[styles.frogPartialBadge, { backgroundColor: isDark ? 'rgba(248,113,113,0.18)' : 'rgba(254,202,202,0.85)' }]}>
+          <Text style={[styles.frogPartialBadgeText, { color: danger }]}>未完成</Text>
+        </View>
+      ) : null}
+      <MaterialIcons name="chevron-right" size={18} color={muted} />
+    </Pressable>
+  );
+}
+
+function formatFrogDayStatus(status: FrogCalendarDayStatus | undefined) {
+  if (status === 'completed') return '已完成';
+  if (status === 'partial') return '已完成';
+  if (status === 'incomplete') return '未完成';
+  return null;
+}
+
+function StandaloneTodoRowItem({
+  item,
+  onPress,
+  text,
+  muted,
+  success,
+  rowBg,
+  borderColor,
+  isDark,
+}: {
+  item: TasksCalendarTaskItem;
+  onPress: () => void;
+  text: string;
+  muted: string;
+  success: string;
+  rowBg: string;
+  borderColor: string;
+  isDark: boolean;
+}) {
+  const reason = item.todoDayReason;
+  const completedOnDay = reason === 'completed' || reason === 'completed-and-due';
+  const dueOnDay = reason === 'due' || reason === 'completed-and-due';
+  const priorityColor = getTasksCalendarPriorityColor(item.priority, isDark);
+  const pri = formatTasksCalendarPriority(item.priority);
+  const dueBadgeBg = isDark ? 'rgba(251,191,36,0.18)' : 'rgba(254,243,199,0.95)';
+  const dueBadgeColor = isDark ? '#fcd34d' : '#92400e';
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.listRow,
+        { backgroundColor: rowBg, borderColor },
+        pressed && { opacity: 0.88 },
+      ]}
+      accessibilityRole="button">
+      <View style={[styles.listDot, { backgroundColor: completedOnDay ? muted : priorityColor }]} />
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text
+          style={[styles.listTitle, { color: text }, completedOnDay && styles.listTitleDone]}
+          numberOfLines={2}>
+          {item.title}
+        </Text>
+        <Text style={[styles.listMeta, { color: completedOnDay ? success : priorityColor }]}>
+          {completedOnDay ? '已完成' : formatTaskStatus(item.status)}
+          {pri ? ` · ${pri}` : ''}
+        </Text>
+      </View>
+      {dueOnDay ? (
+        <View style={[styles.frogPartialBadge, { backgroundColor: dueBadgeBg }]}>
+          <Text style={[styles.frogPartialBadgeText, { color: dueBadgeColor }]}>截止日</Text>
+        </View>
+      ) : null}
+      <MaterialIcons name="chevron-right" size={18} color={muted} />
+    </Pressable>
+  );
 }
 
 function TaskRowItem({
@@ -186,6 +344,7 @@ function HabitRowItem({
   success,
   rowBg,
   borderColor,
+  isDark,
 }: {
   item: TasksCalendarHabitItem;
   onPress: () => void;
@@ -194,6 +353,7 @@ function HabitRowItem({
   success: string;
   rowBg: string;
   borderColor: string;
+  isDark: boolean;
 }) {
   const goal = item.dailyGoal;
   const isTask = item.kind === 'task';
@@ -202,6 +362,7 @@ function HabitRowItem({
     ? !!item.taskShowPeriodCheck
     : isHabitDayGoalMet({ kind: item.kind, todayCount: item.todayCount, dailyGoal: goal });
   const isBreak = item.kind === 'break';
+  const cornerBadge = habitKindCornerBadge(item.kind, isDark);
   const progressLabel =
     isTask && item.periodGoal != null
       ? `本周期 ${taskPeriodProgress} / ${item.periodGoal}`
@@ -217,6 +378,9 @@ function HabitRowItem({
       accessibilityRole="button">
       <View style={[styles.listIconBadge, { backgroundColor: `${success}18` }]}>
         <Text style={{ fontSize: 18 }}>{item.icon || '✓'}</Text>
+        <View style={[styles.habitKindCornerBadge, { backgroundColor: cornerBadge.color, borderColor: rowBg }]}>
+          <Text style={styles.habitKindCornerBadgeText}>{cornerBadge.text}</Text>
+        </View>
       </View>
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={[styles.listTitle, { color: text }]} numberOfLines={1}>
@@ -283,27 +447,31 @@ function SummaryChip({ label, value, color, bg }: { label: string; value: number
 function DayDetailSections({
   summary,
   selectedDate,
+  logicalTodayYmd,
   router,
   text,
   muted,
   accent,
   success,
-  tertiary,
+  danger,
   sectionBg,
   rowBg,
   borderColor,
+  isDark,
 }: {
   summary: TasksCalendarDaySummary;
   selectedDate: Date;
+  logicalTodayYmd: string;
   router: ReturnType<typeof useRouter>;
   text: string;
   muted: string;
   accent: string;
   success: string;
-  tertiary: string;
+  danger: string;
   sectionBg: string;
   rowBg: string;
   borderColor: string;
+  isDark: boolean;
 }) {
   const openTask = (id: string) => router.push(`/task/${id}`);
   const openHabit = (id: string) => router.push({ pathname: '/habit-detail', params: { habitId: id } });
@@ -311,6 +479,10 @@ function DayDetailSections({
 
   const counts = daySummaryCounts(summary);
   const hasAny = counts.total > 0;
+  const selectedYmd = formatYmd(selectedDate);
+  const isTodaySelected = selectedYmd === logicalTodayYmd;
+  const frogSectionTitle = isTodaySelected ? '今日青蛙' : '青蛙';
+  const frogIncompleteCount = summary.frogs.filter((f) => f.frogDayStatus === 'incomplete').length;
 
   const renderSection = (
     title: string,
@@ -358,7 +530,6 @@ function DayDetailSections({
         <View style={styles.summaryChipRow}>
           <SummaryChip label="青蛙" value={counts.frogs} color={success} bg={`${success}12`} />
           <SummaryChip label="待办" value={counts.todos} color={accent} bg={`${accent}12`} />
-          <SummaryChip label="矩阵" value={counts.matrix} color={tertiary} bg={`${tertiary}12`} />
           <SummaryChip label="习惯" value={counts.habits} color={success} bg={`${success}10`} />
           <SummaryChip label="项目" value={counts.projects} color={muted} bg={`${muted}14`} />
         </View>
@@ -375,20 +546,22 @@ function DayDetailSections({
       ) : (
         <>
           {renderSection(
-            '今日青蛙',
+            frogSectionTitle,
             'eco',
-            success,
+            frogIncompleteCount > 0 ? danger : success,
             summary.frogs.length,
             summary.frogs.map((t) => (
-              <TaskRowItem
+              <FrogTaskRowItem
                 key={t.id}
                 item={t}
                 onPress={() => openTask(t.id)}
                 text={text}
                 muted={muted}
-                accent={success}
+                success={success}
+                danger={danger}
                 rowBg={rowBg}
                 borderColor={borderColor}
+                isDark={isDark}
               />
             ))
           )}
@@ -398,33 +571,16 @@ function DayDetailSections({
             accent,
             summary.standaloneTodos.length,
             summary.standaloneTodos.map((t) => (
-              <TaskRowItem
+              <StandaloneTodoRowItem
                 key={t.id}
                 item={t}
                 onPress={() => openTask(t.id)}
                 text={text}
                 muted={muted}
-                accent={accent}
+                success={success}
                 rowBg={rowBg}
                 borderColor={borderColor}
-              />
-            ))
-          )}
-          {renderSection(
-            '任务列表',
-            'grid-view',
-            tertiary,
-            summary.matrixTasks.length,
-            summary.matrixTasks.map((t) => (
-              <TaskRowItem
-                key={t.id}
-                item={t}
-                onPress={() => openTask(t.id)}
-                text={text}
-                muted={muted}
-                accent={tertiary}
-                rowBg={rowBg}
-                borderColor={borderColor}
+                isDark={isDark}
               />
             ))
           )}
@@ -461,6 +617,7 @@ function DayDetailSections({
                 success={success}
                 rowBg={rowBg}
                 borderColor={borderColor}
+                isDark={isDark}
               />
             ))
           )}
@@ -493,11 +650,12 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   offset,
   todayMonthStart,
   logicalTodayYmd,
-  boundary,
   pageWidth,
   dayCellSize,
   selectedYmd,
   onSelectDate,
+  summaries,
+  loading,
   heatLevels,
   heatEmpty,
   textColor,
@@ -509,11 +667,12 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   offset: number;
   todayMonthStart: Date;
   logicalTodayYmd: string;
-  boundary: TasksDayBoundary;
   pageWidth: number;
   dayCellSize: number;
   selectedYmd: string;
   onSelectDate: (d: Date) => void;
+  summaries: Map<string, TasksCalendarDaySummary> | undefined;
+  loading: boolean;
   heatLevels: readonly string[];
   heatEmpty: string;
   textColor: string;
@@ -525,49 +684,10 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   const monthDate = React.useMemo(() => addMonths(todayMonthStart, offset), [offset, todayMonthStart]);
   const gridCells = React.useMemo(() => buildGridCellsForMonth(monthDate), [monthDate]);
   const gridWeeks = React.useMemo(() => chunkWeeks(gridCells), [gridCells]);
-  const { gridStartYmd, gridEndYmd } = React.useMemo(() => monthGridBounds(monthDate), [monthDate]);
-
-  const [summaries, setSummaries] = React.useState<Map<string, TasksCalendarDaySummary>>(() => new Map());
-  const [loading, setLoading] = React.useState(true);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    setSummaries(new Map());
-    setLoading(true);
-    (async () => {
-      try {
-        const [tasks, habits, projects, habitCheckInsByDay] = await Promise.all([
-          getTasks(),
-          getHabits(),
-          getProjects(),
-          getHabitCheckInCountsByDateRange(gridStartYmd, gridEndYmd),
-        ]);
-        if (cancelled) return;
-        const map = buildTasksCalendarSummaries({
-          startYmd: gridStartYmd,
-          endYmd: gridEndYmd,
-          tasks,
-          habits,
-          projects,
-          habitCheckInsByDay,
-          dayBoundary: boundary,
-        });
-        setSummaries(map);
-      } catch (e) {
-        console.warn('加载任务日历月份失败', e);
-        if (!cancelled) setSummaries(new Map());
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [gridStartYmd, gridEndYmd, boundary, offset]);
 
   const gridTrackWidth = dayCellSize * 7 + GRID_GAP * 6;
 
-  if (loading || dayCellSize <= 0) {
+  if ((loading && !summaries) || dayCellSize <= 0) {
     return (
       <View style={{ width: pageWidth, minHeight: pageWidth * 0.72, justifyContent: 'center' }}>
         <ActivityIndicator color={primary} />
@@ -588,7 +708,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
       {gridWeeks.map((week, wi) => (
         <View key={`week-${offset}-${wi}`} style={[styles.weekRow, { gap: GRID_GAP }]}>
           {week.map((cell: GridCell) => {
-            const summary = summaries.get(cell.ymd);
+            const summary = summaries?.get(cell.ymd);
             const level = getTasksCalendarCellLevel(summary);
             const bg = level === 0 ? heatEmpty : heatLevels[level];
             const selected = cell.ymd === selectedYmd;
@@ -664,8 +784,15 @@ export default function TasksCalendarScreen() {
   const [monthOffset, setMonthOffset] = React.useState(0);
   const [visibleMonthOffset, setVisibleMonthOffset] = React.useState(0);
   const [selectedDate, setSelectedDate] = React.useState<Date>(() => today);
-  const [summaries, setSummaries] = React.useState<Map<string, TasksCalendarDaySummary>>(() => new Map());
-  const [detailLoading, setDetailLoading] = React.useState(true);
+
+  const { summaries, detailLoading, cacheVersion, getMonthPageData, refreshControl } =
+    useTasksCalendarSummaries({
+      pageKey: PAGE_API_KEY,
+      monthOffset,
+      todayMonthStart,
+      boundary,
+      wrapLoad,
+    });
 
   const initialCalendarWidth = React.useMemo(
     () => Math.max(1, roundCalendarWidth(windowWidth - Layout.pagePaddingX * 2 - Spacing.md * 2)),
@@ -687,8 +814,8 @@ export default function TasksCalendarScreen() {
     return Math.floor((calendarWidth - GRID_GAP * 6) / 7);
   }, [calendarWidth]);
   const pagerExtraData = React.useMemo(
-    () => `${calendarWidth}:${dayCellSize}`,
-    [calendarWidth, dayCellSize]
+    () => `${calendarWidth}:${dayCellSize}:${cacheVersion}`,
+    [calendarWidth, dayCellSize, cacheVersion]
   );
   const selectedYmd = formatYmd(selectedDate);
 
@@ -731,61 +858,6 @@ export default function TasksCalendarScreen() {
     () => addMonths(todayMonthStart, visibleMonthOffset),
     [todayMonthStart, visibleMonthOffset]
   );
-
-  /** 当前可见月的 42 格范围；勿依赖 selectedDate，否则每次点选都会触发全量查库 */
-  const { startYmd: detailStartYmd, endYmd: detailEndYmd } = React.useMemo(() => {
-    const monthBounds = monthGridBounds(visibleMonth);
-    return { startYmd: monthBounds.gridStartYmd, endYmd: monthBounds.gridEndYmd };
-  }, [visibleMonth]);
-
-  const detailRangeKey = `${detailStartYmd}:${detailEndYmd}`;
-  const detailRangeKeyRef = React.useRef('');
-
-  const reload = React.useCallback(async (forceApi = false) => {
-    const rangeKey = detailRangeKey;
-    const rangeChanged = rangeKey !== detailRangeKeyRef.current;
-    if (rangeChanged) {
-      detailRangeKeyRef.current = rangeKey;
-      setDetailLoading(true);
-    }
-    try {
-      await wrapLoad(async () => {
-        const [tasks, habits, projects, habitCheckInsByDay] = await Promise.all([
-          getTasks(),
-          getHabits(),
-          getProjects(),
-          getHabitCheckInCountsByDateRange(detailStartYmd, detailEndYmd),
-        ]);
-        const map = buildTasksCalendarSummaries({
-          startYmd: detailStartYmd,
-          endYmd: detailEndYmd,
-          tasks,
-          habits,
-          projects,
-          habitCheckInsByDay,
-          dayBoundary: boundary,
-        });
-        setSummaries(map);
-      }, forceApi);
-    } catch (e) {
-      console.warn('加载任务日历失败', e);
-      setSummaries(new Map());
-    } finally {
-      if (rangeChanged) setDetailLoading(false);
-    }
-  }, [detailStartYmd, detailEndYmd, detailRangeKey, boundary, wrapLoad]);
-
-  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
-
-  useFocusEffect(
-    React.useCallback(() => {
-      void reload();
-    }, [reload])
-  );
-
-  React.useEffect(() => {
-    void reload();
-  }, [monthOffset, detailRangeKey, reload]);
 
   React.useEffect(() => {
     setVisibleMonthOffset(monthOffset);
@@ -850,11 +922,7 @@ export default function TasksCalendarScreen() {
         ]}>
         <AppIconButton icon="arrow-back" onPress={() => router.back()} accessibilityLabel="返回" />
         <Text style={[Typography.title, { color: colors.primary, flex: 1, textAlign: 'center' }]}>任务日历</Text>
-        <AppIconButton
-          icon="insights"
-          onPress={() => router.push('/tasks-overview')}
-          accessibilityLabel="待办总览"
-        />
+        <View style={styles.topBarSpacer} />
       </View>
 
       <ScrollView
@@ -968,8 +1036,9 @@ export default function TasksCalendarScreen() {
               const w = calendarWidthRef.current;
               return { length: w, offset: w * index, index };
             }}
-            windowSize={5}
-            maxToRenderPerBatch={3}
+            windowSize={3}
+            maxToRenderPerBatch={1}
+            initialNumToRender={1}
             updateCellsBatchingPeriod={16}
             removeClippedSubviews={false}
             onScroll={(e) => {
@@ -995,17 +1064,20 @@ export default function TasksCalendarScreen() {
                 pagerRef.current?.scrollToOffset({ offset: info.index * w, animated: false });
               });
             }}
-            renderItem={({ item: offset }) => (
+            renderItem={({ item: offset }) => {
+              const { summaries: monthSummaries, loading: monthLoading } = getMonthPageData(offset);
+              return (
               <TasksCalendarMonthPage
                 key={`tasks-cal-page-${offset}`}
                 offset={offset}
                 todayMonthStart={todayMonthStart}
                 logicalTodayYmd={logicalTodayYmd}
-                boundary={boundary}
                 pageWidth={calendarWidth}
                 dayCellSize={dayCellSize}
                 selectedYmd={selectedYmd}
                 onSelectDate={setSelectedDate}
+                summaries={monthSummaries}
+                loading={monthLoading}
                 heatLevels={heatLevels}
                 heatEmpty={heatEmpty}
                 textColor={colors.text}
@@ -1014,7 +1086,8 @@ export default function TasksCalendarScreen() {
                 secondary={colors.secondary}
                 tertiary={colors.tertiary}
               />
-            )}
+              );
+            }}
           />
           </View>
           ) : (
@@ -1033,15 +1106,17 @@ export default function TasksCalendarScreen() {
             <DayDetailSections
               summary={selectedSummary}
               selectedDate={selectedDate}
+              logicalTodayYmd={logicalTodayYmd}
               router={router}
               text={colors.text}
               muted={colors.textMuted}
               accent={colors.primary}
               success={colors.secondary}
-              tertiary={colors.tertiary}
+              danger={colors.danger}
               sectionBg={sectionBg}
               rowBg={rowBg}
               borderColor={colors.outline}
+              isDark={isDark}
             />
           ) : (
             <DayDetailSections
@@ -1055,15 +1130,17 @@ export default function TasksCalendarScreen() {
                 projectsDue: [],
               }}
               selectedDate={selectedDate}
+              logicalTodayYmd={logicalTodayYmd}
               router={router}
               text={colors.text}
               muted={colors.textMuted}
               accent={colors.primary}
               success={colors.secondary}
-              tertiary={colors.tertiary}
+              danger={colors.danger}
               sectionBg={sectionBg}
               rowBg={rowBg}
               borderColor={colors.outline}
+              isDark={isDark}
             />
           )}
         </View>
@@ -1081,6 +1158,7 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
+  topBarSpacer: { width: 40 },
   scroll: {
     paddingHorizontal: Layout.pagePaddingX,
     paddingBottom: Spacing['4xl'],
@@ -1224,10 +1302,30 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
   },
+  habitKindCornerBadge: {
+    position: 'absolute',
+    left: -4,
+    top: -4,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 3,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  habitKindCornerBadgeText: { color: '#fff', fontSize: 9, fontWeight: '900', lineHeight: 11 },
   listTitle: { fontSize: 14, fontWeight: '700' },
   listTitleDone: { textDecorationLine: 'line-through', opacity: 0.6 },
   listMeta: { fontSize: 11, fontWeight: '600' },
+  frogPartialBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: Radius.pill,
+  },
+  frogPartialBadgeText: { fontSize: 10, fontWeight: '800' },
   emptyDayWrap: {
     alignItems: 'center',
     paddingVertical: Spacing['3xl'],

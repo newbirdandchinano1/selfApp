@@ -1,11 +1,16 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { listEarnedRewards, redeemEarnedReward, unredeemEarnedReward } from '@/lib/repositories/earned-rewards/earned-reward';
+import {
+  deleteEarnedReward,
+  listEarnedRewards,
+  redeemEarnedReward,
+  unredeemEarnedReward,
+} from '@/lib/repositories/earned-rewards/earned-reward';
 import type { EarnedRewardRow } from '@/lib/repositories/earned-rewards/earned-reward.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,6 +21,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Swipeable } from 'react-native-gesture-handler';
 
 function formatEarnedTime(iso: string): string {
   const d = new Date(iso);
@@ -51,6 +57,7 @@ export default function EarnedRewardsScreen() {
   const [items, setItems] = useState<EarnedRewardRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [redeemingId, setRedeemingId] = useState<string | null>(null);
+  const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
 
   const reload = useCallback(async (forceApi = false) => {
@@ -127,73 +134,118 @@ export default function EarnedRewardsScreen() {
     [reload],
   );
 
+  const confirmDelete = useCallback((row: EarnedRewardRow) => {
+    Alert.alert('删除奖励', `确定删除「${row.label}」？此操作不可恢复。`, [
+      { text: '取消', style: 'cancel', onPress: () => swipeableRefs.current[row.id]?.close() },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            swipeableRefs.current[row.id]?.close();
+            setRedeemingId(row.id);
+            try {
+              await deleteEarnedReward(row.id);
+              setItems((prev) => prev.filter((i) => i.id !== row.id));
+            } catch (e) {
+              Alert.alert('删除失败', e instanceof Error ? e.message : '请稍后重试');
+            } finally {
+              setRedeemingId(null);
+            }
+          })();
+        },
+      },
+    ]);
+  }, []);
+
   const renderRow = ({ item }: { item: EarnedRewardRow }) => {
     const isRedeemed = !!item.redeemed_at;
     const busy = redeemingId === item.id;
     return (
-      <View style={[styles.card, { backgroundColor: cardBg, borderColor: borderSoft }]}>
-        <View style={styles.cardHead}>
-          <View style={[styles.iconWrap, { backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : 'rgba(130,81,0,0.1)' }]}>
-            <MaterialIcons name="emoji-events" size={22} color={tertiary} />
+      <Swipeable
+        ref={(r) => {
+          swipeableRefs.current[item.id] = r;
+        }}
+        overshootRight={false}
+        rightThreshold={48}
+        renderRightActions={() => (
+          <Pressable
+            onPress={() => confirmDelete(item)}
+            disabled={!!redeemingId}
+            style={({ pressed }) => [
+              styles.swipeDeleteAction,
+              { opacity: redeemingId ? 0.55 : pressed ? 0.92 : 1 },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="删除">
+            <MaterialIcons name="delete-outline" size={24} color="#fff" />
+            <Text style={styles.swipeDeleteText}>删除</Text>
+          </Pressable>
+        )}>
+        <View style={[styles.card, { backgroundColor: cardBg, borderColor: borderSoft }]}>
+          <View style={styles.cardHead}>
+            <View style={[styles.iconWrap, { backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : 'rgba(130,81,0,0.1)' }]}>
+              <MaterialIcons name="emoji-events" size={22} color={tertiary} />
+            </View>
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={[styles.rewardLabel, { color: text }]} numberOfLines={2}>
+                {item.label}
+              </Text>
+              <Text style={[styles.sourceLine, { color: outline }]} numberOfLines={2}>
+                来自{sourceTypeLabel(item.source_type)}「{item.source_title}」
+              </Text>
+              <Text style={[styles.timeLine, { color: outline }]}>
+                {isRedeemed ? `已于 ${formatEarnedTime(item.redeemed_at!)} 兑现` : `获得于 ${formatEarnedTime(item.earned_at)}`}
+              </Text>
+            </View>
           </View>
-          <View style={{ flex: 1, gap: 4 }}>
-            <Text style={[styles.rewardLabel, { color: text }]} numberOfLines={2}>
-              {item.label}
-            </Text>
-            <Text style={[styles.sourceLine, { color: outline }]} numberOfLines={2}>
-              来自{sourceTypeLabel(item.source_type)}「{item.source_title}」
-            </Text>
-            <Text style={[styles.timeLine, { color: outline }]}>
-              {isRedeemed ? `已于 ${formatEarnedTime(item.redeemed_at!)} 兑现` : `获得于 ${formatEarnedTime(item.earned_at)}`}
-            </Text>
-          </View>
+          {!isRedeemed ? (
+            <Pressable
+              onPress={() => confirmRedeem(item)}
+              disabled={!!redeemingId}
+              style={({ pressed }) => [
+                styles.redeemBtn,
+                { backgroundColor: pressed ? secondary : primary, opacity: busy || redeemingId ? 0.7 : 1 },
+              ]}>
+              {busy ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <MaterialIcons name="redeem" size={18} color="#fff" />
+                  <Text style={styles.redeemText}>兑现</Text>
+                </>
+              )}
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={() => confirmUnredeem(item)}
+              disabled={!!redeemingId}
+              style={({ pressed }) => [
+                styles.unredeemBtn,
+                {
+                  borderColor: isDark ? 'rgba(52,211,153,0.35)' : 'rgba(0,108,73,0.35)',
+                  backgroundColor: pressed
+                    ? isDark
+                      ? 'rgba(52,211,153,0.2)'
+                      : 'rgba(0,108,73,0.12)'
+                    : isDark
+                      ? 'rgba(52,211,153,0.14)'
+                      : 'rgba(0,108,73,0.1)',
+                  opacity: busy || redeemingId ? 0.7 : 1,
+                },
+              ]}>
+              {busy ? (
+                <ActivityIndicator color={secondary} size="small" />
+              ) : (
+                <>
+                  <MaterialIcons name="verified" size={16} color={secondary} />
+                  <Text style={[styles.redeemedText, { color: secondary }]}>已兑现 · 点击取消</Text>
+                </>
+              )}
+            </Pressable>
+          )}
         </View>
-        {!isRedeemed ? (
-          <Pressable
-            onPress={() => confirmRedeem(item)}
-            disabled={!!redeemingId}
-            style={({ pressed }) => [
-              styles.redeemBtn,
-              { backgroundColor: pressed ? secondary : primary, opacity: busy || redeemingId ? 0.7 : 1 },
-            ]}>
-            {busy ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <>
-                <MaterialIcons name="redeem" size={18} color="#fff" />
-                <Text style={styles.redeemText}>兑现</Text>
-              </>
-            )}
-          </Pressable>
-        ) : (
-          <Pressable
-            onPress={() => confirmUnredeem(item)}
-            disabled={!!redeemingId}
-            style={({ pressed }) => [
-              styles.unredeemBtn,
-              {
-                borderColor: isDark ? 'rgba(52,211,153,0.35)' : 'rgba(0,108,73,0.35)',
-                backgroundColor: pressed
-                  ? isDark
-                    ? 'rgba(52,211,153,0.2)'
-                    : 'rgba(0,108,73,0.12)'
-                  : isDark
-                    ? 'rgba(52,211,153,0.14)'
-                    : 'rgba(0,108,73,0.1)',
-                opacity: busy || redeemingId ? 0.7 : 1,
-              },
-            ]}>
-            {busy ? (
-              <ActivityIndicator color={secondary} size="small" />
-            ) : (
-              <>
-                <MaterialIcons name="verified" size={16} color={secondary} />
-                <Text style={[styles.redeemedText, { color: secondary }]}>已兑现 · 点击取消</Text>
-              </>
-            )}
-          </Pressable>
-        )}
-      </View>
+      </Swipeable>
     );
   };
 
@@ -237,10 +289,10 @@ export default function EarnedRewardsScreen() {
           ListHeaderComponent={
             pending.length > 0 ? (
               <Text style={[styles.sectionKicker, { color: outline }]}>
-                待兑现 {pending.length} 项{redeemed.length > 0 ? ` · 已兑现 ${redeemed.length} 项` : ''}
+                待兑现 {pending.length} 项{redeemed.length > 0 ? ` · 已兑现 ${redeemed.length} 项` : ''} · 左滑删除
               </Text>
             ) : (
-              <Text style={[styles.sectionKicker, { color: outline }]}>全部已兑现</Text>
+              <Text style={[styles.sectionKicker, { color: outline }]}>全部已兑现 · 左滑删除</Text>
             )
           }
         />
@@ -296,4 +348,14 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   redeemedText: { fontSize: 14, fontWeight: '700' },
+  swipeDeleteAction: {
+    width: 88,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#dc2626',
+    borderRadius: 16,
+    marginVertical: 1,
+    gap: 4,
+  },
+  swipeDeleteText: { color: '#fff', fontSize: 12, fontWeight: '800' },
 });

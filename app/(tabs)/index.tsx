@@ -8,7 +8,7 @@ import { Directory, File, Paths } from 'expo-file-system';
 import React from 'react';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
-import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
+import { shouldSkipPageFocusApiRefresh, clearPageLoadedInSession, resetPageApiSession } from '@/lib/page-api-session';
 
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
@@ -166,6 +166,8 @@ function pickHealthRecordsForYmd(
     .filter((r) => r.record_date === ymd)
     .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
 }
+
+type HomeHealthReloadResult = { sliceEmpty: boolean };
 
 /** 将拍照/选图的临时 URI 复制到应用目录，便于详情页长期展示 */
 async function copyIntakePhotoToDocuments(recordId: string, sourceUri: string | null | undefined): Promise<string | null> {
@@ -739,6 +741,9 @@ export default function HealthScreen() {
   const markPageDirty = resetSync;
   const reloadPageRef = React.useRef<((forceApi?: boolean) => Promise<void>) | null>(null);
   const weekAnchorYmdRef = React.useRef(formatLocalYmd(weekAnchorDate));
+  const emptyLocalEscalatedRef = React.useRef(false);
+  const [pageLoadError, setPageLoadError] = React.useState<string | null>(null);
+  const [pageLoadRetrying, setPageLoadRetrying] = React.useState(false);
 
   // 获取用户信息
   const [user, setUser] = React.useState<UserRow | null>(null);
@@ -796,15 +801,16 @@ export default function HealthScreen() {
   );
   const intakeParseLocked = pendingIntake != null;
 
-  const reload = React.useCallback(async (forceApi = false) => {
+  const reload = React.useCallback(async (forceApi = false): Promise<false | HomeHealthReloadResult> => {
     const currentUser = await getDefaultUser();
     if (!currentUser?.id) {
       setDailyAiTargets(null);
       setDailyAiLoading(false);
-      return;
+      return false;
     }
 
     let healthLoaded = false;
+    let sliceEmpty = true;
     try {
       const applySlice = (slice: Awaited<ReturnType<typeof loadHomeHealthSliceForUser>>) => {
         setHealthRecords(slice.week);
@@ -813,11 +819,13 @@ export default function HealthScreen() {
         setSelectedDayRecords(slice.dayRecords);
       };
 
-      applySlice(await loadHomeHealthSliceForUser(currentUser.id, weekAnchorDate, selectedDate));
+      const slice = await loadHomeHealthSliceForUser(currentUser.id, weekAnchorDate, selectedDate);
+      applySlice(slice);
+      sliceEmpty = slice.week.length === 0 && slice.prevWeek.length === 0;
       healthLoaded = true;
     } catch (fallbackError) {
       console.warn('健康数据本地回退失败', fallbackError);
-      return;
+      return false;
     }
 
     // 下拉刷新只同步摄入/快捷卡片；AI 日目标仅在进入页面时更新，避免刷新 spinner 长时间卡住
@@ -847,12 +855,37 @@ export default function HealthScreen() {
       setQuickAddItems(getDefaultQuickAddItems());
       setQuickAddCatalog(getDefaultQuickAddItems());
     }
+
+    return { sliceEmpty };
   }, [logicalTodayYmd, selectedDate, weekAnchorDate]);
 
   const reloadPage = React.useCallback(async (forceApi = false) => {
-    await wrapLoad(async () => {
-      await reload(forceApi);
-    }, forceApi);
+    if (forceApi) setPageLoadRetrying(true);
+    try {
+      const result = await wrapLoad(async () => reload(forceApi), forceApi);
+      const fnResult = result.fnResult as false | HomeHealthReloadResult | undefined;
+
+      if (!result.ok || result.restFailed || fnResult === false) {
+        setPageLoadError('数据加载失败，请检查网络后重试');
+        return;
+      }
+
+      setPageLoadError(null);
+
+      if (
+        !forceApi &&
+        result.localOnly &&
+        fnResult?.sliceEmpty &&
+        !emptyLocalEscalatedRef.current
+      ) {
+        emptyLocalEscalatedRef.current = true;
+        clearPageLoadedInSession(PAGE_API_KEY);
+        resetPageApiSession(PAGE_API_KEY, { force: true });
+        await reloadPage(true);
+      }
+    } finally {
+      if (forceApi) setPageLoadRetrying(false);
+    }
   }, [reload, wrapLoad]);
   reloadPageRef.current = reloadPage;
 
@@ -1850,6 +1883,38 @@ export default function HealthScreen() {
         showsVerticalScrollIndicator={false}
         directionalLockEnabled
       >
+        {pageLoadError ? (
+          <View
+            style={[
+              styles.loadErrorBanner,
+              {
+                backgroundColor: `${colors.primary}12`,
+                borderColor: `${colors.primary}40`,
+              },
+            ]}
+          >
+            <MaterialIcons name="cloud-off" size={20} color={colors.primary} />
+            <Text style={[styles.loadErrorText, { color: colors.text }]}>{pageLoadError}</Text>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              disabled={pageLoadRetrying}
+              onPress={() => {
+                clearPageLoadedInSession(PAGE_API_KEY);
+                resetPageApiSession(PAGE_API_KEY, { force: true });
+                void reloadPage(true);
+              }}
+              style={[styles.loadErrorRetryBtn, { backgroundColor: colors.primary }]}
+              accessibilityRole="button"
+              accessibilityLabel="重试加载健康数据"
+            >
+              {pageLoadRetrying ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.loadErrorRetryText}>重试</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        ) : null}
         <Animated.View
           pointerEvents="none"
           style={[
@@ -2860,6 +2925,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing['5xl'],
     paddingTop: 0,
     paddingBottom: Spacing['6xl'],
+  },
+  loadErrorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: Spacing.lg,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+  },
+  loadErrorText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
+  },
+  loadErrorRetryBtn: {
+    minWidth: 56,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadErrorRetryText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
   },
   bgOrb: {
     position: 'absolute',

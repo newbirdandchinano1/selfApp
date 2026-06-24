@@ -1,5 +1,5 @@
 import { tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
-import { getCheckInsMapByHabitId } from '@/lib/repositories/habits/habit-check-in';
+import { getCheckInsMapByHabitId, getTodayHabitCountsMap } from '@/lib/repositories/habits/habit-check-in';
 import { isBreakHabitSucceeded } from '@/lib/repositories/habits/habit-break-success';
 import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
 import { getHabitById } from '@/lib/repositories/habits/habit';
@@ -273,8 +273,10 @@ export async function tryCompleteTaskByBoundHabits(taskId: string): Promise<Comp
 }
 
 /** 启动或刷新任务页时，批量检查所有已绑定习惯的任务 */
-export async function syncAllHabitBoundTaskCompletions(): Promise<CompleteTasksBoundToHabitResult> {
-  const allTasks = await loadAllTasks();
+export async function syncAllHabitBoundTaskCompletions(opts?: {
+  allTasks?: TaskRow[];
+}): Promise<CompleteTasksBoundToHabitResult> {
+  const allTasks = opts?.allTasks ?? (await loadAllTasks());
   const candidates = allTasks.filter((task) => {
     if (isTaskTerminalStatus(task.status) || isTaskShelvedStatus(task.status)) return false;
     return parseBoundHabitIdsFromExtraData(task.extra_data).length > 0;
@@ -283,12 +285,13 @@ export async function syncAllHabitBoundTaskCompletions(): Promise<CompleteTasksB
 
   const boundary = await loadTasksDayBoundary();
   const logicalTodayYmd = getLogicalLocalYmd(new Date(), boundary);
+  const todayCountByHabitId = await getTodayHabitCountsMap(logicalTodayYmd);
 
   const completedTasks: HabitBoundTaskSyncChange[] = [];
   const cascadeChanges: ParentTaskCascadeChange[] = [];
 
   for (const task of candidates) {
-    const result = await completeTaskIfAllBoundHabitsMet(task, { logicalTodayYmd });
+    const result = await completeTaskIfAllBoundHabitsMet(task, { logicalTodayYmd, todayCountByHabitId });
     completedTasks.push(...result.completedTasks);
     cascadeChanges.push(...result.cascadeChanges);
   }

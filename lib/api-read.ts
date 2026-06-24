@@ -13,7 +13,7 @@ import {
   overlayLocalPendingOnApiTableRows,
 } from '@/lib/api-read-pending-overlay';
 import { getDatabase } from '@/lib/database';
-import { markPageLoadRestFailed, resolveReadLocalOnly } from '@/lib/page-api-session';
+import { markPageLoadRestFailed, resolveReadLocalOnly, resolveReadOfflineFallback } from '@/lib/page-api-session';
 
 export type ApiListOptions = {
   page?: number;
@@ -25,6 +25,20 @@ export type ApiListOptions = {
   /** @deprecated API_ONLY_READS 下无效，始终走 REST */
   localOnly?: boolean;
   offlineFallback?: boolean;
+  /** habit_check_ins：record_date 范围（见 CALENDAR_API_FOR_APP.md） */
+  startDate?: string;
+  endDate?: string;
+  dueDateGte?: string;
+  dueDateLte?: string;
+  frogAssignedOnGte?: string;
+  frogAssignedOnLte?: string;
+  createdAtGte?: string;
+  createdAtLte?: string;
+  assignedYmdGte?: string;
+  assignedYmdLte?: string;
+  calendarRelevant?: boolean;
+  fields?: string;
+  updatedSince?: string;
 };
 
 export type ApiTableMeta = {
@@ -204,9 +218,12 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
   const existingInflight = inflightTableFetchAll.get(table);
   if (opts?.forceRefresh && existingInflight) {
     invalidateInflightApiTableFetch(table);
-    return existingInflight as Promise<T[]>;
-  }
-  if (existingInflight) {
+    try {
+      await existingInflight;
+    } catch {
+      /* 作废进行中的陈旧全量拉取，随后发起新的 forceRefresh */
+    }
+  } else if (existingInflight) {
     return existingInflight as Promise<T[]>;
   }
 
@@ -292,7 +309,7 @@ export async function readApiTable<T extends Record<string, unknown>>(
         return overlayLocalPendingOnApiTableRows(table, apiRows);
       }
     } catch (e) {
-      if (opts?.offlineFallback) {
+      if (resolveReadOfflineFallback(opts?.offlineFallback)) {
         markPageLoadRestFailed();
         console.warn('[api-read] 接口不可用，回退本地 SQLite', table, e);
         return readLocalTableVisible<T>(table);
@@ -342,7 +359,7 @@ export async function readApiRecord<T extends Record<string, unknown>>(
         return overlayLocalPendingOnApiRecord(table, pkValue, apiRow);
       }
     } catch (e) {
-      if (opts?.offlineFallback) {
+      if (resolveReadOfflineFallback(opts?.offlineFallback)) {
         markPageLoadRestFailed();
         console.warn('[api-read] 接口不可用，回退本地 SQLite', table, pkValue, e);
         return readLocalRecordVisible<T>(table, pkValue);

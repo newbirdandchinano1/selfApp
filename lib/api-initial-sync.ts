@@ -8,7 +8,8 @@ import {
   readAppMeta,
   writeAppMeta,
 } from '@/lib/api-local-bootstrap';
-import { enablePreferLocalReads } from '@/lib/page-api-session';
+import { listAllTabPageKeys } from '@/lib/page-api-scope';
+import { enablePreferLocalReads, markPageSyncedWithApi } from '@/lib/page-api-session';
 
 export { REST_INITIAL_SYNC_META_KEY, PREFER_LOCAL_READS_META_KEY } from '@/lib/api-local-bootstrap';
 
@@ -40,6 +41,13 @@ async function markBootstrapCompleted(): Promise<void> {
   enablePreferLocalReads();
 }
 
+/** 升级用户本机已有业务数据：各 Tab 直接读本地，无需再逐页 REST */
+function markAllTabPagesSyncedWithApi(): void {
+  for (const key of listAllTabPageKeys()) {
+    markPageSyncedWithApi(key);
+  }
+}
+
 /**
  * 首启引导：清空本地业务数据并标记完成（不再阻塞全表 REST）。
  * 已有本地数据的升级用户仅标记完成，各 Tab 视为已同步。
@@ -66,6 +74,7 @@ export async function runInitialRestSyncIfNeeded(opts?: {
 
   if (await localDbHasSubstantialUserData()) {
     await markBootstrapCompleted();
+    markAllTabPagesSyncedWithApi();
     report({ phase: 'done', tableIndex: 0, tableCount: 0 });
     return { ran: false, ok: true, skippedReason: 'has_local_data' };
   }

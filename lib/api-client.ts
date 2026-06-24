@@ -14,6 +14,7 @@ import {
 } from '@/lib/api-mysql-payload';
 import { fetchWithTimeoutAndRetry, isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { enqueueApiRequest } from '@/lib/api-request-queue';
+import type { TasksCalendarResponse } from '@/lib/tasks-calendar-data';
 
 export function prepareRowBodyForApi(
   table: string,
@@ -385,27 +386,129 @@ export type ApiListResponse<T> = {
   pagination: ApiListPagination;
 };
 
-function buildListQuery(opts?: {
+/** List API 可选过滤参数（见 CALENDAR_API_FOR_APP.md） */
+export type ApiListQueryOpts = {
   page?: number;
   limit?: number;
   includeDeleted?: boolean;
-}): string {
-  const params = new URLSearchParams();
-  if (opts?.page != null) params.set('page', String(opts.page));
-  if (opts?.limit != null) params.set('limit', String(opts.limit));
-  if (opts?.includeDeleted === true) params.set('includeDeleted', 'true');
-  const qs = params.toString();
-  return qs ? `?${qs}` : '';
+  startDate?: string;
+  endDate?: string;
+  dueDateGte?: string;
+  dueDateLte?: string;
+  frogAssignedOnGte?: string;
+  frogAssignedOnLte?: string;
+  createdAtGte?: string;
+  createdAtLte?: string;
+  assignedYmdGte?: string;
+  assignedYmdLte?: string;
+  calendarRelevant?: boolean;
+  fields?: string;
+  updatedSince?: string;
+};
+
+function buildQuery(params: Record<string, string | number | boolean | null | undefined>): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value == null) continue;
+    if (typeof value === 'boolean') {
+      if (value) qs.set(key, 'true');
+      continue;
+    }
+    if (value === '') continue;
+    qs.set(key, String(value));
+  }
+  const text = qs.toString();
+  return text ? `?${text}` : '';
+}
+
+function buildListQuery(opts?: ApiListQueryOpts): string {
+  return buildQuery({
+    page: opts?.page,
+    limit: opts?.limit,
+    includeDeleted: opts?.includeDeleted === true,
+    startDate: opts?.startDate,
+    endDate: opts?.endDate,
+    dueDateGte: opts?.dueDateGte,
+    dueDateLte: opts?.dueDateLte,
+    frogAssignedOnGte: opts?.frogAssignedOnGte,
+    frogAssignedOnLte: opts?.frogAssignedOnLte,
+    createdAtGte: opts?.createdAtGte,
+    createdAtLte: opts?.createdAtLte,
+    assignedYmdGte: opts?.assignedYmdGte,
+    assignedYmdLte: opts?.assignedYmdLte,
+    calendarRelevant: opts?.calendarRelevant === true,
+    fields: opts?.fields,
+    updatedSince: opts?.updatedSince,
+  });
+}
+
+export async function apiGetTasksCalendar(
+  params: {
+    start: string;
+    end: string;
+    dayBoundaryHour?: number;
+    dayBoundaryMinute?: number;
+    signal?: AbortSignal;
+  },
+): Promise<TasksCalendarResponse> {
+  const qs = buildQuery({
+    start: params.start,
+    end: params.end,
+    dayBoundaryHour: params.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params.dayBoundaryMinute ?? 0,
+  });
+  return apiRequest(`/api/calendar/tasks${qs}`, {
+    method: 'GET',
+    signal: params.signal,
+  });
+}
+
+export type TasksBootstrapPayload = {
+  projects?: Record<string, unknown>[];
+  projectCategories?: Record<string, unknown>[];
+  tasks?: Record<string, unknown>[];
+  taskCategories?: Record<string, unknown>[];
+  taskItems?: Record<string, unknown>[];
+  habits?: Record<string, unknown>[];
+  habitContexts?: Record<string, unknown>[];
+  habitCheckIns?: Record<string, unknown>[];
+  taskExecutionEvents?: Record<string, unknown>[];
+  frogCompletionEvents?: Record<string, unknown>[];
+  meta?: Record<string, unknown>;
+};
+
+export async function apiGetTasksBootstrap(
+  params?: {
+    dayBoundaryHour?: number;
+    dayBoundaryMinute?: number;
+    heatmapStart?: string;
+    heatmapEnd?: string;
+    habitCheckInMonths?: number;
+    habitCheckInStart?: string;
+    habitCheckInEnd?: string;
+    include?: string;
+    signal?: AbortSignal;
+  },
+): Promise<TasksBootstrapPayload> {
+  const qs = buildQuery({
+    dayBoundaryHour: params?.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params?.dayBoundaryMinute ?? 0,
+    heatmapStart: params?.heatmapStart,
+    heatmapEnd: params?.heatmapEnd,
+    habitCheckInMonths: params?.habitCheckInMonths,
+    habitCheckInStart: params?.habitCheckInStart,
+    habitCheckInEnd: params?.habitCheckInEnd,
+    include: params?.include,
+  });
+  return apiRequest<TasksBootstrapPayload>(`/api/pages/tasks${qs}`, {
+    method: 'GET',
+    signal: params?.signal,
+  });
 }
 
 export async function apiListRecords<T extends Record<string, unknown>>(
   table: string,
-  opts?: {
-    page?: number;
-    limit?: number;
-    includeDeleted?: boolean;
-    signal?: AbortSignal;
-  },
+  opts?: ApiListQueryOpts & { signal?: AbortSignal },
 ): Promise<ApiListResponse<T>> {
   const data = await apiRequest<ApiListResponse<T>>(
     `/api/data/${encodeURIComponent(table)}${buildListQuery(opts)}`,

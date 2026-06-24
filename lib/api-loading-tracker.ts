@@ -67,7 +67,6 @@ export function endApiLoading(): void {
 
 export async function withApiLoading<T>(fn: () => Promise<T>): Promise<T> {
   beginApiLoading();
-  clearApiLoadingError();
   try {
     const result = await fn();
     clearApiLoadingError();

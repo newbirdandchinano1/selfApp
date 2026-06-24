@@ -438,12 +438,12 @@ export async function getTasksByProjectId(projectId: string, opts?: { forceRefre
 /** 一次拉取全表任务，再按项目 id 批量构建任务树（避免 N 次并发全量读导致 reconcile 竞态） */
 export async function getProjectTaskTreeMap(
   projectIds: string[],
-  opts?: { forceRefresh?: boolean },
+  opts?: { forceRefresh?: boolean; preloadedTasks?: TaskRow[] },
 ): Promise<Record<string, TaskTreeNode[]>> {
   const uniqueIds = [...new Set(projectIds.map(id => id.trim()).filter(Boolean))];
   if (uniqueIds.length === 0) return {};
 
-  const all = await loadAllTasks(opts);
+  const all = opts?.preloadedTasks ?? (await loadAllTasks(opts));
   const map: Record<string, TaskTreeNode[]> = {};
   for (const id of uniqueIds) {
     map[id] = buildProjectTaskTree(collectTasksForProject(all, id));

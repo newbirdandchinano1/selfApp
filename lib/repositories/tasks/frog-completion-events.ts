@@ -55,6 +55,25 @@ export async function insertFrogCompletionEvent(
   );
 }
 
+/** 按指派日返回已完成青蛙的 task_id 集合（与热力图口径一致，仅计 net completed） */
+export async function getFrogCompletedTaskIdsByDayRange(
+  startYmd: string,
+  endYmd: string,
+): Promise<Map<string, Set<string>>> {
+  const rows = await readApiTable<FrogCompletionEventRow>('frog_completion_events', {
+    offlineFallback: true,
+  });
+  const m = new Map<string, Set<string>>();
+  for (const r of filterNetCompletedFrogEvents(rows)) {
+    if (!r.assigned_ymd || !isYmdInRange(r.assigned_ymd, startYmd, endYmd)) continue;
+    if (!r.task_id) continue;
+    const set = m.get(r.assigned_ymd) ?? new Set<string>();
+    set.add(r.task_id);
+    m.set(r.assigned_ymd, set);
+  }
+  return m;
+}
+
 /** 按青蛙指派日统计「标记完成」次数（与待办总览热力图口径一致，仅计 completed） */
 export async function getFrogCompletionCountsByDayRange(
   startYmd: string,
