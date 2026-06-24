@@ -7,6 +7,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Directory, File, Paths } from 'expo-file-system';
 import React from 'react';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 
 import { makeTimestampEntityId } from '@/lib/entity-id';
@@ -857,12 +858,9 @@ export default function HealthScreen() {
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
-      void reloadPageRef.current?.().catch((e) => console.warn('刷新健康页数据失败', e));
-    }, []),
-  );
+  usePageFocusReload(PAGE_API_KEY, (forceApi) => {
+    void reloadPageRef.current?.(forceApi).catch((e) => console.warn('刷新健康页数据失败', e));
+  });
 
   /** 切换周视图时重新拉取该周数据（不依赖 focus，避免切 Tab 误触发） */
   React.useEffect(() => {

@@ -24,13 +24,14 @@ export async function writeAppMeta(key: string, value: string): Promise<void> {
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [key, value]);
 }
 
-/** 探测本机是否已有业务数据（升级用户跳过首启全量同步） */
+const USER_DATA_PROBE_TABLES = ['tasks', 'users', 'finance_accounts', 'projects', 'health_records'] as const;
+
+/** 探测本机是否已有业务数据（含默认用户种子行） */
 export async function localDbHasUserData(): Promise<boolean> {
   const db = await getDatabase();
   if (!db) return false;
 
-  const probeTables = ['tasks', 'users', 'finance_accounts', 'projects', 'health_records'];
-  for (const table of probeTables) {
+  for (const table of USER_DATA_PROBE_TABLES) {
     try {
       const row = await db.getFirstAsync<{ c: number }>(
         `SELECT COUNT(*) AS c FROM ${quoteIdent(table)}`,
@@ -41,4 +42,37 @@ export async function localDbHasUserData(): Promise<boolean> {
     }
   }
   return false;
+}
+
+/** 是否已有可展示的业务数据（不含仅 default 用户种子行） */
+export async function localDbHasSubstantialUserData(): Promise<boolean> {
+  const db = await getDatabase();
+  if (!db) return false;
+
+  const probeTables = ['tasks', 'finance_accounts', 'projects', 'health_records'];
+  for (const table of probeTables) {
+    try {
+      const row = await db.getFirstAsync<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM ${quoteIdent(table)}`,
+      );
+      if ((row?.c ?? 0) > 0) return true;
+    } catch {
+      /* 表可能尚未创建 */
+    }
+  }
+
+  try {
+    const row = await db.getFirstAsync<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM ${quoteIdent('users')} WHERE id != 'default'`,
+    );
+    if ((row?.c ?? 0) > 0) return true;
+  } catch {
+    /* ignore */
+  }
+
+  return false;
+}
+
+export async function clearPageSyncMeta(): Promise<void> {
+  await writeAppMeta(PAGE_SYNC_META_KEY, '[]');
 }

@@ -32,7 +32,7 @@ import { startCloudPeriodicAlignScheduler } from '@/lib/cloud-sync-scheduler';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-selection';
 import { loadThemePreference } from '@/lib/theme-preference';
-import { runInitialRestSyncIfNeeded, type InitialSyncProgress } from '@/lib/api-initial-sync';
+import { runInitialRestSyncIfNeeded, hasCompletedInitialRestSync, type InitialSyncProgress } from '@/lib/api-initial-sync';
 import { hydratePageApiSession } from '@/lib/page-api-session';
 
 if (Platform.OS !== 'web') {
@@ -135,16 +135,18 @@ function RootLayoutInner() {
         await hydrateCloudDirtyFromStorage();
         await hydrateApiDirtyFromStorage();
 
-        const syncResult = await runInitialRestSyncIfNeeded({
-          onProgress: progress => {
-            if (mounted) setSyncProgress(progress);
-          },
-        });
-        if (!syncResult.ok && syncResult.ran) {
-          console.warn('[bootstrap] 首启全量同步失败，将按需同步', syncResult.error);
+        const alreadyBootstrapped = await hasCompletedInitialRestSync();
+        if (!alreadyBootstrapped) {
+          const syncResult = await runInitialRestSyncIfNeeded({
+            onProgress: progress => {
+              if (mounted) setSyncProgress(progress);
+            },
+          });
+          if (!syncResult.ok && syncResult.ran) {
+            console.warn('[bootstrap] 首启引导失败', syncResult.error);
+          }
         }
 
-        await markAllPendingTablesDirty();
         await loadApiDebugEnabled();
         if (mounted) {
           setSyncProgress(null);
@@ -152,6 +154,8 @@ function RootLayoutInner() {
           setIsDbReady(true);
         }
         runDeferredBootstrap();
+
+        void markAllPendingTablesDirty();
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);
         console.warn('数据库初始化失败', detail, e);

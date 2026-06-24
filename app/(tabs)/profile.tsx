@@ -1,7 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
+import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { listVisions } from '@/lib/repositories/visions/vision';
@@ -199,14 +199,15 @@ export default function ProfileScreen() {
     [markPageDirty],
   );
 
+  usePageFocusReload(PAGE_API_KEY, (forceApi) => {
+    void reloadPageRef.current?.(forceApi).catch((e) => {
+      if (__DEV__) console.warn('[profile] reload failed', e);
+    });
+  });
+
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      if (!shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) {
-        void reloadPageRef.current?.().catch((e) => {
-          if (__DEV__) console.warn('[profile] reload failed', e);
-        });
-      }
       const unsubscribe = subscribeDefaultUserUpdates(() => {
         if (cancelled) return;
         void loadUser();

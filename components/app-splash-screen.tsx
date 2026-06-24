@@ -34,11 +34,8 @@ export type AppSplashScreenProps = {
 
 function formatSyncProgress(progress: InitialSyncProgress | null | undefined): string | null {
   if (!progress) return null;
-  if (progress.phase === 'preparing') return '正在准备同步…';
-  if (progress.phase === 'syncing') {
-    const label = progress.tableLabel ? ` · ${progress.tableLabel}` : '';
-    return `正在同步数据 ${progress.tableIndex}/${progress.tableCount}${label}`;
-  }
+  if (progress.phase === 'preparing') return '正在准备…';
+  if (progress.phase === 'clearing') return '正在初始化本地数据…';
   return null;
 }
 

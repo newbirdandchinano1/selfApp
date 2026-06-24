@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react';
 import { useRegisterApiLoadingRetry } from '@/hooks/use-register-api-loading-retry';
 import { usePullToRefresh, type UsePullToRefreshResult } from '@/hooks/use-pull-to-refresh';
 import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
+import { listPageScopeTables, syncPageScopeFromApi } from '@/lib/api-page-sync';
 import {
   beginPageApiRead,
   endPageApiRead,
@@ -13,8 +14,8 @@ import {
 } from '@/lib/page-api-session';
 
 /**
- * 页面数据加载：local-first 下已同步页面直接读 SQLite；
- * 首次访问先展示本地（若有），再后台 REST 拉取并覆盖本地。
+ * 页面数据加载：已同步页面直接读 SQLite；
+ * 首次访问先按页面范围 REST 全量覆盖本地，再读本地展示。
  */
 export function usePageApiSync(pageKey: string) {
   const [synced, setSynced] = useState(() => hasPageSyncedWithApi(pageKey));
@@ -26,7 +27,28 @@ export function usePageApiSync(pageKey: string) {
 
   const wrapLoad = useCallback(
     async (fn: () => Promise<boolean | void>, forceApi = false) => {
-      const readOpts = resolvePageApiReadOpts(pageKey, forceApi);
+      let readOpts = resolvePageApiReadOpts(pageKey, forceApi);
+
+      if (
+        isLocalFirstReads() &&
+        !forceApi &&
+        !readOpts.localOnly &&
+        listPageScopeTables(pageKey).length > 0
+      ) {
+        beginPageApiRead({ localOnly: false, offlineFallback: true });
+        try {
+          const scopeResult = await syncPageScopeFromApi(pageKey);
+          if (scopeResult.ok) {
+            markPageSyncedWithApi(pageKey);
+            setSynced(true);
+            readOpts = resolvePageApiReadOpts(pageKey, forceApi);
+          }
+        } catch (e) {
+          console.warn('[usePageApiSync] 页面范围同步失败，继续尝试读库', pageKey, e);
+        } finally {
+          endPageApiRead();
+        }
+      }
 
       if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
         beginPageApiRead({ localOnly: true, offlineFallback: true });
@@ -59,8 +81,10 @@ export function usePageApiSync(pageKey: string) {
   }, [pageKey]);
 
   const resetSync = useCallback(() => {
-    resetPageApiSession(pageKey);
-    setSynced(false);
+    if (isApiOnlyReads()) {
+      resetPageApiSession(pageKey);
+      setSynced(false);
+    }
   }, [pageKey]);
 
   const readOpts = resolvePageApiReadOpts(pageKey);

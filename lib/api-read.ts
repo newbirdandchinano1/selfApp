@@ -1,5 +1,4 @@
 import { apiGetRecord, apiGetTablesMeta, apiListRecords } from '@/lib/api-client';
-import { withApiLoading } from '@/lib/api-loading-tracker';
 import {
   getApiTablePrimaryKey,
   isApiReadableTable,
@@ -8,7 +7,7 @@ import {
   applyApiRecordMissingToLocal,
   syncApiReadResultToLocal,
 } from '@/lib/api-read-local-sync';
-import { isApiOnlyReads } from '@/lib/api-data-mode';
+import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
 import {
   overlayLocalPendingOnApiRecord,
   overlayLocalPendingOnApiTableRows,
@@ -288,7 +287,7 @@ export async function readApiTable<T extends Record<string, unknown>>(
   const skipNetwork = resolveReadLocalOnly(opts);
   if (!skipNetwork) {
     try {
-      const apiRows = await withApiLoading(() => fetchApiTableAll<T>(table, opts));
+      const apiRows = await fetchApiTableAll<T>(table, opts);
       if (isApiOnlyReads()) {
         return overlayLocalPendingOnApiTableRows(table, apiRows);
       }
@@ -304,7 +303,11 @@ export async function readApiTable<T extends Record<string, unknown>>(
   if (isApiOnlyReads()) {
     throw new Error(`[api-read] 表「${table}」在仅接口模式下必须请求 REST`);
   }
-  return readLocalTableVisible<T>(table);
+  const localRows = await readLocalTableVisible<T>(table);
+  if (isLocalFirstReads() && !skipNetwork) {
+    return overlayLocalPendingOnApiTableRows(table, localRows);
+  }
+  return localRows;
 }
 
 /** 强制从 REST 全量拉取 */
@@ -333,7 +336,7 @@ export async function readApiRecord<T extends Record<string, unknown>>(
   const skipNetwork = resolveReadLocalOnly(opts);
   if (!skipNetwork) {
     try {
-      const apiRow = await withApiLoading(() => fetchApiRecordByPk<T>(table, pkValue, opts));
+      const apiRow = await fetchApiRecordByPk<T>(table, pkValue, opts);
       if (isApiOnlyReads()) {
         return overlayLocalPendingOnApiRecord(table, pkValue, apiRow);
       }

@@ -4,6 +4,7 @@ import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design
 import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
@@ -1447,6 +1448,10 @@ export default function TasksScreen() {
   /** 底部「无项目待办」快捷输入框内容 */
   const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
   const [quickTodoSaving, setQuickTodoSaving] = React.useState(false);
+  const [mutationOverlayLabel, setMutationOverlayLabel] = React.useState<string | null>(null);
+  const [operationToast, setOperationToast] = React.useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const mutationInFlightRef = React.useRef(false);
+  const operationToastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [wishNameById, setWishNameById] = React.useState<Map<string, string>>(() => new Map());
   /** 键盘占用高度：用于主列表底部留白，避免快捷待办被键盘挡住后无法滚到位 */
   const [mainScrollKeyboardPad, setMainScrollKeyboardPad] = React.useState(0);
@@ -1469,6 +1474,41 @@ export default function TasksScreen() {
       const nextY = mainScrollOffsetYRef.current + delta;
       mainScrollRef.current?.scrollTo({ y: Math.max(0, nextY), animated: true });
     });
+  }, []);
+
+  const showOperationToast = React.useCallback((kind: 'success' | 'error', message: string) => {
+    if (operationToastTimerRef.current) clearTimeout(operationToastTimerRef.current);
+    setOperationToast({ kind, message });
+    operationToastTimerRef.current = setTimeout(() => {
+      setOperationToast(null);
+      operationToastTimerRef.current = null;
+    }, 1800);
+  }, []);
+
+  const runExclusiveMutation = React.useCallback(
+    async <T,>(label: string, action: () => Promise<T>, successMessage?: string): Promise<T | undefined> => {
+      if (mutationInFlightRef.current) return undefined;
+      mutationInFlightRef.current = true;
+      setMutationOverlayLabel(label);
+      try {
+        const result = await action();
+        if (successMessage) showOperationToast('success', successMessage);
+        return result;
+      } catch (err) {
+        showOperationToast('error', '操作失败，请稍后重试。');
+        throw err;
+      } finally {
+        mutationInFlightRef.current = false;
+        setMutationOverlayLabel(null);
+      }
+    },
+    [showOperationToast]
+  );
+
+  React.useEffect(() => {
+    return () => {
+      if (operationToastTimerRef.current) clearTimeout(operationToastTimerRef.current);
+    };
   }, []);
 
   React.useEffect(() => {
@@ -2084,12 +2124,7 @@ export default function TasksScreen() {
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
-      void reloadPage();
-    }, [reloadPage])
-  );
+  usePageFocusReload(PAGE_API_KEY, reloadPage);
 
   const taskTitleById = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -2428,24 +2463,26 @@ export default function TasksScreen() {
   );
 
   const moveProjectToInboxById = React.useCallback(async (projectId: string) => {
-    markPageDirty();
     try {
-      const proj = projects.find((p) => p.id === projectId) ?? (await getProjectById(projectId));
-      await updateProject(projectId, {
-        category_id: INBOX_PROJECT_CATEGORY_ID,
-        status: 'completed',
-      });
-      if (proj) {
-        await tryGrantProjectCompletionReward(proj);
-      }
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      projectSwipeableRefs.current[projectId]?.close();
-      await loadProjects();
+      await runExclusiveMutation('正在收纳项目...', async () => {
+        markPageDirty();
+        const proj = projects.find((p) => p.id === projectId) ?? (await getProjectById(projectId));
+        await updateProject(projectId, {
+          category_id: INBOX_PROJECT_CATEGORY_ID,
+          status: 'completed',
+        });
+        if (proj) {
+          await tryGrantProjectCompletionReward(proj);
+        }
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        projectSwipeableRefs.current[projectId]?.close();
+        await loadProjects();
+      }, '项目已收纳');
     } catch (err) {
       console.warn('收纳项目失败', err);
       Alert.alert('操作失败', '未能将项目移至收集箱，请稍后重试。');
     }
-  }, [loadProjects, markPageDirty, projects]);
+  }, [loadProjects, markPageDirty, projects, runExclusiveMutation]);
 
   const handleProjectSwipeArchive = React.useCallback(
     (project: ProjectRow) => {
@@ -2482,23 +2519,25 @@ export default function TasksScreen() {
             text: '删除',
             style: 'destructive',
             onPress: async () => {
-              markPageDirty();
               try {
-                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                await deleteProject(project.id);
-                const rows = await loadProjects();
-                await loadProjectTasks(rows);
+                await runExclusiveMutation('正在删除项目...', async () => {
+                  markPageDirty();
+                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                  await deleteProject(project.id);
+                  const rows = await loadProjects();
+                  await loadProjectTasks(rows);
+                }, '项目已删除');
               } catch (err) {
                 console.warn('删除收集箱项目失败', err);
                 Alert.alert('删除失败', formatWriteError(err, '项目删除失败，请稍后重试。'));
                 await loadProjects();
               }
-            },
+            }, 
           },
         ]);
       })();
     },
-    [loadProjectTasks, loadProjects, markPageDirty]
+    [loadProjectTasks, loadProjects, markPageDirty, runExclusiveMutation]
   );
 
   const activateShelvedTodo = React.useCallback(
@@ -2919,8 +2958,7 @@ export default function TasksScreen() {
       Alert.alert('提示', '请先输入待办内容。');
       return;
     }
-    if (quickTodoSaving) return;
-    markPageDirty();
+    if (quickTodoSaving || mutationInFlightRef.current) return;
     setQuickTodoSaving(true);
     const id = makeTimestampEntityId('tsk_', 8);
     const now = new Date().toISOString();
@@ -2943,53 +2981,62 @@ export default function TasksScreen() {
       sort_order: 0,
     };
     try {
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setTasks((prev) => [optimisticTask, ...prev]);
-      setQuickTodoDraft('');
-      await createTask({
-        id,
-        project_id: null,
-        category_id: null,
-        parent_task_id: null,
-        title,
-        note: null,
-        status: 'todo',
-        priority: 0,
-        due_date: null,
-        extra_data: null,
-      });
-      await loadTasks({ forceRefresh: true });
+      await runExclusiveMutation('正在保存待办...', async () => {
+        markPageDirty();
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setTasks((prev) => [optimisticTask, ...prev]);
+        setQuickTodoDraft('');
+        await createTask({
+          id,
+          project_id: null,
+          category_id: null,
+          parent_task_id: null,
+          title,
+          note: null,
+          status: 'todo',
+          priority: 0,
+          due_date: null,
+          extra_data: null,
+        });
+        await loadTasks();
+      }, '待办已保存');
     } catch (err) {
       console.warn('创建无项目待办失败', err);
       Alert.alert('保存失败', formatWriteError(err, '待办未能写入，请稍后重试。'));
-      await loadTasks({ forceRefresh: true });
+      await loadTasks();
     } finally {
       setQuickTodoSaving(false);
     }
-  }, [loadTasks, markPageDirty, quickTodoDraft, quickTodoSaving]);
+  }, [loadTasks, markPageDirty, quickTodoDraft, quickTodoSaving, runExclusiveMutation]);
 
   /** 左滑删除：软删除整棵子树，并刷新列表（与 DB deleteTask 行为一致） */
   const handleUpgradeStandaloneTodo = React.useCallback(
     async (taskId: string) => {
-      if (upgradingStandaloneTodoId) return;
-      markPageDirty();
+      if (upgradingStandaloneTodoId || mutationInFlightRef.current) return;
       standaloneTodoSwipeableRefs.current[taskId]?.close();
       setUpgradingStandaloneTodoId(taskId);
       try {
-        const result = await upgradeStandaloneTodoToProject(taskId);
+        const result = await runExclusiveMutation('正在升级待办...', async () => {
+          markPageDirty();
+          const upgradeResult = await upgradeStandaloneTodoToProject(taskId);
+          if (!upgradeResult.ok) return upgradeResult;
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          const rows = await loadProjects();
+          await loadTasks();
+          await loadProjectTasks(rows);
+          setExpandedProjectIds((prev) => {
+            const next = { ...prev, [upgradeResult.projectId]: true };
+            void saveExpandedProjectState(next);
+            return next;
+          });
+          return upgradeResult;
+        });
+        if (!result) return;
         if (!result.ok) {
           Alert.alert('无法升级', result.message);
           return;
         }
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        const rows = await loadProjects();
-        await loadTasks();
-        await loadProjectTasks(rows);
-        setExpandedProjectIds((prev) => {
-          const next = { ...prev, [result.projectId]: true };
-          void saveExpandedProjectState(next);
-          return next;
-        });
+        showOperationToast('success', '待办已升级为项目');
         Alert.alert('已升级为项目', `「${result.projectName}」已创建，原待办成为项目下的主任务。`);
       } catch (err) {
         console.warn('待办升级为项目失败', err);
@@ -3005,6 +3052,7 @@ export default function TasksScreen() {
       loadTasks,
       markPageDirty,
       saveExpandedProjectState,
+      showOperationToast,
       upgradingStandaloneTodoId,
     ]
   );
@@ -3018,12 +3066,14 @@ export default function TasksScreen() {
           text: '删除',
           style: 'destructive',
           onPress: async () => {
-            markPageDirty();
             try {
-              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-              await deleteTask(taskId);
-              await loadTasks();
-              await loadProjectTasks(projects);
+              await runExclusiveMutation('正在删除待办...', async () => {
+                markPageDirty();
+                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                await deleteTask(taskId);
+                await loadTasks();
+                await loadProjectTasks(projects);
+              }, '待办已删除');
             } catch (err) {
               console.warn('删除待办失败', err);
               Alert.alert('删除失败', formatWriteError(err, '任务删除失败，请稍后重试。'));
@@ -3033,7 +3083,7 @@ export default function TasksScreen() {
         },
       ]);
     },
-    [loadProjectTasks, loadTasks, markPageDirty, projects]
+    [loadProjectTasks, loadTasks, markPageDirty, projects, runExclusiveMutation]
   );
 
   const openStandaloneTaskComposer = React.useCallback(() => {
@@ -3304,19 +3354,21 @@ export default function TasksScreen() {
     }
 
     try {
-      markPageDirty();
-      if (categoryEditorTitle.includes('新建')) {
-        await createProjectCategory({ id: buildCategoryId('project'), name });
-        await loadProjectCategories();
-      } else {
-        if (!activeCategoryId) {
-          Alert.alert('无法修改分类', '未找到要修改的分类。');
-          return;
+      await runExclusiveMutation(categoryEditorTitle.includes('新建') ? '正在新建分类...' : '正在修改分类...', async () => {
+        markPageDirty();
+        if (categoryEditorTitle.includes('新建')) {
+          await createProjectCategory({ id: buildCategoryId('project'), name });
+          await loadProjectCategories();
+        } else {
+          if (!activeCategoryId) {
+            Alert.alert('无法修改分类', '未找到要修改的分类。');
+            return;
+          }
+          await updateProjectCategory(activeCategoryId, { name });
+          await loadProjectCategories();
         }
-        await updateProjectCategory(activeCategoryId, { name });
-        await loadProjectCategories();
-      }
-      closeCategoryEditor();
+        closeCategoryEditor();
+      }, categoryEditorTitle.includes('新建') ? '分类已新建' : '分类已修改');
     } catch (err) {
       console.warn('保存分类失败', err);
       Alert.alert('保存失败', formatWriteError(err, '分类保存失败，请稍后重试。'));
@@ -3329,6 +3381,7 @@ export default function TasksScreen() {
     closeCategoryEditor,
     loadProjectCategories,
     markPageDirty,
+    runExclusiveMutation,
     scopedCategories,
   ]);
 
@@ -3360,13 +3413,15 @@ export default function TasksScreen() {
         text: '删除',
         style: 'destructive',
         onPress: async () => {
-          markPageDirty();
           try {
-            await deleteProjectCategory(activeCategoryId);
-            await loadProjectCategories();
-            if (taskTab === activeCategoryId) setTaskTab('all');
-            if (projectTab === activeCategoryId) setProjectTab('all');
-            closeCategoryMenu();
+            await runExclusiveMutation('正在删除分类...', async () => {
+              markPageDirty();
+              await deleteProjectCategory(activeCategoryId);
+              await loadProjectCategories();
+              if (taskTab === activeCategoryId) setTaskTab('all');
+              if (projectTab === activeCategoryId) setProjectTab('all');
+              closeCategoryMenu();
+            }, '分类已删除');
           } catch (err) {
             console.warn('删除分类失败', err);
             Alert.alert('删除失败', formatWriteError(err, '分类删除失败，请稍后重试。'));
@@ -3382,6 +3437,7 @@ export default function TasksScreen() {
     markPageDirty,
     projects,
     projectTab,
+    runExclusiveMutation,
     scopedCategories,
     taskTab,
   ]);
@@ -5363,6 +5419,32 @@ export default function TasksScreen() {
         </Animated.View>
       </ScrollView>
 
+      {operationToast && (
+        <View pointerEvents="none" style={styles.operationToastWrap}>
+          <View
+            style={[
+              styles.operationToast,
+              { backgroundColor: operationToast.kind === 'success' ? `${success}f2` : `${error}f2` },
+            ]}>
+            <MaterialIcons
+              name={operationToast.kind === 'success' ? 'check-circle' : 'error'}
+              size={18}
+              color="#fff"
+            />
+            <Text style={styles.operationToastText}>{operationToast.message}</Text>
+          </View>
+        </View>
+      )}
+
+      <Modal transparent visible={mutationOverlayLabel != null} animationType="fade" statusBarTranslucent>
+        <View style={[styles.mutationOverlay, { backgroundColor: colors.overlay }]}>
+          <View style={[styles.mutationOverlayCard, { backgroundColor: modalCardBg }]}>
+            <ActivityIndicator color={primary} />
+            <Text style={[styles.mutationOverlayText, { color: colors.text }]}>{mutationOverlayLabel}</Text>
+          </View>
+        </View>
+      </Modal>
+
       <Modal
         visible={projectAiModal != null}
         transparent
@@ -5498,6 +5580,48 @@ export default function TasksScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  operationToastWrap: {
+    position: 'absolute',
+    top: 72,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 40,
+    paddingHorizontal: Spacing.xl,
+  },
+  operationToast: {
+    minHeight: 42,
+    maxWidth: '92%',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.pill,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  operationToastText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  mutationOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing['2xl'],
+  },
+  mutationOverlayCard: {
+    minWidth: 168,
+    borderRadius: Radius['2xl'],
+    paddingHorizontal: Spacing['2xl'],
+    paddingVertical: Spacing.xl,
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  mutationOverlayText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
   pageHeader: {
     paddingHorizontal: Spacing['5xl'],
     paddingBottom: Spacing.md,

@@ -1,8 +1,6 @@
 /**
- * 为 true 时：展示优先用内存中的 REST 结果，再叠加重本地 pending 修改；
- * REST 同时写入 SQLite 供写改删；接口不可用时（offlineFallback）最后回退本地库。
- *
- * 为 false（local-first）：已同步页面/全局本地模式优先读 SQLite，按需或下拉刷新才请求 REST。
+ * local-first：已同步页面读 SQLite；首次进入页面按范围 REST 全量覆盖本地。
+ * 增删改同时写本地（即时 UI）并推送后端。
  */
 export const API_ONLY_READS = false;
 

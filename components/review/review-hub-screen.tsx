@@ -20,8 +20,7 @@ import { Layout, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
-import { useFocusEffect } from '@react-navigation/native';
+import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -76,12 +75,7 @@ export function ReviewHubScreen() {
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
-      void reload();
-    }, [reload]),
-  );
+  usePageFocusReload(PAGE_API_KEY, reload);
 
   const yesterdayYmd = getYesterdayYmd(todayYmd);
   const todayEntry = snapshot?.dailyEntries.find(e => e.ymd === todayYmd) ?? null;

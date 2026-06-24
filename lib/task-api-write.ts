@@ -1,8 +1,9 @@
-import { apiPatchRecord, ensureApiLoggedIn } from '@/lib/api-client';
+import { isLocalFirstReads } from '@/lib/api-data-mode';
 import { mergePreservedForeignKeysIntoPatch } from '@/lib/api-fk-preserve';
-import { fetchApiRecordByPk, invalidateInflightApiTableFetch } from '@/lib/api-read';
-import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
+import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { readLocalRowForWrite } from '@/lib/api-local-row';
+import { updateTask } from '@/lib/repositories/tasks/task';
+import type { UpdateTaskInput } from '@/lib/repositories/tasks/task.types';
 import { ensureTaskCategoryMirrorLocally } from '@/lib/repositories/tasks/task-category-mirror';
 
 export type TaskApiPatch = {
@@ -69,85 +70,44 @@ async function ensureProjectRefsFromTaskSnapshot(
   }
 }
 
-/**
- * API 写入成功后对齐本地 SQLite（不抛错、不阻断 UI）。
- * 优先拉服务端最新行；失败则用页面快照 seed；再失败则仅更新已有行的 PATCH 字段。
- */
-async function bestEffortSyncTaskPatchToLocal(
-  taskId: string,
-  patch: TaskApiPatch,
-  taskRowSnapshot?: Record<string, unknown> | null,
-): Promise<void> {
-  try {
-    await fetchApiRecordByPk('tasks', taskId);
-    return;
-  } catch (e) {
-    if (__DEV__) console.warn('[task-api-write] 拉取服务端任务同步本地失败，尝试快照', e);
-  }
-
-  if (taskRowSnapshot) {
-    try {
-      const { children: _children, ...snapshotRow } = taskRowSnapshot;
-      const merged = { ...snapshotRow, id: taskId, ...patch };
-      const existing = await readLocalRowForWrite<Record<string, unknown>>('tasks', taskId);
-      if (existing) {
-        await syncApiReadResultToLocal('tasks', merged);
-        return;
-      }
-      const { seedApiRowToLocalForWrite } = await import('@/lib/api-local-row-seed');
-      const seeded = await seedApiRowToLocalForWrite('tasks', merged);
-      if (!seeded) {
-        await syncApiReadResultToLocal('tasks', merged);
-      }
-      return;
-    } catch (e) {
-      if (__DEV__) console.warn('[task-api-write] 快照写入本地失败', e);
-    }
-  }
-
-  try {
-    const { getDatabase } = await import('@/lib/database');
-    const db = await getDatabase();
-    if (!db) return;
-    const sets: string[] = ["updated_at = datetime('now')", "sync_status = 'synced'"];
-    const vals: unknown[] = [];
-    if ('extra_data' in patch) {
-      sets.push('extra_data = ?');
-      vals.push(patch.extra_data ?? null);
-    }
-    if ('status' in patch) {
-      sets.push('status = ?');
-      vals.push(patch.status);
-    }
-    if ('completed_at' in patch) {
-      sets.push('completed_at = ?');
-      vals.push(patch.completed_at ?? null);
-    }
-    if (sets.length <= 2) return;
-    vals.push(taskId);
-    await db.runAsync(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`, vals);
-  } catch (e) {
-    if (__DEV__) console.warn('[task-api-write] 本地任务对齐失败', e);
-  }
-}
-
-/** 直接 PATCH 后端更新任务字段；成功后 best-effort 同步本地库 */
+/** local-first：先写本地 SQLite（即时 UI），再由脏表队列推送后端 */
 export async function persistTaskPatchToApi(
   taskId: string,
   patch: TaskApiPatch,
   taskRowSnapshot?: Record<string, unknown> | null,
 ): Promise<void> {
   const { local, parentRow } = await resolveTaskForeignKeysForApiPatch(taskId, taskRowSnapshot);
-  const apiPatch = mergePreservedForeignKeysIntoPatch('tasks', patch, [
+  const merged = mergePreservedForeignKeysIntoPatch('tasks', patch, [
     taskRowSnapshot,
     local,
     parentRow,
   ]) as TaskApiPatch;
 
-  await ensureTaskCategoryMirrorFromSnapshot(apiPatch);
-  await ensureProjectRefsFromTaskSnapshot(apiPatch, parentRow);
+  await ensureTaskCategoryMirrorFromSnapshot(merged);
+  await ensureProjectRefsFromTaskSnapshot(merged, parentRow);
+
+  if (isLocalFirstReads()) {
+    await updateTask(taskId, merged as UpdateTaskInput);
+    invalidateInflightApiTableFetch('tasks');
+    return;
+  }
+
+  const { apiPatchRecord, ensureApiLoggedIn } = await import('@/lib/api-client');
+  const { fetchApiRecordByPk } = await import('@/lib/api-read');
+  const { syncApiReadResultToLocal } = await import('@/lib/api-read-local-sync');
+
   await ensureApiLoggedIn();
-  await apiPatchRecord('tasks', taskId, apiPatch);
+  await apiPatchRecord('tasks', taskId, merged);
   invalidateInflightApiTableFetch('tasks');
-  await bestEffortSyncTaskPatchToLocal(taskId, patch, taskRowSnapshot);
+
+  try {
+    await fetchApiRecordByPk('tasks', taskId);
+  } catch (e) {
+    if (__DEV__) console.warn('[task-api-write] 拉取服务端任务同步本地失败，尝试快照', e);
+    if (taskRowSnapshot) {
+      const { children: _children, ...snapshotRow } = taskRowSnapshot;
+      const row = { ...snapshotRow, id: taskId, ...merged };
+      await syncApiReadResultToLocal('tasks', row);
+    }
+  }
 }

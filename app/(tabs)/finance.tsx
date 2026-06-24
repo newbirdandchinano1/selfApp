@@ -5,6 +5,7 @@ import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { shouldSkipDuplicateAutoLedgerImage } from '@/lib/auto-ledger-dedupe';
 import {
     subscribeAutoLedgerCompleted,
@@ -62,7 +63,6 @@ import {
     type FinanceSheetLaunchIntent,
 } from '@/lib/finance-sheet-launch-intent';
 import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
-import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import {
     createFinanceTransaction,
     createFinanceTransferTransactions,
@@ -2111,48 +2111,6 @@ export default function FinanceScreen() {
     }, [applyManualOrTransferSheetIntent, loadFinanceAccounts]),
   );
 
-  useFocusEffect(
-    React.useCallback(() => {
-      if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
-      let cancelled = false;
-      const run = async (forceApi = false) => {
-        scheduleRunScheduledFinanceExpenses('finance-tab-focus');
-        await wrapLoad(async () => {
-        try {
-          await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-          if (cancelled) return;
-
-          const rawDefaults = await loadFinanceDefaultAccounts();
-          if (!cancelled) {
-            defaultAccountsRef.current = sanitizeFinanceDefaultAccounts(rawDefaults, financeAccountsRef.current);
-          }
-
-          const pendingIntent = peekFinanceSheetLaunchIntent();
-          const isAutoLedgerIntent =
-            pendingIntent?.kind === 'auto_ledger_clipboard_pending' ||
-            pendingIntent?.kind === 'auto_ledger_clipboard_image';
-          const intent = isAutoLedgerIntent ? null : consumeFinanceSheetLaunchIntent();
-          const list = financeAccountsRef.current;
-
-          if (intent && list.length > 0) {
-            applyManualOrTransferSheetIntent(intent);
-          }
-
-          const settings = await loadMonthBudgetSettings();
-          if (!cancelled) setMonthBudgetSettings(settings);
-          const rd = await loadBudgetRefreshDay();
-          if (!cancelled) setBudgetRefreshDay(rd);
-        } catch (e) {
-          console.warn('Finance tab focus refresh failed:', e);
-        }
-        }, forceApi);
-      };
-      void run(false);
-      return () => {
-        cancelled = true;
-      };
-    }, [applyManualOrTransferSheetIntent, loadFinanceAccounts, loadFinanceTransactions, wrapLoad])
-  );
 
   const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
@@ -2169,6 +2127,40 @@ export default function FinanceScreen() {
       }
     }, forceApi);
   }, [loadFinanceAccounts, loadFinanceTransactions, wrapLoad]);
+
+  usePageFocusReload(PAGE_API_KEY, reload);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      scheduleRunScheduledFinanceExpenses('finance-tab-focus');
+
+      let cancelled = false;
+      void (async () => {
+        try {
+          const pendingIntent = peekFinanceSheetLaunchIntent();
+          const isAutoLedgerIntent =
+            pendingIntent?.kind === 'auto_ledger_clipboard_pending' ||
+            pendingIntent?.kind === 'auto_ledger_clipboard_image';
+          const intent = isAutoLedgerIntent ? null : consumeFinanceSheetLaunchIntent();
+          if (!intent) return;
+
+          await reloadFinanceAccounts();
+          if (cancelled) return;
+
+          const list = financeAccountsRef.current;
+          if (list.length > 0) {
+            applyManualOrTransferSheetIntent(intent);
+          }
+        } catch (e) {
+          console.warn('Finance tab sheet intent failed:', e);
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }, [applyManualOrTransferSheetIntent, reloadFinanceAccounts]),
+  );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
