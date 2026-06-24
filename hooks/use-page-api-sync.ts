@@ -1,24 +1,38 @@
 import { useCallback, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 
 import { useRegisterApiLoadingRetry } from '@/hooks/use-register-api-loading-retry';
 import { usePullToRefresh, type UsePullToRefreshResult } from '@/hooks/use-pull-to-refresh';
 import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
-import { listPageScopeTables, syncPageScopeFromApi } from '@/lib/api-page-sync';
+import { clearActivePageApiKey, setActivePageApiKey } from '@/lib/page-api-active';
 import {
   beginPageApiRead,
+  clearPageLoadedInSession,
+  consumePageLoadRestFailed,
   endPageApiRead,
   hasPageSyncedWithApi,
+  markPageLoadedInSession,
+  markPageRestRefreshCompleted,
   markPageSyncedWithApi,
+  notifyPageDataChanged,
   resetPageApiSession,
   resolvePageApiReadOpts,
 } from '@/lib/page-api-session';
+import { runGuardedPageApiLoad } from '@/lib/page-api-load-guard';
 
 /**
- * 页面数据加载：已同步页面直接读 SQLite；
- * 首次访问先按页面范围 REST 全量覆盖本地，再读本地展示。
+ * 页面数据加载：local-first 下已同步页面直接读 SQLite；
+ * 首次访问先展示本地（若有），再后台 REST 拉取并覆盖本地。
  */
 export function usePageApiSync(pageKey: string) {
   const [synced, setSynced] = useState(() => hasPageSyncedWithApi(pageKey));
+
+  useFocusEffect(
+    useCallback(() => {
+      setActivePageApiKey(pageKey);
+      return () => clearActivePageApiKey(pageKey);
+    }, [pageKey]),
+  );
 
   const getReadOpts = useCallback(
     (forceApi?: boolean) => resolvePageApiReadOpts(pageKey, forceApi),
@@ -27,50 +41,51 @@ export function usePageApiSync(pageKey: string) {
 
   const wrapLoad = useCallback(
     async (fn: () => Promise<boolean | void>, forceApi = false) => {
-      let readOpts = resolvePageApiReadOpts(pageKey, forceApi);
+      const readOpts = resolvePageApiReadOpts(pageKey, forceApi);
+      const needsRest = isApiOnlyReads() || forceApi || !readOpts.localOnly;
 
-      if (
-        isLocalFirstReads() &&
-        !forceApi &&
-        !readOpts.localOnly &&
-        listPageScopeTables(pageKey).length > 0
-      ) {
-        beginPageApiRead({ localOnly: false, offlineFallback: true });
+      const execute = async () => {
+        if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
+          beginPageApiRead({ localOnly: true, offlineFallback: true });
+          try {
+            await fn();
+          } catch (e) {
+            console.warn('[usePageApiSync] 本地预读失败，继续尝试 REST', pageKey, e);
+          } finally {
+            endPageApiRead();
+          }
+        }
+
+        beginPageApiRead(readOpts);
         try {
-          const scopeResult = await syncPageScopeFromApi(pageKey);
-          if (scopeResult.ok) {
+          const ok = await fn();
+          const restFailed = consumePageLoadRestFailed();
+          if (
+            ok !== false &&
+            !restFailed &&
+            (isApiOnlyReads() || !readOpts.localOnly)
+          ) {
             markPageSyncedWithApi(pageKey);
             setSynced(true);
-            readOpts = resolvePageApiReadOpts(pageKey, forceApi);
           }
-        } catch (e) {
-          console.warn('[usePageApiSync] 页面范围同步失败，继续尝试读库', pageKey, e);
+          if (ok !== false && !restFailed) {
+            markPageLoadedInSession(pageKey);
+          }
+          if (ok !== false && !restFailed && !readOpts.localOnly) {
+            markPageRestRefreshCompleted(pageKey);
+          }
         } finally {
           endPageApiRead();
         }
-      }
+      };
 
-      if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
-        beginPageApiRead({ localOnly: true, offlineFallback: true });
-        try {
-          await fn();
-        } catch (e) {
-          console.warn('[usePageApiSync] 本地预读失败，继续尝试 REST', pageKey, e);
-        } finally {
-          endPageApiRead();
-        }
+      if (needsRest) {
+        return runGuardedPageApiLoad(pageKey, execute, {
+          debounce: !forceApi,
+          force: forceApi,
+        });
       }
-
-      beginPageApiRead(readOpts);
-      try {
-        const ok = await fn();
-        if (ok !== false && (isApiOnlyReads() || !readOpts.localOnly)) {
-          markPageSyncedWithApi(pageKey);
-          setSynced(true);
-        }
-      } finally {
-        endPageApiRead();
-      }
+      return execute();
     },
     [pageKey],
   );
@@ -81,10 +96,8 @@ export function usePageApiSync(pageKey: string) {
   }, [pageKey]);
 
   const resetSync = useCallback(() => {
-    if (isApiOnlyReads()) {
-      resetPageApiSession(pageKey);
-      setSynced(false);
-    }
+    resetPageApiSession(pageKey);
+    setSynced(false);
   }, [pageKey]);
 
   const readOpts = resolvePageApiReadOpts(pageKey);
@@ -95,6 +108,8 @@ export function usePageApiSync(pageKey: string) {
     wrapLoad,
     markSynced,
     resetSync,
+    /** 手动通知祖先页面：下次聚焦时从服务端全量重拉 */
+    notifyAncestorsDataChanged: () => notifyPageDataChanged(pageKey),
   };
 }
 
@@ -109,9 +124,10 @@ export function usePagePullRefresh(
   useRegisterApiLoadingRetry(reload);
 
   const refreshFromApi = useCallback(async () => {
-    resetPageApiSession(pageKey);
+    clearPageLoadedInSession(pageKey);
+    resetPageApiSession(pageKey, { force: true });
     await reload(true);
-  }, [pageKey, reload]);
+  }, [pageKey, reload, resetPageApiSession]);
 
   return usePullToRefresh(refreshFromApi);
 }

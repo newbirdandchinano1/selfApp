@@ -652,30 +652,36 @@ export default function AddHabitScreen() {
     const note = habitNote.trim() || null;
 
     let savedHabitId: string;
-    if (isEditMode && habitId) {
-      await updateHabit(habitId, {
-        context,
-        name,
-        tag,
-        icon: habitIcon,
-        tone,
-        note,
-        extra_data: extraData,
-      });
-      savedHabitId = habitId;
-    } else {
-      const id = makeTimestampEntityId('hb_', 8);
-      await createHabit({
-        id,
-        context,
-        name,
-        icon: habitIcon,
-        tag,
-        tone,
-        note,
-        extra_data: extraData,
-      });
-      savedHabitId = id;
+    try {
+      if (isEditMode && habitId) {
+        await updateHabit(habitId, {
+          context,
+          name,
+          tag,
+          icon: habitIcon,
+          tone,
+          note,
+          extra_data: extraData,
+        });
+        savedHabitId = habitId;
+      } else {
+        const id = makeTimestampEntityId('hb_', 8);
+        await createHabit({
+          id,
+          context,
+          name,
+          icon: habitIcon,
+          tag,
+          tone,
+          note,
+          extra_data: extraData,
+        });
+        savedHabitId = id;
+      }
+    } catch (err) {
+      const msg = err instanceof Error && err.message.trim() ? err.message : '保存失败，请稍后重试';
+      Alert.alert('保存失败', msg);
+      return;
     }
 
     const { permissionDenied } = await syncHabitReminderNotification({

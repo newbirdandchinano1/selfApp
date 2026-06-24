@@ -1,6 +1,18 @@
+import {
+  formatApiErrorMessage,
+  isApiErrorRetryable,
+  isDuplicateRecordApiError,
+} from '@/lib/api-client';
+
 type ApiLoadingListener = () => void;
 
+export type ApiLoadingErrorState = {
+  message: string;
+  retryable: boolean;
+};
+
 let pendingCount = 0;
+let loadingError: ApiLoadingErrorState | null = null;
 const listeners = new Set<ApiLoadingListener>();
 let focusedRetryTarget: (() => void) | null = null;
 
@@ -10,6 +22,10 @@ export function getApiLoadingPendingCount(): number {
 
 export function isApiLoadingActive(): boolean {
   return pendingCount > 0;
+}
+
+export function getApiLoadingError(): ApiLoadingErrorState | null {
+  return loadingError;
 }
 
 export function subscribeApiLoading(listener: ApiLoadingListener): () => void {
@@ -25,6 +41,20 @@ function notifyApiLoadingListeners(): void {
   }
 }
 
+export function clearApiLoadingError(): void {
+  if (!loadingError) return;
+  loadingError = null;
+  notifyApiLoadingListeners();
+}
+
+export function reportApiLoadingError(err: unknown): void {
+  loadingError = {
+    message: formatApiErrorMessage(err),
+    retryable: isApiErrorRetryable(err),
+  };
+  notifyApiLoadingListeners();
+}
+
 export function beginApiLoading(): void {
   pendingCount += 1;
   notifyApiLoadingListeners();
@@ -37,16 +67,29 @@ export function endApiLoading(): void {
 
 export async function withApiLoading<T>(fn: () => Promise<T>): Promise<T> {
   beginApiLoading();
+  clearApiLoadingError();
   try {
-    return await fn();
+    const result = await fn();
+    clearApiLoadingError();
+    return result;
+  } catch (e) {
+    if (!isDuplicateRecordApiError(e)) {
+      reportApiLoadingError(e);
+    }
+    throw e;
   } finally {
     endApiLoading();
   }
 }
 
+/** 增删改等写请求：与读请求共用全局蒙层与错误提示 */
+export async function withApiWriteLoading<T>(fn: () => Promise<T>): Promise<T> {
+  return withApiLoading(fn);
+}
+
 /** 加载超时或用户重试时强制清零，避免计数与 UI 卡住 */
 export function forceResetApiLoading(): void {
-  if (pendingCount === 0) return;
+  if (pendingCount === 0 && !loadingError) return;
   pendingCount = 0;
   notifyApiLoadingListeners();
 }
@@ -67,12 +110,14 @@ function invokeFocusedApiLoadingRetryTarget(): void {
   }
 }
 
-/** 加载超时后重试：重置计数、作废进行中的 REST 读、清空页面同步标记并触发当前聚焦页 reload */
+/** 加载失败或超时后重试：重置计数、作废进行中的 REST 读、清空页面同步标记并触发当前聚焦页 reload */
 export async function retryStuckApiLoading(): Promise<void> {
+  clearApiLoadingError();
   forceResetApiLoading();
   const { invalidateAllInflightApiTableFetches } = await import('@/lib/api-read');
   invalidateAllInflightApiTableFetches();
-  const { resetPageApiSession } = await import('@/lib/page-api-session');
-  resetPageApiSession();
+  const { resetPageApiSession, clearPageLoadedInSession } = await import('@/lib/page-api-session');
+  clearPageLoadedInSession();
+  resetPageApiSession(undefined, { force: true });
   invokeFocusedApiLoadingRetryTarget();
 }

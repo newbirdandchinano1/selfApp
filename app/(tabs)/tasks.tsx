@@ -1737,7 +1737,6 @@ export default function TasksScreen() {
       return rolled + overdueBumped;
     } catch (err) {
       console.warn('加载任务列表失败', err);
-      setTasks([]);
       return 0;
     }
   }, [dayBoundary]);

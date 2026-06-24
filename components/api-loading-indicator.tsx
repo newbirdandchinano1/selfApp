@@ -15,10 +15,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const BAR_SEGMENT_WIDTH = Math.round(SCREEN_WIDTH * 0.42);
-const LOADING_TIMEOUT_MS = 10000;
+const LOADING_TIMEOUT_MS = 30000;
 
 export function ApiLoadingIndicator() {
-  const { visible, timedOut, blocking, retry } = useApiLoadingOverlay(480, LOADING_TIMEOUT_MS);
+  const { visible, timedOut, error, blocking, retry, dismiss } = useApiLoadingOverlay(480, LOADING_TIMEOUT_MS);
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
   const isDark = colorScheme === 'dark';
@@ -80,7 +80,47 @@ export function ApiLoadingIndicator() {
         ]}
       />
 
-      {timedOut ? (
+      {error ? (
+        <View
+          style={[
+            styles.timeoutCard,
+            {
+              backgroundColor: isDark ? 'rgba(31,41,55,0.98)' : 'rgba(255,255,255,0.98)',
+              borderColor: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.35)',
+            },
+          ]}
+        >
+          <Text style={[styles.timeoutTitle, { color: textColor }]}>加载失败</Text>
+          <Text style={[styles.timeoutHint, { color: isDark ? '#94a3b8' : '#64748b' }]}>
+            {error.message || '请求失败，请稍后重试'}
+          </Text>
+          {error.retryable ? (
+            <Pressable
+              onPress={() => void retry()}
+              style={({ pressed }) => [
+                styles.retryBtn,
+                { backgroundColor: primary, opacity: pressed ? 0.85 : 1 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="重试加载"
+            >
+              <Text style={styles.retryBtnText}>重试</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={dismiss}
+              style={({ pressed }) => [
+                styles.retryBtn,
+                { backgroundColor: primary, opacity: pressed ? 0.85 : 1 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="知道了"
+            >
+              <Text style={styles.retryBtnText}>知道了</Text>
+            </Pressable>
+          )}
+        </View>
+      ) : timedOut ? (
         <View
           style={[
             styles.timeoutCard,
@@ -92,7 +132,7 @@ export function ApiLoadingIndicator() {
         >
           <Text style={[styles.timeoutTitle, { color: textColor }]}>加载超时</Text>
           <Text style={[styles.timeoutHint, { color: isDark ? '#94a3b8' : '#64748b' }]}>
-            数据加载超过 10 秒，请检查网络后重试
+            数据加载超过 30 秒，请检查网络后重试
           </Text>
           <Pressable
             onPress={() => void retry()}
@@ -136,7 +176,7 @@ export function ApiLoadingIndicator() {
             ]}
           >
             <ActivityIndicator size="small" color={primary} />
-            <Text style={[styles.pillText, { color: primary }]}>正在加载数据…</Text>
+            <Text style={[styles.pillText, { color: primary }]}>正在同步数据…</Text>
           </Animated.View>
         </View>
       )}

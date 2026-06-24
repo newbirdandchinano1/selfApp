@@ -1,21 +1,132 @@
 import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
+import { collectAncestorPageKeys } from '@/lib/page-api-ancestry';
+import { runGuardedPageApiLoad } from '@/lib/page-api-load-guard';
 import {
   PAGE_SYNC_META_KEY,
   PREFER_LOCAL_READS_META_KEY,
-  REST_INITIAL_SYNC_META_KEY,
-  clearPageSyncMeta,
-  localDbHasSubstantialUserData,
+  localDbHasUserData,
   readAppMeta,
   writeAppMeta,
 } from '@/lib/api-local-bootstrap';
-import { TAB_PAGE_KEYS } from '@/lib/page-api-scope';
 
-export { TAB_PAGE_KEYS, TABLE_TAB_DIRTY_MAP } from '@/lib/page-api-scope';
+/** 底部 Tab 主页面 pageKey，与 app/(tabs) 中 PAGE_API_KEY 一致 */
+export const TAB_PAGE_KEYS = {
+  health: 'tabs/index',
+  tasks: 'tabs/tasks',
+  finance: 'tabs/finance',
+  review: 'tabs/review',
+  profile: 'tabs/profile',
+} as const;
 
-/** 已完成「接口 → 本地」同步的页面（跨重启持久化） */
-const syncedPages = new Set<string>();
+type TabPageKey = (typeof TAB_PAGE_KEYS)[keyof typeof TAB_PAGE_KEYS];
 
-/** 首启引导完成后，读操作默认走本地（各页仍按 syncedPages 决定是否跳过 REST） */
+/**
+ * 本地表变更后需标记刷新的 Tab 主页面。
+ * local-first 模式下本地写入已即时可见，不再重置页面同步状态强制重拉 REST。
+ */
+const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
+  health_records: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
+  users: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
+  tasks: [TAB_PAGE_KEYS.tasks],
+  projects: [TAB_PAGE_KEYS.tasks],
+  project_categories: [TAB_PAGE_KEYS.tasks],
+  task_categories: [TAB_PAGE_KEYS.tasks],
+  task_items: [TAB_PAGE_KEYS.tasks],
+  task_execution_events: [TAB_PAGE_KEYS.tasks],
+  frog_completion_events: [TAB_PAGE_KEYS.tasks],
+  habits: [TAB_PAGE_KEYS.tasks],
+  habit_contexts: [TAB_PAGE_KEYS.tasks],
+  habit_check_ins: [TAB_PAGE_KEYS.tasks],
+  accounts: [TAB_PAGE_KEYS.finance],
+  account_transactions: [TAB_PAGE_KEYS.finance],
+  finance_accounts: [TAB_PAGE_KEYS.finance],
+  finance_account_types: [TAB_PAGE_KEYS.finance],
+  finance_flow_categories: [TAB_PAGE_KEYS.finance],
+  finance_transactions: [TAB_PAGE_KEYS.finance],
+  savings_plans: [TAB_PAGE_KEYS.finance],
+  savings_plan_deposits: [TAB_PAGE_KEYS.finance],
+  cash_flow_profile: [TAB_PAGE_KEYS.finance],
+  cash_flow_incomes: [TAB_PAGE_KEYS.finance],
+  cash_flow_holdings: [TAB_PAGE_KEYS.finance],
+  cash_flow_expense_lines: [TAB_PAGE_KEYS.finance],
+  visions: [TAB_PAGE_KEYS.profile],
+  goal_dimensions: [TAB_PAGE_KEYS.profile],
+  wish_items: [TAB_PAGE_KEYS.profile],
+  weekly_review_journal: [TAB_PAGE_KEYS.review],
+  daily_review_journal: [TAB_PAGE_KEYS.review],
+  earned_rewards: [TAB_PAGE_KEYS.profile],
+  memo_dimensions: [TAB_PAGE_KEYS.profile],
+  memos: [TAB_PAGE_KEYS.profile],
+  user_weaknesses: [TAB_PAGE_KEYS.profile],
+  user_skill_items: [TAB_PAGE_KEYS.profile],
+  user_desired_skills: [TAB_PAGE_KEYS.profile],
+  user_skills_meta: [TAB_PAGE_KEYS.profile],
+  review_dimensions: [TAB_PAGE_KEYS.review],
+  review_columns: [TAB_PAGE_KEYS.review],
+  recipe_categories: [TAB_PAGE_KEYS.profile],
+  recipe_items: [TAB_PAGE_KEYS.profile],
+};
+
+/** 本会话内已完成首次加载的页面（切换 Tab 不再重复全量 REST/重载） */
+const sessionLoadedPages = new Set<string>();
+
+/** 子页面写入后标记需从服务端全量重拉的页面（含祖先链） */
+const pagesNeedingRestRefresh = new Set<string>();
+
+/** REST 读取失败但已回退本地（wrapLoad 不应标记 synced） */
+let pageLoadRestFailed = false;
+
+export function markPageLoadRestFailed(): void {
+  pageLoadRestFailed = true;
+}
+
+export function consumePageLoadRestFailed(): boolean {
+  const failed = pageLoadRestFailed;
+  pageLoadRestFailed = false;
+  return failed;
+}
+
+export function markPageLoadedInSession(pageKey: string): void {
+  const key = pageKey.trim();
+  if (key) sessionLoadedPages.add(key);
+}
+
+export function clearPageLoadedInSession(pageKey?: string): void {
+  if (pageKey?.trim()) {
+    sessionLoadedPages.delete(pageKey.trim());
+    return;
+  }
+  sessionLoadedPages.clear();
+}
+
+export function hasPageLoadedInSession(pageKey: string): boolean {
+  return sessionLoadedPages.has(pageKey.trim());
+}
+
+export function pageNeedsRestRefresh(pageKey: string): boolean {
+  return pagesNeedingRestRefresh.has(pageKey.trim());
+}
+
+/** 子页面数据变更：向所有祖先页面传递「下次聚焦需 REST 全量拉取」 */
+export function notifyPageDataChanged(pageKey: string): void {
+  const ancestors = collectAncestorPageKeys(pageKey);
+  if (__DEV__ && ancestors.length > 0) {
+    console.log('[page-api-session] 数据变更传递', pageKey, '→', ancestors);
+  }
+  for (const ancestor of ancestors) {
+    const key = ancestor.trim();
+    if (!key) continue;
+    pagesNeedingRestRefresh.add(key);
+    clearPageLoadedInSession(key);
+    resetPageApiSession(key, { force: true });
+  }
+}
+
+export function markPageRestRefreshCompleted(pageKey: string): void {
+  pagesNeedingRestRefresh.delete(pageKey.trim());
+}
+
+/** 首启全量同步完成或升级用户引导后，所有页面直接读本地 */
 let preferLocalReads = false;
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -49,36 +160,17 @@ function loadSyncedPagesFromJson(raw: string | null): void {
   }
 }
 
-const LEGACY_ALL_PAGES_SYNCED_META_KEY = 'legacy_all_pages_synced_v1';
-
-async function migrateLegacyAllPagesSyncedIfNeeded(): Promise<void> {
-  if ((await readAppMeta(LEGACY_ALL_PAGES_SYNCED_META_KEY)) === '1') return;
-  if (syncedPages.size > 0) {
-    await writeAppMeta(LEGACY_ALL_PAGES_SYNCED_META_KEY, '1');
-    return;
-  }
-  if ((await readAppMeta(REST_INITIAL_SYNC_META_KEY)) !== '1') return;
-  if (!(await localDbHasSubstantialUserData())) return;
-
-  for (const pageKey of Object.values(TAB_PAGE_KEYS)) {
-    syncedPages.add(pageKey);
-  }
-  schedulePersistSyncedPages();
-  await writeAppMeta(LEGACY_ALL_PAGES_SYNCED_META_KEY, '1');
-}
-
 /** 启动时从 app_meta 恢复页面同步状态与本地优先读模式 */
 export async function hydratePageApiSession(): Promise<void> {
   preferLocalReads = (await readAppMeta(PREFER_LOCAL_READS_META_KEY)) === '1';
   loadSyncedPagesFromJson(await readAppMeta(PAGE_SYNC_META_KEY));
 
-  const hasSubstantialData = await localDbHasSubstantialUserData();
-  if (!hasSubstantialData && syncedPages.size > 0) {
-    syncedPages.clear();
-    await clearPageSyncMeta();
-  }
+  if (preferLocalReads || isApiOnlyReads()) return;
 
-  await migrateLegacyAllPagesSyncedIfNeeded();
+  if (await localDbHasUserData()) {
+    preferLocalReads = true;
+    await writeAppMeta(PREFER_LOCAL_READS_META_KEY, '1');
+  }
 }
 
 export function enablePreferLocalReads(): void {
@@ -90,13 +182,21 @@ export function isPreferLocalReads(): boolean {
 }
 
 export function hasPageSyncedWithApi(pageKey: string): boolean {
+  if (preferLocalReads) return true;
   return syncedPages.has(pageKey);
 }
 
-/** 页面 focus 时是否可跳过数据重载（已同步页面保留内存状态，冷启动由 usePageFocusReload 补一次本地读） */
+/** 页面 focus 时是否可跳过数据重载（local-first：本会话已加载过则跳过；待 REST 刷新则不跳过） */
 export function shouldSkipPageFocusApiRefresh(pageKey: string): boolean {
+  if (pageNeedsRestRefresh(pageKey)) return false;
+  if (isLocalFirstReads()) {
+    return hasPageLoadedInSession(pageKey);
+  }
   return hasPageSyncedWithApi(pageKey);
 }
+
+/** 已完成「接口 → 本地」同步的页面（跨重启持久化） */
+const syncedPages = new Set<string>();
 
 export function markPageSyncedWithApi(pageKey: string): void {
   const key = pageKey.trim();
@@ -105,7 +205,10 @@ export function markPageSyncedWithApi(pageKey: string): void {
   if (isLocalFirstReads()) schedulePersistSyncedPages();
 }
 
-export function resetPageApiSession(pageKey?: string): void {
+export function resetPageApiSession(pageKey?: string, opts?: { force?: boolean }): void {
+  if (isLocalFirstReads() && !opts?.force) {
+    return;
+  }
   if (pageKey) {
     syncedPages.delete(pageKey);
     if (isLocalFirstReads()) schedulePersistSyncedPages();
@@ -121,7 +224,7 @@ export function markTabPageDirty(tab: keyof typeof TAB_PAGE_KEYS): void {
   resetPageApiSession(TAB_PAGE_KEYS[tab]);
 }
 
-/** 本地表写入后，按映射标记相关 Tab 主页面为 dirty（local-first 下保持已同步，避免重拉覆盖本地修改） */
+/** 本地表写入后，按映射标记相关 Tab 主页面为 dirty（local-first 下跳过） */
 export function markTabPagesDirtyForTable(table: string): void {
   if (isLocalFirstReads()) return;
   const pages = TABLE_TAB_DIRTY_MAP[table.trim()];
@@ -144,10 +247,10 @@ export function resolvePageApiReadOpts(
   if (isApiOnlyReads()) {
     return { localOnly: false, offlineFallback: false };
   }
-  if (forceApi) {
+  if (forceApi || pageNeedsRestRefresh(pageKey)) {
     return { localOnly: false, offlineFallback: true };
   }
-  if (hasPageSyncedWithApi(pageKey)) {
+  if (preferLocalReads || hasPageSyncedWithApi(pageKey)) {
     return { localOnly: true, offlineFallback: true };
   }
   return { localOnly: false, offlineFallback: true };
@@ -177,17 +280,8 @@ export function resolveReadLocalOnly(explicit?: {
 }): boolean {
   if (isApiOnlyReads()) return false;
   if (explicit?.forceRefresh) return false;
-  if (explicit?.localOnly === true) return true;
-  if (explicit?.localOnly === false) return false;
-
-  const active = getActivePageApiReadOpts();
-  if (active?.localOnly === true) return true;
-  if (active?.localOnly === false) return false;
-
-  // local-first：无显式 REST 上下文时默认读本地，避免 Tab 切换/辅助读表误触发全屏加载
-  if (isLocalFirstReads()) return true;
-
-  return false;
+  if (explicit?.localOnly) return true;
+  return Boolean(getActivePageApiReadOpts()?.localOnly);
 }
 
 /** 非 React 组件内执行与 wrapLoad 等价的页面级读库策略 */
@@ -196,45 +290,45 @@ export async function runPageApiLoad(
   fn: () => Promise<boolean | void>,
   forceApi = false,
 ): Promise<void> {
-  let readOpts = resolvePageApiReadOpts(pageKey, forceApi);
+  const readOpts = resolvePageApiReadOpts(pageKey, forceApi);
+  const needsRest = isApiOnlyReads() || forceApi || !readOpts.localOnly;
 
-  if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
-    const { listPageScopeTables } = await import('@/lib/page-api-scope');
-    if (listPageScopeTables(pageKey).length > 0) {
-      beginPageApiRead({ localOnly: false, offlineFallback: true });
+  const execute = async () => {
+    if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
+      beginPageApiRead({ localOnly: true, offlineFallback: true });
       try {
-        const { syncPageScopeFromApi } = await import('@/lib/api-page-sync');
-        const scopeResult = await syncPageScopeFromApi(pageKey);
-        if (scopeResult.ok) {
-          markPageSyncedWithApi(pageKey);
-          readOpts = resolvePageApiReadOpts(pageKey, forceApi);
-        }
+        await fn();
       } catch (e) {
-        console.warn('[page-api-session] 页面范围同步失败，继续尝试读库', pageKey, e);
+        console.warn('[page-api-session] 本地预读失败，继续尝试 REST', pageKey, e);
       } finally {
         endPageApiRead();
       }
     }
-  }
 
-  if (isLocalFirstReads() && !forceApi && !readOpts.localOnly) {
-    beginPageApiRead({ localOnly: true, offlineFallback: true });
+    beginPageApiRead(readOpts);
     try {
-      await fn();
-    } catch (e) {
-      console.warn('[page-api-session] 本地预读失败，继续尝试 REST', pageKey, e);
+      const ok = await fn();
+      const restFailed = consumePageLoadRestFailed();
+      if (ok !== false && !restFailed && (isApiOnlyReads() || !readOpts.localOnly)) {
+        markPageSyncedWithApi(pageKey);
+      }
+      if (ok !== false && !restFailed) {
+        markPageLoadedInSession(pageKey);
+      }
+      if (ok !== false && !restFailed && !readOpts.localOnly) {
+        markPageRestRefreshCompleted(pageKey);
+      }
     } finally {
       endPageApiRead();
     }
-  }
+  };
 
-  beginPageApiRead(readOpts);
-  try {
-    const ok = await fn();
-    if (ok !== false && (isApiOnlyReads() || !readOpts.localOnly)) {
-      markPageSyncedWithApi(pageKey);
-    }
-  } finally {
-    endPageApiRead();
+  if (needsRest) {
+    await runGuardedPageApiLoad(pageKey, execute, {
+      debounce: !forceApi,
+      force: forceApi,
+    });
+    return;
   }
+  await execute();
 }

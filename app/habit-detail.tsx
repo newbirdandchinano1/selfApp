@@ -4,7 +4,6 @@ import {
   getCheckInsMapByHabitId,
   getHabitCheckInDbCountForDay,
   incrementHabitCheckInForDay,
-  pushHabitCheckInChangesToApi,
 } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
@@ -498,7 +497,6 @@ export default function HabitDetailScreen() {
       }
       setCheckIns((prev) => ({ ...prev, [ymd]: nextCount }));
       void playHabitCheckInDing();
-      await pushHabitCheckInChangesToApi({ awaitSync: true });
       if (habit && parseHabitKind(habit.extra_data) === 'build') {
         await tryMarkBuildHabitCompleted(habit, logicalTodayYmd);
       }
@@ -541,7 +539,6 @@ export default function HabitDetailScreen() {
         else next[ymd] = nextCount;
         return next;
       });
-      await pushHabitCheckInChangesToApi({ awaitSync: true });
       await reload(true);
     } catch (e) {
       console.warn('取消补卡失败', e);

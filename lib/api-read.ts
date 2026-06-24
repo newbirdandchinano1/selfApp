@@ -13,7 +13,7 @@ import {
   overlayLocalPendingOnApiTableRows,
 } from '@/lib/api-read-pending-overlay';
 import { getDatabase } from '@/lib/database';
-import { resolveReadLocalOnly } from '@/lib/page-api-session';
+import { markPageLoadRestFailed, resolveReadLocalOnly } from '@/lib/page-api-session';
 
 export type ApiListOptions = {
   page?: number;
@@ -293,6 +293,7 @@ export async function readApiTable<T extends Record<string, unknown>>(
       }
     } catch (e) {
       if (opts?.offlineFallback) {
+        markPageLoadRestFailed();
         console.warn('[api-read] 接口不可用，回退本地 SQLite', table, e);
         return readLocalTableVisible<T>(table);
       }
@@ -342,6 +343,7 @@ export async function readApiRecord<T extends Record<string, unknown>>(
       }
     } catch (e) {
       if (opts?.offlineFallback) {
+        markPageLoadRestFailed();
         console.warn('[api-read] 接口不可用，回退本地 SQLite', table, pkValue, e);
         return readLocalRecordVisible<T>(table, pkValue);
       }

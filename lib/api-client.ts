@@ -13,6 +13,7 @@ import {
   slimRecordForMysqlApi,
 } from '@/lib/api-mysql-payload';
 import { fetchWithTimeoutAndRetry, isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
+import { enqueueApiRequest } from '@/lib/api-request-queue';
 
 export function prepareRowBodyForApi(
   table: string,
@@ -55,13 +56,50 @@ export class ApiUnauthorizedError extends Error {
 export class ApiRequestError extends Error {
   readonly httpStatus: number;
   readonly apiCode: number;
+  readonly retryable: boolean;
+  readonly retryAfterSec?: number;
 
-  constructor(message: string, httpStatus: number, apiCode: number) {
+  constructor(
+    message: string,
+    httpStatus: number,
+    apiCode: number,
+    opts?: { retryable?: boolean; retryAfterSec?: number },
+  ) {
     super(message);
     this.name = 'ApiRequestError';
     this.httpStatus = httpStatus;
     this.apiCode = apiCode;
+    this.retryable = opts?.retryable ?? false;
+    this.retryAfterSec = opts?.retryAfterSec;
   }
+}
+
+/** 按规范：HTTP 200 且 body.code === 0 为成功 */
+export function isApiResponseSuccess(httpStatus: number, apiCode: number): boolean {
+  return httpStatus === 200 && apiCode === 0;
+}
+
+export function formatApiErrorMessage(err: unknown): string {
+  if (err instanceof ApiRequestError || err instanceof ApiUnauthorizedError) {
+    return err.message;
+  }
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+export function isApiErrorRetryable(err: unknown): boolean {
+  if (err instanceof ApiRequestError) return err.retryable;
+  if (err instanceof ApiUnauthorizedError) return true;
+  if (isAbortError(err)) return true;
+  return true;
+}
+
+/** upsert 流程中 POST 409 / 唯一约束冲突，上层会改走 PUT，不应弹全局错误 */
+export function isDuplicateRecordApiError(err: unknown): boolean {
+  return (
+    err instanceof ApiRequestError &&
+    (err.httpStatus === 409 || /已存在|duplicate|冲突|unique/i.test(err.message))
+  );
 }
 
 function serializeUnknownError(err: unknown): string {
@@ -126,9 +164,11 @@ export async function apiLogin(opts?: {
   const { parsed, text } = await parseResponseBody(res);
   const envelope = extractEnvelope(parsed);
 
-  if (!envelope || envelope.code !== 0) {
+  if (!envelope || !isApiResponseSuccess(res.status, envelope.code)) {
     const message = envelope?.message || `登录失败：HTTP ${res.status}`;
-    throw new ApiRequestError(message, res.status, envelope?.code ?? -1);
+    throw new ApiRequestError(message, res.status, envelope?.code ?? -1, {
+      retryable: res.status >= 500,
+    });
   }
 
   const token = (envelope.data as { token?: string } | null)?.token;
@@ -185,11 +225,14 @@ export async function apiRequest<T = unknown>(
 
     const { parsed, text } = await parseResponseBody(res);
 
+    const envelope = extractEnvelope(parsed);
+
     if (res.status === 401) {
-      throw new ApiUnauthorizedError();
+      await clearApiAuthToken();
+      const message = envelope?.message?.trim() || '请先登录';
+      throw new ApiUnauthorizedError(message);
     }
 
-    const envelope = extractEnvelope(parsed);
     if (res.status === 413 || /entity too large/i.test(text)) {
       throw new ApiRequestError(
         envelope?.message?.trim() || 'request entity too large',
@@ -203,14 +246,24 @@ export async function apiRequest<T = unknown>(
         `接口响应格式异常：HTTP ${res.status}`,
         res.status,
         -1,
+        { retryable: res.status >= 500 },
       );
     }
 
-    if (envelope.code !== 0) {
+    if (!isApiResponseSuccess(res.status, envelope.code)) {
+      const retryable = res.status === 500 || res.status === 502 || res.status === 503;
+      let retryAfterSec: number | undefined;
+      if (res.status === 503) {
+        const ra = res.headers.get('Retry-After');
+        if (ra != null && /^\d+$/.test(ra.trim())) {
+          retryAfterSec = parseInt(ra.trim(), 10);
+        }
+      }
       throw new ApiRequestError(
         envelope.message || `请求失败：HTTP ${res.status}`,
         res.status,
         envelope.code,
+        { retryable, retryAfterSec },
       );
     }
 
@@ -221,18 +274,30 @@ export async function apiRequest<T = unknown>(
     return envelope.data as T;
   };
 
-  try {
-    const token = options.skipAuth ? null : await ensureApiLoggedIn({ signal: options.signal });
-    return await runOnce(token);
-  } catch (e) {
-    if (retryOnUnauthorized && e instanceof ApiUnauthorizedError && !options.skipAuth) {
-      await clearApiAuthToken();
-      const token = await apiLogin({ signal: options.signal });
-      return runOnce(token);
+  const execute = async (): Promise<T> => {
+    const runAuth = async (): Promise<T> => {
+      try {
+        const token = options.skipAuth ? null : await ensureApiLoggedIn({ signal: options.signal });
+        return await runOnce(token);
+      } catch (e) {
+        if (retryOnUnauthorized && e instanceof ApiUnauthorizedError && !options.skipAuth) {
+          await clearApiAuthToken();
+          const token = await apiLogin({ signal: options.signal });
+          return runOnce(token);
+        }
+        if (isAbortError(e)) throw e;
+        throw e;
+      }
+    };
+
+    if (method !== 'GET') {
+      const { withApiWriteLoading } = await import('@/lib/api-loading-tracker');
+      return withApiWriteLoading(runAuth);
     }
-    if (isAbortError(e)) throw e;
-    throw e;
-  }
+    return runAuth();
+  };
+
+  return enqueueApiRequest(execute);
 }
 
 export async function apiCreateRecord<T = unknown>(
@@ -394,5 +459,7 @@ export async function apiHealthCheck(opts?: { signal?: AbortSignal }): Promise<b
   const baseUrl = await getApiBaseUrl();
   throwIfAborted(opts?.signal);
   const res = await fetchWithTimeoutAndRetry(`${baseUrl}/health`, { method: 'GET' }, { signal: opts?.signal });
-  return res.ok;
+  const { parsed } = await parseResponseBody(res);
+  const envelope = extractEnvelope(parsed);
+  return isApiResponseSuccess(res.status, envelope?.code ?? -1);
 }

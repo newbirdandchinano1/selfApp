@@ -1,7 +1,12 @@
-import { readApiTable } from '@/lib/api-read';
+import { invalidateInflightApiTableFetch, readApiTable } from '@/lib/api-read';
 import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import type { HabitContextRow } from './habit-context.types';
+
+async function pushHabitContextChangesToApi(): Promise<void> {
+  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+  await pushLocalChangesToApi({ awaitSync: true });
+}
 
 export async function getHabitContexts() {
   const rows = await readApiTable<HabitContextRow>('habit_contexts', { offlineFallback: true });
@@ -10,6 +15,9 @@ export async function getHabitContexts() {
 
 export async function createHabitContext(name: string) {
   const db = await getDatabase();
+  if (!db) {
+    throw new Error('本地数据库不可用，无法保存情境');
+  }
   const trimmed = name.trim();
   if (!trimmed) throw new Error('情境名称不能为空');
 
@@ -42,17 +50,18 @@ export async function createHabitContext(name: string) {
        WHERE id = ?`,
       [trimmed, nextSort, id]
     );
-    return;
+  } else {
+    await db.runAsync(
+      `INSERT INTO habit_contexts (
+         id, name, sort_order, is_builtin, extra_data,
+         created_at, updated_at, sync_status
+       ) VALUES (?, ?, ?, 0, NULL,
+         datetime('now'), datetime('now'), 'pending_create')`,
+      [id, trimmed, nextSort]
+    );
   }
-
-  await db.runAsync(
-    `INSERT INTO habit_contexts (
-       id, name, sort_order, is_builtin, extra_data,
-       created_at, updated_at, sync_status
-     ) VALUES (?, ?, ?, 0, NULL,
-       datetime('now'), datetime('now'), 'pending_create')`,
-    [id, trimmed, nextSort]
-  );
+  invalidateInflightApiTableFetch('habit_contexts');
+  await pushHabitContextChangesToApi();
 }
 
 /** 删除情境后，仍引用该名称的习惯归入此前情境（与内置默认一致，避免界面「删了又出现」） */
@@ -61,6 +70,9 @@ const HABIT_CONTEXT_FALLBACK_NAME = '全天';
 export async function deleteHabitContexts(ids: string[]) {
   if (ids.length === 0) return;
   const db = await getDatabase();
+  if (!db) {
+    throw new Error('本地数据库不可用，无法删除情境');
+  }
   const placeholders = ids.map(() => '?').join(', ');
 
   const resolved = await db.getAllAsync<{ name: string }>(
@@ -87,10 +99,16 @@ export async function deleteHabitContexts(ids: string[]) {
      WHERE id IN (${placeholders})`,
     ids
   );
+  invalidateInflightApiTableFetch('habit_contexts');
+  invalidateInflightApiTableFetch('habits');
+  await pushHabitContextChangesToApi();
 }
 
 export async function updateHabitContextsSortOrder(contextIdsInOrder: string[]) {
   const db = await getDatabase();
+  if (!db) {
+    throw new Error('本地数据库不可用，无法更新情境排序');
+  }
   // Keep gaps so manual inserts can be placed between without a full renumber.
   const GAP = 10;
   for (let i = 0; i < contextIdsInOrder.length; i++) {
@@ -105,5 +123,7 @@ export async function updateHabitContextsSortOrder(contextIdsInOrder: string[]) 
       [sortOrder, id]
     );
   }
+  invalidateInflightApiTableFetch('habit_contexts');
+  await pushHabitContextChangesToApi();
 }
 
