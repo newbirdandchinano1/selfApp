@@ -16,6 +16,7 @@ import {
   getTasksByProjectId,
   updateTask,
   type TaskTreeNode,
+  type TaskWriteOptions,
 } from '@/lib/repositories/tasks/task';
 
 function parseTaskExtraData(raw: string | null): Record<string, unknown> {
@@ -41,7 +42,11 @@ function scheduleFromExtra(extraDataRaw: string | null): ScheduleMetaLike | null
 }
 
 /** 收紧单个节点及其全部后代；frame 为当前节点允许的最大窗口 */
-async function tightenNodeAndDescendants(node: TaskTreeNode, frame: DateLimitYmd): Promise<number> {
+async function tightenNodeAndDescendants(
+  node: TaskTreeNode,
+  frame: DateLimitYmd,
+  writeOpts?: TaskWriteOptions,
+): Promise<number> {
   if (!hasDateLimitBounds(frame)) return 0;
 
   let count = 0;
@@ -54,13 +59,17 @@ async function tightenNodeAndDescendants(node: TaskTreeNode, frame: DateLimitYmd
   );
 
   if (changed) {
-    await updateTask(node.id, {
-      due_date: dueDateFromScheduleMeta(nextSchedule, dueDate),
-      extra_data: JSON.stringify({
-        ...extra,
-        schedule: nextSchedule,
-      }),
-    });
+    await updateTask(
+      node.id,
+      {
+        due_date: dueDateFromScheduleMeta(nextSchedule, dueDate),
+        extra_data: JSON.stringify({
+          ...extra,
+          schedule: nextSchedule,
+        }),
+      },
+      writeOpts,
+    );
     count += 1;
   }
 
@@ -69,7 +78,7 @@ async function tightenNodeAndDescendants(node: TaskTreeNode, frame: DateLimitYmd
   });
 
   for (const child of node.children) {
-    count += await tightenNodeAndDescendants(child, childFrame);
+    count += await tightenNodeAndDescendants(child, childFrame, writeOpts);
   }
 
   return count;
@@ -93,12 +102,13 @@ export async function tightenDescendantTasksOf(
 export async function tightenAllProjectTasks(
   projectId: string,
   frame: DateLimitYmd,
+  writeOpts?: TaskWriteOptions,
 ): Promise<number> {
   if (!hasDateLimitBounds(frame)) return 0;
   const roots = await getTasksByProjectId(projectId);
   let count = 0;
   for (const root of roots) {
-    count += await tightenNodeAndDescendants(root, frame);
+    count += await tightenNodeAndDescendants(root, frame, writeOpts);
   }
   return count;
 }

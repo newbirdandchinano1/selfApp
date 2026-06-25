@@ -23,7 +23,12 @@ import {
   validatePrerequisiteSelection,
 } from '@/lib/repositories/projects/project-prerequisites';
 import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
+import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import {
+  beginCloudSqliteDirtyIgnoreBatch,
+  endCloudSqliteDirtyIgnoreBatch,
+} from '@/lib/cloud-sql-dirty-track';
 import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
 import { addProjectAiReviewSavedListener, runProjectAiReview } from '@/lib/project-ai-review-background';
 import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
@@ -265,6 +270,31 @@ function mapTaskTreeToSubtaskNodes(nodes: TaskTreeNode[]): SubtaskNode[] {
 
 function collectAllSubtaskIds(nodes: SubtaskNode[]): string[] {
   return nodes.flatMap((n) => [n.id, ...collectAllSubtaskIds(n.children)]);
+}
+
+function isProjectSubtaskUnchanged(
+  existing: TaskRow,
+  subtask: Subtask,
+  parentTaskId: string | null,
+): boolean {
+  const existingExtra = parseTaskExtraData(existing.extra_data);
+  const nextExtra = JSON.stringify({
+    ...existingExtra,
+    reminder: subtask.reminder || subtask.reminderText || '',
+    repeat: subtask.repeat || subtask.repeatText || '',
+  });
+  const nextStatus = (subtask.done ? 'done' : 'todo') as TaskRow['status'];
+  const nextDue = extractDueDate(subtask.deadline || subtask.deadlineText || '');
+  return (
+    existing.title === (subtask.title.trim() || '未命名任务') &&
+    (existing.description ?? null) === (subtask.acceptanceCriteria?.trim() || null) &&
+    (existing.note ?? null) === (subtask.note?.trim() || null) &&
+    existing.status === nextStatus &&
+    existing.priority === toTaskPriority(subtask.priority || subtask.priorityLabel) &&
+    (existing.due_date?.slice(0, 10) ?? null) === (nextDue ?? null) &&
+    (existing.extra_data ?? null) === nextExtra &&
+    (existing.parent_task_id ?? null) === (parentTaskId ?? null)
+  );
 }
 
 function collectExpandableSubtaskIds(nodes: SubtaskNode[]): string[] {
@@ -842,6 +872,7 @@ export default function EditProjectScreen() {
 
     setSaving(true);
     let committed = false;
+    beginCloudSqliteDirtyIgnoreBatch();
     try {
       const db = await getDatabase();
       await db.execAsync('BEGIN IMMEDIATE');
@@ -853,9 +884,7 @@ export default function EditProjectScreen() {
             true,
           )
         : null;
-      const categoryIdForNewTask = normalizeProjectCategoryId(
-        projectSnapshotRef.current?.category_id ?? selectedCategoryIdRef.current,
-      );
+      const writeOpts = { deferSync: true as const };
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
       const mergedExtra = mergePrerequisiteIdsIntoExtraData(
         { ...projectExtraData, schedule: scheduleToSave },
@@ -901,20 +930,24 @@ export default function EditProjectScreen() {
             reminder: subtask.reminder || subtask.reminderText || '',
             repeat: subtask.repeat || subtask.repeatText || '',
           }),
-          ...(categoryTouched ? { category_id: normalizedCategoryId } : {}),
         };
 
         if (existingTaskIds.has(subtask.id)) {
-          await updateTask(subtask.id, payload);
+          if (!existingTask || !isProjectSubtaskUnchanged(existingTask, subtask, parent_task_id)) {
+            await updateTask(subtask.id, payload, writeOpts);
+          }
         } else {
-          await createTask({
-            id: subtask.id,
-            ...payload,
-            category_id: categoryTouched ? normalizedCategoryId : categoryIdForNewTask,
-          });
+          await createTask(
+            {
+              id: subtask.id,
+              ...payload,
+              category_id: null,
+            },
+            writeOpts,
+          );
         }
       }
-      await tightenAllProjectTasks(projectId, projectFrame);
+      await tightenAllProjectTasks(projectId, projectFrame, writeOpts);
       await db.execAsync('COMMIT');
       committed = true;
     } catch (error) {
@@ -927,12 +960,23 @@ export default function EditProjectScreen() {
       console.warn('保存项目失败', error);
       Alert.alert('保存失败', formatWriteError(error));
       setSaving(false);
+    } finally {
+      endCloudSqliteDirtyIgnoreBatch();
     }
 
     if (!committed) return;
 
-    notifyAncestorsDataChanged();
-    void pushLocalChangesToApi();
+    try {
+      await markPendingTablesDirty(['projects', 'project_categories', 'tasks', 'task_categories']);
+      await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+      notifyAncestorsDataChanged();
+    } catch (syncErr) {
+      console.warn('项目保存后同步到服务器失败', syncErr);
+      Alert.alert(
+        '同步失败',
+        formatWriteError(syncErr, '已保存到本机，但未能写入服务器。请检查网络后重试或下拉刷新。'),
+      );
+    }
 
     try {
       if (Platform.OS !== 'web' && router.canGoBack()) {

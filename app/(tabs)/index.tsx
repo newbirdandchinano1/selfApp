@@ -872,12 +872,8 @@ export default function HealthScreen() {
 
       setPageLoadError(null);
 
-      if (
-        !forceApi &&
-        result.localOnly &&
-        fnResult?.sliceEmpty &&
-        !emptyLocalEscalatedRef.current
-      ) {
+      // 本地空库或 REST 同步后仍无数据：自动强制全量拉取（与下拉刷新一致）
+      if (!forceApi && fnResult?.sliceEmpty && !emptyLocalEscalatedRef.current) {
         emptyLocalEscalatedRef.current = true;
         clearPageLoadedInSession(PAGE_API_KEY);
         resetPageApiSession(PAGE_API_KEY, { force: true });

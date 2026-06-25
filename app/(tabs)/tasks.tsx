@@ -8,6 +8,8 @@ import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
+import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
+import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import {
   INBOX_PROJECT_CATEGORY_ID,
   INBOX_PROJECT_CATEGORY_NAME,
@@ -1267,19 +1269,20 @@ function isMatrixScopeTask(task: TaskRow): boolean {
 }
 
 /**
- * 任务列表分类 Tab 与项目列表对齐：任务行未写 category_id 时回落到所属项目（或父任务链）分类。
+ * 任务列表分类 Tab 与项目列表对齐：有 project_id 时以项目分类为准；
+ * 无项目待办才使用任务自身的 category_id。
  */
 function resolveTaskListCategoryId(
   task: TaskRow,
   projectById: Map<string, ProjectRow>,
   taskById: Map<string, TaskRow>,
 ): string {
-  if (task.category_id) return task.category_id;
   if (task.project_id) {
     const project = projectById.get(task.project_id);
     if (project?.category_id) return project.category_id;
     return INBOX_PROJECT_CATEGORY_ID;
   }
+  if (task.category_id) return task.category_id;
   if (task.parent_task_id) {
     const parent = taskById.get(task.parent_task_id);
     if (parent) return resolveTaskListCategoryId(parent, projectById, taskById);
@@ -3390,6 +3393,8 @@ export default function TasksScreen() {
           await updateProjectCategory(activeCategoryId, { name });
           await loadProjectCategories();
         }
+        await markPendingTablesDirty(['project_categories']);
+        await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
         closeCategoryEditor();
       }, categoryEditorTitle.includes('新建') ? '分类已新建' : '分类已修改');
     } catch (err) {
@@ -3441,6 +3446,8 @@ export default function TasksScreen() {
               markPageDirty();
               await deleteProjectCategory(activeCategoryId);
               await loadProjectCategories();
+              await markPendingTablesDirty(['project_categories']);
+              await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
               if (taskTab === activeCategoryId) setTaskTab('all');
               if (projectTab === activeCategoryId) setProjectTab('all');
               closeCategoryMenu();

@@ -21,12 +21,6 @@ async function runFlush(opts?: { rethrow?: boolean }): Promise<void> {
     const { flushApiDirtyTablesNow } = await import('@/lib/api-incremental-sync');
     await flushApiDirtyTablesNow({ rethrow: opts?.rethrow ?? false });
   });
-  const { getActivePageApiKey } = await import('@/lib/page-api-active');
-  const { notifyPageDataChanged } = await import('@/lib/page-api-session');
-  const sourcePage = getActivePageApiKey();
-  if (sourcePage) {
-    notifyPageDataChanged(sourcePage);
-  }
 }
 
 export async function pushLocalChangesToApi(opts?: {

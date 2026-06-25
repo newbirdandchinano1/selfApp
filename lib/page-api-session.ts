@@ -126,6 +126,19 @@ export function notifyPageDataChanged(pageKey: string): void {
   }
 }
 
+/**
+ * local-first：子页面写入后仅通知祖先页下次聚焦重读本地 SQLite，不触发 REST 全量同步。
+ */
+export function notifyAncestorPagesLocalReload(pageKey: string): void {
+  const ancestors = collectAncestorPageKeys(pageKey);
+  if (__DEV__ && ancestors.length > 0) {
+    console.log('[page-api-session] 本地数据变更', pageKey, '→', ancestors);
+  }
+  for (const ancestor of ancestors) {
+    clearPageLoadedInSession(ancestor);
+  }
+}
+
 export function markPageRestRefreshCompleted(pageKey: string): void {
   pagesNeedingRestRefresh.delete(pageKey.trim());
 }

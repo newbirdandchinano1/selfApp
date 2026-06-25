@@ -292,7 +292,34 @@ async function resolveCreateTaskForeignKeys(input: CreateTaskInput): Promise<Cre
   return { ...input, ...foreignKeys };
 }
 
-export async function createTask(input: CreateTaskInput) {
+export type TaskWriteOptions = {
+  /** 批量保存时延后推送，由调用方在事务提交后统一 pushLocalChangesToApi */
+  deferSync?: boolean;
+};
+
+/** 项目改分类后清空任务冗余 category_id，展示与筛选回落到 projects.category_id */
+export async function clearProjectTasksCategoryIds(
+  projectId: string,
+  opts?: TaskWriteOptions,
+): Promise<void> {
+  const db = await getDatabase();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE tasks
+     SET category_id = NULL,
+         updated_at = datetime('now'),
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE project_id = ?
+       AND category_id IS NOT NULL`,
+    [projectId],
+  );
+  if (!opts?.deferSync) {
+    const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+    await pushLocalChangesToApi({ awaitSync: true });
+  }
+}
+
+export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions) {
   const db = await getDatabase();
   const resolved = await resolveCreateTaskForeignKeys(input);
 
@@ -324,8 +351,10 @@ export async function createTask(input: CreateTaskInput) {
       resolved.extra_data ?? null,
     ]
   );
-  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
+  if (!opts?.deferSync) {
+    const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+    await pushLocalChangesToApi({ awaitSync: true });
+  }
 }
 
 export async function getTaskById(id: string) {
@@ -466,7 +495,7 @@ export async function getTaskTreeByRootTaskId(rootTaskId: string): Promise<TaskT
   return { ...root, children: await getChildTasksByParentTaskId(root.id) };
 }
 
-export async function updateTask(id: string, input: UpdateTaskInput) {
+export async function updateTask(id: string, input: UpdateTaskInput, opts?: TaskWriteOptions) {
   const db = await getDatabase();
   if (!db) {
     throw new Error('本地数据库不可用，无法保存任务');
@@ -505,8 +534,10 @@ export async function updateTask(id: string, input: UpdateTaskInput) {
   if ((result.changes ?? 0) === 0) {
     throw new Error('任务保存失败，请返回列表刷新后重试');
   }
-  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
+  if (!opts?.deferSync) {
+    const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+    await pushLocalChangesToApi({ awaitSync: true });
+  }
 }
 
 /** 将根任务及其所有子任务挂到同一项目（用于待办升级为项目等场景） */

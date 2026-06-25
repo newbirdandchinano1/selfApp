@@ -3,7 +3,7 @@ import { useFocusEffect } from '@react-navigation/native';
 
 import { useRegisterApiLoadingRetry } from '@/hooks/use-register-api-loading-retry';
 import { usePullToRefresh, type UsePullToRefreshResult } from '@/hooks/use-pull-to-refresh';
-import { isApiOnlyReads } from '@/lib/api-data-mode';
+import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
 import { clearActivePageApiKey, setActivePageApiKey } from '@/lib/page-api-active';
 import {
   clearPageLoadedInSession,
@@ -11,6 +11,7 @@ import {
   hasPageLoadedInSession,
   hasPageSyncedWithApi,
   markPageSyncedWithApi,
+  notifyAncestorPagesLocalReload,
   notifyPageDataChanged,
   resetPageApiSession,
   resolvePageApiReadOpts,
@@ -92,8 +93,9 @@ export function usePageApiSync(pageKey: string) {
     wrapLoad,
     markSynced,
     resetSync,
-    /** 手动通知祖先页面：下次聚焦时从服务端全量重拉 */
-    notifyAncestorsDataChanged: () => notifyPageDataChanged(pageKey),
+    /** 手动通知祖先页面：local-first 下重读本地库，否则从服务端全量重拉 */
+    notifyAncestorsDataChanged: () =>
+      isLocalFirstReads() ? notifyAncestorPagesLocalReload(pageKey) : notifyPageDataChanged(pageKey),
   };
 }
 

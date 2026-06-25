@@ -302,17 +302,38 @@ export async function flushApiDirtyTablesNow(opts?: { rethrow?: boolean }): Prom
 
 /** 启动时扫描仍有待同步行的表并标记脏表 */
 export async function markAllPendingTablesDirty(): Promise<void> {
+  await markPendingTablesDirty(await listPendingApiSyncTableNames());
+}
+
+/** 仅将指定表中仍有 pending 行的表标记为脏（避免全库扫描引发无关表反复推送） */
+export async function markPendingTablesDirty(tables: Iterable<string>): Promise<void> {
   const db = await getDatabase();
   if (!db) return;
 
+  for (const table of tables) {
+    const t = table.trim();
+    if (!t || REST_SKIP_TABLES.has(t)) continue;
+    if (!(await tableHasSyncStatusColumn(t))) continue;
+    const pending = await db.getFirstAsync<{ n: number }>(
+      `SELECT 1 AS n FROM ${quoteIdent(t)} WHERE sync_status != 'synced' LIMIT 1`,
+    );
+    if (pending) markApiTableDirty(t);
+  }
+}
+
+async function listPendingApiSyncTableNames(): Promise<string[]> {
+  const db = await getDatabase();
+  if (!db) return [];
   const tables = (await listLocalUserTablesForApiUpload()).filter(t => !REST_SKIP_TABLES.has(t));
+  const out: string[] = [];
   for (const table of tables) {
     if (!(await tableHasSyncStatusColumn(table))) continue;
     const pending = await db.getFirstAsync<{ n: number }>(
       `SELECT 1 AS n FROM ${quoteIdent(table)} WHERE sync_status != 'synced' LIMIT 1`,
     );
-    if (pending) markApiTableDirty(table);
+    if (pending) out.push(table);
   }
+  return out;
 }
 
 /** 脏表增量：将本地待同步行推送到 REST 后端 */
