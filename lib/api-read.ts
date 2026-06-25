@@ -64,6 +64,17 @@ const tableFetchGeneration = new Map<string, number>();
 
 const MAX_FETCH_ATTEMPTS_AFTER_INVALIDATE = 4;
 
+const CORE_SNAPSHOT_TABLES = new Set([
+  'projects',
+  'project_categories',
+  'tasks',
+  'task_items',
+]);
+
+function isCoreSnapshotTable(table: string): boolean {
+  return CORE_SNAPSHOT_TABLES.has(table.trim());
+}
+
 /** 同表 reconcile 串行化（bootstrap 与 fetchApiTableAll 共用，正式包并行时避免互相删行） */
 const tableSyncLockDepth = new Map<string, number>();
 const tableSyncLockTail = new Map<string, Promise<void>>();
@@ -323,10 +334,12 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
     try {
       all = await pullAllApiTablePages<T>(table, opts);
     } catch (e) {
-      // 最后一次尝试仍不完整：记录警告但接受已有数据，避免完全无数据
       if (isIncompletePaginationError(e)) {
+        if (isCoreSnapshotTable(table)) {
+          console.warn(`[api-read] 表「${table}」重试后分页仍不完整，拒绝写入不完整快照`);
+          throw e;
+        }
         console.warn(`[api-read] 表「${table}」重试后分页仍不完整，接受已有数据`);
-        // allowIncomplete: 接受不完整数据但不再抛出
         const fallbackAll = await pullAllApiTablePages<T>(table, { ...opts, allowIncomplete: true });
         await syncApiReadResultToLocal(table, fallbackAll as Record<string, unknown>[], {
           reconcileSnapshot: true,
