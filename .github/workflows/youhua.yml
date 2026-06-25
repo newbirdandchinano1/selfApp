@@ -1,0 +1,77 @@
+name: iOS-Build-Optimized
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Cache Pods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: |
+            pods-${{ runner.os }}-
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Install Pods
+        run: |
+          cd ios
+          pod install
+
+      - name: Build
+        run: |
+          cd ios
+
+          WORKSPACE=$(find . -name "*.xcworkspace" | head -n 1)
+          SCHEME=$(find . -name "*.xcodeproj" | head -n 1 | xargs basename .xcodeproj)
+
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            -destination 'generic/platform=iOS' \
+            build
+
+      - name: Create IPA
+        run: |
+          mkdir Payload
+
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData \
+            -path "*Release-iphoneos/*.app" \
+            | head -n 1)
+
+          cp -R "$APP_PATH" Payload/
+
+          zip -r MyApp.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyUnsignedIPA
+          path: MyApp.ipa
+          retention-days: 7
