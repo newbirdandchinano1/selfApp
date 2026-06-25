@@ -1,5 +1,4 @@
 import { ensureLocalRowPresent, requireLocalRowForWrite } from '@/lib/api-local-row';
-import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortBySortOrderAsc, sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import { INBOX_PROJECT_CATEGORY_ID } from './constants';
@@ -28,12 +27,34 @@ export async function createProject(input: CreateProjectInput) {
   );
 }
 
-export async function getProjectById(id: string) {
-  return readApiRecord<ProjectRow>('projects', id, { offlineFallback: true });
+async function readLocalProjectsVisible(): Promise<ProjectRow[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<ProjectRow>(
+    `SELECT * FROM projects WHERE sync_status != 'pending_delete'`,
+  );
+  return rows ?? [];
 }
 
+async function readLocalProjectCategoriesVisible(): Promise<ProjectCategoryRow[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<ProjectCategoryRow>(
+    `SELECT * FROM project_categories WHERE sync_status != 'pending_delete'`,
+  );
+  return rows ?? [];
+}
+
+export async function getProjectById(id: string) {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<ProjectRow>(
+    `SELECT * FROM projects WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
+    [id],
+  );
+  return row ?? null;
+}
+
+/** 项目列表：仅读本地 SQLite（后端拉取逻辑待重写） */
 export async function getProjects() {
-  const rows = await readApiTable<ProjectRow>('projects', { offlineFallback: true });
+  const rows = await readLocalProjectsVisible();
   return sortByUpdatedDesc(rows);
 }
 
@@ -41,7 +62,7 @@ export async function isProjectNameDuplicate(name: string, excludeId?: string) {
   const normalizedName = name.trim().toLowerCase();
   if (!normalizedName) return false;
 
-  const rows = await readApiTable<ProjectRow>('projects', { offlineFallback: false });
+  const rows = await readLocalProjectsVisible();
   return rows.some(
     p =>
       p.id !== excludeId &&
@@ -147,8 +168,9 @@ export async function createProjectCategory(input: CreateProjectCategoryInput) {
   );
 }
 
+/** 项目分类列表：仅读本地 SQLite（后端拉取逻辑待重写） */
 export async function getProjectCategories() {
-  const rows = await readApiTable<ProjectCategoryRow>('project_categories', { offlineFallback: true });
+  const rows = await readLocalProjectCategoriesVisible();
   return sortBySortOrderAsc(rows);
 }
 

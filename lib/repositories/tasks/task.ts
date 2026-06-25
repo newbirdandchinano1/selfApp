@@ -1,6 +1,6 @@
 import { persistTaskPatchToApi } from '@/lib/task-api-write';
 import { ensureLocalRowForWrite, ensureLocalRowPresent, readLocalRowForWrite, requireLocalRowForWrite } from '@/lib/api-local-row';
-import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
+import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import {
   compareDatetimeDesc,
   matchesOverviewScope,
@@ -22,8 +22,25 @@ import { isTaskShelvedStatus, isTaskTerminalStatus } from './task.types';
 
 export type TaskTreeNode = TaskRow & { children: TaskTreeNode[] };
 
-async function loadAllTasks(opts?: { forceRefresh?: boolean }): Promise<TaskRow[]> {
-  return readApiTable<TaskRow>('tasks', { offlineFallback: true, forceRefresh: opts?.forceRefresh });
+async function readLocalTasksVisible(): Promise<TaskRow[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<TaskRow>(
+    `SELECT * FROM tasks WHERE sync_status != 'pending_delete'`,
+  );
+  return rows ?? [];
+}
+
+async function readLocalTaskCategoriesVisible(): Promise<TaskCategoryRow[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<TaskCategoryRow>(
+    `SELECT * FROM task_categories WHERE sync_status != 'pending_delete'`,
+  );
+  return rows ?? [];
+}
+
+/** 任务列表：仅读本地 SQLite（后端拉取逻辑待重写） */
+async function loadAllTasks(_opts?: { forceRefresh?: boolean }): Promise<TaskRow[]> {
+  return readLocalTasksVisible();
 }
 
 function sortTasksForProjectList(rows: TaskRow[]): TaskRow[] {
@@ -358,7 +375,12 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
 }
 
 export async function getTaskById(id: string) {
-  return readApiRecord<TaskRow>('tasks', id, { offlineFallback: true });
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<TaskRow>(
+    `SELECT * FROM tasks WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
+    [id],
+  );
+  return row ?? null;
 }
 
 export async function getTasks(opts?: { forceRefresh?: boolean }) {
@@ -615,8 +637,9 @@ export async function createTaskCategory(input: CreateTaskCategoryInput) {
   );
 }
 
+/** 任务分类列表：仅读本地 SQLite（后端拉取逻辑待重写） */
 export async function getTaskCategories() {
-  const rows = await readApiTable<TaskCategoryRow>('task_categories', { offlineFallback: true });
+  const rows = await readLocalTaskCategoriesVisible();
   return sortBySortOrderAsc(rows);
 }
 

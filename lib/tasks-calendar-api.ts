@@ -44,23 +44,12 @@ async function loadLocalAggregateBase(): Promise<LocalAggregateBase> {
     if (!skipNetwork) {
       try {
         const [tasks, habits, projects] = await Promise.all([
-          fetchApiTableAll<TaskRow>('tasks', {
-            calendarRelevant: true,
-            startDate: '1970-01-01',
-            endDate: '2099-12-31',
-            fields: 'id,title,status,priority,project_id,parent_task_id,due_date,extra_data,completed_at,updated_at',
-            limit: 200,
-          }),
+          getTasks(),
           fetchApiTableAll<HabitRow>('habits', {
             fields: 'id,context,name,tag,icon,tone,note,extra_data,created_at,updated_at',
             limit: 200,
           }),
-          fetchApiTableAll<ProjectRow>('projects', {
-            dueDateGte: '1970-01-01',
-            dueDateLte: '2099-12-31',
-            fields: 'id,name,status,due_date,category_id,note,extra_data',
-            limit: 200,
-          }),
+          getProjects(),
         ]);
         localAggregateBaseCache = { tasks, habits, projects };
         return localAggregateBaseCache;

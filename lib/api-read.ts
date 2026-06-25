@@ -64,12 +64,7 @@ const tableFetchGeneration = new Map<string, number>();
 
 const MAX_FETCH_ATTEMPTS_AFTER_INVALIDATE = 4;
 
-const CORE_SNAPSHOT_TABLES = new Set([
-  'projects',
-  'project_categories',
-  'tasks',
-  'task_items',
-]);
+const CORE_SNAPSHOT_TABLES = new Set<string>();
 
 function isCoreSnapshotTable(table: string): boolean {
   return CORE_SNAPSHOT_TABLES.has(table.trim());

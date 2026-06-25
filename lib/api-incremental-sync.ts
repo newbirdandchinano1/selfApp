@@ -132,6 +132,11 @@ export function clearApiDirtyTables(tables: Iterable<string>): void {
   void persistApiDirtyNow();
 }
 
+export function clearAllApiDirtyTables(): void {
+  apiDirtyTables.clear();
+  void persistApiDirtyNow();
+}
+
 /** 仅清除已无待同步行的脏表标记 */
 async function clearApiDirtyTablesWithoutPending(tables: Iterable<string>): Promise<void> {
   const toClear: string[] = [];

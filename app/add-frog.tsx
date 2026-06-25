@@ -3,6 +3,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { ApiRequestError } from '@/lib/api-client';
 import { assignFrogToApi, getFrogAssignedOn, unassignFrogFromApi } from '@/lib/frog-assignment';
+import { fetchTodayFrogs } from '@/lib/today-frogs-api';
 import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { isLogicalDayInYmdRange } from '@/lib/repositories/projects/project-schedule-status';
 import { buildProjectLockMap } from '@/lib/repositories/projects/project-prerequisites';
@@ -476,7 +477,11 @@ export default function AddFrogScreen() {
     try {
       await wrapLoad(async () => {
         try {
-          const [rows, projectRows] = await Promise.all([getTasks(), getProjects()]);
+          const [rows, projectRows, todayFrogResult] = await Promise.all([
+            getTasks(),
+            getProjects(),
+            fetchTodayFrogs({ offlineFallback: true }),
+          ]);
       const treeMap: Record<string, TaskTreeNode[]> = {};
       await Promise.all(
         projectRows.map(async (p) => {
@@ -485,7 +490,7 @@ export default function AddFrogScreen() {
       );
       const now = new Date();
       const boundary = await loadTasksDayBoundary();
-      const todayYmd = getLogicalLocalYmd(now, boundary);
+      const todayYmd = todayFrogResult.logicalToday || getLogicalLocalYmd(now, boundary);
       const lockMap = buildProjectLockMap(projectRows, treeMap, todayYmd);
       const locked = new Set<string>();
       lockMap.forEach((info, id) => {
@@ -494,9 +499,10 @@ export default function AddFrogScreen() {
       setTaskMap(Object.fromEntries(rows.map((r) => [r.id, r])));
       setLockedProjectIds(locked);
       const projectNameById = Object.fromEntries(projectRows.map((p) => [p.id, p.name]));
+      const taskTitleById = new Map(rows.map((r) => [r.id, r.title]));
       const grouped = groupTasksToSections(rows, now, todayYmd, locked, projectNameById);
       setSections(grouped.sections);
-      setAssignedToday(grouped.assignedToday);
+      setAssignedToday(buildAssignedTodayItems(todayFrogResult.tasks, todayYmd, taskTitleById, projectNameById));
       setSelected((prev) => {
         const allowed = new Set(rows.filter((r) => !isStandaloneTodoTask(r)).map((r) => r.id));
         const next: Record<string, boolean> = {};

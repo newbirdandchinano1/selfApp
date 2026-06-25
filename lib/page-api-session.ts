@@ -31,13 +31,6 @@ type TabPageKey = (typeof TAB_PAGE_KEYS)[keyof typeof TAB_PAGE_KEYS];
 const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   health_records: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   users: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
-  tasks: [TAB_PAGE_KEYS.tasks],
-  projects: [TAB_PAGE_KEYS.tasks],
-  project_categories: [TAB_PAGE_KEYS.tasks],
-  task_categories: [TAB_PAGE_KEYS.tasks],
-  task_items: [TAB_PAGE_KEYS.tasks],
-  task_execution_events: [TAB_PAGE_KEYS.tasks],
-  frog_completion_events: [TAB_PAGE_KEYS.tasks],
   habits: [TAB_PAGE_KEYS.tasks],
   habit_contexts: [TAB_PAGE_KEYS.tasks],
   habit_check_ins: [TAB_PAGE_KEYS.tasks],
@@ -73,6 +66,29 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
 
 /** 本会话内已完成首次加载的页面（切换 Tab 不再重复全量 REST/重载） */
 const sessionLoadedPages = new Set<string>();
+
+/**
+ * 进程是否为「热会话」：至少有一次页面 REST 加载成功后为 true。
+ * 冷启动（新进程）为 false，Tab 二次聚焦必须走接口；热会话内同 Tab 可跳过。
+ */
+let warmProcessSession = false;
+
+/** 新进程 / 冷启动：清空本会话加载标记，下次进 Tab 必须拉接口 */
+export function markProcessColdStart(): void {
+  warmProcessSession = false;
+  clearPageLoadedInSession();
+}
+
+export function markProcessWarmSession(): void {
+  warmProcessSession = true;
+}
+
+export function isWarmProcessSession(): boolean {
+  return warmProcessSession;
+}
+
+// 新 JS 进程 / Web 刷新视为冷启动
+markProcessColdStart();
 
 /** 子页面写入后标记需从服务端全量重拉的页面（含祖先链） */
 const pagesNeedingRestRefresh = new Set<string>();
@@ -202,8 +218,9 @@ export function hasPageSyncedWithApi(pageKey: string): boolean {
   return syncedPages.has(pageKey.trim());
 }
 
-/** 页面 focus 时是否可跳过数据重载（local-first：本会话已加载过则跳过；待 REST 刷新则不跳过） */
+/** 页面 focus 时是否可跳过数据重载（热会话 + 本会话已加载过；冷启动或待 REST 刷新则不跳过） */
 export function shouldSkipPageFocusApiRefresh(pageKey: string): boolean {
+  if (!warmProcessSession) return false;
   if (pageNeedsRestRefresh(pageKey)) return false;
   if (isLocalFirstReads()) {
     return hasPageLoadedInSession(pageKey);
@@ -385,6 +402,7 @@ export function finalizePageLoadSession(
   markPageLoadedInSession(pageKey);
   if (!readOpts.localOnly) {
     markPageRestRefreshCompleted(pageKey);
+    markProcessWarmSession();
   }
 }
 

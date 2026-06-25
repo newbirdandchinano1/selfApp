@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef } from 'react';
 import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 
 /**
- * 挂载时必定 reload 一次（首次进 Tab 触发同步/读库）。
- * 已同步页面再次聚焦时跳过重载，避免全屏加载蒙层。
+ * 挂载时必定 reload 一次（冷启动首次进 Tab 触发同步/读库）。
+ * 热会话内同 Tab 再次聚焦时跳过重载，避免全屏加载蒙层；冷启动进程内首次聚焦不跳过。
  */
 export function usePageFocusReload(
   pageKey: string,

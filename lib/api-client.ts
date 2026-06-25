@@ -437,7 +437,7 @@ function buildQuery(params: Record<string, string | number | boolean | null | un
   for (const [key, value] of Object.entries(params)) {
     if (value == null) continue;
     if (typeof value === 'boolean') {
-      if (value) qs.set(key, 'true');
+      qs.set(key, value ? 'true' : 'false');
       continue;
     }
     if (value === '') continue;
@@ -465,6 +465,59 @@ function buildListQuery(opts?: ApiListQueryOpts): string {
     calendarRelevant: opts?.calendarRelevant === true,
     fields: opts?.fields,
     updatedSince: opts?.updatedSince,
+  });
+}
+
+export type TodayFrogsPayload = {
+  logicalToday: string;
+  count: number;
+  tasks: Record<string, unknown>[];
+};
+
+export async function apiGetTodayFrogs(params?: {
+  dayBoundaryHour?: number;
+  dayBoundaryMinute?: number;
+  signal?: AbortSignal;
+}): Promise<TodayFrogsPayload> {
+  const qs = buildQuery({
+    dayBoundaryHour: params?.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params?.dayBoundaryMinute ?? 0,
+  });
+  return apiRequest<TodayFrogsPayload>(`/api/pages/tasks/today-frogs${qs}`, {
+    method: 'GET',
+    signal: params?.signal,
+  });
+}
+
+export type TasksCatalogTableVersion = {
+  count?: number;
+  version?: string | null;
+  maxUpdatedAt?: string | null;
+};
+
+export type TasksCatalogMeta = {
+  serverTime?: string;
+  tablesVersion?: Record<string, TasksCatalogTableVersion>;
+};
+
+export type TasksCatalogPayload = {
+  projects?: Record<string, unknown>[];
+  projectCategories?: Record<string, unknown>[];
+  taskCategories?: Record<string, unknown>[];
+  meta?: TasksCatalogMeta;
+};
+
+/** 项目与分类专用聚合接口（不含 tasks） */
+export async function apiGetTasksCatalog(params?: {
+  updatedSince?: string;
+  signal?: AbortSignal;
+}): Promise<TasksCatalogPayload> {
+  const qs = buildQuery({
+    updatedSince: params?.updatedSince,
+  });
+  return apiRequest<TasksCatalogPayload>(`/api/pages/tasks/catalog${qs}`, {
+    method: 'GET',
+    signal: params?.signal,
   });
 }
 
@@ -518,6 +571,35 @@ export type TasksBootstrapSummaryMeta = {
   completionHeatmapWeeks?: number;
 };
 
+/** 任务页视图筛选 meta（`GET /api/pages/tasks?taskView=tasksPage`） */
+export type TasksPageFilteredMeta = TasksBootstrapSummaryMeta & {
+  tasksScope?: string;
+  serverFiltered?: boolean;
+  filtersVersion?: string;
+  taskViews?: string[];
+  weekStart?: string;
+  weekEnd?: string;
+  page?: number;
+  limit?: number;
+  total?: number;
+  totalPages?: number;
+  snapshotAt?: string;
+};
+
+export type TasksPageFilterParams = {
+  taskView?: 'tasksPage' | 'standaloneTodos' | 'matrixWeek' | 'projectTrees';
+  taskViews?: string;
+  logicalToday?: string;
+  weekStart?: string;
+  weekEnd?: string;
+  projectIds?: string;
+  includeCompleted?: boolean;
+  includeCancelled?: boolean;
+  includeShelved?: boolean;
+  page?: number;
+  limit?: number;
+};
+
 export type TasksBootstrapSummaryPayload = {
   tables: Record<string, TasksBootstrapTableSummary>;
   meta: TasksBootstrapSummaryMeta;
@@ -561,7 +643,7 @@ export async function apiGetTasksBootstrap(
     habitCheckInEnd?: string;
     include?: string;
     signal?: AbortSignal;
-  },
+  } & TasksPageFilterParams,
 ): Promise<TasksBootstrapPayload> {
   const qs = buildQuery({
     dayBoundaryHour: params?.dayBoundaryHour ?? 0,
@@ -572,6 +654,17 @@ export async function apiGetTasksBootstrap(
     habitCheckInStart: params?.habitCheckInStart,
     habitCheckInEnd: params?.habitCheckInEnd,
     include: params?.include,
+    taskView: params?.taskView,
+    taskViews: params?.taskViews,
+    logicalToday: params?.logicalToday,
+    weekStart: params?.weekStart,
+    weekEnd: params?.weekEnd,
+    projectIds: params?.projectIds,
+    includeCompleted: params?.includeCompleted,
+    includeCancelled: params?.includeCancelled,
+    includeShelved: params?.includeShelved,
+    page: params?.page,
+    limit: params?.limit,
   });
   // bootstrap 端点一次返回 10 张表的数据，JSON 响应可能非常大，
   // 使用更长的超时时间避免在慢网络下被截断
@@ -580,6 +673,228 @@ export async function apiGetTasksBootstrap(
     signal: params?.signal,
     perAttemptTimeoutMs: 180_000,
   });
+}
+
+export type HabitsGridItem = {
+  id: string;
+  name: string;
+  icon: string;
+  kind: 'build' | 'break' | 'task' | string;
+  todayCount: number;
+  dailyGoal: number | null;
+  displayCompleted: boolean;
+  hiddenOnViewDay: boolean;
+  periodProgress: number | null;
+  periodGoal: number | null;
+};
+
+export type HabitsGridSection = {
+  id: string;
+  title: string;
+  items: HabitsGridItem[];
+};
+
+export type HabitsGridMeta = {
+  serverFiltered?: boolean;
+  filtersVersion?: string;
+  serverTime?: string;
+};
+
+export type HabitsGridPayload = {
+  logicalToday: string;
+  sections: HabitsGridSection[];
+  meta?: HabitsGridMeta;
+};
+
+export async function apiGetTasksHabitsGrid(params?: {
+  dayBoundaryHour?: number;
+  dayBoundaryMinute?: number;
+  logicalToday?: string;
+  habitCheckInMonths?: number;
+  signal?: AbortSignal;
+}): Promise<HabitsGridPayload> {
+  const qs = buildQuery({
+    dayBoundaryHour: params?.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params?.dayBoundaryMinute ?? 0,
+    logicalToday: params?.logicalToday,
+    habitCheckInMonths: params?.habitCheckInMonths,
+  });
+  return apiRequest<HabitsGridPayload>(`/api/pages/tasks/habits-grid${qs}`, {
+    method: 'GET',
+    signal: params?.signal,
+  });
+}
+
+export type CompletionHeatmapDayCounts = {
+  frogs: number;
+  todos: number;
+  total: number;
+};
+
+export type CompletionHeatmapMeta = {
+  logicalToday?: string;
+  heatmapStart?: string;
+  heatmapEnd?: string;
+  completionHeatmapWeeks?: number;
+  serverTime?: string;
+};
+
+export type CompletionHeatmapDayDetailFrog = {
+  task_id: string | null;
+  task_title: string | null;
+};
+
+export type CompletionHeatmapDayDetailTodo = {
+  id: string;
+  task_id: string | null;
+  title: string | null;
+};
+
+export type CompletionHeatmapDayDetail = {
+  ymd: string;
+  frogs: CompletionHeatmapDayDetailFrog[];
+  todos: CompletionHeatmapDayDetailTodo[];
+};
+
+export type CompletionHeatmapPayload = {
+  meta: CompletionHeatmapMeta;
+  countsByDay: Record<string, CompletionHeatmapDayCounts>;
+  dayDetail?: CompletionHeatmapDayDetail;
+};
+
+export async function apiGetTasksCompletionHeatmap(params?: {
+  dayBoundaryHour?: number;
+  dayBoundaryMinute?: number;
+  heatmapStart?: string;
+  heatmapEnd?: string;
+  day?: string;
+  includeDayDetail?: boolean;
+  signal?: AbortSignal;
+}): Promise<CompletionHeatmapPayload> {
+  const qs = buildQuery({
+    dayBoundaryHour: params?.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params?.dayBoundaryMinute ?? 0,
+    heatmapStart: params?.heatmapStart,
+    heatmapEnd: params?.heatmapEnd,
+    day: params?.day,
+    includeDayDetail: params?.includeDayDetail === true ? true : undefined,
+  });
+  return apiRequest<CompletionHeatmapPayload>(`/api/pages/tasks/completion-heatmap${qs}`, {
+    method: 'GET',
+    signal: params?.signal,
+  });
+}
+
+/** 分页列表 meta（`GET /api/pages/projects`、`GET /api/pages/tasks/list`） */
+export type PageListMeta = {
+  serverTime?: string;
+  categoryId?: string;
+  categoryIds?: string[];
+  uncategorized?: boolean;
+};
+
+export type PageListResponse<T> = {
+  list: T[];
+  pagination: ApiListPagination;
+  meta?: PageListMeta;
+};
+
+export type ApiTaskTreeNode = Record<string, unknown> & {
+  id: string;
+  children?: ApiTaskTreeNode[];
+};
+
+export type ApiProjectListItem = Record<string, unknown> & {
+  id: string;
+  tasks?: ApiTaskTreeNode[];
+};
+
+export type ProjectsListQueryParams = {
+  categoryId?: string;
+  categoryIds?: string;
+  uncategorized?: boolean;
+  includeCompleted?: boolean;
+  includeCancelled?: boolean;
+  includeShelved?: boolean;
+  page?: number;
+  limit?: number;
+  updatedSince?: string;
+  signal?: AbortSignal;
+};
+
+export type TasksListQueryParams = {
+  categoryId?: string;
+  categoryIds?: string;
+  uncategorized?: boolean;
+  includeCompleted?: boolean;
+  includeCancelled?: boolean;
+  includeShelved?: boolean;
+  page?: number;
+  limit?: number;
+  updatedSince?: string;
+  signal?: AbortSignal;
+};
+
+/** 项目列表（含服务端组装的任务树） */
+export async function apiGetProjectsList(
+  params?: ProjectsListQueryParams,
+): Promise<PageListResponse<ApiProjectListItem>> {
+  const qs = buildQuery({
+    categoryId: params?.categoryId,
+    categoryIds: params?.categoryIds,
+    uncategorized: params?.uncategorized === true ? true : undefined,
+    includeCompleted: params?.includeCompleted === true ? true : undefined,
+    includeCancelled: params?.includeCancelled === true ? true : undefined,
+    includeShelved: params?.includeShelved === false ? false : undefined,
+    page: params?.page,
+    limit: params?.limit,
+    updatedSince: params?.updatedSince,
+  });
+  const data = await apiRequest<PageListResponse<ApiProjectListItem>>(`/api/pages/projects${qs}`, {
+    method: 'GET',
+    signal: params?.signal,
+  });
+  return {
+    list: Array.isArray(data?.list) ? data.list : [],
+    pagination: data?.pagination ?? {
+      page: params?.page ?? 1,
+      limit: params?.limit ?? 50,
+      total: 0,
+      totalPages: 0,
+    },
+    meta: data?.meta,
+  };
+}
+
+/** 任务扁平列表（按任务分类筛选） */
+export async function apiGetTasksList(
+  params?: TasksListQueryParams,
+): Promise<PageListResponse<Record<string, unknown>>> {
+  const qs = buildQuery({
+    categoryId: params?.categoryId,
+    categoryIds: params?.categoryIds,
+    uncategorized: params?.uncategorized === true ? true : undefined,
+    includeCompleted: params?.includeCompleted === true ? true : undefined,
+    includeCancelled: params?.includeCancelled === true ? true : undefined,
+    includeShelved: params?.includeShelved === false ? false : undefined,
+    page: params?.page,
+    limit: params?.limit,
+    updatedSince: params?.updatedSince,
+  });
+  const data = await apiRequest<PageListResponse<Record<string, unknown>>>(
+    `/api/pages/tasks/list${qs}`,
+    { method: 'GET', signal: params?.signal },
+  );
+  return {
+    list: Array.isArray(data?.list) ? data.list : [],
+    pagination: data?.pagination ?? {
+      page: params?.page ?? 1,
+      limit: params?.limit ?? 50,
+      total: 0,
+      totalPages: 0,
+    },
+    meta: data?.meta,
+  };
 }
 
 export async function apiListRecords<T extends Record<string, unknown>>(

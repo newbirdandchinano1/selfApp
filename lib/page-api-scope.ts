@@ -15,13 +15,6 @@ export type TabPageKey = (typeof TAB_PAGE_KEYS)[keyof typeof TAB_PAGE_KEYS];
 export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   health_records: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   users: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
-  tasks: [TAB_PAGE_KEYS.tasks],
-  projects: [TAB_PAGE_KEYS.tasks],
-  project_categories: [TAB_PAGE_KEYS.tasks],
-  task_categories: [TAB_PAGE_KEYS.tasks],
-  task_items: [TAB_PAGE_KEYS.tasks],
-  task_execution_events: [TAB_PAGE_KEYS.tasks],
-  frog_completion_events: [TAB_PAGE_KEYS.tasks],
   habits: [TAB_PAGE_KEYS.tasks],
   habit_contexts: [TAB_PAGE_KEYS.tasks],
   habit_check_ins: [TAB_PAGE_KEYS.tasks],

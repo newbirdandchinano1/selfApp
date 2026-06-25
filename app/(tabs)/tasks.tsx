@@ -58,8 +58,6 @@ import {
 } from '@/lib/repositories/tasks/task-habit-binding';
 import {
   backfillFrogCompletionEventsFromTasks,
-  getFrogCompletionCountsByDayRange,
-  getFrogCompletionsForAssignedDay,
   insertFrogCompletionEvent,
   type FrogCompletionDayItem,
 } from '@/lib/repositories/tasks/frog-completion-events';
@@ -77,8 +75,6 @@ import {
   setFrogSessionCompletedOn,
 } from '@/lib/long-term-task';
 import {
-  getTaskCompletionCountsByDayRange,
-  getNetCompletedTaskEventsForLocalDay,
   insertTaskExecutionEvent,
   type TaskExecutionEventWithTitle,
 } from '@/lib/repositories/tasks/task-execution-events';
@@ -107,7 +103,6 @@ import {
   decrementTodayHabitCheckIn,
   getCheckInsMapByHabitId,
   incrementTodayHabitCheckIn,
-  loadHabitCheckInPageData,
 } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
 import {
@@ -120,19 +115,14 @@ import {
   syncBuildHabitCompletions,
   tryMarkBuildHabitCompleted,
 } from '@/lib/repositories/habits/habit-build-success';
-import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
-import { getTaskHabitTasksViewState } from '@/lib/repositories/habits/habit-task-period';
 import {
   breakSlipBadgeColor,
   breakSlipBorderColor,
   buildProgressBadgeColor,
   buildProgressBorderColor,
   getBreakHabitDayUiState,
-  isHabitDayDisplayCompleted,
   isHabitDayGoalMet,
-  parseHabitDailyGoal,
-  parseHabitIncrementCap,
 } from '@/lib/repositories/habits/habit-goal';
 import {
   applyRepeatingTaskRollovers,
@@ -141,20 +131,28 @@ import {
   taskHasRepeatingSchedule,
 } from '@/lib/task-repeat-rollover';
 import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
+import { fetchTodayFrogs } from '@/lib/today-frogs-api';
+import { fetchProjectsListForTab } from '@/lib/projects-list-api';
+import {
+  fetchMatrixWeekTasks,
+  fetchStandaloneTodos,
+  fetchTasksPageData,
+  resolveMatrixProjectIds,
+} from '@/lib/tasks-page-api';
+import { fetchTasksHabitsGrid } from '@/lib/tasks-habits-grid-api';
+import {
+  fetchCompletionHeatmap,
+  fetchCompletionHeatmapDayDetail,
+} from '@/lib/tasks-completion-heatmap-api';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import {
   formatScheduleDateToYMD,
   getStandaloneTodoOverdueDisplayYmd,
-  getStandaloneTodoOverdueSortMs,
-  isMatrixTaskInCurrentWeek,
   isStandaloneTodoOpen,
   isStandaloneTodoOverdue,
   isTaskDueOverdue,
   isTaskOverdueForList,
   isTaskRowOverdue,
-  standaloneTodoPassesDayBoundaryFilter,
-  standaloneTodoPassesRepeatDayFilter,
-  standaloneTodoPassesScheduleWindowFilter,
 } from '@/lib/standalone-todo-visibility';
 import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
 import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
@@ -171,7 +169,6 @@ import {
   saveTasksProjectExpandedState,
   type TasksMainListView,
 } from '@/lib/tasks-ui-settings';
-import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 import {
   getLogicalLocalYmd,
   type TasksDayBoundary,
@@ -504,6 +501,8 @@ type HabitSection = {
     periodProgress: number | null;
     periodGoal: number | null;
     taskShowPeriodCheck: boolean;
+    /** 服务端 habits-grid 返回的今日完成态 */
+    displayCompleted: boolean;
   }>;
 };
 
@@ -752,6 +751,7 @@ function mergeDailyCountMaps(...maps: Map<string, number>[]): Map<string, number
 
 function TaskCompletionHeatmap({
   logicalTodayYmd,
+  dayBoundary,
   textMain,
   textMuted,
   accentColor,
@@ -762,6 +762,7 @@ function TaskCompletionHeatmap({
   reloadToken,
 }: {
   logicalTodayYmd: string;
+  dayBoundary: TasksDayBoundary;
   textMain: string;
   textMuted: string;
   accentColor: string;
@@ -807,13 +808,21 @@ function TaskCompletionHeatmap({
 
   const loadCompletionHeatmap = React.useCallback(async () => {
     scheduleFrogBackfillOnce();
-    const [frogCounts, todoCounts] = await Promise.all([
-      getFrogCompletionCountsByDayRange(heatmapRange.startYmd, heatmapRange.endYmd),
-      getTaskCompletionCountsByDayRange(heatmapRange.startYmd, heatmapRange.endYmd),
-    ]);
-    setFrogCountByYmd(frogCounts);
-    setTodoCountByYmd(todoCounts);
-  }, [heatmapRange.endYmd, heatmapRange.startYmd, scheduleFrogBackfillOnce]);
+    try {
+      const data = await fetchCompletionHeatmap({
+        boundary: dayBoundary,
+        heatmapStart: heatmapRange.startYmd,
+        heatmapEnd: heatmapRange.endYmd,
+        offlineFallback: true,
+      });
+      setFrogCountByYmd(data.frogCountByYmd);
+      setTodoCountByYmd(data.todoCountByYmd);
+    } catch (e) {
+      console.warn('加载完成热力图失败', e);
+      setFrogCountByYmd(new Map());
+      setTodoCountByYmd(new Map());
+    }
+  }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd, scheduleFrogBackfillOnce]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -904,13 +913,14 @@ function TaskCompletionHeatmap({
     setDayItemsLoading(true);
     void (async () => {
       try {
-        const [frogItems, todoEvents] = await Promise.all([
-          getFrogCompletionsForAssignedDay(selectedYmd),
-          getNetCompletedTaskEventsForLocalDay(selectedYmd),
-        ]);
+        const detail = await fetchCompletionHeatmapDayDetail({
+          day: selectedYmd,
+          boundary: dayBoundary,
+          offlineFallback: true,
+        });
         if (!cancelled) {
-          setSelectedFrogItems(frogItems);
-          setSelectedTodoItems(todoEvents);
+          setSelectedFrogItems(detail.frogItems);
+          setSelectedTodoItems(detail.todoItems);
         }
       } catch (e) {
         console.warn('加载完成明细失败', e);
@@ -925,7 +935,7 @@ function TaskCompletionHeatmap({
     return () => {
       cancelled = true;
     };
-  }, [selectedYmd, reloadToken]);
+  }, [dayBoundary, selectedYmd, reloadToken]);
 
   const onHeatCellPress = React.useCallback((cell: CompletionHeatCell) => {
     if (!cell.ymd) return;
@@ -1263,33 +1273,6 @@ function buildProjectTaskNodeById(nodes: TaskTreeNode[]): Map<string, TaskTreeNo
   return map;
 }
 
-/** 四象限任务列表：仅含挂项目或带子任务层级的行（与顶部「待办」区数据源分离） */
-function isMatrixScopeTask(task: TaskRow): boolean {
-  return !!task.project_id || !!task.parent_task_id;
-}
-
-/**
- * 任务列表分类 Tab 与项目列表对齐：有 project_id 时以项目分类为准；
- * 无项目待办才使用任务自身的 category_id。
- */
-function resolveTaskListCategoryId(
-  task: TaskRow,
-  projectById: Map<string, ProjectRow>,
-  taskById: Map<string, TaskRow>,
-): string {
-  if (task.project_id) {
-    const project = projectById.get(task.project_id);
-    if (project?.category_id) return project.category_id;
-    return INBOX_PROJECT_CATEGORY_ID;
-  }
-  if (task.category_id) return task.category_id;
-  if (task.parent_task_id) {
-    const parent = taskById.get(task.parent_task_id);
-    if (parent) return resolveTaskListCategoryId(parent, projectById, taskById);
-  }
-  return INBOX_PROJECT_CATEGORY_ID;
-}
-
 /** 直接子任务完成进度（与项目列表父任务进度条一致） */
 function getDirectChildTaskProgress(children: TaskTreeNode[]): { total: number; done: number; ratio: number } {
   const total = children.length;
@@ -1440,7 +1423,9 @@ export default function TasksScreen() {
   const [mainListView, setMainListView] = React.useState<TasksMainListView>('projects');
   const [projects, setProjects] = React.useState<ProjectRow[]>([]);
   const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
-  const [tasks, setTasks] = React.useState<TaskRow[]>([]);
+  const [standaloneTodos, setStandaloneTodos] = React.useState<TaskRow[]>([]);
+  const [matrixWeekTasks, setMatrixWeekTasks] = React.useState<TaskRow[]>([]);
+  const [todayFrogs, setTodayFrogs] = React.useState<TaskRow[]>([]);
   const [completionHeatmapReloadToken, setCompletionHeatmapReloadToken] = React.useState(0);
   const [projectTaskTreeMap, setProjectTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
   const [expandedProjectIds, setExpandedProjectIds] = React.useState<Record<string, boolean>>({});
@@ -1735,9 +1720,9 @@ export default function TasksScreen() {
     }
   }, []);
 
-  const loadTasks = React.useCallback(async (opts?: { forceRefresh?: boolean; preloadedTasks?: TaskRow[] }): Promise<number> => {
+  const loadTasks = React.useCallback(async (opts?: { forceRefresh?: boolean }): Promise<number> => {
     try {
-      let rows = opts?.preloadedTasks ?? (await getTasks(opts));
+      let rows = await getTasks(opts);
       const logicalToday = getLogicalLocalYmd(new Date(), dayBoundary);
       const rolled = await applyRepeatingTaskRollovers(rows, logicalToday, dayBoundary);
       const overdueBumped = await applyOverdueTaskPriorityBump(rows, logicalToday);
@@ -1745,11 +1730,38 @@ export default function TasksScreen() {
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         rows = await getTasks(opts);
       }
-      setTasks(rows);
+
+      const matrixProjectIds = resolveMatrixProjectIds(projects, taskTab);
+      const [standalone, matrix] = await Promise.all([
+        fetchStandaloneTodos({
+          boundary: dayBoundary,
+          offlineFallback: true,
+          forceRefresh: opts?.forceRefresh,
+        }),
+        fetchMatrixWeekTasks({
+          boundary: dayBoundary,
+          projectIds: matrixProjectIds,
+          taskTab,
+          projects,
+          offlineFallback: true,
+          forceRefresh: opts?.forceRefresh,
+        }),
+      ]);
+      setStandaloneTodos(standalone.tasks);
+      setMatrixWeekTasks(matrix.tasks);
       return rolled + overdueBumped;
     } catch (err) {
       console.warn('加载任务列表失败', err);
       return 0;
+    }
+  }, [dayBoundary, projects, taskTab]);
+
+  const loadTodayFrogs = React.useCallback(async () => {
+    try {
+      const result = await fetchTodayFrogs({ boundary: dayBoundary, offlineFallback: true });
+      setTodayFrogs(result.tasks);
+    } catch (err) {
+      console.warn('加载今日青蛙失败', err);
     }
   }, [dayBoundary]);
 
@@ -1757,68 +1769,17 @@ export default function TasksScreen() {
     try {
       await syncBreakHabitCompletions();
       await syncBuildHabitCompletions();
-      const logicalToday = getLogicalLocalYmd(new Date(), dayBoundary);
-      const [contexts, rows, { checkStats, checkInsMaps }] = await Promise.all([
-        getHabitContexts(),
-        getHabits(),
-        loadHabitCheckInPageData(),
-      ]);
-      setHabitLookupById(new Map(rows.map((r) => [r.id, { name: r.name, icon: r.icon }])));
-
-      const itemsByContext = new Map<string, HabitSection['items']>();
-
-      for (const r of rows) {
-        const kind = parseHabitKind(r.extra_data);
-        if (kind === 'break' && isBreakHabitSucceeded(r.extra_data)) continue;
-        if (kind === 'build' && isBuildHabitSucceeded(r.extra_data)) continue;
-        const checkIns = checkInsMaps.get(r.id) ?? {};
-        const taskViewState =
-          kind === 'task'
-            ? getTaskHabitTasksViewState({
-                extraData: r.extra_data,
-                checkIns,
-                logicalYmd: logicalToday,
-              })
-            : null;
-        if (taskViewState?.hiddenOnViewDay) continue;
-
-        const arr = itemsByContext.get(r.context) ?? [];
-        const todayCount = checkStats.get(r.id)?.todayCount ?? 0;
-        const dailyGoal = parseHabitDailyGoal(r.extra_data, kind);
-        const incrementCap = parseHabitIncrementCap(r.extra_data, kind);
-        arr.push({
-          id: r.id,
-          icon: r.icon,
-          name: r.name,
-          todayCount,
-          dailyGoal,
-          incrementCap,
-          kind,
-          extraData: r.extra_data ?? null,
-          periodProgress: taskViewState?.periodProgress ?? null,
-          periodGoal: taskViewState?.periodGoal ?? null,
-          taskShowPeriodCheck: taskViewState?.showPeriodCheckOnViewDay ?? false,
-        });
-        itemsByContext.set(r.context, arr);
-      }
-
-      const ordered = contexts.map((c) => c.name);
-      const known = new Set(ordered);
-      const legacy = Array.from(itemsByContext.keys())
-        .filter((ctx) => !known.has(ctx))
-        .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
-      const all = [...ordered, ...legacy];
-
-      const nextSections: HabitSection[] = all.map((ctx) => ({
-        id: ctx,
-        title: ctx,
-        items: itemsByContext.get(ctx) ?? [],
-      }));
-
-      setHabitSections(nextSections);
+      const data = await fetchTasksHabitsGrid({ boundary: dayBoundary, offlineFallback: true });
+      const sections = data.sections as HabitSection[];
+      setHabitLookupById(
+        new Map(
+          sections.flatMap((s) => s.items).map((it) => [it.id, { name: it.name, icon: it.icon }]),
+        ),
+      );
+      setHabitSections(sections);
       setExpandedHabitSections((prev) => {
         const next = { ...prev };
-        for (const s of nextSections) {
+        for (const s of sections) {
           if (typeof next[s.id] !== 'boolean') next[s.id] = true;
         }
         return next;
@@ -1867,6 +1828,43 @@ export default function TasksScreen() {
     },
     [],
   );
+
+  /** 按当前项目 Tab 从 `GET /api/pages/projects` 拉取任务树；失败时回退本地组树 */
+  const loadProjectsListFromApi = React.useCallback(
+    async (
+      tab: string,
+      opts?: { forceRefresh?: boolean; generation?: number; replaceMap?: boolean },
+    ): Promise<Record<string, TaskTreeNode[]>> => {
+      const shouldApply = () =>
+        opts?.generation == null || opts.generation === reloadGenerationRef.current;
+
+      try {
+        const result = await fetchProjectsListForTab(tab, {
+          includeCompleted: !hideCompletedProjectTasks,
+          forceRefresh: opts?.forceRefresh,
+          offlineFallback: true,
+        });
+        if (shouldApply()) {
+          setProjectTaskTreeMap((prev) =>
+            opts?.replaceMap ? result.projectTaskTreeMap : { ...prev, ...result.projectTaskTreeMap },
+          );
+        }
+        return result.projectTaskTreeMap;
+      } catch (err) {
+        console.warn('加载项目列表 API 失败，回退本地组树', err);
+        const tabProjects =
+          tab === 'all'
+            ? projects.filter((p) => !isProjectInInboxCategory(p.category_id))
+            : tab === INBOX_PROJECT_CATEGORY_ID
+              ? projects.filter((p) => isProjectInInboxCategory(p.category_id))
+              : projects.filter((p) => p.category_id === tab);
+        return loadProjectTasks(tabProjects, { generation: opts?.generation });
+      }
+    },
+    [hideCompletedProjectTasks, loadProjectTasks, projects],
+  );
+
+  const projectTabApiReadyRef = React.useRef(false);
 
   React.useEffect(() => {
     Animated.sequence([
@@ -1932,6 +1930,12 @@ export default function TasksScreen() {
   }, [projectAnim, projectTab]);
 
   React.useEffect(() => {
+    if (!projectTabApiReadyRef.current) return;
+    if (mainListView !== 'projects') return;
+    void loadProjectsListFromApi(projectTab, { replaceMap: true });
+  }, [projectTab, hideCompletedProjectTasks, mainListView, loadProjectsListFromApi]);
+
+  React.useEffect(() => {
     const anim = mainListView === 'tasks' ? matrixAnim : projectAnim;
     anim.stopAnimation(() => {
       anim.setValue(0.9);
@@ -1954,7 +1958,7 @@ export default function TasksScreen() {
         useNativeDriver: true,
       }).start();
     });
-  }, [frogCardAnim, tasks]);
+  }, [frogCardAnim, standaloneTodos, matrixWeekTasks]);
 
   React.useEffect(() => {
     if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -2010,8 +2014,8 @@ export default function TasksScreen() {
 
   React.useEffect(() => {
     if (Platform.OS === 'web') return;
-    void syncScheduledTaskReminders(tasks);
-  }, [tasks]);
+    void getTasks().then((rows) => syncScheduledTaskReminders(rows));
+  }, [standaloneTodos, matrixWeekTasks]);
 
   React.useEffect(() => {
     if (!categoryModalVisible) return;
@@ -2035,8 +2039,20 @@ export default function TasksScreen() {
     ]);
     if (isStale()) return;
 
-    const rows = await loadProjects();
+    const pageData = await fetchTasksPageData({
+      boundary: dayBoundary,
+      taskTab,
+      offlineFallback: true,
+      forceLocal: false,
+      forceRefresh: forceApi,
+    });
     if (isStale()) return;
+
+    const rows = pageData.projects;
+    setProjects(rows);
+    setProjectCategories(pageData.projectCategories);
+    setStandaloneTodos(pageData.standaloneTodos);
+    setMatrixWeekTasks(pageData.matrixWeekTasks);
 
     if (!storedExpanded) {
       const allCollapsed = Object.fromEntries(rows.map((p) => [p.id, false] as const));
@@ -2060,7 +2076,11 @@ export default function TasksScreen() {
     let cachedTasks = await getTasks(taskLoadOpts);
     if (isStale()) return;
 
-    let treeMap = await loadProjectTasks(rows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
+    let treeMap = await loadProjectsListFromApi(projectTab, {
+      forceRefresh: forceApi,
+      generation,
+    });
+    projectTabApiReadyRef.current = true;
     if (isStale()) return;
 
     const archived = await autoArchiveProjectsPastDueIfNeeded(rows, treeMap, logicalToday);
@@ -2073,7 +2093,7 @@ export default function TasksScreen() {
       treeMap = await loadProjectTasks(workingRows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
-    const catRows = await loadProjectCategories();
+    const catRows = pageData.projectCategories;
     if (isStale()) return;
 
     const reactivated = await reactivateInboxCompletedProjectsWithOpenTasks(workingRows, treeMap, catRows);
@@ -2094,7 +2114,7 @@ export default function TasksScreen() {
       await loadProjectTasks(afterPurge, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
-    const taskRolled = await loadTasks({ ...taskLoadOpts, preloadedTasks: cachedTasks });
+    const taskRolled = await loadTasks(taskLoadOpts);
     if (isStale()) return;
     if (taskRolled > 0) {
       cachedTasks = await getTasks(taskLoadOpts);
@@ -2105,7 +2125,7 @@ export default function TasksScreen() {
       if (isStale()) return;
       if (habitSync.completedTasks.length > 0) {
         cachedTasks = await getTasks(taskLoadOpts);
-        await loadTasks({ ...taskLoadOpts, preloadedTasks: cachedTasks });
+        await loadTasks(taskLoadOpts);
         if (isStale()) return;
         await loadProjectTasks(workingRows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
         if (isStale()) return;
@@ -2118,7 +2138,7 @@ export default function TasksScreen() {
       await loadProjectTasks(workingRows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
-    await loadHabits();
+    await Promise.all([loadHabits(), loadTodayFrogs()]);
     if (isStale()) return;
 
     try {
@@ -2136,9 +2156,13 @@ export default function TasksScreen() {
     loadProjectCategories,
     loadProjects,
     loadProjectTasks,
+    loadProjectsListFromApi,
     loadTasks,
+    loadTodayFrogs,
     loadHabits,
+    dayBoundary,
     logicalTodayYmd,
+    taskTab,
     saveExpandedProjectState,
   ]);
 
@@ -2152,11 +2176,51 @@ export default function TasksScreen() {
 
   usePageFocusReload(PAGE_API_KEY, reloadPage);
 
+  const findVisibleTask = React.useCallback(
+    (taskId: string): TaskRow | undefined =>
+      standaloneTodos.find((t) => t.id === taskId) ??
+      matrixWeekTasks.find((t) => t.id === taskId) ??
+      findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId) ??
+      todayFrogs.find((t) => t.id === taskId),
+    [standaloneTodos, matrixWeekTasks, projectTaskTreeMap, todayFrogs],
+  );
+
+  const patchVisibleTask = React.useCallback(
+    (taskId: string, patch: Partial<TaskRow> | ((row: TaskRow) => TaskRow)) => {
+      const apply = (row: TaskRow) => (typeof patch === 'function' ? patch(row) : { ...row, ...patch });
+      setStandaloneTodos((prev) => prev.map((t) => (t.id === taskId ? apply(t) : t)));
+      setMatrixWeekTasks((prev) => prev.map((t) => (t.id === taskId ? apply(t) : t)));
+    },
+    [],
+  );
+
+  const reloadMatrixWeekTasks = React.useCallback(async () => {
+    try {
+      const matrixProjectIds = resolveMatrixProjectIds(projects, taskTab);
+      const matrix = await fetchMatrixWeekTasks({
+        boundary: dayBoundary,
+        projectIds: matrixProjectIds,
+        taskTab,
+        projects,
+        offlineFallback: true,
+      });
+      setMatrixWeekTasks(matrix.tasks);
+    } catch (err) {
+      console.warn('加载本周列表失败', err);
+    }
+  }, [dayBoundary, projects, taskTab]);
+
+  React.useEffect(() => {
+    if (!projectTabApiReadyRef.current) return;
+    void reloadMatrixWeekTasks();
+  }, [taskTab, reloadMatrixWeekTasks]);
+
   const taskTitleById = React.useMemo(() => {
     const map = new Map<string, string>();
-    tasks.forEach((t) => map.set(t.id, t.title));
+    for (const t of standaloneTodos) map.set(t.id, t.title);
+    for (const t of matrixWeekTasks) map.set(t.id, t.title);
     return map;
-  }, [tasks]);
+  }, [standaloneTodos, matrixWeekTasks]);
 
   const projectById = React.useMemo(() => {
     const map = new Map<string, ProjectRow>();
@@ -2166,104 +2230,32 @@ export default function TasksScreen() {
 
   const taskById = React.useMemo(() => {
     const map = new Map<string, TaskRow>();
-    tasks.forEach((t) => map.set(t.id, t));
+    for (const t of standaloneTodos) map.set(t.id, t);
+    for (const t of matrixWeekTasks) map.set(t.id, t);
     return map;
-  }, [tasks]);
-
-  const currentWeekRange = React.useMemo(
-    () => getCurrentWeekRange(logicalYmdToLocalDate(logicalTodayYmd)),
-    [logicalTodayYmd],
-  );
-
-  const filteredTasks = React.useMemo(() => {
-    const matrixScoped = tasks.filter(isMatrixScopeTask);
-    const inCurrentWeek = matrixScoped.filter((t) =>
-      isMatrixTaskInCurrentWeek(t, currentWeekRange.startYmd, currentWeekRange.endYmd, logicalTodayYmd),
-    );
-    if (taskTab === 'all') {
-      return inCurrentWeek.filter(
-        (t) => !isProjectInInboxCategory(resolveTaskListCategoryId(t, projectById, taskById)),
-      );
-    }
-    return inCurrentWeek.filter(
-      (t) => resolveTaskListCategoryId(t, projectById, taskById) === taskTab,
-    );
-  }, [taskTab, tasks, projectById, taskById, currentWeekRange.startYmd, currentWeekRange.endYmd]);
-
-  /**
-   * 架构意图：「待办」区块只展示未挂 `project_id` 的顶层任务；「任务列表」四象限只展示挂项目或带父任务的行，
-   * 二者数据源上互不重复（独立待办不参与矩阵分类与计数）。
-   */
-  const standaloneTodos = React.useMemo(() => {
-    const list = tasks.filter(
-      (t) =>
-        !t.project_id &&
-        !t.parent_task_id &&
-        standaloneTodoPassesDayBoundaryFilter(t, dayBoundary, logicalTodayYmd) &&
-        standaloneTodoPassesRepeatDayFilter(t, logicalTodayYmd) &&
-        standaloneTodoPassesScheduleWindowFilter(t, logicalTodayYmd)
-    );
-    const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
-    const createdMs = (t: TaskRow) => {
-      const ms = Date.parse(t.created_at);
-      return Number.isNaN(ms) ? 0 : ms;
-    };
-    return list.slice().sort((a, b) => {
-      const da = isDoneRow(a);
-      const db = isDoneRow(b);
-      if (da !== db) return da ? 1 : -1;
-      const shelvedA = isTaskShelvedStatus(a.status);
-      const shelvedB = isTaskShelvedStatus(b.status);
-      if (shelvedA !== shelvedB) return shelvedA ? 1 : -1;
-      const oa = isStandaloneTodoOverdue(a, logicalTodayYmd);
-      const ob = isStandaloneTodoOverdue(b, logicalTodayYmd);
-      if (oa !== ob) return oa ? -1 : 1;
-      if (oa && ob) {
-        const dueCmp = getStandaloneTodoOverdueSortMs(a) - getStandaloneTodoOverdueSortMs(b);
-        if (dueCmp !== 0) return dueCmp;
-      }
-      return createdMs(a) - createdMs(b);
-    });
-  }, [tasks, dayBoundary, logicalTodayYmd]);
+  }, [standaloneTodos, matrixWeekTasks]);
 
   const standaloneTodoOpenCount = React.useMemo(
     () => standaloneTodos.filter((t) => isStandaloneTodoOpen(t)).length,
-    [standaloneTodos]
+    [standaloneTodos],
   );
-
-  const todayFrogs = React.useMemo(() => {
-    const today = logicalTodayYmd;
-    return tasks
-      .filter((t) => {
-        const meta = parseTaskMeta(t.extra_data);
-        return (meta.frogAssignedOn ?? '') === today;
-      })
-      .slice()
-      .sort((a, b) => {
-        const doneA = isFrogDoneForToday(a.extra_data, a.status, today);
-        const doneB = isFrogDoneForToday(b.extra_data, b.status, today);
-        if (doneA !== doneB) return doneA ? 1 : -1;
-        if (a.priority !== b.priority) return b.priority - a.priority;
-        const updA = a.updated_at ? Date.parse(a.updated_at) : 0;
-        const updB = b.updated_at ? Date.parse(b.updated_at) : 0;
-        return updB - updA;
-      });
-  }, [tasks, logicalTodayYmd]);
 
   const frogCarouselCardWidth = React.useMemo(
     () => Math.min(196, Math.max(152, Dimensions.get('window').width * 0.46)),
-    []
+    [],
   );
 
   const matrixGroups = React.useMemo(() => {
-    const q11: TaskRow[] = []; // 紧急且重要
-    const q10: TaskRow[] = []; // 不紧急但重要
-    const q01: TaskRow[] = []; // 紧急但不重要
-    const q00: TaskRow[] = []; // 不紧急不重要
+    const q11: TaskRow[] = [];
+    const q10: TaskRow[] = [];
+    const q01: TaskRow[] = [];
+    const q00: TaskRow[] = [];
 
-    // 顶部「待办」与「任务列表」四象限分离：无项目、无父任务的独立待办只出现在待办区，不计入矩阵
-    const forMatrix = filteredTasks.filter(
-      (t) => t.status !== 'done' && t.status !== 'cancelled' && (!!t.project_id || !!t.parent_task_id),
+    const forMatrix = matrixWeekTasks.filter(
+      (t) =>
+        t.status !== 'done' &&
+        t.status !== 'cancelled' &&
+        (!!t.project_id || !!t.parent_task_id),
     );
 
     forMatrix.forEach((t) => {
@@ -2290,7 +2282,7 @@ export default function TasksScreen() {
         });
 
     return { q11: sort(q11), q10: sort(q10), q01: sort(q01), q00: sort(q00) };
-  }, [filteredTasks, logicalTodayYmd]);
+  }, [matrixWeekTasks, logicalTodayYmd]);
 
   const projectCategoryMap = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -2320,7 +2312,7 @@ export default function TasksScreen() {
   }, [projectCategories]);
 
   const openTask = (id: string) => {
-    const row = tasks.find((t) => t.id === id);
+    const row = findVisibleTask(id);
     if (row && isStandaloneTodoTask(row)) {
       router.push(standaloneTodoEditorHref(id));
       return;
@@ -2381,15 +2373,18 @@ export default function TasksScreen() {
       const changes = [...result.completedTasks, ...result.cascadeChanges];
       if (changes.length === 0) return;
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setTasks((prev) =>
+      setStandaloneTodos((prev) =>
         prev.map((task) => {
           const change = changes.find((item) => item.id === task.id);
           if (!change) return task;
-          return {
-            ...task,
-            status: change.status,
-            completed_at: change.completed_at,
-          };
+          return { ...task, status: change.status, completed_at: change.completed_at };
+        }),
+      );
+      setMatrixWeekTasks((prev) =>
+        prev.map((task) => {
+          const change = changes.find((item) => item.id === task.id);
+          if (!change) return task;
+          return { ...task, status: change.status, completed_at: change.completed_at };
         }),
       );
       setProjectTaskTreeMap((prev) => {
@@ -2452,8 +2447,7 @@ export default function TasksScreen() {
 
   const unassignFrog = React.useCallback(
     (taskId: string) => {
-      const frog =
-        tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      const frog = findVisibleTask(taskId);
       if (!frog) return;
       const titleLabel = (frog.title ?? '').trim() || '该任务';
       Alert.alert('取消指派', `确定将「${titleLabel}」从今日青蛙中移除吗？`, [
@@ -2466,18 +2460,19 @@ export default function TasksScreen() {
               markPageDirty();
               const nextExtra = clearFrogAssignedOn(frog.extra_data);
               LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-              setTasks((prev) =>
-                prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtra } : t))
-              );
+              patchVisibleTask(taskId, { extra_data: nextExtra });
+              setTodayFrogs((prev) => prev.filter((t) => t.id !== taskId));
               setProjectTaskTreeMap((prev) =>
                 updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtra }))
               );
               try {
                 await unassignFrogFromApi(taskId, frog.extra_data, frog as Record<string, unknown>);
+                await loadTodayFrogs();
               } catch (err) {
                 console.warn('取消青蛙指派失败', err);
                 Alert.alert('操作失败', '未能取消指派，请稍后重试。');
                 await loadTasks();
+                await loadTodayFrogs();
                 await loadProjectTasks(projects);
               }
             })();
@@ -2485,7 +2480,7 @@ export default function TasksScreen() {
         },
       ]);
     },
-    [loadProjectTasks, loadTasks, markPageDirty, projects, projectTaskTreeMap, tasks, updateTaskInProjectTree]
+    [findVisibleTask, loadProjectTasks, loadTasks, loadTodayFrogs, markPageDirty, patchVisibleTask, projects, projectTaskTreeMap, todayFrogs, updateTaskInProjectTree]
   );
 
   const moveProjectToInboxById = React.useCallback(async (projectId: string) => {
@@ -2569,16 +2564,14 @@ export default function TasksScreen() {
   const activateShelvedTodo = React.useCallback(
     async (taskId: string) => {
       if (activatingShelvedTodoId || upgradingStandaloneTodoId) return;
-      const current = tasks.find((t) => t.id === taskId);
+      const current = findVisibleTask(taskId);
       if (!current || !isTaskShelvedStatus(current.status)) return;
 
       standaloneTodoSwipeableRefs.current[taskId]?.close();
       markPageDirty();
       setActivatingShelvedTodoId(taskId);
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setTasks((prev) =>
-        prev.map((t) => (t.id === taskId ? { ...t, status: 'todo', completed_at: null } : t))
-      );
+      patchVisibleTask(taskId, { status: 'todo', completed_at: null });
 
       try {
         await updateTask(taskId, { status: 'todo', completed_at: null });
@@ -2595,7 +2588,7 @@ export default function TasksScreen() {
         setActivatingShelvedTodoId(null);
       }
     },
-    [activatingShelvedTodoId, loadTasks, markPageDirty, tasks, upgradingStandaloneTodoId]
+    [activatingShelvedTodoId, findVisibleTask, loadTasks, markPageDirty, patchVisibleTask, upgradingStandaloneTodoId]
   );
 
   const confirmActivateShelvedTodo = React.useCallback(
@@ -2617,8 +2610,7 @@ export default function TasksScreen() {
 
   const toggleTaskDone = React.useCallback(
     async (taskId: string) => {
-      const current =
-        tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      const current = findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
       if (isTaskShelvedStatus(current.status)) return;
@@ -2647,8 +2639,13 @@ export default function TasksScreen() {
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
-      // optimistic update: matrix/today frogs use `tasks`, project tree uses `projectTaskTreeMap`
-      setTasks((prev) =>
+      // optimistic update: 待办/矩阵、今日青蛙、项目树
+      patchVisibleTask(taskId, {
+        status: nextStatus,
+        completed_at: nextCompletedAt,
+        extra_data: nextExtraData,
+      });
+      setTodayFrogs((prev) =>
         prev.map((t) =>
           t.id === taskId
             ? { ...t, status: nextStatus, completed_at: nextCompletedAt, extra_data: nextExtraData }
@@ -2703,13 +2700,10 @@ export default function TasksScreen() {
         if (cascadeChanges.length > 0) {
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           for (const change of cascadeChanges) {
-            setTasks((prev) =>
-              prev.map((t) =>
-                t.id === change.id
-                  ? { ...t, status: change.status, completed_at: change.completed_at }
-                  : t
-              )
-            );
+            patchVisibleTask(change.id, {
+              status: change.status,
+              completed_at: change.completed_at,
+            });
             setProjectTaskTreeMap((prev) =>
               updateTaskInProjectTree(prev, change.id, (node) => ({
                 ...node,
@@ -2736,6 +2730,9 @@ export default function TasksScreen() {
           }
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
+        if (getFrogAssignedOn(current.extra_data) === logicalTodayYmd) {
+          await loadTodayFrogs();
+        }
         if (nextStatus === 'done' && current.project_id) {
           const pid = current.project_id;
           const proj = projects.find((p) => p.id === pid);
@@ -2783,33 +2780,42 @@ export default function TasksScreen() {
             }
           })();
         }
+        setCompletionHeatmapReloadToken((n) => n + 1);
+        await loadTasks();
+        if (current.project_id) {
+          await loadProjectsListFromApi(projectTab);
+        }
       } catch (err) {
         console.warn('更新任务状态失败', err);
         // fallback: reload to ensure consistency
         await loadTasks();
+        await loadTodayFrogs();
         await loadProjectTasks(projects);
       }
     },
     [
+      findVisibleTask,
       loadProjectTasks,
       loadProjects,
       loadTasks,
+      loadTodayFrogs,
       lockedProjectIds,
       logicalTodayYmd,
       markPageDirty,
       moveProjectToInboxById,
+      patchVisibleTask,
       projectLockMap,
       projectTaskTreeMap,
       projects,
-      tasks,
+      projectTab,
+      loadProjectsListFromApi,
       updateTaskInProjectTree,
     ]
   );
 
   const completeFrogSessionOnly = React.useCallback(
     async (taskId: string) => {
-      const current =
-        tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      const current = findVisibleTask(taskId);
       if (!current) return;
 
       if (current.project_id && lockedProjectIds.has(current.project_id)) {
@@ -2824,7 +2830,8 @@ export default function TasksScreen() {
       const nextExtraData = setFrogSessionCompletedOn(current.extra_data, logicalTodayYmd);
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setTasks((prev) =>
+      patchVisibleTask(taskId, { extra_data: nextExtraData });
+      setTodayFrogs((prev) =>
         prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtraData } : t))
       );
       setProjectTaskTreeMap((prev) =>
@@ -2843,31 +2850,35 @@ export default function TasksScreen() {
           console.warn('记录青蛙完成事件失败', frogLogErr);
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
+        await loadTodayFrogs();
       } catch (err) {
         console.warn('完成青蛙会话失败', err);
         Alert.alert('操作失败', '未能完成今日青蛙，请稍后重试。');
         await loadTasks();
+        await loadTodayFrogs();
         await loadProjectTasks(projects);
       }
     },
     [
+      findVisibleTask,
       loadProjectTasks,
       loadTasks,
+      loadTodayFrogs,
       lockedProjectIds,
       logicalTodayYmd,
       markPageDirty,
+      patchVisibleTask,
       projectLockMap,
       projectTaskTreeMap,
       projects,
-      tasks,
+      todayFrogs,
       updateTaskInProjectTree,
     ]
   );
 
   const reopenFrogSessionOnly = React.useCallback(
     async (taskId: string) => {
-      const current =
-        tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      const current = findVisibleTask(taskId);
       if (!current) return;
 
       const frogAssigned = getFrogAssignedOn(current.extra_data);
@@ -2877,7 +2888,8 @@ export default function TasksScreen() {
       const nextExtraData = clearFrogSessionCompletedOn(current.extra_data);
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setTasks((prev) =>
+      patchVisibleTask(taskId, { extra_data: nextExtraData });
+      setTodayFrogs((prev) =>
         prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtraData } : t))
       );
       setProjectTaskTreeMap((prev) =>
@@ -2896,29 +2908,33 @@ export default function TasksScreen() {
           console.warn('记录青蛙重开事件失败', frogLogErr);
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
+        await loadTodayFrogs();
       } catch (err) {
         console.warn('恢复青蛙会话失败', err);
         Alert.alert('操作失败', '未能恢复今日青蛙，请稍后重试。');
         await loadTasks();
+        await loadTodayFrogs();
         await loadProjectTasks(projects);
       }
     },
     [
+      findVisibleTask,
       loadProjectTasks,
       loadTasks,
+      loadTodayFrogs,
       logicalTodayYmd,
       markPageDirty,
+      patchVisibleTask,
       projectTaskTreeMap,
       projects,
-      tasks,
+      todayFrogs,
       updateTaskInProjectTree,
     ]
   );
 
   const toggleFrogDone = React.useCallback(
     (taskId: string) => {
-      const current =
-        tasks.find((t) => t.id === taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      const current = findVisibleTask(taskId);
       if (!current || isTaskShelvedStatus(current.status)) return;
 
       const frogAssigned = getFrogAssignedOn(current.extra_data);
@@ -2968,16 +2984,16 @@ export default function TasksScreen() {
     },
     [
       completeFrogSessionOnly,
+      findVisibleTask,
       logicalTodayYmd,
       playFrogDoneBounce,
-      projectTaskTreeMap,
       reopenFrogSessionOnly,
-      tasks,
+      todayFrogs,
       toggleTaskDone,
     ]
   );
 
-  /** 从任务 Tab 底部快捷创建「无项目」待办，写入 tasks 表，与四象限列表共用 `tasks` 状态 */
+  /** 从任务 Tab 底部快捷创建「无项目」待办 */
   const submitQuickStandaloneTodo = React.useCallback(async () => {
     const title = quickTodoDraft.trim();
     if (!title) {
@@ -3010,7 +3026,7 @@ export default function TasksScreen() {
       await runExclusiveMutation('正在保存待办...', async () => {
         markPageDirty();
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        setTasks((prev) => [optimisticTask, ...prev]);
+        setStandaloneTodos((prev) => [optimisticTask, ...prev]);
         setQuickTodoDraft('');
         await createTask({
           id,
@@ -3244,11 +3260,13 @@ export default function TasksScreen() {
         await maybeCompleteBuildHabit(habitId);
         await maybeRefreshTaskHabitVisibility(habitId);
         await syncHabitBoundTasksForHabit(habitId, nextCount);
+        await loadHabits();
       } catch (err) {
         console.warn('习惯打卡失败', err);
       }
     },
     [
+      loadHabits,
       maybeCompleteBreakHabit,
       maybeCompleteBuildHabit,
       maybeRefreshTaskHabitVisibility,
@@ -3830,6 +3848,7 @@ export default function TasksScreen() {
             <View style={sectionCardStyle}>
               <TaskCompletionHeatmap
                 logicalTodayYmd={logicalTodayYmd}
+                dayBoundary={dayBoundary}
                 textMain={colors.text}
                 textMuted={outline}
                 accentColor={primary}
@@ -4256,7 +4275,9 @@ export default function TasksScreen() {
                     {isOpen ? (
                       <View style={styles.habitItemsRow} onLayout={onHabitItemsRowLayout}>
                         {visibleHabitItems.map((item) => {
-                          const scheduleAllowsToday = isHabitScheduledToday(item.extraData, habitScheduleAnchorDate);
+                          const scheduleAllowsToday = item.extraData
+                            ? isHabitScheduledToday(item.extraData, habitScheduleAnchorDate)
+                            : true;
                           const isBreak = item.kind === 'break';
                           const isTask = item.kind === 'task';
                           const taskPeriodProgress = item.periodProgress ?? 0;
@@ -4266,11 +4287,7 @@ export default function TasksScreen() {
                             : null;
                           const displayCompleted = isTask
                             ? item.taskShowPeriodCheck
-                            : isHabitDayDisplayCompleted({
-                                kind: item.kind,
-                                todayCount: item.todayCount,
-                                dailyGoal: item.dailyGoal,
-                              });
+                            : item.displayCompleted;
                           const goalMet = isBreak
                             ? scheduleAllowsToday && displayCompleted
                             : displayCompleted;

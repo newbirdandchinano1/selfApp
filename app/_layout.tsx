@@ -32,7 +32,8 @@ import { startCloudPeriodicAlignScheduler } from '@/lib/cloud-sync-scheduler';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-selection';
 import { loadThemePreference } from '@/lib/theme-preference';
-import { runInitialRestSyncIfNeeded, hasCompletedInitialRestSync, type InitialSyncProgress } from '@/lib/api-initial-sync';
+import { clearLocalDatabaseOnColdStart } from '@/lib/api-local-clear';
+import type { InitialSyncProgress } from '@/lib/api-initial-sync';
 import { hydratePageApiSession } from '@/lib/page-api-session';
 
 if (Platform.OS !== 'web') {
@@ -131,21 +132,17 @@ function RootLayoutInner() {
     const run = async () => {
       try {
         await initDatabase();
+
+        if (Platform.OS !== 'web') {
+          if (mounted) {
+            setSyncProgress({ phase: 'clearing', tableIndex: 0, tableCount: 0 });
+          }
+          await clearLocalDatabaseOnColdStart();
+        }
+
         await hydratePageApiSession();
         await hydrateCloudDirtyFromStorage();
         await hydrateApiDirtyFromStorage();
-
-        const alreadyBootstrapped = await hasCompletedInitialRestSync();
-        if (!alreadyBootstrapped) {
-          const syncResult = await runInitialRestSyncIfNeeded({
-            onProgress: progress => {
-              if (mounted) setSyncProgress(progress);
-            },
-          });
-          if (!syncResult.ok && syncResult.ran) {
-            console.warn('[bootstrap] 首启引导失败', syncResult.error);
-          }
-        }
 
         await loadApiDebugEnabled();
         if (mounted) {

@@ -5,6 +5,7 @@ import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { repairLocalDatabase } from '@/lib/database';
+import { resetLocalDatabaseForDebug } from '@/lib/api-local-clear';
 import {
     DEFAULT_CLOUD_AUTH_TOKEN,
     DEFAULT_CLOUD_SQL_API_URL,
@@ -135,13 +136,14 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [cloudBackupProgress, setCloudBackupProgress] = useState<CloudSyncProgress | null>(null);
   const [cloudRestoreBusy, setCloudRestoreBusy] = useState(false);
   const [localDbRepairBusy, setLocalDbRepairBusy] = useState(false);
+  const [localDbClearBusy, setLocalDbClearBusy] = useState(false);
   const [apiDebugEnabled, setApiDebugEnabledState] = useState(false);
   const cloudOpAbortRef = useRef<AbortController | null>(null);
   /** 同步标记：备份/同步进行中（不依赖 setState，避免连点竞态） */
   const cloudOpInFlightRef = useRef(false);
   const lastCloudBackupPressAtRef = useRef(0);
 
-  const cloudOpBusy = cloudBackupBusy || cloudRestoreBusy || localDbRepairBusy;
+  const cloudOpBusy = cloudBackupBusy || cloudRestoreBusy || localDbRepairBusy || localDbClearBusy;
   const [lastFullCloudBackupAtIso, setLastFullCloudBackupAtIso] = useState<string | null>(null);
   const [cloudDiagModal, setCloudDiagModal] = useState<{
     visible: boolean;
@@ -413,6 +415,45 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
       ],
     );
   }, [cloudOpBusy, runLocalDatabaseRepair]);
+
+  const runLocalDatabaseClear = useCallback(async () => {
+    if (Platform.OS === 'web') {
+      Alert.alert('不可用', 'Web 环境无本地 SQLite，请在手机或模拟器上使用。');
+      return;
+    }
+    if (cloudOpInFlightRef.current || localDbClearBusy) return;
+    cloudOpInFlightRef.current = true;
+    setLocalDbClearBusy(true);
+    try {
+      await resetLocalDatabaseForDebug();
+      Alert.alert(
+        '本地数据库已清空',
+        '全部业务数据已删除，表结构已重建。请完全退出应用后重新打开，各 Tab 将重新从后端拉取数据。',
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      Alert.alert('清空失败', msg);
+    } finally {
+      setLocalDbClearBusy(false);
+      cloudOpInFlightRef.current = false;
+    }
+  }, [localDbClearBusy]);
+
+  const requestLocalDatabaseClear = useCallback(() => {
+    if (cloudOpInFlightRef.current || cloudOpBusy) return;
+    Alert.alert(
+      '清空本地数据库',
+      '将删除本机全部 SQLite 业务数据（任务、项目、习惯、记账等），表结构会重建。此操作不可恢复，仅用于调试。\n\n完成后请完全退出并重新打开应用。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '确认清空',
+          style: 'destructive',
+          onPress: () => void runLocalDatabaseClear(),
+        },
+      ],
+    );
+  }, [cloudOpBusy, runLocalDatabaseClear]);
 
   const runZhipuConnectivityProbe = useCallback(async () => {
     setZhipuProbeLoading(true);
@@ -775,6 +816,39 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                   <Text style={[styles.rowTitle, { color: text }]}>修复本地数据库</Text>
                   <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
                     启动失败或外键报错时使用：清理孤儿引用并同步分类表，不覆盖云端数据。
+                  </Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={22} color={outline} />
+              </View>
+            </Pressable>
+          ) : null}
+
+          {Platform.OS !== 'web' ? (
+            <Pressable
+              onPress={requestLocalDatabaseClear}
+              disabled={cloudOpBusy}
+              pointerEvents={cloudOpBusy ? 'none' : 'auto'}
+              style={({ pressed }) => [
+                { opacity: cloudOpBusy ? 0.55 : pressed ? 0.88 : 1, marginTop: 10 },
+              ]}>
+              <View
+                style={[
+                  styles.card,
+                  styles.actionCard,
+                  {
+                    backgroundColor: cardBg,
+                    borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(185,28,28,0.35)',
+                  },
+                ]}>
+                {localDbClearBusy ? (
+                  <ActivityIndicator size="small" color={isDark ? '#f87171' : '#b91c1c'} />
+                ) : (
+                  <MaterialIcons name="delete-forever" size={26} color={isDark ? '#f87171' : '#b91c1c'} />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.rowTitle, { color: text }]}>清空本地数据库（调试）</Text>
+                  <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                    删除全部本地业务数据并重建空库，便于验证后端拉取逻辑。不可恢复。
                   </Text>
                 </View>
                 <MaterialIcons name="chevron-right" size={22} color={outline} />
