@@ -62,6 +62,45 @@ const tableFetchGeneration = new Map<string, number>();
 
 const MAX_FETCH_ATTEMPTS_AFTER_INVALIDATE = 4;
 
+/** 同表 reconcile 串行化（bootstrap 与 fetchApiTableAll 共用，正式包并行时避免互相删行） */
+const tableSyncLockDepth = new Map<string, number>();
+const tableSyncLockTail = new Map<string, Promise<void>>();
+
+export async function withApiTableSyncLock<T>(table: string, fn: () => Promise<T>): Promise<T> {
+  const t = table.trim();
+  if (!t) return fn();
+
+  const held = tableSyncLockDepth.get(t) ?? 0;
+  if (held > 0) {
+    tableSyncLockDepth.set(t, held + 1);
+    try {
+      return await fn();
+    } finally {
+      tableSyncLockDepth.set(t, held);
+    }
+  }
+
+  const prev = tableSyncLockTail.get(t) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  const chained = prev.then(() => gate).catch(() => gate);
+  tableSyncLockTail.set(t, chained);
+
+  await prev.catch(() => {});
+  tableSyncLockDepth.set(t, 1);
+  try {
+    return await fn();
+  } finally {
+    tableSyncLockDepth.delete(t);
+    release();
+    if (tableSyncLockTail.get(t) === chained) {
+      tableSyncLockTail.delete(t);
+    }
+  }
+}
+
 /** 本地写入后标记进行中的全量拉取已过期，避免 UI 读到写入前的 REST 快照 */
 export function invalidateInflightApiTableFetch(table: string): void {
   const t = table.trim();
@@ -227,7 +266,7 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
     return existingInflight as Promise<T[]>;
   }
 
-  const fetchPromise = (async (): Promise<T[]> => {
+  const fetchPromise = withApiTableSyncLock(table, async (): Promise<T[]> => {
     for (let attempt = 0; attempt < MAX_FETCH_ATTEMPTS_AFTER_INVALIDATE; attempt += 1) {
       const startGen = tableFetchGeneration.get(table) ?? 0;
       const all = await pullAllApiTablePages<T>(table, opts);
@@ -252,7 +291,7 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
       return readLocalTableVisible<T>(table);
     }
     return all;
-  })();
+  });
 
   inflightTableFetchAll.set(table, fetchPromise as Promise<Record<string, unknown>[]>);
   try {

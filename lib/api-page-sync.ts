@@ -1,6 +1,6 @@
 import { apiGetTasksBootstrap, ensureApiLoggedIn, type TasksBootstrapPayload } from '@/lib/api-client';
 import { withApiLoading } from '@/lib/api-loading-tracker';
-import { fetchApiTableAll } from '@/lib/api-read';
+import { fetchApiTableAll, withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import {
   beginCloudSqliteDirtyIgnoreBatch,
@@ -36,6 +36,17 @@ const TASKS_BOOTSTRAP_TABLE_MAP: [keyof TasksBootstrapPayload, string][] = [
   ['frogCompletionEvents', 'frog_completion_events'],
 ];
 
+type BootstrapTablesVersionMeta = Record<string, { count?: number } | undefined>;
+
+function readBootstrapExpectedRowCount(
+  meta: BootstrapTablesVersionMeta | undefined,
+  tableName: string,
+): number | undefined {
+  const entry = meta?.[tableName];
+  const count = entry?.count;
+  return typeof count === 'number' && Number.isFinite(count) && count >= 0 ? count : undefined;
+}
+
 async function syncTasksPageBootstrapFromApi(opts?: { signal?: AbortSignal }): Promise<number> {
   throwIfAborted(opts?.signal);
   const boundary = await loadTasksDayBoundary();
@@ -46,12 +57,29 @@ async function syncTasksPageBootstrapFromApi(opts?: { signal?: AbortSignal }): P
     signal: opts?.signal,
   });
 
+  const tablesVersion = (payload?.meta as { tablesVersion?: BootstrapTablesVersionMeta } | undefined)
+    ?.tablesVersion;
+
   let tablesSynced = 0;
   for (const [responseKey, tableName] of TASKS_BOOTSTRAP_TABLE_MAP) {
     throwIfAborted(opts?.signal);
     const rows = payload?.[responseKey];
     if (!Array.isArray(rows)) continue;
-    await syncApiReadResultToLocal(tableName, rows, { reconcileSnapshot: true });
+
+    await withApiTableSyncLock(tableName, async () => {
+      const expectedCount = readBootstrapExpectedRowCount(tablesVersion, tableName);
+      if (expectedCount != null && rows.length < expectedCount) {
+        console.warn(
+          `[api-page-sync] bootstrap 表「${tableName}」行数不足（${rows.length}/${expectedCount}），降级逐表分页拉取`,
+        );
+        await fetchApiTableAll<Record<string, unknown>>(tableName, {
+          signal: opts?.signal,
+          forceRefresh: true,
+        });
+        return;
+      }
+      await syncApiReadResultToLocal(tableName, rows, { reconcileSnapshot: true });
+    });
     tablesSynced += 1;
   }
   return tablesSynced;
