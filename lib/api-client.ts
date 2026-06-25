@@ -123,10 +123,34 @@ export function serializeApiErrorForDiagnostic(err: unknown): string {
 async function parseResponseBody(res: Response): Promise<{ parsed: unknown; text: string }> {
   const text = await res.text().catch(() => '');
   if (!text.trim()) return { parsed: null, text: '' };
+
+  // 诊断日志：记录大响应的大小，帮助排查截断问题
+  if (text.length > 50_000) {
+    const contentLength = res.headers.get('Content-Length');
+    console.log(
+      `[api] 响应体大小: ${text.length} 字符` +
+      (contentLength != null ? ` (Content-Length: ${contentLength})` : '') +
+      ` ${res.url?.slice(-60)}`,
+    );
+  }
+
   try {
     return { parsed: JSON.parse(text) as unknown, text };
-  } catch {
-    return { parsed: { raw: text }, text };
+  } catch (parseErr) {
+    // JSON 解析失败可能是截断导致的不完整 JSON
+    const contentLength = res.headers.get('Content-Length');
+    console.warn('[api] JSON 解析失败，响应可能被截断', {
+      status: res.status,
+      textLength: text.length,
+      contentLength: contentLength ?? 'unknown',
+      textTail: text.slice(-200),
+    });
+    throw new ApiRequestError(
+      `JSON 解析失败，响应可能被截断（${text.length} 字符）`,
+      res.status,
+      -1,
+      { retryable: true },
+    );
   }
 }
 
@@ -193,6 +217,8 @@ type ApiRequestOptions = {
   signal?: AbortSignal;
   skipAuth?: boolean;
   retryOnUnauthorized?: boolean;
+  /** 单次请求超时毫秒数，bootstrap 等大响应用更大的值 */
+  perAttemptTimeoutMs?: number;
 };
 
 export async function apiRequest<T = unknown>(
@@ -221,7 +247,7 @@ export async function apiRequest<T = unknown>(
         headers,
         ...(options.body != null ? { body: JSON.stringify(options.body) } : {}),
       },
-      { signal: options.signal },
+      { signal: options.signal, perAttemptTimeoutMs: options.perAttemptTimeoutMs },
     );
 
     const { parsed, text } = await parseResponseBody(res);
@@ -477,6 +503,53 @@ export type TasksBootstrapPayload = {
   meta?: Record<string, unknown>;
 };
 
+export type TasksBootstrapTableSummary = {
+  count: number;
+  version: string | null;
+};
+
+export type TasksBootstrapSummaryMeta = {
+  serverTime?: string;
+  logicalToday?: string;
+  heatmapStart?: string;
+  heatmapEnd?: string;
+  habitCheckInStart?: string;
+  habitCheckInEnd?: string;
+  completionHeatmapWeeks?: number;
+};
+
+export type TasksBootstrapSummaryPayload = {
+  tables: Record<string, TasksBootstrapTableSummary>;
+  meta: TasksBootstrapSummaryMeta;
+};
+
+export async function apiGetTasksBootstrapSummary(
+  params?: {
+    dayBoundaryHour?: number;
+    dayBoundaryMinute?: number;
+    heatmapStart?: string;
+    heatmapEnd?: string;
+    habitCheckInMonths?: number;
+    habitCheckInStart?: string;
+    habitCheckInEnd?: string;
+    signal?: AbortSignal;
+  },
+): Promise<TasksBootstrapSummaryPayload> {
+  const qs = buildQuery({
+    dayBoundaryHour: params?.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params?.dayBoundaryMinute ?? 0,
+    heatmapStart: params?.heatmapStart,
+    heatmapEnd: params?.heatmapEnd,
+    habitCheckInMonths: params?.habitCheckInMonths,
+    habitCheckInStart: params?.habitCheckInStart,
+    habitCheckInEnd: params?.habitCheckInEnd,
+  });
+  return apiRequest<TasksBootstrapSummaryPayload>(`/api/pages/tasks/summary${qs}`, {
+    method: 'GET',
+    signal: params?.signal,
+  });
+}
+
 export async function apiGetTasksBootstrap(
   params?: {
     dayBoundaryHour?: number;
@@ -500,9 +573,12 @@ export async function apiGetTasksBootstrap(
     habitCheckInEnd: params?.habitCheckInEnd,
     include: params?.include,
   });
+  // bootstrap 端点一次返回 10 张表的数据，JSON 响应可能非常大，
+  // 使用更长的超时时间避免在慢网络下被截断
   return apiRequest<TasksBootstrapPayload>(`/api/pages/tasks${qs}`, {
     method: 'GET',
     signal: params?.signal,
+    perAttemptTimeoutMs: 180_000,
   });
 }
 

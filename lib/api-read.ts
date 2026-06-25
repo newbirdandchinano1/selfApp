@@ -39,6 +39,8 @@ export type ApiListOptions = {
   calendarRelevant?: boolean;
   fields?: string;
   updatedSince?: string;
+  /** summary.count：校验 pagination.total 与最终拉取行数 */
+  expectedTotal?: number;
 };
 
 export type ApiTableMeta = {
@@ -195,7 +197,7 @@ export function shouldFetchNextApiTablePage(
 
 async function pullAllApiTablePages<T extends Record<string, unknown>>(
   table: string,
-  opts?: Omit<ApiListOptions, 'page'> & { maxPages?: number },
+  opts?: Omit<ApiListOptions, 'page'> & { maxPages?: number; allowIncomplete?: boolean },
 ): Promise<T[]> {
   const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 200);
   const maxPages = opts?.maxPages ?? 500;
@@ -212,6 +214,12 @@ async function pullAllApiTablePages<T extends Record<string, unknown>>(
       limit,
     });
     if (pagination.total > knownTotal) knownTotal = pagination.total;
+
+    if (opts?.expectedTotal != null && page === 1 && pagination.total !== opts.expectedTotal) {
+      throw new Error(
+        `[api-read] 表「${table}」pagination.total (${pagination.total}) 与 summary.count (${opts.expectedTotal}) 不一致`,
+      );
+    }
 
     let newRowCount = 0;
     for (const row of list) {
@@ -238,14 +246,29 @@ async function pullAllApiTablePages<T extends Record<string, unknown>>(
     page += 1;
   }
 
-  if (knownTotal > 0 && seenPk.size < knownTotal) {
-    console.warn(
-      `[api-read] 表「${table}」分页可能不完整：已拉 ${seenPk.size}/${knownTotal} 条（page limit=${limit}）`,
-    );
+  const expectedRows = opts?.expectedTotal ?? (knownTotal > 0 ? knownTotal : 0);
+  if (expectedRows > 0 && seenPk.size < expectedRows) {
+    const msg = `[api-read] 表「${table}」分页不完整：已拉 ${seenPk.size}/${expectedRows} 条（page limit=${limit}）`;
+    console.warn(msg);
+    if (!opts?.allowIncomplete) {
+      // 分页数据不完整时抛出错误，触发上层重试，避免静默写入不完整数据
+      throw new Error(msg);
+    }
+  }
+
+  if (opts?.expectedTotal != null && seenPk.size !== opts.expectedTotal) {
+    const msg = `[api-read] 表「${table}」拉取行数 ${seenPk.size} 与 summary.count ${opts.expectedTotal} 不一致`;
+    console.warn(msg);
+    if (!opts?.allowIncomplete) {
+      throw new Error(msg);
+    }
   }
 
   return all;
 }
+
+/** 分页数据不完整时的最大重试次数 */
+const MAX_INCOMPLETE_PAGINATION_RETRIES = 3;
 
 /** 拉取全表（自动翻页，limit 最大 200） */
 export async function fetchApiTableAll<T extends Record<string, unknown>>(
@@ -266,10 +289,23 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
     return existingInflight as Promise<T[]>;
   }
 
+  const isIncompletePaginationError = (e: unknown): boolean =>
+    e instanceof Error && /分页不完整/.test(e.message);
+
   const fetchPromise = withApiTableSyncLock(table, async (): Promise<T[]> => {
     for (let attempt = 0; attempt < MAX_FETCH_ATTEMPTS_AFTER_INVALIDATE; attempt += 1) {
       const startGen = tableFetchGeneration.get(table) ?? 0;
-      const all = await pullAllApiTablePages<T>(table, opts);
+      let all: T[];
+      try {
+        all = await pullAllApiTablePages<T>(table, opts);
+      } catch (e) {
+        // 分页不完整错误：重试而非直接失败
+        if (isIncompletePaginationError(e) && attempt < MAX_INCOMPLETE_PAGINATION_RETRIES - 1) {
+          console.warn(`[api-read] 表「${table}」分页不完整，重试 ${attempt + 1}/${MAX_INCOMPLETE_PAGINATION_RETRIES}`);
+          continue;
+        }
+        throw e;
+      }
       const endGen = tableFetchGeneration.get(table) ?? 0;
       if (startGen !== endGen) {
         continue;
@@ -283,7 +319,23 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
       return all;
     }
 
-    const all = await pullAllApiTablePages<T>(table, opts);
+    let all: T[];
+    try {
+      all = await pullAllApiTablePages<T>(table, opts);
+    } catch (e) {
+      // 最后一次尝试仍不完整：记录警告但接受已有数据，避免完全无数据
+      if (isIncompletePaginationError(e)) {
+        console.warn(`[api-read] 表「${table}」重试后分页仍不完整，接受已有数据`);
+        // allowIncomplete: 接受不完整数据但不再抛出
+        const fallbackAll = await pullAllApiTablePages<T>(table, { ...opts, allowIncomplete: true });
+        await syncApiReadResultToLocal(table, fallbackAll as Record<string, unknown>[], {
+          reconcileSnapshot: true,
+        });
+        if (isApiOnlyReads()) return readLocalTableVisible<T>(table);
+        return fallbackAll;
+      }
+      throw e;
+    }
     await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
       reconcileSnapshot: true,
     });
