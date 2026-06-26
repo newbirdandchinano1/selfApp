@@ -13,6 +13,7 @@ export type TabPageKey = (typeof TAB_PAGE_KEYS)[keyof typeof TAB_PAGE_KEYS];
  * 本地表变更后需标记刷新的 Tab 主页面。
  */
 export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
+  app_settings: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   health_records: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   users: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   habits: [TAB_PAGE_KEYS.tasks],

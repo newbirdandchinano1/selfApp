@@ -6,6 +6,7 @@ import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/reposito
 import {
   BUILTIN_SHEET_CATEGORY_LABELS,
   getFinanceTransactionCategoryLabel,
+  isBalanceCorrectionFinanceTransaction,
   isInitialBalanceFinanceTransaction,
   parseFinanceTransactionExtra,
 } from '@/lib/repositories/finance/finance-transaction-extra';
@@ -60,6 +61,15 @@ type TrendPoint = {
   heightPct: number;
   income: number;
   expense: number;
+};
+
+type TrendDetailItem = {
+  id: string;
+  name: string;
+  desc: string;
+  amount: number;
+  icon: keyof typeof MaterialIcons.glyphMap;
+  type: 'income' | 'expense';
 };
 
 const CATEGORY_COLORS = ['#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe', '#0ea5e9', '#38bdf8'];
@@ -185,6 +195,32 @@ function resolveTransactionCategory(
   return { key: 'uncategorized', name: '未分类', icon: DEFAULT_CATEGORY_ICON, row: undefined };
 }
 
+function transactionMatchesTrendPoint(
+  txn: FinanceTransactionRow,
+  point: TrendPoint,
+  isYearlyGranularity: boolean,
+) {
+  const ymd = parseYmd(txn.happened_at);
+  if (isYearlyGranularity) return ymd.slice(0, 7) === point.dateKey;
+  return ymd === point.dateKey;
+}
+
+function buildTrendDetailItem(
+  txn: FinanceTransactionRow,
+  categoryMap: Map<string, FinanceFlowCategoryRow>,
+  categoryByName: Map<string, FinanceFlowCategoryRow>,
+): TrendDetailItem {
+  const resolved = resolveTransactionCategory(txn, categoryMap, categoryByName);
+  return {
+    id: txn.id,
+    name: resolved.name === '未分类' ? txn.name : `${resolved.name}-${txn.name}`,
+    desc: txn.note ?? txn.ai_comment ?? '',
+    amount: Math.abs(txn.amount),
+    icon: resolved.icon,
+    type: txn.transaction_type === 'income' ? 'income' : 'expense',
+  };
+}
+
 const PAGE_API_KEY = 'finance-stats';
 
 export default function FinanceStatsScreen() {
@@ -271,16 +307,21 @@ export default function FinanceStatsScreen() {
     });
   }, [range.endYmd, range.startYmd, transactions]);
 
+  const statsTransactions = React.useMemo(
+    () => filteredTransactions.filter((txn) => !isBalanceCorrectionFinanceTransaction(txn)),
+    [filteredTransactions],
+  );
+
   const categoryMap = React.useMemo(() => new Map(categories.map((category) => [category.id, category])), [categories]);
   const categoryByName = React.useMemo(() => new Map(categories.map((category) => [category.name, category])), [categories]);
   const categoryNameById = React.useMemo(() => new Map(categories.map((category) => [category.id, category.name])), [categories]);
   const totalIncome = React.useMemo(
-    () => filteredTransactions.filter((txn) => txn.transaction_type === 'income').reduce((sum, txn) => sum + Math.abs(txn.amount), 0),
-    [filteredTransactions]
+    () => statsTransactions.filter((txn) => txn.transaction_type === 'income').reduce((sum, txn) => sum + Math.abs(txn.amount), 0),
+    [statsTransactions]
   );
   const totalExpense = React.useMemo(
-    () => filteredTransactions.filter((txn) => txn.transaction_type !== 'income' && txn.transaction_type !== 'transfer').reduce((sum, txn) => sum + Math.abs(txn.amount), 0),
-    [filteredTransactions]
+    () => statsTransactions.filter((txn) => txn.transaction_type !== 'income' && txn.transaction_type !== 'transfer').reduce((sum, txn) => sum + Math.abs(txn.amount), 0),
+    [statsTransactions]
   );
   const balance = totalIncome - totalExpense;
 
@@ -288,7 +329,7 @@ export default function FinanceStatsScreen() {
   const categoryAccent = categoryMode === 'income' ? incomeColor : expenseColor;
   const categoryData = React.useMemo<CategoryItem[]>(() => {
     const bucket = new Map<string, { name: string; amount: number; count: number; icon: keyof typeof MaterialIcons.glyphMap }>();
-    filteredTransactions.forEach((txn) => {
+    statsTransactions.forEach((txn) => {
       const isIncome = txn.transaction_type === 'income';
       const isExpense = txn.transaction_type !== 'income' && txn.transaction_type !== 'transfer';
       if ((categoryMode === 'income' && !isIncome) || (categoryMode === 'expense' && !isExpense)) return;
@@ -309,11 +350,11 @@ export default function FinanceStatsScreen() {
         icon: item.icon,
         color: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
       }));
-  }, [categoryByName, categoryMap, categoryMode, categoryTotal, filteredTransactions]);
+  }, [categoryByName, categoryMap, categoryMode, categoryTotal, statsTransactions]);
 
   const dailyRows = React.useMemo<BillSummaryItem[]>(() => {
     const bucket = new Map<string, { income: number; expense: number }>();
-    filteredTransactions.forEach((txn) => {
+    statsTransactions.forEach((txn) => {
       const day = parseYmd(txn.happened_at);
       const current = bucket.get(day) ?? { income: 0, expense: 0 };
       const signed = getSignedAmount(txn);
@@ -331,10 +372,10 @@ export default function FinanceStatsScreen() {
       { date: '日均', expense: totalExpense / days, income: totalIncome / days, balance: balance / days },
       ...rows,
     ];
-  }, [balance, filteredTransactions, range.end, range.start, totalExpense, totalIncome]);
+  }, [balance, range.end, range.start, statsTransactions, totalExpense, totalIncome]);
 
   const topRankItems = React.useMemo<TopExpenseItem[]>(() => {
-    return filteredTransactions
+    return statsTransactions
       .filter((txn) => !isInitialBalanceFinanceTransaction(txn))
       .filter((txn) => rankMode === 'income' ? txn.transaction_type === 'income' : txn.transaction_type !== 'income' && txn.transaction_type !== 'transfer')
       .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
@@ -350,7 +391,7 @@ export default function FinanceStatsScreen() {
           icon: resolved.icon,
         };
       });
-  }, [categoryByName, categoryMap, filteredTransactions, rankMode]);
+  }, [categoryByName, categoryMap, rankMode, statsTransactions]);
 
   const shiftRange = React.useCallback((direction: -1 | 1) => {
     if (activeTab === '自定义') {
@@ -421,7 +462,7 @@ export default function FinanceStatsScreen() {
 
     if (activeTab === '年') {
       const monthly = Array.from({ length: 12 }, () => ({ income: 0, expense: 0 }));
-      filteredTransactions.forEach((txn) => {
+      statsTransactions.forEach((txn) => {
         if (txn.transaction_type === 'transfer') return;
         const month = Number(parseYmd(txn.happened_at).slice(5, 7));
         if (month < 1 || month > 12) return;
@@ -446,7 +487,7 @@ export default function FinanceStatsScreen() {
     }
 
     const daily = new Map<string, { income: number; expense: number }>();
-    filteredTransactions.forEach((txn) => {
+    statsTransactions.forEach((txn) => {
       if (txn.transaction_type === 'transfer') return;
       const day = parseYmd(txn.happened_at);
       const current = daily.get(day) ?? { income: 0, expense: 0 };
@@ -480,7 +521,7 @@ export default function FinanceStatsScreen() {
         ? Array.from({ length: 7 }, (_, index) => formatMonthDay(addDays(range.start, index)))
         : buildDateAxis(range.start, range.end, shouldShowAxisYear),
     };
-  }, [activeTab, filteredTransactions, range.end, range.start, trendMode]);
+  }, [activeTab, range.end, range.start, statsTransactions, trendMode]);
 
   React.useEffect(() => {
     setSelectedTrendIndex(null);
@@ -498,9 +539,33 @@ export default function FinanceStatsScreen() {
       const value = trendMode === 'income' ? selectedTrendPoint.income : selectedTrendPoint.expense;
       return `${selectedTrendPoint.label} · ${trendModeLabel} ${formatMoney(value)}`;
     }
-    if (!filteredTransactions.length) return '当前区间暂无账单数据';
-    return `区间内共 ${filteredTransactions.length} 笔，${trendModeLabel} ${trendTotal < 0 ? '-' : ''}${formatMoney(Math.abs(trendTotal))} · 点击柱形查看具体日期`;
-  }, [filteredTransactions.length, selectedTrendPoint, trendMode, trendModeLabel, trendTotal]);
+    if (!statsTransactions.length) return '当前区间暂无账单数据';
+    return `区间内共 ${statsTransactions.length} 笔，${trendModeLabel} ${trendTotal < 0 ? '-' : ''}${formatMoney(Math.abs(trendTotal))} · 点击柱形查看明细`;
+  }, [selectedTrendPoint, statsTransactions.length, trendMode, trendModeLabel, trendTotal]);
+
+  const selectedTrendDetails = React.useMemo(() => {
+    if (!selectedTrendPoint) return null;
+    const isYearly = activeTab === '年';
+    const matched = statsTransactions
+      .filter((txn) => transactionMatchesTrendPoint(txn, selectedTrendPoint, isYearly))
+      .filter((txn) => txn.transaction_type !== 'transfer')
+      .filter((txn) => {
+        if (trendMode === 'income') return txn.transaction_type === 'income';
+        if (trendMode === 'expense') return txn.transaction_type !== 'income';
+        return true;
+      })
+      .map((txn) => buildTrendDetailItem(txn, categoryMap, categoryByName))
+      .sort((a, b) => b.amount - a.amount);
+
+    if (trendMode === 'balance') {
+      return {
+        incomeItems: matched.filter((item) => item.type === 'income'),
+        expenseItems: matched.filter((item) => item.type === 'expense'),
+      };
+    }
+    return { items: matched };
+  }, [activeTab, categoryByName, categoryMap, selectedTrendPoint, statsTransactions, trendMode]);
+
   const trendTitle = trendMode === 'income' ? '每日收入趋势' : trendMode === 'balance' ? '每日结余趋势' : '每日支出趋势';
   const trendAccent = trendMode === 'income' ? incomeColor : trendMode === 'balance' ? balanceColor : expenseColor;
   const shouldShowCustomYear = range.start.getFullYear() !== range.end.getFullYear();
@@ -516,16 +581,16 @@ export default function FinanceStatsScreen() {
     const parts: string[] = [];
     parts.push(`统计区间：${rangeLabel}（${range.startYmd} 至 ${range.endYmd}）`);
     parts.push(
-      `收入合计 ${totalIncome.toFixed(2)} 元，支出合计 ${totalExpense.toFixed(2)} 元，结余 ${balance.toFixed(2)} 元，流水 ${filteredTransactions.length} 笔（转账未计入收支分类）。`,
+      `收入合计 ${totalIncome.toFixed(2)} 元，支出合计 ${totalExpense.toFixed(2)} 元，结余 ${balance.toFixed(2)} 元，流水 ${statsTransactions.length} 笔（转账与余额校正未计入收支统计）。`,
     );
 
-    if (!filteredTransactions.length) {
+    if (!statsTransactions.length) {
       return parts.join('\n');
     }
 
     const expenseMap = new Map<string, { amount: number; count: number }>();
     const incomeMap = new Map<string, { amount: number; count: number }>();
-    for (const txn of filteredTransactions) {
+    for (const txn of statsTransactions) {
       const name = getFinanceTransactionCategoryLabel(txn, categoryNameById) ?? '未分类';
       if (txn.transaction_type === 'income') {
         const cur = incomeMap.get(name) ?? { amount: 0, count: 0 };
@@ -558,7 +623,7 @@ export default function FinanceStatsScreen() {
       parts.push(...incLines);
     }
 
-    const top = [...filteredTransactions]
+    const top = [...statsTransactions]
       .filter((t) => t.transaction_type !== 'transfer')
       .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
       .slice(0, 6)
@@ -575,7 +640,7 @@ export default function FinanceStatsScreen() {
 
     const s = parts.join('\n');
     return s.length > 8000 ? `${s.slice(0, 8000)}\n…（摘要已截断）` : s;
-  }, [balance, categoryNameById, filteredTransactions, range.endYmd, range.startYmd, rangeLabel, totalExpense, totalIncome]);
+  }, [balance, categoryNameById, range.endYmd, range.startYmd, rangeLabel, statsTransactions, totalExpense, totalIncome]);
 
   React.useEffect(() => {
     setAiBillAnalysis(null);
@@ -615,6 +680,35 @@ export default function FinanceStatsScreen() {
         {label}
       </Text>
     </Pressable>
+  );
+
+  const renderTrendDetailGroup = (title: string, items: TrendDetailItem[], accent: string, emptyLabel: string) => (
+    <View style={styles.trendDetailGroup}>
+      <Text style={[Typography.label, { color: colors.textSecondary }]}>
+        {title}
+        {items.length
+          ? ` · ${items.length} 笔 · ${formatMoney(items.reduce((sum, item) => sum + item.amount, 0))}`
+          : ''}
+      </Text>
+      {items.length ? (
+        items.map((item) => (
+          <View key={item.id} style={[styles.rankRow, { backgroundColor: colors.surfaceSubtle }]}>
+            <View style={[styles.rankIcon, { backgroundColor: `${accent}22` }]}>
+              <MaterialIcons name={item.icon} size={18} color={accent} />
+            </View>
+            <View style={styles.rankMain}>
+              <Text style={[Typography.bodyStrong, styles.rankTitle, { color: colors.text }]}>{item.name}</Text>
+              {item.desc ? (
+                <Text style={[Typography.caption, { color: colors.textSecondary }]}>{item.desc}</Text>
+              ) : null}
+            </View>
+            <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatMoney(item.amount)}</Text>
+          </View>
+        ))
+      ) : (
+        <Text style={[Typography.caption, styles.trendDetailEmpty, { color: colors.textSecondary }]}>{emptyLabel}</Text>
+      )}
+    </View>
   );
 
   return (
@@ -757,19 +851,16 @@ export default function FinanceStatsScreen() {
                 <ActivityIndicator size="small" color={expenseColor} />
                 <Text style={[Typography.caption, { color: colors.textSecondary, flex: 1 }]}>正在调用智谱模型，请稍候…</Text>
               </View>
-            ) : (
+            ) : aiBillAnalysisError || aiBillAnalysis ? (
               <Text
                 style={[
                   Typography.caption,
                   styles.analysisBody,
                   { color: aiBillAnalysisError ? colors.danger : colors.textSecondary },
                 ]}>
-                {aiBillAnalysisError
-                  ? `获取失败：${aiBillAnalysisError}`
-                  : aiBillAnalysis ??
-                    '根据当前区间的收支、分类与高额流水摘要生成约 300～400 字的结构化分析（总览、习惯、风险亮点与可行建议）。点击下方按钮调用智谱 GLM-4-Flash（与项目内智谱接口一致），需要网络；密钥优先读取 EXPO_PUBLIC_ZHIPU_API_KEY。'}
+                {aiBillAnalysisError ? `获取失败：${aiBillAnalysisError}` : aiBillAnalysis}
               </Text>
-            )}
+            ) : null}
             <Pressable
               onPress={() => void runAiBillAnalysis()}
               disabled={aiBillAnalysisBusy}
@@ -882,6 +973,24 @@ export default function FinanceStatsScreen() {
               </Text>
             ))}
           </View>
+
+          {selectedTrendPoint && selectedTrendDetails ? (
+            <View style={styles.trendDetailSection}>
+              {trendMode === 'balance' ? (
+                <>
+                  {renderTrendDetailGroup('收入明细', selectedTrendDetails.incomeItems ?? [], incomeColor, '暂无收入')}
+                  {renderTrendDetailGroup('支出明细', selectedTrendDetails.expenseItems ?? [], expenseColor, '暂无支出')}
+                </>
+              ) : (
+                renderTrendDetailGroup(
+                  trendMode === 'income' ? '收入明细' : '支出明细',
+                  selectedTrendDetails.items ?? [],
+                  trendAccent,
+                  trendMode === 'income' ? '暂无收入' : '暂无支出',
+                )
+              )}
+            </View>
+          ) : null}
         </AppCard>
 
         <AppCard style={[shadows.card, styles.cardGap]}>
@@ -1212,6 +1321,16 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 10,
     fontWeight: '600',
+  },
+  trendDetailSection: {
+    marginTop: Spacing.lg,
+    gap: Spacing.lg,
+  },
+  trendDetailGroup: {
+    gap: Spacing.md,
+  },
+  trendDetailEmpty: {
+    paddingHorizontal: Spacing.sm,
   },
   tableWrap: {
     borderRadius: Radius.lg,

@@ -864,9 +864,8 @@ export default function HealthScreen() {
       const [selectedItems, catalog] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
       setQuickAddItems(selectedItems);
       setQuickAddCatalog(catalog);
-    } catch {
-      setQuickAddItems(getDefaultQuickAddItems());
-      setQuickAddCatalog(getDefaultQuickAddItems());
+    } catch (e) {
+      console.warn('加载快捷卡片失败，保留当前展示', e);
     }
 
     return { sliceEmpty };
@@ -1391,10 +1390,17 @@ export default function HealthScreen() {
 
   React.useEffect(() => {
     const anims = quickAddCardAnimsRef.current;
+    const revealed = healthContentRevealDoneRef.current;
     while (anims.length < quickAddItems.length) {
-      anims.push(new Animated.Value(0));
+      anims.push(new Animated.Value(revealed ? 1 : 0));
     }
-  }, [quickAddItems.length]);
+    if (revealed) {
+      for (let i = 0; i < quickAddItems.length; i++) {
+        anims[i]?.setValue(1);
+      }
+      sectionEntranceAnims[1].setValue(1);
+    }
+  }, [quickAddItems.length, sectionEntranceAnims]);
 
   React.useEffect(() => {
     if (initialHealthLoadPending) return;
@@ -1426,80 +1432,8 @@ export default function HealthScreen() {
       ]).start(({ finished }) => {
         if (finished) setHealthSkeletonMounted(false);
       });
-      return;
     }
-
-    metricCardAnims.forEach((anim) => anim.setValue(0));
-    quickAddCardAnimsRef.current.forEach((anim) => anim.setValue(0));
-    sectionEntranceAnims.forEach((anim) => anim.setValue(0));
-    fadeAnim.setValue(0);
-    translateYAnim.setValue(18);
-    healthContentOpacity.setValue(1);
-
-    const metricStagger = Animated.stagger(
-      90,
-      metricCardAnims.map((anim) =>
-        Animated.timing(anim, {
-          toValue: 1,
-          duration: 520,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        })
-      )
-    );
-
-    const quickAddStagger = Animated.stagger(
-      80,
-      quickAddCardAnimsRef.current.map((anim) =>
-        Animated.timing(anim, {
-          toValue: 1,
-          duration: 460,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        })
-      )
-    );
-
-    const sectionStagger = Animated.stagger(
-      120,
-      sectionEntranceAnims.map((anim) =>
-        Animated.timing(anim, {
-          toValue: 1,
-          duration: 420,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        })
-      )
-    );
-
-    Animated.sequence([
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 520,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(translateYAnim, {
-          toValue: 0,
-          duration: 520,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-      metricStagger,
-      Animated.parallel([sectionStagger, quickAddStagger]),
-    ]).start();
-  }, [
-    fadeAnim,
-    translateYAnim,
-    metricCardAnims,
-    quickAddItems.length,
-    sectionEntranceAnims,
-    initialHealthLoadPending,
-    healthSkeletonOpacity,
-    healthContentOpacity,
-  ]);
+  }, [fadeAnim, translateYAnim, metricCardAnims, sectionEntranceAnims, initialHealthLoadPending, healthSkeletonOpacity, healthContentOpacity]);
 
   React.useEffect(() => {
     const pulse = Animated.loop(

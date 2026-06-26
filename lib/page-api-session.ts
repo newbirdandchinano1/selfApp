@@ -30,8 +30,13 @@ type TabPageKey = (typeof TAB_PAGE_KEYS)[keyof typeof TAB_PAGE_KEYS];
  * local-first 模式下本地写入已即时可见，不再重置页面同步状态强制重拉 REST。
  */
 const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
+  app_settings: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   health_records: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   users: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
+  projects: [TAB_PAGE_KEYS.tasks],
+  project_categories: [TAB_PAGE_KEYS.tasks],
+  tasks: [TAB_PAGE_KEYS.tasks],
+  task_categories: [TAB_PAGE_KEYS.tasks],
   habits: [TAB_PAGE_KEYS.tasks],
   habit_contexts: [TAB_PAGE_KEYS.tasks],
   habit_check_ins: [TAB_PAGE_KEYS.tasks],
@@ -66,6 +71,24 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   recipe_categories: [TAB_PAGE_KEYS.profile],
   recipe_items: [TAB_PAGE_KEYS.profile],
 };
+
+/** 本地表写入后需刷新的子页面（非 Tab 主页面） */
+const TABLE_CHILD_PAGE_DIRTY_MAP: Record<string, string[]> = {
+  habit_check_ins: ['habit-detail', 'habit-manage', 'tasks-calendar'],
+  habits: ['habit-detail', 'habit-manage'],
+};
+
+function markChildPagesDirtyForTable(table: string): void {
+  const childPages = TABLE_CHILD_PAGE_DIRTY_MAP[table.trim()];
+  if (!childPages?.length) return;
+  for (const key of childPages) {
+    const trimmed = key.trim();
+    if (!trimmed) continue;
+    clearPageLoadedInSession(trimmed);
+    pagesNeedingRestRefresh.add(trimmed);
+    resetPageApiSession(trimmed, { force: true });
+  }
+}
 
 /** 本会话内已完成首次加载的页面（切换 Tab 不再重复全量 REST/重载） */
 const sessionLoadedPages = new Set<string>();
@@ -260,14 +283,22 @@ export function markTabPageDirty(tab: keyof typeof TAB_PAGE_KEYS): void {
   resetPageApiSession(TAB_PAGE_KEYS[tab]);
 }
 
-/** 本地表写入后，按映射标记相关 Tab 主页面为 dirty（local-first 下跳过） */
+/** 本地表写入后，按映射标记相关 Tab 主页面为 dirty */
 export function markTabPagesDirtyForTable(table: string): void {
-  if (isLocalFirstReads()) return;
   const pages = TABLE_TAB_DIRTY_MAP[table.trim()];
-  if (!pages?.length) return;
-  for (const key of pages) {
+  const childPages = TABLE_CHILD_PAGE_DIRTY_MAP[table.trim()];
+  if (!pages?.length && !childPages?.length) return;
+  if (isLocalFirstReads()) {
+    for (const key of pages ?? []) {
+      clearPageLoadedInSession(key);
+    }
+    markChildPagesDirtyForTable(table);
+    return;
+  }
+  for (const key of pages ?? []) {
     resetPageApiSession(key);
   }
+  markChildPagesDirtyForTable(table);
 }
 
 export type PageApiReadOpts = {

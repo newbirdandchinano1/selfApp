@@ -128,7 +128,7 @@ import {
   buildProgressBadgeColor,
   buildProgressBorderColor,
   getBreakHabitDayUiState,
-  isHabitDayGoalMet,
+  isHabitDayDisplayCompleted,
 } from '@/lib/repositories/habits/habit-goal';
 import {
   applyRepeatingTaskRollovers,
@@ -513,6 +513,60 @@ type HabitSection = {
     displayCompleted: boolean;
   }>;
 };
+
+type HabitGridItem = HabitSection['items'][number];
+
+function applyHabitCountPatch(
+  item: HabitGridItem,
+  todayCount: number,
+  periodDelta = 0,
+): HabitGridItem {
+  const next: HabitGridItem = { ...item, todayCount };
+  if (
+    periodDelta !== 0 &&
+    item.kind === 'task' &&
+    typeof item.periodProgress === 'number' &&
+    typeof item.periodGoal === 'number'
+  ) {
+    const nextProgress = Math.max(0, Math.min(item.periodGoal, item.periodProgress + periodDelta));
+    next.periodProgress = nextProgress;
+    next.taskShowPeriodCheck = nextProgress >= item.periodGoal;
+  }
+  next.displayCompleted = isHabitDayDisplayCompleted({
+    kind: item.kind,
+    todayCount,
+    dailyGoal: item.dailyGoal,
+  });
+  return next;
+}
+
+function patchHabitSectionsCount(
+  sections: HabitSection[],
+  habitId: string,
+  todayCount: number,
+  periodDelta = 0,
+): HabitSection[] {
+  return sections.map((sec) => ({
+    ...sec,
+    items: sec.items.map((it) => {
+      if (it.id !== habitId) return it;
+      return applyHabitCountPatch(it, todayCount, periodDelta);
+    }),
+  }));
+}
+
+function optimisticHabitCountDelta(
+  item: HabitGridItem,
+  delta: 1 | -1,
+): { nextCount: number; periodDelta: number } | null {
+  const cur = item.todayCount;
+  if (delta > 0) {
+    if (item.incrementCap != null && cur >= item.incrementCap) return null;
+    return { nextCount: cur + 1, periodDelta: item.kind === 'task' ? 1 : 0 };
+  }
+  if (cur <= 0) return null;
+  return { nextCount: cur - 1, periodDelta: item.kind === 'task' ? -1 : 0 };
+}
 
 /** 与 `app/add-habit.tsx` 中 `schedule.activeTab` 一致 */
 type HabitCycleTab = '每天' | '每周定期' | '每周N天' | '每月定期' | '每月N天';
@@ -3231,43 +3285,24 @@ export default function TasksScreen() {
     setExpandedHabitSections((prev) => ({ ...prev, [sectionId]: !prev[sectionId] }));
   }, []);
 
-  const habitIconTapTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const habitIconTapFirstRef = React.useRef<{ habitId: string; t: number } | null>(null);
-
-  React.useEffect(() => {
-    return () => {
-      if (habitIconTapTimerRef.current) clearTimeout(habitIconTapTimerRef.current);
-    };
-  }, []);
 
   const patchHabitTodayCount = React.useCallback(
     (habitId: string, todayCount: number, periodDelta = 0) => {
-      setHabitSections((prev) =>
-        prev.map((sec) => ({
-          ...sec,
-          items: sec.items.map((it) => {
-            if (it.id !== habitId) return it;
-            if (
-              periodDelta !== 0 &&
-              it.kind === 'task' &&
-              typeof it.periodProgress === 'number' &&
-              typeof it.periodGoal === 'number'
-            ) {
-              const nextProgress = Math.min(it.periodGoal, it.periodProgress + periodDelta);
-              return {
-                ...it,
-                todayCount,
-                periodProgress: nextProgress,
-                taskShowPeriodCheck: nextProgress >= it.periodGoal,
-              };
-            }
-            return { ...it, todayCount };
-          }),
-        }))
-      );
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setHabitSections((prev) => patchHabitSectionsCount(prev, habitId, todayCount, periodDelta));
     },
     []
   );
+
+  const restoreHabitGridItem = React.useCallback((snapshot: HabitGridItem) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setHabitSections((prev) =>
+      prev.map((sec) => ({
+        ...sec,
+        items: sec.items.map((it) => (it.id === snapshot.id ? snapshot : it)),
+      }))
+    );
+  }, []);
 
   const maybeCompleteBreakHabit = React.useCallback(
     async (habitId: string) => {
@@ -3320,80 +3355,72 @@ export default function TasksScreen() {
     [loadHabits]
   );
 
-  const handleHabitIncrement = React.useCallback(
-    async (habitId: string, incrementCap: number | null) => {
-      markPageDirty();
-      try {
-        const { nextCount, increased } = await incrementTodayHabitCheckIn(habitId, incrementCap);
-        patchHabitTodayCount(habitId, nextCount, increased ? 1 : 0);
-        if (increased) void playHabitCheckInDing();
-        await maybeCompleteBreakHabit(habitId);
-        await maybeCompleteBuildHabit(habitId);
-        await maybeRefreshTaskHabitVisibility(habitId);
-        await syncHabitBoundTasksForHabit(habitId, nextCount);
-        await loadHabits();
-      } catch (err) {
-        console.warn('习惯打卡失败', err);
-      }
+  const runHabitSideEffectsAfterCountChange = React.useCallback(
+    (habitId: string, nextCount: number) => {
+      void maybeCompleteBreakHabit(habitId);
+      void maybeCompleteBuildHabit(habitId);
+      void maybeRefreshTaskHabitVisibility(habitId);
+      void syncHabitBoundTasksForHabit(habitId, nextCount);
+      void loadHabits();
     },
     [
       loadHabits,
       maybeCompleteBreakHabit,
       maybeCompleteBuildHabit,
       maybeRefreshTaskHabitVisibility,
-      markPageDirty,
-      patchHabitTodayCount,
       syncHabitBoundTasksForHabit,
     ]
+  );
+
+  const handleHabitIncrement = React.useCallback(
+    async (item: HabitGridItem) => {
+      markPageDirty();
+      const optimistic = optimisticHabitCountDelta(item, 1);
+      if (optimistic) {
+        patchHabitTodayCount(item.id, optimistic.nextCount, optimistic.periodDelta);
+      }
+      try {
+        const { nextCount, increased } = await incrementTodayHabitCheckIn(item.id, item.incrementCap);
+        if (!optimistic || nextCount !== optimistic.nextCount) {
+          patchHabitTodayCount(item.id, nextCount, increased && item.kind === 'task' ? 1 : 0);
+        }
+        if (increased) void playHabitCheckInDing();
+        runHabitSideEffectsAfterCountChange(item.id, nextCount);
+      } catch (err) {
+        console.warn('习惯打卡失败', err);
+        restoreHabitGridItem(item);
+      }
+    },
+    [markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
   );
 
   const handleHabitUndoOnce = React.useCallback(
-    async (habitId: string) => {
+    async (item: HabitGridItem) => {
       markPageDirty();
+      const optimistic = optimisticHabitCountDelta(item, -1);
+      if (optimistic) {
+        patchHabitTodayCount(item.id, optimistic.nextCount, optimistic.periodDelta);
+      }
       try {
-        const nextCount = await decrementTodayHabitCheckIn(habitId);
-        patchHabitTodayCount(habitId, nextCount);
-        await maybeCompleteBreakHabit(habitId);
-        await maybeCompleteBuildHabit(habitId);
-        await loadHabits();
-        await syncHabitBoundTasksForHabit(habitId, nextCount);
+        const nextCount = await decrementTodayHabitCheckIn(item.id);
+        if (!optimistic || nextCount !== optimistic.nextCount) {
+          const periodDelta = item.kind === 'task' && nextCount < item.todayCount ? -1 : 0;
+          patchHabitTodayCount(item.id, nextCount, periodDelta);
+        }
+        runHabitSideEffectsAfterCountChange(item.id, nextCount);
       } catch (err) {
         console.warn('撤销打卡失败', err);
+        restoreHabitGridItem(item);
       }
     },
-    [
-      loadHabits,
-      maybeCompleteBreakHabit,
-      maybeCompleteBuildHabit,
-      markPageDirty,
-      patchHabitTodayCount,
-      syncHabitBoundTasksForHabit,
-    ]
+    [markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
   );
 
   const handleHabitIconPress = React.useCallback(
-    (item: { id: string; incrementCap: number | null }) => {
-      const DOUBLE_MS = 300;
-      const now = Date.now();
-      const first = habitIconTapFirstRef.current;
-      if (first && first.habitId === item.id && now - first.t < DOUBLE_MS) {
-        habitIconTapFirstRef.current = null;
-        if (habitIconTapTimerRef.current) {
-          clearTimeout(habitIconTapTimerRef.current);
-          habitIconTapTimerRef.current = null;
-        }
-        void handleHabitUndoOnce(item.id);
-        return;
-      }
-      habitIconTapFirstRef.current = { habitId: item.id, t: now };
-      if (habitIconTapTimerRef.current) clearTimeout(habitIconTapTimerRef.current);
-      habitIconTapTimerRef.current = setTimeout(() => {
-        habitIconTapTimerRef.current = null;
-        habitIconTapFirstRef.current = null;
-        void handleHabitIncrement(item.id, item.incrementCap);
-      }, DOUBLE_MS);
+    (item: HabitGridItem) => {
+      void handleHabitIncrement(item);
     },
-    [handleHabitIncrement, handleHabitUndoOnce]
+    [handleHabitIncrement]
   );
 
   const hasChildrenDeeperThan = React.useCallback((nodes: TaskTreeNode[], level: number, maxLevel: number): boolean => {
@@ -4361,7 +4388,11 @@ export default function TasksScreen() {
                             : null;
                           const displayCompleted = isTask
                             ? item.taskShowPeriodCheck
-                            : item.displayCompleted;
+                            : isHabitDayDisplayCompleted({
+                                kind: item.kind,
+                                todayCount: item.todayCount,
+                                dailyGoal: item.dailyGoal,
+                              });
                           const goalMet = isBreak
                             ? scheduleAllowsToday && displayCompleted
                             : displayCompleted;
@@ -4393,6 +4424,11 @@ export default function TasksScreen() {
                             ? buildProgressBorderColor(item.todayCount, item.dailyGoal, isDark)
                             : null;
                           const progressBadgeCount = isTask ? taskPeriodProgress : item.todayCount;
+                          const canUndoTodayBadge = scheduleAllowsToday && item.todayCount > 0;
+                          const onHabitBadgeUndo = () => {
+                            if (!canUndoTodayBadge) return;
+                            void handleHabitUndoOnce(item);
+                          };
                           const progressBadgeBg = isBreak
                             ? breakSlipping
                               ? breakSlipBadgeColor(item.todayCount, item.dailyGoal, isDark)
@@ -4492,9 +4528,23 @@ export default function TasksScreen() {
                                     ) : null}
                                   </View>
                                   {goalMet ? (
-                                    <View style={[styles.habitTodayBadge, { borderColor: card, backgroundColor: secondary }]}>
-                                      <MaterialIcons name="check" size={11} color="#fff" />
-                                    </View>
+                                    canUndoTodayBadge ? (
+                                      <Pressable
+                                        onPress={onHabitBadgeUndo}
+                                        hitSlop={6}
+                                        accessibilityLabel="撤销一次打卡"
+                                        style={({ pressed }) => [
+                                          styles.habitTodayBadge,
+                                          { borderColor: card, backgroundColor: secondary },
+                                          pressed && { opacity: 0.86 },
+                                        ]}>
+                                        <MaterialIcons name="check" size={11} color="#fff" />
+                                      </Pressable>
+                                    ) : (
+                                      <View style={[styles.habitTodayBadge, { borderColor: card, backgroundColor: secondary }]}>
+                                        <MaterialIcons name="check" size={11} color="#fff" />
+                                      </View>
+                                    )
                                   ) : goalFailed ? (
                                     <View
                                       style={[
@@ -4507,23 +4557,40 @@ export default function TasksScreen() {
                                       <Text style={styles.habitTodayBadgeFail}>❌</Text>
                                     </View>
                                   ) : breakSlipping || buildProgressing || taskProgressing || (!isBreak && !isTask && hasProgress) ? (
-                                    <View
-                                      style={[
-                                        styles.habitTodayBadge,
-                                        {
-                                          borderColor: card,
-                                          backgroundColor: progressBadgeBg,
-                                        },
-                                      ]}>
-                                      <Text style={styles.habitTodayBadgeCount}>{progressBadgeCount}</Text>
-                                    </View>
+                                    canUndoTodayBadge ? (
+                                      <Pressable
+                                        onPress={onHabitBadgeUndo}
+                                        hitSlop={6}
+                                        accessibilityLabel="撤销一次打卡"
+                                        style={({ pressed }) => [
+                                          styles.habitTodayBadge,
+                                          {
+                                            borderColor: card,
+                                            backgroundColor: progressBadgeBg,
+                                          },
+                                          pressed && { opacity: 0.86 },
+                                        ]}>
+                                        <Text style={styles.habitTodayBadgeCount}>{progressBadgeCount}</Text>
+                                      </Pressable>
+                                    ) : (
+                                      <View
+                                        style={[
+                                          styles.habitTodayBadge,
+                                          {
+                                            borderColor: card,
+                                            backgroundColor: progressBadgeBg,
+                                          },
+                                        ]}>
+                                        <Text style={styles.habitTodayBadgeCount}>{progressBadgeCount}</Text>
+                                      </View>
+                                    )
                                   ) : null}
                                 </View>
                               </Pressable>
                               <Pressable
                                 onPress={() => {
                                   if (!scheduleAllowsToday) return;
-                                  void handleHabitIncrement(item.id, item.incrementCap);
+                                  void handleHabitIncrement(item);
                                 }}
                                 onLongPress={openHabitDetail}
                                 delayLongPress={260}
@@ -6545,6 +6612,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: -2,
     bottom: -2,
+    zIndex: 4,
     minWidth: 18,
     height: 18,
     paddingHorizontal: 4,

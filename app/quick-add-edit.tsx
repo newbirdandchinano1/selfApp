@@ -13,6 +13,7 @@ import {
 } from '@/lib/quick-add-cards';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { notifyAncestorPagesLocalReload } from '@/lib/page-api-session';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -55,33 +56,33 @@ export default function QuickAddEditScreen() {
     }))
   );
   const [allItems, setAllItems] = React.useState<QuickAddItem[]>([]);
+  const [itemsLoading, setItemsLoading] = React.useState(true);
 
   const reload = React.useCallback(async (forceApi = false) => {
-    await wrapLoad(async () => {
+    setItemsLoading(true);
     try {
-      const [selected, all] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
-      setHomeItems(
-        selected.map((item) => ({
-          ...item,
-          icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-        }))
-      );
-      setAllItems(
-        all.map((item) => ({
-          ...item,
-          icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-        }))
-      );
-    } catch {
-      setHomeItems(
-        getDefaultQuickAddItems().map((item) => ({
-          ...item,
-          icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-        }))
-      );
-      setAllItems([]);
+      await wrapLoad(async () => {
+        try {
+          const [selected, all] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
+          setHomeItems(
+            selected.map((item) => ({
+              ...item,
+              icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+            }))
+          );
+          setAllItems(
+            all.map((item) => ({
+              ...item,
+              icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+            }))
+          );
+        } catch (e) {
+          console.warn('加载快捷卡片失败', e);
+        }
+      }, forceApi);
+    } finally {
+      setItemsLoading(false);
     }
-    }, forceApi);
   }, [wrapLoad]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
@@ -155,17 +156,19 @@ export default function QuickAddEditScreen() {
   }, []);
 
   const onSave = React.useCallback(async () => {
+    if (itemsLoading) return;
     if (homeItems.length === 0) {
       Alert.alert('请至少保留1个', '至少保留一个快捷卡片，方便快速记录。');
       return;
     }
     try {
       await saveSelectedQuickAddKeys(homeItems.map((item) => item.key));
+      notifyAncestorPagesLocalReload(PAGE_API_KEY);
       router.back();
     } catch {
       Alert.alert('保存失败', '请稍后重试。');
     }
-  }, [homeItems, router]);
+  }, [homeItems, itemsLoading, router]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -174,8 +177,14 @@ export default function QuickAddEditScreen() {
           <MaterialIcons name="arrow-back" size={22} color={theme.text} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: theme.text }]}>编辑快捷卡片</Text>
-        <Pressable onPress={() => void onSave()} style={({ pressed }) => [styles.saveBtn, pressed && { opacity: 0.75 }]}>
-          <Text style={[styles.saveText, { color: theme.primary }]}>保存</Text>
+        <Pressable
+          onPress={() => void onSave()}
+          disabled={itemsLoading}
+          style={({ pressed }) => [styles.saveBtn, (pressed || itemsLoading) && { opacity: 0.75 }]}
+        >
+          <Text style={[styles.saveText, { color: itemsLoading ? theme.textSecondary : theme.primary }]}>
+            {itemsLoading ? '加载中' : '保存'}
+          </Text>
         </Pressable>
       </View>
 

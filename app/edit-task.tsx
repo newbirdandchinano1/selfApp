@@ -15,6 +15,7 @@ import {
 } from '@/lib/schedule-inherit';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import { formatWriteError } from '@/lib/format-write-error';
+import { notifyAncestorPagesLocalReload } from '@/lib/page-api-session';
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
@@ -928,6 +929,7 @@ export default function EditTaskScreen() {
                 setSkipRemoveGuard(true);
                 setSaving(true);
                 await deleteTask(taskId);
+                notifyAncestorPagesLocalReload(PAGE_API_KEY);
                 navigateAfterDeleteTask();
               } catch (error) {
                 console.warn('删除任务失败', error);
@@ -951,6 +953,7 @@ export default function EditTaskScreen() {
                 setSkipRemoveGuard(true);
                 setSaving(true);
                 await deleteTask(taskId);
+                notifyAncestorPagesLocalReload(PAGE_API_KEY);
                 navigateAfterDeleteTask();
               } catch (err) {
                 console.warn('删除任务失败', err);

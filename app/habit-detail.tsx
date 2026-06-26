@@ -48,6 +48,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
+import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   ActivityIndicator,
@@ -256,6 +257,29 @@ export default function HabitDetailScreen() {
 
   const focusYmd = React.useMemo(() => toYMD(focusDate), [focusDate]);
 
+  const loadHabitOverview = React.useCallback(async () => {
+    if (!habitId) {
+      setHabit(null);
+      setCheckIns({});
+      return;
+    }
+    await syncBreakHabitCompletions();
+    await syncBuildHabitCompletions();
+    const row = await getHabitById(habitId);
+    setHabit(row ?? null);
+    if (!row) {
+      setCheckIns({});
+      return;
+    }
+    const fromDb = await getCheckInsMapByHabitId(row.id);
+    const merged = { ...fromDb };
+    const legacy = normalizeCheckIns(parseExtra(row.extra_data).checkIns);
+    for (const [k, v] of Object.entries(legacy)) {
+      if (merged[k] === undefined) merged[k] = v;
+    }
+    setCheckIns(merged);
+  }, [habitId]);
+
   const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
   React.useEffect(() => {
     const prev = prevLogicalTodayYmdRef.current;
@@ -268,8 +292,8 @@ export default function HabitDetailScreen() {
     });
     setTrendWeekStart(startOfWeekMonday(todayDate));
     setCalendarMonth(new Date(todayDate.getFullYear(), todayDate.getMonth(), 1));
-    if (habitId) void reload();
-  }, [habitId, logicalTodayYmd, reload]);
+    if (habitId) void loadHabitOverview();
+  }, [habitId, logicalTodayYmd, loadHabitOverview]);
 
   const reload = React.useCallback(
     async (forceApi = false) => {
@@ -281,21 +305,7 @@ export default function HabitDetailScreen() {
         }
         setLoading(true);
         try {
-          await syncBreakHabitCompletions();
-          await syncBuildHabitCompletions();
-          const row = await getHabitById(habitId);
-          setHabit(row ?? null);
-          if (!row) {
-            setCheckIns({});
-          } else {
-            const fromDb = await getCheckInsMapByHabitId(row.id);
-            const merged = { ...fromDb };
-            const legacy = normalizeCheckIns(parseExtra(row.extra_data).checkIns);
-            for (const [k, v] of Object.entries(legacy)) {
-              if (merged[k] === undefined) merged[k] = v;
-            }
-            setCheckIns(merged);
-          }
+          await loadHabitOverview();
         } catch (e) {
           console.warn('加载习惯详情失败', e);
           setHabit(null);
@@ -304,14 +314,23 @@ export default function HabitDetailScreen() {
         }
       }, forceApi);
     },
-    [habitId, wrapLoad],
+    [habitId, loadHabitOverview, wrapLoad],
   );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     React.useCallback(() => {
-      void reload();
+      invalidateInflightApiTableFetch('habit_check_ins');
+      void (async () => {
+        try {
+          await loadHabitOverview();
+        } catch (e) {
+          console.warn('刷新习惯概览失败', e);
+        } finally {
+          setLoading(false);
+        }
+      })();
       setFocusDate((prev) => {
         const ymd = toYMD(prev);
         if (ymd >= logicalTodayYmd) {
@@ -319,7 +338,7 @@ export default function HabitDetailScreen() {
         }
         return prev;
       });
-    }, [logicalTodayYmd, reload])
+    }, [logicalTodayYmd, loadHabitOverview])
   );
 
   const extraParsed = habit ? parseExtra(habit.extra_data) : {};
@@ -518,11 +537,11 @@ export default function HabitDetailScreen() {
     }
   }, [habit, focusYmd, incrementCap, logicalTodayYmd, reload]);
 
-  const handleCancelMakeUpCheckIn = React.useCallback(async () => {
+  const handleDecrementFocusDayCheckIn = React.useCallback(async () => {
     if (!habit) return;
     const ymd = focusYmd;
-    if (ymd >= logicalTodayYmd) {
-      Alert.alert('提示', '取消补卡仅适用于已过去的日期；今天的打卡请在任务页双击图标撤销。');
+    if (ymd > logicalTodayYmd) {
+      Alert.alert('提示', '不能撤销未来日期的记录。');
       return;
     }
     const dbBefore = await getHabitCheckInDbCountForDay(habit.id, ymd);
@@ -534,7 +553,10 @@ export default function HabitDetailScreen() {
           '该日次数来自旧版本地数据，未写入打卡表。如需调整请编辑习惯或清除备注中的历史打卡字段。'
         );
       } else {
-        Alert.alert('提示', '该日暂无打卡记录可撤销。');
+        Alert.alert(
+          '提示',
+          ymd === logicalTodayYmd ? '今日暂无打卡记录可撤销。' : '该日暂无打卡记录可撤销。',
+        );
       }
       return;
     }
@@ -547,9 +569,12 @@ export default function HabitDetailScreen() {
         else next[ymd] = nextCount;
         return next;
       });
+      if (habit && parseHabitKind(habit.extra_data) === 'build') {
+        await tryMarkBuildHabitCompleted(habit, logicalTodayYmd);
+      }
       await reload(true);
     } catch (e) {
-      console.warn('取消补卡失败', e);
+      console.warn('撤销打卡失败', e);
       const msg = e instanceof Error && e.message.trim() ? e.message : '未能撤销，请稍后重试。';
       Alert.alert('操作失败', msg);
     } finally {
@@ -687,8 +712,13 @@ export default function HabitDetailScreen() {
               </Text>
             )
           ) : null}
-          {focusYmd >= logicalTodayYmd && !buildSucceeded ? (
+          {focusYmd < logicalTodayYmd && !buildSucceeded ? (
             <Text style={styles.makeUpSub}>补卡、取消补卡仅针对「逻辑日」之前的日期（与应用日界设置一致）。</Text>
+          ) : null}
+          {focusYmd === logicalTodayYmd && !buildSucceeded ? (
+            <Text style={styles.makeUpSub}>
+              今日可在下方撤销一次；任务页也可点击图标角标数字（或完成勾）撤销。
+            </Text>
           ) : null}
           <View style={styles.makeUpBtnRow}>
             <Pressable
@@ -712,16 +742,27 @@ export default function HabitDetailScreen() {
               style={[
                 styles.makeUpBtn,
                 styles.makeUpBtnCancel,
-                (cancelMakeUpSaving || focusYmd >= logicalTodayYmd || buildSucceeded) && styles.makeUpBtnCancelDisabled,
+                (cancelMakeUpSaving ||
+                  buildSucceeded ||
+                  focusYmd > logicalTodayYmd ||
+                  (checkIns[focusYmd] ?? 0) <= 0) &&
+                  styles.makeUpBtnCancelDisabled,
               ]}
-              disabled={cancelMakeUpSaving || focusYmd >= logicalTodayYmd || buildSucceeded}
-              onPress={() => void handleCancelMakeUpCheckIn()}>
+              disabled={
+                cancelMakeUpSaving ||
+                buildSucceeded ||
+                focusYmd > logicalTodayYmd ||
+                (checkIns[focusYmd] ?? 0) <= 0
+              }
+              onPress={() => void handleDecrementFocusDayCheckIn()}>
               {cancelMakeUpSaving ? (
                 <ActivityIndicator color={RED_TEXT} size="small" />
               ) : (
                 <>
                   <MaterialIcons name="undo" size={18} color={RED_TEXT} />
-                  <Text style={styles.makeUpBtnCancelText}>取消补卡</Text>
+                  <Text style={styles.makeUpBtnCancelText}>
+                    {focusYmd === logicalTodayYmd ? '今日撤销一次' : '取消补卡'}
+                  </Text>
                 </>
               )}
             </Pressable>
