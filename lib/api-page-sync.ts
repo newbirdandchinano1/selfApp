@@ -32,7 +32,7 @@ import { isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 
 import { resolveApiPushInsertOrder } from '@/lib/cloud-sql-sync';
 
-import { listPageScopeTables } from '@/lib/page-api-scope';
+import { listPageScopeTables, TAB_PAGE_KEYS } from '@/lib/page-api-scope';
 
 import { loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 
@@ -74,7 +74,19 @@ const TASKS_BOOTSTRAP_TABLE_MAP: [keyof TasksBootstrapPayload, string][] = [
 
   ['habitCheckIns', 'habit_check_ins'],
 
+  ['taskExecutionEvents', 'task_execution_events'],
+
+  ['frogCompletionEvents', 'frog_completion_events'],
+
 ];
+
+
+
+export async function clearTasksBootstrapVersionCache(): Promise<void> {
+
+  await writeAppMeta(TASKS_BOOTSTRAP_VERSIONS_META_KEY, '{}');
+
+}
 
 
 
@@ -510,7 +522,9 @@ export async function syncPageScopeFromApi(
 
     try {
 
-      const tablesSynced = await withApiLoading(async () => {
+      const runPageSync = withApiLoading;
+
+      const tablesSynced = await runPageSync(async () => {
 
         await ensureApiLoggedIn({ signal: opts?.signal });
 

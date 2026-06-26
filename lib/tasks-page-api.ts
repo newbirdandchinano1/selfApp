@@ -34,7 +34,11 @@ import type { TaskCategoryRow, TaskRow } from '@/lib/repositories/tasks/task.typ
 
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 
+import { overlayLocalPendingOnApiTableRows } from '@/lib/api-read-pending-overlay';
+
 import { fetchTasksCatalog } from '@/lib/tasks-catalog-api';
+
+import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
 
 import {
 
@@ -52,15 +56,16 @@ import {
 
   standaloneTodoPassesDayBoundaryFilter,
 
-  standaloneTodoPassesRepeatDayFilter,
-
-  standaloneTodoPassesScheduleWindowFilter,
+  standaloneTodoPassesStandaloneListFilter,
 
 } from '@/lib/standalone-todo-visibility';
 
 
 
 export const TASKS_PAGE_FILTERS_VERSION = 'tasks-page-v1';
+
+/** 待办栏单视图请求分页上限（与后端契约一致） */
+export const STANDALONE_TODOS_API_PAGE_LIMIT = 200;
 
 
 
@@ -160,6 +165,57 @@ function isServerFilteredTasksPage(meta: TasksPageFilteredMeta | undefined): boo
 
 
 
+/** 待办栏单视图 meta 校验（须 taskView=standaloneTodos 且 tasksScope 一致） */
+export function isServerFilteredStandaloneTodos(meta: TasksPageFilteredMeta | undefined): boolean {
+
+  return (
+
+    meta?.serverFiltered === true &&
+
+    meta?.filtersVersion === TASKS_PAGE_FILTERS_VERSION &&
+
+    meta?.tasksScope === 'standaloneTodos'
+
+  );
+
+}
+
+
+
+function isServerFilteredMatrixWeek(meta: TasksPageFilteredMeta | undefined): boolean {
+
+  return (
+
+    meta?.serverFiltered === true &&
+
+    meta?.filtersVersion === TASKS_PAGE_FILTERS_VERSION &&
+
+    meta?.tasksScope === 'matrixWeek'
+
+  );
+
+}
+
+
+
+function isServerFilteredTaskView(
+
+  taskView: TasksPageTaskView,
+
+  meta: TasksPageFilteredMeta | undefined,
+
+): boolean {
+
+  if (taskView === 'standaloneTodos') return isServerFilteredStandaloneTodos(meta);
+
+  if (taskView === 'matrixWeek') return isServerFilteredMatrixWeek(meta);
+
+  return isServerFilteredTasksPage(meta);
+
+}
+
+
+
 async function syncTasksPageTableRows(
 
   tableName: string,
@@ -248,7 +304,8 @@ export function resolveMatrixProjectIds(
 
 
 
-function sortStandaloneTodosLocally(rows: TaskRow[]): TaskRow[] {
+/** 未完成在前 → 搁置置底 → 已完成/取消置底；组内按创建时间升序 */
+export function sortStandaloneTodosLocally(rows: TaskRow[]): TaskRow[] {
 
   const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
 
@@ -274,7 +331,11 @@ function sortStandaloneTodosLocally(rows: TaskRow[]): TaskRow[] {
 
     if (sa !== sb) return sa ? 1 : -1;
 
-    return createdMs(a) - createdMs(b);
+    const byCreated = createdMs(a) - createdMs(b);
+
+    if (byCreated !== 0) return byCreated;
+
+    return a.id.localeCompare(b.id);
 
   });
 
@@ -294,21 +355,7 @@ function filterStandaloneTodosOffline(
 
   return sortStandaloneTodosLocally(
 
-    rows.filter(
-
-      (t) =>
-
-        !t.project_id &&
-
-        !t.parent_task_id &&
-
-        standaloneTodoPassesDayBoundaryFilter(t, boundary, logicalToday) &&
-
-        standaloneTodoPassesRepeatDayFilter(t, logicalToday) &&
-
-        standaloneTodoPassesScheduleWindowFilter(t, logicalToday),
-
-    ),
+    rows.filter((t) => standaloneTodoPassesStandaloneListFilter(t, boundary, logicalToday)),
 
   );
 
@@ -454,6 +501,10 @@ async function pullTasksViewFromApi(opts: {
 
       page,
 
+      limit: taskView === 'standaloneTodos' ? STANDALONE_TODOS_API_PAGE_LIMIT : undefined,
+
+      includeShelved: taskView === 'standaloneTodos' ? true : undefined,
+
       signal,
 
     });
@@ -512,15 +563,25 @@ function buildTasksViewData(
 
   tasks: TaskRow[],
 
+  taskView: TasksPageTaskView,
+
 ): TasksViewData {
 
-  const serverFiltered = isServerFilteredTasksPage(meta);
+  const serverFiltered = isServerFilteredTaskView(taskView, meta);
 
   if (!serverFiltered) {
 
-    console.warn(`[tasks-page-api] 响应未标记 tasks-page-v1 筛选（${meta?.tasksScope ?? 'unknown'}）`);
+    console.warn(
+
+      `[tasks-page-api] ${taskView} 响应 meta 未通过校验（tasksScope=${meta?.tasksScope ?? 'unknown'}）`,
+
+    );
 
   }
+
+  const orderedTasks =
+
+    taskView === 'standaloneTodos' ? sortStandaloneTodosLocally(tasks) : tasks;
 
   return {
 
@@ -530,13 +591,136 @@ function buildTasksViewData(
 
     weekEnd: ctx.weekEnd,
 
-    tasks,
+    tasks: orderedTasks,
 
     serverFiltered,
 
     filtersVersion: typeof meta?.filtersVersion === 'string' ? meta.filtersVersion : null,
 
   };
+
+}
+
+
+
+type ReadTasksViewFromLocalOpts = {
+
+  taskView: TasksPageTaskView;
+
+  boundary: TasksDayBoundary;
+
+  logicalToday: string;
+
+  weekStart: string;
+
+  weekEnd: string;
+
+  projects?: ProjectRow[];
+
+  taskTab?: string;
+
+};
+
+
+
+/** 待办栏列表：meta 已校验时信任 API 返回的 done/cancelled；否则全量本地筛选 */
+async function resolveStandaloneTodosList(
+
+  apiTasks: TaskRow[],
+
+  serverFiltered: boolean,
+
+  localReadOpts: ReadTasksViewFromLocalOpts,
+
+): Promise<TaskRow[]> {
+
+  const { boundary, logicalToday } = localReadOpts;
+
+  if (serverFiltered) {
+
+    const fromApi = apiTasks.filter((t) => isStandaloneTodoTask(t));
+
+    const withPending = (await overlayLocalPendingOnApiTableRows(
+
+      'tasks',
+
+      fromApi as Record<string, unknown>[],
+
+    )) as TaskRow[];
+
+    const apiIds = new Set(withPending.map((t) => String(t.id)));
+
+    const extras: TaskRow[] = [];
+
+    for (const t of await getTasks()) {
+
+      if (!isStandaloneTodoTask(t) || apiIds.has(String(t.id))) continue;
+
+      if (t.status === 'done' || t.status === 'cancelled') {
+
+        if (standaloneTodoPassesDayBoundaryFilter(t, boundary, logicalToday)) extras.push(t);
+
+      } else if (standaloneTodoPassesStandaloneListFilter(t, boundary, logicalToday)) {
+
+        extras.push(t);
+
+      }
+
+    }
+
+    return sortStandaloneTodosLocally([...withPending, ...extras]);
+
+  }
+
+  return filterStandaloneTodosOffline(await getTasks(), boundary, logicalToday);
+
+}
+
+
+
+async function finalizeTasksViewFromApi(
+
+  ctx: { logicalToday: string; weekStart: string; weekEnd: string },
+
+  taskView: TasksPageTaskView,
+
+  apiResult: { tasks: TaskRow[]; meta: TasksPageFilteredMeta | undefined },
+
+  localReadOpts: ReadTasksViewFromLocalOpts,
+
+  offlineFallback?: boolean,
+
+): Promise<TasksViewData> {
+
+  const viewData = buildTasksViewData(ctx, apiResult.meta, apiResult.tasks, taskView);
+
+  if (offlineFallback !== false && taskView === 'standaloneTodos') {
+
+    const tasks = await resolveStandaloneTodosList(
+
+      apiResult.tasks,
+
+      viewData.serverFiltered,
+
+      localReadOpts,
+
+    );
+
+    return {
+
+      ...ctx,
+
+      tasks,
+
+      serverFiltered: viewData.serverFiltered,
+
+      filtersVersion: viewData.filtersVersion,
+
+    };
+
+  }
+
+  return viewData;
 
 }
 
@@ -640,7 +824,35 @@ async function pullTasksView(opts: {
 
       });
 
-      return buildTasksViewData(ctx, result.meta, result.tasks);
+      return finalizeTasksViewFromApi(
+
+        ctx,
+
+        opts.taskView,
+
+        result,
+
+        {
+
+          taskView: opts.taskView,
+
+          boundary,
+
+          logicalToday,
+
+          weekStart,
+
+          weekEnd,
+
+          projects: opts.projects,
+
+          taskTab: opts.taskTab,
+
+        },
+
+        opts.offlineFallback,
+
+      );
 
     } catch (e) {
 
@@ -825,13 +1037,75 @@ async function pullTasksPageFromApi(opts: {
 
 
 
+  const pageCtx = { logicalToday, weekStart, weekEnd };
+
+  const [standalone, matrix] = await Promise.all([
+
+    finalizeTasksViewFromApi(
+
+      pageCtx,
+
+      'standaloneTodos',
+
+      standaloneResult,
+
+      {
+
+        taskView: 'standaloneTodos',
+
+        boundary,
+
+        logicalToday,
+
+        weekStart,
+
+        weekEnd,
+
+      },
+
+      true,
+
+    ),
+
+    finalizeTasksViewFromApi(
+
+      pageCtx,
+
+      'matrixWeek',
+
+      matrixResult,
+
+      {
+
+        taskView: 'matrixWeek',
+
+        boundary,
+
+        logicalToday,
+
+        weekStart,
+
+        weekEnd,
+
+        projects: catalog.projects,
+
+        taskTab: taskTab ?? 'all',
+
+      },
+
+      true,
+
+    ),
+
+  ]);
+
   return {
 
     catalog,
 
-    standalone: buildTasksViewData({ logicalToday, weekStart, weekEnd }, standaloneResult.meta, standaloneResult.tasks),
+    standalone,
 
-    matrix: buildTasksViewData({ logicalToday, weekStart, weekEnd }, matrixResult.meta, matrixResult.tasks),
+    matrix,
 
   };
 

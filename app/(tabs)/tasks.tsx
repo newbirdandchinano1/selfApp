@@ -1,3 +1,10 @@
+import {
+  TasksFrogSectionSkeleton,
+  TasksHabitSectionSkeleton,
+  TasksHeatmapSkeleton,
+  TasksProjectsSectionSkeleton,
+  TasksStandaloneSectionSkeleton,
+} from '@/components/tasks/tasks-home-skeletons';
 import { AppIconButton } from '@/components/ui';
 import { CompletionRewardBadge } from '@/components/completion-reward/CompletionRewardBadge';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
@@ -57,7 +64,6 @@ import {
   type CompleteTasksBoundToHabitResult,
 } from '@/lib/repositories/tasks/task-habit-binding';
 import {
-  backfillFrogCompletionEventsFromTasks,
   insertFrogCompletionEvent,
   type FrogCompletionDayItem,
 } from '@/lib/repositories/tasks/frog-completion-events';
@@ -130,6 +136,7 @@ import {
   patchExtraDataOnRepeatTaskReopen,
   taskHasRepeatingSchedule,
 } from '@/lib/task-repeat-rollover';
+import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
 import { fetchTodayFrogs } from '@/lib/today-frogs-api';
 import { fetchProjectsListForTab } from '@/lib/projects-list-api';
@@ -138,6 +145,7 @@ import {
   fetchStandaloneTodos,
   fetchTasksPageData,
   resolveMatrixProjectIds,
+  sortStandaloneTodosLocally,
 } from '@/lib/tasks-page-api';
 import { fetchTasksHabitsGrid } from '@/lib/tasks-habits-grid-api';
 import {
@@ -770,7 +778,7 @@ function TaskCompletionHeatmap({
   innerCardBg: string;
   innerBorderColor: string;
   isDark: boolean;
-  /** 任务勾选变更后递增，触发热力图从本地库重载 */
+  /** 任务勾选变更后递增，触发热力图从服务端重载 */
   reloadToken: number;
 }) {
   const router = useRouter();
@@ -782,7 +790,6 @@ function TaskCompletionHeatmap({
   const [selectedFrogItems, setSelectedFrogItems] = React.useState<FrogCompletionDayItem[]>([]);
   const [selectedTodoItems, setSelectedTodoItems] = React.useState<TaskExecutionEventWithTitle[]>([]);
   const [dayItemsLoading, setDayItemsLoading] = React.useState(false);
-  const backfillDoneRef = React.useRef(false);
 
   const combinedCountByYmd = React.useMemo(
     () => mergeDailyCountMaps(frogCountByYmd, todoCountByYmd),
@@ -796,24 +803,12 @@ function TaskCompletionHeatmap({
     return { startYmd: formatLocalYmd(gridStartMonday), endYmd: logicalTodayYmd };
   }, [logicalTodayYmd]);
 
-  const scheduleFrogBackfillOnce = React.useCallback(() => {
-    if (backfillDoneRef.current) return;
-    backfillDoneRef.current = true;
-    InteractionManager.runAfterInteractions(() => {
-      void backfillFrogCompletionEventsFromTasks().catch((e) => {
-        console.warn('青蛙完成记录回填失败', e);
-      });
-    });
-  }, []);
-
   const loadCompletionHeatmap = React.useCallback(async () => {
-    scheduleFrogBackfillOnce();
     try {
       const data = await fetchCompletionHeatmap({
         boundary: dayBoundary,
         heatmapStart: heatmapRange.startYmd,
         heatmapEnd: heatmapRange.endYmd,
-        offlineFallback: true,
       });
       setFrogCountByYmd(data.frogCountByYmd);
       setTodoCountByYmd(data.todoCountByYmd);
@@ -822,7 +817,7 @@ function TaskCompletionHeatmap({
       setFrogCountByYmd(new Map());
       setTodoCountByYmd(new Map());
     }
-  }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd, scheduleFrogBackfillOnce]);
+  }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -916,7 +911,8 @@ function TaskCompletionHeatmap({
         const detail = await fetchCompletionHeatmapDayDetail({
           day: selectedYmd,
           boundary: dayBoundary,
-          offlineFallback: true,
+          heatmapStart: heatmapRange.startYmd,
+          heatmapEnd: heatmapRange.endYmd,
         });
         if (!cancelled) {
           setSelectedFrogItems(detail.frogItems);
@@ -935,7 +931,7 @@ function TaskCompletionHeatmap({
     return () => {
       cancelled = true;
     };
-  }, [dayBoundary, selectedYmd, reloadToken]);
+  }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd, selectedYmd, reloadToken]);
 
   const onHeatCellPress = React.useCallback((cell: CompletionHeatCell) => {
     if (!cell.ymd) return;
@@ -1396,6 +1392,12 @@ export default function TasksScreen() {
   const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
   /** 用户在本页做过写操作后调用，下次聚焦时再从后端全量拉取 */
   const markPageDirty = resetSync;
+  /** 首次数据未就绪前展示骨架屏，避免显示空列表闪动 */
+  const [initialTasksLoadPending, setInitialTasksLoadPending] = React.useState(true);
+  const [tasksSkeletonMounted, setTasksSkeletonMounted] = React.useState(true);
+  const tasksContentRevealDoneRef = React.useRef(false);
+  const tasksSkeletonOpacity = React.useRef(new Animated.Value(1)).current;
+  const tasksContentOpacity = React.useRef(new Animated.Value(0)).current;
   /** Measured width of the habit grid row — avoids guessing padding (tabs / safe area / web max-width). */
   const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
   const habitGridItemWidth = React.useMemo(() => {
@@ -1720,7 +1722,7 @@ export default function TasksScreen() {
     }
   }, []);
 
-  const loadTasks = React.useCallback(async (opts?: { forceRefresh?: boolean }): Promise<number> => {
+  const loadTasks = React.useCallback(async (opts?: { forceRefresh?: boolean; forceLocal?: boolean }): Promise<number> => {
     try {
       let rows = await getTasks(opts);
       const logicalToday = getLogicalLocalYmd(new Date(), dayBoundary);
@@ -1736,6 +1738,7 @@ export default function TasksScreen() {
         fetchStandaloneTodos({
           boundary: dayBoundary,
           offlineFallback: true,
+          forceLocal: opts?.forceLocal,
           forceRefresh: opts?.forceRefresh,
         }),
         fetchMatrixWeekTasks({
@@ -1744,6 +1747,7 @@ export default function TasksScreen() {
           taskTab,
           projects,
           offlineFallback: true,
+          forceLocal: opts?.forceLocal,
           forceRefresh: opts?.forceRefresh,
         }),
       ]);
@@ -1756,9 +1760,13 @@ export default function TasksScreen() {
     }
   }, [dayBoundary, projects, taskTab]);
 
-  const loadTodayFrogs = React.useCallback(async () => {
+  const loadTodayFrogs = React.useCallback(async (opts?: { forceLocal?: boolean }) => {
     try {
-      const result = await fetchTodayFrogs({ boundary: dayBoundary, offlineFallback: true });
+      const result = await fetchTodayFrogs({
+        boundary: dayBoundary,
+        offlineFallback: true,
+        forceLocal: opts?.forceLocal,
+      });
       setTodayFrogs(result.tasks);
     } catch (err) {
       console.warn('加载今日青蛙失败', err);
@@ -1867,6 +1875,43 @@ export default function TasksScreen() {
   const projectTabApiReadyRef = React.useRef(false);
 
   React.useEffect(() => {
+    if (initialTasksLoadPending) return;
+
+    if (!tasksContentRevealDoneRef.current) {
+      tasksContentRevealDoneRef.current = true;
+      setTasksSkeletonMounted(true);
+      tasksSkeletonOpacity.setValue(1);
+      tasksContentOpacity.setValue(0);
+      pageFadeAnim.setValue(1);
+      pageTranslateAnim.setValue(0);
+      frogCardAnim.setValue(1);
+      matrixAnim.setValue(1);
+      projectAnim.setValue(1);
+      Animated.parallel([
+        Animated.timing(tasksSkeletonOpacity, {
+          toValue: 0,
+          duration: 280,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(tasksContentOpacity, {
+          toValue: 1,
+          duration: 320,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start(({ finished }) => {
+        if (finished) setTasksSkeletonMounted(false);
+      });
+      return;
+    }
+
+    pageFadeAnim.setValue(0);
+    pageTranslateAnim.setValue(18);
+    frogCardAnim.setValue(0);
+    matrixAnim.setValue(0);
+    projectAnim.setValue(0);
+    tasksContentOpacity.setValue(1);
     Animated.sequence([
       Animated.parallel([
         Animated.timing(pageFadeAnim, {
@@ -1903,7 +1948,16 @@ export default function TasksScreen() {
         }),
       ]),
     ]).start();
-  }, [frogCardAnim, matrixAnim, pageFadeAnim, pageTranslateAnim, projectAnim]);
+  }, [
+    frogCardAnim,
+    initialTasksLoadPending,
+    matrixAnim,
+    pageFadeAnim,
+    pageTranslateAnim,
+    projectAnim,
+    tasksContentOpacity,
+    tasksSkeletonOpacity,
+  ]);
 
   React.useEffect(() => {
     matrixAnim.stopAnimation(() => {
@@ -2167,14 +2221,27 @@ export default function TasksScreen() {
   ]);
 
   const reloadPage = React.useCallback(async (forceApi = false) => {
-    await wrapLoad(async () => {
-      await reload();
-    }, forceApi);
+    try {
+      await wrapLoad(async () => {
+        await reload();
+      }, forceApi);
+      setInitialTasksLoadPending(false);
+      setCompletionHeatmapReloadToken((n) => n + 1);
+    } catch {
+      setInitialTasksLoadPending(false);
+    }
   }, [reload, wrapLoad]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
   usePageFocusReload(PAGE_API_KEY, reloadPage);
+
+  const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
+  React.useEffect(() => {
+    if (prevLogicalTodayYmdRef.current === logicalTodayYmd) return;
+    prevLogicalTodayYmdRef.current = logicalTodayYmd;
+    void Promise.all([loadHabits(), loadTodayFrogs()]);
+  }, [logicalTodayYmd, loadHabits, loadTodayFrogs]);
 
   const findVisibleTask = React.useCallback(
     (taskId: string): TaskRow | undefined =>
@@ -2188,7 +2255,9 @@ export default function TasksScreen() {
   const patchVisibleTask = React.useCallback(
     (taskId: string, patch: Partial<TaskRow> | ((row: TaskRow) => TaskRow)) => {
       const apply = (row: TaskRow) => (typeof patch === 'function' ? patch(row) : { ...row, ...patch });
-      setStandaloneTodos((prev) => prev.map((t) => (t.id === taskId ? apply(t) : t)));
+      setStandaloneTodos((prev) =>
+        sortStandaloneTodosLocally(prev.map((t) => (t.id === taskId ? apply(t) : t))),
+      );
       setMatrixWeekTasks((prev) => prev.map((t) => (t.id === taskId ? apply(t) : t)));
     },
     [],
@@ -2374,11 +2443,13 @@ export default function TasksScreen() {
       if (changes.length === 0) return;
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setStandaloneTodos((prev) =>
-        prev.map((task) => {
-          const change = changes.find((item) => item.id === task.id);
-          if (!change) return task;
-          return { ...task, status: change.status, completed_at: change.completed_at };
-        }),
+        sortStandaloneTodosLocally(
+          prev.map((task) => {
+            const change = changes.find((item) => item.id === task.id);
+            if (!change) return task;
+            return { ...task, status: change.status, completed_at: change.completed_at };
+          }),
+        ),
       );
       setMatrixWeekTasks((prev) =>
         prev.map((task) => {
@@ -2467,12 +2538,12 @@ export default function TasksScreen() {
               );
               try {
                 await unassignFrogFromApi(taskId, frog.extra_data, frog as Record<string, unknown>);
-                await loadTodayFrogs();
+                await loadTodayFrogs({ forceLocal: true });
               } catch (err) {
                 console.warn('取消青蛙指派失败', err);
                 Alert.alert('操作失败', '未能取消指派，请稍后重试。');
-                await loadTasks();
-                await loadTodayFrogs();
+                await loadTasks({ forceLocal: true });
+                await loadTodayFrogs({ forceLocal: true });
                 await loadProjectTasks(projects);
               }
             })();
@@ -2545,8 +2616,11 @@ export default function TasksScreen() {
                   markPageDirty();
                   LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                   await deleteProject(project.id);
+                  await markPendingTablesDirty(['projects', 'tasks']);
+                  await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
                   const rows = await loadProjects();
                   await loadProjectTasks(rows);
+                  await loadProjectsListFromApi(projectTab, { replaceMap: true });
                 }, '项目已删除');
               } catch (err) {
                 console.warn('删除收集箱项目失败', err);
@@ -2558,7 +2632,7 @@ export default function TasksScreen() {
         ]);
       })();
     },
-    [loadProjectTasks, loadProjects, markPageDirty, runExclusiveMutation]
+    [loadProjectTasks, loadProjects, loadProjectsListFromApi, markPageDirty, projectTab, runExclusiveMutation]
   );
 
   const activateShelvedTodo = React.useCallback(
@@ -2624,7 +2698,7 @@ export default function TasksScreen() {
 
       const wasDone = isTaskTerminalStatus(current.status);
       const nextStatus: TaskRow['status'] = wasDone ? 'todo' : 'done';
-      const nextCompletedAt = wasDone ? null : new Date().toISOString();
+      const nextCompletedAt = wasDone ? null : formatTaskAuditDatetimeLocal();
       let nextExtraData = current.extra_data;
       if (taskHasRepeatingSchedule(current.extra_data)) {
         if (nextStatus === 'done') {
@@ -2730,9 +2804,6 @@ export default function TasksScreen() {
           }
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
-        if (getFrogAssignedOn(current.extra_data) === logicalTodayYmd) {
-          await loadTodayFrogs();
-        }
         if (nextStatus === 'done' && current.project_id) {
           const pid = current.project_id;
           const proj = projects.find((p) => p.id === pid);
@@ -2780,16 +2851,16 @@ export default function TasksScreen() {
             }
           })();
         }
-        setCompletionHeatmapReloadToken((n) => n + 1);
-        await loadTasks();
+        await loadTasks({ forceLocal: true });
+        await loadTodayFrogs({ forceLocal: true });
         if (current.project_id) {
           await loadProjectsListFromApi(projectTab);
         }
       } catch (err) {
         console.warn('更新任务状态失败', err);
         // fallback: reload to ensure consistency
-        await loadTasks();
-        await loadTodayFrogs();
+        await loadTasks({ forceLocal: true });
+        await loadTodayFrogs({ forceLocal: true });
         await loadProjectTasks(projects);
       }
     },
@@ -2850,12 +2921,12 @@ export default function TasksScreen() {
           console.warn('记录青蛙完成事件失败', frogLogErr);
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
-        await loadTodayFrogs();
+        await loadTodayFrogs({ forceLocal: true });
       } catch (err) {
         console.warn('完成青蛙会话失败', err);
         Alert.alert('操作失败', '未能完成今日青蛙，请稍后重试。');
         await loadTasks();
-        await loadTodayFrogs();
+        await loadTodayFrogs({ forceLocal: true });
         await loadProjectTasks(projects);
       }
     },
@@ -2908,12 +2979,12 @@ export default function TasksScreen() {
           console.warn('记录青蛙重开事件失败', frogLogErr);
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
-        await loadTodayFrogs();
+        await loadTodayFrogs({ forceLocal: true });
       } catch (err) {
         console.warn('恢复青蛙会话失败', err);
         Alert.alert('操作失败', '未能恢复今日青蛙，请稍后重试。');
         await loadTasks();
-        await loadTodayFrogs();
+        await loadTodayFrogs({ forceLocal: true });
         await loadProjectTasks(projects);
       }
     },
@@ -3003,7 +3074,7 @@ export default function TasksScreen() {
     if (quickTodoSaving || mutationInFlightRef.current) return;
     setQuickTodoSaving(true);
     const id = makeTimestampEntityId('tsk_', 8);
-    const now = new Date().toISOString();
+    const now = formatTaskAuditDatetimeLocal();
     const optimisticTask: TaskRow = {
       id,
       project_id: null,
@@ -3675,6 +3746,9 @@ export default function TasksScreen() {
         }}
         scrollEventThrottle={16}
       >
+        <View style={styles.tasksBodyStack}>
+          {!initialTasksLoadPending ? (
+            <Animated.View style={{ opacity: tasksContentOpacity }}>
         <Animated.View
           style={{
             opacity: pageFadeAnim,
@@ -5464,6 +5538,29 @@ export default function TasksScreen() {
           {/* 底部留白用实体高度，避免 scrollEnabled 切换时与 paddingBottom 叠加触发布局回弹 */}
           <View style={{ height: 46 + mainScrollKeyboardPad }} />
         </Animated.View>
+            </Animated.View>
+          ) : null}
+
+          {initialTasksLoadPending || tasksSkeletonMounted ? (
+            <Animated.View
+              pointerEvents={initialTasksLoadPending ? 'auto' : 'none'}
+              style={[
+                initialTasksLoadPending ? undefined : styles.tasksSkeletonOverlay,
+                {
+                  opacity: initialTasksLoadPending ? 1 : tasksSkeletonOpacity,
+                  backgroundColor: initialTasksLoadPending ? undefined : bg,
+                },
+              ]}
+            >
+              <TasksFrogSectionSkeleton colors={colors} cardBg={card} frogCardWidth={frogCarouselCardWidth} />
+              <TasksHeatmapSkeleton colors={colors} cardBg={card} />
+              <TasksStandaloneSectionSkeleton colors={colors} cardBg={card} />
+              <TasksHabitSectionSkeleton colors={colors} cardBg={card} habitItemWidth={habitGridItemWidth} />
+              <TasksProjectsSectionSkeleton colors={colors} cardBg={card} />
+              <View style={{ height: 46 }} />
+            </Animated.View>
+          ) : null}
+        </View>
       </ScrollView>
 
       {operationToast && (
@@ -5699,6 +5796,18 @@ const styles = StyleSheet.create({
     width: '100%',
     paddingHorizontal: Spacing['5xl'],
     paddingBottom: Spacing['4xl'],
+    gap: Spacing['4xl'],
+  },
+  tasksBodyStack: {
+    position: 'relative',
+    gap: Spacing['4xl'],
+  },
+  tasksSkeletonOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 2,
     gap: Spacing['4xl'],
   },
   bgOrb: {

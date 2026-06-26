@@ -12,6 +12,7 @@ import {
 
 export { addDaysToYmd } from '@/lib/standalone-todo-visibility';
 import { getLogicalLocalYmd, type TasksDayBoundary } from '@/lib/tasks-logical-day';
+import { parseTaskAuditDatetimeForLogicalDay } from '@/lib/api-mysql-datetime';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getFrogSessionCompletedOn } from '@/lib/long-term-task';
@@ -231,9 +232,9 @@ function taskCompletedOnLogicalDay(task: TaskRow, ymd: string, boundary: TasksDa
   if (!isTaskTerminalStatus(task.status)) return false;
   const raw = task.completed_at?.trim() || task.updated_at?.trim();
   if (!raw) return false;
-  const ms = Date.parse(raw);
-  if (Number.isNaN(ms)) return false;
-  return getLogicalLocalYmd(new Date(ms), boundary) === ymd;
+  const doneAt = parseTaskAuditDatetimeForLogicalDay(raw);
+  if (Number.isNaN(doneAt.getTime())) return false;
+  return getLogicalLocalYmd(doneAt, boundary) === ymd;
 }
 
 function todoCalendarSortRank(reason: TodoCalendarDayReason | undefined): number {

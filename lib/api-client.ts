@@ -497,6 +497,8 @@ export type TasksCatalogTableVersion = {
 
 export type TasksCatalogMeta = {
   serverTime?: string;
+  /** false 时 APP 应跳过 catalog 写入并降级逐表 List */
+  catalogComplete?: boolean;
   tablesVersion?: Record<string, TasksCatalogTableVersion>;
 };
 
@@ -780,6 +782,103 @@ export async function apiGetTasksCompletionHeatmap(params?: {
     includeDayDetail: params?.includeDayDetail === true ? true : undefined,
   });
   return apiRequest<CompletionHeatmapPayload>(`/api/pages/tasks/completion-heatmap${qs}`, {
+    method: 'GET',
+    signal: params?.signal,
+  });
+}
+
+export type TasksOverviewMeta = {
+  serverTime?: string;
+  logicalToday?: string;
+  heatmapStart?: string;
+  heatmapEnd?: string;
+  firstCompletedDay?: string | null;
+  filtersVersion?: string;
+};
+
+export type TasksOverviewInsightCounts = {
+  open: number;
+  doneOrCancelled: number;
+  totalActive: number;
+  completedEvents: number;
+  reopenedEvents: number;
+};
+
+export type TasksOverviewStatKey =
+  | 'open'
+  | 'doneOrCancelled'
+  | 'totalActive'
+  | 'completedEvents'
+  | 'reopenedEvents';
+
+export type TasksOverviewEvent = {
+  id: string;
+  task_id: string | null;
+  action: string;
+  created_at: string;
+  task_title: string | null;
+};
+
+export type TasksOverviewPaged<T> = {
+  list: T[];
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
+export type TasksOverviewStatDetail = {
+  statKey: string;
+  mode: 'tasks' | 'events';
+  tasks?: TasksOverviewPaged<Record<string, unknown>>;
+  events?: TasksOverviewPaged<TasksOverviewEvent>;
+};
+
+export type TasksOverviewDayDetail = {
+  ymd: string;
+  netCompletedCount: number;
+  events: TasksOverviewEvent[];
+};
+
+export type TasksOverviewPayload = {
+  meta: TasksOverviewMeta;
+  insightCounts: TasksOverviewInsightCounts;
+  countsByDay: Record<string, number>;
+  recentEvents: TasksOverviewPaged<TasksOverviewEvent>;
+  statDetail?: TasksOverviewStatDetail;
+  dayDetail?: TasksOverviewDayDetail;
+};
+
+export async function apiGetTasksOverview(params?: {
+  dayBoundaryHour?: number;
+  dayBoundaryMinute?: number;
+  logicalToday?: string;
+  heatmapStart?: string;
+  heatmapEnd?: string;
+  eventsPage?: number;
+  eventsLimit?: number;
+  statKey?: string;
+  statPage?: number;
+  statLimit?: number;
+  day?: string;
+  includeDayDetail?: boolean;
+  signal?: AbortSignal;
+}): Promise<TasksOverviewPayload> {
+  const qs = buildQuery({
+    dayBoundaryHour: params?.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params?.dayBoundaryMinute ?? 0,
+    logicalToday: params?.logicalToday,
+    heatmapStart: params?.heatmapStart,
+    heatmapEnd: params?.heatmapEnd,
+    eventsPage: params?.eventsPage,
+    eventsLimit: params?.eventsLimit,
+    statKey: params?.statKey,
+    statPage: params?.statPage,
+    statLimit: params?.statLimit,
+    day: params?.day,
+    includeDayDetail: params?.includeDayDetail === true ? true : undefined,
+  });
+  return apiRequest<TasksOverviewPayload>(`/api/pages/tasks/tasks-overview${qs}`, {
     method: 'GET',
     signal: params?.signal,
   });

@@ -1013,6 +1013,27 @@ export default function EditProjectScreen() {
 
   const removeProject = React.useCallback(() => {
     if (!projectId || saving || loading) return;
+
+    const deleteProjectAndLeave = async () => {
+      try {
+        setSaving(true);
+        await deleteProject(projectId);
+        try {
+          await markPendingTablesDirty(['projects', 'tasks']);
+          await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+          notifyAncestorsDataChanged();
+        } catch (syncErr) {
+          console.warn('项目删除后同步到服务器失败', syncErr);
+        }
+        router.back();
+      } catch (error) {
+        console.warn('删除项目失败', error);
+        Alert.alert('删除失败', formatWriteError(error, '项目删除失败，请稍后重试。'));
+      } finally {
+        setSaving(false);
+      }
+    };
+
     (async () => {
       try {
         const incomplete = await countIncompleteTasksByProjectId(projectId);
@@ -1026,18 +1047,7 @@ export default function EditProjectScreen() {
           {
             text: '删除',
             style: 'destructive',
-            onPress: async () => {
-              try {
-                setSaving(true);
-                await deleteProject(projectId);
-                router.back();
-              } catch (error) {
-                console.warn('删除项目失败', error);
-                Alert.alert('删除失败', formatWriteError(error, '项目删除失败，请稍后重试。'));
-              } finally {
-                setSaving(false);
-              }
-            },
+            onPress: () => void deleteProjectAndLeave(),
           },
         ]);
       } catch (error) {
@@ -1047,23 +1057,12 @@ export default function EditProjectScreen() {
           {
             text: '删除',
             style: 'destructive',
-            onPress: async () => {
-              try {
-                setSaving(true);
-                await deleteProject(projectId);
-                router.back();
-              } catch (err) {
-                console.warn('删除项目失败', err);
-                Alert.alert('删除失败', formatWriteError(err, '项目删除失败，请稍后重试。'));
-              } finally {
-                setSaving(false);
-              }
-            },
+            onPress: () => void deleteProjectAndLeave(),
           },
         ]);
       }
     })();
-  }, [loading, projectId, router, saving]);
+  }, [loading, notifyAncestorsDataChanged, projectId, router, saving]);
 
   const renderSubtaskNodes = (nodes: SubtaskNode[], depth: number): React.ReactNode =>
     nodes.map((s) => {

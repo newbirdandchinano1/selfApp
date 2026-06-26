@@ -18,6 +18,8 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   habits: [TAB_PAGE_KEYS.tasks],
   habit_contexts: [TAB_PAGE_KEYS.tasks],
   habit_check_ins: [TAB_PAGE_KEYS.tasks],
+  task_execution_events: [TAB_PAGE_KEYS.tasks],
+  frog_completion_events: [TAB_PAGE_KEYS.tasks],
   accounts: [TAB_PAGE_KEYS.finance],
   account_transactions: [TAB_PAGE_KEYS.finance],
   finance_accounts: [TAB_PAGE_KEYS.finance],

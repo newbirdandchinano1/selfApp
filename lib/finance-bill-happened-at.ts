@@ -1,3 +1,5 @@
+import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
+
 const BILL_HAPPENED_AT_FIELD_KEYS = [
   'happened_at',
   'consumption_time',
@@ -70,9 +72,9 @@ export function resolveHappenedAtForBillLedger(billIso: string | null | undefine
       const now = Date.now();
       const t = d.getTime();
       if (t >= now - FIVE_YEARS_MS && t <= now + TWO_DAYS_MS) {
-        return { iso: d.toISOString(), fromBill: true };
+        return { iso: formatFinanceHappenedAt(d), fromBill: true };
       }
     }
   }
-  return { iso: new Date().toISOString(), fromBill: false };
+  return { iso: formatFinanceHappenedAt(new Date()), fromBill: false };
 }

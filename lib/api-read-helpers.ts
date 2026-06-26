@@ -1,8 +1,10 @@
 /** 客户端排序 / 过滤辅助（替代无法直接映射的 SQL） */
 
+import { parseStoredDatetime } from '@/lib/api-mysql-datetime';
+
 export function compareDatetimeDesc(a: string | null | undefined, b: string | null | undefined): number {
-  const ta = a ? Date.parse(a) : 0;
-  const tb = b ? Date.parse(b) : 0;
+  const ta = a ? parseStoredDatetime(a).getTime() : 0;
+  const tb = b ? parseStoredDatetime(b).getTime() : 0;
   return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta);
 }
 
@@ -35,7 +37,7 @@ export function isBlank(value: unknown): boolean {
 
 export function ymdFromDatetime(value: string | null | undefined): string | null {
   if (!value?.trim()) return null;
-  const d = new Date(value);
+  const d = parseStoredDatetime(value);
   if (Number.isNaN(d.getTime())) {
     const m = value.trim().match(/^(\d{4}-\d{2}-\d{2})/);
     return m?.[1] ?? null;
@@ -43,6 +45,9 @@ export function ymdFromDatetime(value: string | null | undefined): string | null
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
+
+/** @deprecated 请对 completed_at / updated_at 使用 ymdFromAuditDatetime */
+export { ymdFromAuditDatetime } from '@/lib/api-mysql-datetime';
 
 export function isYmdInRange(ymd: string, startYmd: string, endYmd: string): boolean {
   return ymd >= startYmd && ymd <= endYmd;

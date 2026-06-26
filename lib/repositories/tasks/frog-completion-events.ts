@@ -1,10 +1,14 @@
 import { ensureLocalRowPresent } from '@/lib/api-local-row';
+import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, isYmdInRange } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 
 export type FrogCompletionEventAction = 'completed' | 'reopened';
+
+/** 热力图聚合只读本地，避免 REST 全量拉取 reconcile 覆盖刚写入的事件 */
+const HEATMAP_EVENT_READ_OPTS = { offlineFallback: true, localOnly: true as const };
 
 export type FrogCompletionDayItem = {
   id: string;
@@ -53,6 +57,9 @@ export async function insertFrogCompletionEvent(
      VALUES (?, ?, ?, ?, datetime('now'), ?, 'pending_create')`,
     [id, taskId, ymd, action, taskTitle?.trim() || null]
   );
+  invalidateInflightApiTableFetch('frog_completion_events');
+  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+  await pushLocalChangesToApi({ awaitSync: true });
 }
 
 /** 按指派日返回已完成青蛙的 task_id 集合（与热力图口径一致，仅计 net completed） */
@@ -60,9 +67,7 @@ export async function getFrogCompletedTaskIdsByDayRange(
   startYmd: string,
   endYmd: string,
 ): Promise<Map<string, Set<string>>> {
-  const rows = await readApiTable<FrogCompletionEventRow>('frog_completion_events', {
-    offlineFallback: true,
-  });
+  const rows = await readApiTable<FrogCompletionEventRow>('frog_completion_events', HEATMAP_EVENT_READ_OPTS);
   const m = new Map<string, Set<string>>();
   for (const r of filterNetCompletedFrogEvents(rows)) {
     if (!r.assigned_ymd || !isYmdInRange(r.assigned_ymd, startYmd, endYmd)) continue;
@@ -79,9 +84,7 @@ export async function getFrogCompletionCountsByDayRange(
   startYmd: string,
   endYmd: string
 ): Promise<Map<string, number>> {
-  const rows = await readApiTable<FrogCompletionEventRow>('frog_completion_events', {
-    offlineFallback: true,
-  });
+  const rows = await readApiTable<FrogCompletionEventRow>('frog_completion_events', HEATMAP_EVENT_READ_OPTS);
   const m = new Map<string, number>();
   for (const r of filterNetCompletedFrogEvents(rows)) {
     if (!r.assigned_ymd || !isYmdInRange(r.assigned_ymd, startYmd, endYmd)) continue;
@@ -95,9 +98,9 @@ export async function getFrogCompletionsForAssignedDay(ymd: string): Promise<Fro
   const [events, tasks] = await Promise.all([
     readApiTable<{ id: string; task_id: string | null; assigned_ymd: string; action: string; task_title?: string | null; created_at: string }>(
       'frog_completion_events',
-      { offlineFallback: true },
+      HEATMAP_EVENT_READ_OPTS,
     ),
-    readApiTable<{ id: string; title?: string | null }>('tasks', { offlineFallback: true }),
+    readApiTable<{ id: string; title?: string | null }>('tasks', HEATMAP_EVENT_READ_OPTS),
   ]);
   const taskById = new Map(tasks.map(t => [t.id, t]));
   return filterNetCompletedFrogEvents(events)

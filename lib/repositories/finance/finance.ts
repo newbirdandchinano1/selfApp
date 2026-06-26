@@ -2,6 +2,7 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import { ensureLocalRowForWrite, readLocalRowForWrite } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, sortBySortOrderAsc, ymdFromDatetime } from '@/lib/api-read-helpers';
+import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
 import { getDatabase } from '../../database.native';
 import {
   buildFinanceTransferTxnExtra,
@@ -718,7 +719,7 @@ export async function applyFinanceAccountBalanceCorrection(input: {
   if (Math.abs(delta) < FINANCE_BALANCE_ADJUST_EPS) return;
 
   const id = makeTimestampEntityId('ft_badj_', 6);
-  const happened_at = new Date().toISOString();
+  const happened_at = formatFinanceHappenedAt(new Date());
   const note = input.note ?? null;
 
   /** @param transactionType 流水类型，支出默认写入不计入预算标记 */

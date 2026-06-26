@@ -1,4 +1,6 @@
+import { parseTaskAuditDatetimeForLogicalDay } from '@/lib/api-mysql-datetime';
 import {
+  getRepeatDoneOnYmd,
   isTaskRepeatDueOnLogicalDay,
   parseTaskRepeatSchedule,
   type TaskRepeatSchedule,
@@ -145,12 +147,33 @@ export function standaloneTodoPassesDayBoundaryFilter(
   logicalTodayYmd: string,
 ): boolean {
   if (task.status !== 'done' && task.status !== 'cancelled') return true;
+
+  const repeatDone = getRepeatDoneOnYmd(task.extra_data);
+  if (repeatDone && repeatDone >= logicalTodayYmd) return true;
+
   const raw = task.completed_at?.trim() || task.updated_at?.trim();
   if (!raw) return true;
-  const ms = Date.parse(raw);
-  if (Number.isNaN(ms)) return true;
-  const doneLogicalYmd = getLogicalLocalYmd(new Date(ms), boundary);
+  const doneAt = parseTaskAuditDatetimeForLogicalDay(raw);
+  if (Number.isNaN(doneAt.getTime())) return true;
+  const doneLogicalYmd = getLogicalLocalYmd(doneAt, boundary);
   return doneLogicalYmd >= logicalTodayYmd;
+}
+
+/** 待办栏可见性：与后端 standaloneTodos 契约一致——已完成/取消仅按逻辑日界判断，不再叠加重复/日程窗 */
+export function standaloneTodoPassesStandaloneListFilter(
+  task: TaskRow,
+  boundary: TasksDayBoundary,
+  logicalTodayYmd: string,
+): boolean {
+  if (task.project_id || task.parent_task_id) return false;
+  if (task.status === 'done' || task.status === 'cancelled') {
+    return standaloneTodoPassesDayBoundaryFilter(task, boundary, logicalTodayYmd);
+  }
+  return (
+    standaloneTodoPassesDayBoundaryFilter(task, boundary, logicalTodayYmd) &&
+    standaloneTodoPassesRepeatDayFilter(task, logicalTodayYmd) &&
+    standaloneTodoPassesScheduleWindowFilter(task, logicalTodayYmd)
+  );
 }
 
 /** 设置了重复的独立待办：重复日展示；非重复日仅当截止/计划已过期或错过重复日时保留 */
@@ -191,12 +214,7 @@ export function isStandaloneTodoVisibleOnDay(
   logicalViewYmd: string,
   boundary: TasksDayBoundary,
 ): boolean {
-  if (task.project_id || task.parent_task_id) return false;
-  return (
-    standaloneTodoPassesDayBoundaryFilter(task, boundary, logicalViewYmd) &&
-    standaloneTodoPassesRepeatDayFilter(task, logicalViewYmd) &&
-    standaloneTodoPassesScheduleWindowFilter(task, logicalViewYmd)
-  );
+  return standaloneTodoPassesStandaloneListFilter(task, boundary, logicalViewYmd);
 }
 
 export function isStandaloneTodoOverdue(task: TaskRow, logicalTodayYmd: string): boolean {

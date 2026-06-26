@@ -37,6 +37,9 @@ import {
     isActiveAiLlmConfigured,
     parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
+import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
+import { getLogicalLocalYmd, refreshAnchorAfterLogicalDayChange } from '@/lib/tasks-logical-day';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Dimensions, Keyboard, Platform, type KeyboardEvent } from 'react-native';
@@ -57,6 +60,7 @@ export function useFinanceTransactionSheetController({
 }: FinanceTransactionSheetControllerOptions) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { boundary: dayBoundary, logicalTodayYmd } = useDayBoundary();
   const colorScheme = useColorScheme();
   const themeKey = colorScheme === 'dark' ? 'dark' : 'light';
   const baseTheme = Colors[themeKey];
@@ -79,6 +83,15 @@ export function useFinanceTransactionSheetController({
   const [selectedCategoryKey, setSelectedCategoryKey] = React.useState('food');
   const [selectedAccountId, setSelectedAccountId] = React.useState<string | null>(null);
   const [selectedHappenedAt, setSelectedHappenedAt] = React.useState(() => new Date());
+  const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
+  React.useEffect(() => {
+    const prev = prevLogicalTodayYmdRef.current;
+    if (prev === logicalTodayYmd) return;
+    prevLogicalTodayYmdRef.current = logicalTodayYmd;
+    setSelectedHappenedAt((value) =>
+      refreshAnchorAfterLogicalDayChange(value, dayBoundary, logicalTodayYmd, prev),
+    );
+  }, [dayBoundary, logicalTodayYmd]);
   const [isDatePickerVisible, setIsDatePickerVisible] = React.useState(false);
   const [isTimePickerVisible, setIsTimePickerVisible] = React.useState(false);
   const [isAccountPickerVisible, setIsAccountPickerVisible] = React.useState(false);
@@ -593,7 +606,7 @@ export function useFinanceTransactionSheetController({
       const ts = Date.now();
       const rnd = Math.random().toString(16).slice(2);
       const groupId = `tg_${ts}_${rnd}`;
-      const happenedAt = selectedHappenedAt.toISOString();
+      const happenedAt = formatFinanceHappenedAt(selectedHappenedAt);
       const noteTrim = sheetNote.trim() || null;
       const absAmount = amountNumber;
       const extraOut = buildFinanceTransferTxnExtra({
@@ -662,7 +675,7 @@ export function useFinanceTransactionSheetController({
         Alert.alert('请输入内容', '用一句话描述这笔账，需包含金额。');
         return;
       }
-      const happenedAtIso = selectedHappenedAt.toISOString();
+      const happenedAtIso = formatFinanceHappenedAt(selectedHappenedAt);
       const includeInBudget = sheetIncludeInBudgetRef.current;
       const manualAccount = selectedAccount;
 
@@ -761,7 +774,7 @@ export function useFinanceTransactionSheetController({
         {
           id: makeTimestampEntityId('ft_', 8),
           name: title,
-          happened_at: selectedHappenedAt.toISOString(),
+          happened_at: formatFinanceHappenedAt(selectedHappenedAt),
           account_id: selectedAccount.id,
           transaction_type: transactionType,
           amount: signedAmount,

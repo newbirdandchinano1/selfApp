@@ -2,6 +2,7 @@ import { AppButton, AppCard, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import {
   applyFinanceAccountBalanceCorrection,
@@ -278,7 +279,7 @@ export default function AddAccountScreen() {
         await createFinanceTransaction({
           id: txnId,
           name: '初始余额',
-          happened_at: new Date().toISOString(),
+          happened_at: formatFinanceHappenedAt(new Date()),
           account_id: accountId,
           transaction_type: isLiability ? 'expense' : 'income',
           amount: signRule * absInitial,

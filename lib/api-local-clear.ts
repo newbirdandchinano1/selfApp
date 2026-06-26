@@ -55,6 +55,9 @@ async function resetLocalReadCachesAfterClear(): Promise<void> {
   const { clearAllCloudSqliteDirtyTables } = await import('@/lib/cloud-sql-dirty-track');
   clearAllCloudSqliteDirtyTables();
 
+  const { clearTasksBootstrapVersionCache } = await import('@/lib/api-page-sync');
+  await clearTasksBootstrapVersionCache();
+
   markProcessColdStart();
   resetPageApiSession(undefined, { force: true });
   await clearPageSyncMeta();

@@ -81,6 +81,11 @@ export async function withApiLoading<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** 不触发全局加载蒙层的 API 调用（如健康页骨架屏自行展示加载态） */
+export async function withSilentApiLoading<T>(fn: () => Promise<T>): Promise<T> {
+  return fn();
+}
+
 /** 增删改等写请求：与读请求共用全局蒙层与错误提示 */
 export async function withApiWriteLoading<T>(fn: () => Promise<T>): Promise<T> {
   return withApiLoading(fn);

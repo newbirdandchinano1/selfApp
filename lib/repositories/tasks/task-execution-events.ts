@@ -1,10 +1,14 @@
 import { ensureLocalRowPresent } from '@/lib/api-local-row';
+import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, isYmdInRange, matchesOverviewScope, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 
 export type TaskExecutionEventAction = 'completed' | 'reopened';
+
+/** 热力图聚合只读本地，避免 REST 全量拉取 reconcile 覆盖刚写入的事件 */
+const HEATMAP_EVENT_READ_OPTS = { offlineFallback: true, localOnly: true as const };
 
 type TaskRowLite = {
   id: string;
@@ -47,8 +51,8 @@ export type TaskExecutionEventWithTitle = {
 
 async function loadScopedExecutionEvents(): Promise<TaskExecutionEventWithTitle[]> {
   const [events, tasks] = await Promise.all([
-    readApiTable<EventRowLite>('task_execution_events', { offlineFallback: true }),
-    readApiTable<TaskRowLite>('tasks', { offlineFallback: true }),
+    readApiTable<EventRowLite>('task_execution_events', HEATMAP_EVENT_READ_OPTS),
+    readApiTable<TaskRowLite>('tasks', HEATMAP_EVENT_READ_OPTS),
   ]);
   const taskById = new Map(tasks.map(t => [t.id, t]));
   return events
@@ -79,6 +83,9 @@ export async function insertTaskExecutionEvent(
      VALUES (?, ?, ?, datetime('now'), ?, 'pending_create')`,
     [id, taskId, action, taskTitle?.trim() || null]
   );
+  invalidateInflightApiTableFetch('task_execution_events');
+  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+  await pushLocalChangesToApi({ awaitSync: true });
 }
 
 /** 某一本地日内的全部执行事件（含完成与恢复），按时间正序 */
@@ -185,7 +192,7 @@ export async function getTaskGlobalInsightCounts(): Promise<{
   reopenedEvents: number;
 }> {
   const [tasks, events] = await Promise.all([
-    readApiTable<TaskRowLite>('tasks', { offlineFallback: true }),
+    readApiTable<TaskRowLite>('tasks', HEATMAP_EVENT_READ_OPTS),
     loadScopedExecutionEvents(),
   ]);
   const scoped = tasks.filter(matchesOverviewScope);

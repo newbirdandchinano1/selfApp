@@ -8,6 +8,7 @@ import {
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { AppState, Platform } from 'react-native';
 
 type DayBoundaryContextValue = {
   boundary: TasksDayBoundary;
@@ -67,6 +68,26 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
       if (timeout) clearTimeout(timeout);
     };
   }, [boundary.hour, boundary.minute]);
+
+  /** 后台过夜后 setTimeout 常被挂起，回到前台时需重新计算逻辑日 */
+  useEffect(() => {
+    const tick = () => setLogicalTodayClock((c) => c + 1);
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') tick();
+    });
+    const onVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') tick();
+    };
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+    }
+    return () => {
+      appStateSub.remove();
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
+    };
+  }, []);
 
   const logicalTodayYmd = useMemo(
     () => getLogicalLocalYmd(new Date(), boundary),

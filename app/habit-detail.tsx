@@ -39,10 +39,8 @@ import {
 } from '@/lib/repositories/habits/habit-task-period';
 import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import {
-  addDaysToLogicalYmd,
-  DEFAULT_TASKS_DAY_BOUNDARY,
-  getLogicalLocalYmd,
   logicalYmdToLocalDate,
+  refreshYmdFocusAfterLogicalDayChange,
 } from '@/lib/tasks-logical-day';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -235,7 +233,7 @@ export default function HabitDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
-  const { logicalTodayYmd } = useDayBoundary();
+  const { logicalTodayYmd, logicalTodayDate } = useDayBoundary();
   const scrollTopPad = insets.top + TOP_BAR_BODY_H;
   const params = useLocalSearchParams<{ habitId?: string }>();
   const habitId = pickParam(params.habitId);
@@ -244,11 +242,7 @@ export default function HabitDetailScreen() {
   const [habit, setHabit] = React.useState<HabitRow | null>(null);
   const [checkIns, setCheckIns] = React.useState<Record<string, number>>({});
 
-  const [focusDate, setFocusDate] = React.useState(() =>
-    logicalYmdToLocalDate(
-      addDaysToLogicalYmd(getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), -1)
-    )
-  );
+  const [focusDate, setFocusDate] = React.useState(() => logicalTodayDate);
   const [calendarMonth, setCalendarMonth] = React.useState(() => {
     const t = new Date();
     return new Date(t.getFullYear(), t.getMonth(), 1);
@@ -262,13 +256,20 @@ export default function HabitDetailScreen() {
 
   const focusYmd = React.useMemo(() => toYMD(focusDate), [focusDate]);
 
+  const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
   React.useEffect(() => {
-    setFocusDate((prev) => {
-      const ymd = toYMD(prev);
-      if (ymd < logicalTodayYmd) return prev;
-      return logicalYmdToLocalDate(addDaysToLogicalYmd(logicalTodayYmd, -1));
+    const prev = prevLogicalTodayYmdRef.current;
+    if (prev === logicalTodayYmd) return;
+    prevLogicalTodayYmdRef.current = logicalTodayYmd;
+    const todayDate = logicalYmdToLocalDate(logicalTodayYmd);
+    setFocusDate((focusPrev) => {
+      const nextYmd = refreshYmdFocusAfterLogicalDayChange(toYMD(focusPrev), logicalTodayYmd, prev);
+      return nextYmd === toYMD(focusPrev) ? focusPrev : logicalYmdToLocalDate(nextYmd);
     });
-  }, [logicalTodayYmd]);
+    setTrendWeekStart(startOfWeekMonday(todayDate));
+    setCalendarMonth(new Date(todayDate.getFullYear(), todayDate.getMonth(), 1));
+    if (habitId) void reload();
+  }, [habitId, logicalTodayYmd, reload]);
 
   const reload = React.useCallback(
     async (forceApi = false) => {
@@ -311,7 +312,14 @@ export default function HabitDetailScreen() {
   useFocusEffect(
     React.useCallback(() => {
       void reload();
-    }, [reload])
+      setFocusDate((prev) => {
+        const ymd = toYMD(prev);
+        if (ymd >= logicalTodayYmd) {
+          return logicalYmdToLocalDate(logicalTodayYmd);
+        }
+        return prev;
+      });
+    }, [logicalTodayYmd, reload])
   );
 
   const extraParsed = habit ? parseExtra(habit.extra_data) : {};

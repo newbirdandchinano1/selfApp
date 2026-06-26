@@ -5,7 +5,14 @@ import { consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerRe
 import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
-import { getTaskById, getTaskTreeByRootTaskId, updateTask } from '@/lib/repositories/tasks/task';
+import { formatWriteError } from '@/lib/format-write-error';
+import {
+  countIncompleteDescendantTasks,
+  deleteTask,
+  getTaskById,
+  getTaskTreeByRootTaskId,
+  updateTask,
+} from '@/lib/repositories/tasks/task';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -504,6 +511,70 @@ export default function TaskDetailScreen() {
     router.back();
   }, [persistTaskDetail, router]);
 
+  const navigateAfterDeleteTask = React.useCallback(() => {
+    exitingAfterSaveRef.current = true;
+    setSkipRemoveGuard(true);
+    router.back();
+  }, [router]);
+
+  const removeTask = React.useCallback(() => {
+    if (!taskId || saving || !taskLoaded) return;
+    (async () => {
+      try {
+        const incomplete = await countIncompleteDescendantTasks(taskId);
+        const message =
+          incomplete > 0
+            ? `该任务下有 ${incomplete} 个未完成子任务。\n\n确认删除该任务，并连同其所有子任务一起删除吗？（删除后在同步或恢复功能前无法找回）`
+            : '删除后在同步或恢复功能前无法找回，确认删除吗？';
+
+        Alert.alert('删除任务', message, [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '删除',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                skipAutoSaveRef.current = true;
+                setSkipRemoveGuard(true);
+                setSaving(true);
+                await deleteTask(taskId);
+                navigateAfterDeleteTask();
+              } catch (error) {
+                console.warn('删除任务失败', error);
+                Alert.alert('删除失败', formatWriteError(error, '任务删除失败，请稍后重试。'));
+              } finally {
+                setSaving(false);
+              }
+            },
+          },
+        ]);
+      } catch (error) {
+        console.warn('统计子任务失败', error);
+        Alert.alert('删除任务', '删除后在同步或恢复功能前无法找回，确认删除吗？', [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '删除',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                skipAutoSaveRef.current = true;
+                setSkipRemoveGuard(true);
+                setSaving(true);
+                await deleteTask(taskId);
+                navigateAfterDeleteTask();
+              } catch (err) {
+                console.warn('删除任务失败', err);
+                Alert.alert('删除失败', formatWriteError(err, '任务删除失败，请稍后重试。'));
+              } finally {
+                setSaving(false);
+              }
+            },
+          },
+        ]);
+      }
+    })();
+  }, [navigateAfterDeleteTask, saving, taskId, taskLoaded]);
+
   const preventRemove = isFocused && taskLoaded && !skipRemoveGuard && !skipAutoSaveRef.current;
 
   usePreventRemove(preventRemove, ({ data }) => {
@@ -607,7 +678,17 @@ export default function TaskDetailScreen() {
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
         <Text style={[styles.topTitle, { color: theme.text }]}>任务详情</Text>
-        <View style={styles.headerSpacer} />
+        <Pressable
+          onPress={removeTask}
+          disabled={saving || !taskLoaded || !taskId}
+          hitSlop={10}
+          accessibilityLabel="删除任务"
+          style={({ pressed }) => [
+            styles.iconBtn,
+            { opacity: saving || !taskLoaded || !taskId ? 0.45 : pressed ? 0.7 : 1 },
+          ]}>
+          <MaterialIcons name="delete-outline" size={22} color={error} />
+        </Pressable>
       </View>
 
       <ScrollView refreshControl={refreshControl} contentContainerStyle={[styles.content, { paddingBottom: 140 }]} showsVerticalScrollIndicator={false}>
@@ -905,10 +986,6 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  headerSpacer: {
-    width: 38,
-    height: 38,
   },
   topTitle: {
     fontSize: 16,

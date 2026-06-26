@@ -1,62 +1,64 @@
+import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
 import {
-  ComposerEditorialCard,
-  ComposerHero,
-  ComposerMain,
-  ComposerNoteSection,
-  ComposerPriorityMatrix,
-  ComposerScheduleSection,
-  ComposerSection,
-  ComposerSectionHead,
-  ComposerTopBar,
-  composerStyles,
-  taskPriorityLabel,
-  type TaskPriorityKey,
+    ComposerEditorialCard,
+    ComposerHero,
+    ComposerMain,
+    ComposerNoteSection,
+    ComposerPriorityMatrix,
+    ComposerScheduleSection,
+    ComposerSection,
+    ComposerSectionHead,
+    ComposerTopBar,
+    composerStyles,
+    taskPriorityLabel,
+    type TaskPriorityKey,
 } from '@/components/composer';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { setAddTaskResult } from '@/lib/add-task-bridge';
+import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
+import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { mergeCompletionRewardIntoExtraData } from '@/lib/completion-reward/completion-reward-extra';
+import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
+import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { formatWriteError } from '@/lib/format-write-error';
+import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getProjectById } from '@/lib/repositories/projects/project';
-import {
-  applyScheduleMetaToLabels,
-  dueDateFromScheduleMeta,
-  extractScheduleLimitFromExtra,
-  parseDateLimitParam,
-  parseDefaultScheduleParam,
-  resolveInheritedDefaultSchedule,
-} from '@/lib/schedule-inherit';
-import { setAddTaskResult } from '@/lib/add-task-bridge';
-import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
-import { formatWriteError } from '@/lib/format-write-error';
-import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { createTask, getTaskById, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
+import {
+    applyScheduleMetaToLabels,
+    dueDateFromScheduleMeta,
+    extractScheduleLimitFromExtra,
+    parseDateLimitParam,
+    parseDefaultScheduleParam,
+    resolveInheritedDefaultSchedule,
+} from '@/lib/schedule-inherit';
+import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
+import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
+    ActivityIndicator,
+    Alert,
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
-import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
-import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
-import { mergeCompletionRewardIntoExtraData } from '@/lib/completion-reward/completion-reward-extra';
-import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
-import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 
 type Subtask = {
   id: string;
@@ -222,7 +224,7 @@ function resolveStandaloneStatusOnSave(previous: string, intent: 'active' | 'she
 const PAGE_API_KEY = 'add-task';
 
 export default function AddTaskScreen() {
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const params = useLocalSearchParams<{
     source?: string;
@@ -561,6 +563,13 @@ export default function AddTaskScreen() {
             extra_data: extraPayload,
           });
         }
+        try {
+          await markPendingTablesDirty(['tasks']);
+          await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+        } catch (syncErr) {
+          console.warn('待办保存后同步到服务器失败', syncErr);
+        }
+        notifyAncestorsDataChanged();
         router.back();
       } catch (error) {
         console.warn('保存待办失败', error);

@@ -1,4 +1,9 @@
 import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
+import {
+  FinanceAccountCarouselSkeleton,
+  FinanceBudgetCardSkeleton,
+  FinanceTxnListSkeleton,
+} from '@/components/finance/finance-home-skeletons';
 import { AppIconButton } from '@/components/ui';
 import { Layout, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
@@ -83,10 +88,12 @@ import {
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import { formatFinanceHappenedAt, parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import {
     addDaysToLogicalYmd,
     getLogicalLocalYmd,
     logicalYmdToLocalDate,
+    refreshAnchorAfterLogicalDayChange,
 } from '@/lib/tasks-logical-day';
 import {
     getActiveAiLlmApiKey,
@@ -451,6 +458,12 @@ export default function FinanceScreen() {
   const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
   /** 用户在本页做过写操作后调用，下次聚焦时再从后端全量拉取 */
   const markPageDirty = resetSync;
+  /** 首次数据未就绪前展示骨架屏，避免显示全 0 假数据 */
+  const [initialFinanceLoadPending, setInitialFinanceLoadPending] = React.useState(true);
+  const [financeSkeletonMounted, setFinanceSkeletonMounted] = React.useState(true);
+  const financeContentRevealDoneRef = React.useRef(false);
+  const financeSkeletonOpacity = React.useRef(new Animated.Value(1)).current;
+  const financeContentOpacity = React.useRef(new Animated.Value(0)).current;
   const colorScheme = useColorScheme();
   const themeKey: keyof typeof Colors = colorScheme === 'dark' ? 'dark' : 'light';
   const baseTheme = Colors[themeKey];
@@ -490,6 +503,15 @@ export default function FinanceScreen() {
   const [selectedCategoryKey, setSelectedCategoryKey] = React.useState('food');
   const [selectedAccountId, setSelectedAccountId] = React.useState<string | null>(null);
   const [selectedHappenedAt, setSelectedHappenedAt] = React.useState(() => new Date());
+  const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
+  React.useEffect(() => {
+    const prev = prevLogicalTodayYmdRef.current;
+    if (prev === logicalTodayYmd) return;
+    prevLogicalTodayYmdRef.current = logicalTodayYmd;
+    setSelectedHappenedAt((value) =>
+      refreshAnchorAfterLogicalDayChange(value, dayBoundary, logicalTodayYmd, prev),
+    );
+  }, [dayBoundary, logicalTodayYmd]);
   const [isDatePickerVisible, setIsDatePickerVisible] = React.useState(false);
   const [isTimePickerVisible, setIsTimePickerVisible] = React.useState(false);
   const [isAccountPickerVisible, setIsAccountPickerVisible] = React.useState(false);
@@ -588,15 +610,47 @@ export default function FinanceScreen() {
   }, [baseBottomAnim, collapsedBottom, insets.bottom]);
 
   React.useEffect(() => {
-    Animated.stagger(70, [
-      Animated.timing(revealAnim, {
-        toValue: 1,
-        duration: 460,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [revealAnim]);
+    if (initialFinanceLoadPending) return;
+
+    if (!financeContentRevealDoneRef.current) {
+      financeContentRevealDoneRef.current = true;
+      setFinanceSkeletonMounted(true);
+      financeSkeletonOpacity.setValue(1);
+      financeContentOpacity.setValue(0);
+      revealAnim.setValue(1);
+      Animated.parallel([
+        Animated.timing(financeSkeletonOpacity, {
+          toValue: 0,
+          duration: 280,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(financeContentOpacity, {
+          toValue: 1,
+          duration: 320,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start(({ finished }) => {
+        if (finished) setFinanceSkeletonMounted(false);
+      });
+      return;
+    }
+
+    revealAnim.setValue(0);
+    financeContentOpacity.setValue(1);
+    Animated.timing(revealAnim, {
+      toValue: 1,
+      duration: 460,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [
+    financeContentOpacity,
+    financeSkeletonOpacity,
+    initialFinanceLoadPending,
+    revealAnim,
+  ]);
 
   const scheduleFinanceTransactionsFlush = React.useCallback(() => {
     if (txnAiFlushTimerRef.current) clearTimeout(txnAiFlushTimerRef.current);
@@ -881,7 +935,7 @@ export default function FinanceScreen() {
   const todayTxns = React.useMemo(
     () =>
       financeTransactions.filter((txn) => {
-        const happenedAt = new Date(txn.happened_at);
+        const happenedAt = parseStoredDatetime(txn.happened_at);
         if (Number.isNaN(happenedAt.getTime())) return false;
         return getLogicalLocalYmd(happenedAt, dayBoundary) === logicalTodayYmd;
       }),
@@ -928,7 +982,7 @@ export default function FinanceScreen() {
   const sortedDayKeys = React.useMemo(() => {
     const keys = new Set<string>();
     sortedTransactions.forEach((txn) => {
-      const happenedAt = new Date(txn.happened_at);
+      const happenedAt = parseStoredDatetime(txn.happened_at);
       if (Number.isNaN(happenedAt.getTime())) return;
       const dayKey = getDayKey(happenedAt);
       if (dayKey <= logicalTodayYmd) {
@@ -1073,7 +1127,7 @@ export default function FinanceScreen() {
       .slice()
       .sort((a, b) => new Date(b.happened_at).getTime() - new Date(a.happened_at).getTime())
       .map((txn) => {
-        const happenedAt = new Date(txn.happened_at);
+        const happenedAt = parseStoredDatetime(txn.happened_at);
         const hour = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getHours()).padStart(2, '0');
         const minute = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getMinutes()).padStart(2, '0');
         const accountLabel = accountNameMap.get(txn.account_id) ?? '未知账户';
@@ -1154,7 +1208,7 @@ export default function FinanceScreen() {
     };
 
     sortedTransactions.forEach((txn) => {
-      const happenedAt = new Date(txn.happened_at);
+      const happenedAt = parseStoredDatetime(txn.happened_at);
       if (Number.isNaN(happenedAt.getTime())) return;
       const dayKey = getDayKey(happenedAt);
       if (dayKey === todayDayKey) return;
@@ -1222,13 +1276,13 @@ export default function FinanceScreen() {
   const displayTxns = React.useMemo<Txn[]>(() => {
     return sortedTransactions
       .filter((txn) => {
-        const happenedAt = new Date(txn.happened_at);
+        const happenedAt = parseStoredDatetime(txn.happened_at);
         if (Number.isNaN(happenedAt.getTime())) return false;
         if (getDayKey(happenedAt) === todayDayKey) return false;
         return visibleDayKeySet.has(getDayKey(happenedAt));
       })
       .map((txn) => {
-      const happenedAt = new Date(txn.happened_at);
+      const happenedAt = parseStoredDatetime(txn.happened_at);
       const hour = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getHours()).padStart(2, '0');
       const minute = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getMinutes()).padStart(2, '0');
       const dayKey = getDayKey(happenedAt);
@@ -1293,7 +1347,7 @@ export default function FinanceScreen() {
   const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
   const monthlyTransactions = React.useMemo(() => {
     return financeTransactions.filter((txn) => {
-      const happenedAt = new Date(txn.happened_at);
+      const happenedAt = parseStoredDatetime(txn.happened_at);
       return happenedAt >= monthStart && happenedAt < monthEnd;
     });
   }, [financeTransactions, monthEnd, monthStart]);
@@ -1318,7 +1372,7 @@ export default function FinanceScreen() {
   const budgetPeriodEndExclusive = getNextBudgetPeriodStart(budgetPeriodStart, budgetRefreshDay);
   const budgetPeriodTransactions = React.useMemo(() => {
     return financeTransactions.filter((txn) => {
-      const happenedAt = new Date(txn.happened_at);
+      const happenedAt = parseStoredDatetime(txn.happened_at);
       return happenedAt >= budgetPeriodStart && happenedAt < budgetPeriodEndExclusive;
     });
   }, [financeTransactions, budgetPeriodStart, budgetPeriodEndExclusive]);
@@ -1365,7 +1419,7 @@ export default function FinanceScreen() {
   const prevBudgetPeriodEndExclusive = budgetPeriodStart;
   const prevBudgetPeriodTransactions = React.useMemo(() => {
     return financeTransactions.filter((txn) => {
-      const happenedAt = new Date(txn.happened_at);
+      const happenedAt = parseStoredDatetime(txn.happened_at);
       return happenedAt >= prevBudgetPeriodStart && happenedAt < prevBudgetPeriodEndExclusive;
     });
   }, [financeTransactions, prevBudgetPeriodStart, prevBudgetPeriodEndExclusive]);
@@ -2113,7 +2167,7 @@ export default function FinanceScreen() {
 
 
   const reload = React.useCallback(async (forceApi = false) => {
-    await wrapLoad(async () => {
+    return wrapLoad(async () => {
       try {
         await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
         const rawDefaults = await loadFinanceDefaultAccounts();
@@ -2124,11 +2178,36 @@ export default function FinanceScreen() {
         setBudgetRefreshDay(rd);
       } catch (e) {
         console.warn('Finance tab refresh failed:', e);
+        throw e;
       }
     }, forceApi);
   }, [loadFinanceAccounts, loadFinanceTransactions, wrapLoad]);
 
-  usePageFocusReload(PAGE_API_KEY, reload);
+  const reloadPage = React.useCallback(async (forceApi = false) => {
+    try {
+      const result = await reload(forceApi);
+      if (!result.ok || result.restFailed) {
+        setInitialFinanceLoadPending(false);
+        return;
+      }
+      setInitialFinanceLoadPending(false);
+    } catch {
+      setInitialFinanceLoadPending(false);
+    }
+  }, [reload]);
+
+  usePageFocusReload(PAGE_API_KEY, reloadPage);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isSheetVisible) return;
+      setSelectedHappenedAt((prev) => {
+        const ymd = getLogicalLocalYmd(prev, dayBoundary);
+        if (ymd < logicalTodayYmd) return new Date();
+        return prev;
+      });
+    }, [dayBoundary, isSheetVisible, logicalTodayYmd]),
+  );
 
   useFocusEffect(
     React.useCallback(() => {
@@ -2162,7 +2241,7 @@ export default function FinanceScreen() {
     }, [applyManualOrTransferSheetIntent, reloadFinanceAccounts]),
   );
 
-  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
   const closeSheet = React.useCallback(() => {
     if (isSavingTransaction || isParsingSentence || isSentencePreviewBusy) return;
@@ -2285,7 +2364,7 @@ export default function FinanceScreen() {
             await createFinanceTransaction({
               id: txnId,
               name: title,
-              happened_at: new Date().toISOString(),
+              happened_at: formatFinanceHappenedAt(new Date()),
               account_id: account.id,
               transaction_type: 'expense',
               amount: signedAmount,
@@ -2639,7 +2718,7 @@ export default function FinanceScreen() {
       const groupId = `tg_${ts}_${rnd}`;
       const idOut = `ft_${ts}_out_${rnd}`;
       const idIn = `ft_${ts}_in_${rnd}`;
-      const happenedAt = selectedHappenedAt.toISOString();
+      const happenedAt = formatFinanceHappenedAt(selectedHappenedAt);
       const absAmount = amountNumber;
       const noteTrim = sheetNote.trim() || null;
       const fromName = transferFromAccount.name;
@@ -2719,7 +2798,7 @@ export default function FinanceScreen() {
         return;
       }
 
-      const happenedAtIso = selectedHappenedAt.toISOString();
+      const happenedAtIso = formatFinanceHappenedAt(selectedHappenedAt);
       const includeInBudget = sheetIncludeInBudgetRef.current;
       const manualAccount = selectedAccount;
 
@@ -2839,7 +2918,7 @@ export default function FinanceScreen() {
         {
           id: txnId,
           name: title,
-          happened_at: selectedHappenedAt.toISOString(),
+          happened_at: formatFinanceHappenedAt(selectedHappenedAt),
           account_id: selectedAccount.id,
           transaction_type: transactionType,
           amount: signedAmount,
@@ -3023,6 +3102,9 @@ export default function FinanceScreen() {
         </View>
 
         <View style={styles.content}>
+          <View style={styles.financeBodyStack}>
+          {!initialFinanceLoadPending ? (
+            <Animated.View style={{ opacity: financeContentOpacity }}>
           <Animated.View style={{ opacity: heroOpacity, transform: [{ translateY: heroTranslateY }] }}>
             <View style={[styles.netCard, styles.budgetOverviewCard, { backgroundColor: isDark ? baseTheme.surface : '#f7f9fd', borderColor: outlineVariant }]}>
                   <View style={[styles.netAccent, { backgroundColor: primary, width: 3 }]} />
@@ -3590,6 +3672,28 @@ export default function FinanceScreen() {
             ) : null}
           </View>
           </Animated.View>
+            </Animated.View>
+          ) : null}
+
+          {initialFinanceLoadPending || financeSkeletonMounted ? (
+            <Animated.View
+              pointerEvents={initialFinanceLoadPending ? 'auto' : 'none'}
+              style={[
+                initialFinanceLoadPending ? undefined : styles.financeSkeletonOverlay,
+                {
+                  opacity: initialFinanceLoadPending ? 1 : financeSkeletonOpacity,
+                  backgroundColor: initialFinanceLoadPending ? undefined : bg,
+                },
+              ]}
+            >
+              <FinanceBudgetCardSkeleton
+                colors={{ surface, outline: outlineVariant, cardBg: isDark ? baseTheme.surface : '#f7f9fd' }}
+              />
+              <FinanceAccountCarouselSkeleton colors={{ surface, outline: outlineVariant, cardBg: surface }} />
+              <FinanceTxnListSkeleton colors={{ surface, outline: outlineVariant, cardBg: surface }} />
+            </Animated.View>
+          ) : null}
+          </View>
         </View>
       </ScrollView>
 
@@ -4854,6 +4958,17 @@ const styles = StyleSheet.create({
     width: '100%',
     paddingHorizontal: 20,
     paddingTop: 16,
+    gap: 18,
+  },
+  financeBodyStack: {
+    position: 'relative',
+  },
+  financeSkeletonOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 2,
     gap: 18,
   },
   netCard: {

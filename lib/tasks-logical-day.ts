@@ -88,6 +88,38 @@ export function getLogicalDayKeyFromDate(at: Date, boundary?: TasksDayBoundary):
   return getLogicalLocalYmd(at, boundary ?? getDayBoundarySync());
 }
 
+/**
+ * 逻辑日翻页后同步锚定日期/时间：若仍停留在旧「今天 / 昨天」视图，则跳到新逻辑日的当前时刻。
+ */
+export function refreshAnchorAfterLogicalDayChange(
+  value: Date,
+  boundary: TasksDayBoundary,
+  logicalTodayYmd: string,
+  previousLogicalTodayYmd: string,
+): Date {
+  if (previousLogicalTodayYmd === logicalTodayYmd) return value;
+  const valueYmd = getLogicalLocalYmd(value, boundary);
+  const staleFromYmd = addDaysToLogicalYmd(previousLogicalTodayYmd, -1);
+  if (valueYmd >= staleFromYmd) {
+    return new Date();
+  }
+  return value;
+}
+
+/** 逻辑日 YMD 翻页后：若选中的是旧「今天 / 昨天」，则切到新逻辑日 */
+export function refreshYmdFocusAfterLogicalDayChange(
+  focusYmd: string,
+  logicalTodayYmd: string,
+  previousLogicalTodayYmd: string,
+): string {
+  if (previousLogicalTodayYmd === logicalTodayYmd) return focusYmd;
+  const staleFromYmd = addDaysToLogicalYmd(previousLogicalTodayYmd, -1);
+  if (focusYmd >= staleFromYmd) {
+    return logicalTodayYmd;
+  }
+  return focusYmd;
+}
+
 export async function loadTasksDayBoundary(): Promise<TasksDayBoundary> {
   try {
     const parsed = await getAppSetting<unknown>(AppSettingKey.tasksCompletionDayStart);

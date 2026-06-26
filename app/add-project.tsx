@@ -15,6 +15,8 @@ import { PrerequisiteProjectPickerField } from '@/components/projects/Prerequisi
 import { Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
+import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
@@ -154,7 +156,7 @@ function ensureInboxCategory(rows: ProjectCategoryRow[]): ProjectCategoryRow[] {
 const PAGE_API_KEY = 'add-project';
 
 export default function AddProjectScreen() {
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const params = useLocalSearchParams<{ source?: string; categoryId?: string | string[] }>();
   const insets = useSafeAreaInsets();
@@ -357,6 +359,13 @@ export default function AddProjectScreen() {
         due_date: dueDateFromScheduleMeta(scheduleToSave, extractDueDate(deadlineText)),
         extra_data: mergeCompletionRewardIntoExtraData(JSON.stringify(extra), completionReward),
       });
+      try {
+        await markPendingTablesDirty(['projects']);
+        await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+      } catch (syncErr) {
+        console.warn('项目创建后同步到服务器失败', syncErr);
+      }
+      notifyAncestorsDataChanged();
       router.back();
     } catch (error) {
       console.warn('创建项目失败', error);
@@ -364,7 +373,19 @@ export default function AddProjectScreen() {
     } finally {
       setCreating(false);
     }
-  }, [allProjects, completionReward, creating, deadlineText, notes, prerequisiteProjectIds, router, scheduleMeta, selectedCategoryId, title]);
+  }, [
+    allProjects,
+    completionReward,
+    creating,
+    deadlineText,
+    notes,
+    notifyAncestorsDataChanged,
+    prerequisiteProjectIds,
+    router,
+    scheduleMeta,
+    selectedCategoryId,
+    title,
+  ]);
 
   const handleTitleChange = (text: string) => {
     setTitle(text.slice(0, TITLE_MAX_LENGTH));

@@ -68,7 +68,7 @@ export default function HabitManageScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, isDark, shadows } = useAppTheme();
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_API_KEY);
 
   const [habitData, setHabitData] = React.useState<HabitGroup[]>([]);
   const [contextTabs, setContextTabs] = React.useState<ContextTab[]>([]);
@@ -227,6 +227,7 @@ export default function HabitManageScreen() {
             try {
               await deleteHabitById(item.id);
               void cancelScheduledHabitReminder(item.id);
+              notifyAncestorsDataChanged();
               await reload();
             } catch (err) {
               console.warn('删除习惯失败', err);

@@ -1,3 +1,8 @@
+import {
+  ProfileHeaderSkeleton,
+  ProfileVisionSectionSkeleton,
+  ProfileWishListSectionSkeleton,
+} from '@/components/profile/profile-home-skeletons';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -17,6 +22,7 @@ import React, { useCallback, useEffect, useRef, useState, type ComponentProps } 
 import {
   Animated,
   Dimensions,
+  Easing,
   FlatList,
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -58,6 +64,12 @@ export default function ProfileScreen() {
   /** 用户在本页做过操作后调用，下次聚焦时再从后端全量拉取 */
   const markPageDirty = resetSync;
   const reloadPageRef = useRef<((forceApi?: boolean) => Promise<void>) | null>(null);
+  /** 首次数据未就绪前展示骨架屏，避免显示全 0 假数据 */
+  const [initialProfileLoadPending, setInitialProfileLoadPending] = useState(true);
+  const [profileSkeletonMounted, setProfileSkeletonMounted] = useState(true);
+  const profileContentRevealDoneRef = useRef(false);
+  const profileSkeletonOpacity = useRef(new Animated.Value(1)).current;
+  const profileContentOpacity = useRef(new Animated.Value(0)).current;
   const colorScheme = useColorScheme();
   const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
   const theme = Colors[scheme];
@@ -175,21 +187,30 @@ export default function ProfileScreen() {
     }
   }, []);
 
-  const reload = useCallback(async (forceApi = false) => {
-    await wrapLoad(async () => {
-      await loadUser();
-      await loadProfileVisions();
-      await loadProfileWishItems();
-    }, forceApi);
+  const reloadPage = useCallback(async (forceApi = false) => {
+    try {
+      const result = await wrapLoad(async () => {
+        await loadUser();
+        await loadProfileVisions();
+        await loadProfileWishItems();
+      }, forceApi);
+      if (!result.ok || result.restFailed) {
+        setInitialProfileLoadPending(false);
+        return;
+      }
+      setInitialProfileLoadPending(false);
+    } catch {
+      setInitialProfileLoadPending(false);
+    }
   }, [
     wrapLoad,
     loadUser,
     loadProfileVisions,
     loadProfileWishItems,
   ]);
-  reloadPageRef.current = reload;
+  reloadPageRef.current = reloadPage;
 
-  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
   const onProfileAction = useCallback(
     (action: () => void) => {
@@ -226,30 +247,63 @@ export default function ProfileScreen() {
   const contentLiftAnim = useRef(new Animated.Value(20)).current;
 
   useEffect(() => {
-    Animated.parallel([
-      Animated.timing(headerFadeAnim, {
-        toValue: 1,
-        duration: 450,
-        useNativeDriver: true,
-      }),
-      Animated.timing(headerLiftAnim, {
-        toValue: 0,
-        duration: 450,
-        useNativeDriver: true,
-      }),
-      Animated.timing(contentFadeAnim, {
-        toValue: 1,
-        duration: 600,
-        delay: 140,
-        useNativeDriver: true,
-      }),
-      Animated.timing(contentLiftAnim, {
-        toValue: 0,
-        duration: 600,
-        delay: 140,
-        useNativeDriver: true,
-      }),
-    ]).start();
+    if (initialProfileLoadPending) return;
+
+    if (!profileContentRevealDoneRef.current) {
+      profileContentRevealDoneRef.current = true;
+      setProfileSkeletonMounted(true);
+      profileSkeletonOpacity.setValue(1);
+      profileContentOpacity.setValue(0);
+      headerFadeAnim.setValue(0);
+      headerLiftAnim.setValue(12);
+      contentFadeAnim.setValue(0);
+      contentLiftAnim.setValue(20);
+
+      Animated.parallel([
+        Animated.timing(profileSkeletonOpacity, {
+          toValue: 0,
+          duration: 280,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(profileContentOpacity, {
+          toValue: 1,
+          duration: 320,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(headerFadeAnim, {
+          toValue: 1,
+          duration: 450,
+          useNativeDriver: true,
+        }),
+        Animated.timing(headerLiftAnim, {
+          toValue: 0,
+          duration: 450,
+          useNativeDriver: true,
+        }),
+        Animated.timing(contentFadeAnim, {
+          toValue: 1,
+          duration: 600,
+          delay: 140,
+          useNativeDriver: true,
+        }),
+        Animated.timing(contentLiftAnim, {
+          toValue: 0,
+          duration: 600,
+          delay: 140,
+          useNativeDriver: true,
+        }),
+      ]).start(({ finished }) => {
+        if (finished) setProfileSkeletonMounted(false);
+      });
+    } else {
+      headerFadeAnim.setValue(1);
+      headerLiftAnim.setValue(0);
+      contentFadeAnim.setValue(1);
+      contentLiftAnim.setValue(0);
+      profileContentOpacity.setValue(1);
+    }
 
     const pulse = Animated.loop(
       Animated.sequence([
@@ -271,7 +325,16 @@ export default function ProfileScreen() {
     return () => {
       pulse.stop();
     };
-  }, [contentFadeAnim, contentLiftAnim, headerFadeAnim, headerLiftAnim, profilePulseAnim]);
+  }, [
+    contentFadeAnim,
+    contentLiftAnim,
+    headerFadeAnim,
+    headerLiftAnim,
+    initialProfileLoadPending,
+    profileContentOpacity,
+    profilePulseAnim,
+    profileSkeletonOpacity,
+  ]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
@@ -284,6 +347,9 @@ export default function ProfileScreen() {
             paddingBottom: 36 + Math.max(insets.bottom, 12),
           },
         ]}>
+        <View style={styles.profileBodyStack}>
+          {!initialProfileLoadPending ? (
+            <Animated.View style={{ opacity: profileContentOpacity }}>
         <Animated.View
           style={[
             styles.header,
@@ -603,6 +669,38 @@ export default function ProfileScreen() {
             </ScrollView>
           )}
         </Animated.View>
+            </Animated.View>
+          ) : null}
+
+          {initialProfileLoadPending || profileSkeletonMounted ? (
+            <Animated.View
+              pointerEvents={initialProfileLoadPending ? 'auto' : 'none'}
+              style={[
+                initialProfileLoadPending ? undefined : styles.profileSkeletonOverlay,
+                {
+                  opacity: initialProfileLoadPending ? 1 : profileSkeletonOpacity,
+                  backgroundColor: initialProfileLoadPending ? undefined : bg,
+                },
+              ]}
+            >
+              <ProfileHeaderSkeleton
+                colors={{ surface, outline: outlineVariant }}
+                isDark={isDark}
+              />
+              <View style={styles.main}>
+                <ProfileVisionSectionSkeleton
+                  cardWidth={VISION_CARD_WIDTH}
+                  colors={{ surface, outline: outlineVariant }}
+                  isDark={isDark}
+                />
+                <ProfileWishListSectionSkeleton
+                  colors={{ surface, outline: outlineVariant }}
+                  isDark={isDark}
+                />
+              </View>
+            </Animated.View>
+          ) : null}
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -610,6 +708,16 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  profileBodyStack: {
+    position: 'relative',
+  },
+  profileSkeletonOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 2,
+  },
   scrollContent: {
     paddingTop: 0,
   },

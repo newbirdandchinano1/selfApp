@@ -1,3 +1,4 @@
+import { parseTaskAuditDatetimeForLogicalDay } from '@/lib/api-mysql-datetime';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
@@ -207,7 +208,7 @@ export function getCompletedLogicalYmd(
   boundary: TasksDayBoundary,
 ): string | null {
   if (!completedAt?.trim()) return null;
-  const d = new Date(completedAt);
+  const d = parseTaskAuditDatetimeForLogicalDay(completedAt);
   if (Number.isNaN(d.getTime())) return null;
   return getLogicalLocalYmd(d, boundary);
 }

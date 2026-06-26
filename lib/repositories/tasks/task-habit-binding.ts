@@ -11,6 +11,7 @@ import {
   parseHabitDailyGoal,
 } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind } from '@/lib/repositories/habits/habit-kind';
+import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
 import {
@@ -156,7 +157,7 @@ export type CompleteTasksBoundToHabitResult = {
 };
 
 async function markTaskDoneFromHabitBinding(task: TaskRow): Promise<HabitBoundTaskSyncChange> {
-  const completedAt = new Date().toISOString();
+  const completedAt = formatTaskAuditDatetimeLocal();
   await updateTask(task.id, { status: 'done', completed_at: completedAt });
   try {
     await insertTaskExecutionEvent(task.id, 'completed', task.title ?? null);

@@ -1,3 +1,4 @@
+import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { persistTaskPatchToApi } from '@/lib/task-api-write';
 import { ensureLocalRowForWrite, ensureLocalRowPresent, readLocalRowForWrite, requireLocalRowForWrite } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
@@ -21,6 +22,10 @@ import { ensureTaskCategoryMirrorLocally } from './task-category-mirror';
 import { isTaskShelvedStatus, isTaskTerminalStatus } from './task.types';
 
 export type TaskTreeNode = TaskRow & { children: TaskTreeNode[] };
+
+function sqlLocalNow(): string {
+  return formatTaskAuditDatetimeLocal();
+}
 
 async function readLocalTasksVisible(): Promise<TaskRow[]> {
   const db = await getDatabase();
@@ -114,10 +119,10 @@ export async function reorderProjectTaskSiblings(
     await db.runAsync(
       `UPDATE tasks
           SET sort_order = ?,
-              updated_at = datetime('now'),
+              updated_at = ?,
               sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
         WHERE id = ?`,
-      [i + 1, id]
+      [i + 1, sqlLocalNow(), id]
     );
   }
 }
@@ -166,7 +171,7 @@ export async function cascadeParentTaskStatusAfterChildChange(
       }
       if (!areAllDirectChildrenTerminal(all, parentId)) break;
 
-      const completedAt = new Date().toISOString();
+      const completedAt = formatTaskAuditDatetimeLocal();
       await persistTaskPatchToApi(
         parentId,
         { status: 'done', completed_at: completedAt },
@@ -250,9 +255,9 @@ export async function deleteTasksByProjectId(projectId: string) {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE tasks
-     SET updated_at = datetime('now'), sync_status = 'pending_delete'
+     SET updated_at = ?, sync_status = 'pending_delete'
      WHERE project_id = ?`,
-    [projectId],
+    [sqlLocalNow(), projectId],
   );
 }
 
@@ -324,11 +329,11 @@ export async function clearProjectTasksCategoryIds(
   await db.runAsync(
     `UPDATE tasks
      SET category_id = NULL,
-         updated_at = datetime('now'),
+         updated_at = ?,
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE project_id = ?
        AND category_id IS NOT NULL`,
-    [projectId],
+    [sqlLocalNow(), projectId],
   );
   if (!opts?.deferSync) {
     const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
@@ -348,11 +353,12 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
     resolved.project_id ?? null,
     resolved.parent_task_id ?? null,
   );
+  const nowLocal = sqlLocalNow();
   await db.runAsync(
     `INSERT INTO tasks (
       id, project_id, category_id, parent_task_id, title, description, note, status, priority, due_date, completed_at,
       sort_order, created_at, updated_at, sync_status, extra_data
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'pending_create', ?)`,
     [
       resolved.id,
       resolved.project_id ?? null,
@@ -365,6 +371,8 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
       resolved.priority ?? 0,
       resolved.due_date ?? null,
       sortOrder,
+      nowLocal,
+      nowLocal,
       resolved.extra_data ?? null,
     ]
   );
@@ -531,10 +539,11 @@ export async function updateTask(id: string, input: UpdateTaskInput, opts?: Task
     },
     { preserveCategoryId: current.category_id },
   );
+  const nowLocal = sqlLocalNow();
   const result = await db.runAsync(
     `UPDATE tasks
      SET project_id = ?, category_id = ?, parent_task_id = ?, title = ?, description = ?, note = ?, status = ?, priority = ?, due_date = ?,
-         completed_at = ?, extra_data = ?, sort_order = ?, updated_at = datetime('now'),
+         completed_at = ?, extra_data = ?, sort_order = ?, updated_at = ?,
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
@@ -550,6 +559,7 @@ export async function updateTask(id: string, input: UpdateTaskInput, opts?: Task
       input.completed_at !== undefined ? input.completed_at : current.completed_at,
       input.extra_data !== undefined ? input.extra_data : current.extra_data,
       input.sort_order ?? current.sort_order ?? 1000,
+      nowLocal,
       id,
     ]
   );
@@ -570,6 +580,7 @@ export async function assignProjectIdToTaskSubtree(rootTaskId: string, projectId
     throw new Error('所属项目尚未同步到本地，请返回任务列表刷新后重试');
   }
   const db = await getDatabase();
+  const nowLocal = sqlLocalNow();
   const result = await db.runAsync(
     `WITH RECURSIVE subtree(id) AS (
         SELECT id FROM tasks WHERE id = ?
@@ -580,10 +591,10 @@ export async function assignProjectIdToTaskSubtree(rootTaskId: string, projectId
      )
      UPDATE tasks
         SET project_id = ?,
-            updated_at = datetime('now'),
+            updated_at = ?,
             sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
       WHERE id IN (SELECT id FROM subtree)`,
-    [rootTaskId, projectId],
+    [rootTaskId, projectId, nowLocal],
   );
   if ((result.changes ?? 0) === 0) {
     throw new Error('任务尚未同步到本地，请返回列表刷新后重试');
@@ -601,6 +612,7 @@ export async function deleteTask(id: string) {
   }
 
   const db = await getDatabase();
+  const nowLocal = sqlLocalNow();
   const result = await db.runAsync(
     `WITH RECURSIVE subtree(id) AS (
         SELECT id FROM tasks WHERE id = ?
@@ -610,10 +622,10 @@ export async function deleteTask(id: string) {
           JOIN subtree s ON t.parent_task_id = s.id
      )
      UPDATE tasks
-        SET updated_at = datetime('now'),
+        SET updated_at = ?,
             sync_status = 'pending_delete'
       WHERE id IN (SELECT id FROM subtree)`,
-    [id],
+    [id, nowLocal],
   );
   if ((result.changes ?? 0) === 0) {
     throw new Error('任务尚未同步到本地，请返回列表刷新后重试');

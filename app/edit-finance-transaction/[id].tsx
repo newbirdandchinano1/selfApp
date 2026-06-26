@@ -17,7 +17,7 @@ import {
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import { notifyFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
-import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import { formatFinanceHappenedAt, parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -164,7 +164,7 @@ export default function EditFinanceTransactionScreen() {
       setNoteDraft(txn.note?.trim() ?? '');
       setAmountDraft(Math.abs(Number(txn.amount)).toFixed(2));
       setAiComment(txn.ai_comment?.trim() ?? '');
-      const d = new Date(txn.happened_at);
+      const d = parseStoredDatetime(txn.happened_at);
       setHappenedAt(Number.isNaN(d.getTime()) ? new Date() : d);
       setAccountId(txn.account_id);
 
@@ -256,7 +256,7 @@ export default function EditFinanceTransactionScreen() {
       const mergedExtra = mergeExtraData(row.extra_data, extraPatch);
       await updateFinanceTransaction(row.id, {
         name: title,
-        happened_at: happenedAt.toISOString(),
+        happened_at: formatFinanceHappenedAt(happenedAt),
         account_id: selectedAccount.id,
         transaction_type: tab,
         amount: signedAmount,
@@ -269,7 +269,7 @@ export default function EditFinanceTransactionScreen() {
       if (tab !== 'transfer' && !existingAiComment) {
         await tryPersistFinanceTxnAiComment(row.id, {
           name: title,
-          happened_at: happenedAt.toISOString(),
+          happened_at: formatFinanceHappenedAt(happenedAt),
           transaction_type: tab,
           amount: signedAmount,
           note: noteDraft.trim() || null,
@@ -419,7 +419,7 @@ export default function EditFinanceTransactionScreen() {
                   const title = nameDraft.trim() || (tab === 'income' ? '收入' : tab === 'expense' ? '支出' : '转账');
                   const result = await tryPersistFinanceTxnAiComment(row.id, {
                     name: title,
-                    happened_at: happenedAt.toISOString(),
+                    happened_at: formatFinanceHappenedAt(happenedAt),
                     transaction_type: tab,
                     amount: signedAmount,
                     note: noteDraft.trim() || null,

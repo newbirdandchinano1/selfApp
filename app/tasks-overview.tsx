@@ -1,20 +1,14 @@
 import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { getTasksForOverviewList } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
-import {
-  countTaskExecutionEventsByAction,
-  countTaskExecutionEventsInScope,
-  getFirstCompletedEventDayYmd,
-  getRecentTaskExecutionEventsPage,
-  getTaskCompletionCountsByDayRange,
-  getTaskExecutionEventsByActionPage,
-  getNetCompletedTaskEventsForLocalDay,
-  getTaskGlobalInsightCounts,
-  type TaskExecutionEventWithTitle,
-} from '@/lib/repositories/tasks/task-execution-events';
+import type { TaskExecutionEventWithTitle } from '@/lib/repositories/tasks/task-execution-events';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
+import {
+  fetchTasksOverview,
+  type TasksOverviewInsightCounts,
+  type TasksOverviewStatKey,
+} from '@/lib/tasks-overview-api';
 import { buildGlobalTaskHeatmapGrid, heatmapGridDayRange, type HeatmapCell } from '@/lib/tasks-global-heatmap';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -50,12 +44,10 @@ function actionLabel(action: string) {
   return action;
 }
 
-type OverviewStatKey = 'open' | 'doneOrCancelled' | 'totalActive' | 'completedEvents' | 'reopenedEvents';
-
 const STAT_CARDS: Array<{
-  key: OverviewStatKey;
+  key: TasksOverviewStatKey;
   label: string;
-  countKey: keyof Awaited<ReturnType<typeof getTaskGlobalInsightCounts>>;
+  countKey: keyof TasksOverviewInsightCounts;
   valueColor: 'text' | 'secondary' | 'primary';
   listMode: 'tasks' | 'events';
   eventAction?: 'completed' | 'reopened';
@@ -198,11 +190,12 @@ export default function TasksOverviewScreen() {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme === 'dark' ? 'dark' : 'light'];
   const isDark = colorScheme === 'dark';
-  const { logicalTodayYmd } = useDayBoundary();
+  const { logicalTodayYmd, boundary } = useDayBoundary();
 
-  const [counts, setCounts] = React.useState<Awaited<ReturnType<typeof getTaskGlobalInsightCounts>> | null>(null);
+  const [counts, setCounts] = React.useState<TasksOverviewInsightCounts | null>(null);
   const [events, setEvents] = React.useState<TaskExecutionEventWithTitle[]>([]);
   const [eventsTotal, setEventsTotal] = React.useState(0);
+  const [eventsPage, setEventsPage] = React.useState(1);
   const [eventsHasMore, setEventsHasMore] = React.useState(false);
   const [eventsLoading, setEventsLoading] = React.useState(true);
   const [eventsLoadingMore, setEventsLoadingMore] = React.useState(false);
@@ -218,15 +211,18 @@ export default function TasksOverviewScreen() {
   const [selectedHeatYmd, setSelectedHeatYmd] = React.useState<string | null>(null);
   const [selectedHeatCount, setSelectedHeatCount] = React.useState(0);
   const [selectedHeatInRange, setSelectedHeatInRange] = React.useState(true);
-  const [dayEvents, setDayEvents] = React.useState<Awaited<ReturnType<typeof getNetCompletedTaskEventsForLocalDay>>>([]);
+  const [dayEvents, setDayEvents] = React.useState<TaskExecutionEventWithTitle[]>([]);
   const [dayEventsLoading, setDayEventsLoading] = React.useState(false);
 
-  const [selectedStatKey, setSelectedStatKey] = React.useState<OverviewStatKey | null>(null);
+  const [selectedStatKey, setSelectedStatKey] = React.useState<TasksOverviewStatKey | null>(null);
   const [statTasks, setStatTasks] = React.useState<TaskRow[]>([]);
+  const [statTasksTotal, setStatTasksTotal] = React.useState(0);
+  const [statTasksHasMore, setStatTasksHasMore] = React.useState(false);
   const [statEvents, setStatEvents] = React.useState<TaskExecutionEventWithTitle[]>([]);
   const [statEventsTotal, setStatEventsTotal] = React.useState(0);
+  const [statPage, setStatPage] = React.useState(1);
   const [statEventsHasMore, setStatEventsHasMore] = React.useState(false);
-  const [statEventsLoadingMore, setStatEventsLoadingMore] = React.useState(false);
+  const [statLoadingMore, setStatLoadingMore] = React.useState(false);
   const [statLoading, setStatLoading] = React.useState(false);
 
   const screenW = Dimensions.get('window').width;
@@ -237,93 +233,140 @@ export default function TasksOverviewScreen() {
     return computeHeatLayout(w);
   }, [heatmapLayoutW, approxCardInner]);
 
-  const loadOverview = React.useCallback(async (weeks: number) => {
-    const { startYmd, endYmd } = heatmapGridDayRange(weeks, logicalTodayYmd);
-    const [c, dayMap, firstDay] = await Promise.all([
-      getTaskGlobalInsightCounts(),
-      getTaskCompletionCountsByDayRange(startYmd, endYmd),
-      getFirstCompletedEventDayYmd(),
-    ]);
-    let maxC = 0;
-    for (const v of dayMap.values()) {
-      if (v > maxC) maxC = v;
-    }
-    const grid = buildGlobalTaskHeatmapGrid(weeks, dayMap, firstDay, logicalTodayYmd);
-    setHeatWeeks(weeks);
-    setCounts(c);
-    setHeatmapGrid(grid);
-    setHeatMax(maxC);
-    setMinDataYmd(firstDay);
-  }, [logicalTodayYmd]);
+  const buildFetchParams = React.useCallback(
+    (weeks: number, overrides?: Partial<Parameters<typeof fetchTasksOverview>[0]>) => {
+      const { startYmd, endYmd } = heatmapGridDayRange(weeks, logicalTodayYmd);
+      return {
+        boundary,
+        logicalToday: logicalTodayYmd,
+        heatmapStart: startYmd,
+        heatmapEnd: endYmd,
+        offlineFallback: true as const,
+        ...overrides,
+      };
+    },
+    [boundary, logicalTodayYmd],
+  );
 
-  const loadEventsFirstPage = React.useCallback(async () => {
-    setEventsLoading(true);
-    try {
-      const [total, page] = await Promise.all([
-        countTaskExecutionEventsInScope(),
-        getRecentTaskExecutionEventsPage(HISTORY_PAGE_SIZE, 0),
-      ]);
-      setEventsTotal(total);
-      setEvents(page);
-      setEventsHasMore(page.length < total);
-    } catch (e) {
-      console.warn('加载执行历史失败', e);
-      setEventsTotal(0);
-      setEvents([]);
-      setEventsHasMore(false);
-    } finally {
-      setEventsLoading(false);
-    }
-  }, []);
+  const applyHeatmapFromData = React.useCallback(
+    (weeks: number, dayMap: Map<string, number>, firstDay: string | null) => {
+      let maxC = 0;
+      for (const v of dayMap.values()) {
+        if (v > maxC) maxC = v;
+      }
+      setHeatWeeks(weeks);
+      setHeatmapGrid(buildGlobalTaskHeatmapGrid(weeks, dayMap, firstDay, logicalTodayYmd));
+      setHeatMax(maxC);
+      setMinDataYmd(firstDay);
+    },
+    [logicalTodayYmd],
+  );
+
+  const loadHomeScreen = React.useCallback(
+    async (weeks: number) => {
+      const data = await fetchTasksOverview(
+        buildFetchParams(weeks, { eventsPage: 1, eventsLimit: HISTORY_PAGE_SIZE }),
+      );
+      setCounts(data.insightCounts);
+      applyHeatmapFromData(weeks, data.countsByDay, data.meta.firstCompletedDay);
+      setEvents(data.recentEvents.list);
+      setEventsTotal(data.recentEvents.total);
+      setEventsPage(data.recentEvents.page);
+      setEventsHasMore(data.recentEvents.page < data.recentEvents.totalPages);
+    },
+    [applyHeatmapFromData, buildFetchParams],
+  );
 
   const loadMoreEvents = React.useCallback(async () => {
     if (eventsLoading || eventsLoadingMore || !eventsHasMore || selectedHeatYmd || selectedStatKey) return;
     setEventsLoadingMore(true);
     try {
-      const page = await getRecentTaskExecutionEventsPage(HISTORY_PAGE_SIZE, events.length);
-      setEvents((prev) => {
-        const merged = [...prev, ...page];
-        setEventsHasMore(merged.length < eventsTotal);
-        return merged;
-      });
+      const nextPage = eventsPage + 1;
+      const data = await fetchTasksOverview(
+        buildFetchParams(heatLayout.weeks, { eventsPage: nextPage, eventsLimit: HISTORY_PAGE_SIZE }),
+      );
+      setEvents((prev) => [...prev, ...data.recentEvents.list]);
+      setEventsPage(data.recentEvents.page);
+      setEventsHasMore(data.recentEvents.page < data.recentEvents.totalPages);
     } catch (e) {
       console.warn('加载更多执行历史失败', e);
     } finally {
       setEventsLoadingMore(false);
     }
   }, [
-    events.length,
+    buildFetchParams,
     eventsHasMore,
     eventsLoading,
     eventsLoadingMore,
-    eventsTotal,
+    eventsPage,
+    heatLayout.weeks,
     selectedHeatYmd,
     selectedStatKey,
   ]);
 
-  const loadMoreStatEvents = React.useCallback(async () => {
+  const loadMoreStatDetail = React.useCallback(async () => {
     const card = selectedStatKey ? STAT_CARDS.find((c) => c.key === selectedStatKey) : null;
-    if (!card?.eventAction || statLoading || statEventsLoadingMore || !statEventsHasMore || selectedHeatYmd) return;
-    setStatEventsLoadingMore(true);
-    try {
-      const page = await getTaskExecutionEventsByActionPage(card.eventAction, HISTORY_PAGE_SIZE, statEvents.length);
-      setStatEvents((prev) => {
-        const merged = [...prev, ...page];
-        setStatEventsHasMore(merged.length < statEventsTotal);
-        return merged;
-      });
-    } catch (e) {
-      console.warn('加载更多概况执行记录失败', e);
-    } finally {
-      setStatEventsLoadingMore(false);
-    }
-  }, [selectedHeatYmd, selectedStatKey, statEvents.length, statEventsHasMore, statEventsLoadingMore, statEventsTotal, statLoading]);
+    if (!card || statLoading || statLoadingMore || selectedHeatYmd) return;
+    if (card.listMode === 'tasks' && !statTasksHasMore) return;
+    if (card.listMode === 'events' && !statEventsHasMore) return;
 
-  const reload = React.useCallback(async (forceApi = false) => {
-    await wrapLoad(async () => {
-      await Promise.all([loadOverview(heatLayout.weeks), loadEventsFirstPage()]);
-    }, forceApi);
-  }, [heatLayout.weeks, loadEventsFirstPage, loadOverview, wrapLoad]);
+    setStatLoadingMore(true);
+    try {
+      const nextPage = statPage + 1;
+      const data = await fetchTasksOverview(
+        buildFetchParams(heatLayout.weeks, {
+          statKey: selectedStatKey!,
+          statPage: nextPage,
+          statLimit: HISTORY_PAGE_SIZE,
+        }),
+      );
+      const detail = data.statDetail;
+      if (detail?.mode === 'tasks' && detail.tasks) {
+        setStatTasks((prev) => [...prev, ...detail.tasks!.list]);
+        setStatPage(detail.tasks.page);
+        setStatTasksHasMore(detail.tasks.page < detail.tasks.totalPages);
+      } else if (detail?.mode === 'events' && detail.events) {
+        setStatEvents((prev) => [...prev, ...detail.events!.list]);
+        setStatPage(detail.events.page);
+        setStatEventsHasMore(detail.events.page < detail.events.totalPages);
+      }
+    } catch (e) {
+      console.warn('加载更多概况明细失败', e);
+    } finally {
+      setStatLoadingMore(false);
+    }
+  }, [
+    buildFetchParams,
+    heatLayout.weeks,
+    selectedHeatYmd,
+    selectedStatKey,
+    statEventsHasMore,
+    statLoading,
+    statLoadingMore,
+    statPage,
+    statTasksHasMore,
+  ]);
+
+  const reload = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
+        setEventsLoading(true);
+        try {
+          await loadHomeScreen(heatLayout.weeks);
+        } catch (e) {
+          console.warn('加载待办总览失败', e);
+          setCounts(null);
+          setHeatmapGrid([]);
+          setEvents([]);
+          setEventsTotal(0);
+          setEventsHasMore(false);
+        } finally {
+          setEventsLoading(false);
+        }
+      }, forceApi);
+    },
+    [heatLayout.weeks, loadHomeScreen, wrapLoad],
+  );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
@@ -342,13 +385,12 @@ export default function TasksOverviewScreen() {
       const distanceToBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
       if (distanceToBottom >= 80) return;
       if (selectedStatKey) {
-        const card = STAT_CARDS.find((c) => c.key === selectedStatKey);
-        if (card?.listMode === 'events') void loadMoreStatEvents();
+        void loadMoreStatDetail();
       } else {
         void loadMoreEvents();
       }
     },
-    [loadMoreEvents, loadMoreStatEvents, selectedHeatYmd, selectedStatKey]
+    [loadMoreEvents, loadMoreStatDetail, selectedHeatYmd, selectedStatKey]
   );
 
   React.useEffect(() => {
@@ -365,9 +407,11 @@ export default function TasksOverviewScreen() {
     }
     let cancelled = false;
     setDayEventsLoading(true);
-    getNetCompletedTaskEventsForLocalDay(selectedHeatYmd)
-      .then((rows) => {
-        if (!cancelled) setDayEvents(rows);
+    void fetchTasksOverview(
+      buildFetchParams(heatLayout.weeks, { day: selectedHeatYmd, includeDayDetail: true }),
+    )
+      .then((data) => {
+        if (!cancelled) setDayEvents(data.dayDetail?.events ?? []);
       })
       .catch((e) => {
         console.warn('加载某日执行记录失败', e);
@@ -379,15 +423,18 @@ export default function TasksOverviewScreen() {
     return () => {
       cancelled = true;
     };
-  }, [selectedHeatYmd]);
+  }, [buildFetchParams, heatLayout.weeks, selectedHeatYmd]);
 
   const clearStatSelection = React.useCallback(() => {
     setSelectedStatKey(null);
     setStatTasks([]);
+    setStatTasksTotal(0);
+    setStatTasksHasMore(false);
     setStatEvents([]);
     setStatEventsTotal(0);
+    setStatPage(1);
     setStatEventsHasMore(false);
-    setStatEventsLoadingMore(false);
+    setStatLoadingMore(false);
     setStatLoading(false);
   }, []);
 
@@ -411,7 +458,7 @@ export default function TasksOverviewScreen() {
   }, []);
 
   const onStatCardPress = React.useCallback(
-    (key: OverviewStatKey) => {
+    (key: TasksOverviewStatKey) => {
       if (selectedStatKey === key) {
         clearStatSelection();
         return;
@@ -428,32 +475,36 @@ export default function TasksOverviewScreen() {
     if (!card) return;
     let cancelled = false;
     setStatLoading(true);
+    setStatTasks([]);
+    setStatTasksTotal(0);
+    setStatTasksHasMore(false);
     setStatEvents([]);
     setStatEventsTotal(0);
+    setStatPage(1);
     setStatEventsHasMore(false);
-    setStatEventsLoadingMore(false);
+    setStatLoadingMore(false);
     const run = async () => {
       try {
-        if (card.listMode === 'tasks') {
-          const rows = await getTasksForOverviewList(
-            card.key === 'open' ? 'open' : card.key === 'doneOrCancelled' ? 'doneOrCancelled' : 'totalActive'
-          );
-          if (!cancelled) {
-            setStatTasks(rows);
-            setStatEvents([]);
-          }
-        } else if (card.eventAction) {
-          const [total, rows] = await Promise.all([
-            countTaskExecutionEventsByAction(card.eventAction),
-            getTaskExecutionEventsByActionPage(card.eventAction, HISTORY_PAGE_SIZE, 0),
-          ]);
-          if (!cancelled) {
-            setStatEventsTotal(total);
-            setStatEvents(rows);
-            setStatEventsHasMore(rows.length < total);
-            setStatEventsLoadingMore(false);
-            setStatTasks([]);
-          }
+        const data = await fetchTasksOverview(
+          buildFetchParams(heatLayout.weeks, {
+            statKey: selectedStatKey,
+            statPage: 1,
+            statLimit: HISTORY_PAGE_SIZE,
+          }),
+        );
+        const detail = data.statDetail;
+        if (!cancelled && detail?.mode === 'tasks' && detail.tasks) {
+          setStatTasks(detail.tasks.list);
+          setStatTasksTotal(detail.tasks.total);
+          setStatPage(detail.tasks.page);
+          setStatTasksHasMore(detail.tasks.page < detail.tasks.totalPages);
+          setStatEvents([]);
+        } else if (!cancelled && detail?.mode === 'events' && detail.events) {
+          setStatEvents(detail.events.list);
+          setStatEventsTotal(detail.events.total);
+          setStatPage(detail.events.page);
+          setStatEventsHasMore(detail.events.page < detail.events.totalPages);
+          setStatTasks([]);
         }
       } catch (e) {
         console.warn('加载概况明细失败', e);
@@ -469,7 +520,7 @@ export default function TasksOverviewScreen() {
     return () => {
       cancelled = true;
     };
-  }, [selectedStatKey]);
+  }, [buildFetchParams, heatLayout.weeks, selectedStatKey]);
 
   const selectedStatCard = React.useMemo(
     () => (selectedStatKey ? STAT_CARDS.find((c) => c.key === selectedStatKey) : null),
@@ -508,7 +559,7 @@ export default function TasksOverviewScreen() {
         onScroll={handleMainScroll}
         scrollEventThrottle={16}>
         <Text style={[styles.hint, { color: outline }]}>
-          仅统计任务页顶部「待办」中的独立项，不含「任务列表」四象限内的项目/子任务。完成与恢复记录在勾选时写入本地库；删除后仍保留标题快照。点击概况卡片或热力图格子，在下方「执行历史」查看明细；再次点击可取消选中。
+          仅统计任务页顶部「待办」中的独立项，不含「任务列表」四象限内的项目/子任务。数据优先从服务端加载，离线时回退本地库。点击概况卡片或热力图格子，在下方「执行历史」查看明细；再次点击可取消选中。
         </Text>
 
         <View style={[styles.card, { backgroundColor: surface, borderColor: border }]}>
@@ -600,7 +651,9 @@ export default function TasksOverviewScreen() {
                   {selectedStatCard.label}
                   {selectedStatCard.listMode === 'events' && !statLoading
                     ? ` · 已加载 ${statEvents.length} / ${statEventsTotal || counts?.[selectedStatCard.countKey] || 0} 条`
-                    : ` · 共 ${counts?.[selectedStatCard.countKey] ?? 0} 条`}
+                    : selectedStatCard.listMode === 'tasks' && !statLoading
+                      ? ` · 已加载 ${statTasks.length} / ${statTasksTotal || counts?.[selectedStatCard.countKey] || 0} 条`
+                      : ` · 共 ${counts?.[selectedStatCard.countKey] ?? 0} 条`}
                 </Text>
               ) : selectedHeatYmd ? (
                 <Text style={[styles.subHint, { color: outline, marginTop: 6 }]}>
@@ -640,38 +693,50 @@ export default function TasksOverviewScreen() {
               statTasks.length === 0 ? (
                 <Text style={[styles.emptyHist, { color: theme.textSecondary }]}>暂无符合条件的待办。</Text>
               ) : (
-                statTasks.map((t, idx) => (
-                  <Pressable
-                    key={t.id}
-                    onPress={() =>
-                      router.push(
-                        isStandaloneTodoTask(t) ? standaloneTodoEditorHref(t.id) : { pathname: '/task/[id]', params: { id: t.id } },
-                      )
-                    }
-                    style={({ pressed }) => [
-                      styles.histRow,
-                      { borderBottomColor: border, opacity: pressed ? 0.86 : 1 },
-                      idx === statTasks.length - 1 ? { borderBottomWidth: 0 } : null,
-                    ]}>
-                    <View
-                      style={[
-                        styles.histDot,
-                        { backgroundColor: t.status === 'done' || t.status === 'cancelled' ? secondary : primary },
-                      ]}
-                    />
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={[styles.histTitle, { color: theme.text }]} numberOfLines={2}>
-                        {t.title?.trim() || '（无标题）'}
-                      </Text>
-                      <Text style={[styles.histMeta, { color: outline }]}>
-                        {formatTaskStatus(t.status)}
-                        {t.due_date?.trim() ? ` · 截止 ${t.due_date.slice(0, 10)}` : ''}
-                        {t.updated_at ? ` · 更新 ${formatDateTimeCN(t.updated_at)}` : ''}
+                <>
+                  {statTasks.map((t, idx) => (
+                    <Pressable
+                      key={t.id}
+                      onPress={() =>
+                        router.push(
+                          isStandaloneTodoTask(t) ? standaloneTodoEditorHref(t.id) : { pathname: '/task/[id]', params: { id: t.id } },
+                        )
+                      }
+                      style={({ pressed }) => [
+                        styles.histRow,
+                        { borderBottomColor: border, opacity: pressed ? 0.86 : 1 },
+                        idx === statTasks.length - 1 && !statTasksHasMore && !statLoadingMore ? { borderBottomWidth: 0 } : null,
+                      ]}>
+                      <View
+                        style={[
+                          styles.histDot,
+                          { backgroundColor: t.status === 'done' || t.status === 'cancelled' ? secondary : primary },
+                        ]}
+                      />
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={[styles.histTitle, { color: theme.text }]} numberOfLines={2}>
+                          {t.title?.trim() || '（无标题）'}
+                        </Text>
+                        <Text style={[styles.histMeta, { color: outline }]}>
+                          {formatTaskStatus(t.status)}
+                          {t.due_date?.trim() ? ` · 截止 ${t.due_date.slice(0, 10)}` : ''}
+                          {t.updated_at ? ` · 更新 ${formatDateTimeCN(t.updated_at)}` : ''}
+                        </Text>
+                      </View>
+                      <MaterialIcons name="chevron-right" size={20} color={outline} />
+                    </Pressable>
+                  ))}
+                  {statTasksHasMore || statLoadingMore ? (
+                    <View style={styles.dayHistLoading}>
+                      {statLoadingMore ? <ActivityIndicator color={primary} /> : null}
+                      <Text style={[styles.dayHistLoadingText, { color: outline }]}>
+                        {statLoadingMore
+                          ? '加载更多…'
+                          : `已加载 ${statTasks.length} / ${statTasksTotal} 条，继续下滑加载更多`}
                       </Text>
                     </View>
-                    <MaterialIcons name="chevron-right" size={20} color={outline} />
-                  </Pressable>
-                ))
+                  ) : null}
+                </>
               )
             ) : statEvents.length === 0 ? (
               <Text style={[styles.emptyHist, { color: theme.textSecondary }]}>暂无执行记录。</Text>
@@ -683,7 +748,7 @@ export default function TasksOverviewScreen() {
                     style={[
                       styles.histRow,
                       { borderBottomColor: border },
-                      idx === statEvents.length - 1 && !statEventsHasMore && !statEventsLoadingMore
+                      idx === statEvents.length - 1 && !statEventsHasMore && !statLoadingMore
                         ? { borderBottomWidth: 0 }
                         : null,
                     ]}>
@@ -698,11 +763,11 @@ export default function TasksOverviewScreen() {
                     </View>
                   </View>
                 ))}
-                {statEventsHasMore || statEventsLoadingMore ? (
+                {statEventsHasMore || statLoadingMore ? (
                   <View style={styles.dayHistLoading}>
-                    {statEventsLoadingMore ? <ActivityIndicator color={primary} /> : null}
+                    {statLoadingMore ? <ActivityIndicator color={primary} /> : null}
                     <Text style={[styles.dayHistLoadingText, { color: outline }]}>
-                      {statEventsLoadingMore
+                      {statLoadingMore
                         ? '加载更多…'
                         : `已加载 ${statEvents.length} / ${statEventsTotal} 条，继续下滑加载更多`}
                     </Text>

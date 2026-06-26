@@ -1,13 +1,12 @@
-import { apiGetTasksCompletionHeatmap, type CompletionHeatmapDayCounts } from '@/lib/api-client';
+import {
+  apiGetTasksCompletionHeatmap,
+  type CompletionHeatmapDayDetail,
+  type CompletionHeatmapDayCounts,
+  type CompletionHeatmapDayDetailTodo,
+} from '@/lib/api-client';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
 import type { FrogCompletionDayItem } from '@/lib/repositories/tasks/frog-completion-events';
-import { getFrogCompletionCountsByDayRange } from '@/lib/repositories/tasks/frog-completion-events';
 import type { TaskExecutionEventWithTitle } from '@/lib/repositories/tasks/task-execution-events';
-import {
-  getNetCompletedTaskEventsForLocalDay,
-  getTaskCompletionCountsByDayRange,
-} from '@/lib/repositories/tasks/task-execution-events';
-import { getFrogCompletionsForAssignedDay } from '@/lib/repositories/tasks/frog-completion-events';
 import { loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 
 export type CompletionHeatmapData = {
@@ -26,6 +25,19 @@ export type CompletionHeatmapDayDetailData = {
   todoItems: TaskExecutionEventWithTitle[];
 };
 
+type HeatmapRequestOpts = {
+  boundary?: TasksDayBoundary;
+  heatmapStart?: string;
+  heatmapEnd?: string;
+  signal?: AbortSignal;
+};
+
+function readDayCount(row: CompletionHeatmapDayCounts | undefined, key: 'frogs' | 'todos'): number {
+  if (!row || typeof row !== 'object') return 0;
+  const n = row[key];
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+}
+
 function countsRecordToMaps(countsByDay: Record<string, CompletionHeatmapDayCounts>): {
   frogCountByYmd: Map<string, number>;
   todoCountByYmd: Map<string, number>;
@@ -34,115 +46,90 @@ function countsRecordToMaps(countsByDay: Record<string, CompletionHeatmapDayCoun
   const todoCountByYmd = new Map<string, number>();
   for (const [ymd, row] of Object.entries(countsByDay ?? {})) {
     if (!ymd) continue;
-    frogCountByYmd.set(ymd, row?.frogs ?? 0);
-    todoCountByYmd.set(ymd, row?.todos ?? 0);
+    frogCountByYmd.set(ymd, readDayCount(row, 'frogs'));
+    todoCountByYmd.set(ymd, readDayCount(row, 'todos'));
   }
   return { frogCountByYmd, todoCountByYmd };
 }
 
-async function readCompletionHeatmapFromLocal(
-  startYmd: string,
-  endYmd: string,
-): Promise<CompletionHeatmapData> {
-  const [frogCounts, todoCounts] = await Promise.all([
-    getFrogCompletionCountsByDayRange(startYmd, endYmd),
-    getTaskCompletionCountsByDayRange(startYmd, endYmd),
-  ]);
+function readTodoTitle(row: CompletionHeatmapDayDetailTodo & Record<string, unknown>): string | null {
+  const title = typeof row.title === 'string' ? row.title.trim() : '';
+  if (title) return title;
+  const taskTitle = typeof row.task_title === 'string' ? row.task_title.trim() : '';
+  return taskTitle || null;
+}
+
+function mapDayDetailFromApi(detail: CompletionHeatmapDayDetail, ymd: string): CompletionHeatmapDayDetailData {
   return {
-    frogCountByYmd: frogCounts,
-    todoCountByYmd: todoCounts,
-    meta: { heatmapStart: startYmd, heatmapEnd: endYmd },
+    frogItems: (detail.frogs ?? []).map((f, i) => ({
+      id: f.task_id ? `${f.task_id}:${ymd}` : `frog-${i}`,
+      task_id: f.task_id,
+      assigned_ymd: detail.ymd?.trim() || ymd,
+      task_title: f.task_title?.trim() || null,
+    })),
+    todoItems: (detail.todos ?? []).map((t) => ({
+      id: t.id,
+      task_id: t.task_id ?? '',
+      action: 'completed',
+      created_at: `${detail.ymd?.trim() || ymd}T12:00:00.000Z`,
+      task_title: readTodoTitle(t as CompletionHeatmapDayDetailTodo & Record<string, unknown>),
+    })),
   };
 }
 
-/** 完成热力图：`GET /api/pages/tasks/completion-heatmap` */
-export async function fetchCompletionHeatmap(opts: {
-  boundary?: TasksDayBoundary;
-  heatmapStart?: string;
-  heatmapEnd?: string;
-  offlineFallback?: boolean;
-  forceLocal?: boolean;
-  signal?: AbortSignal;
-}): Promise<CompletionHeatmapData> {
+/**
+ * 完成热力图（画格子）：`GET /api/pages/tasks/completion-heatmap`
+ * 使用 `countsByDay` 中的 `frogs` / `todos` 字段。
+ */
+export async function fetchCompletionHeatmap(opts: HeatmapRequestOpts): Promise<CompletionHeatmapData> {
   const boundary = opts.boundary ?? (await loadTasksDayBoundary());
-  const { heatmapStart, heatmapEnd, offlineFallback, forceLocal, signal } = opts;
+  const { heatmapStart, heatmapEnd, signal } = opts;
 
-  if (!forceLocal) {
-    try {
-      throwIfAborted(signal);
-      const payload = await apiGetTasksCompletionHeatmap({
-        dayBoundaryHour: boundary.hour,
-        dayBoundaryMinute: boundary.minute,
-        heatmapStart,
-        heatmapEnd,
-        signal,
-      });
-      const { frogCountByYmd, todoCountByYmd } = countsRecordToMaps(payload.countsByDay ?? {});
-      return {
-        frogCountByYmd,
-        todoCountByYmd,
-        meta: payload.meta ?? {},
-      };
-    } catch (e) {
-      if (!offlineFallback) throw e;
-      console.warn('[tasks-completion-heatmap-api] 接口失败，回退本地 SQLite', e);
-    }
-  }
-
-  if (heatmapStart && heatmapEnd) {
-    return readCompletionHeatmapFromLocal(heatmapStart, heatmapEnd);
-  }
-  return { frogCountByYmd: new Map(), todoCountByYmd: new Map(), meta: {} };
+  throwIfAborted(signal);
+  const payload = await apiGetTasksCompletionHeatmap({
+    dayBoundaryHour: boundary.hour,
+    dayBoundaryMinute: boundary.minute,
+    heatmapStart,
+    heatmapEnd,
+    signal,
+  });
+  console.log('[tasks-completion-heatmap-api] completion-heatmap 接口返回', JSON.stringify(payload, null, 2));
+  const { frogCountByYmd, todoCountByYmd } = countsRecordToMaps(payload.countsByDay ?? {});
+  return {
+    frogCountByYmd,
+    todoCountByYmd,
+    meta: payload.meta ?? {},
+  };
 }
 
-/** 选中日明细：`GET /api/pages/tasks/completion-heatmap?day=&includeDayDetail=true` */
-export async function fetchCompletionHeatmapDayDetail(opts: {
-  day: string;
-  boundary?: TasksDayBoundary;
-  offlineFallback?: boolean;
-  forceLocal?: boolean;
-  signal?: AbortSignal;
-}): Promise<CompletionHeatmapDayDetailData> {
+/**
+ * 点击某一天：`GET /api/pages/tasks/completion-heatmap?day=YYYY-MM-DD&...`
+ * 读 `dayDetail.todos`（不是 overview 的 `dayDetail.events`）。
+ * `heatmapStart` / `heatmapEnd` / 日界必须与首次加载热力图一致。
+ */
+export async function fetchCompletionHeatmapDayDetail(
+  opts: HeatmapRequestOpts & { day: string },
+): Promise<CompletionHeatmapDayDetailData> {
   const boundary = opts.boundary ?? (await loadTasksDayBoundary());
   const ymd = opts.day.trim();
+  const { heatmapStart, heatmapEnd, signal } = opts;
 
-  if (!opts.forceLocal) {
-    try {
-      throwIfAborted(opts.signal);
-      const payload = await apiGetTasksCompletionHeatmap({
-        dayBoundaryHour: boundary.hour,
-        dayBoundaryMinute: boundary.minute,
-        day: ymd,
-        includeDayDetail: true,
-        signal: opts.signal,
-      });
-      const detail = payload.dayDetail;
-      if (detail) {
-        return {
-          frogItems: (detail.frogs ?? []).map((f, i) => ({
-            id: f.task_id ? `${f.task_id}:${ymd}` : `frog-${i}`,
-            task_id: f.task_id,
-            assigned_ymd: ymd,
-            task_title: f.task_title ?? null,
-          })),
-          todoItems: (detail.todos ?? []).map((t) => ({
-            id: t.id,
-            task_id: t.task_id ?? '',
-            action: 'completed',
-            created_at: `${ymd}T12:00:00.000Z`,
-            task_title: t.title ?? null,
-          })),
-        };
-      }
-    } catch (e) {
-      if (!opts.offlineFallback) throw e;
-      console.warn('[tasks-completion-heatmap-api] 日明细接口失败，回退本地', e);
-    }
+  throwIfAborted(signal);
+  const payload = await apiGetTasksCompletionHeatmap({
+    dayBoundaryHour: boundary.hour,
+    dayBoundaryMinute: boundary.minute,
+    heatmapStart,
+    heatmapEnd,
+    day: ymd,
+    includeDayDetail: true,
+    signal,
+  });
+  console.log(
+    '[tasks-completion-heatmap-api] completion-heatmap 日明细接口返回',
+    JSON.stringify(payload, null, 2),
+  );
+  if (payload.dayDetail) {
+    return mapDayDetailFromApi(payload.dayDetail, ymd);
   }
-
-  const [frogItems, todoItems] = await Promise.all([
-    getFrogCompletionsForAssignedDay(ymd),
-    getNetCompletedTaskEventsForLocalDay(ymd),
-  ]);
-  return { frogItems, todoItems };
+  return { frogItems: [], todoItems: [] };
 }

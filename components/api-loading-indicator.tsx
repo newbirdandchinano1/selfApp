@@ -1,5 +1,7 @@
 import { useApiLoadingOverlay } from '@/hooks/use-api-loading-overlay';
+import { useActivePageApiKey } from '@/hooks/use-active-page-api-key';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { isSkeletonLoadingTabPageKey } from '@/lib/page-api-health-ui';
 import React, { useEffect, useRef } from 'react';
 import {
   ActivityIndicator,
@@ -19,6 +21,8 @@ const LOADING_TIMEOUT_MS = 30000;
 
 export function ApiLoadingIndicator() {
   const { visible, timedOut, error, blocking, retry, dismiss } = useApiLoadingOverlay(480, LOADING_TIMEOUT_MS);
+  const activePageKey = useActivePageApiKey();
+  const suppressForSkeletonTab = isSkeletonLoadingTabPageKey(activePageKey);
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
   const isDark = colorScheme === 'dark';
@@ -70,6 +74,38 @@ export function ApiLoadingIndicator() {
   }, [visible, pillOpacity, slide]);
 
   if (!blocking) return null;
+
+  const progressBar = (
+    <View
+      style={[styles.topBar, suppressForSkeletonTab ? styles.topBarNonBlocking : { top: insets.top }]}
+      pointerEvents="none"
+      accessibilityRole="progressbar"
+      accessibilityLabel="加载中"
+    >
+      <View style={[styles.track, { backgroundColor: isDark ? 'rgba(96,165,250,0.22)' : 'rgba(0,88,190,0.16)' }]}>
+        <Animated.View
+          style={[
+            styles.bar,
+            {
+              width: BAR_SEGMENT_WIDTH,
+              backgroundColor: primary,
+              transform: [{ translateX: barTranslateX }],
+            },
+          ]}
+        />
+      </View>
+    </View>
+  );
+
+  // 骨架屏 Tab：仅顶部进度条，不遮挡页面；错误由页面内处理
+  if (suppressForSkeletonTab) {
+    if (!visible || error || timedOut) return null;
+    return (
+      <View style={styles.barOnlyRoot} pointerEvents="none">
+        {progressBar}
+      </View>
+    );
+  }
 
   return (
     <View style={styles.blocker} pointerEvents="auto" accessibilityViewIsModal>
@@ -147,29 +183,14 @@ export function ApiLoadingIndicator() {
           </Pressable>
         </View>
       ) : (
-        <View
-          style={[styles.topBar, { top: insets.top }]}
-          pointerEvents="none"
-          accessibilityRole="progressbar"
-          accessibilityLabel="加载中"
-        >
-          <View style={[styles.track, { backgroundColor: isDark ? 'rgba(96,165,250,0.22)' : 'rgba(0,88,190,0.16)' }]}>
-            <Animated.View
-              style={[
-                styles.bar,
-                {
-                  width: BAR_SEGMENT_WIDTH,
-                  backgroundColor: primary,
-                  transform: [{ translateX: barTranslateX }],
-                },
-              ]}
-            />
-          </View>
+        <>
+          {progressBar}
           <Animated.View
             style={[
               styles.pill,
               {
                 opacity: pillOpacity,
+                marginTop: insets.top + 15,
                 backgroundColor: isDark ? 'rgba(31,41,55,0.96)' : 'rgba(255,255,255,0.98)',
                 borderColor: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.35)',
               },
@@ -178,13 +199,18 @@ export function ApiLoadingIndicator() {
             <ActivityIndicator size="small" color={primary} />
             <Text style={[styles.pillText, { color: primary }]}>正在同步数据…</Text>
           </Animated.View>
-        </View>
+        </>
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  barOnlyRoot: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    elevation: 9999,
+  },
   blocker: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 9999,
@@ -201,6 +227,9 @@ const styles = StyleSheet.create({
     right: 0,
     alignItems: 'center',
   },
+  topBarNonBlocking: {
+    top: 0,
+  },
   track: {
     width: '100%',
     height: 5,
@@ -211,7 +240,8 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   pill: {
-    marginTop: 10,
+    position: 'absolute',
+    alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,

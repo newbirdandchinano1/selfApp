@@ -3,6 +3,7 @@
  * 由 markApiTableDirty 全局触发；关键流程可 awaitSync 等待完成。
  */
 import { withApiWriteLoading } from '@/lib/api-loading-tracker';
+import { isSkeletonLoadingTabActive } from '@/lib/page-api-health-ui';
 
 const WRITE_PUSH_DEBOUNCE_MS = 300;
 
@@ -17,10 +18,17 @@ function clearWritePushDebounce(): void {
 }
 
 async function runFlush(opts?: { rethrow?: boolean }): Promise<void> {
-  await withApiWriteLoading(async () => {
+  const flush = async () => {
     const { flushApiDirtyTablesNow } = await import('@/lib/api-incremental-sync');
     await flushApiDirtyTablesNow({ rethrow: opts?.rethrow ?? false });
-  });
+  };
+
+  if (isSkeletonLoadingTabActive()) {
+    await flush();
+    return;
+  }
+
+  await withApiWriteLoading(flush);
 }
 
 export async function pushLocalChangesToApi(opts?: {

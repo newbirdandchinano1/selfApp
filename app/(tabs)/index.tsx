@@ -1,4 +1,11 @@
 import { RecordIntakeSheet, type RecordIntakeConfirmPayload } from '@/components/record-intake-sheet';
+import {
+  HealthIntakeListSkeleton,
+  HealthMetricsSkeleton,
+  HealthQuickAddSkeleton,
+  HealthStatusCardSkeleton,
+  HealthTrendCardSkeleton,
+} from '@/components/health/health-home-skeletons';
 import { AppIconButton } from '@/components/ui';
 import { HealthNutrientAccents, Layout, Radius, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -744,6 +751,12 @@ export default function HealthScreen() {
   const emptyLocalEscalatedRef = React.useRef(false);
   const [pageLoadError, setPageLoadError] = React.useState<string | null>(null);
   const [pageLoadRetrying, setPageLoadRetrying] = React.useState(false);
+  /** 首次数据未就绪前展示骨架屏，避免显示全 0 假数据 */
+  const [initialHealthLoadPending, setInitialHealthLoadPending] = React.useState(true);
+  const [healthSkeletonMounted, setHealthSkeletonMounted] = React.useState(true);
+  const healthContentRevealDoneRef = React.useRef(false);
+  const healthSkeletonOpacity = React.useRef(new Animated.Value(1)).current;
+  const healthContentOpacity = React.useRef(new Animated.Value(0)).current;
 
   // 获取用户信息
   const [user, setUser] = React.useState<UserRow | null>(null);
@@ -867,10 +880,12 @@ export default function HealthScreen() {
 
       if (!result.ok || result.restFailed || fnResult === false) {
         setPageLoadError('数据加载失败，请检查网络后重试');
+        setInitialHealthLoadPending(false);
         return;
       }
 
       setPageLoadError(null);
+      setInitialHealthLoadPending(false);
 
       // 本地空库或 REST 同步后仍无数据：自动强制全量拉取（与下拉刷新一致）
       if (!forceApi && fnResult?.sliceEmpty && !emptyLocalEscalatedRef.current) {
@@ -1382,11 +1397,44 @@ export default function HealthScreen() {
   }, [quickAddItems.length]);
 
   React.useEffect(() => {
+    if (initialHealthLoadPending) return;
+
+    metricCardAnims.forEach((anim) => anim.setValue(1));
+    quickAddCardAnimsRef.current.forEach((anim) => anim.setValue(1));
+    sectionEntranceAnims.forEach((anim) => anim.setValue(1));
+    fadeAnim.setValue(1);
+    translateYAnim.setValue(0);
+
+    if (!healthContentRevealDoneRef.current) {
+      healthContentRevealDoneRef.current = true;
+      setHealthSkeletonMounted(true);
+      healthSkeletonOpacity.setValue(1);
+      healthContentOpacity.setValue(0);
+      Animated.parallel([
+        Animated.timing(healthSkeletonOpacity, {
+          toValue: 0,
+          duration: 280,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(healthContentOpacity, {
+          toValue: 1,
+          duration: 320,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start(({ finished }) => {
+        if (finished) setHealthSkeletonMounted(false);
+      });
+      return;
+    }
+
     metricCardAnims.forEach((anim) => anim.setValue(0));
     quickAddCardAnimsRef.current.forEach((anim) => anim.setValue(0));
     sectionEntranceAnims.forEach((anim) => anim.setValue(0));
     fadeAnim.setValue(0);
     translateYAnim.setValue(18);
+    healthContentOpacity.setValue(1);
 
     const metricStagger = Animated.stagger(
       90,
@@ -1442,7 +1490,16 @@ export default function HealthScreen() {
       metricStagger,
       Animated.parallel([sectionStagger, quickAddStagger]),
     ]).start();
-  }, [fadeAnim, translateYAnim, metricCardAnims, quickAddItems.length, sectionEntranceAnims]);
+  }, [
+    fadeAnim,
+    translateYAnim,
+    metricCardAnims,
+    quickAddItems.length,
+    sectionEntranceAnims,
+    initialHealthLoadPending,
+    healthSkeletonOpacity,
+    healthContentOpacity,
+  ]);
 
   React.useEffect(() => {
     const pulse = Animated.loop(
@@ -1960,6 +2017,9 @@ export default function HealthScreen() {
           ]}
         />
 
+        <View style={styles.healthBodyStack}>
+          {!initialHealthLoadPending ? (
+            <Animated.View style={{ opacity: healthContentOpacity }}>
         <Animated.View
           style={{
             opacity: fadeAnim,
@@ -2638,6 +2698,39 @@ export default function HealthScreen() {
 
         <View style={{ height: 40 }} />
         </Animated.View>
+            </Animated.View>
+          ) : null}
+
+          {initialHealthLoadPending || healthSkeletonMounted ? (
+            <Animated.View
+              pointerEvents={initialHealthLoadPending ? 'auto' : 'none'}
+              style={[
+                initialHealthLoadPending ? undefined : styles.healthSkeletonOverlay,
+                {
+                  opacity: initialHealthLoadPending ? 1 : healthSkeletonOpacity,
+                  backgroundColor: initialHealthLoadPending ? undefined : colors.background,
+                },
+              ]}
+            >
+              <HealthMetricsSkeleton cardWidth={cardWidth} colors={colors} />
+              <HealthStatusCardSkeleton colors={colors} />
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={[styles.sectionTitle, { color: colors.text }]}>快速添加</Text>
+                </View>
+                <HealthQuickAddSkeleton cardWidth={cardWidth} colors={colors} />
+              </View>
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={[styles.sectionTitle, { color: colors.text }]}>摄入记录</Text>
+                </View>
+                <HealthIntakeListSkeleton colors={colors} />
+              </View>
+              <HealthTrendCardSkeleton colors={colors} isDark={isDark} />
+              <View style={{ height: 40 }} />
+            </Animated.View>
+          ) : null}
+        </View>
       </ScrollView>
 
       <Animated.View
@@ -2965,6 +3058,16 @@ const styles = StyleSheet.create({
   bgOrbMiddle: {
     top: 280,
     left: -88,
+  },
+  healthBodyStack: {
+    position: 'relative',
+  },
+  healthSkeletonOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 2,
   },
   metricsRow: {
     flexDirection: 'row',

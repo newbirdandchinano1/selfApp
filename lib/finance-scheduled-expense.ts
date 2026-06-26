@@ -1,4 +1,4 @@
-import { AppSettingKey, getAppSetting, setAppSetting } from '@/lib/app-settings-store';
+import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { isTaskRepeatDueOnLogicalDay, type TaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 
@@ -180,12 +180,12 @@ export function buildScheduledExpenseSlotKey(ymd: string, slotIndex: number): st
 
 export function scheduledExpenseHappenedAtIso(ymd: string, hour: number, minute: number, slotIndex: number): string {
   const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return new Date().toISOString();
+  if (!m) return formatWallClockDatetimeLocal(new Date());
   const totalMinutes = hour * 60 + minute + slotIndex;
   const h = Math.floor(totalMinutes / 60) % 24;
   const min = totalMinutes % 60;
   const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), h, min, 0, 0);
-  return d.toISOString();
+  return formatWallClockDatetimeLocal(d);
 }
 
 export function ymdFromIso(iso: string): string | null {

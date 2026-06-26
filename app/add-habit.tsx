@@ -22,7 +22,8 @@ import {
   normalizeBuildHabitExpectedGoal,
   parseBuildHabitExpectedGoal,
 } from '@/lib/repositories/habits/habit-goal';
-import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
+import { getLogicalLocalYmd } from '@/lib/tasks-logical-day';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import {
   DEFAULT_TASK_REPEAT_PERIOD,
@@ -192,7 +193,7 @@ function NumberControl({
 const PAGE_API_KEY = 'add-habit';
 
 export default function AddHabitScreen() {
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const params = useLocalSearchParams<{
     mode?: string;
@@ -203,6 +204,7 @@ export default function AddHabitScreen() {
   }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark, scheme, shadows } = useAppTheme();
+  const { boundary: dayBoundary, logicalTodayYmd } = useDayBoundary();
 
   const isEditMode = pickParam(params.mode) === 'edit';
   const initialName = pickParam(params.name) ?? '';
@@ -272,6 +274,14 @@ export default function AddHabitScreen() {
       void reload();
     }, [reload])
   );
+
+  const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
+  React.useEffect(() => {
+    const prev = prevLogicalTodayYmdRef.current;
+    if (prev === logicalTodayYmd) return;
+    prevLogicalTodayYmdRef.current = logicalTodayYmd;
+    if (isEditMode && habitId) void reload();
+  }, [habitId, isEditMode, logicalTodayYmd, reload]);
 
   const toggleWeekDay = React.useCallback((day: string) => {
     setSelectedDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
@@ -615,12 +625,7 @@ export default function AddHabitScreen() {
     if (habitKind === 'break') {
       let cycleStartedAt: string | null = null;
       if (!isEditMode) {
-        try {
-          const boundary = await loadTasksDayBoundary();
-          cycleStartedAt = getLogicalLocalYmd(new Date(), boundary);
-        } catch {
-          cycleStartedAt = getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY);
-        }
+        cycleStartedAt = getLogicalLocalYmd(new Date(), dayBoundary);
       }
       extraData = ensureBreakHabitCycleExtra(extraDataRaw, cycleStartedAt);
       const extraObj = JSON.parse(extraData) as Record<string, unknown>;
@@ -698,6 +703,7 @@ export default function AddHabitScreen() {
       );
     }
 
+    notifyAncestorsDataChanged();
     router.back();
   }, [
     activeMonthlyFilter,
@@ -719,6 +725,7 @@ export default function AddHabitScreen() {
     isEditMode,
     monthlyNDays,
     monthlySpecificDays,
+    notifyAncestorsDataChanged,
     quantifyEnabled,
     reminderEnabled,
     reminderTime,

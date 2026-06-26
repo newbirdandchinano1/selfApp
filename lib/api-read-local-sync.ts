@@ -19,6 +19,8 @@ export type ApplyApiReadToLocalOptions = {
    * 全表列表读：将本地 `sync_status = 'synced'` 且不在本次 API 结果中的行与服务器对齐（物理删除）。
    */
   reconcileSnapshot?: boolean;
+  /** 写入失败时向上抛出，供 catalog 等路径检测并触发重试 */
+  throwOnError?: boolean;
 };
 
 /**
@@ -30,6 +32,9 @@ const API_RECONCILE_SKIP_TABLES = new Set([
   'finance_transactions',
   /** 打卡增量上传后 REST 列表可能尚未包含新行，reconcile 会误删本地已 synced 记录 */
   'habit_check_ins',
+  /** 完成事件增量写入后 REST 列表/聚合可能滞后，避免 reconcile 误删本地记录 */
+  'task_execution_events',
+  'frog_completion_events',
 ]);
 
 function quoteIdent(name: string): string {
@@ -132,6 +137,19 @@ async function upsertRowsToLocalTable(
             );
           }
           preserveLocalForeignKeysOnEmptyApi(table, obj, existing, colNames);
+          if (table === 'tasks') {
+            const apiStatus = obj.status;
+            const apiCompletedAt = obj.completed_at;
+            const isTerminal = apiStatus === 'done' || apiStatus === 'cancelled';
+            const apiCompletedEmpty =
+              apiCompletedAt == null || (typeof apiCompletedAt === 'string' && !apiCompletedAt.trim());
+            if (isTerminal && apiCompletedEmpty) {
+              const localCompletedAt = existing.completed_at;
+              if (localCompletedAt != null && String(localCompletedAt).trim() !== '') {
+                obj.completed_at = localCompletedAt;
+              }
+            }
+          }
           for (const col of colNames) {
             if (Object.prototype.hasOwnProperty.call(obj, col)) continue;
             const prev = existing[col];
@@ -264,5 +282,6 @@ export async function syncApiReadResultToLocal(
     await applyApiRowsToLocalTable(table, [rows], opts);
   } catch (e) {
     console.warn('[api-read-local-sync] 写入本地失败', table, e);
+    if (opts?.throwOnError) throw e;
   }
 }

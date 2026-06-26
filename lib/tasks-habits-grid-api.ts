@@ -3,7 +3,7 @@ import { throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
 import { parseHabitIncrementCap } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
-import { loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
+import { getLogicalLocalYmd, loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 
 export const TASKS_HABITS_GRID_FILTERS_VERSION = 'tasks-page-v1';
 
@@ -76,17 +76,19 @@ async function mergeHabitGridExtraFields(
 
 async function pullHabitsGridFromApi(opts: {
   boundary: TasksDayBoundary;
+  logicalToday: string;
   signal?: AbortSignal;
 }): Promise<TasksHabitsGridData> {
   throwIfAborted(opts.signal);
   const payload = await apiGetTasksHabitsGrid({
     dayBoundaryHour: opts.boundary.hour,
     dayBoundaryMinute: opts.boundary.minute,
+    logicalToday: opts.logicalToday,
     signal: opts.signal,
   });
   const sections = await mergeHabitGridExtraFields(Array.isArray(payload.sections) ? payload.sections : []);
   return {
-    logicalToday: payload.logicalToday?.trim() || '',
+    logicalToday: payload.logicalToday?.trim() || opts.logicalToday,
     sections,
     serverFiltered: isServerFilteredHabitsGrid(payload.meta),
     filtersVersion: typeof payload.meta?.filtersVersion === 'string' ? payload.meta.filtersVersion : null,
@@ -101,10 +103,11 @@ export async function fetchTasksHabitsGrid(opts?: {
   signal?: AbortSignal;
 }): Promise<TasksHabitsGridData> {
   const boundary = opts?.boundary ?? (await loadTasksDayBoundary());
+  const logicalToday = getLogicalLocalYmd(new Date(), boundary);
 
   if (!opts?.forceLocal) {
     try {
-      return await pullHabitsGridFromApi({ boundary, signal: opts?.signal });
+      return await pullHabitsGridFromApi({ boundary, logicalToday, signal: opts?.signal });
     } catch (e) {
       if (!opts?.offlineFallback) throw e;
       console.warn('[tasks-habits-grid-api] 接口失败，回退空列表', e);

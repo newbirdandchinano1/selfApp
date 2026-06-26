@@ -1,5 +1,5 @@
 import { readApiTable } from '@/lib/api-read';
-import { isYmdInRange, ymdFromDatetime } from '@/lib/api-read-helpers';
+import { isYmdInRange, ymdFromAuditDatetime, ymdFromDatetime } from '@/lib/api-read-helpers';
 
 export type WeeklyReviewMetrics = {
   /** 统计区间类型：近 7 个自然日（含锚定日）或本地自然周（周一至周日） */
@@ -132,7 +132,7 @@ export async function fetchWeeklyReviewMetrics(
 
   const tasksCompleted = tasks.filter(t => {
     if (t.status !== 'done' || !t.completed_at) return false;
-    const day = ymdFromDatetime(t.completed_at);
+    const day = ymdFromAuditDatetime(t.completed_at);
     return day != null && isYmdInRange(day, startYmd, endYmd);
   }).length;
 

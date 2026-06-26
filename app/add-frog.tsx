@@ -453,7 +453,7 @@ function buildAssignedTodayItems(
 const PAGE_API_KEY = 'add-frog';
 
 export default function AddFrogScreen() {
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
@@ -572,6 +572,7 @@ export default function AddFrogScreen() {
               setSaving(true);
               try {
                 await unassignFrogFromApi(id, row.extra_data, row as Record<string, unknown>);
+                notifyAncestorsDataChanged();
                 await reload(true);
               } catch (e) {
                 console.warn('取消青蛙指派失败', e);
@@ -590,7 +591,7 @@ export default function AddFrogScreen() {
         },
       ]);
     },
-    [reload, taskMap]
+    [notifyAncestorsDataChanged, reload, taskMap]
   );
 
   const assignFrogs = React.useCallback(async () => {
@@ -616,6 +617,7 @@ export default function AddFrogScreen() {
         await assignFrogToApi(id, row.extra_data ?? null, today, row as Record<string, unknown>);
       }
       Alert.alert('已指派', `已将 ${ids.length} 个任务指派为今日青蛙。`);
+      notifyAncestorsDataChanged();
       router.back();
     } catch (e) {
       console.warn('指派青蛙失败', e);
@@ -629,7 +631,7 @@ export default function AddFrogScreen() {
     } finally {
       setSaving(false);
     }
-  }, [lockedProjectIds, router, saving, selectedIds, taskMap]);
+  }, [lockedProjectIds, notifyAncestorsDataChanged, router, saving, selectedIds, taskMap]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: surface }]} edges={['top']}>

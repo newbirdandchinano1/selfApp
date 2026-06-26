@@ -2,6 +2,7 @@ import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
 import { ApiRequestError } from '@/lib/api-client';
 import { getApiLoadingError, reportApiLoadingError } from '@/lib/api-loading-tracker';
 import { syncPageScopeFromApi } from '@/lib/api-page-sync';
+import { isSkeletonLoadingTabPageKey } from '@/lib/page-api-health-ui';
 import { collectAncestorPageKeys } from '@/lib/page-api-ancestry';
 import { runGuardedPageApiLoad } from '@/lib/page-api-load-guard';
 import { listPageScopeTables } from '@/lib/page-api-scope';
@@ -34,6 +35,8 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   habits: [TAB_PAGE_KEYS.tasks],
   habit_contexts: [TAB_PAGE_KEYS.tasks],
   habit_check_ins: [TAB_PAGE_KEYS.tasks],
+  task_execution_events: [TAB_PAGE_KEYS.tasks],
+  frog_completion_events: [TAB_PAGE_KEYS.tasks],
   accounts: [TAB_PAGE_KEYS.finance],
   account_transactions: [TAB_PAGE_KEYS.finance],
   finance_accounts: [TAB_PAGE_KEYS.finance],
@@ -350,7 +353,7 @@ export async function runPageLoadBody(
       const sync = await syncPageScopeFromApi(pageKey);
       if (!sync.ok) {
         markPageLoadRestFailed();
-        if (!getApiLoadingError()) {
+        if (!getApiLoadingError() && !isSkeletonLoadingTabPageKey(pageKey)) {
           reportApiLoadingError(
             new ApiRequestError(sync.error ?? '页面数据同步失败', 0, -1, { retryable: true }),
           );
@@ -382,7 +385,7 @@ export function finalizePageLoadSession(
   restFailed: boolean,
 ): void {
   if (ok === false || restFailed) {
-    if (!getApiLoadingError()) {
+    if (!getApiLoadingError() && !isSkeletonLoadingTabPageKey(pageKey)) {
       reportApiLoadingError(
         new ApiRequestError(
           restFailed ? '网络请求失败，无法从服务端加载数据' : '页面数据加载失败',
