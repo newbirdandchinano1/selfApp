@@ -270,6 +270,27 @@ export async function upsertRowToApi(
     opts.uploadedPkByTable?.get('projects')?.add(pid);
   };
 
+  const tryUpsertReferencedParentTask = async (payload: Record<string, unknown>): Promise<void> => {
+    if (table !== 'tasks' || !opts?.rowsByTable) return;
+    const parentTaskId = payload.parent_task_id;
+    if (parentTaskId == null || parentTaskId === '') return;
+
+    const pid = String(parentTaskId);
+    const parentRow = (opts.rowsByTable.get('tasks') ?? []).find(t => String(t.id) === pid);
+    if (!parentRow) return;
+
+    const taskPkCols = opts.pkColsByTable?.get('tasks') ?? ['id'];
+    await upsertRowToApi('tasks', parentRow, taskPkCols, {
+      signal: opts?.signal,
+      uploadedPkByTable: opts.uploadedPkByTable,
+      fkRefs: opts.fkRefsByTable?.get('tasks') ?? [],
+      rowsByTable: opts.rowsByTable,
+      pkColsByTable: opts.pkColsByTable,
+      fkRefsByTable: opts.fkRefsByTable,
+    });
+    opts.uploadedPkByTable?.get('tasks')?.add(pid);
+  };
+
   const tryUpsertReferencedProjectCategory = async (payload: Record<string, unknown>): Promise<void> => {
     if (table !== 'projects' || !opts?.rowsByTable) return;
     const categoryId = payload.category_id;
@@ -371,6 +392,7 @@ export async function upsertRowToApi(
         if (table === 'tasks') {
           await tryUpsertReferencedTaskCategory(body);
           await tryUpsertReferencedProject(body);
+          await tryUpsertReferencedParentTask(body);
         }
         if (table === 'projects') await tryUpsertReferencedProjectCategory(body);
         if (table === 'memos') await tryUpsertReferencedMemoDimension(body);
@@ -659,6 +681,43 @@ export async function upsertProjectsReferencedByTasks(
       fkRefsByTable,
     });
     uploadedProjects.add(pid);
+  }
+}
+
+/** 子任务上传前先确保 parent_task_id 指向的父任务已入库（含 pending 父任务） */
+export async function upsertParentTasksReferencedByTasks(
+  taskRows: Record<string, unknown>[],
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+  pkColsByTable: Map<string, string[]>,
+  uploadedPkByTable: UploadedPkRegistry,
+  fkRefsByTable: Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const parentIds = new Set<string>();
+  for (const task of taskRows) {
+    const pid = task.parent_task_id;
+    if (pid != null && pid !== '') parentIds.add(String(pid));
+  }
+  if (parentIds.size === 0) return;
+
+  const taskTableRows = rowsByTable.get('tasks') ?? [];
+  const taskPkCols = pkColsByTable.get('tasks') ?? ['id'];
+  const uploadedTasks = uploadedPkByTable.get('tasks') ?? new Set<string>();
+  uploadedPkByTable.set('tasks', uploadedTasks);
+
+  for (const pid of parentIds) {
+    if (uploadedTasks.has(pid)) continue;
+    const parentRow = taskTableRows.find(t => String(t.id) === pid);
+    if (!parentRow) continue;
+    await upsertRowToApi('tasks', parentRow, taskPkCols, {
+      signal,
+      uploadedPkByTable,
+      fkRefs: fkRefsByTable.get('tasks') ?? [],
+      rowsByTable,
+      pkColsByTable,
+      fkRefsByTable,
+    });
+    uploadedTasks.add(pid);
   }
 }
 

@@ -1,5 +1,5 @@
 import { apiGetTasksCatalog, type TasksCatalogPayload } from '@/lib/api-client';
-import { readAppMeta, writeAppMeta } from '@/lib/api-local-bootstrap';
+import { localDbHasSubstantialUserData, readAppMeta, writeAppMeta } from '@/lib/api-local-bootstrap';
 import { fetchApiTableAll, withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { sleep, throwIfAborted } from '@/lib/cloud-fetch-retry';
@@ -17,9 +17,9 @@ const TASKS_CATALOG_VERSIONS_META_KEY = 'tasks_catalog_table_versions_v1';
 const CATALOG_SYNC_MAX_ATTEMPTS = 3;
 
 const CATALOG_TABLE_MAP: [keyof TasksCatalogPayload, string][] = [
-  ['projects', 'projects'],
   ['projectCategories', 'project_categories'],
   ['taskCategories', 'task_categories'],
+  ['projects', 'projects'],
 ];
 
 const CATALOG_FALLBACK_TABLES = ['projects', 'project_categories', 'task_categories'] as const;
@@ -46,6 +46,12 @@ async function writeCatalogLastSyncAt(iso: string): Promise<void> {
 
 async function clearCatalogLastSyncAt(): Promise<void> {
   await writeAppMeta(TASKS_CATALOG_LAST_SYNC_META_KEY, '');
+}
+
+/** 冷启动清库 / 调试重置后调用，避免增量游标与空本地库不匹配 */
+export async function clearTasksCatalogSyncCache(): Promise<void> {
+  await clearCatalogLastSyncAt();
+  await writeAppMeta(TASKS_CATALOG_VERSIONS_META_KEY, '{}');
 }
 
 async function writeCatalogTableVersions(
@@ -253,7 +259,12 @@ async function pullTasksCatalogFromApi(opts?: {
 }): Promise<TasksCatalogData> {
   throwIfAborted(opts?.signal);
 
-  const lastSyncAt = opts?.forceRefresh ? null : await readCatalogLastSyncAt();
+  let forceRefresh = Boolean(opts?.forceRefresh);
+  if (!forceRefresh && !(await localDbHasSubstantialUserData())) {
+    forceRefresh = true;
+  }
+
+  const lastSyncAt = forceRefresh ? null : await readCatalogLastSyncAt();
   const isFullSync = !lastSyncAt;
 
   const payload = await apiGetTasksCatalog({
@@ -264,6 +275,18 @@ async function pullTasksCatalogFromApi(opts?: {
   validateCatalogPayload(payload);
 
   const tablesVersion = payload.meta!.tablesVersion!;
+
+  if (isFullSync) {
+    for (const [responseKey, tableName] of CATALOG_TABLE_MAP) {
+      const rows = payload[responseKey];
+      const expected = readExpectedTableCount(tablesVersion, tableName);
+      if (expected != null && Array.isArray(rows) && rows.length !== expected) {
+        throw new Error(
+          `[tasks-catalog-api] 全量 ${tableName} 数组长度 ${rows.length} 与 count ${expected} 不一致`,
+        );
+      }
+    }
+  }
 
   for (const [responseKey, tableName] of CATALOG_TABLE_MAP) {
     throwIfAborted(opts?.signal);

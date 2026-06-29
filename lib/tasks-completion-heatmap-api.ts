@@ -93,7 +93,6 @@ export async function fetchCompletionHeatmap(opts: HeatmapRequestOpts): Promise<
     heatmapEnd,
     signal,
   });
-  console.log('[tasks-completion-heatmap-api] completion-heatmap 接口返回', JSON.stringify(payload, null, 2));
   const { frogCountByYmd, todoCountByYmd } = countsRecordToMaps(payload.countsByDay ?? {});
   return {
     frogCountByYmd,
@@ -124,10 +123,6 @@ export async function fetchCompletionHeatmapDayDetail(
     includeDayDetail: true,
     signal,
   });
-  console.log(
-    '[tasks-completion-heatmap-api] completion-heatmap 日明细接口返回',
-    JSON.stringify(payload, null, 2),
-  );
   if (payload.dayDetail) {
     return mapDayDetailFromApi(payload.dayDetail, ymd);
   }

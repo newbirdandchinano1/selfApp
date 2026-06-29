@@ -12,7 +12,7 @@ import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
-import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
+import { shouldSkipPageFocusApiRefresh, consumeForceFullApiRefreshAfterLocalClear } from '@/lib/page-api-session';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
@@ -139,7 +139,7 @@ import {
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
 import { fetchTodayFrogs } from '@/lib/today-frogs-api';
-import { fetchProjectsListForTab } from '@/lib/projects-list-api';
+import { fetchProjectsListForTab, mergeProjectRowsById } from '@/lib/projects-list-api';
 import {
   fetchMatrixWeekTasks,
   fetchStandaloneTodos,
@@ -731,6 +731,23 @@ function sortTaskTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
   });
 
   return clone;
+}
+
+function sortProjectTaskTreeMap(treeMap: Record<string, TaskTreeNode[]>): Record<string, TaskTreeNode[]> {
+  const next: Record<string, TaskTreeNode[]> = {};
+  for (const [projectId, nodes] of Object.entries(treeMap)) {
+    next[projectId] = sortTaskTree(nodes);
+  }
+  return next;
+}
+
+function isTaskInProjectListScope(
+  task: Pick<TaskRow, 'project_id' | 'parent_task_id'>,
+  treeMap: Record<string, TaskTreeNode[]>,
+  taskId: string,
+): boolean {
+  if (task.project_id || task.parent_task_id) return true;
+  return !!findTaskRowInProjectTreeMap(treeMap, taskId);
 }
 
 /** 从项目任务树中查找任务行（用于与扁平 `tasks` 状态短暂不一致时的勾选完成） */
@@ -1656,6 +1673,22 @@ export default function TasksScreen() {
   const standaloneTodoSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
   /** 丢弃过期的整页 reload，避免并发 focus 刷新互相覆盖项目任务 */
   const reloadGenerationRef = React.useRef(0);
+  const projectTabApiReadyRef = React.useRef(false);
+  /** reload 已拉过 projects-list 时，跳过一次 effect 重复请求 */
+  const skipProjectsListEffectOnceRef = React.useRef(false);
+  const loadProjectsListFromApiRef = React.useRef<
+    (
+      tab: string,
+      opts?: {
+        forceRefresh?: boolean;
+        generation?: number;
+        replaceMap?: boolean;
+        hideCompletedProjectTasks?: boolean;
+      },
+    ) => Promise<Record<string, TaskTreeNode[]>>
+  | null>(null);
+  const projectsRef = React.useRef(projects);
+  projectsRef.current = projects;
   const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
   const [activatingShelvedTodoId, setActivatingShelvedTodoId] = React.useState<string | null>(null);
 
@@ -1735,8 +1768,14 @@ export default function TasksScreen() {
     (hide: boolean) => {
       setHideCompletedProjectTasks(hide);
       void saveHideCompletedProjectTasksPref(hide);
+      if (projectTabApiReadyRef.current) {
+        void loadProjectsListFromApiRef.current?.(projectTab, {
+          replaceMap: true,
+          hideCompletedProjectTasks: hide,
+        });
+      }
     },
-    [saveHideCompletedProjectTasksPref],
+    [projectTab, saveHideCompletedProjectTasksPref],
   );
 
   const loadMainListView = React.useCallback(async (): Promise<TasksMainListView | null> => {
@@ -1891,22 +1930,34 @@ export default function TasksScreen() {
     [],
   );
 
+  /** 完成/恢复项目内任务后：从本地 SQLite 重建任务树（保留已完成项并置底，避免 API 过滤误隐藏） */
+  const reloadProjectTasksFromLocal = React.useCallback(async () => {
+    const cachedTasks = await getTasks({ forceLocal: true });
+    await loadProjectTasks(projectsRef.current, { preloadedTasks: cachedTasks });
+  }, [loadProjectTasks]);
+
   /** 按当前项目 Tab 从 `GET /api/pages/projects` 拉取任务树；失败时回退本地组树 */
   const loadProjectsListFromApi = React.useCallback(
     async (
       tab: string,
-      opts?: { forceRefresh?: boolean; generation?: number; replaceMap?: boolean },
+      opts?: {
+        forceRefresh?: boolean;
+        generation?: number;
+        replaceMap?: boolean;
+        hideCompletedProjectTasks?: boolean;
+      },
     ): Promise<Record<string, TaskTreeNode[]>> => {
       const shouldApply = () =>
         opts?.generation == null || opts.generation === reloadGenerationRef.current;
 
       try {
         const result = await fetchProjectsListForTab(tab, {
-          includeCompleted: !hideCompletedProjectTasks,
+          hideCompletedProjectTasks: opts?.hideCompletedProjectTasks ?? hideCompletedProjectTasks,
           forceRefresh: opts?.forceRefresh,
           offlineFallback: true,
         });
         if (shouldApply()) {
+          setProjects((prev) => mergeProjectRowsById(prev, result.projects));
           setProjectTaskTreeMap((prev) =>
             opts?.replaceMap ? result.projectTaskTreeMap : { ...prev, ...result.projectTaskTreeMap },
           );
@@ -1916,17 +1967,16 @@ export default function TasksScreen() {
         console.warn('加载项目列表 API 失败，回退本地组树', err);
         const tabProjects =
           tab === 'all'
-            ? projects.filter((p) => !isProjectInInboxCategory(p.category_id))
+            ? projectsRef.current.filter((p) => !isProjectInInboxCategory(p.category_id))
             : tab === INBOX_PROJECT_CATEGORY_ID
-              ? projects.filter((p) => isProjectInInboxCategory(p.category_id))
-              : projects.filter((p) => p.category_id === tab);
+              ? projectsRef.current.filter((p) => isProjectInInboxCategory(p.category_id))
+              : projectsRef.current.filter((p) => p.category_id === tab);
         return loadProjectTasks(tabProjects, { generation: opts?.generation });
       }
     },
-    [hideCompletedProjectTasks, loadProjectTasks, projects],
+    [hideCompletedProjectTasks, loadProjectTasks],
   );
-
-  const projectTabApiReadyRef = React.useRef(false);
+  loadProjectsListFromApiRef.current = loadProjectsListFromApi;
 
   React.useEffect(() => {
     if (initialTasksLoadPending) return;
@@ -2040,8 +2090,12 @@ export default function TasksScreen() {
   React.useEffect(() => {
     if (!projectTabApiReadyRef.current) return;
     if (mainListView !== 'projects') return;
+    if (skipProjectsListEffectOnceRef.current) {
+      skipProjectsListEffectOnceRef.current = false;
+      return;
+    }
     void loadProjectsListFromApi(projectTab, { replaceMap: true });
-  }, [projectTab, hideCompletedProjectTasks, mainListView, loadProjectsListFromApi]);
+  }, [projectTab, mainListView, loadProjectsListFromApi]);
 
   React.useEffect(() => {
     const anim = mainListView === 'tasks' ? matrixAnim : projectAnim;
@@ -2133,7 +2187,8 @@ export default function TasksScreen() {
   const reload = React.useCallback(async (forceApi = false) => {
     const generation = ++reloadGenerationRef.current;
     const isStale = () => generation !== reloadGenerationRef.current;
-    const taskLoadOpts = forceApi ? { forceRefresh: true as const } : undefined;
+    const forceApiRefresh = forceApi || consumeForceFullApiRefreshAfterLocalClear();
+    const taskLoadOpts = forceApiRefresh ? { forceRefresh: true as const } : undefined;
     const projectTaskOpts = (extra?: { forceRefresh?: boolean; preloadedTasks?: TaskRow[] }) => ({
       ...extra,
       generation,
@@ -2152,7 +2207,7 @@ export default function TasksScreen() {
       taskTab,
       offlineFallback: true,
       forceLocal: false,
-      forceRefresh: forceApi,
+      forceRefresh: forceApiRefresh,
     });
     if (isStale()) return;
 
@@ -2184,10 +2239,13 @@ export default function TasksScreen() {
     let cachedTasks = await getTasks(taskLoadOpts);
     if (isStale()) return;
 
+    const effectiveHideCompleted = storedHideCompleted ?? hideCompletedProjectTasks;
     let treeMap = await loadProjectsListFromApi(projectTab, {
-      forceRefresh: forceApi,
+      forceRefresh: forceApiRefresh,
       generation,
+      hideCompletedProjectTasks: effectiveHideCompleted,
     });
+    skipProjectsListEffectOnceRef.current = true;
     projectTabApiReadyRef.current = true;
     if (isStale()) return;
 
@@ -2781,12 +2839,14 @@ export default function TasksScreen() {
         )
       );
       setProjectTaskTreeMap((prev) =>
-        updateTaskInProjectTree(prev, taskId, (node) => ({
-          ...node,
-          status: nextStatus,
-          completed_at: nextCompletedAt,
-          extra_data: nextExtraData,
-        }))
+        sortProjectTaskTreeMap(
+          updateTaskInProjectTree(prev, taskId, (node) => ({
+            ...node,
+            status: nextStatus,
+            completed_at: nextCompletedAt,
+            extra_data: nextExtraData,
+          })),
+        ),
       );
 
       try {
@@ -2832,13 +2892,6 @@ export default function TasksScreen() {
               status: change.status,
               completed_at: change.completed_at,
             });
-            setProjectTaskTreeMap((prev) =>
-              updateTaskInProjectTree(prev, change.id, (node) => ({
-                ...node,
-                status: change.status,
-                completed_at: change.completed_at,
-              }))
-            );
             try {
               await insertTaskExecutionEvent(
                 change.id,
@@ -2856,6 +2909,17 @@ export default function TasksScreen() {
               });
             }
           }
+          setProjectTaskTreeMap((prev) => {
+            let next = prev;
+            for (const change of cascadeChanges) {
+              next = updateTaskInProjectTree(next, change.id, (node) => ({
+                ...node,
+                status: change.status,
+                completed_at: change.completed_at,
+              }));
+            }
+            return sortProjectTaskTreeMap(next);
+          });
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
         if (nextStatus === 'done' && current.project_id) {
@@ -2905,17 +2969,22 @@ export default function TasksScreen() {
             }
           })();
         }
-        await loadTasks({ forceLocal: true });
         await loadTodayFrogs({ forceLocal: true });
-        if (current.project_id) {
-          await loadProjectsListFromApi(projectTab);
+        if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
+          await reloadProjectTasksFromLocal();
+        } else {
+          await loadTasks({ forceLocal: true });
         }
       } catch (err) {
         console.warn('更新任务状态失败', err);
         // fallback: reload to ensure consistency
-        await loadTasks({ forceLocal: true });
         await loadTodayFrogs({ forceLocal: true });
-        await loadProjectTasks(projects);
+        if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
+          await reloadProjectTasksFromLocal();
+        } else {
+          await loadTasks({ forceLocal: true });
+          await loadProjectTasks(projects);
+        }
       }
     },
     [
@@ -2932,8 +3001,7 @@ export default function TasksScreen() {
       projectLockMap,
       projectTaskTreeMap,
       projects,
-      projectTab,
-      loadProjectsListFromApi,
+      reloadProjectTasksFromLocal,
       updateTaskInProjectTree,
     ]
   );
@@ -5000,7 +5068,7 @@ export default function TasksScreen() {
                                       {boundHabitIds.length > 1 ? `${boundHabitIds.length}项习惯` : '习惯'}
                                     </Text>
                                   ) : null}
-                                  {level === 1 && isDone ? <Text style={styles.taskDoneTag}>已完成</Text> : null}
+                                  {isDone ? <Text style={styles.taskDoneTag}>已完成</Text> : null}
                                 </View>
                               </View>
                               {(() => {

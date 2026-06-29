@@ -631,8 +631,31 @@ export async function deleteTask(id: string) {
     throw new Error('任务尚未同步到本地，请返回列表刷新后重试');
   }
   invalidateInflightApiTableFetch('tasks');
-  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
+
+  const rootRow = await db.getFirstAsync<{ sync_status: string | null }>(
+    `SELECT sync_status FROM tasks WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  const rootWasNeverSynced = rootRow?.sync_status === 'pending_create';
+
+  if (!rootWasNeverSynced) {
+    const { apiDeleteRecord, ApiRequestError } = await import('@/lib/api-client');
+    try {
+      await apiDeleteRecord('tasks', id);
+    } catch (e) {
+      if (e instanceof ApiRequestError && e.httpStatus === 404) {
+        // 服务端已删除，继续清理本地子树
+      } else {
+        const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+        await pushLocalChangesToApi({ awaitSync: true });
+        throw e;
+      }
+    }
+  }
+
+  const idList = [...subtreeIds];
+  const placeholders = idList.map(() => '?').join(', ');
+  await db.runAsync(`DELETE FROM tasks WHERE id IN (${placeholders})`, idList);
 }
 
 export async function createTaskCategory(input: CreateTaskCategoryInput) {

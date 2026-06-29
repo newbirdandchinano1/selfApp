@@ -238,3 +238,70 @@ export function formatApiDebugTime(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
+
+export type PageListApiLogKind = 'projects-list' | 'tasks-list';
+
+function countTasksInProjectList(projects: unknown[]): number {
+  let total = 0;
+  const walk = (nodes: unknown[]) => {
+    for (const node of nodes) {
+      if (!node || typeof node !== 'object') continue;
+      total += 1;
+      const children = (node as { children?: unknown[] }).children;
+      if (Array.isArray(children) && children.length > 0) walk(children);
+    }
+  };
+  for (const project of projects) {
+    if (!project || typeof project !== 'object') continue;
+    const tasks = (project as { tasks?: unknown[] }).tasks;
+    if (Array.isArray(tasks) && tasks.length > 0) walk(tasks);
+  }
+  return total;
+}
+
+/** 项目/任务分页列表接口：控制台输出请求与完整响应，便于联调 */
+export function logPageListApiResponse(
+  kind: PageListApiLogKind,
+  pathWithQuery: string,
+  params: Record<string, unknown> | undefined,
+  result: { list: unknown[]; pagination?: unknown; meta?: unknown },
+): void {
+  const label = kind === 'projects-list' ? '项目列表' : '任务列表';
+  const summary: Record<string, unknown> = {
+    接口: `GET ${pathWithQuery}`,
+    项目数: kind === 'projects-list' ? result.list.length : undefined,
+    任务数: kind === 'projects-list' ? countTasksInProjectList(result.list) : result.list.length,
+    pagination: result.pagination,
+    meta: result.meta,
+  };
+  if (kind !== 'projects-list') {
+    delete summary['项目数'];
+  }
+
+  console.log(`\n========== [${label}] 接口响应 ==========`);
+  console.log(`[${label}] 请求参数`, params ?? {});
+  console.log(`[${label}] 响应摘要`, summary);
+  console.log(`[${label}] 完整 list`, result.list);
+  console.log(`========== [${label}] END ==========\n`);
+
+  if (enabled) {
+    appendApiDebugLog({
+      method: 'GET',
+      url: pathWithQuery,
+      status: 200,
+      apiCode: 0,
+      durationMs: 0,
+      ok: true,
+      responseBody: capStoredText(
+        JSON.stringify(
+          {
+            summary,
+            list: result.list,
+          },
+          null,
+          2,
+        ),
+      ),
+    });
+  }
+}

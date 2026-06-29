@@ -8,7 +8,7 @@ import {
 } from '@/lib/cloud-sql-dirty-track';
 import { clearPageSyncMeta, PREFER_LOCAL_READS_META_KEY, writeAppMeta } from '@/lib/api-local-bootstrap';
 import { getDatabase } from '@/lib/database';
-import { markProcessColdStart, resetPageApiSession } from '@/lib/page-api-session';
+import { markForceFullApiRefreshAfterLocalClear, markProcessColdStart, resetPageApiSession } from '@/lib/page-api-session';
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
@@ -58,7 +58,13 @@ async function resetLocalReadCachesAfterClear(): Promise<void> {
   const { clearTasksBootstrapVersionCache } = await import('@/lib/api-page-sync');
   await clearTasksBootstrapVersionCache();
 
+  const { clearTasksCatalogSyncCache } = await import('@/lib/tasks-catalog-api');
+  await clearTasksCatalogSyncCache();
+
+  await writeAppMeta(PREFER_LOCAL_READS_META_KEY, '0');
+
   markProcessColdStart();
+  markForceFullApiRefreshAfterLocalClear();
   resetPageApiSession(undefined, { force: true });
   await clearPageSyncMeta();
 }

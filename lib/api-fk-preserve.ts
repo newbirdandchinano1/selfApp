@@ -19,6 +19,9 @@ export const PRESERVE_ON_EMPTY_API: Record<string, readonly string[]> = {
 export const UPLOAD_PRESERVE_FK: ReadonlyArray<{ table: string } & ForeignKeyRef> = [
   { table: 'projects', fromColumn: 'category_id', parentTable: 'project_categories' },
   { table: 'tasks', fromColumn: 'category_id', parentTable: 'task_categories' },
+  /** 局部更新 status 时父项目/父任务通常已存在于服务端，不应因本批未上传而置空 */
+  { table: 'tasks', fromColumn: 'project_id', parentTable: 'projects' },
+  { table: 'tasks', fromColumn: 'parent_task_id', parentTable: 'tasks' },
   { table: 'memos', fromColumn: 'dimension_id', parentTable: 'memo_dimensions' },
   { table: 'finance_transactions', fromColumn: 'flow_category_id', parentTable: 'finance_flow_categories' },
   { table: 'recipe_items', fromColumn: 'category_id', parentTable: 'recipe_categories' },

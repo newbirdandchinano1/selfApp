@@ -20,6 +20,8 @@ import {
 
   upsertProjectsReferencedByTasks,
 
+  upsertParentTasksReferencedByTasks,
+
   upsertRowToApi,
 
   upsertTaskCategoriesReferencedByTasks,
@@ -459,6 +461,22 @@ export async function triggerApiFullUpload(opts?: {
         );
 
         await upsertProjectsReferencedByTasks(
+
+          rawRows,
+
+          rowsByTable,
+
+          pkColsByTable,
+
+          uploadedPkByTable,
+
+          fkRefsByTable,
+
+          opts?.signal,
+
+        );
+
+        await upsertParentTasksReferencedByTasks(
 
           rawRows,
 

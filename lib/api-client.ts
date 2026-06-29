@@ -13,6 +13,7 @@ import {
   slimRecordForMysqlApi,
 } from '@/lib/api-mysql-payload';
 import { fetchWithTimeoutAndRetry, isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
+import { logPageListApiResponse } from '@/lib/api-debug';
 import { enqueueApiRequest } from '@/lib/api-request-queue';
 import type { TasksCalendarResponse } from '@/lib/tasks-calendar-data';
 
@@ -890,6 +891,10 @@ export type PageListMeta = {
   categoryId?: string;
   categoryIds?: string[];
   uncategorized?: boolean;
+  /** 后端回显：本次响应是否包含 status=done 的任务 */
+  includeCompleted?: boolean;
+  /** 后端回显：本次响应是否包含 status=cancelled 的任务 */
+  includeCancelled?: boolean;
 };
 
 export type PageListResponse<T> = {
@@ -942,8 +947,8 @@ export async function apiGetProjectsList(
     categoryId: params?.categoryId,
     categoryIds: params?.categoryIds,
     uncategorized: params?.uncategorized === true ? true : undefined,
-    includeCompleted: params?.includeCompleted === true ? true : undefined,
-    includeCancelled: params?.includeCancelled === true ? true : undefined,
+    includeCompleted: params?.includeCompleted === false ? false : undefined,
+    includeCancelled: params?.includeCancelled === false ? false : undefined,
     includeShelved: params?.includeShelved === false ? false : undefined,
     page: params?.page,
     limit: params?.limit,
@@ -953,7 +958,7 @@ export async function apiGetProjectsList(
     method: 'GET',
     signal: params?.signal,
   });
-  return {
+  const result = {
     list: Array.isArray(data?.list) ? data.list : [],
     pagination: data?.pagination ?? {
       page: params?.page ?? 1,
@@ -963,6 +968,8 @@ export async function apiGetProjectsList(
     },
     meta: data?.meta,
   };
+  logPageListApiResponse('projects-list', `/api/pages/projects${qs}`, params as Record<string, unknown>, result);
+  return result;
 }
 
 /** 任务扁平列表（按任务分类筛选） */
@@ -984,7 +991,7 @@ export async function apiGetTasksList(
     `/api/pages/tasks/list${qs}`,
     { method: 'GET', signal: params?.signal },
   );
-  return {
+  const result = {
     list: Array.isArray(data?.list) ? data.list : [],
     pagination: data?.pagination ?? {
       page: params?.page ?? 1,
@@ -994,6 +1001,8 @@ export async function apiGetTasksList(
     },
     meta: data?.meta,
   };
+  logPageListApiResponse('tasks-list', `/api/pages/tasks/list${qs}`, params as Record<string, unknown>, result);
+  return result;
 }
 
 export async function apiListRecords<T extends Record<string, unknown>>(

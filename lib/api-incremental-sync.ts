@@ -11,6 +11,7 @@ import {
   upsertMemoDimensionsReferencedByMemos,
   upsertHabitsReferencedByCheckIns,
   upsertProjectsReferencedByTasks,
+  upsertParentTasksReferencedByTasks,
   upsertRowToApi,
   upsertTaskCategoriesReferencedByTasks,
 } from '@/lib/api-row-upsert';
@@ -418,6 +419,13 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
           fkRefsByTable,
         );
         await upsertProjectsReferencedByTasks(
+          rawRows,
+          rowsByTable,
+          pkColsByTable,
+          uploadedPkByTable,
+          fkRefsByTable,
+        );
+        await upsertParentTasksReferencedByTasks(
           rawRows,
           rowsByTable,
           pkColsByTable,

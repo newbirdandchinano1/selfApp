@@ -91,7 +91,9 @@ export default function AccountDetailScreen() {
   const isLiabilityAccount = accountSignRule < 0 || account?.account_type === 'liability';
 
   const detailName = account?.name ?? (routeAccountName || '账户');
-  const detailDesc = account?.account_no?.trim() ? account.account_no : isLiabilityAccount ? '负债明细' : '账户余额';
+  const accountNo = account?.account_no?.trim() ?? '';
+  const accountNote = account?.note?.trim() ?? '';
+  const detailSubtitle = accountNo || (accountNote ? '' : isLiabilityAccount ? '负债明细' : '账户余额');
 
   const accountIcon = React.useCallback(
     (acc: FinanceAccountBalanceRow | null): keyof typeof MaterialIcons.glyphMap => {
@@ -434,7 +436,7 @@ export default function AccountDetailScreen() {
             onPress={onPressEditAccountMeta}
             disabled={!resolvedAccountId}
             accessibilityRole="button"
-            accessibilityLabel="编辑账户名称、卡号与图标"
+            accessibilityLabel="编辑账户名称、卡号、备注与图标"
             style={({ pressed }) => [
               styles.accountMetaPressable,
               !resolvedAccountId && { opacity: 0.5 },
@@ -450,12 +452,28 @@ export default function AccountDetailScreen() {
             </View>
             <View style={styles.accountTitleCol}>
               <Text style={[Typography.title, { color: colors.text }]}>{detailName}</Text>
-              <Text style={[Typography.caption, styles.accountDesc, { color: colors.textSecondary }]}>
-                {detailDesc}
-              </Text>
+              {detailSubtitle ? (
+                <Text style={[Typography.caption, styles.accountDesc, { color: colors.textSecondary }]}>
+                  {detailSubtitle}
+                </Text>
+              ) : null}
             </View>
             <MaterialIcons name="chevron-right" size={22} color={colors.textMuted} style={styles.accountMetaChevron} />
           </Pressable>
+
+          {accountNote ? (
+            <View
+              style={[
+                styles.accountNoteBlock,
+                {
+                  backgroundColor: isDark ? colors.surfaceMuted : colors.input,
+                  borderColor: colors.outline,
+                },
+              ]}>
+              <Text style={[Typography.kicker, styles.accountNoteLabel, { color: colors.textSecondary }]}>备注</Text>
+              <Text style={[Typography.body, styles.accountNoteText, { color: colors.text }]}>{accountNote}</Text>
+            </View>
+          ) : null}
 
           <View style={[styles.dashedDivider, { borderColor: colors.outline }]} />
 
@@ -724,6 +742,20 @@ const styles = StyleSheet.create({
   },
   accountDesc: {
     marginTop: Spacing.xs,
+  },
+  accountNoteBlock: {
+    marginTop: Spacing.xl,
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  accountNoteLabel: {
+    letterSpacing: 0.4,
+  },
+  accountNoteText: {
+    lineHeight: 22,
   },
   accountMetaChevron: {
     flexShrink: 0,

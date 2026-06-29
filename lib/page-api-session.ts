@@ -105,6 +105,20 @@ export function markProcessColdStart(): void {
   clearPageLoadedInSession();
 }
 
+/** 本地库被清空后，任务页首次加载须强制全量 REST（catalog / projects 列表） */
+let forceFullApiRefreshAfterLocalClear = false;
+
+export function markForceFullApiRefreshAfterLocalClear(): void {
+  forceFullApiRefreshAfterLocalClear = true;
+}
+
+/** 消费并清除「清库后须全量拉取」标记（仅生效一次） */
+export function consumeForceFullApiRefreshAfterLocalClear(): boolean {
+  const next = forceFullApiRefreshAfterLocalClear;
+  forceFullApiRefreshAfterLocalClear = false;
+  return next;
+}
+
 export function markProcessWarmSession(): void {
   warmProcessSession = true;
 }
