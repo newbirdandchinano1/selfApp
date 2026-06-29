@@ -956,7 +956,7 @@ export default function FinanceScreen() {
       todayTxns.reduce((sum, txn) => {
         const displayAmount = getTxnDisplayAmount(txn);
         if (displayAmount >= 0) return sum;
-        if (isFinanceTransactionExcludedFromBudget(txn.extra_data)) return sum;
+        if (isFinanceTransactionExcludedFromBudget(txn.extra_data, txn.transaction_type)) return sum;
         return sum + Math.abs(displayAmount);
       }, 0),
     [getTxnDisplayAmount, todayTxns]
@@ -1382,7 +1382,7 @@ export default function FinanceScreen() {
       budgetPeriodTransactions.reduce((sum, txn) => {
         const displayAmount = getTxnDisplayAmount(txn);
         if (displayAmount >= 0) return sum;
-        if (isFinanceTransactionExcludedFromBudget(txn.extra_data)) return sum;
+        if (isFinanceTransactionExcludedFromBudget(txn.extra_data, txn.transaction_type)) return sum;
         return sum + Math.abs(displayAmount);
       }, 0),
     [getTxnDisplayAmount, budgetPeriodTransactions]
@@ -1392,7 +1392,7 @@ export default function FinanceScreen() {
     () =>
       budgetPeriodTransactions.reduce((sum, txn) => {
         if (txn.transaction_type !== 'income') return sum;
-        if (isFinanceTransactionExcludedFromBudget(txn.extra_data)) return sum;
+        if (isFinanceTransactionExcludedFromBudget(txn.extra_data, txn.transaction_type)) return sum;
         const displayAmount = getTxnDisplayAmount(txn);
         return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
       }, 0),

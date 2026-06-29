@@ -57,7 +57,7 @@ export function usePageApiSync(pageKey: string) {
           setSynced(true);
         }
         return {
-          ok: ok !== false && !restFailed,
+          ok: ok !== false,
           restFailed,
           localOnly: readOpts.localOnly,
           fnResult: ok === false ? false : ok,

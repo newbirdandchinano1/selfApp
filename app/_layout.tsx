@@ -24,7 +24,7 @@ import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { loadApiDebugEnabled } from '@/lib/api-debug';
-import { initDatabase, repairLocalDatabase } from '@/lib/database';
+import { initDatabase } from '@/lib/database';
 import { loadCloudBackupTokenCache } from '@/lib/cloud-backup-config';
 import { hydrateCloudDirtyFromStorage } from '@/lib/cloud-sql-dirty-track';
 import { hydrateApiDirtyFromStorage, markAllPendingTablesDirty } from '@/lib/api-incremental-sync';
@@ -32,9 +32,11 @@ import { startCloudPeriodicAlignScheduler } from '@/lib/cloud-sync-scheduler';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-selection';
 import { loadThemePreference } from '@/lib/theme-preference';
-import { clearLocalDatabaseOnColdStart } from '@/lib/api-local-clear';
-import type { InitialSyncProgress } from '@/lib/api-initial-sync';
+import { runInitialRestSyncIfNeeded, type InitialSyncProgress } from '@/lib/api-initial-sync';
 import { hydratePageApiSession } from '@/lib/page-api-session';
+
+/** 本地初始化超过此时长则强制进入主界面，避免启动页无限等待 */
+const BOOTSTRAP_MAX_MS = 15_000;
 
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
@@ -56,7 +58,6 @@ function RootLayoutInner() {
   const [isDbReady, setIsDbReady] = useState(false);
   const [showMainApp, setShowMainApp] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
-  const [dbRepairBusy, setDbRepairBusy] = useState(false);
   const [syncProgress, setSyncProgress] = useState<InitialSyncProgress | null>(null);
 
   const runDeferredBootstrap = () => {
@@ -99,61 +100,56 @@ function RootLayoutInner() {
     }
   };
 
-  const handleDbRepair = async () => {
-    if (dbRepairBusy) return;
-    setDbRepairBusy(true);
-    setDbError(null);
-    try {
-      const repair = await repairLocalDatabase();
-      await initDatabase();
-      await hydratePageApiSession();
-      await hydrateCloudDirtyFromStorage();
-      setIsDbReady(true);
-      runDeferredBootstrap();
-      if (repair.remainingFkIssues > 0) {
-        console.warn(`本地库修复后仍有 ${repair.remainingFkIssues} 条外键异常`);
-      }
-    } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
-      console.warn('数据库修复失败', detail, e);
-      setDbError(
-        __DEV__ && detail.trim()
-          ? `修复后仍无法启动。\n${detail}`
-          : '修复后仍无法启动，请到设置中尝试「从云同步到本机」。',
-      );
-    } finally {
-      setDbRepairBusy(false);
-    }
-  };
-
   useEffect(() => {
     let mounted = true;
 
+    const bootstrapWork = async () => {
+      await initDatabase();
+
+      if (Platform.OS !== 'web') {
+        const syncResult = await runInitialRestSyncIfNeeded({
+          onProgress: (progress) => {
+            if (mounted) setSyncProgress(progress);
+          },
+        });
+        if (!syncResult.ok && syncResult.error) {
+          console.warn('[bootstrap] 首启准备未完成', syncResult.error);
+        }
+      }
+
+      await hydratePageApiSession();
+      await hydrateCloudDirtyFromStorage();
+      await hydrateApiDirtyFromStorage();
+      await loadApiDebugEnabled();
+    };
+
     const run = async () => {
       try {
-        await initDatabase();
+        await Promise.race([
+          bootstrapWork(),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error('BOOTSTRAP_TIMEOUT')), BOOTSTRAP_MAX_MS);
+          }),
+        ]);
 
-        if (Platform.OS !== 'web') {
-          if (mounted) {
-            setSyncProgress({ phase: 'clearing', tableIndex: 0, tableCount: 0 });
-          }
-          await clearLocalDatabaseOnColdStart();
-        }
-
-        await hydratePageApiSession();
-        await hydrateCloudDirtyFromStorage();
-        await hydrateApiDirtyFromStorage();
-
-        await loadApiDebugEnabled();
         if (mounted) {
           setSyncProgress(null);
           setDbError(null);
           setIsDbReady(true);
         }
         runDeferredBootstrap();
-
         void markAllPendingTablesDirty();
       } catch (e) {
+        if (e instanceof Error && e.message === 'BOOTSTRAP_TIMEOUT') {
+          console.warn('启动初始化超时，仍进入应用');
+          if (mounted) {
+            setSyncProgress(null);
+            setIsDbReady(true);
+          }
+          runDeferredBootstrap();
+          return;
+        }
+
         const detail = e instanceof Error ? e.message : String(e);
         console.warn('数据库初始化失败', detail, e);
         if (mounted) {
@@ -238,7 +234,6 @@ function RootLayoutInner() {
             <Stack.Screen name="review-settings" />
             <Stack.Screen name="review-calendar" />
             <Stack.Screen name="review-template-settings" />
-            <Stack.Screen name="my-skills" />
             <Stack.Screen name="my-recipes" />
             <Stack.Screen name="recipe-view/[id]" />
             <Stack.Screen name="recipe-edit/[id]" />
@@ -258,13 +253,9 @@ function RootLayoutInner() {
             exitReady={isDbReady && !dbError}
             onFinish={() => setShowMainApp(true)}
             dbError={dbError}
-            dbRepairBusy={dbRepairBusy}
             syncProgress={syncProgress}
             onRetry={() => {
               void handleDbRetry();
-            }}
-            onRepair={() => {
-              void handleDbRepair();
             }}
           />
         ) : null}

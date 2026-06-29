@@ -13,8 +13,6 @@ export type {
   DailyIntakeTargetsEstimateJson,
   FoodNutritionJson,
   FoodTextIntakeJson,
-  UserSkillAiPortfolioPayload,
-  UserSkillAiPortfolioSkillRow,
   VisionWallAiAssessmentPayload,
   VisionWallAiPerGoalRow,
   VisionWallAiSection,
@@ -25,7 +23,6 @@ import type {
   DailyIntakeTargetsEstimateJson,
   FoodNutritionJson,
   FoodTextIntakeJson,
-  UserSkillAiPortfolioPayload,
   VisionWallAiAssessmentPayload,
 } from '@/lib/ai-types';
 
@@ -731,47 +728,6 @@ export async function analyzeWeaknessReviewFromText(
       rawContent: JSON.stringify(data),
       attempts: 1,
     };
-  } catch (e) {
-    const err = mapApiError(e);
-    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
-  }
-}
-
-export type AnalyzeUserSkillsPortfolioFromTextOptions = {
-  apiKey: string;
-  userDisplayName: string;
-  lines: { skill_id: string; dimension: string; name: string; description: string }[];
-  maxAttempts?: number;
-  retryDelayMs?: number;
-};
-
-export type AnalyzeUserSkillsPortfolioFromTextResult =
-  | { ok: true; data: UserSkillAiPortfolioPayload; rawContent: string; attempts: number }
-  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
-
-export async function analyzeUserSkillsPortfolioFromText(
-  options: AnalyzeUserSkillsPortfolioFromTextOptions,
-): Promise<AnalyzeUserSkillsPortfolioFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
-  const lines = options.lines.filter(
-    l =>
-      l.skill_id.trim().length > 0 &&
-      l.dimension.trim().length > 0 &&
-      l.name.trim().length > 0 &&
-      l.description.trim().length > 0,
-  );
-  if (lines.length === 0) return { ok: false, error: '没有可评估的技能条目', attempts: 0 };
-  try {
-    const data = await aiApi.aiSkillsPortfolio({
-      user_display_name: options.userDisplayName.trim() || '用户',
-      lines: lines.map(l => ({
-        skill_id: l.skill_id.trim(),
-        dimension: l.dimension.trim(),
-        name: l.name.trim(),
-        description: l.description.trim(),
-      })),
-    });
-    return { ok: true, data, rawContent: JSON.stringify(data), attempts: 1 };
   } catch (e) {
     const err = mapApiError(e);
     return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };

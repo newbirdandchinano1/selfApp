@@ -184,7 +184,7 @@ export async function apiLogin(opts?: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     },
-    { signal: opts?.signal },
+    { signal: opts?.signal, perAttemptTimeoutMs: 8_000, maxAttempts: 2 },
   );
 
   const { parsed, text } = await parseResponseBody(res);

@@ -44,6 +44,22 @@ export { listAllTabPageKeys, listPageScopeTables } from '@/lib/page-api-scope';
 
 const TASKS_BOOTSTRAP_VERSIONS_META_KEY = 'tasks_bootstrap_table_versions_v1';
 
+/** 单页首次 REST 同步上限，避免后端不可用时骨架屏长时间阻塞 */
+const PAGE_SYNC_TIMEOUT_MS = 20_000;
+
+function mergeAbortSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
+  const controller = new AbortController();
+  for (const source of signals) {
+    if (!source) continue;
+    if (source.aborted) {
+      controller.abort();
+      return controller.signal;
+    }
+    source.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  return controller.signal;
+}
+
 
 
 async function resolvePageTableOrder(tables: string[]): Promise<string[]> {
@@ -512,13 +528,15 @@ export async function syncPageScopeFromApi(
 
   const ordered = await resolvePageTableOrder(tables);
 
-
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), PAGE_SYNC_TIMEOUT_MS);
+  const signal = mergeAbortSignals(opts?.signal, timeoutController.signal);
 
   beginCloudSqliteDirtyIgnoreBatch();
 
   try {
 
-    throwIfAborted(opts?.signal);
+    throwIfAborted(signal);
 
     try {
 
@@ -526,7 +544,7 @@ export async function syncPageScopeFromApi(
 
       const tablesSynced = await runPageSync(async () => {
 
-        await ensureApiLoggedIn({ signal: opts?.signal });
+        await ensureApiLoggedIn({ signal });
 
 
 
@@ -534,11 +552,11 @@ export async function syncPageScopeFromApi(
 
           try {
 
-            return await syncTasksPageBootstrapFromApi({ signal: opts?.signal });
+            return await syncTasksPageBootstrapFromApi({ signal });
 
           } catch (e) {
 
-            if (isAbortError(e) || opts?.signal?.aborted) throw e;
+            if (isAbortError(e) || signal.aborted) throw e;
 
             console.warn('[api-page-sync] 任务页 bootstrap 同步失败，降级为逐表 List', e);
 
@@ -550,11 +568,11 @@ export async function syncPageScopeFromApi(
 
         for (const table of ordered) {
 
-          throwIfAborted(opts?.signal);
+          throwIfAborted(signal);
 
           await fetchApiTableAll<Record<string, unknown>>(table, {
 
-            signal: opts?.signal,
+            signal,
 
             forceRefresh: true,
 
@@ -570,9 +588,13 @@ export async function syncPageScopeFromApi(
 
     } catch (e) {
 
-      if (isAbortError(e) || opts?.signal?.aborted) {
+      if (isAbortError(e) || signal.aborted) {
 
-        return { ok: false, tablesSynced: 0, error: '同步已取消' };
+        return {
+          ok: false,
+          tablesSynced: 0,
+          error: timeoutController.signal.aborted ? '同步超时，请检查网络' : '同步已取消',
+        };
 
       }
 
@@ -585,6 +607,8 @@ export async function syncPageScopeFromApi(
     }
 
   } finally {
+
+    clearTimeout(timeoutId);
 
     endCloudSqliteDirtyIgnoreBatch();
 

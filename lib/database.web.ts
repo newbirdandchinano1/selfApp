@@ -6,8 +6,8 @@ export type SyncStatus = 'synced' | 'pending_create' | 'pending_update' | 'pendi
 export interface BaseRecord {
   id: string;
   created_at: string;
-  updated_at: string;
-  sync_status: SyncStatus;
+  updated_at: string;
+  sync_status: SyncStatus;
 }
 
 export type UserRow = {
@@ -18,8 +18,8 @@ export type UserRow = {
   weight: number;
   age: number;
   created_at: string;
-  updated_at: string;
-  sync_status: SyncStatus;
+  updated_at: string;
+  sync_status: SyncStatus;
 };
 
 
@@ -34,14 +34,4 @@ export async function initDatabase() {
 
 export async function getSchemaVersion() {
   return null;
-}
-
-export type RepairLocalDatabaseResult = {
-  ok: true;
-  dedupedTables: string[];
-  remainingFkIssues: number;
-};
-
-export async function repairLocalDatabase(): Promise<RepairLocalDatabaseResult> {
-  throw new Error('当前环境无本地 SQLite，无法修复数据库');
 }

@@ -166,138 +166,6 @@ async function migrateDropDeletedAtAndVersionColumns(db: SQLite.SQLiteDatabase):
   }
 }
 
-async function repairDatabaseReferentialIntegrity(db: SQLite.SQLiteDatabase): Promise<void> {
-  const inbox = INBOX_PROJECT_CATEGORY_ID;
-
-  await db.runAsync(
-    `INSERT OR IGNORE INTO project_categories (
-      id, name, created_at, updated_at, sync_status, extra_data
-    ) VALUES (?, ?, datetime('now'), datetime('now'), 'synced', NULL)`,
-    [inbox, INBOX_PROJECT_CATEGORY_NAME],
-  );
-
-  try {
-    await db.execAsync(`
-      INSERT OR REPLACE INTO task_categories (
-        id, name, sort_order, created_at, updated_at, sync_status, extra_data
-      )
-      SELECT
-        id, name, sort_order, created_at, updated_at, sync_status, extra_data
-      FROM project_categories;
-    `);
-  } catch {
-    /* 镜像失败不阻断启动 */
-  }
-
-  await db.runAsync(
-    `UPDATE projects
-     SET category_id = ?, updated_at = datetime('now')
-     WHERE category_id IS NULL OR category_id NOT IN (SELECT id FROM project_categories)`,
-    [inbox],
-  );
-
-  await db.runAsync(
-    `UPDATE tasks
-     SET category_id = NULL, updated_at = datetime('now')
-     WHERE category_id IS NOT NULL
-       AND category_id NOT IN (SELECT id FROM task_categories)`,
-  );
-
-  await db.runAsync(
-    `UPDATE tasks
-     SET project_id = NULL, updated_at = datetime('now')
-     WHERE project_id IS NOT NULL
-       AND project_id NOT IN (SELECT id FROM projects)`,
-  );
-
-  await db.runAsync(
-    `UPDATE tasks
-     SET parent_task_id = NULL, updated_at = datetime('now')
-     WHERE parent_task_id IS NOT NULL
-       AND parent_task_id NOT IN (SELECT id FROM tasks)`,
-  );
-
-  await db.runAsync(`DELETE FROM task_items WHERE task_id NOT IN (SELECT id FROM tasks)`);
-  await db.runAsync(
-    `DELETE FROM task_execution_events WHERE task_id IS NOT NULL AND task_id NOT IN (SELECT id FROM tasks)`,
-  );
-  await db.runAsync(
-    `DELETE FROM frog_completion_events WHERE task_id IS NOT NULL AND task_id NOT IN (SELECT id FROM tasks)`,
-  );
-  await db.runAsync(`DELETE FROM habit_check_ins WHERE habit_id NOT IN (SELECT id FROM habits)`);
-
-  await db.runAsync(
-    'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
-    ['default'],
-  );
-  await db.runAsync(`DELETE FROM health_records WHERE user_id NOT IN (SELECT id FROM users)`);
-
-  await db.runAsync(
-    `UPDATE finance_flow_categories SET parent_id = NULL
-     WHERE parent_id IS NOT NULL
-       AND parent_id NOT IN (SELECT id FROM finance_flow_categories)`,
-  );
-  await db.runAsync(
-    `UPDATE finance_transactions SET flow_category_id = NULL
-     WHERE flow_category_id IS NOT NULL
-       AND flow_category_id NOT IN (SELECT id FROM finance_flow_categories)`,
-  );
-  // 仅在本地已有账户行时才清理孤儿流水，避免账户表尚未同步时误删全部历史流水
-  const financeAccountCountRow = await db.getFirstAsync<{ c: number }>(
-    `SELECT COUNT(*) AS c FROM finance_accounts`,
-  );
-  if ((financeAccountCountRow?.c ?? 0) > 0) {
-    await db.runAsync(
-      `DELETE FROM finance_transactions WHERE account_id NOT IN (SELECT id FROM finance_accounts)`,
-    );
-  }
-  await db.runAsync(
-    `DELETE FROM savings_plan_deposits WHERE savings_plan_id NOT IN (SELECT id FROM savings_plans)`,
-  );
-  await db.runAsync(
-    `DELETE FROM review_columns WHERE dimension_id NOT IN (SELECT id FROM review_dimensions)`,
-  );
-  await db.runAsync(`DELETE FROM recipe_items WHERE category_id NOT IN (SELECT id FROM recipe_categories)`);
-  await db.runAsync(
-    `UPDATE earned_rewards SET wish_item_id = NULL
-     WHERE wish_item_id IS NOT NULL
-       AND wish_item_id NOT IN (SELECT id FROM wish_items)`,
-  );
-  await db.runAsync(`DELETE FROM account_transactions WHERE account_id NOT IN (SELECT id FROM accounts)`);
-}
-
-export type RepairLocalDatabaseResult = {
-  ok: true;
-  /** 已清理主键重复行的表名 */
-  dedupedTables: string[];
-  /** `PRAGMA foreign_key_check` 仍存在的违规条数，0 表示已通过 */
-  remainingFkIssues: number;
-};
-
-/** 手动修复本地 SQLite 孤儿外键（设置页「修复本地数据库」） */
-export async function repairLocalDatabase(): Promise<RepairLocalDatabaseResult> {
-  const db = await getDatabase();
-  const { dedupeAllLocalUserTablesByPrimaryKeyIfNeeded } = await import(
-    '@/lib/sqlite-primary-key-dedupe'
-  );
-  const dedupedTables = await dedupeAllLocalUserTablesByPrimaryKeyIfNeeded();
-  await db.execAsync('PRAGMA foreign_keys = OFF');
-  await repairDatabaseReferentialIntegrity(db);
-  await db.execAsync('PRAGMA foreign_keys = ON');
-
-  let remainingFkIssues = 0;
-  try {
-    const fkViolations = await db.getAllAsync<{ table: string; rowid: number; parent: string }>(
-      'PRAGMA foreign_key_check',
-    );
-    remainingFkIssues = fkViolations.length;
-  } catch {
-    /* ignore */
-  }
-
-  return { ok: true, dedupedTables, remainingFkIssues };
-}
-
 export async function initDatabase() {
   const db = await getDatabase();
 
@@ -796,36 +664,6 @@ export async function initDatabase() {
       sync_status TEXT NOT NULL DEFAULT 'synced'
     );
 
-    CREATE TABLE IF NOT EXISTS user_skill_items (
-      id TEXT PRIMARY KEY NOT NULL,
-      name TEXT NOT NULL DEFAULT '',
-      description TEXT NOT NULL DEFAULT '',
-      last_evaluation TEXT,
-      last_suggestions TEXT,
-      sort_order INTEGER,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'synced'
-    );
-
-    CREATE TABLE IF NOT EXISTS user_desired_skills (
-      id TEXT PRIMARY KEY NOT NULL,
-      name TEXT NOT NULL DEFAULT '',
-      target_level TEXT NOT NULL DEFAULT '',
-      sort_order INTEGER,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'synced'
-    );
-
-    CREATE TABLE IF NOT EXISTS user_skills_meta (
-      id TEXT PRIMARY KEY NOT NULL,
-      last_ai_at TEXT,
-      last_overall_suggestions TEXT,
-      last_profile_analysis TEXT,
-      updated_at TEXT NOT NULL
-    );
-
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY NOT NULL,
       value_json TEXT NOT NULL,
@@ -833,11 +671,6 @@ export async function initDatabase() {
       sync_status TEXT NOT NULL DEFAULT 'pending_create'
     );
   `);
-
-  await db.runAsync(
-    `INSERT OR IGNORE INTO user_skills_meta (id, last_ai_at, last_overall_suggestions, last_profile_analysis, updated_at)
-     VALUES ('default', NULL, NULL, NULL, datetime('now'))`,
-  );
 
   const { migrateAppSettingsFromAsyncStorageIfNeeded } = await import('@/lib/app-settings-store');
   await migrateAppSettingsFromAsyncStorageIfNeeded();
@@ -1262,9 +1095,6 @@ export async function initDatabase() {
   const { migrateUserWeaknessesStorageToSqliteIfNeeded } = await import('@/lib/user-weaknesses');
   await migrateUserWeaknessesStorageToSqliteIfNeeded(db);
 
-  const { migrateUserSkillsStorageToSqliteIfNeeded } = await import('@/lib/user-skills');
-  await migrateUserSkillsStorageToSqliteIfNeeded(db);
-
   const { ensureReviewTemplateDefaults } = await import('@/lib/repositories/insights/review-template');
   await ensureReviewTemplateDefaults();
 
@@ -1274,16 +1104,6 @@ export async function initDatabase() {
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);
-
-  const repairResult = await repairLocalDatabase();
-  if (__DEV__) {
-    if (repairResult.dedupedTables.length > 0) {
-      console.warn(`已清理主键重复行：${repairResult.dedupedTables.join('、')}`);
-    }
-    if (repairResult.remainingFkIssues > 0) {
-      console.warn(`数据库外键检查仍有 ${repairResult.remainingFkIssues} 条异常（已尝试修复）`);
-    }
-  }
 
   enableCloudSqliteMutationTrackingOnDatabase(db as never);
 

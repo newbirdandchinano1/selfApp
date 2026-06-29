@@ -103,6 +103,21 @@ export function isIncomeIncludedInBudget(extraData: string | null): boolean {
   return true;
 }
 
+export function getTransferLegFromTxnExtra(extraData: string | null): 'out' | 'in' | null {
+  const extra = parseFinanceTxnExtraObject(extraData);
+  const leg = extra.transfer_leg;
+  if (leg === 'out' || leg === 'in') return leg;
+  return null;
+}
+
+/** 账户间内部转账（转出/转入均不计入预算）。 */
+export function isTransferFinanceTransaction(
+  txn: Pick<{ transaction_type: string; extra_data: string | null }, 'transaction_type' | 'extra_data'>,
+): boolean {
+  if (txn.transaction_type === 'transfer') return true;
+  return getTransferLegFromTxnExtra(txn.extra_data) !== null;
+}
+
 /** 支出是否计入预算（转账不适用；余额校正支出默认不计入，可被用户显式覆盖）。 */
 export function isExpenseIncludedInBudget(extraData: string | null): boolean {
   const extra = parseFinanceTxnExtraObject(extraData);
@@ -136,6 +151,7 @@ export function buildFinanceTransferTxnExtra(input: {
     transfer_leg: input.leg,
     counterparty_account_id: input.counterpartyAccountId,
     counterparty_account_name: input.counterpartyAccountName,
+    [FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET]: true,
   });
 }
 
@@ -174,7 +190,12 @@ export function mergeFinanceTxnExtraOnApiSync(
   return JSON.stringify(merged);
 }
 
-export function isFinanceTransactionExcludedFromBudget(extraData: string | null): boolean {
+export function isFinanceTransactionExcludedFromBudget(
+  extraData: string | null,
+  transactionType?: string | null,
+): boolean {
+  if (transactionType === 'transfer') return true;
+  if (getTransferLegFromTxnExtra(extraData) !== null) return true;
   if (getBudgetFixedExpenseIdFromTxnExtra(extraData) !== null) return true;
   const extra = parseFinanceTxnExtraObject(extraData);
   if (FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET in extra) {

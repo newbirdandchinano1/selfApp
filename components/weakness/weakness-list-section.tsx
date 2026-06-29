@@ -32,13 +32,13 @@ import {
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const PAGE_API_KEY = 'my-skills-weaknesses';
+const PAGE_API_KEY = 'weakness-list';
 
 type Props = {
   refreshSignal?: number;
 };
 
-export function MySkillsWeaknessSection({ refreshSignal = 0 }: Props) {
+export function WeaknessListSection({ refreshSignal = 0 }: Props) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
@@ -292,16 +292,6 @@ export function MySkillsWeaknessSection({ refreshSignal = 0 }: Props) {
 
   return (
     <>
-      <View style={[styles.sectionHeader, { borderTopColor: borderSoft }]}>
-        <View style={styles.sectionHeaderText}>
-          <Text style={[styles.sectionTitle, { color: text }]}>我的缺点</Text>
-          <Text style={[styles.sectionHint, { color: outline }]}>
-            诚实面对短板；记录后保存或打开详情页时会自动生成 AI 分析与建议。
-            {items.length > 0 ? ` · 共 ${items.length} 条` : ''}
-          </Text>
-        </View>
-      </View>
-
       <Pressable
         onPress={() => router.push({ pathname: '/weakness-edit/[id]', params: { id: 'new' } })}
         style={({ pressed }) => [
@@ -449,14 +439,6 @@ export function MySkillsWeaknessSection({ refreshSignal = 0 }: Props) {
 }
 
 const styles = StyleSheet.create({
-  sectionHeader: {
-    paddingTop: 8,
-    marginTop: 6,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  sectionHeaderText: { gap: 4 },
-  sectionTitle: { fontSize: 17, fontWeight: '900' },
-  sectionHint: { fontSize: 13, lineHeight: 20, fontWeight: '600' },
   addBtn: {
     flexDirection: 'row',
     alignItems: 'center',

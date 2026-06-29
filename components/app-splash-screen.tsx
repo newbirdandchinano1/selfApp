@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -25,11 +24,9 @@ export type AppSplashScreenProps = {
   exitReady: boolean;
   onFinish: () => void;
   dbError?: string | null;
-  dbRepairBusy?: boolean;
   /** 首启全量同步进度（可选） */
   syncProgress?: InitialSyncProgress | null;
   onRetry?: () => void;
-  onRepair?: () => void;
 };
 
 function formatSyncProgress(progress: InitialSyncProgress | null | undefined): string | null {
@@ -46,10 +43,8 @@ export function AppSplashScreen({
   exitReady,
   onFinish,
   dbError,
-  dbRepairBusy = false,
   syncProgress,
   onRetry,
-  onRepair,
 }: AppSplashScreenProps) {
   const insets = useSafeAreaInsets();
   const [visible, setVisible] = useState(true);
@@ -162,28 +157,13 @@ export function AppSplashScreen({
           <View style={styles.errorActions}>
             <Pressable
               onPress={onRetry}
-              disabled={dbRepairBusy}
               style={({ pressed }) => [
                 styles.errorButton,
-                { opacity: dbRepairBusy ? 0.5 : pressed ? 0.82 : 1 },
+                { opacity: pressed ? 0.82 : 1 },
               ]}
             >
               <Text style={styles.errorButtonText}>重试</Text>
             </Pressable>
-            {Platform.OS !== 'web' ? (
-              <Pressable
-                onPress={onRepair}
-                disabled={dbRepairBusy}
-                style={({ pressed }) => [
-                  styles.errorButton,
-                  { opacity: dbRepairBusy ? 0.5 : pressed ? 0.82 : 1 },
-                ]}
-              >
-                <Text style={styles.errorButtonText}>
-                  {dbRepairBusy ? '修复中…' : '修复数据库'}
-                </Text>
-              </Pressable>
-            ) : null}
           </View>
         </View>
       ) : null}

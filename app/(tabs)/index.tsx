@@ -877,17 +877,21 @@ export default function HealthScreen() {
       const result = await wrapLoad(async () => reload(forceApi), forceApi);
       const fnResult = result.fnResult as false | HomeHealthReloadResult | undefined;
 
-      if (!result.ok || result.restFailed || fnResult === false) {
+      if (!result.ok || fnResult === false) {
         setPageLoadError('数据加载失败，请检查网络后重试');
         setInitialHealthLoadPending(false);
         return;
       }
 
-      setPageLoadError(null);
+      if (result.restFailed) {
+        setPageLoadError('无法连接服务器，当前显示本地数据');
+      } else {
+        setPageLoadError(null);
+      }
       setInitialHealthLoadPending(false);
 
       // 本地空库或 REST 同步后仍无数据：自动强制全量拉取（与下拉刷新一致）
-      if (!forceApi && fnResult?.sliceEmpty && !emptyLocalEscalatedRef.current) {
+      if (!forceApi && !result.restFailed && fnResult?.sliceEmpty && !emptyLocalEscalatedRef.current) {
         emptyLocalEscalatedRef.current = true;
         clearPageLoadedInSession(PAGE_API_KEY);
         resetPageApiSession(PAGE_API_KEY, { force: true });

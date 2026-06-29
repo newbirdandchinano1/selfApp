@@ -496,10 +496,10 @@ export async function updateFinanceAccount(id: string, input: UpdateFinanceAccou
      WHERE id = ?`,
     [
       input.name ?? current.name,
-      input.account_no ?? current.account_no,
+      input.account_no !== undefined ? input.account_no : current.account_no,
       input.account_type ?? current.account_type,
       input.sign_rule ?? current.sign_rule,
-      input.note ?? current.note,
+      input.note !== undefined ? input.note : current.note,
       input.extra_data ?? current.extra_data,
       id,
     ]

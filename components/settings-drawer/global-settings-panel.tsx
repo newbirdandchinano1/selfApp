@@ -4,7 +4,6 @@ import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
-import { repairLocalDatabase } from '@/lib/database';
 import { resetLocalDatabaseForDebug } from '@/lib/api-local-clear';
 import {
     DEFAULT_CLOUD_AUTH_TOKEN,
@@ -135,7 +134,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [cloudBackupBusy, setCloudBackupBusy] = useState(false);
   const [cloudBackupProgress, setCloudBackupProgress] = useState<CloudSyncProgress | null>(null);
   const [cloudRestoreBusy, setCloudRestoreBusy] = useState(false);
-  const [localDbRepairBusy, setLocalDbRepairBusy] = useState(false);
   const [localDbClearBusy, setLocalDbClearBusy] = useState(false);
   const [apiDebugEnabled, setApiDebugEnabledState] = useState(false);
   const cloudOpAbortRef = useRef<AbortController | null>(null);
@@ -143,7 +141,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const cloudOpInFlightRef = useRef(false);
   const lastCloudBackupPressAtRef = useRef(0);
 
-  const cloudOpBusy = cloudBackupBusy || cloudRestoreBusy || localDbRepairBusy || localDbClearBusy;
+  const cloudOpBusy = cloudBackupBusy || cloudRestoreBusy || localDbClearBusy;
   const [lastFullCloudBackupAtIso, setLastFullCloudBackupAtIso] = useState<string | null>(null);
   const [cloudDiagModal, setCloudDiagModal] = useState<{
     visible: boolean;
@@ -374,48 +372,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     );
   }, [cloudOpBusy, runCloudRestore]);
 
-  const runLocalDatabaseRepair = useCallback(async () => {
-    if (Platform.OS === 'web') {
-      Alert.alert('不可用', 'Web 环境无本地 SQLite，请在手机或模拟器上使用。');
-      return;
-    }
-    if (cloudOpInFlightRef.current || localDbRepairBusy) return;
-    cloudOpInFlightRef.current = true;
-    setLocalDbRepairBusy(true);
-    try {
-      const result = await repairLocalDatabase();
-      if (result.remainingFkIssues === 0) {
-        Alert.alert(
-          '修复完成',
-          '已清理孤儿外键并同步任务分类镜像。请完全退出应用后重新打开；若仍无法进入，可再试「从云同步到本机」。',
-        );
-      } else {
-        Alert.alert(
-          '部分修复',
-          `仍有 ${result.remainingFkIssues} 处外键异常未能自动处理。建议先「一键全量备份」后执行「从云同步到本机」；若无效请反馈具体报错。`,
-        );
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      Alert.alert('修复失败', msg);
-    } finally {
-      setLocalDbRepairBusy(false);
-      cloudOpInFlightRef.current = false;
-    }
-  }, [localDbRepairBusy, cloudOpBusy]);
-
-  const requestLocalDatabaseRepair = useCallback(() => {
-    if (cloudOpInFlightRef.current || cloudOpBusy) return;
-    Alert.alert(
-      '修复本地数据库',
-      '将清理云同步后可能产生的孤儿外键（如任务分类不一致），不会删除你的业务数据。完成后建议重启应用。确定继续？',
-      [
-        { text: '取消', style: 'cancel' },
-        { text: '开始修复', onPress: () => void runLocalDatabaseRepair() },
-      ],
-    );
-  }, [cloudOpBusy, runLocalDatabaseRepair]);
-
   const runLocalDatabaseClear = useCallback(async () => {
     if (Platform.OS === 'web') {
       Alert.alert('不可用', 'Web 环境无本地 SQLite，请在手机或模拟器上使用。');
@@ -571,15 +527,15 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           <Pressable
             onPress={() => {
               closeSettingsDrawer();
-              router.push('/my-skills');
+              router.push('/weakness-list');
             }}
             style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
             <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <MaterialIcons name="psychology" size={26} color={secondary} />
+              <MaterialIcons name="psychology-alt" size={26} color={secondary} />
               <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>我的技能</Text>
+                <Text style={[styles.rowTitle, { color: text }]}>我的缺点</Text>
                 <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  记录现有技能、学习目标与待改进缺点；填写描述后可请求 AI 评估或分析。
+                  记录待改进的缺点与具体表现；保存后可自动生成 AI 分析与建议。
                 </Text>
               </View>
               <MaterialIcons name="chevron-right" size={22} color={outline} />
@@ -789,39 +745,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               <MaterialIcons name="chevron-right" size={22} color={outline} />
             </View>
           </Pressable>
-
-          {Platform.OS !== 'web' ? (
-            <Pressable
-              onPress={requestLocalDatabaseRepair}
-              disabled={cloudOpBusy}
-              pointerEvents={cloudOpBusy ? 'none' : 'auto'}
-              style={({ pressed }) => [
-                { opacity: cloudOpBusy ? 0.55 : pressed ? 0.88 : 1, marginTop: 10 },
-              ]}>
-              <View
-                style={[
-                  styles.card,
-                  styles.actionCard,
-                  {
-                    backgroundColor: cardBg,
-                    borderColor: isDark ? 'rgba(251,191,36,0.35)' : 'rgba(180,83,9,0.22)',
-                  },
-                ]}>
-                {localDbRepairBusy ? (
-                  <ActivityIndicator size="small" color={isDark ? '#fbbf24' : '#b45309'} />
-                ) : (
-                  <MaterialIcons name="healing" size={26} color={isDark ? '#fbbf24' : '#b45309'} />
-                )}
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.rowTitle, { color: text }]}>修复本地数据库</Text>
-                  <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                    启动失败或外键报错时使用：清理孤儿引用并同步分类表，不覆盖云端数据。
-                  </Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={22} color={outline} />
-              </View>
-            </Pressable>
-          ) : null}
 
           {Platform.OS !== 'web' ? (
             <Pressable

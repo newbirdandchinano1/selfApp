@@ -3857,12 +3857,20 @@ export default function TasksScreen() {
                   <Text style={[styles.sectionTitle, { color: colors.text }]}>今日青蛙</Text>
                   <MaterialIcons name="eco" size={20} color={primary} />
                 </View>
-                <ScalePressable
-                  onPress={() => router.push('/add-frog')}
-                  style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
-                  <MaterialIcons name="add" size={14} color={primary} />
-                  <Text style={[styles.ghostBtnText, { color: primary }]}>添加青蛙</Text>
-                </ScalePressable>
+                <View style={styles.frogHeaderActions}>
+                  <ScalePressable
+                    onPress={() => router.push('/add-frog')}
+                    style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
+                    <MaterialIcons name="add" size={14} color={primary} />
+                    <Text style={[styles.ghostBtnText, { color: primary }]}>添加青蛙</Text>
+                  </ScalePressable>
+                  <ScalePressable
+                    onPress={() => router.push({ pathname: '/add-frog', params: { target: 'tomorrow' } })}
+                    style={({ pressed }) => [styles.ghostBtn, { borderColor: `${tertiary}44` }, pressed && { opacity: 0.8 }]}>
+                    <MaterialIcons name="event" size={14} color={tertiary} />
+                    <Text style={[styles.ghostBtnText, { color: tertiary }]}>预定青蛙</Text>
+                  </ScalePressable>
+                </View>
               </View>
 
               <Animated.View
@@ -5997,6 +6005,7 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flexShrink: 1 },
   sectionTitle: { ...Typography.h2 },
   sectionMeta: { ...Typography.caption },
+  frogHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexShrink: 0 },
   ghostBtn: {
     flexDirection: 'row',
     alignItems: 'center',

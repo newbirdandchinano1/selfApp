@@ -4,7 +4,13 @@ import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { ApiRequestError } from '@/lib/api-client';
 import { assignFrogToApi, getFrogAssignedOn, unassignFrogFromApi } from '@/lib/frog-assignment';
 import { fetchTodayFrogs } from '@/lib/today-frogs-api';
-import { DEFAULT_TASKS_DAY_BOUNDARY, getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
+import {
+  addDaysToLogicalYmd,
+  DEFAULT_TASKS_DAY_BOUNDARY,
+  getLogicalLocalYmd,
+  loadTasksDayBoundary,
+  logicalYmdToLocalDate,
+} from '@/lib/tasks-logical-day';
 import { isLogicalDayInYmdRange } from '@/lib/repositories/projects/project-schedule-status';
 import { buildProjectLockMap } from '@/lib/repositories/projects/project-prerequisites';
 import { getProjects } from '@/lib/repositories/projects/project';
@@ -13,7 +19,7 @@ import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -424,12 +430,13 @@ function groupTasksToSections(
 
 function buildAssignedTodayItems(
   rows: TaskRow[],
-  todayYmd: string,
+  assignYmd: string,
   taskTitleById: Map<string, string>,
   projectNameById: Record<string, string>,
+  isTomorrowTarget = false,
 ): Item[] {
   return rows
-    .filter((t) => getFrogAssignedOn(t.extra_data) === todayYmd)
+    .filter((t) => getFrogAssignedOn(t.extra_data) === assignYmd)
     .map((t) => {
       const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
       const { parentLabel, projectLabel } = getTaskContextLabels(t, taskTitleById, projectNameById);
@@ -438,7 +445,12 @@ function buildAssignedTodayItems(
         title: t.title,
         parentLabel,
         projectLabel,
-        subtitle: t.status === 'done' || t.status === 'cancelled' ? '已完成或已取消' : '今日已指派',
+        subtitle:
+          t.status === 'done' || t.status === 'cancelled'
+            ? '已完成或已取消'
+            : isTomorrowTarget
+              ? '明日已预定'
+              : '今日已指派',
         tone,
         dueSortKey: null,
         priority: t.priority,
@@ -452,8 +464,18 @@ function buildAssignedTodayItems(
 
 const PAGE_API_KEY = 'add-frog';
 
+type FrogAssignTarget = 'today' | 'tomorrow';
+
+function parseFrogAssignTarget(raw: string | string[] | undefined): FrogAssignTarget {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value === 'tomorrow' ? 'tomorrow' : 'today';
+}
+
 export default function AddFrogScreen() {
   const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_API_KEY);
+  const { target: targetParam } = useLocalSearchParams<{ target?: string | string[] }>();
+  const assignTarget = parseFrogAssignTarget(targetParam);
+  const isTomorrowTarget = assignTarget === 'tomorrow';
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
@@ -491,6 +513,8 @@ export default function AddFrogScreen() {
       const now = new Date();
       const boundary = await loadTasksDayBoundary();
       const todayYmd = todayFrogResult.logicalToday || getLogicalLocalYmd(now, boundary);
+      const assignYmd = isTomorrowTarget ? addDaysToLogicalYmd(todayYmd, 1) : todayYmd;
+      const anchorNow = isTomorrowTarget ? logicalYmdToLocalDate(assignYmd) : now;
       const lockMap = buildProjectLockMap(projectRows, treeMap, todayYmd);
       const locked = new Set<string>();
       lockMap.forEach((info, id) => {
@@ -500,9 +524,10 @@ export default function AddFrogScreen() {
       setLockedProjectIds(locked);
       const projectNameById = Object.fromEntries(projectRows.map((p) => [p.id, p.name]));
       const taskTitleById = new Map(rows.map((r) => [r.id, r.title]));
-      const grouped = groupTasksToSections(rows, now, todayYmd, locked, projectNameById);
+      const grouped = groupTasksToSections(rows, anchorNow, assignYmd, locked, projectNameById);
       setSections(grouped.sections);
-      setAssignedToday(buildAssignedTodayItems(todayFrogResult.tasks, todayYmd, taskTitleById, projectNameById));
+      const assignedRows = isTomorrowTarget ? rows : todayFrogResult.tasks;
+      setAssignedToday(buildAssignedTodayItems(assignedRows, assignYmd, taskTitleById, projectNameById, isTomorrowTarget));
       setSelected((prev) => {
         const allowed = new Set(rows.filter((r) => !isStandaloneTodoTask(r)).map((r) => r.id));
         const next: Record<string, boolean> = {};
@@ -524,7 +549,7 @@ export default function AddFrogScreen() {
     } finally {
       setLoading(false);
     }
-  }, [wrapLoad]);
+  }, [isTomorrowTarget, wrapLoad]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
@@ -561,7 +586,7 @@ export default function AddFrogScreen() {
     (id: string) => {
       const row = taskMap[id];
       const titleLabel = (row?.title ?? '').trim() || '该任务';
-      Alert.alert('取消指派', `确定将「${titleLabel}」从今日青蛙中移除吗？`, [
+      Alert.alert('取消指派', `确定将「${titleLabel}」从${isTomorrowTarget ? '明日' : '今日'}青蛙中移除吗？`, [
         { text: '保留', style: 'cancel' },
         {
           text: '取消指派',
@@ -591,7 +616,7 @@ export default function AddFrogScreen() {
         },
       ]);
     },
-    [notifyAncestorsDataChanged, reload, taskMap]
+    [isTomorrowTarget, notifyAncestorsDataChanged, reload, taskMap]
   );
 
   const assignFrogs = React.useCallback(async () => {
@@ -599,7 +624,8 @@ export default function AddFrogScreen() {
     setSaving(true);
     try {
       const boundary = await loadTasksDayBoundary();
-      const today = getLogicalLocalYmd(new Date(), boundary);
+      const todayYmd = getLogicalLocalYmd(new Date(), boundary);
+      const assignYmd = isTomorrowTarget ? addDaysToLogicalYmd(todayYmd, 1) : todayYmd;
       const ids = selectedIds.slice();
       const lockedPick = ids.find((id) => {
         const row = taskMap[id];
@@ -614,9 +640,14 @@ export default function AddFrogScreen() {
         if (!row) {
           throw new Error('任务数据已过期，请下拉刷新后重试');
         }
-        await assignFrogToApi(id, row.extra_data ?? null, today, row as Record<string, unknown>);
+        await assignFrogToApi(id, row.extra_data ?? null, assignYmd, row as Record<string, unknown>);
       }
-      Alert.alert('已指派', `已将 ${ids.length} 个任务指派为今日青蛙。`);
+      Alert.alert(
+        isTomorrowTarget ? '已预定' : '已指派',
+        isTomorrowTarget
+          ? `已将 ${ids.length} 个任务预定为明日青蛙。`
+          : `已将 ${ids.length} 个任务指派为今日青蛙。`,
+      );
       notifyAncestorsDataChanged();
       router.back();
     } catch (e) {
@@ -631,7 +662,7 @@ export default function AddFrogScreen() {
     } finally {
       setSaving(false);
     }
-  }, [lockedProjectIds, notifyAncestorsDataChanged, router, saving, selectedIds, taskMap]);
+  }, [isTomorrowTarget, lockedProjectIds, notifyAncestorsDataChanged, router, saving, selectedIds, taskMap]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: surface }]} edges={['top']}>
@@ -651,7 +682,7 @@ export default function AddFrogScreen() {
             style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
             <MaterialIcons name="arrow-back" size={22} color={blue} />
           </Pressable>
-          <Text style={[styles.headerTitle, { color: blue }]}>新增青蛙</Text>
+          <Text style={[styles.headerTitle, { color: blue }]}>{isTomorrowTarget ? '预定青蛙' : '新增青蛙'}</Text>
         </View>
       </View>
 
@@ -663,8 +694,8 @@ export default function AddFrogScreen() {
         ]}
         showsVerticalScrollIndicator={false}>
         <View style={styles.editorial}>
-          <Text style={[styles.kicker, { color: primary }]}>时间线</Text>
-          <Text style={[styles.h1, { color: theme.text }]}>选择青蛙</Text>
+          <Text style={[styles.kicker, { color: primary }]}>{isTomorrowTarget ? '明日' : '时间线'}</Text>
+          <Text style={[styles.h1, { color: theme.text }]}>{isTomorrowTarget ? '选择明日青蛙' : '选择青蛙'}</Text>
         </View>
 
         <View style={styles.sections}>
@@ -673,7 +704,9 @@ export default function AddFrogScreen() {
               <View style={styles.sectionHeader}>
                 <View style={styles.sectionHeaderLeft}>
                   <View style={[styles.sectionBar, { backgroundColor: primary }]} />
-                  <Text style={[styles.sectionTitle, { color: theme.text }]}>今日已指派</Text>
+                  <Text style={[styles.sectionTitle, { color: theme.text }]}>
+                    {isTomorrowTarget ? '明日已预定' : '今日已指派'}
+                  </Text>
                 </View>
                 <View style={[styles.sectionBadge, { backgroundColor: `${primary}1A` }]}>
                   <Text style={[styles.sectionBadgeText, { color: primary }]}>{assignedToday.length} 条</Text>
@@ -874,7 +907,9 @@ export default function AddFrogScreen() {
               },
               pressed && selectedIds.length > 0 && !saving && !loading && { transform: [{ scale: 0.98 }] },
             ]}>
-            <Text style={styles.confirmText}>{saving ? '指派中…' : '确认指派'}</Text>
+            <Text style={styles.confirmText}>
+              {saving ? (isTomorrowTarget ? '预定中…' : '指派中…') : isTomorrowTarget ? '确认预定' : '确认指派'}
+            </Text>
           </Pressable>
         </View>
       </View>

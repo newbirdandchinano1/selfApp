@@ -10,7 +10,6 @@ import type {
   DailyIntakeTargetsEstimateJson,
   FoodNutritionJson,
   FoodTextIntakeJson,
-  UserSkillAiPortfolioPayload,
   VisionWallAiAssessmentPayload,
 } from '@/lib/ai-types';
 
@@ -143,13 +142,6 @@ export async function aiVisionWallAssessment(body: {
   user_display_name?: string;
 }): Promise<VisionWallAiAssessmentPayload> {
   return apiRequest(`${AI_PREFIX}/vision-wall/assessment`, { method: 'POST', body });
-}
-
-export async function aiSkillsPortfolio(body: {
-  user_display_name: string;
-  lines: { skill_id: string; dimension: string; name: string; description: string }[];
-}): Promise<UserSkillAiPortfolioPayload> {
-  return apiRequest(`${AI_PREFIX}/skills/portfolio`, { method: 'POST', body });
 }
 
 /** 拆分 data URI 或纯 Base64，供图片类接口使用 */

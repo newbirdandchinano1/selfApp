@@ -28,6 +28,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -93,7 +94,7 @@ export default function AddAccountScreen() {
 
   const canSave =
     accountName.trim().length > 0 &&
-    (accountType !== 'custom' || customTypeName.trim().length > 0) &&
+    (isEditMode || accountType !== 'custom' || customTypeName.trim().length > 0) &&
     !saving &&
     (!isEditMode || editSheetReady);
   const isSelectedLiability = accountType === 'liability' || (accountType === 'custom' && customIsLiability);
@@ -186,6 +187,7 @@ export default function AddAccountScreen() {
   );
 
   const onSave = React.useCallback(async () => {
+    Keyboard.dismiss();
     const name = accountName.trim();
     if (!name) {
       Alert.alert('请输入账户名称', '账户名称不能为空。');
@@ -595,6 +597,7 @@ export default function AddAccountScreen() {
             fullWidth
             loading={saving}
             disabled={!canSave}
+            onPressIn={() => Keyboard.dismiss()}
             onPress={() => void onSave()}
           />
         </View>

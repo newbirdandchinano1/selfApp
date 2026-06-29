@@ -63,9 +63,6 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   memo_dimensions: [TAB_PAGE_KEYS.profile],
   memos: [TAB_PAGE_KEYS.profile],
   user_weaknesses: [TAB_PAGE_KEYS.profile],
-  user_skill_items: [TAB_PAGE_KEYS.profile],
-  user_desired_skills: [TAB_PAGE_KEYS.profile],
-  user_skills_meta: [TAB_PAGE_KEYS.profile],
   review_dimensions: [TAB_PAGE_KEYS.review],
   review_columns: [TAB_PAGE_KEYS.review],
   recipe_categories: [TAB_PAGE_KEYS.profile],
@@ -403,7 +400,13 @@ export async function runPageLoadBody(
             new ApiRequestError(sync.error ?? '页面数据同步失败', 0, -1, { retryable: true }),
           );
         }
-        ok = false;
+        // 后端不可用时回退读本地缓存，避免骨架屏/启动态长时间阻塞
+        beginPageApiRead({ localOnly: true, offlineFallback: true });
+        try {
+          ok = await invokeLoadFn();
+        } finally {
+          endPageApiRead();
+        }
       } else {
         beginPageApiRead({ localOnly: true, offlineFallback: true });
         try {
@@ -429,18 +432,23 @@ export function finalizePageLoadSession(
   ok: boolean | void,
   restFailed: boolean,
 ): void {
-  if (ok === false || restFailed) {
+  if (ok === false) {
     if (!getApiLoadingError() && !isSkeletonLoadingTabPageKey(pageKey)) {
       reportApiLoadingError(
-        new ApiRequestError(
-          restFailed ? '网络请求失败，无法从服务端加载数据' : '页面数据加载失败',
-          0,
-          -1,
-          { retryable: true },
-        ),
+        new ApiRequestError('页面数据加载失败', 0, -1, { retryable: true }),
       );
     }
     resetPageApiSession(pageKey, { force: true });
+    return;
+  }
+
+  if (restFailed) {
+    if (!getApiLoadingError() && !isSkeletonLoadingTabPageKey(pageKey)) {
+      reportApiLoadingError(
+        new ApiRequestError('无法连接服务器，当前显示本地数据', 0, -1, { retryable: true }),
+      );
+    }
+    markPageLoadedInSession(pageKey);
     return;
   }
 
