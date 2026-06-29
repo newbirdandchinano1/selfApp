@@ -4020,6 +4020,7 @@ export default function FinanceScreen() {
                   selectedKey={selectedCategoryKey}
                   onSelectKey={setSelectedCategoryKey}
                   transactionType={activeSheetTab === 'income' ? 'income' : 'expense'}
+                  singleRowCollapsed
                   subtle={subtle}
                   primary={primary}
                   text={text}

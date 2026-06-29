@@ -19,6 +19,9 @@ import {
 
 const ICON_COLUMNS = 6;
 const ICON_GAP = 8;
+/** 与 categoryItem width: 20% 对应，单行最多 5 个 */
+const CATEGORY_ITEMS_PER_ROW = 5;
+const COLLAPSED_CATEGORY_COUNT = CATEGORY_ITEMS_PER_ROW - 1;
 
 export type FinanceCategoryPickerStyles = {
   categoryGrid: object;
@@ -48,6 +51,8 @@ type FinanceCategoryPickerProps = {
   isSavingCategory: boolean;
   onCloseAddModal: () => void;
   onSaveNewCategory: () => void;
+  /** 为 true 时默认只显示一行分类，其余通过展开查看 */
+  singleRowCollapsed?: boolean;
 };
 
 export function FinanceCategoryPicker({
@@ -71,64 +76,117 @@ export function FinanceCategoryPicker({
   isSavingCategory,
   onCloseAddModal,
   onSaveNewCategory,
+  singleRowCollapsed = false,
 }: FinanceCategoryPickerProps) {
   const typeLabel = transactionType === 'income' ? '收入' : '支出';
   const [iconGridWidth, setIconGridWidth] = React.useState(0);
+  const [categoriesExpanded, setCategoriesExpanded] = React.useState(false);
   const iconTileSize =
     iconGridWidth > 0
       ? Math.floor((iconGridWidth - ICON_GAP * (ICON_COLUMNS - 1)) / ICON_COLUMNS)
       : 0;
 
+  const needsCollapse =
+    singleRowCollapsed && categories.length + 1 > CATEGORY_ITEMS_PER_ROW;
+
+  React.useEffect(() => {
+    setCategoriesExpanded(false);
+  }, [transactionType, categories.length]);
+
+  const visibleCategories = React.useMemo(() => {
+    if (!needsCollapse || categoriesExpanded) return categories;
+    const first = categories.slice(0, COLLAPSED_CATEGORY_COUNT);
+    if (first.some((item) => item.key === selectedKey)) return first;
+    const selected = categories.find((item) => item.key === selectedKey);
+    if (!selected) return first;
+    return [...first.slice(0, COLLAPSED_CATEGORY_COUNT - 1), selected];
+  }, [categories, categoriesExpanded, needsCollapse, selectedKey]);
+
+  const renderCategoryItem = (item: SheetCategory) => {
+    const isSelected = selectedKey === item.key;
+    return (
+      <Pressable
+        key={item.key}
+        style={s.categoryItem}
+        onPress={() => onSelectKey(item.key)}
+        onLongPress={item.isCustom && onLongPressCustom ? () => onLongPressCustom(item) : undefined}
+        delayLongPress={400}
+        accessibilityHint={item.isCustom ? '长按可删除自定义分类' : undefined}>
+        <View
+          style={[
+            s.categoryIconWrap,
+            {
+              backgroundColor: isSelected ? `${item.color}20` : outlineVariant,
+              borderColor: isSelected ? item.color : 'transparent',
+            },
+          ]}>
+          <MaterialIcons name={item.icon} size={22} color={item.color} />
+        </View>
+        <Text style={[s.categoryLabel, { color: isSelected ? item.color : subtle }]} numberOfLines={1}>
+          {item.label}
+        </Text>
+      </Pressable>
+    );
+  };
+
+  const renderAddCategoryItem = () => (
+    <Pressable
+      style={s.categoryItem}
+      onPress={onAddPress}
+      accessibilityRole="button"
+      accessibilityLabel={`添加自定义${typeLabel}分类`}>
+      <View
+        style={[
+          s.categoryIconWrap,
+          {
+            backgroundColor: 'transparent',
+            borderColor: outlineVariant,
+            borderWidth: 1,
+            borderStyle: 'dashed',
+          },
+        ]}>
+        <MaterialIcons name="add" size={22} color={primary} />
+      </View>
+      <Text style={[s.categoryLabel, { color: primary }]} numberOfLines={1}>
+        自定义
+      </Text>
+    </Pressable>
+  );
+
+  const renderToggleExpandItem = () => {
+    const expanded = categoriesExpanded;
+    return (
+      <Pressable
+        style={s.categoryItem}
+        onPress={() => setCategoriesExpanded((v) => !v)}
+        accessibilityRole="button"
+        accessibilityLabel={expanded ? '收起分类' : '展开更多分类'}>
+        <View
+          style={[
+            s.categoryIconWrap,
+            {
+              backgroundColor: expanded ? `${primary}12` : outlineVariant,
+              borderColor: expanded ? primary : 'transparent',
+            },
+          ]}>
+          <MaterialIcons name={expanded ? 'expand-less' : 'expand-more'} size={24} color={primary} />
+        </View>
+        <Text style={[s.categoryLabel, { color: primary }]} numberOfLines={1}>
+          {expanded ? '收起' : '更多'}
+        </Text>
+      </Pressable>
+    );
+  };
+
+  const showAddInGrid = !needsCollapse || categoriesExpanded;
+  const isCollapsedGrid = needsCollapse && !categoriesExpanded;
+
   return (
     <>
-      <View style={s.categoryGrid}>
-        {categories.map((item) => {
-          const isSelected = selectedKey === item.key;
-          return (
-            <Pressable
-              key={item.key}
-              style={s.categoryItem}
-              onPress={() => onSelectKey(item.key)}
-              onLongPress={item.isCustom && onLongPressCustom ? () => onLongPressCustom(item) : undefined}
-              delayLongPress={400}
-              accessibilityHint={item.isCustom ? '长按可删除自定义分类' : undefined}>
-              <View
-                style={[
-                  s.categoryIconWrap,
-                  {
-                    backgroundColor: isSelected ? `${item.color}20` : outlineVariant,
-                    borderColor: isSelected ? item.color : 'transparent',
-                  },
-                ]}>
-                <MaterialIcons name={item.icon} size={22} color={item.color} />
-              </View>
-              <Text style={[s.categoryLabel, { color: isSelected ? item.color : subtle }]} numberOfLines={1}>
-                {item.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-        <Pressable
-          style={s.categoryItem}
-          onPress={onAddPress}
-          accessibilityRole="button"
-          accessibilityLabel={`添加自定义${typeLabel}分类`}>
-          <View
-            style={[
-              s.categoryIconWrap,
-              {
-                backgroundColor: 'transparent',
-                borderColor: outlineVariant,
-                borderWidth: 1,
-                borderStyle: 'dashed',
-              },
-            ]}>
-            <MaterialIcons name="add" size={22} color={primary} />
-          </View>
-          <Text style={[s.categoryLabel, { color: primary }]} numberOfLines={1}>
-            自定义
-          </Text>
-        </Pressable>
+      <View style={[s.categoryGrid, isCollapsedGrid && pickerStyles.categoryGridCollapsed]}>
+        {visibleCategories.map(renderCategoryItem)}
+        {showAddInGrid ? renderAddCategoryItem() : null}
+        {needsCollapse ? renderToggleExpandItem() : null}
       </View>
 
       <Modal visible={addModalVisible} transparent animationType="fade" onRequestClose={onCloseAddModal}>
@@ -205,6 +263,13 @@ export function FinanceCategoryPicker({
     </>
   );
 }
+
+const pickerStyles = StyleSheet.create({
+  categoryGridCollapsed: {
+    flexWrap: 'nowrap',
+    rowGap: 0,
+  },
+});
 
 const modalStyles = StyleSheet.create({
   backdrop: {

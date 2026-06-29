@@ -353,6 +353,7 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                   selectedKey={selectedCategoryKey}
                   onSelectKey={setSelectedCategoryKey}
                   transactionType={activeSheetTab === 'income' ? 'income' : 'expense'}
+                  singleRowCollapsed
                   subtle={subtle}
                   primary={primary}
                   text={text}

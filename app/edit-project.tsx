@@ -124,7 +124,7 @@ type SchedulePickerInitPayload = {
   endTime?: string;
 };
 
-const TITLE_MAX_LENGTH = 30;
+const TITLE_MAX_LENGTH = 80;
 
 type ProjectScheduleMeta = Pick<
   SchedulePickerResult,

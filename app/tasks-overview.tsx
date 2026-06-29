@@ -3,7 +3,7 @@ import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import type { TaskExecutionEventWithTitle } from '@/lib/repositories/tasks/task-execution-events';
-import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
+import { openTaskById } from '@/lib/open-task-by-id';
 import {
   fetchTasksOverview,
   type TasksOverviewInsightCounts,
@@ -66,6 +66,63 @@ function formatTaskStatus(status: string) {
   if (status === 'cancelled') return '已取消';
   if (status === 'shelved') return '暂时搁置';
   return '待办';
+}
+
+function OverviewEventHistoryRow({
+  event,
+  border,
+  textColor,
+  outline,
+  secondary,
+  primary,
+  isLast,
+  openingTaskId,
+  onOpenTask,
+}: {
+  event: TaskExecutionEventWithTitle;
+  border: string;
+  textColor: string;
+  outline: string;
+  secondary: string;
+  primary: string;
+  isLast: boolean;
+  openingTaskId: string | null;
+  onOpenTask: (taskId: string) => void;
+}) {
+  const taskId = event.task_id?.trim() ?? '';
+  const canOpen = Boolean(taskId);
+  const opening = openingTaskId === taskId;
+
+  return (
+    <Pressable
+      disabled={!canOpen || opening}
+      onPress={() => {
+        if (taskId) onOpenTask(taskId);
+      }}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !canOpen }}
+      accessibilityLabel={`${event.task_title?.trim() || '待办'}，${actionLabel(event.action)}`}
+      style={({ pressed }) => [
+        styles.histRow,
+        { borderBottomColor: border, opacity: !canOpen ? 1 : pressed || opening ? 0.86 : 1 },
+        isLast ? { borderBottomWidth: 0 } : null,
+      ]}>
+      <View style={[styles.histDot, { backgroundColor: event.action === 'completed' ? secondary : primary }]} />
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={[styles.histTitle, { color: textColor }]} numberOfLines={2}>
+          {event.task_title?.trim() || '（待办已删除或不可用）'}
+        </Text>
+        <Text style={[styles.histMeta, { color: outline }]}>
+          {actionLabel(event.action)} · {formatDateTimeCN(event.created_at)}
+        </Text>
+      </View>
+      {opening ? (
+        <ActivityIndicator size="small" color={primary} style={{ marginTop: 2 }} />
+      ) : canOpen ? (
+        <MaterialIcons name="chevron-right" size={20} color={outline} />
+      ) : null}
+    </Pressable>
+  );
 }
 
 /** 根据容器宽度计算周数与格子边长，使热力图横向铺满且格子足够大 */
@@ -224,6 +281,7 @@ export default function TasksOverviewScreen() {
   const [statEventsHasMore, setStatEventsHasMore] = React.useState(false);
   const [statLoadingMore, setStatLoadingMore] = React.useState(false);
   const [statLoading, setStatLoading] = React.useState(false);
+  const [openingTaskId, setOpeningTaskId] = React.useState<string | null>(null);
 
   const screenW = Dimensions.get('window').width;
   const approxCardInner = Math.max(200, screenW - 18 * 2 - 16 * 2);
@@ -532,6 +590,20 @@ export default function TasksOverviewScreen() {
     clearStatSelection();
   }, [clearHeatSelection, clearStatSelection]);
 
+  const handleOpenTask = React.useCallback(
+    async (taskId: string) => {
+      const id = taskId.trim();
+      if (!id) return;
+      setOpeningTaskId(id);
+      try {
+        await openTaskById(router, id);
+      } finally {
+        setOpeningTaskId((current) => (current === id ? null : current));
+      }
+    },
+    [router],
+  );
+
   const showClearSelection = !!selectedHeatYmd || !!selectedStatKey;
 
   const bg = isDark ? theme.background : '#faf8ff';
@@ -694,17 +766,16 @@ export default function TasksOverviewScreen() {
                 <Text style={[styles.emptyHist, { color: theme.textSecondary }]}>暂无符合条件的待办。</Text>
               ) : (
                 <>
-                  {statTasks.map((t, idx) => (
+                  {statTasks.map((t, idx) => {
+                    const opening = openingTaskId === t.id;
+                    return (
                     <Pressable
                       key={t.id}
-                      onPress={() =>
-                        router.push(
-                          isStandaloneTodoTask(t) ? standaloneTodoEditorHref(t.id) : { pathname: '/task/[id]', params: { id: t.id } },
-                        )
-                      }
+                      disabled={opening}
+                      onPress={() => void handleOpenTask(t.id)}
                       style={({ pressed }) => [
                         styles.histRow,
-                        { borderBottomColor: border, opacity: pressed ? 0.86 : 1 },
+                        { borderBottomColor: border, opacity: pressed || opening ? 0.86 : 1 },
                         idx === statTasks.length - 1 && !statTasksHasMore && !statLoadingMore ? { borderBottomWidth: 0 } : null,
                       ]}>
                       <View
@@ -723,9 +794,14 @@ export default function TasksOverviewScreen() {
                           {t.updated_at ? ` · 更新 ${formatDateTimeCN(t.updated_at)}` : ''}
                         </Text>
                       </View>
-                      <MaterialIcons name="chevron-right" size={20} color={outline} />
+                      {opening ? (
+                        <ActivityIndicator size="small" color={primary} style={{ marginTop: 2 }} />
+                      ) : (
+                        <MaterialIcons name="chevron-right" size={20} color={outline} />
+                      )}
                     </Pressable>
-                  ))}
+                    );
+                  })}
                   {statTasksHasMore || statLoadingMore ? (
                     <View style={styles.dayHistLoading}>
                       {statLoadingMore ? <ActivityIndicator color={primary} /> : null}
@@ -743,25 +819,18 @@ export default function TasksOverviewScreen() {
             ) : (
               <>
                 {statEvents.map((e, idx) => (
-                  <View
+                  <OverviewEventHistoryRow
                     key={e.id}
-                    style={[
-                      styles.histRow,
-                      { borderBottomColor: border },
-                      idx === statEvents.length - 1 && !statEventsHasMore && !statLoadingMore
-                        ? { borderBottomWidth: 0 }
-                        : null,
-                    ]}>
-                    <View style={[styles.histDot, { backgroundColor: e.action === 'completed' ? secondary : primary }]} />
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={[styles.histTitle, { color: theme.text }]} numberOfLines={2}>
-                        {e.task_title?.trim() || '（待办已删除或不可用）'}
-                      </Text>
-                      <Text style={[styles.histMeta, { color: outline }]}>
-                        {actionLabel(e.action)} · {formatDateTimeCN(e.created_at)}
-                      </Text>
-                    </View>
-                  </View>
+                    event={e}
+                    border={border}
+                    textColor={theme.text}
+                    outline={outline}
+                    secondary={secondary}
+                    primary={primary}
+                    isLast={idx === statEvents.length - 1 && !statEventsHasMore && !statLoadingMore}
+                    openingTaskId={openingTaskId}
+                    onOpenTask={(taskId) => void handleOpenTask(taskId)}
+                  />
                 ))}
                 {statEventsHasMore || statLoadingMore ? (
                   <View style={styles.dayHistLoading}>
@@ -785,23 +854,18 @@ export default function TasksOverviewScreen() {
               <Text style={[styles.emptyHist, { color: theme.textSecondary }]}>该日暂无执行记录。</Text>
             ) : (
               dayEvents.map((e, idx) => (
-                <View
+                <OverviewEventHistoryRow
                   key={e.id}
-                  style={[
-                    styles.histRow,
-                    { borderBottomColor: border },
-                    idx === dayEvents.length - 1 ? { borderBottomWidth: 0 } : null,
-                  ]}>
-                  <View style={[styles.histDot, { backgroundColor: e.action === 'completed' ? secondary : primary }]} />
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={[styles.histTitle, { color: theme.text }]} numberOfLines={2}>
-                      {e.task_title?.trim() || '（待办已删除或不可用）'}
-                    </Text>
-                    <Text style={[styles.histMeta, { color: outline }]}>
-                      {actionLabel(e.action)} · {formatDateTimeCN(e.created_at)}
-                    </Text>
-                  </View>
-                </View>
+                  event={e}
+                  border={border}
+                  textColor={theme.text}
+                  outline={outline}
+                  secondary={secondary}
+                  primary={primary}
+                  isLast={idx === dayEvents.length - 1}
+                  openingTaskId={openingTaskId}
+                  onOpenTask={(taskId) => void handleOpenTask(taskId)}
+                />
               ))
             )
           ) : eventsLoading ? (
@@ -814,23 +878,18 @@ export default function TasksOverviewScreen() {
           ) : (
             <>
               {events.map((e, idx) => (
-                <View
+                <OverviewEventHistoryRow
                   key={e.id}
-                  style={[
-                    styles.histRow,
-                    { borderBottomColor: border },
-                    idx === events.length - 1 && !eventsHasMore && !eventsLoadingMore ? { borderBottomWidth: 0 } : null,
-                  ]}>
-                  <View style={[styles.histDot, { backgroundColor: e.action === 'completed' ? secondary : primary }]} />
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={[styles.histTitle, { color: theme.text }]} numberOfLines={2}>
-                      {e.task_title?.trim() || '（待办已删除或不可用）'}
-                    </Text>
-                    <Text style={[styles.histMeta, { color: outline }]}>
-                      {actionLabel(e.action)} · {formatDateTimeCN(e.created_at)}
-                    </Text>
-                  </View>
-                </View>
+                  event={e}
+                  border={border}
+                  textColor={theme.text}
+                  outline={outline}
+                  secondary={secondary}
+                  primary={primary}
+                  isLast={idx === events.length - 1 && !eventsHasMore && !eventsLoadingMore}
+                  openingTaskId={openingTaskId}
+                  onOpenTask={(taskId) => void handleOpenTask(taskId)}
+                />
               ))}
               {eventsHasMore || eventsLoadingMore ? (
                 <View style={styles.dayHistLoading}>

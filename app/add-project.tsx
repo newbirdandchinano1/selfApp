@@ -97,7 +97,7 @@ type ProjectScheduleMeta = Pick<
   | 'endTime'
 >;
 
-const TITLE_MAX_LENGTH = 30;
+const TITLE_MAX_LENGTH = 80;
 
 function formatDate(value: string): string {
   const v = value.trim();

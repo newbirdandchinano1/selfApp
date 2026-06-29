@@ -27,7 +27,8 @@ import { formatWriteError } from '@/lib/format-write-error';
 import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getProjectById } from '@/lib/repositories/projects/project';
-import { createTask, getTaskById, updateTask } from '@/lib/repositories/tasks/task';
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
+import { createTask, deleteTask, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
     applyScheduleMetaToLabels,
@@ -136,7 +137,7 @@ type TaskScheduleMeta = Pick<
   | 'startTime'
   | 'endTime'
 >;
-const MAX_PROJECT_TASK_TITLE_LENGTH = 30;
+const MAX_PROJECT_TASK_TITLE_LENGTH = 80;
 const MAX_STANDALONE_TODO_TITLE_LENGTH = 50;
 const STANDALONE_SCHEDULE_SOURCE = 'add-standalone-todo';
 
@@ -373,7 +374,7 @@ export default function AddTaskScreen() {
         if (isEditStandalone && editTaskId) {
           setLoadingEdit(true);
           try {
-            const task = await getTaskById(editTaskId);
+            const task = await ensureLocalRowForWrite<TaskRow>('tasks', editTaskId);
             if (!task || !isStandaloneTodoTask(task)) {
               Alert.alert('待办不存在', '未找到对应待办，可能已被删除。');
               router.back();
@@ -646,6 +647,37 @@ export default function AddTaskScreen() {
   const screenTitle = isEditStandalone ? '编辑待办' : isStandalone ? '新建待办' : '新建任务';
   const formBusy = isSubmitting || loadingEdit;
 
+  const removeStandaloneTodo = React.useCallback(() => {
+    if (!editTaskId || formBusy) return;
+    const titleLabel = title.trim() || '该待办';
+    Alert.alert('删除待办', `确定删除「${titleLabel}」吗？（若有子任务会一并删除）`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setIsSubmitting(true);
+            await deleteTask(editTaskId);
+            try {
+              await markPendingTablesDirty(['tasks']);
+              await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+            } catch (syncErr) {
+              console.warn('待办删除后同步到服务器失败', syncErr);
+            }
+            notifyAncestorsDataChanged();
+            router.back();
+          } catch (error) {
+            console.warn('删除待办失败', error);
+            Alert.alert('删除失败', formatWriteError(error, '待办删除失败，请稍后重试。'));
+          } finally {
+            setIsSubmitting(false);
+          }
+        },
+      },
+    ]);
+  }, [editTaskId, formBusy, notifyAncestorsDataChanged, router, title]);
+
   return (
     <SafeAreaView style={[composerStyles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
       <ComposerTopBar
@@ -829,6 +861,27 @@ export default function AddTaskScreen() {
               onChangeText={setNotes}
               placeholder="背景信息、协作人、链接…（可选）"
             />
+
+            {isEditStandalone ? (
+              <View style={[styles.pageFooter, { borderTopColor: colors.outline }]}>
+                <Pressable
+                  onPress={removeStandaloneTodo}
+                  disabled={formBusy}
+                  accessibilityRole="button"
+                  accessibilityLabel="删除待办"
+                  style={({ pressed }) => [
+                    styles.deleteBtn,
+                    {
+                      backgroundColor: pressed ? '#991b1b' : '#ba1a1a',
+                      opacity: formBusy ? 0.7 : 1,
+                    },
+                    pressed && { transform: [{ scale: 0.98 }] },
+                  ]}>
+                  <MaterialIcons name="delete-outline" size={22} color="#fff" />
+                  <Text style={styles.deleteText}>删除待办</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </ComposerMain>
           )}
         </ScrollView>
@@ -940,6 +993,26 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginTop: -Spacing.sm,
   },
+  pageFooter: {
+    marginTop: Spacing['4xl'],
+    paddingTop: Spacing['4xl'],
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  deleteBtn: {
+    width: '100%',
+    paddingVertical: Spacing.xl,
+    borderRadius: Radius.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: Spacing.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.14,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  deleteText: { color: '#fff', fontSize: 18, fontWeight: '900', letterSpacing: -0.2 },
   longTermRow: {
     flexDirection: 'row',
     alignItems: 'center',

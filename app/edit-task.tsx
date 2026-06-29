@@ -341,7 +341,7 @@ function formSnapshotsEqual(a: EditTaskFormSnapshot, b: EditTaskFormSnapshot): b
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-const TITLE_MAX_LENGTH = 30;
+const TITLE_MAX_LENGTH = 80;
 
 const PAGE_API_KEY = 'edit-task';
 

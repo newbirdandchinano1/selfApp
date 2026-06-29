@@ -1,9 +1,12 @@
-import { AppButton, AppCard, ScreenHeader } from '@/components/ui';
+import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
-import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
+import {
+  FINANCE_ACCOUNT_ICON_OPTIONS,
+  type FinanceAccountIconOption,
+} from '@/lib/constants/finance-account-icons';
 import {
   applyFinanceAccountBalanceCorrection,
   createFinanceAccount,
@@ -53,14 +56,23 @@ const BASE_TYPE_OPTIONS: {
   { key: 'liability', label: '负债', icon: 'credit-card' },
 ];
 
-function SectionLabel({ children }: { children: string }) {
-  const { colors } = useAppTheme();
-  return (
-    <Text style={[Typography.kicker, styles.sectionLabel, { color: colors.textSecondary }]}>{children}</Text>
-  );
+function resolveAccountTypeLabel(accountType: AccountType, customTypeName: string): string {
+  if (accountType === 'custom') return customTypeName.trim() || '自定义类型';
+  return BASE_TYPE_OPTIONS.find((t) => t.key === accountType)?.label ?? '银行账户';
+}
+
+function resolveAccountTypeIcon(
+  accountType: AccountType,
+  iconKey: string,
+): keyof typeof MaterialIcons.glyphMap {
+  if (accountType === 'custom') {
+    return FINANCE_ACCOUNT_ICON_OPTIONS.find((item) => item.key === iconKey)?.icon ?? 'tune';
+  }
+  return BASE_TYPE_OPTIONS.find((t) => t.key === accountType)?.icon ?? 'account-balance';
 }
 
 const PAGE_API_KEY = 'add-account';
+const ICON_ROW_COUNT = 5;
 
 export default function AddAccountScreen() {
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
@@ -71,6 +83,16 @@ export default function AddAccountScreen() {
 
   const insets = useSafeAreaInsets();
   const { colors, isDark, shadows } = useAppTheme();
+
+  const iconGridGap = Spacing.sm;
+  const [iconGridWidth, setIconGridWidth] = React.useState(0);
+  const iconCellLayout = React.useMemo(() => {
+    if (iconGridWidth <= 0) return { base: 0, lastColExtra: 0 };
+    const gaps = iconGridGap * (ICON_ROW_COUNT - 1);
+    const base = Math.floor((iconGridWidth - gaps) / ICON_ROW_COUNT);
+    const remainder = iconGridWidth - gaps - base * ICON_ROW_COUNT;
+    return { base, lastColExtra: remainder };
+  }, [iconGridWidth]);
 
   const editExtraBaselineRef = React.useRef<Record<string, unknown>>({});
   const editLedgerMetaRef = React.useRef<{ sign_rule: number; account_type: string }>({
@@ -91,6 +113,7 @@ export default function AddAccountScreen() {
     Array<{ name: string; isLiability: boolean; iconKey: string }>
   >([]);
   const [editSheetReady, setEditSheetReady] = React.useState(!isEditMode);
+  const [iconPickerExpanded, setIconPickerExpanded] = React.useState(false);
 
   const canSave =
     accountName.trim().length > 0 &&
@@ -98,6 +121,24 @@ export default function AddAccountScreen() {
     !saving &&
     (!isEditMode || editSheetReady);
   const isSelectedLiability = accountType === 'liability' || (accountType === 'custom' && customIsLiability);
+  const collapsedIconOptions = React.useMemo(() => {
+    const all = FINANCE_ACCOUNT_ICON_OPTIONS;
+    const selectedIndex = all.findIndex((item) => item.key === iconKey);
+    if (selectedIndex < 0 || selectedIndex < ICON_ROW_COUNT) {
+      return all.slice(0, ICON_ROW_COUNT);
+    }
+    return [...all.slice(0, ICON_ROW_COUNT - 1), all[selectedIndex]!];
+  }, [iconKey]);
+  const iconOptionsToShow = iconPickerExpanded ? FINANCE_ACCOUNT_ICON_OPTIONS : collapsedIconOptions;
+  const canExpandIcons = FINANCE_ACCOUNT_ICON_OPTIONS.length > ICON_ROW_COUNT;
+  const accountTypeLabel = React.useMemo(
+    () => resolveAccountTypeLabel(accountType, customTypeName),
+    [accountType, customTypeName],
+  );
+  const accountTypeIcon = React.useMemo(
+    () => resolveAccountTypeIcon(accountType, iconKey),
+    [accountType, iconKey],
+  );
 
   const reloadCustomTypes = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
@@ -343,6 +384,43 @@ export default function AddAccountScreen() {
     });
   }, []);
 
+  const renderIconOption = (it: FinanceAccountIconOption, index: number) => {
+    const active = it.key === iconKey;
+    const col = index % ICON_ROW_COUNT;
+    const row = Math.floor(index / ICON_ROW_COUNT);
+    const totalRows = Math.ceil(iconOptionsToShow.length / ICON_ROW_COUNT);
+    const cellWidth =
+      iconCellLayout.base + (col === ICON_ROW_COUNT - 1 ? iconCellLayout.lastColExtra : 0);
+    const cellHeight = iconCellLayout.base;
+
+    return (
+      <Pressable
+        key={it.key}
+        onPress={() => setIconKey(it.key)}
+        style={({ pressed }) => [
+          {
+            width: cellWidth,
+            height: cellHeight,
+            marginRight: col === ICON_ROW_COUNT - 1 ? 0 : iconGridGap,
+            marginBottom: row === totalRows - 1 ? 0 : iconGridGap,
+          },
+          pressed && styles.pressed,
+        ]}>
+        <View
+          style={[
+            styles.iconGridCellInner,
+            {
+              backgroundColor: active ? colors.primaryMuted : colors.surface,
+              borderColor: active ? colors.primary : colors.outline,
+            },
+            active && shadows.card,
+          ]}>
+          <MaterialIcons name={it.icon} size={20} color={active ? colors.primary : colors.textSecondary} />
+        </View>
+      </Pressable>
+    );
+  };
+
   const renderTypeCard = (
     key: string,
     active: boolean,
@@ -388,196 +466,206 @@ export default function AddAccountScreen() {
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag">
           <View style={styles.content}>
-            <View style={[styles.section, isEditMode && { opacity: 0.48 }]} pointerEvents={isEditMode ? 'none' : 'auto'}>
-              <SectionLabel>选择账户类型</SectionLabel>
-              {isEditMode ? (
-                <Text style={[Typography.caption, styles.balanceEditFootnote, { color: colors.textSecondary }]}>
-                  创建后不可修改类型；可改名称、卡号、图标与备注
-                </Text>
-              ) : null}
-              <View style={styles.typeGrid}>
-                {BASE_TYPE_OPTIONS.map((t) =>
-                  renderTypeCard(
-                    t.key,
-                    t.key === accountType,
-                    () => setAccountType(t.key),
-                    undefined,
-                    t.icon,
-                    t.label,
-                  ),
-                )}
-                {customTypeOptions.map((t) => {
-                  const icon = FINANCE_ACCOUNT_ICON_OPTIONS.find((item) => item.key === t.iconKey)?.icon ?? 'tune';
-                  const active = accountType === 'custom' && customTypeName === t.name;
-                  return renderTypeCard(
-                    `custom-type-${t.name}`,
-                    active,
-                    () => {
-                      setAccountType('custom');
-                      setCustomTypeName(t.name);
-                      setCustomIsLiability(t.isLiability);
-                      setIconKey(t.iconKey);
-                    },
-                    () => {
-                      void (async () => {
-                        try {
-                          const hasRelatedAccounts = await hasAccountsForCustomType(t.name);
-                          if (hasRelatedAccounts) {
-                            Alert.alert('无法删除', `“${t.name}”下已有账户，请先删除或转移账户后再试。`);
-                            return;
-                          }
-
-                          Alert.alert('删除自定义类型', `确认删除“${t.name}”吗？`, [
-                            { text: '取消', style: 'cancel' },
-                            {
-                              text: '删除',
-                              style: 'destructive',
-                              onPress: async () => {
-                                try {
-                                  await deleteFinanceAccountTypeByName(t.name);
-                                  removeCustomAccountTypeOption(t.name);
-                                  await reloadCustomTypes();
-                                  if (accountType === 'custom' && customTypeName === t.name) {
-                                    setAccountType('bank');
-                                    setCustomTypeName('');
-                                    setCustomIsLiability(false);
-                                    setIconKey('savings');
-                                  }
-                                } catch (e) {
-                                  console.warn('删除自定义类型失败:', e);
-                                  Alert.alert('删除失败', '请稍后重试。');
-                                }
-                              },
-                            },
-                          ]);
-                        } catch (e) {
-                          console.warn('校验自定义类型是否可删除失败:', e);
-                          Alert.alert('操作失败', '请稍后重试。');
-                        }
-                      })();
-                    },
-                    icon,
-                    t.name,
-                  );
-                })}
-                {renderTypeCard(
-                  'custom-add',
-                  accountType === 'custom' && !customTypeName,
-                  () => {
-                    setAccountType('custom');
-                    setCustomAccountTypeDraft({
-                      name: customTypeName,
-                      isLiability: customIsLiability,
-                      iconKey,
-                    });
-                    router.push('/add-account-type');
-                  },
-                  undefined,
-                  'add',
-                  '自定义',
-                )}
-              </View>
-            </View>
-
-            <View style={styles.section}>
-              <View style={styles.form}>
-                <View style={styles.field}>
-                  <SectionLabel>账户名称</SectionLabel>
-                  <TextInput
-                    value={accountName}
-                    onChangeText={setAccountName}
-                    placeholder="例如：招商银行储蓄卡"
-                    placeholderTextColor={colors.textMuted}
-                    style={[styles.textInput, { color: colors.text, borderBottomColor: colors.outline }]}
-                  />
-                </View>
-
-                <View style={styles.field}>
-                  <SectionLabel>卡号 / 尾号 (选填)</SectionLabel>
-                  <TextInput
-                    value={accountNo}
-                    onChangeText={setAccountNo}
-                    placeholder="例如：6222 **** 1234"
-                    placeholderTextColor={colors.textMuted}
-                    style={[styles.textInput, { color: colors.text, borderBottomColor: colors.outline }]}
-                  />
-                </View>
-
-                <View style={styles.field}>
-                  <SectionLabel>{isSelectedLiability ? '当前负债' : '当前余额'}</SectionLabel>
-                  {isEditMode ? (
-                    <Text style={[Typography.caption, styles.balanceEditFootnote, { color: colors.textSecondary }]}>
-                      与流水汇总一致；修改数字并保存后，会记一笔「余额校正」流水。
-                    </Text>
-                  ) : null}
-                  <View style={[styles.balanceRow, { borderBottomColor: colors.outline }]}>
-                    <Text style={[Typography.h2, styles.currency, { color: colors.primary }]}>¥</Text>
-                    <TextInput
-                      value={balance}
-                      onChangeText={handleBalanceChange}
-                      placeholder="0.00"
-                      placeholderTextColor={colors.textMuted}
-                      keyboardType="decimal-pad"
-                      editable={!isEditMode || editSheetReady}
-                      style={[styles.balanceInput, Typography.display, { color: colors.text }]}
-                    />
+            {isEditMode ? (
+              <AppCard padded style={[styles.section, shadows.card]}>
+                {!editSheetReady ? (
+                  <View style={styles.editHeroLoading}>
+                    <Text style={[Typography.body, { color: colors.textSecondary }]}>加载中…</Text>
                   </View>
-                </View>
-
-                <View style={styles.field}>
-                  <SectionLabel>备注 (选填)</SectionLabel>
-                  <TextInput
-                    value={notes}
-                    onChangeText={setNotes}
-                    placeholder="添加备注信息..."
-                    placeholderTextColor={colors.textMuted}
-                    multiline
-                    style={[
-                      styles.notesInput,
-                      {
-                        backgroundColor: isDark ? colors.surfaceMuted : colors.input,
-                        color: colors.text,
-                        borderColor: colors.outline,
+                ) : (
+                  <View style={styles.editHeroMeta}>
+                    <View
+                      style={[
+                        styles.typeBadge,
+                        {
+                          backgroundColor: isDark ? colors.surfaceMuted : colors.input,
+                          borderColor: colors.outline,
+                        },
+                      ]}>
+                      <MaterialIcons name={accountTypeIcon} size={14} color={colors.textSecondary} />
+                      <Text style={[Typography.caption, styles.typeBadgeText, { color: colors.text }]}>
+                        {accountTypeLabel}
+                      </Text>
+                    </View>
+                    <Text style={[Typography.caption, styles.editHeroHint, { color: colors.textSecondary }]}>
+                      账户类型创建后不可修改
+                    </Text>
+                  </View>
+                )}
+              </AppCard>
+            ) : (
+              <AppCard padded style={styles.section}>
+                <Text style={[Typography.kicker, styles.cardKicker, { color: colors.textSecondary }]}>选择账户类型</Text>
+                <View style={styles.typeGrid}>
+                  {BASE_TYPE_OPTIONS.map((t) =>
+                    renderTypeCard(
+                      t.key,
+                      t.key === accountType,
+                      () => setAccountType(t.key),
+                      undefined,
+                      t.icon,
+                      t.label,
+                    ),
+                  )}
+                  {customTypeOptions.map((t) => {
+                    const icon = FINANCE_ACCOUNT_ICON_OPTIONS.find((item) => item.key === t.iconKey)?.icon ?? 'tune';
+                    const active = accountType === 'custom' && customTypeName === t.name;
+                    return renderTypeCard(
+                      `custom-type-${t.name}`,
+                      active,
+                      () => {
+                        setAccountType('custom');
+                        setCustomTypeName(t.name);
+                        setCustomIsLiability(t.isLiability);
+                        setIconKey(t.iconKey);
                       },
-                    ]}
-                  />
-                </View>
-              </View>
-            </View>
+                      () => {
+                        void (async () => {
+                          try {
+                            const hasRelatedAccounts = await hasAccountsForCustomType(t.name);
+                            if (hasRelatedAccounts) {
+                              Alert.alert('无法删除', `“${t.name}”下已有账户，请先删除或转移账户后再试。`);
+                              return;
+                            }
 
-            <View style={styles.section}>
-              <SectionLabel>个性化</SectionLabel>
-              <AppCard padded style={{ borderColor: colors.outline }}>
-                <Text style={[Typography.caption, styles.customLabel, { color: colors.textSecondary }]}>账户图标</Text>
-                <View style={styles.iconGrid}>
-                  {FINANCE_ACCOUNT_ICON_OPTIONS.map((it) => {
-                    const active = it.key === iconKey;
-                    return (
-                      <Pressable
-                        key={it.key}
-                        onPress={() => setIconKey(it.key)}
-                        style={({ pressed }) => [styles.iconCell, pressed && styles.pressed]}>
-                        <View
-                          style={[
-                            styles.iconCellInner,
-                            {
-                              backgroundColor: active ? colors.primaryMuted : colors.input,
-                              borderColor: active ? colors.primary : colors.outline,
-                            },
-                            active && shadows.card,
-                          ]}>
-                          <MaterialIcons
-                            name={it.icon}
-                            size={18}
-                            color={active ? colors.primary : colors.textSecondary}
-                          />
-                        </View>
-                      </Pressable>
+                            Alert.alert('删除自定义类型', `确认删除“${t.name}”吗？`, [
+                              { text: '取消', style: 'cancel' },
+                              {
+                                text: '删除',
+                                style: 'destructive',
+                                onPress: async () => {
+                                  try {
+                                    await deleteFinanceAccountTypeByName(t.name);
+                                    removeCustomAccountTypeOption(t.name);
+                                    await reloadCustomTypes();
+                                    if (accountType === 'custom' && customTypeName === t.name) {
+                                      setAccountType('bank');
+                                      setCustomTypeName('');
+                                      setCustomIsLiability(false);
+                                      setIconKey('savings');
+                                    }
+                                  } catch (e) {
+                                    console.warn('删除自定义类型失败:', e);
+                                    Alert.alert('删除失败', '请稍后重试。');
+                                  }
+                                },
+                              },
+                            ]);
+                          } catch (e) {
+                            console.warn('校验自定义类型是否可删除失败:', e);
+                            Alert.alert('操作失败', '请稍后重试。');
+                          }
+                        })();
+                      },
+                      icon,
+                      t.name,
                     );
                   })}
+                  {renderTypeCard(
+                    'custom-add',
+                    accountType === 'custom' && !customTypeName,
+                    () => {
+                      setAccountType('custom');
+                      setCustomAccountTypeDraft({
+                        name: customTypeName,
+                        isLiability: customIsLiability,
+                        iconKey,
+                      });
+                      router.push('/add-account-type');
+                    },
+                    undefined,
+                    'add',
+                    '自定义',
+                  )}
                 </View>
               </AppCard>
-            </View>
+            )}
+
+            <AppCard padded style={styles.section}>
+              <Text style={[Typography.kicker, styles.cardKicker, { color: colors.textSecondary }]}>账户图标</Text>
+              <View
+                style={styles.iconGrid}
+                onLayout={(event) => {
+                  const nextWidth = Math.floor(event.nativeEvent.layout.width);
+                  setIconGridWidth((prev) => (prev === nextWidth ? prev : nextWidth));
+                }}>
+                {iconOptionsToShow.map((it, index) => renderIconOption(it, index))}
+              </View>
+              {canExpandIcons ? (
+                <Pressable
+                  onPress={() => setIconPickerExpanded((expanded) => !expanded)}
+                  accessibilityRole="button"
+                  accessibilityLabel={iconPickerExpanded ? '收起图标列表' : '展开查看更多图标'}
+                  style={({ pressed }) => [styles.iconExpandToggle, pressed && styles.pressed]}>
+                  <Text style={[Typography.caption, { color: colors.primary, fontWeight: '700' }]}>
+                    {iconPickerExpanded ? '收起' : `查看更多（${FINANCE_ACCOUNT_ICON_OPTIONS.length - ICON_ROW_COUNT}+）`}
+                  </Text>
+                  <MaterialIcons
+                    name={iconPickerExpanded ? 'expand-less' : 'expand-more'}
+                    size={18}
+                    color={colors.primary}
+                  />
+                </Pressable>
+              ) : null}
+
+              <View style={[styles.sectionDivider, { backgroundColor: colors.outline }]} />
+
+              <Text style={[Typography.kicker, styles.cardKicker, { color: colors.textSecondary }]}>基本信息</Text>
+              <AppInput
+                label="账户名称"
+                value={accountName}
+                onChangeText={setAccountName}
+                placeholder="例如：招商银行储蓄卡"
+              />
+              <AppInput
+                label="卡号 / 尾号"
+                hint="选填"
+                value={accountNo}
+                onChangeText={setAccountNo}
+                placeholder="例如：6222 **** 1234"
+              />
+
+              <View style={styles.amountRow}>
+                <Text style={[Typography.bodyStrong, styles.fieldLabel, { color: colors.text }]}>
+                  {isSelectedLiability ? '当前负债' : '当前余额'}
+                </Text>
+                {isEditMode ? (
+                  <Text style={[Typography.caption, styles.balanceHint, { color: colors.textSecondary }]}>
+                    与流水汇总一致；修改并保存后会记一笔「余额校正」流水
+                  </Text>
+                ) : null}
+                <View
+                  style={[
+                    styles.amountWrap,
+                    {
+                      borderColor: colors.outline,
+                      backgroundColor: colors.input,
+                    },
+                  ]}>
+                  <Text style={[Typography.h2, styles.currency, { color: colors.primary }]}>¥</Text>
+                  <TextInput
+                    value={balance}
+                    onChangeText={handleBalanceChange}
+                    placeholder="0.00"
+                    placeholderTextColor={colors.textMuted}
+                    keyboardType="decimal-pad"
+                    editable={!isEditMode || editSheetReady}
+                    style={[styles.amountInput, Typography.title, { color: colors.text }]}
+                  />
+                </View>
+              </View>
+
+              <AppInput
+                label="备注"
+                hint="选填"
+                value={notes}
+                onChangeText={setNotes}
+                placeholder="添加备注信息..."
+                multiline
+                inputWrapStyle={styles.notesWrap}
+                inputStyle={styles.notesInput}
+              />
+            </AppCard>
           </View>
         </ScrollView>
 
@@ -586,7 +674,7 @@ export default function AddAccountScreen() {
             styles.footer,
             {
               paddingBottom: Spacing['3xl'] + Math.max(insets.bottom, 0),
-              backgroundColor: colors.headerScrim,
+              backgroundColor: colors.background,
               borderTopColor: colors.outline,
             },
           ]}>
@@ -614,101 +702,124 @@ const styles = StyleSheet.create({
     maxWidth: Layout.contentMaxWidth,
     alignSelf: 'center',
     width: '100%',
-    paddingHorizontal: Spacing['5xl'],
-    paddingTop: Spacing['3xl'],
-    gap: Spacing['6xl'],
+    paddingHorizontal: Layout.pagePaddingX,
+    paddingTop: Spacing.md,
+    gap: Spacing.md,
   },
-  section: { gap: Spacing.xl },
-  sectionLabel: { opacity: 0.85 },
+  section: { gap: Spacing.lg },
+  cardKicker: { marginBottom: Spacing.xs },
+  editHeroLoading: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing['3xl'],
+  },
+  editHeroMeta: {
+    gap: Spacing.md,
+  },
+  typeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  typeBadgeText: {
+    fontWeight: '700',
+  },
+  editHeroHint: {
+    lineHeight: 18,
+  },
   typeGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: Spacing.xl,
+    gap: Spacing.lg,
   },
   typeCard: {
     width: '31%',
     minWidth: 96,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: Spacing.lg,
+    gap: Spacing.md,
     paddingVertical: Spacing['2xl'],
     borderRadius: Radius.xl,
     borderWidth: StyleSheet.hairlineWidth,
   },
   typeIconWrap: {
-    width: 48,
-    height: 48,
+    width: 44,
+    height: 44,
     borderRadius: Radius.icon,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  typeLabel: { fontSize: 13, textAlign: 'center' },
-  form: { gap: Spacing['3xl'] },
-  field: { gap: Spacing.md },
-  balanceEditFootnote: {
-    lineHeight: 16,
-    marginBottom: Spacing.sm,
-    marginTop: -Spacing.xs,
-  },
-  textInput: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: Spacing.lg,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  balanceRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: Spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: Spacing.sm,
-  },
-  currency: {
-    fontSize: 24,
-    fontWeight: '900',
+  typeLabel: { fontSize: 12, textAlign: 'center' },
+  fieldLabel: { marginBottom: Spacing.xs },
+  amountRow: { gap: Spacing.sm },
+  balanceHint: {
+    lineHeight: 17,
     marginBottom: Spacing.xs,
   },
-  balanceInput: {
+  amountWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.xl,
+    minHeight: 52,
+    gap: Spacing.sm,
+  },
+  currency: {
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  amountInput: {
     flex: 1,
     padding: 0,
     includeFontPadding: false,
   },
+  notesWrap: {
+    minHeight: 96,
+    alignItems: 'flex-start',
+    paddingVertical: Spacing.lg,
+  },
   notesInput: {
-    borderRadius: Radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing['2xl'],
-    minHeight: 90,
+    minHeight: 72,
     fontSize: 14,
     fontWeight: '500',
     lineHeight: 20,
     textAlignVertical: 'top',
   },
-  customLabel: {
-    marginBottom: Spacing.lg,
+  sectionDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginVertical: Spacing.xs,
   },
   iconGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    marginHorizontal: -Spacing.sm,
-  },
-  iconCell: {
-    width: '20%',
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.sm,
-  },
-  iconCellInner: {
     width: '100%',
-    aspectRatio: 1,
-    minWidth: 44,
-    borderRadius: Radius.md,
+  },
+  iconGridCellInner: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    borderRadius: Radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  iconExpandToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    paddingVertical: Spacing.sm,
+  },
   footer: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing['5xl'],
-    paddingTop: Spacing['3xl'],
+    paddingHorizontal: Layout.pagePaddingX,
+    paddingTop: Spacing.lg,
     maxWidth: Layout.contentMaxWidth,
     alignSelf: 'center',
     width: '100%',

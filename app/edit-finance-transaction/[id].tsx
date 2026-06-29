@@ -444,6 +444,7 @@ export default function EditFinanceTransactionScreen() {
               selectedKey={categoryKey}
               onSelectKey={setCategoryKey}
               transactionType={tab === 'income' ? 'income' : 'expense'}
+              singleRowCollapsed
               subtle={subtle}
               primary={primary}
               text={text}
