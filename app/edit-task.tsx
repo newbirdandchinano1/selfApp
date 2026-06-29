@@ -363,6 +363,7 @@ export default function EditTaskScreen() {
   const scheduleSource =
     normalizeRouteParam(params.source as string | string[] | undefined) || `edit-task-${taskId || 'unknown'}`;
   const addSubtaskSource = `${scheduleSource}-add-subtask`;
+  const pickParentTaskSource = `${scheduleSource}-pick-parent`;
 
   const [title, setTitle] = React.useState('');
   const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
@@ -378,6 +379,7 @@ export default function EditTaskScreen() {
   const [taskSnapshot, setTaskSnapshot] = React.useState<TaskRow | null>(null);
   const [loadedFormSnapshot, setLoadedFormSnapshot] = React.useState<EditTaskFormSnapshot | null>(null);
   const [subtasks, setSubtasks] = React.useState<SubtaskDraft[]>([]);
+  const [parentTask, setParentTask] = React.useState<SubtaskDraft | null>(null);
   const [parentDateLimit, setParentDateLimit] = React.useState<DateLimitYmd>({});
   const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
   const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
@@ -615,6 +617,55 @@ export default function EditTaskScreen() {
     }
   }, [addSubtaskSource, reload, taskId]);
 
+  const readPickParentTaskResult = React.useCallback(async () => {
+    const payload = globalThis.__pickParentTaskResult as
+      | { source: string; parentTaskId: string | null }
+      | undefined;
+    if (!payload || payload.source !== pickParentTaskSource) return;
+
+    const childTask = taskSnapshotRef.current;
+    if (!childTask) {
+      Alert.alert('关联失败', '当前任务尚未加载完成，请稍后重试。');
+      return;
+    }
+
+    const nextParentId = payload.parentTaskId;
+    if ((childTask.parent_task_id ?? null) === nextParentId) {
+      globalThis.__pickParentTaskResult = undefined;
+      return;
+    }
+
+    globalThis.__pickParentTaskResult = undefined;
+
+    try {
+      await updateTask(taskId, { parent_task_id: nextParentId });
+      await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+
+      if (nextParentId) {
+        const parent = await getTaskById(nextParentId);
+        setParentTask(parent ? mapTaskRowToSubtask(parent) : null);
+        setParentDateLimit(extractScheduleLimitFromExtra(parent?.extra_data ?? null, parent?.due_date ?? null));
+
+        const parentSchedule = (parseTaskExtraData(parent?.extra_data ?? null).schedule ?? null) as TaskScheduleMeta | null;
+        const parentFrame = mergeDateLimit(scheduleMetaToDateLimit(parentSchedule), {
+          end: toYmd(parent?.due_date ?? undefined) ?? undefined,
+        });
+        const tightenFrame = mergeDateLimit(parentFrame, projectDateLimit);
+        await tightenDescendantTasksOf(nextParentId, tightenFrame);
+      } else {
+        setParentTask(null);
+        setParentDateLimit({});
+      }
+
+      setTaskSnapshot((prev) => (prev ? { ...prev, parent_task_id: nextParentId } : prev));
+      notifyAncestorPagesLocalReload(PAGE_API_KEY);
+      Alert.alert('已更新', nextParentId ? '父任务已关联。' : '已移除父任务。');
+    } catch (error) {
+      console.warn('关联父任务失败', error);
+      Alert.alert('关联失败', formatWriteError(error, '父任务关联失败，请稍后重试。'));
+    }
+  }, [pickParentTaskSource, projectDateLimit, taskId]);
+
   const loadTask = React.useCallback(async () => {
     if (!taskId) {
       setLoading(false);
@@ -686,10 +737,15 @@ export default function EditTaskScreen() {
 
       let parentLimit: DateLimitYmd = {};
       if (task.parent_task_id) {
-        const parentTask = await getTaskById(task.parent_task_id);
-        if (parentTask) {
-          parentLimit = extractScheduleLimitFromExtra(parentTask.extra_data, parentTask.due_date);
+        const parentRow = await getTaskById(task.parent_task_id);
+        if (parentRow) {
+          parentLimit = extractScheduleLimitFromExtra(parentRow.extra_data, parentRow.due_date);
+          setParentTask(mapTaskRowToSubtask(parentRow));
+        } else {
+          setParentTask(null);
         }
+      } else {
+        setParentTask(null);
       }
       let projectLimit: DateLimitYmd = {};
       if (task.project_id) {
@@ -723,10 +779,11 @@ export default function EditTaskScreen() {
     React.useCallback(() => {
       const consumedSchedule = readScheduleResult();
       void readAddSubtaskResult();
+      void readPickParentTaskResult();
       if (!consumedSchedule) {
         void reload();
       }
-    }, [readAddSubtaskResult, readScheduleResult, reload])
+    }, [readPickParentTaskResult, readAddSubtaskResult, readScheduleResult, reload])
   );
 
   const openEditSubtask = React.useCallback(
@@ -1074,6 +1131,103 @@ export default function EditTaskScreen() {
                 style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
                 <MaterialIcons name="edit-calendar" size={22} color={primary} />
               </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.subtaskHeader}>
+              <Text style={[styles.sectionLabel, { color: outline }]}>父任务</Text>
+              <Pressable
+                onPress={() =>
+                  router.push({
+                    pathname: '/pick-parent-task',
+                    params: {
+                      taskId,
+                      source: pickParentTaskSource,
+                      currentParentId: parentTask?.id ?? taskSnapshot?.parent_task_id ?? '',
+                    },
+                  })
+                }
+                disabled={loading}
+                style={({ pressed }) => [styles.linkBtn, (pressed || loading) && { opacity: 0.75 }]}>
+                <MaterialIcons name="add-circle" size={16} color={primary} />
+                <Text style={[styles.linkBtnText, { color: primary }]}>
+                  {parentTask ? '更换父任务' : '添加父任务'}
+                </Text>
+              </Pressable>
+            </View>
+            <View style={styles.subtaskList}>
+              {parentTask ? (
+                <Pressable
+                  onPress={() => openEditSubtask(parentTask.id)}
+                  style={({ pressed }) => [
+                    styles.subtaskRow,
+                    { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder, opacity: pressed ? 0.86 : 1 },
+                  ]}>
+                  <View style={[styles.subtaskIndicator, { backgroundColor: subtaskIndicatorBg }]}>
+                    <MaterialIcons name="account-tree" size={18} color={primary} />
+                  </View>
+                  <View style={styles.subtaskBody}>
+                    <Text style={[styles.subtaskText, { color: theme.text }]} numberOfLines={1}>
+                      {parentTask.title}
+                    </Text>
+                    {!!(
+                      parentTask.priority ||
+                      parentTask.priorityLabel ||
+                      parentTask.deadline ||
+                      parentTask.deadlineText ||
+                      parentTask.reminder ||
+                      parentTask.reminderText ||
+                      parentTask.repeat ||
+                      parentTask.repeatText ||
+                      parentTask.note
+                    ) && (
+                      <>
+                        <View style={styles.subtaskMetaRow}>
+                          {!!(parentTask.priority || parentTask.priorityLabel) &&
+                            (() => {
+                              const priorityText = parentTask.priority || parentTask.priorityLabel || '';
+                              const priorityColor = getPriorityColor(priorityText, isDark);
+                              return (
+                                <View
+                                  style={[
+                                    styles.metaTag,
+                                    { backgroundColor: priorityColor.bg, borderColor: priorityColor.border },
+                                  ]}>
+                                  <MaterialIcons name="flag" size={14} color={priorityColor.tint} />
+                                  <Text style={[styles.metaTagText, { color: priorityColor.tint }]}>{priorityText}</Text>
+                                </View>
+                              );
+                            })()}
+                          {!!(parentTask.deadline || parentTask.deadlineText) && (
+                            <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
+                              <MaterialIcons name="event" size={14} color={primary} />
+                              <Text style={[styles.metaTagText, { color: theme.text }]} numberOfLines={1}>
+                                {parentTask.deadline || parentTask.deadlineText}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                        {!!parentTask.note && (
+                          <Text style={[styles.subtaskNote, { color: outline }]} numberOfLines={2}>
+                            {parentTask.note}
+                          </Text>
+                        )}
+                      </>
+                    )}
+                  </View>
+                  <View style={[styles.subtaskAction, { backgroundColor: subtaskIndicatorBg }]}>
+                    <MaterialIcons name="chevron-right" size={18} color={outline} />
+                  </View>
+                </Pressable>
+              ) : (
+                <View style={[styles.emptySubtaskRow, { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder }]}>
+                  <View style={[styles.emptySubtaskIcon, { backgroundColor: subtaskIndicatorBg }]}>
+                    <MaterialIcons name="device-hub" size={18} color={outline} />
+                  </View>
+                  <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无父任务，点击右上角选择</Text>
+                </View>
+              )}
             </View>
           </View>
 

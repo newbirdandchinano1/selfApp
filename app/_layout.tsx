@@ -196,6 +196,7 @@ function RootLayoutInner() {
             />
             <Stack.Screen name="add-project" />
             <Stack.Screen name="add-subtask" />
+            <Stack.Screen name="pick-parent-task" />
             <Stack.Screen name="add-account" />
             <Stack.Screen name="add-account-type" />
             <Stack.Screen name="account-detail" />

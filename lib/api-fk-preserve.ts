@@ -162,6 +162,13 @@ export async function readReferencedParentIdsForReconcile(
       );
       return distinctNonEmptyIds(rows, 'dimension_id');
     }
+    case 'tasks': {
+      const rows = await db.getAllAsync<{ parent_task_id: string | null }>(
+        `SELECT DISTINCT parent_task_id FROM tasks
+         WHERE parent_task_id IS NOT NULL AND TRIM(parent_task_id) != ''`,
+      );
+      return distinctNonEmptyIds(rows, 'parent_task_id');
+    }
     default:
       return null;
   }

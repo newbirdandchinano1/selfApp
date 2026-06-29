@@ -93,14 +93,23 @@ function apiTreeNodeToTaskTreeNode(node: ApiTaskTreeNode): TaskTreeNode {
   return { ...(rest as TaskRow), children: childNodes };
 }
 
-function flattenTaskTree(nodes: TaskTreeNode[]): TaskRow[] {
+function flattenTaskTree(nodes: TaskTreeNode[], parentTaskId: string | null = null): TaskRow[] {
   const rows: TaskRow[] = [];
-  const walk = (node: TaskTreeNode) => {
-    const { children, ...row } = node;
-    rows.push(row as TaskRow);
-    for (const child of children) walk(child);
+  const walk = (node: TaskTreeNode, parentId: string | null) => {
+    const { children, ...rest } = node;
+    const explicitParent =
+      rest.parent_task_id != null && String(rest.parent_task_id).trim() !== ''
+        ? String(rest.parent_task_id).trim()
+        : null;
+    rows.push({
+      ...(rest as TaskRow),
+      parent_task_id: explicitParent ?? parentId,
+    });
+    for (const child of children) {
+      walk(child, String(node.id));
+    }
   };
-  for (const node of nodes) walk(node);
+  for (const node of nodes) walk(node, parentTaskId);
   return rows;
 }
 

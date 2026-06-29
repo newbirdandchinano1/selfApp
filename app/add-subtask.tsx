@@ -11,6 +11,7 @@ import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -261,7 +262,7 @@ export default function AddSubtaskScreen() {
     globalThis.__addSubtaskResult = {
       source: scheduleSource,
       task: {
-        id: `task-${Date.now()}`,
+        id: makeTimestampEntityId('tsk_', 8),
         title: trimmedTitle,
         done: false,
         priority: currentPriority.label,

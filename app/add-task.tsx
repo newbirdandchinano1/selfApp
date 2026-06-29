@@ -618,7 +618,7 @@ export default function AddTaskScreen() {
     setAddTaskResult({
       source: scheduleSource,
       task: {
-        id: `task-${Date.now()}`,
+        id: makeTimestampEntityId('tsk_', 8),
         title: trimmedTitle,
         done: false,
         priority: priorityLabel,

@@ -136,6 +136,21 @@ export async function countIncompleteDescendantTasks(rootTaskId: string): Promis
   ).length;
 }
 
+/** 可选为父任务的任务：同项目内、排除自身及其全部子孙（防环） */
+export async function getEligibleParentTaskCandidates(taskId: string): Promise<TaskRow[]> {
+  const current = await getTaskById(taskId);
+  if (!current) return [];
+
+  const all = await loadAllTasks();
+  const excluded = collectSubtreeIds(all, taskId);
+
+  const pool = current.project_id
+    ? collectTasksForProject(all, current.project_id.trim())
+    : all.filter(t => t.project_id || t.parent_task_id);
+
+  return sortTasksForProjectList(pool.filter(t => !excluded.has(String(t.id))));
+}
+
 export type ParentTaskCascadeChange = Pick<TaskRow, 'id' | 'status' | 'completed_at' | 'title' | 'extra_data'>;
 
 function areAllDirectChildrenTerminal(rows: TaskRow[], parentId: string): boolean {
@@ -376,6 +391,24 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
       resolved.extra_data ?? null,
     ]
   );
+
+  const projectId = resolved.project_id ? String(resolved.project_id).trim() : '';
+  const parentTaskId = resolved.parent_task_id ? String(resolved.parent_task_id).trim() : '';
+  if (parentTaskId && projectId) {
+    const parent = await readLocalRowForWrite<TaskRow>('tasks', parentTaskId);
+    const parentProjectId = parent?.project_id ? String(parent.project_id).trim() : '';
+    if (parent && !parentProjectId) {
+      await db.runAsync(
+        `UPDATE tasks
+            SET project_id = ?,
+                updated_at = ?,
+                sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+          WHERE id = ?`,
+        [projectId, nowLocal, parentTaskId],
+      );
+    }
+  }
+
   if (!opts?.deferSync) {
     const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
     await pushLocalChangesToApi({ awaitSync: true });
@@ -460,10 +493,15 @@ function normalizeTaskProjectId(projectId: string | null | undefined): string {
   return typeof projectId === 'string' ? projectId.trim() : '';
 }
 
-/** 含 project_id 直接归属 + 父链挂接的子任务（接口子行可能缺 project_id） */
+/** 含 project_id 直接归属 + 向下子树 + 向上祖先链（父任务可能缺 project_id 但仍被子女引用） */
 function collectTasksForProject(all: TaskRow[], projectId: string): TaskRow[] {
   const pid = projectId.trim();
   if (!pid) return [];
+
+  const byId = new Map<string, TaskRow>();
+  for (const t of all) {
+    byId.set(String(t.id), t);
+  }
 
   const included = new Set<string>();
   for (const t of all) {
@@ -483,6 +521,19 @@ function collectTasksForProject(all: TaskRow[], projectId: string): TaskRow[] {
         included.add(id);
         changed = true;
       }
+    }
+  }
+
+  for (const id of [...included]) {
+    let parentId = byId.get(id)?.parent_task_id
+      ? String(byId.get(id)!.parent_task_id).trim()
+      : '';
+    while (parentId) {
+      if (!included.has(parentId)) {
+        included.add(parentId);
+      }
+      const parent = byId.get(parentId);
+      parentId = parent?.parent_task_id ? String(parent.parent_task_id).trim() : '';
     }
   }
 
@@ -727,12 +778,13 @@ function buildTaskTree(rows: TaskRow[]) {
   const map = new Map<string, TaskTreeNode>();
   const roots: TaskTreeNode[] = [];
 
-  rows.forEach(row => map.set(row.id, { ...row, children: [] }));
+  rows.forEach(row => map.set(String(row.id), { ...row, children: [] }));
 
   rows.forEach(row => {
-    const node = map.get(row.id)!;
-    if (row.parent_task_id && map.has(row.parent_task_id)) {
-      map.get(row.parent_task_id)!.children.push(node);
+    const node = map.get(String(row.id))!;
+    const parentId = row.parent_task_id ? String(row.parent_task_id).trim() : '';
+    if (parentId && map.has(parentId)) {
+      map.get(parentId)!.children.push(node);
     } else {
       roots.push(node);
     }
