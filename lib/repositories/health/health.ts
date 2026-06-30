@@ -1,6 +1,7 @@
 import { File } from 'expo-file-system';
 
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
+import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { addDaysToYmd, compareDatetimeDesc, isYmdInRange, sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
@@ -13,11 +14,12 @@ import type {
 
 export async function createHealthRecord(input: CreateHealthRecordInput) {
   const db = await getDatabase();
+  const now = formatWallClockDatetimeLocal(new Date());
   await db.runAsync(
     `INSERT INTO health_records (
       id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, calories, target_calories, record_date, quick_add_key, intake_display_title, intake_ai_comment, source_image_uri,
       created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create')`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_create')`,
     [
       input.id,
       input.user_id,
@@ -34,6 +36,8 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
       input.intake_display_title ?? null,
       input.intake_ai_comment ?? null,
       input.source_image_uri ?? null,
+      now,
+      now,
     ]
   );
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
@@ -242,9 +246,10 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
     return;
   }
 
+  const now = formatWallClockDatetimeLocal(new Date());
   await db.runAsync(
     `UPDATE health_records
-     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, carbohydrate = ?, target_carbohydrate = ?, calories = ?, target_calories = ?, record_date = ?, quick_add_key = ?, intake_display_title = ?, intake_ai_comment = ?, source_image_uri = ?, updated_at = datetime('now'),
+     SET hydration = ?, target_hydration = ?, protein = ?, target_protein = ?, carbohydrate = ?, target_carbohydrate = ?, calories = ?, target_calories = ?, record_date = ?, quick_add_key = ?, intake_display_title = ?, intake_ai_comment = ?, source_image_uri = ?, updated_at = ?,
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
@@ -261,6 +266,7 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
       input.intake_display_title !== undefined ? input.intake_display_title : current.intake_display_title ?? null,
       input.intake_ai_comment !== undefined ? input.intake_ai_comment : current.intake_ai_comment ?? null,
       input.source_image_uri !== undefined ? input.source_image_uri : current.source_image_uri ?? null,
+      now,
       id,
     ]
   );
@@ -284,10 +290,10 @@ export async function deleteHealthRecord(id: string) {
   }
   await db.runAsync(
     `UPDATE health_records
-     SET updated_at = datetime('now'),
+     SET updated_at = ?,
          sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_delete' ELSE 'pending_delete' END
      WHERE id = ?`,
-    [id]
+    [formatWallClockDatetimeLocal(new Date()), id],
   );
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
   await pushLocalChangesToApi({ awaitSync: true });

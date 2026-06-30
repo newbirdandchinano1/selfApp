@@ -46,6 +46,13 @@ export function parseStoredDatetime(value: string): Date {
   return new Date(trimmed);
 }
 
+/** MySQL / ISO 墙上时钟 → 「HH:mm」（与接口返回的本地时刻一致，勿再按 UTC 偏移） */
+export function formatStoredDatetimeHm(value: string): string {
+  const d = parseStoredDatetime(value.trim());
+  if (Number.isNaN(d.getTime())) return '';
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
 /**
  * 审计类 _at 字段（completed_at / updated_at 等）：REST 侧按 UTC 写入 MySQL DATETIME。
  * 与 normalizeDateTimeStringForMysql 对称，用于判断「逻辑日完成」。

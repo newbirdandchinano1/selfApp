@@ -18,6 +18,8 @@ import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { shouldSkipPageFocusApiRefresh, clearPageLoadedInSession, resetPageApiSession } from '@/lib/page-api-session';
 
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
+import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 
@@ -197,37 +199,6 @@ async function copyIntakePhotoToDocuments(recordId: string, sourceUri: string | 
   }
 }
 
-/**
- * SQLite `datetime('now')` 等为 UTC 无时区字符串；`new Date(...)` 易被当作本地时刻解析而错位。
- * 无时区后缀时按 UTC 解析，再映射到北京时间展示/比较。
- */
-function parseHealthRecordUtcInstant(raw: string): Date {
-  const trimmed = raw.trim();
-  if (!trimmed) return new Date(NaN);
-  let iso = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T');
-  if (!/Z$/i.test(iso) && !/[+-]\d{2}:?\d{2}$/.test(iso)) {
-    iso = `${iso}Z`;
-  }
-  return new Date(iso);
-}
-
-/** SQLite datetime → 北京时间「HH:mm」 */
-function formatRecordTime(createdAt: string): string {
-  const d = parseHealthRecordUtcInstant(createdAt);
-  if (Number.isNaN(d.getTime())) return '';
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-    timeZone: 'Asia/Shanghai',
-    hourCycle: 'h23',
-  }).formatToParts(d);
-  const h = parts.find((p) => p.type === 'hour')?.value ?? '';
-  const m = parts.find((p) => p.type === 'minute')?.value ?? '';
-  if (!h || !m) return '';
-  return `${h.padStart(2, '0')}:${m.padStart(2, '0')}`;
-}
-
 function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'kcal'): string {
   const formatted = Number(value.toFixed(2)).toString();
   return `${formatted}${unit}`;
@@ -314,16 +285,15 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
   const lines: IntakeListLine[] = [];
   const quickAddByKey = createQuickAddItemMap(quickAddCatalog);
   const orderedRows = [...rows].sort((a, b) => {
-    const ta = parseHealthRecordUtcInstant(a.created_at).getTime();
-    const tb = parseHealthRecordUtcInstant(b.created_at).getTime();
-    if (tb !== ta) return tb - ta;
-    return parseHealthRecordUtcInstant(b.updated_at).getTime() - parseHealthRecordUtcInstant(a.updated_at).getTime();
+    const c = compareDatetimeDesc(a.created_at, b.created_at);
+    if (c !== 0) return c;
+    return compareDatetimeDesc(a.updated_at, b.updated_at);
   });
   const getMetricQuickAdd = (qa: QuickAddCardItem | undefined, metric: 'hydration' | 'protein' | 'carbohydrate' | 'calories') =>
     qa && getQuickAddMetricTypes(qa).includes(metric) ? qa : undefined;
 
   for (const row of orderedRows) {
-    const timeLine = formatRecordTime(row.created_at);
+    const timeLine = formatStoredDatetimeHm(row.created_at);
     if (positiveNutrientKindsCount(row) >= 2) {
       lines.push({
         key: `${row.id}-combined`,

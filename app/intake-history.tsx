@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
 import {
   createQuickAddItemMap,
   getQuickAddMetricTypes,
@@ -111,10 +112,7 @@ function toDateFromYmd(raw: string | string[] | undefined) {
 }
 
 function formatRecordTime(createdAt: string): string {
-  const normalized = createdAt.includes('T') ? createdAt : `${createdAt.replace(' ', 'T')}`;
-  const d = new Date(normalized);
-  if (Number.isNaN(d.getTime())) return '';
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return formatStoredDatetimeHm(createdAt);
 }
 
 function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'kcal'): string {
