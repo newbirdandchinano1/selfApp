@@ -231,6 +231,7 @@ function RootLayoutInner() {
             <Stack.Screen name="weekly-review-form" />
             <Stack.Screen name="daily-review" />
             <Stack.Screen name="daily-review/[ymd]" />
+            <Stack.Screen name="daily-review/[ymd]/[dimensionId]" />
             <Stack.Screen name="review-settings" />
             <Stack.Screen name="review-calendar" />
             <Stack.Screen name="review-template-settings" />

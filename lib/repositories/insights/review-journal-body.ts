@@ -1,10 +1,16 @@
 import { LEGACY_WEEKLY_COLUMN_IDS } from './review-template-defaults';
+import { reviewContentToPlainPreview } from '@/lib/review-journal-format';
 import type { ReviewColumnTemplate, ReviewDimensionTemplate } from './review-template.types';
 import type { WeeklyReviewJournalRow } from './weekly-review-journal.types';
 
 export const REVIEW_BODY_VERSION = 2 as const;
 
 export type ReviewFieldValues = Record<string, string>;
+
+export type ReviewJournalMeta = {
+  weather?: string;
+  mood?: string;
+};
 
 export function emptyFieldValues(columnIds: string[]): ReviewFieldValues {
   const out: ReviewFieldValues = {};
@@ -24,8 +30,37 @@ export function collectColumnIds(template: ReviewDimensionTemplate[]): string[] 
   return ids;
 }
 
-export function serializeReviewBody(fields: ReviewFieldValues): string {
-  return JSON.stringify({ v: REVIEW_BODY_VERSION, fields });
+export function serializeReviewBody(fields: ReviewFieldValues, meta?: ReviewJournalMeta): string {
+  const payload: Record<string, unknown> = { v: REVIEW_BODY_VERSION, fields };
+  if (meta && (meta.weather || meta.mood)) {
+    payload.meta = meta;
+  }
+  return JSON.stringify(payload);
+}
+
+function parseReviewJournalMeta(raw: string | null | undefined): ReviewJournalMeta {
+  if (!raw || !String(raw).trim()) return {};
+  try {
+    const o = JSON.parse(String(raw).trim()) as Record<string, unknown>;
+    if (!o?.meta || typeof o.meta !== 'object') return {};
+    const m = o.meta as Record<string, unknown>;
+    const meta: ReviewJournalMeta = {};
+    if (m.weather != null) meta.weather = String(m.weather);
+    if (m.mood != null) meta.mood = String(m.mood);
+    return meta;
+  } catch {
+    return {};
+  }
+}
+
+export function parseDailyReviewJournal(
+  raw: string | null | undefined,
+  columnIds: string[],
+): { fields: ReviewFieldValues; meta: ReviewJournalMeta } {
+  return {
+    fields: parseDailyReviewBody(raw, columnIds),
+    meta: parseReviewJournalMeta(raw),
+  };
 }
 
 /** 解析日复盘 body；兼容 v1 固定键与纯文本 */
@@ -145,7 +180,7 @@ export function previewTextFromFields(
   columns: ReviewColumnTemplate[],
 ): string {
   const bits = columns
-    .map(c => fields[c.id]?.trim().replace(/\s+/g, ' ') ?? '')
+    .map(c => reviewContentToPlainPreview(fields[c.id] ?? ''))
     .filter(Boolean);
   return bits.join(' · ');
 }

@@ -39,10 +39,15 @@ export function formatRangeLabel(start: Date, end: Date): string {
 }
 
 export function getYesterdayYmd(todayYmd: string): string {
-  const [y, m, d] = todayYmd.split('-').map(Number);
-  const date = new Date(y, m - 1, d);
-  date.setDate(date.getDate() - 1);
-  return toYmdLocal(date);
+  return shiftYmd(todayYmd, -1);
+}
+
+export function shiftYmd(ymd: string, deltaDays: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+  if (!m) return ymd;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  d.setDate(d.getDate() + deltaDays);
+  return toYmdLocal(d);
 }
 
 /** 每日复盘：过去与自然日「今天」可填；未来日期不可填。 */
