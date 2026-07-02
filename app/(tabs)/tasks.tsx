@@ -1511,6 +1511,8 @@ export default function TasksScreen() {
   const [activeCategoryLabel, setActiveCategoryLabel] = React.useState('全部');
   const [activeCategoryId, setActiveCategoryId] = React.useState<string | null>(null);
   const [habitSections, setHabitSections] = React.useState<HabitSection[]>([]);
+  /** 防止小习惯图标/名称快速连点产生并发打卡。 */
+  const habitCheckInLockRef = React.useRef<Set<string>>(new Set());
   const [habitLookupById, setHabitLookupById] = React.useState<
     Map<string, { name: string; icon: string }>
   >(() => new Map());
@@ -3442,6 +3444,8 @@ export default function TasksScreen() {
 
   const handleHabitIncrement = React.useCallback(
     async (item: HabitGridItem) => {
+      if (habitCheckInLockRef.current.has(item.id)) return;
+      habitCheckInLockRef.current.add(item.id);
       markPageDirty();
       const optimistic = optimisticHabitCountDelta(item, 1);
       if (optimistic) {
@@ -3457,6 +3461,8 @@ export default function TasksScreen() {
       } catch (err) {
         console.warn('习惯打卡失败', err);
         restoreHabitGridItem(item);
+      } finally {
+        habitCheckInLockRef.current.delete(item.id);
       }
     },
     [markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
@@ -3464,6 +3470,8 @@ export default function TasksScreen() {
 
   const handleHabitUndoOnce = React.useCallback(
     async (item: HabitGridItem) => {
+      if (habitCheckInLockRef.current.has(item.id)) return;
+      habitCheckInLockRef.current.add(item.id);
       markPageDirty();
       const optimistic = optimisticHabitCountDelta(item, -1);
       if (optimistic) {
@@ -3479,6 +3487,8 @@ export default function TasksScreen() {
       } catch (err) {
         console.warn('撤销打卡失败', err);
         restoreHabitGridItem(item);
+      } finally {
+        habitCheckInLockRef.current.delete(item.id);
       }
     },
     [markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
@@ -4666,7 +4676,7 @@ export default function TasksScreen() {
                               <Pressable
                                 onPress={() => {
                                   if (!scheduleAllowsToday) return;
-                                  void handleHabitIncrement(item);
+                                  handleHabitIconPress(item);
                                 }}
                                 onLongPress={openHabitDetail}
                                 delayLongPress={260}
