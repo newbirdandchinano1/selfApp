@@ -156,56 +156,110 @@ export function parseHabitQuantifyMeta(extraData: string | null, kind?: HabitKin
   };
 }
 
+export type BreakHabitDayContext = {
+  todayCount: number;
+  dailyGoal?: number | null;
+  /** 当日是否有打卡记录（含 count=0 的「保持戒除」确认） */
+  hasDayRecord?: boolean;
+  /** 逻辑日 YMD；配合 logicalTodayYmd 区分今日待确认与历史未确认失败 */
+  ymd?: string;
+  logicalTodayYmd?: string;
+};
+
+function isBreakHabitCountGoalMet(count: number, dailyGoal: number | null | undefined): boolean {
+  const threshold = dailyGoal ?? 0;
+  if (threshold <= 0) return count === 0;
+  return count < threshold;
+}
+
+function isBreakHabitDayPending(ctx: BreakHabitDayContext): boolean {
+  if (ctx.hasDayRecord) return false;
+  const ymd = ctx.ymd?.trim();
+  const logicalTodayYmd = ctx.logicalTodayYmd?.trim();
+  if (!ymd || !logicalTodayYmd) return false;
+  return ymd === logicalTodayYmd;
+}
+
 /**
  * 当日是否达成目标。
  * 养成：次数 ≥ 每日目标（不限时 > 0 即达成）。
- * 戒除：次数低于每日目标阈值即达成（阈值为 0 时须为 0 次）。
+ * 戒除：须用户确认；无记录时今日为未确认、历史日为失败；有记录时次数低于阈值即达成。
  */
 export function isHabitDayGoalMet(params: {
   kind: HabitKind;
   todayCount: number;
   dailyGoal?: number | null;
+  hasDayRecord?: boolean;
+  ymd?: string;
+  logicalTodayYmd?: string;
 }): boolean {
   const { kind, todayCount } = params;
   const count = Math.max(0, Math.floor(todayCount));
   const dailyGoal = params.dailyGoal ?? (kind === 'break' ? 0 : null);
 
   if (kind === 'break') {
-    const threshold = dailyGoal ?? 0;
-    if (threshold <= 0) return count === 0;
-    return count < threshold;
+    if (!params.hasDayRecord) {
+      return false;
+    }
+    return isBreakHabitCountGoalMet(count, dailyGoal);
   }
 
   if (dailyGoal != null) return count >= dailyGoal;
   return count > 0;
 }
 
-/** 戒除习惯任务页三态：未破戒 / 破戒未超限 / 已破戒未达标 */
-export type BreakHabitDayUiState = 'clean' | 'slipping' | 'failed';
+/** 戒除习惯任务页四态：待确认 / 未破戒 / 破戒未超限 / 已破戒未达标 */
+export type BreakHabitDayUiState = 'pending' | 'clean' | 'slipping' | 'failed';
 
-/** 戒除习惯当日是否视为完成：默认完成，破戒（次数 > 0）则未完成 */
-export function isBreakHabitDayCompleted(todayCount: number): boolean {
-  return Math.max(0, Math.floor(todayCount)) === 0;
+/** 戒除习惯当日 UI / 完成态（须用户确认；超日界未确认视为失败） */
+export function resolveBreakHabitDayUiState(ctx: BreakHabitDayContext): BreakHabitDayUiState {
+  const count = Math.max(0, Math.floor(ctx.todayCount));
+  const dailyGoal = ctx.dailyGoal ?? 0;
+  if (isBreakHabitDayPending(ctx)) return 'pending';
+  if (!ctx.hasDayRecord) return 'failed';
+  if (!isBreakHabitCountGoalMet(count, dailyGoal)) return 'failed';
+  if (count > 0) return 'slipping';
+  return 'clean';
 }
 
-/** 任务页展示 / 习惯绑定：养成/完成任务看达标，戒除看未破戒 */
+/** 戒除习惯当日是否视为完成：须用户确认保持戒除，破戒则未完成 */
+export function isBreakHabitDayCompleted(ctx: BreakHabitDayContext): boolean {
+  return resolveBreakHabitDayUiState(ctx) === 'clean';
+}
+
+/** 任务页展示 / 习惯绑定：养成/完成任务看达标，戒除看已确认且未破戒 */
 export function isHabitDayDisplayCompleted(params: {
   kind: HabitKind;
   todayCount: number;
   dailyGoal?: number | null;
+  hasDayRecord?: boolean;
+  ymd?: string;
+  logicalTodayYmd?: string;
 }): boolean {
-  if (params.kind === 'break') return isBreakHabitDayCompleted(params.todayCount);
+  if (params.kind === 'break') {
+    return isBreakHabitDayCompleted({
+      todayCount: params.todayCount,
+      dailyGoal: params.dailyGoal,
+      hasDayRecord: params.hasDayRecord,
+      ymd: params.ymd,
+      logicalTodayYmd: params.logicalTodayYmd,
+    });
+  }
   return isHabitDayGoalMet(params);
 }
 
-export function getBreakHabitDayUiState(todayCount: number, dailyGoal: number | null): BreakHabitDayUiState {
-  const count = Math.max(0, Math.floor(todayCount));
-  const threshold = dailyGoal ?? 0;
-  if (!isHabitDayGoalMet({ kind: 'break', todayCount: count, dailyGoal: threshold })) {
-    return 'failed';
-  }
-  if (count > 0) return 'slipping';
-  return 'clean';
+export function getBreakHabitDayUiState(
+  todayCount: number,
+  dailyGoal: number | null,
+  opts?: Pick<BreakHabitDayContext, 'hasDayRecord' | 'ymd' | 'logicalTodayYmd'>,
+): BreakHabitDayUiState {
+  return resolveBreakHabitDayUiState({
+    todayCount,
+    dailyGoal,
+    hasDayRecord: opts?.hasDayRecord,
+    ymd: opts?.ymd,
+    logicalTodayYmd: opts?.logicalTodayYmd,
+  });
 }
 
 /** 破戒未超限时边框红色强度（0–1），次数越接近阈值越深 */
@@ -285,14 +339,28 @@ export function computeConsecutiveGoalMetDays(params: {
   dailyGoal?: number | null;
   maxLookback?: number;
   minYmd?: string | null;
+  /** 戒除：用于区分今日待确认与历史未确认失败 */
+  logicalTodayYmd?: string;
 }): number {
-  const { checkIns, endYmd, kind, dailyGoal, maxLookback = 999, minYmd } = params;
+  const { checkIns, endYmd, kind, dailyGoal, maxLookback = 999, minYmd, logicalTodayYmd } = params;
   let streak = 0;
   let cursor = endYmd;
   for (let i = 0; i < maxLookback; i++) {
     if (minYmd && cursor < minYmd) break;
+    const hasDayRecord = Object.prototype.hasOwnProperty.call(checkIns, cursor);
     const cnt = checkIns[cursor] ?? 0;
-    if (!isHabitDayGoalMet({ kind, todayCount: cnt, dailyGoal })) break;
+    if (
+      !isHabitDayGoalMet({
+        kind,
+        todayCount: cnt,
+        dailyGoal,
+        hasDayRecord: kind === 'break' ? hasDayRecord : undefined,
+        ymd: kind === 'break' ? cursor : undefined,
+        logicalTodayYmd: kind === 'break' ? logicalTodayYmd : undefined,
+      })
+    ) {
+      break;
+    }
     streak++;
     cursor = addDaysToYmd(cursor, -1);
   }

@@ -123,6 +123,7 @@ export function computeActiveBreakStreak(
     kind: 'break',
     dailyGoal,
     minYmd: resolveBreakCycleStartYmd(cycle, habitCreatedAt, boundary),
+    logicalTodayYmd: endYmd,
   });
 }
 

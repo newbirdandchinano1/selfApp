@@ -1,14 +1,13 @@
-import { CheckRow } from '@/components/review/review-ui-parts';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import type { ReviewJournalMeta } from '@/lib/repositories/insights/review-journal-body';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
+import { reviewContentToPlainDisplay } from '@/lib/review-journal-format';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useState } from 'react';
 import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   useWindowDimensions,
   View,
   type StyleProp,
@@ -55,6 +54,9 @@ export function DailyReviewMetaBar({
   onMetaChange,
   onPrevDay,
   onNextDay,
+  reminderEnabled,
+  reminderTimeLabel,
+  onOpenReminderSettings,
 }: {
   meta: ReviewJournalMeta;
   dateLabel: string;
@@ -70,6 +72,9 @@ export function DailyReviewMetaBar({
   onMetaChange: (patch: Partial<ReviewJournalMeta>) => void;
   onPrevDay: () => void;
   onNextDay: () => void;
+  reminderEnabled?: boolean;
+  reminderTimeLabel?: string | null;
+  onOpenReminderSettings?: () => void;
 }) {
   const [picker, setPicker] = useState<PickerKind>(null);
 
@@ -118,6 +123,27 @@ export function DailyReviewMetaBar({
           </Pressable>
         </View>
       </View>
+
+      {onOpenReminderSettings ? (
+        <Pressable
+          onPress={onOpenReminderSettings}
+          hitSlop={Layout.hitSlop}
+          style={({ pressed }) => [
+            styles.reviewDayBtn,
+            { borderColor: colors.outline, opacity: pressed ? 0.82 : 1, alignSelf: 'flex-start' },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={reminderEnabled ? '每日复盘提醒设置' : '设置每日复盘提醒'}>
+          <MaterialIcons
+            name={reminderEnabled ? 'notifications-active' : 'notifications-none'}
+            size={18}
+            color={colors.primary}
+          />
+          <Text style={[styles.reviewDayBtnText, { color: colors.primary }]} numberOfLines={1}>
+            {reminderEnabled && reminderTimeLabel ? `每日 ${reminderTimeLabel} 提醒` : '设置每日提醒'}
+          </Text>
+        </Pressable>
+      ) : null}
 
       {picker === 'weather' && canEdit ? (
         <View style={styles.pickerRow}>
@@ -174,25 +200,64 @@ export function DailyReviewMetaBar({
   );
 }
 
-function DailyReviewGridCell({
-  dim,
-  fields,
-  canEdit,
+export function WeeklyReviewMetaBar({
+  weekRangeLabel,
+  configuredDowLabel,
   colors,
-  onSetField,
-  style,
+  onOpenReviewDaySettings,
 }: {
-  dim: ReviewDimensionTemplate | null;
-  fields: Record<string, string>;
-  canEdit: boolean;
+  weekRangeLabel: string;
+  configuredDowLabel?: string;
   colors: {
     text: string;
     textMuted: string;
     outline: string;
     primary: string;
-    input: string;
   };
-  onSetField: (columnId: string, value: string) => void;
+  onOpenReviewDaySettings: () => void;
+}) {
+  return (
+    <View style={styles.metaBar}>
+      <View style={styles.toolbarRow}>
+        <Pressable
+          onPress={onOpenReviewDaySettings}
+          hitSlop={Layout.hitSlop}
+          style={({ pressed }) => [
+            styles.reviewDayBtn,
+            { borderColor: colors.outline, opacity: pressed ? 0.82 : 1 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="设置周复盘日">
+          <MaterialIcons name="event" size={18} color={colors.primary} />
+          <Text style={[styles.reviewDayBtnText, { color: colors.primary }]} numberOfLines={1}>
+            {configuredDowLabel ? `每周${configuredDowLabel}` : '设置周复盘日'}
+          </Text>
+        </Pressable>
+
+        <View style={styles.toolbarRight}>
+          <Text style={[styles.weekRangeLabel, { color: colors.textMuted }]} numberOfLines={1}>
+            {weekRangeLabel || '本周期'}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function DailyReviewGridCell({
+  dim,
+  fields,
+  colors,
+  style,
+}: {
+  dim: ReviewDimensionTemplate | null;
+  fields: Record<string, string>;
+  colors: {
+    text: string;
+    textMuted: string;
+    outline: string;
+    primary: string;
+  };
   style?: StyleProp<ViewStyle>;
 }) {
   if (!dim) {
@@ -204,58 +269,73 @@ function DailyReviewGridCell({
   const singleField = dim.columns.length === 1;
   const cellMinHeight = Math.max(120, dim.columns.length * 44 + 56);
 
+  const columnPreview = (colId: string, placeholder?: string) => {
+    const preview = reviewContentToPlainDisplay(fields[colId] ?? '');
+    return preview || placeholder || '点击填写…';
+  };
+
+  const hasContent = dim.columns.some(col => reviewContentToPlainDisplay(fields[col.id] ?? '').length > 0);
+
   return (
-    <View style={[styles.cell, { minHeight: cellMinHeight, borderColor: colors.outline }, style]}>
-      <Text style={[styles.cellTitle, { color: colors.textMuted }]} numberOfLines={2}>
-        {dim.title}
-      </Text>
+    <View pointerEvents="none" style={[styles.cell, { minHeight: cellMinHeight, borderColor: colors.outline }, style]}>
+      <View
+        style={[
+          styles.cellTitleWrap,
+          { borderBottomColor: colors.outline, backgroundColor: `${colors.primary}10` },
+        ]}>
+        <Text style={[styles.cellTitle, { color: colors.text }]} numberOfLines={2}>
+          {dim.title}
+        </Text>
+      </View>
 
       <View style={styles.cellBody}>
         {checklist
           ? dim.columns.map(col => {
               const checked = (fields[col.id] ?? '').trim() === '1';
               return (
-                <CheckRow
-                  key={col.id}
-                  checked={checked}
-                  disabled={!canEdit}
-                  label={col.title}
-                  textColor={colors.text}
-                  outline={colors.outline}
-                  primary={colors.primary}
-                  onToggle={() => onSetField(col.id, checked ? '' : '1')}
-                />
+                <View key={col.id} style={styles.checkReadonly}>
+                  <MaterialIcons
+                    name={checked ? 'check-box' : 'check-box-outline-blank'}
+                    size={22}
+                    color={checked ? colors.primary : colors.outline}
+                  />
+                  <Text style={[styles.checkReadonlyLabel, { color: colors.text }]} numberOfLines={1}>
+                    {col.title}
+                  </Text>
+                </View>
               );
             })
           : null}
 
         {multiField
-          ? dim.columns.map(col => (
-              <View key={col.id} style={styles.inlineField}>
-                <Text style={[styles.inlineLabel, { color: colors.textMuted }]}>{col.title}:</Text>
-                <TextInput
-                  value={fields[col.id] ?? ''}
-                  onChangeText={t => onSetField(col.id, t)}
-                  placeholder={col.placeholder || '…'}
-                  placeholderTextColor={colors.textMuted}
-                  editable={canEdit}
-                  style={[styles.inlineInput, { color: colors.text }]}
-                />
-              </View>
-            ))
+          ? dim.columns.map(col => {
+              const preview = reviewContentToPlainDisplay(fields[col.id] ?? '');
+              const empty = !preview;
+              return (
+                <View
+                  key={col.id}
+                  style={[styles.stackedField, { borderLeftColor: colors.primary }]}>
+                  <Text style={[styles.inlineLabel, { color: colors.primary }]}>{col.title}</Text>
+                  <Text
+                    style={[
+                      styles.previewText,
+                      { color: empty ? colors.textMuted : colors.text },
+                    ]}>
+                    {columnPreview(col.id, col.placeholder)}
+                  </Text>
+                </View>
+              );
+            })
           : null}
 
         {singleField ? (
-          <TextInput
-            value={fields[dim.columns[0].id] ?? ''}
-            onChangeText={t => onSetField(dim.columns[0].id, t)}
-            placeholder={dim.columns[0].placeholder || '…'}
-            placeholderTextColor={colors.textMuted}
-            editable={canEdit}
-            multiline
-            textAlignVertical="top"
-            style={[styles.textArea, { color: colors.text }]}
-          />
+          <Text
+            style={[
+              styles.previewText,
+              { color: hasContent ? colors.text : colors.textMuted },
+            ]}>
+            {columnPreview(dim.columns[0].id, dim.columns[0].placeholder)}
+          </Text>
         ) : null}
       </View>
     </View>
@@ -265,14 +345,11 @@ function DailyReviewGridCell({
 export function DailyReviewGrid({
   dimensions,
   fields,
-  canEdit,
   colors,
-  onSetField,
   onPressDimension,
 }: {
   dimensions: ReviewDimensionTemplate[];
   fields: Record<string, string>;
-  canEdit: boolean;
   colors: {
     text: string;
     textMuted: string;
@@ -281,8 +358,7 @@ export function DailyReviewGrid({
     input: string;
     background: string;
   };
-  onSetField: (columnId: string, value: string) => void;
-  onPressDimension?: (dimensionId: string) => void;
+  onPressDimension: (dimensionId: string) => void;
 }) {
   const { width } = useWindowDimensions();
   const gridWidth = Math.max(0, Math.min(width - Layout.pagePaddingX * 2, Layout.contentMaxWidth));
@@ -305,28 +381,22 @@ export function DailyReviewGrid({
             ]}>
             {row.map((dim, colIndex) => {
               const isLastCol = colIndex === columns - 1 || colIndex === row.length - 1;
-              const clickable = Boolean(onPressDimension);
 
               return (
                 <Pressable
                   key={dim.id}
-                  onPress={clickable ? () => onPressDimension?.(dim.id) : undefined}
-                  disabled={!clickable}
+                  onPress={() => onPressDimension(dim.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${dim.title}，点击查看或编辑`}
                   style={({ pressed }) => [
                     styles.gridCellSlot,
                     {
-                      opacity: clickable ? (pressed ? 0.92 : 1) : 1,
+                      opacity: pressed ? 0.92 : 1,
                       borderRightWidth: !isLastCol ? StyleSheet.hairlineWidth : 0,
                       borderRightColor: colors.outline,
                     },
                   ]}>
-                  <DailyReviewGridCell
-                    dim={dim}
-                    fields={fields}
-                    canEdit={canEdit}
-                    colors={colors}
-                    onSetField={onSetField}
-                  />
+                  <DailyReviewGridCell dim={dim} fields={fields} colors={colors} />
                 </Pressable>
               );
             })}
@@ -398,6 +468,27 @@ const styles = StyleSheet.create({
     maxWidth: 88,
     textAlign: 'center',
   },
+  reviewDayBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    maxWidth: '58%',
+  },
+  reviewDayBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+    flexShrink: 1,
+  },
+  weekRangeLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+    flexShrink: 1,
+  },
   pickerRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -431,46 +522,57 @@ const styles = StyleSheet.create({
     minWidth: 0,
     minHeight: 148,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.xl,
+    paddingVertical: Spacing.lg,
     gap: Spacing.md,
   },
+  cellTitleWrap: {
+    alignSelf: 'stretch',
+    marginHorizontal: -Spacing.lg,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.sm,
+    marginBottom: Spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   cellTitle: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '800',
-    lineHeight: 18,
+    lineHeight: 20,
+    letterSpacing: 0.15,
     textAlign: 'center',
   },
   cellBody: {
     flex: 1,
-    gap: Spacing.sm,
+    gap: Spacing.md,
+    alignSelf: 'stretch',
   },
-  inlineField: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.xs,
-    flexWrap: 'wrap',
+  stackedField: {
+    gap: Spacing.sm,
+    alignSelf: 'stretch',
+    paddingLeft: Spacing.md,
+    borderLeftWidth: 2,
   },
   inlineLabel: {
     fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 20,
+    fontWeight: '800',
+    lineHeight: 16,
+    letterSpacing: 0.25,
   },
-  inlineInput: {
-    flex: 1,
-    minWidth: 40,
-    fontSize: 12,
-    fontWeight: '600',
-    lineHeight: 20,
-    padding: 0,
-    margin: 0,
+  checkReadonly: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
   },
-  textArea: {
+  checkReadonlyLabel: {
     flex: 1,
     fontSize: 12,
     fontWeight: '600',
     lineHeight: 18,
-    padding: 0,
-    margin: 0,
-    minHeight: 72,
+  },
+  previewText: {
+    alignSelf: 'stretch',
+    fontSize: 13,
+    fontWeight: '500',
+    lineHeight: 21,
   },
 });

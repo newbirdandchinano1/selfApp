@@ -53,7 +53,7 @@ async function loadActiveCheckIns(): Promise<
       offlineFallback: true,
     }),
   ]);
-  return checkIns.filter(c => habitIds.has(c.habit_id) && (c.count ?? 0) >= 1);
+  return checkIns.filter(c => habitIds.has(c.habit_id) && (c.count ?? 0) >= 0);
 }
 
 /** 本地 SQLite 中该习惯的打卡次数（pending 覆盖 synced；pending_delete 视为无记录） */
@@ -71,7 +71,7 @@ async function readLocalCheckInsForHabit(habitId: string): Promise<Record<string
       continue;
     }
     const count = r.count ?? 0;
-    if (count >= 1) out[r.record_date] = count;
+    if (count >= 0) out[r.record_date] = count;
   }
   return out;
 }
@@ -91,13 +91,19 @@ export async function getCheckInsMapByHabitId(habitId: string): Promise<Record<s
 
 /**
  * 写入某日次数：count<=0 时删除该日记录（未同步过的行直接物理删除）。
+ * `keepZeroRecord` 为 true 时写入 count=0（戒除习惯「保持戒除」确认）。
  */
-export async function upsertHabitDayCount(habitId: string, recordDateYmd: string, count: number): Promise<void> {
+export async function upsertHabitDayCount(
+  habitId: string,
+  recordDateYmd: string,
+  count: number,
+  opts?: { keepZeroRecord?: boolean },
+): Promise<void> {
   const db = await getDatabase();
   if (!db) {
     throw new Error('本地数据库不可用，无法保存打卡');
   }
-  if (count <= 0) {
+  if (count <= 0 && !opts?.keepZeroRecord) {
     const existing = await db.getFirstAsync<{ id: string; sync_status: string }>(
       `SELECT id, sync_status FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
       [habitId, recordDateYmd],
@@ -148,6 +154,43 @@ export async function upsertHabitDayCount(habitId: string, recordDateYmd: string
   );
   invalidateInflightApiTableFetch('habit_check_ins');
   await pushHabitCheckInChangesToApi({ awaitSync: true });
+}
+
+/** 戒除习惯：确认当日保持戒除（写入 count=0 记录） */
+export async function confirmBreakHabitDayClean(habitId: string, recordDateYmd: string): Promise<void> {
+  await upsertHabitDayCount(habitId, recordDateYmd, 0, { keepZeroRecord: true });
+}
+
+/** 指定日是否有打卡记录（含 count=0 的戒除确认） */
+export async function hasHabitCheckInRecordForDay(habitId: string, recordDateYmd: string): Promise<boolean> {
+  const map = await getCheckInsMapByHabitId(habitId);
+  return Object.prototype.hasOwnProperty.call(map, recordDateYmd);
+}
+
+/** 批量查询指定逻辑日各习惯是否有打卡记录 */
+export async function getHabitDayRecordFlagsForYmd(recordDateYmd: string): Promise<Map<string, boolean>> {
+  const checkIns = await loadActiveCheckIns();
+  const map = new Map<string, boolean>();
+  for (const r of checkIns) {
+    if (r.record_date === recordDateYmd) {
+      map.set(r.habit_id, true);
+    }
+  }
+  const db = await getDatabase();
+  if (db) {
+    const rows = await db.getAllAsync<{ habit_id: string; sync_status: string }>(
+      `SELECT habit_id, sync_status FROM habit_check_ins WHERE record_date = ?`,
+      [recordDateYmd],
+    );
+    for (const r of rows) {
+      if (r.sync_status === 'pending_delete') {
+        map.delete(r.habit_id);
+      } else {
+        map.set(r.habit_id, true);
+      }
+    }
+  }
+  return map;
 }
 
 export type IncrementTodayHabitCheckInResult = {
@@ -203,34 +246,40 @@ export async function getHabitCheckInDbCountForDay(habitId: string, recordDateYm
   return row?.count ?? 0;
 }
 
-/** 指定日次数 -1（不低于 0）；为 0 时软删该日记录。返回新的当日合计次数 */
-export async function decrementHabitCheckInForDay(habitId: string, recordDateYmd: string): Promise<number> {
+/** 指定日次数 -1；戒除习惯减至 0 时清除记录（回到待确认）。返回新的当日合计次数 */
+export async function decrementHabitCheckInForDay(
+  habitId: string,
+  recordDateYmd: string,
+  opts?: { breakHabit?: boolean },
+): Promise<number> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ count: number }>(
     `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
     [habitId, recordDateYmd]
   );
   const cur = row?.count ?? 0;
-  if (cur <= 0) return 0;
+  if (!row) return 0;
+  if (cur <= 0) {
+    await upsertHabitDayCount(habitId, recordDateYmd, 0);
+    return 0;
+  }
   const next = cur - 1;
+  if (opts?.breakHabit && next <= 0) {
+    await upsertHabitDayCount(habitId, recordDateYmd, 0);
+    return 0;
+  }
   await upsertHabitDayCount(habitId, recordDateYmd, next);
   return next;
 }
 
-/** 本地「今天」该习惯打卡次数 -1（不低于 0），返回新的当日合计次数 */
-export async function decrementTodayHabitCheckIn(habitId: string): Promise<number> {
+/** 本地「今天」该习惯打卡次数 -1，返回新的当日合计次数 */
+export async function decrementTodayHabitCheckIn(
+  habitId: string,
+  opts?: { breakHabit?: boolean },
+): Promise<number> {
   const boundary = await loadTasksDayBoundary();
   const today = getLogicalLocalYmd(new Date(), boundary);
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
-    [habitId, today]
-  );
-  const cur = row?.count ?? 0;
-  if (cur <= 0) return 0;
-  const next = cur - 1;
-  await upsertHabitDayCount(habitId, today, next);
-  return next;
+  return decrementHabitCheckInForDay(habitId, today, opts);
 }
 
 export type HabitCheckInListStat = {
@@ -313,7 +362,7 @@ export async function getHabitCheckInCountsByDateRange(
     },
   );
   const rows = checkIns.filter(
-    c => habitIds.has(c.habit_id) && (c.count ?? 0) >= 1 && isYmdInRange(c.record_date, startYmd, endYmd),
+    c => habitIds.has(c.habit_id) && (c.count ?? 0) >= 0 && isYmdInRange(c.record_date, startYmd, endYmd),
   );
   const out = new Map<string, Map<string, number>>();
   for (const r of rows) {

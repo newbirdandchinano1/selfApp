@@ -2,7 +2,7 @@ import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import {
   decrementHabitCheckInForDay,
   getCheckInsMapByHabitId,
-  getHabitCheckInDbCountForDay,
+  hasHabitCheckInRecordForDay,
   incrementHabitCheckInForDay,
 } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitById } from '@/lib/repositories/habits/habit';
@@ -132,10 +132,23 @@ function startOfWeekMonday(d: Date): Date {
 function countDistinctAchievedDays(
   checkIns: Record<string, number>,
   kind: HabitKind,
-  dailyGoal: number | null
+  dailyGoal: number | null,
+  logicalTodayYmd?: string,
 ): number {
+  if (kind === 'break') {
+    return Object.keys(checkIns).filter((ymd) =>
+      isHabitDayGoalMet({
+        kind,
+        todayCount: checkIns[ymd] ?? 0,
+        dailyGoal,
+        hasDayRecord: true,
+        ymd,
+        logicalTodayYmd,
+      }),
+    ).length;
+  }
   return Object.values(checkIns).filter((c) =>
-    isHabitDayGoalMet({ kind, todayCount: c, dailyGoal })
+    isHabitDayGoalMet({ kind, todayCount: c, dailyGoal }),
   ).length;
 }
 
@@ -145,12 +158,25 @@ function countAchievedInMonth(
   month0: number,
   kind: HabitKind,
   dailyGoal: number | null,
-  daysInMonth: number
+  daysInMonth: number,
+  logicalTodayYmd?: string,
 ): number {
   let n = 0;
   for (let day = 1; day <= daysInMonth; day++) {
     const k = `${year}-${pad2(month0 + 1)}-${pad2(day)}`;
-    if (isHabitDayGoalMet({ kind, todayCount: checkIns[k] ?? 0, dailyGoal })) n++;
+    const hasDayRecord = kind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, k) : undefined;
+    if (
+      isHabitDayGoalMet({
+        kind,
+        todayCount: checkIns[k] ?? 0,
+        dailyGoal,
+        hasDayRecord,
+        ymd: k,
+        logicalTodayYmd,
+      })
+    ) {
+      n++;
+    }
   }
   return n;
 }
@@ -159,14 +185,27 @@ function countAchievedInWeek(
   checkIns: Record<string, number>,
   weekStartMon: Date,
   kind: HabitKind,
-  dailyGoal: number | null
+  dailyGoal: number | null,
+  logicalTodayYmd?: string,
 ): number {
   let n = 0;
   for (let i = 0; i < 7; i++) {
     const dt = new Date(weekStartMon);
     dt.setDate(weekStartMon.getDate() + i);
     const k = toYMD(dt);
-    if (isHabitDayGoalMet({ kind, todayCount: checkIns[k] ?? 0, dailyGoal })) n++;
+    const hasDayRecord = kind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, k) : undefined;
+    if (
+      isHabitDayGoalMet({
+        kind,
+        todayCount: checkIns[k] ?? 0,
+        dailyGoal,
+        hasDayRecord,
+        ymd: k,
+        logicalTodayYmd,
+      })
+    ) {
+      n++;
+    }
   }
   return n;
 }
@@ -211,12 +250,19 @@ const BREAK_GOAL_FAIL = '#fecaca';
 function completionBreakDay(
   count: number,
   dailyGoal: number | null,
-  emptyBackground: string
+  emptyBackground: string,
+  hasDayRecord: boolean,
+  ymd: string,
+  logicalTodayYmd: string,
 ): string {
-  if (isHabitDayGoalMet({ kind: 'break', todayCount: count, dailyGoal })) {
+  if (!hasDayRecord) {
+    if (ymd === logicalTodayYmd) return emptyBackground;
+    return BREAK_GOAL_FAIL;
+  }
+  if (isHabitDayGoalMet({ kind: 'break', todayCount: count, dailyGoal, hasDayRecord: true })) {
     return count <= 0 ? BREAK_GOAL_MET : '#4ade80';
   }
-  if (count <= 0) return emptyBackground;
+  if (count <= 0) return BREAK_GOAL_FAIL;
   return BREAK_GOAL_FAIL;
 }
 
@@ -361,18 +407,27 @@ export default function HabitDetailScreen() {
   const dailyGoal = habit ? parseHabitDailyGoal(habit.extra_data, habitKind) : null;
   const consecutiveTargetDays = habit ? parseHabitConsecutiveTargetDays(habit.extra_data) : null;
   const incrementCap = habit ? parseHabitIncrementCap(habit.extra_data, habitKind) : null;
+  const focusHasRecord =
+    habitKind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, focusYmd) : (checkIns[focusYmd] ?? 0) > 0;
 
   const { leadingBlank, daysInMonth } = monthMatrix(calendarMonth.getFullYear(), calendarMonth.getMonth());
 
-  const totalAchieved = countDistinctAchievedDays(checkIns, habitKind, dailyGoal);
-  const weekAchieved = countAchievedInWeek(checkIns, startOfWeekMonday(focusDate), habitKind, dailyGoal);
+  const totalAchieved = countDistinctAchievedDays(checkIns, habitKind, dailyGoal, logicalTodayYmd);
+  const weekAchieved = countAchievedInWeek(
+    checkIns,
+    startOfWeekMonday(focusDate),
+    habitKind,
+    dailyGoal,
+    logicalTodayYmd,
+  );
   const monthAchieved = countAchievedInMonth(
     checkIns,
     focusDate.getFullYear(),
     focusDate.getMonth(),
     habitKind,
     dailyGoal,
-    daysInMonth
+    daysInMonth,
+    logicalTodayYmd,
   );
 
   const breakCycle = habit ? parseBreakHabitCycle(habit.extra_data) : null;
@@ -418,8 +473,9 @@ export default function HabitDetailScreen() {
         kind: habitKind,
         dailyGoal,
         minYmd: habit ? resolveBreakCycleStartYmd(breakCycle ?? parseBreakHabitCycle(null), habit.created_at) : null,
+        logicalTodayYmd,
       }),
-    [breakCycle, checkIns, focusYmd, habit, habitKind, dailyGoal]
+    [breakCycle, checkIns, focusYmd, habit, habitKind, dailyGoal, logicalTodayYmd]
   );
 
   const trendCounts = React.useMemo(() => {
@@ -452,10 +508,23 @@ export default function HabitDetailScreen() {
     const m = calendarMonth.getMonth();
     for (let day = 1; day <= daysInMonth; day++) {
       const k = `${y}-${pad2(m + 1)}-${pad2(day)}`;
-      if (isHabitDayGoalMet({ kind: habitKind, todayCount: checkIns[k] ?? 0, dailyGoal })) n++;
+      const hasDayRecord =
+        habitKind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, k) : undefined;
+      if (
+        isHabitDayGoalMet({
+          kind: habitKind,
+          todayCount: checkIns[k] ?? 0,
+          dailyGoal,
+          hasDayRecord,
+          ymd: k,
+          logicalTodayYmd,
+        })
+      ) {
+        n++;
+      }
     }
     return n;
-  }, [calendarMonth, checkIns, daysInMonth, habitKind, dailyGoal]);
+  }, [calendarMonth, checkIns, daysInMonth, habitKind, dailyGoal, logicalTodayYmd]);
 
   const chartW = Math.min(Dimensions.get('window').width - 32, 440);
 
@@ -544,8 +613,8 @@ export default function HabitDetailScreen() {
       Alert.alert('提示', '不能撤销未来日期的记录。');
       return;
     }
-    const dbBefore = await getHabitCheckInDbCountForDay(habit.id, ymd);
-    if (dbBefore <= 0) {
+    const hasRecord = await hasHabitCheckInRecordForDay(habit.id, ymd);
+    if (!hasRecord) {
       const displayCnt = checkIns[ymd] ?? 0;
       if (displayCnt > 0) {
         Alert.alert(
@@ -562,7 +631,9 @@ export default function HabitDetailScreen() {
     }
     setCancelMakeUpSaving(true);
     try {
-      const nextCount = await decrementHabitCheckInForDay(habit.id, ymd);
+      const nextCount = await decrementHabitCheckInForDay(habit.id, ymd, {
+        breakHabit: parseHabitKind(habit.extra_data) === 'break',
+      });
       setCheckIns((prev) => {
         const next = { ...prev };
         if (nextCount <= 0) delete next[ymd];
@@ -681,7 +752,7 @@ export default function HabitDetailScreen() {
               </Text>
             ) : (
               <Text style={styles.makeUpSub}>
-                当日记录次数低于阈值视为达标
+                须在当日确认状态；未确认且超过日界视为未达标
                 {consecutiveTargetDays != null
                   ? ` · 已连续 ${consecutiveStreak} / ${consecutiveTargetDays} 天`
                   : ` · 已连续 ${consecutiveStreak} 天`}
@@ -717,7 +788,9 @@ export default function HabitDetailScreen() {
           ) : null}
           {focusYmd === logicalTodayYmd && !buildSucceeded ? (
             <Text style={styles.makeUpSub}>
-              今日可在下方撤销一次；任务页也可点击图标角标数字（或完成勾）撤销。
+              {habitKind === 'break'
+                ? '今日须在任务页确认戒除状态；也可在下方撤销一次。'
+                : '今日可在下方撤销一次；任务页也可点击图标角标数字（或完成勾）撤销。'}
             </Text>
           ) : null}
           <View style={styles.makeUpBtnRow}>
@@ -745,14 +818,14 @@ export default function HabitDetailScreen() {
                 (cancelMakeUpSaving ||
                   buildSucceeded ||
                   focusYmd > logicalTodayYmd ||
-                  (checkIns[focusYmd] ?? 0) <= 0) &&
+                  !focusHasRecord) &&
                   styles.makeUpBtnCancelDisabled,
               ]}
               disabled={
                 cancelMakeUpSaving ||
                 buildSucceeded ||
                 focusYmd > logicalTodayYmd ||
-                (checkIns[focusYmd] ?? 0) <= 0
+                !focusHasRecord
               }
               onPress={() => void handleDecrementFocusDayCheckIn()}>
               {cancelMakeUpSaving ? (
@@ -846,14 +919,23 @@ export default function HabitDetailScreen() {
               const m = calendarMonth.getMonth();
               const ymd = `${y}-${pad2(m + 1)}-${pad2(day)}`;
               const cnt = checkIns[ymd] ?? 0;
+              const hasDayRecord =
+                habitKind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, ymd) : false;
               const isSel = ymd === focusYmd;
               const fill =
                 habitKind === 'break'
-                  ? completionBreakDay(cnt, dailyGoal, CAL_DAY_EMPTY)
+                  ? completionBreakDay(cnt, dailyGoal, CAL_DAY_EMPTY, hasDayRecord, ymd, logicalTodayYmd)
                   : completionBlue(cnt, CAL_DAY_EMPTY);
               const showLightText =
                 habitKind === 'break'
-                  ? !isHabitDayGoalMet({ kind: 'break', todayCount: cnt, dailyGoal }) && cnt > 0
+                  ? hasDayRecord &&
+                    !isHabitDayGoalMet({
+                      kind: 'break',
+                      todayCount: cnt,
+                      dailyGoal,
+                      hasDayRecord: true,
+                    }) &&
+                    cnt > 0
                   : cnt > 0 && needsLightTextOnBlue(fill);
               return (
                 <Pressable key={ymd} onPress={() => selectCalendarDay(y, m, day)} style={styles.calCell}>
@@ -976,10 +1058,14 @@ export default function HabitDetailScreen() {
                     const inYear = dt.getFullYear() === heatmapYear;
                     const ymd = toYMD(dt);
                     const cnt = inYear ? checkIns[ymd] ?? 0 : 0;
+                    const hasDayRecord =
+                      habitKind === 'break' && inYear
+                        ? Object.prototype.hasOwnProperty.call(checkIns, ymd)
+                        : false;
                     const bg = !inYear
                       ? HEAT_OUT_YEAR
                       : habitKind === 'break'
-                        ? completionBreakDay(cnt, dailyGoal, HEAT_DAY_EMPTY)
+                        ? completionBreakDay(cnt, dailyGoal, HEAT_DAY_EMPTY, hasDayRecord, ymd, logicalTodayYmd)
                         : completionBlue(cnt, HEAT_DAY_EMPTY);
                     return (
                       <View key={`${wi}-${di}`} style={[styles.heatCell, { backgroundColor: bg }]} />

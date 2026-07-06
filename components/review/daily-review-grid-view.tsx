@@ -10,6 +10,10 @@ import {
   loadReviewPeriodSnapshot,
   shiftYmd,
 } from '@/components/review/review-utils';
+import {
+  formatDailyReviewReminderClock,
+  getDailyReviewReminderSettings,
+} from '@/lib/daily-review-reminder-settings';
 import { Layout, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -23,12 +27,11 @@ import {
 } from '@/lib/repositories/insights/review-journal-body';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -45,11 +48,13 @@ export function DailyReviewGridView({
   onYmdChange,
   pageApiKey,
   refreshControl,
+  onSwitchToWeekly,
 }: {
   ymd: string;
   onYmdChange?: (ymd: string) => void;
   pageApiKey: string;
   refreshControl?: React.ReactElement<RefreshControlProps>;
+  onSwitchToWeekly?: () => void;
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -66,8 +71,11 @@ export function DailyReviewGridView({
   const [dailyTemplate, setDailyTemplate] = useState<Awaited<ReturnType<typeof loadReviewPeriodSnapshot>>['dailyTemplate']>([]);
   const [reviewCycleEndYmd, setReviewCycleEndYmd] = useState('');
   const [configuredDow, setConfiguredDow] = useState<number | null>(null);
+  const [dailyReminderEnabled, setDailyReminderEnabled] = useState(false);
+  const [dailyReminderTimeLabel, setDailyReminderTimeLabel] = useState<string | null>(null);
 
   const hydratedRef = useRef(false);
+  const skipFirstFocusReloadRef = useRef(true);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -80,10 +88,17 @@ export function DailyReviewGridView({
     setLoading(true);
     try {
       await wrapLoad(async () => {
-        const [snapshot, dailyRows] = await Promise.all([
+        const [snapshot, dailyRows, reminderSettings] = await Promise.all([
           loadReviewPeriodSnapshot(todayYmd),
           listDailyReviewsBetween(ymd, ymd),
+          getDailyReviewReminderSettings(),
         ]);
+        setDailyReminderEnabled(reminderSettings.enabled);
+        setDailyReminderTimeLabel(
+          reminderSettings.enabled
+            ? formatDailyReviewReminderClock(reminderSettings.hour, reminderSettings.minute)
+            : null,
+        );
         setDailyTemplate(snapshot.dailyTemplate);
         setReviewCycleEndYmd(snapshot.reviewCycleEndYmd);
         setConfiguredDow(snapshot.configuredDow);
@@ -107,12 +122,14 @@ export function DailyReviewGridView({
     void reload();
   }, [reload]);
 
-  const setField = useCallback(
-    (columnId: string, value: string) => {
-      if (!canEdit) return;
-      setFields(prev => ({ ...prev, [columnId]: value }));
-    },
-    [canEdit],
+  useFocusEffect(
+    useCallback(() => {
+      if (skipFirstFocusReloadRef.current) {
+        skipFirstFocusReloadRef.current = false;
+        return;
+      }
+      void reload();
+    }, [reload]),
   );
 
   const setMetaPatch = useCallback(
@@ -195,7 +212,7 @@ export function DailyReviewGridView({
   }
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={8}>
+    <>
       {loading ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={colors.primary} />
@@ -204,7 +221,6 @@ export function DailyReviewGridView({
         <ScrollView
           refreshControl={refreshControl}
           keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[
             styles.scroll,
@@ -219,6 +235,9 @@ export function DailyReviewGridView({
             onMetaChange={setMetaPatch}
             onPrevDay={() => navigateDay(-1)}
             onNextDay={() => navigateDay(1)}
+            reminderEnabled={dailyReminderEnabled}
+            reminderTimeLabel={dailyReminderTimeLabel}
+            onOpenReminderSettings={() => router.push('/review-settings')}
           />
 
           {skipped ? (
@@ -239,15 +258,13 @@ export function DailyReviewGridView({
 
             {dailyTemplate.length === 0 ? (
               <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21, paddingHorizontal: Layout.pagePaddingX }]}>
-                尚未配置日复盘维度，请先在「复盘设置」中管理模板。
+                尚未配置日复盘维度，请点右上角「模板」按钮编辑标题与栏目。
               </Text>
             ) : (
               <DailyReviewGrid
                 dimensions={dailyTemplate}
                 fields={fields}
-                canEdit={canEdit}
                 colors={gridColors}
-                onSetField={setField}
                 onPressDimension={openDimension}
               />
             )}
@@ -256,7 +273,7 @@ export function DailyReviewGridView({
 
             {skipped ? (
               <Pressable
-                onPress={() => router.push('/weekly-review-form')}
+                onPress={() => (onSwitchToWeekly ? onSwitchToWeekly() : router.push('/weekly-review-form'))}
                 style={({ pressed }) => [
                   styles.actionBtn,
                   { backgroundColor: colors.primary, opacity: pressed ? 0.88 : 1 },
@@ -266,7 +283,7 @@ export function DailyReviewGridView({
             ) : null}
           </ScrollView>
         )}
-    </KeyboardAvoidingView>
+    </>
   );
 }
 

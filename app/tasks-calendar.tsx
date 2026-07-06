@@ -338,6 +338,8 @@ function TaskRowItem({
 
 function HabitRowItem({
   item,
+  dayYmd,
+  logicalTodayYmd,
   onPress,
   text,
   muted,
@@ -347,6 +349,8 @@ function HabitRowItem({
   isDark,
 }: {
   item: TasksCalendarHabitItem;
+  dayYmd: string;
+  logicalTodayYmd: string;
   onPress: () => void;
   text: string;
   muted: string;
@@ -360,13 +364,22 @@ function HabitRowItem({
   const taskPeriodProgress = item.periodProgress ?? 0;
   const met = isTask
     ? !!item.taskShowPeriodCheck
-    : isHabitDayGoalMet({ kind: item.kind, todayCount: item.todayCount, dailyGoal: goal });
+    : isHabitDayGoalMet({
+        kind: item.kind,
+        todayCount: item.todayCount,
+        dailyGoal: goal,
+        hasDayRecord: item.kind === 'break' ? item.hasDayRecord : undefined,
+        ymd: dayYmd,
+        logicalTodayYmd,
+      });
   const isBreak = item.kind === 'break';
   const cornerBadge = habitKindCornerBadge(item.kind, isDark);
   const progressLabel =
     isTask && item.periodGoal != null
       ? `本周期 ${taskPeriodProgress} / ${item.periodGoal}`
-      : `${isBreak ? '记录' : '打卡'} ${item.todayCount}${goal != null ? ` / 阈值 ${goal}` : ''}`;
+      : isBreak && !item.hasDayRecord && dayYmd === logicalTodayYmd
+        ? '待确认今日状态'
+        : `${isBreak ? '记录' : '打卡'} ${item.todayCount}${goal != null ? ` / 阈值 ${goal}` : ''}`;
   return (
     <Pressable
       onPress={onPress}
@@ -611,6 +624,8 @@ function DayDetailSections({
               <HabitRowItem
                 key={h.id}
                 item={h}
+                dayYmd={summary.ymd}
+                logicalTodayYmd={logicalTodayYmd}
                 onPress={() => openHabit(h.id)}
                 text={text}
                 muted={muted}
@@ -709,7 +724,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
         <View key={`week-${offset}-${wi}`} style={[styles.weekRow, { gap: GRID_GAP }]}>
           {week.map((cell: GridCell) => {
             const summary = summaries?.get(cell.ymd);
-            const level = getTasksCalendarCellLevel(summary);
+            const level = getTasksCalendarCellLevel(summary, logicalTodayYmd);
             const bg = level === 0 ? heatEmpty : heatLevels[level];
             const selected = cell.ymd === selectedYmd;
             const isToday = cell.ymd === logicalTodayYmd;

@@ -2,6 +2,7 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import { createWishItem, getWishItemById, updateWishItem } from '@/lib/repositories/wish-list/wish-list';
 import {
   getWishSavingsPlanIdFromExtra,
+  isWishItemFulfilled,
   setWishSavingsPlanIdInExtra,
 } from '@/lib/repositories/wish-list/wish-list-extra';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
@@ -397,6 +398,30 @@ export async function deleteLinkedPlanForWish(wish: WishItemRow | null) {
   await deleteSavingsPlan(planId);
 }
 
+/** 排除关联心愿已在心愿单标记为「已实现」的存钱计划 */
+export function excludeFulfilledWishLinkedPlans(
+  plans: SavingsPlanRow[],
+  wishes: WishItemRow[],
+): SavingsPlanRow[] {
+  const fulfilledPlanIds = new Set<string>();
+  const wishById = new Map(wishes.map((w) => [w.id, w]));
+
+  for (const wish of wishes) {
+    if (!isWishItemFulfilled(wish)) continue;
+    const planId = getLinkedSavingsPlanId(wish);
+    if (planId) fulfilledPlanIds.add(planId);
+  }
+
+  for (const plan of plans) {
+    const wishId = getLinkedWishItemId(plan);
+    if (!wishId) continue;
+    const wish = wishById.get(wishId);
+    if (wish && isWishItemFulfilled(wish)) fulfilledPlanIds.add(plan.id);
+  }
+
+  return plans.filter((p) => !fulfilledPlanIds.has(p.id));
+}
+
 /** 按计划 id 索引关联的心愿单条目（用于存钱计划卡片展示） */
 export async function loadWishItemsByPlanId(): Promise<Record<string, WishItemRow>> {
   const [plans, wishes] = await Promise.all([
@@ -427,6 +452,7 @@ export async function repairWishSavingsLinks() {
   const wishById = new Map(wishes.map((w) => [w.id, w]));
 
   for (const wish of wishes) {
+    if (isWishItemFulfilled(wish)) continue;
     const planId = getLinkedSavingsPlanId(wish);
     if (planId && planById.has(planId)) {
       if (getLinkedWishItemId(planById.get(planId)!) !== wish.id) {

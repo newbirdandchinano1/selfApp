@@ -106,8 +106,10 @@ import {
 import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import {
+  confirmBreakHabitDayClean,
   decrementTodayHabitCheckIn,
   getCheckInsMapByHabitId,
+  getHabitDayRecordFlagsForYmd,
   incrementTodayHabitCheckIn,
 } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
@@ -511,6 +513,8 @@ type HabitSection = {
     taskShowPeriodCheck: boolean;
     /** 服务端 habits-grid 返回的今日完成态 */
     displayCompleted: boolean;
+    /** 戒除：今日是否已有打卡记录（含 count=0 的保持戒除确认） */
+    hasTodayRecord?: boolean;
   }>;
 };
 
@@ -520,8 +524,14 @@ function applyHabitCountPatch(
   item: HabitGridItem,
   todayCount: number,
   periodDelta = 0,
+  opts?: { hasTodayRecord?: boolean; logicalTodayYmd?: string },
 ): HabitGridItem {
   const next: HabitGridItem = { ...item, todayCount };
+  if (opts?.hasTodayRecord !== undefined) {
+    next.hasTodayRecord = opts.hasTodayRecord;
+  } else if (item.kind === 'break') {
+    next.hasTodayRecord = todayCount > 0 ? true : false;
+  }
   if (
     periodDelta !== 0 &&
     item.kind === 'task' &&
@@ -532,10 +542,14 @@ function applyHabitCountPatch(
     next.periodProgress = nextProgress;
     next.taskShowPeriodCheck = nextProgress >= item.periodGoal;
   }
+  const logicalTodayYmd = opts?.logicalTodayYmd;
   next.displayCompleted = isHabitDayDisplayCompleted({
     kind: item.kind,
     todayCount,
     dailyGoal: item.dailyGoal,
+    hasDayRecord: item.kind === 'break' ? next.hasTodayRecord : undefined,
+    ymd: logicalTodayYmd,
+    logicalTodayYmd,
   });
   return next;
 }
@@ -545,12 +559,13 @@ function patchHabitSectionsCount(
   habitId: string,
   todayCount: number,
   periodDelta = 0,
+  opts?: { hasTodayRecord?: boolean; logicalTodayYmd?: string },
 ): HabitSection[] {
   return sections.map((sec) => ({
     ...sec,
     items: sec.items.map((it) => {
       if (it.id !== habitId) return it;
-      return applyHabitCountPatch(it, todayCount, periodDelta);
+      return applyHabitCountPatch(it, todayCount, periodDelta, opts);
     }),
   }));
 }
@@ -558,11 +573,27 @@ function patchHabitSectionsCount(
 function optimisticHabitCountDelta(
   item: HabitGridItem,
   delta: 1 | -1,
-): { nextCount: number; periodDelta: number } | null {
+): { nextCount: number; periodDelta: number; hasTodayRecord?: boolean } | null {
   const cur = item.todayCount;
   if (delta > 0) {
     if (item.incrementCap != null && cur >= item.incrementCap) return null;
-    return { nextCount: cur + 1, periodDelta: item.kind === 'task' ? 1 : 0 };
+    return {
+      nextCount: cur + 1,
+      periodDelta: item.kind === 'task' ? 1 : 0,
+      hasTodayRecord: item.kind === 'break' ? true : undefined,
+    };
+  }
+  if (item.kind === 'break') {
+    if (!item.hasTodayRecord && cur <= 0) return null;
+    if (cur <= 0) {
+      return { nextCount: 0, periodDelta: 0, hasTodayRecord: false };
+    }
+    const nextCount = cur - 1;
+    return {
+      nextCount,
+      periodDelta: 0,
+      hasTodayRecord: nextCount > 0,
+    };
   }
   if (cur <= 0) return null;
   return { nextCount: cur - 1, periodDelta: item.kind === 'task' ? -1 : 0 };
@@ -1873,7 +1904,18 @@ export default function TasksScreen() {
       await syncBreakHabitCompletions();
       await syncBuildHabitCompletions();
       const data = await fetchTasksHabitsGrid({ boundary: dayBoundary, offlineFallback: true });
-      const sections = data.sections as HabitSection[];
+      const logicalToday = data.logicalToday?.trim() || getLogicalLocalYmd(new Date(), dayBoundary);
+      const recordFlags = await getHabitDayRecordFlagsForYmd(logicalToday);
+      const sections = (data.sections as HabitSection[]).map((section) => ({
+        ...section,
+        items: section.items.map((it) => {
+          const hasTodayRecord = it.kind === 'break' ? recordFlags.get(it.id) ?? false : undefined;
+          return applyHabitCountPatch(it, it.todayCount, 0, {
+            hasTodayRecord,
+            logicalTodayYmd: logicalToday,
+          });
+        }),
+      }));
       setHabitLookupById(
         new Map(
           sections.flatMap((s) => s.items).map((it) => [it.id, { name: it.name, icon: it.icon }]),
@@ -3357,11 +3399,21 @@ export default function TasksScreen() {
 
 
   const patchHabitTodayCount = React.useCallback(
-    (habitId: string, todayCount: number, periodDelta = 0) => {
+    (
+      habitId: string,
+      todayCount: number,
+      periodDelta = 0,
+      opts?: { hasTodayRecord?: boolean },
+    ) => {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setHabitSections((prev) => patchHabitSectionsCount(prev, habitId, todayCount, periodDelta));
+      setHabitSections((prev) =>
+        patchHabitSectionsCount(prev, habitId, todayCount, periodDelta, {
+          hasTodayRecord: opts?.hasTodayRecord,
+          logicalTodayYmd,
+        }),
+      );
     },
-    []
+    [logicalTodayYmd],
   );
 
   const restoreHabitGridItem = React.useCallback((snapshot: HabitGridItem) => {
@@ -3449,12 +3501,16 @@ export default function TasksScreen() {
       markPageDirty();
       const optimistic = optimisticHabitCountDelta(item, 1);
       if (optimistic) {
-        patchHabitTodayCount(item.id, optimistic.nextCount, optimistic.periodDelta);
+        patchHabitTodayCount(item.id, optimistic.nextCount, optimistic.periodDelta, {
+          hasTodayRecord: optimistic.hasTodayRecord,
+        });
       }
       try {
         const { nextCount, increased } = await incrementTodayHabitCheckIn(item.id, item.incrementCap);
         if (!optimistic || nextCount !== optimistic.nextCount) {
-          patchHabitTodayCount(item.id, nextCount, increased && item.kind === 'task' ? 1 : 0);
+          patchHabitTodayCount(item.id, nextCount, increased && item.kind === 'task' ? 1 : 0, {
+            hasTodayRecord: item.kind === 'break' ? true : undefined,
+          });
         }
         if (increased) void playHabitCheckInDing();
         runHabitSideEffectsAfterCountChange(item.id, nextCount);
@@ -3468,6 +3524,31 @@ export default function TasksScreen() {
     [markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
   );
 
+  const handleBreakHabitConfirmClean = React.useCallback(
+    async (item: HabitGridItem) => {
+      if (habitCheckInLockRef.current.has(item.id)) return;
+      habitCheckInLockRef.current.add(item.id);
+      markPageDirty();
+      patchHabitTodayCount(item.id, 0, 0, { hasTodayRecord: true });
+      try {
+        await confirmBreakHabitDayClean(item.id, logicalTodayYmd);
+        runHabitSideEffectsAfterCountChange(item.id, 0);
+      } catch (err) {
+        console.warn('确认保持戒除失败', err);
+        restoreHabitGridItem(item);
+      } finally {
+        habitCheckInLockRef.current.delete(item.id);
+      }
+    },
+    [
+      logicalTodayYmd,
+      markPageDirty,
+      patchHabitTodayCount,
+      restoreHabitGridItem,
+      runHabitSideEffectsAfterCountChange,
+    ],
+  );
+
   const handleHabitUndoOnce = React.useCallback(
     async (item: HabitGridItem) => {
       if (habitCheckInLockRef.current.has(item.id)) return;
@@ -3475,13 +3556,19 @@ export default function TasksScreen() {
       markPageDirty();
       const optimistic = optimisticHabitCountDelta(item, -1);
       if (optimistic) {
-        patchHabitTodayCount(item.id, optimistic.nextCount, optimistic.periodDelta);
+        patchHabitTodayCount(item.id, optimistic.nextCount, optimistic.periodDelta, {
+          hasTodayRecord: optimistic.hasTodayRecord,
+        });
       }
       try {
-        const nextCount = await decrementTodayHabitCheckIn(item.id);
+        const nextCount = await decrementTodayHabitCheckIn(item.id, {
+          breakHabit: item.kind === 'break',
+        });
         if (!optimistic || nextCount !== optimistic.nextCount) {
           const periodDelta = item.kind === 'task' && nextCount < item.todayCount ? -1 : 0;
-          patchHabitTodayCount(item.id, nextCount, periodDelta);
+          patchHabitTodayCount(item.id, nextCount, periodDelta, {
+            hasTodayRecord: item.kind === 'break' ? nextCount > 0 : undefined,
+          });
         }
         runHabitSideEffectsAfterCountChange(item.id, nextCount);
       } catch (err) {
@@ -3496,9 +3583,17 @@ export default function TasksScreen() {
 
   const handleHabitIconPress = React.useCallback(
     (item: HabitGridItem) => {
+      if (item.kind === 'break' && !item.hasTodayRecord && item.todayCount <= 0) {
+        Alert.alert(item.name, '请确认今日戒除状态', [
+          { text: '保持戒除', onPress: () => void handleBreakHabitConfirmClean(item) },
+          { text: '记录破戒', onPress: () => void handleHabitIncrement(item) },
+          { text: '取消', style: 'cancel' },
+        ]);
+        return;
+      }
       void handleHabitIncrement(item);
     },
-    [handleHabitIncrement]
+    [handleBreakHabitConfirmClean, handleHabitIncrement],
   );
 
   const hasChildrenDeeperThan = React.useCallback((nodes: TaskTreeNode[], level: number, maxLevel: number): boolean => {
@@ -4470,7 +4565,11 @@ export default function TasksScreen() {
                           const taskPeriodProgress = item.periodProgress ?? 0;
                           const hasProgress = isTask ? taskPeriodProgress > 0 : item.todayCount > 0;
                           const breakUi = isBreak
-                            ? getBreakHabitDayUiState(item.todayCount, item.dailyGoal)
+                            ? getBreakHabitDayUiState(item.todayCount, item.dailyGoal, {
+                                hasDayRecord: item.hasTodayRecord,
+                                ymd: logicalTodayYmd,
+                                logicalTodayYmd,
+                              })
                             : null;
                           const displayCompleted = isTask
                             ? item.taskShowPeriodCheck
@@ -4478,10 +4577,14 @@ export default function TasksScreen() {
                                 kind: item.kind,
                                 todayCount: item.todayCount,
                                 dailyGoal: item.dailyGoal,
+                                hasDayRecord: isBreak ? item.hasTodayRecord : undefined,
+                                ymd: logicalTodayYmd,
+                                logicalTodayYmd,
                               });
                           const goalMet = isBreak
                             ? scheduleAllowsToday && displayCompleted
                             : displayCompleted;
+                          const breakPending = isBreak && scheduleAllowsToday && breakUi === 'pending';
                           const goalFailed = isBreak && scheduleAllowsToday && breakUi === 'failed';
                           const breakSlipping = isBreak && scheduleAllowsToday && breakUi === 'slipping';
                           const taskProgressing =
@@ -4510,7 +4613,9 @@ export default function TasksScreen() {
                             ? buildProgressBorderColor(item.todayCount, item.dailyGoal, isDark)
                             : null;
                           const progressBadgeCount = isTask ? taskPeriodProgress : item.todayCount;
-                          const canUndoTodayBadge = scheduleAllowsToday && item.todayCount > 0;
+                          const canUndoTodayBadge =
+                            scheduleAllowsToday &&
+                            (item.todayCount > 0 || (isBreak && item.hasTodayRecord && item.todayCount <= 0));
                           const onHabitBadgeUndo = () => {
                             if (!canUndoTodayBadge) return;
                             void handleHabitUndoOnce(item);
@@ -4565,9 +4670,13 @@ export default function TasksScreen() {
                                               ? slipBorder
                                               : goalMet
                                                 ? secondary
-                                                : isDark
-                                                  ? 'rgba(148,163,184,0.42)'
-                                                  : 'rgba(148,163,184,0.5)'
+                                                : breakPending
+                                                  ? isDark
+                                                    ? 'rgba(148,163,184,0.55)'
+                                                    : 'rgba(148,163,184,0.62)'
+                                                  : isDark
+                                                    ? 'rgba(148,163,184,0.42)'
+                                                    : 'rgba(148,163,184,0.5)'
                                           : goalMet
                                             ? secondary
                                             : buildProgressing && buildBorder
@@ -4641,6 +4750,19 @@ export default function TasksScreen() {
                                         },
                                       ]}>
                                       <Text style={styles.habitTodayBadgeFail}>❌</Text>
+                                    </View>
+                                  ) : breakPending ? (
+                                    <View
+                                      style={[
+                                        styles.habitTodayBadge,
+                                        {
+                                          borderColor: card,
+                                          backgroundColor: isDark
+                                            ? 'rgba(148,163,184,0.92)'
+                                            : 'rgba(148,163,184,0.88)',
+                                        },
+                                      ]}>
+                                      <Text style={styles.habitTodayBadgeCount}>?</Text>
                                     </View>
                                   ) : breakSlipping || buildProgressing || taskProgressing || (!isBreak && !isTask && hasProgress) ? (
                                     canUndoTodayBadge ? (

@@ -57,19 +57,31 @@ import {
   Text,
   View,
   type LayoutChangeEvent,
+  type RefreshControlProps,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'weekly-review-form';
 
-export function WeeklyReviewFormScreen() {
+export function WeeklyReviewFormScreen({
+  embedded = false,
+  pageApiKey,
+  refreshControl: externalRefreshControl,
+  onRegisterReload,
+}: {
+  embedded?: boolean;
+  pageApiKey?: string;
+  refreshControl?: React.ReactElement<RefreshControlProps>;
+  onRegisterReload?: (reload: () => Promise<void>) => void;
+} = {}) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const apiKey = pageApiKey ?? PAGE_API_KEY;
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
   const { logicalTodayYmd: todayYmd } = useDayBoundary();
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const { wrapLoad } = usePageApiSync(apiKey);
 
   const bg = isDark ? theme.background : '#faf8ff';
   const surface = isDark ? theme.surface : '#ffffff';
@@ -201,21 +213,32 @@ export function WeeklyReviewFormScreen() {
     [todayYmd, wrapLoad],
   );
 
-  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+  const { refreshControl: internalRefreshControl } = usePagePullRefresh(
+    embedded && externalRefreshControl ? `${apiKey}-weekly` : apiKey,
+    reload,
+  );
+  const refreshControl = externalRefreshControl ?? internalRefreshControl;
+
+  useEffect(() => {
+    if (!embedded || !onRegisterReload) return;
+    onRegisterReload(reload);
+    return () => onRegisterReload(async () => {});
+  }, [embedded, onRegisterReload, reload]);
 
   useFocusEffect(
     useCallback(() => {
-      if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) {
+      if (shouldSkipPageFocusApiRefresh(apiKey)) {
         setLoading(false);
         return;
       }
       void reload();
-    }, [reload]),
+    }, [apiKey, reload]),
   );
 
   useEffect(() => {
-    return () => resetPageApiSession(PAGE_API_KEY);
-  }, []);
+    if (embedded) return;
+    return () => resetPageApiSession(apiKey);
+  }, [apiKey, embedded]);
 
   const persistDraft = useCallback(async (): Promise<boolean> => {
     setSaving(true);
@@ -384,21 +407,23 @@ export function WeeklyReviewFormScreen() {
     Alert.alert('已插入', `已将本周期日复盘摘要插入到「${colTitle}」。`);
   }, [dailyDigest, weeklyFields, weeklyTemplate]);
 
-  return (
-    <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right']}>
-      <ScreenHeader title="每周复盘" subtitle={weekRangeLabel || undefined} onBack={() => router.back()} />
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={8}>
-        {loading ? (
-          <View style={styles.centered}>
-            <ActivityIndicator size="large" color={primary} />
-          </View>
-        ) : (
-          <ScrollView
-            ref={scrollRef}
-            refreshControl={refreshControl}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="on-drag"
-            contentContainerStyle={[styles.scroll, { paddingBottom: 28 + Math.max(insets.bottom, 12) }]}>
+  const body = (
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={8}>
+      {loading ? (
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color={primary} />
+        </View>
+      ) : (
+        <ScrollView
+          ref={scrollRef}
+          refreshControl={refreshControl}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentContainerStyle={[
+            styles.scroll,
+            embedded && styles.scrollEmbedded,
+            { paddingBottom: 28 + Math.max(insets.bottom, 12) },
+          ]}>
             {!canEdit ? (
               <View style={[styles.gateCard, { backgroundColor: isDark ? 'rgba(30,41,59,0.65)' : '#fff7ed', borderColor: outlineVariant }]}>
                 <MaterialIcons name="lock-clock" size={22} color={tertiary} />
@@ -609,12 +634,23 @@ export function WeeklyReviewFormScreen() {
           </ScrollView>
         )}
       </KeyboardAvoidingView>
+  );
+
+  if (embedded) {
+    return <View style={[styles.flex, { backgroundColor: bg }]}>{body}</View>;
+  }
+
+  return (
+    <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right']}>
+      <ScreenHeader title="每周复盘" subtitle={weekRangeLabel || undefined} onBack={() => router.back()} />
+      {body}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  flex: { flex: 1 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: {
     paddingHorizontal: Layout.pagePaddingX,
@@ -623,6 +659,9 @@ const styles = StyleSheet.create({
     maxWidth: Layout.contentMaxWidth,
     alignSelf: 'center',
     width: '100%',
+  },
+  scrollEmbedded: {
+    paddingTop: Spacing.md,
   },
   gateCard: {
     borderRadius: Radius.xl,

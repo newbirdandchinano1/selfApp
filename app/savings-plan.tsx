@@ -21,6 +21,7 @@ import { consumeSavingsPlanLaunchIntent } from '@/lib/savings-plan-launch-intent
 import {
   createSavingsPlanWithLinkedWish,
   deleteLinkedWishForPlan,
+  excludeFulfilledWishLinkedPlans,
   loadWishItemsByPlanId,
   repairWishSavingsLinks,
   updateSavingsPlanWithLinkedWish,
@@ -32,6 +33,7 @@ import {
   wishReasonPreviewOrNull,
 } from '@/lib/wish-list-present';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
+import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import {
   loadSavingsOverviewSettings,
   saveSavingsOverviewSettings,
@@ -40,7 +42,6 @@ import {
 import {
   createSavingsPlanDeposit,
   getDepositSumsByActivePlanId,
-  getTotalDepositsForActivePlans,
 } from '@/lib/repositories/savings-plan/savings-plan-deposit';
 import {
   deleteSavingsPlan,
@@ -1013,17 +1014,28 @@ export default function SavingsPlanScreen() {
   const refreshPlansAndDeposits = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
     try {
-      const [rows, settings] = await Promise.all([getSavingsPlans(), loadSavingsOverviewSettings()]);
-      setPlanRows(rows);
+      const [rows, settings, allWishes] = await Promise.all([
+        getSavingsPlans(),
+        loadSavingsOverviewSettings(),
+        listWishItems(),
+      ]);
+      const activeRows = excludeFulfilledWishLinkedPlans(rows, allWishes);
+      setPlanRows(activeRows);
       setOverviewSettings(settings);
-      const [sums, total, wishesByPlan] = await Promise.all([
+      const [sums, wishesByPlan] = await Promise.all([
         getDepositSumsByActivePlanId(),
-        getTotalDepositsForActivePlans(),
         loadWishItemsByPlanId(),
       ]);
-      setDepositByPlanId(sums);
-      setTotalDeposits(total);
-      setWishByPlanId(wishesByPlan);
+      const activePlanIds = new Set(activeRows.map((r) => r.id));
+      const activeSums = Object.fromEntries(
+        Object.entries(sums).filter(([id]) => activePlanIds.has(id)),
+      );
+      const activeTotal = activeRows.reduce((sum, r) => sum + (activeSums[r.id] ?? 0), 0);
+      setDepositByPlanId(activeSums);
+      setTotalDeposits(activeTotal);
+      setWishByPlanId(
+        Object.fromEntries(Object.entries(wishesByPlan).filter(([id]) => activePlanIds.has(id))),
+      );
     } catch (e) {
       console.warn('SavingsPlan: refresh plans/deposits failed', e);
       setPlanRows([]);

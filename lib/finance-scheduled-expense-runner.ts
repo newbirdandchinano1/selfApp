@@ -3,7 +3,10 @@ import {
   addDaysToYmd,
   buildScheduledExpenseSlotKey,
   compareYmd,
+  isLegacyScheduledExpenseSlotKey,
+  isScheduledFinanceExpenseActive,
   isScheduledFinanceExpenseDueOnDay,
+  legacyScheduledExpenseSlotKey,
   loadScheduledFinanceExpenses,
   scheduledExpenseHappenedAtIso,
   type ScheduledFinanceExpense,
@@ -14,6 +17,7 @@ import {
   FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_AUTO,
   FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_ID,
   FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_SLOT,
+  getScheduledExpenseIdFromTxnExtra,
   getScheduledExpenseSlotFromTxnExtra,
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import {
@@ -29,13 +33,48 @@ const BACKFILL_DAYS = 14;
 
 let runnerChain: Promise<void> = Promise.resolve();
 
+function registerExistingScheduledSlot(slots: Set<string>, slot: string, expenseId: string | null): void {
+  slots.add(slot);
+  if (isLegacyScheduledExpenseSlotKey(slot)) {
+    if (expenseId) {
+      const [ymd, slotIndexRaw] = slot.split(':');
+      const slotIndex = Number.parseInt(slotIndexRaw ?? '', 10);
+      if (ymd && Number.isFinite(slotIndex)) {
+        slots.add(buildScheduledExpenseSlotKey(expenseId, ymd, slotIndex));
+      }
+    }
+    return;
+  }
+  const parts = slot.split(':');
+  if (parts.length >= 3) {
+    const slotIndex = Number.parseInt(parts[parts.length - 1] ?? '', 10);
+    const ymd = parts[parts.length - 2];
+    if (ymd && Number.isFinite(slotIndex)) {
+      slots.add(legacyScheduledExpenseSlotKey(ymd, slotIndex));
+    }
+  }
+}
+
 function buildExistingScheduledSlots(transactions: FinanceTransactionRow[]): Set<string> {
   const slots = new Set<string>();
   for (const txn of transactions) {
     const slot = getScheduledExpenseSlotFromTxnExtra(txn.extra_data);
-    if (slot) slots.add(slot);
+    if (!slot) continue;
+    registerExistingScheduledSlot(slots, slot, getScheduledExpenseIdFromTxnExtra(txn.extra_data));
   }
   return slots;
+}
+
+function isScheduledSlotTaken(
+  existingSlots: Set<string>,
+  expenseId: string,
+  ymd: string,
+  slotIndex: number,
+): boolean {
+  return (
+    existingSlots.has(buildScheduledExpenseSlotKey(expenseId, ymd, slotIndex)) ||
+    existingSlots.has(legacyScheduledExpenseSlotKey(ymd, slotIndex))
+  );
 }
 
 function resolveCatchUpStartYmd(item: ScheduledFinanceExpense, todayYmd: string): string {
@@ -57,12 +96,13 @@ async function createScheduledExpenseTransaction(input: {
   slotIndex: number;
 }): Promise<boolean> {
   const { item, account, ymd, slotIndex } = input;
+  if (!(await isScheduledFinanceExpenseActive(item.id))) return false;
   const amountAbs = item.amount;
   const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, amountAbs);
   const extraData = JSON.stringify({
     [FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_AUTO]: true,
     [FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_ID]: item.id,
-    [FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_SLOT]: buildScheduledExpenseSlotKey(ymd, slotIndex),
+    [FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_SLOT]: buildScheduledExpenseSlotKey(item.id, ymd, slotIndex),
     category_key: item.categoryKey ?? null,
     category_label: item.categoryLabel ?? null,
     ...budgetExtraPatchForTransaction('expense', item.includeInBudget),
@@ -138,15 +178,19 @@ export async function runScheduledFinanceExpenses(opts?: {
     const startYmd = resolveCatchUpStartYmd(item, todayYmd);
     let cursor = startYmd;
     while (cursor && compareYmd(cursor, todayYmd) <= 0) {
+      if (!(await isScheduledFinanceExpenseActive(item.id))) break;
       if (isScheduledFinanceExpenseDueOnDay(item, cursor)) {
         const isToday = cursor === todayYmd;
         if (!isToday || isScheduledTimeReached(cursor, item.hour, item.minute, now)) {
           for (let slot = 0; slot < item.timesPerDay; slot += 1) {
-            const slotKey = buildScheduledExpenseSlotKey(cursor, slot);
-            if (existingSlots.has(slotKey)) continue;
+            if (isScheduledSlotTaken(existingSlots, item.id, cursor, slot)) continue;
             const ok = await createScheduledExpenseTransaction({ item, account, ymd: cursor, slotIndex: slot });
             if (ok) {
-              existingSlots.add(slotKey);
+              registerExistingScheduledSlot(
+                existingSlots,
+                buildScheduledExpenseSlotKey(item.id, cursor, slot),
+                item.id,
+              );
               createdCount += 1;
             } else {
               skippedCount += 1;

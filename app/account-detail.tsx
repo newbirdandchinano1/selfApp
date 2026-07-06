@@ -334,8 +334,15 @@ export default function AccountDetailScreen() {
 
   const monthSections = React.useMemo<MonthSection[]>(() => {
     if (transactions.length === 0) return [];
-    const monthMap = new Map<string, FinanceTransactionRow[]>();
+    const uniqueTransactions: FinanceTransactionRow[] = [];
+    const seenTxIds = new Set<string>();
     for (const tx of transactions) {
+      if (seenTxIds.has(tx.id)) continue;
+      seenTxIds.add(tx.id);
+      uniqueTransactions.push(tx);
+    }
+    const monthMap = new Map<string, FinanceTransactionRow[]>();
+    for (const tx of uniqueTransactions) {
       const monthKey = tx.happened_at.slice(0, 7);
       const rows = monthMap.get(monthKey);
       if (rows) rows.push(tx);
@@ -368,22 +375,26 @@ export default function AccountDetailScreen() {
         const dateLabel = Number.isNaN(dt.getTime())
           ? dayKey
           : `${dt.getMonth() + 1}月${dt.getDate()}日 (${WEEKDAY_LABELS[dt.getDay()]})`;
-        const items: DetailItem[] = dayRows.map((tx) => {
+        const seenItemIds = new Set<string>();
+        const items: DetailItem[] = [];
+        for (const tx of dayRows) {
+          if (seenItemIds.has(tx.id)) continue;
+          seenItemIds.add(tx.id);
           const happenedDate = new Date(tx.happened_at);
           const hour = Number.isNaN(happenedDate.getTime()) ? '00' : String(happenedDate.getHours()).padStart(2, '0');
           const minute = Number.isNaN(happenedDate.getTime()) ? '00' : String(happenedDate.getMinutes()).padStart(2, '0');
           const displayAmount = getDisplayAmount(tx);
           const isIncome = displayAmount > 0;
           const isExpense = displayAmount < 0;
-          return {
+          items.push({
             id: tx.id,
             time: `${hour}:${minute}`,
             tag: tx.name?.trim() || '交易',
             emoji: isIncome ? '📈' : isExpense ? '💸' : '💳',
             amount: `${isIncome ? '+' : isExpense ? '-' : ''} ${formatMoney(displayAmount)}`,
             flowLabel: tx.transaction_type === 'transfer' ? '转账' : isIncome ? '收入' : '支出',
-          };
-        });
+          });
+        }
         return { dateLabel, items };
       });
 

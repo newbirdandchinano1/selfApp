@@ -102,12 +102,24 @@ export function taskHasBoundHabit(extraData: string | null | undefined, habitId:
 }
 
 /** 绑定习惯是否已达成可完成任务的目标 */
-export function isHabitGoalMetForTaskBinding(habit: HabitRow, todayCount: number): boolean {
+export function isHabitGoalMetForTaskBinding(
+  habit: HabitRow,
+  todayCount: number,
+  opts?: { hasDayRecord?: boolean; logicalTodayYmd?: string },
+): boolean {
   const kind = parseHabitKind(habit.extra_data);
   if (kind === 'break') {
     if (isBreakHabitSucceeded(habit.extra_data)) return true;
     if (parseHabitConsecutiveTargetDays(habit.extra_data) != null) return false;
-    return isBreakHabitDayCompleted(todayCount);
+    const dailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
+    const logicalTodayYmd = opts?.logicalTodayYmd;
+    return isBreakHabitDayCompleted({
+      todayCount,
+      dailyGoal,
+      hasDayRecord: opts?.hasDayRecord,
+      ymd: logicalTodayYmd,
+      logicalTodayYmd,
+    });
   }
   if (kind === 'build' && isBuildHabitSucceeded(habit.extra_data)) return true;
   const dailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
@@ -131,6 +143,7 @@ export async function areAllBoundHabitsGoalMet(
   options?: {
     logicalTodayYmd?: string;
     todayCountByHabitId?: ReadonlyMap<string, number>;
+    hasDayRecordByHabitId?: ReadonlyMap<string, boolean>;
   },
 ): Promise<boolean> {
   if (habitIds.length === 0) return false;
@@ -144,7 +157,19 @@ export async function areAllBoundHabitsGoalMet(
     const todayCount =
       options?.todayCountByHabitId?.get(habitId) ??
       (await getTodayHabitCount(habitId, logicalTodayYmd));
-    if (!isHabitGoalMetForTaskBinding(habit, todayCount)) return false;
+    let hasDayRecord = options?.hasDayRecordByHabitId?.get(habitId);
+    if (hasDayRecord === undefined && parseHabitKind(habit.extra_data) === 'break') {
+      const map = await getCheckInsMapByHabitId(habitId);
+      hasDayRecord = Object.prototype.hasOwnProperty.call(map, logicalTodayYmd);
+    }
+    if (
+      !isHabitGoalMetForTaskBinding(habit, todayCount, {
+        hasDayRecord,
+        logicalTodayYmd,
+      })
+    ) {
+      return false;
+    }
   }
   return true;
 }

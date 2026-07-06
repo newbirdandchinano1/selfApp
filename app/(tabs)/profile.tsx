@@ -7,6 +7,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
+import { isWishItemFulfilled } from '@/lib/repositories/wish-list/wish-list-extra';
 import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { listVisions } from '@/lib/repositories/visions/vision';
@@ -115,7 +116,8 @@ export default function ProfileScreen() {
   const loadProfileWishItems = useCallback(async () => {
     try {
       const rows = await listWishItems();
-      const sorted = [...rows].sort(
+      const active = rows.filter(r => !isWishItemFulfilled(r));
+      const sorted = [...active].sort(
         (a, b) => b.desire_level - a.desire_level || b.price - a.price || b.updated_at.localeCompare(a.updated_at),
       );
       setWishPreviewRows(sorted.slice(0, WISH_PROFILE_PREVIEW_MAX));

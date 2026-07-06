@@ -50,6 +50,13 @@ export function shiftYmd(ymd: string, deltaDays: number): string {
   return toYmdLocal(d);
 }
 
+/** 当前复盘周期（7 天区间） */
+export function resolveReviewPeriodRolling(today: Date, configuredDow: number | null) {
+  return configuredDow !== null
+    ? getRollingSevenDayRangeEndingOnNextReviewDay(today, configuredDow)
+    : getRollingSevenDayRange(today);
+}
+
 /** 每日复盘：过去与自然日「今天」可填；未来日期不可填。 */
 export function isDailyReviewEditableYmd(ymd: string, todayYmd: string): boolean {
   return ymd <= todayYmd;

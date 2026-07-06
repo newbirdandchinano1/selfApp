@@ -175,8 +175,23 @@ export function describeScheduledFinanceExpense(item: ScheduledFinanceExpense): 
   return `每月 ${days} ${time}${timesLabel}`;
 }
 
-export function buildScheduledExpenseSlotKey(ymd: string, slotIndex: number): string {
+/** 旧版槽位键（无定时支出 id），仅用于兼容历史流水去重。 */
+export function legacyScheduledExpenseSlotKey(ymd: string, slotIndex: number): string {
   return `${ymd}:${slotIndex}`;
+}
+
+export function isLegacyScheduledExpenseSlotKey(slot: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}:\d+$/.test(slot);
+}
+
+/** 槽位键：`{expenseId}:{YYYY-MM-DD}:{slotIndex}`，同一规则下按日去重。 */
+export function buildScheduledExpenseSlotKey(expenseId: string, ymd: string, slotIndex: number): string {
+  return `${expenseId}:${ymd}:${slotIndex}`;
+}
+
+export async function isScheduledFinanceExpenseActive(id: string): Promise<boolean> {
+  const row = await getScheduledFinanceExpenseById(id);
+  return row?.enabled === true;
 }
 
 export function scheduledExpenseHappenedAtIso(ymd: string, hour: number, minute: number, slotIndex: number): string {

@@ -45,6 +45,8 @@ export type TasksCalendarHabitItem = {
   periodProgress?: number | null;
   periodGoal?: number | null;
   taskShowPeriodCheck?: boolean;
+  /** 戒除：当日是否有打卡记录（含 count=0 确认） */
+  hasDayRecord?: boolean;
 };
 
 export type TasksCalendarProjectItem = {
@@ -313,7 +315,10 @@ function emptyDay(ymd: string): TasksCalendarDaySummary {
 }
 
 /** 日历格热力等级 0–4（与任务页信息密度对应） */
-export function getTasksCalendarCellLevel(summary: TasksCalendarDaySummary | undefined): 0 | 1 | 2 | 3 | 4 {
+export function getTasksCalendarCellLevel(
+  summary: TasksCalendarDaySummary | undefined,
+  logicalTodayYmd?: string,
+): 0 | 1 | 2 | 3 | 4 {
   if (!summary) return 0;
   const openTasks =
     summary.frogs.filter((t) => isTaskActiveStatus(t.status)).length +
@@ -322,7 +327,14 @@ export function getTasksCalendarCellLevel(summary: TasksCalendarDaySummary | und
   const dueOpen = summary.dueTasks.filter((t) => isTaskActiveStatus(t.status)).length;
   const habitDue = summary.habits.length;
   const habitDone = summary.habits.filter((h) =>
-    isHabitDayGoalMet({ kind: h.kind, todayCount: h.todayCount, dailyGoal: h.dailyGoal })
+    isHabitDayGoalMet({
+      kind: h.kind,
+      todayCount: h.todayCount,
+      dailyGoal: h.dailyGoal,
+      hasDayRecord: h.kind === 'break' ? h.hasDayRecord : undefined,
+      ymd: summary.ymd,
+      logicalTodayYmd,
+    }),
   ).length;
   const frogDone = summary.frogs.filter((t) => t.status === 'done').length;
   const score = openTasks + dueOpen + habitDue + frogDone + habitDone + summary.projectsDue.length;
@@ -409,7 +421,10 @@ export function buildTasksCalendarSummaries(params: {
       if (taskViewState?.hiddenOnViewDay) continue;
       if (!isHabitVisibleOnCalendarDay(habit.created_at, ymd, dayBoundary)) continue;
       if (!isHabitScheduledOnLogicalYmd(habit.extra_data, ymd)) continue;
-      const count = checkMap.get(habit.id) ?? 0;
+      const habitRecord = habitCheckInsByHabit.get(habit.id) ?? {};
+      const hasDayRecord =
+        kind === 'break' ? Object.prototype.hasOwnProperty.call(habitRecord, ymd) : undefined;
+      const count = hasDayRecord ? (habitRecord[ymd] ?? 0) : (checkMap.get(habit.id) ?? 0);
       day.habits.push({
         id: habit.id,
         name: habit.name,
@@ -417,6 +432,7 @@ export function buildTasksCalendarSummaries(params: {
         todayCount: count,
         dailyGoal,
         kind,
+        hasDayRecord,
         periodProgress: taskViewState?.periodProgress ?? null,
         periodGoal: taskViewState?.periodGoal ?? null,
         taskShowPeriodCheck: taskViewState?.showPeriodCheckOnViewDay ?? false,

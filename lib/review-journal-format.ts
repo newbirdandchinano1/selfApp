@@ -518,3 +518,15 @@ export function reviewContentToPlainPreview(raw: string): string {
     .filter(Boolean)
     .join(' ');
 }
+
+/** 格子只读展示：保留用户换行，文本块之间用换行分隔 */
+export function reviewContentToPlainDisplay(raw: string): string {
+  return parseReviewFieldContent(raw)
+    .blocks.map(block => {
+      if (block.kind === 'image') return '[图片]';
+      return block.model.plain.replace(/\r\n/g, '\n');
+    })
+    .filter(Boolean)
+    .join('\n')
+    .trimEnd();
+}

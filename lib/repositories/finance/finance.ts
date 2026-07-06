@@ -3,6 +3,7 @@ import { ensureLocalRowForWrite, readLocalRowForWrite } from '@/lib/api-local-ro
 import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, sortBySortOrderAsc, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
+import { dedupeRowsByPrimaryKey } from '@/lib/sqlite-primary-key-dedupe';
 import { getDatabase } from '../../database.native';
 import {
   buildFinanceTransferTxnExtra,
@@ -54,7 +55,8 @@ async function readFinanceTransactionsLocalVisible(): Promise<FinanceTransaction
   const rows = await db.getAllAsync<FinanceTransactionRow>(
     `SELECT * FROM finance_transactions WHERE sync_status != 'pending_delete'`,
   );
-  return rows ?? [];
+  if (!rows || rows.length <= 1) return rows ?? [];
+  return dedupeRowsByPrimaryKey(rows as Record<string, unknown>[], ['id']) as FinanceTransactionRow[];
 }
 
 /** 先同步账户再同步流水，避免账户未就绪时流水被启动修复误删或过滤 */
