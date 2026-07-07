@@ -556,6 +556,8 @@ export type TasksBootstrapPayload = {
   habitCheckIns?: Record<string, unknown>[];
   taskExecutionEvents?: Record<string, unknown>[];
   frogCompletionEvents?: Record<string, unknown>[];
+  weeklyTaskScheduleSlots?: Record<string, unknown>[];
+  weeklyTaskScheduleCells?: Record<string, unknown>[];
   meta?: Record<string, unknown>;
 };
 

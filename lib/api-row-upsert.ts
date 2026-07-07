@@ -137,6 +137,164 @@ async function upsertHabitCheckInRowToApi(
   }
 }
 
+function isWeeklyTaskScheduleSlotOverlapError(err: unknown): boolean {
+  return err instanceof ApiRequestError && /时段与已有记录时间重叠|时间重叠/.test(err.message);
+}
+
+function isWeeklyTaskScheduleSlotConflictError(err: unknown): boolean {
+  return isDuplicateRecordApiError(err) || isWeeklyTaskScheduleSlotOverlapError(err);
+}
+
+async function findApiWeeklyTaskScheduleSlotConflict(
+  startHour: number,
+  endHour: number,
+  signal?: AbortSignal,
+): Promise<{ id: string; exact: boolean } | null> {
+  let page = 1;
+  let overlapping: { id: string; exact: boolean } | null = null;
+  while (page <= 50) {
+    const { list, pagination } = await apiListRecords<{
+      id?: string;
+      start_hour?: number;
+      end_hour?: number;
+    }>('weekly_task_schedule_slots', { page, limit: 200, signal });
+    for (const row of list) {
+      if (!row.id) continue;
+      const apiStart = Number(row.start_hour);
+      const apiEnd = Number(row.end_hour);
+      if (!Number.isFinite(apiStart) || !Number.isFinite(apiEnd)) continue;
+      if (apiStart === startHour && apiEnd === endHour) {
+        return { id: String(row.id), exact: true };
+      }
+      if (apiStart < endHour && startHour < apiEnd && !overlapping) {
+        overlapping = { id: String(row.id), exact: false };
+      }
+    }
+    if (page >= pagination.totalPages || list.length === 0) break;
+    page += 1;
+  }
+  return overlapping;
+}
+
+function joinWeeklyTaskScheduleCellContent(a: string, b: string): string {
+  const left = a.trim();
+  const right = b.trim();
+  if (!left) return right;
+  if (!right) return left;
+  if (left.includes(right)) return left;
+  if (right.includes(left)) return right;
+  return `${left}\n${right}`;
+}
+
+async function realignLocalWeeklyTaskScheduleSlotId(
+  localId: string,
+  serverId: string,
+  opts?: { retireLocalSlot?: boolean },
+): Promise<void> {
+  if (!localId || !serverId || localId === serverId) return;
+  const { getDatabase } = await import('@/lib/database');
+  const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+    '@/lib/cloud-sql-dirty-track'
+  );
+  const db = await getDatabase();
+  if (!db) return;
+
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.execAsync('PRAGMA foreign_keys = OFF');
+
+    const existingServerRow = await db.getFirstAsync<{ id: string }>(
+      `SELECT id FROM weekly_task_schedule_slots WHERE id = ? LIMIT 1`,
+      [serverId],
+    );
+
+    const localCells = await db.getAllAsync<{ id: string; day_of_week: number; content: string }>(
+      `SELECT id, day_of_week, content FROM weekly_task_schedule_cells WHERE slot_id = ?`,
+      [localId],
+    );
+
+    for (const cell of localCells) {
+      const target = await db.getFirstAsync<{ id: string; content: string }>(
+        `SELECT id, content FROM weekly_task_schedule_cells
+         WHERE slot_id = ? AND day_of_week = ? LIMIT 1`,
+        [serverId, cell.day_of_week],
+      );
+      if (target) {
+        const merged = joinWeeklyTaskScheduleCellContent(target.content, cell.content);
+        if (merged !== target.content.trim()) {
+          await db.runAsync(
+            `UPDATE weekly_task_schedule_cells
+             SET content = ?,
+               sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+             WHERE id = ?`,
+            [merged, target.id],
+          );
+        }
+        await db.runAsync(`DELETE FROM weekly_task_schedule_cells WHERE id = ?`, [cell.id]);
+      } else {
+        await db.runAsync(`UPDATE weekly_task_schedule_cells SET slot_id = ? WHERE id = ?`, [
+          serverId,
+          cell.id,
+        ]);
+      }
+    }
+
+    if (existingServerRow || opts?.retireLocalSlot) {
+      await db.runAsync(`DELETE FROM weekly_task_schedule_slots WHERE id = ?`, [localId]);
+    } else {
+      await db.runAsync(`UPDATE weekly_task_schedule_slots SET id = ? WHERE id = ?`, [serverId, localId]);
+    }
+
+    await db.runAsync(`UPDATE weekly_task_schedule_slots SET sync_status = 'synced' WHERE id = ?`, [serverId]);
+  } finally {
+    try {
+      await db.execAsync('PRAGMA foreign_keys = ON');
+    } catch {
+      /* ignore */
+    }
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+}
+
+async function upsertWeeklyTaskScheduleSlotRowToApi(
+  payload: Record<string, unknown>,
+  localPk: string | null,
+  signal?: AbortSignal,
+): Promise<'created' | 'updated'> {
+  try {
+    await apiCreateRecord('weekly_task_schedule_slots', payload, { signal });
+    return 'created';
+  } catch (createErr) {
+    if (!isWeeklyTaskScheduleSlotConflictError(createErr)) throw createErr;
+    if (!localPk) throw createErr;
+
+    try {
+      await apiUpdateRecord('weekly_task_schedule_slots', localPk, payload, { signal });
+      return 'updated';
+    } catch (updateErr) {
+      const canResolveByNaturalKey =
+        updateErr instanceof ApiRequestError &&
+        (updateErr.httpStatus === 404 || isWeeklyTaskScheduleSlotConflictError(updateErr));
+      if (!canResolveByNaturalKey) throw updateErr;
+    }
+
+    const startHour = Number(payload.start_hour);
+    const endHour = Number(payload.end_hour);
+    if (!Number.isFinite(startHour) || !Number.isFinite(endHour)) throw createErr;
+
+    const conflict = await findApiWeeklyTaskScheduleSlotConflict(startHour, endHour, signal);
+    if (!conflict) throw createErr;
+
+    if (conflict.exact) {
+      await apiUpdateRecord('weekly_task_schedule_slots', conflict.id, payload, { signal });
+    }
+    await realignLocalWeeklyTaskScheduleSlotId(localPk, conflict.id, {
+      retireLocalSlot: !conflict.exact,
+    });
+    return 'updated';
+  }
+}
+
 /** 单行上传失败可跳过（继续后续行） */
 export class ApiRowUploadSkippedError extends Error {
   readonly table: string;
@@ -235,6 +393,9 @@ export async function upsertRowToApi(
   const runUpsert = async (payload: Record<string, unknown>): Promise<'created' | 'updated'> => {
     if (table === 'habit_check_ins') {
       return upsertHabitCheckInRowToApi(payload, pk, opts?.signal);
+    }
+    if (table === 'weekly_task_schedule_slots') {
+      return upsertWeeklyTaskScheduleSlotRowToApi(payload, pk, opts?.signal);
     }
     try {
       await apiCreateRecord(table, payload, { signal: opts?.signal });
@@ -642,6 +803,49 @@ export async function upsertHabitsReferencedByCheckIns(
     } catch (e) {
       if (e instanceof ApiRowUploadSkippedError) {
         if (__DEV__) console.warn('[api-sync] 预上传 habits 跳过', hid, e.message);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+export async function upsertWeeklyTaskScheduleSlotsReferencedByCells(
+  cellRows: Record<string, unknown>[],
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+  pkColsByTable: Map<string, string[]>,
+  uploadedPkByTable: UploadedPkRegistry,
+  fkRefsByTable: Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const slotIds = new Set<string>();
+  for (const row of cellRows) {
+    const sid = row.slot_id;
+    if (sid != null && sid !== '') slotIds.add(String(sid));
+  }
+  if (slotIds.size === 0) return;
+
+  const slotRows = rowsByTable.get('weekly_task_schedule_slots') ?? [];
+  const slotPkCols = pkColsByTable.get('weekly_task_schedule_slots') ?? ['id'];
+  const uploadedSlots = uploadedPkByTable.get('weekly_task_schedule_slots') ?? new Set<string>();
+  uploadedPkByTable.set('weekly_task_schedule_slots', uploadedSlots);
+
+  for (const sid of slotIds) {
+    const slotRow = slotRows.find(s => String(s.id) === sid);
+    if (!slotRow) continue;
+    try {
+      await upsertRowToApi('weekly_task_schedule_slots', slotRow, slotPkCols, {
+        signal,
+        uploadedPkByTable,
+        fkRefs: fkRefsByTable.get('weekly_task_schedule_slots') ?? [],
+        rowsByTable,
+        pkColsByTable,
+        fkRefsByTable,
+      });
+      uploadedSlots.add(sid);
+    } catch (e) {
+      if (e instanceof ApiRowUploadSkippedError) {
+        if (__DEV__) console.warn('[api-sync] 预上传 weekly_task_schedule_slots 跳过', sid, e.message);
         continue;
       }
       throw e;

@@ -21,6 +21,8 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   habit_check_ins: [TAB_PAGE_KEYS.tasks],
   task_execution_events: [TAB_PAGE_KEYS.tasks],
   frog_completion_events: [TAB_PAGE_KEYS.tasks],
+  weekly_task_schedule_slots: [TAB_PAGE_KEYS.tasks],
+  weekly_task_schedule_cells: [TAB_PAGE_KEYS.tasks],
   accounts: [TAB_PAGE_KEYS.finance],
   account_transactions: [TAB_PAGE_KEYS.finance],
   finance_accounts: [TAB_PAGE_KEYS.finance],
@@ -63,9 +65,16 @@ const PAGE_SCOPE_TABLES: Record<string, string[]> = (() => {
   return out;
 })();
 
+/** 非 Tab 子页面需单独拉取的表 scope */
+const CHILD_PAGE_SCOPE_TABLES: Record<string, string[]> = {
+  'weekly-task-schedule': ['weekly_task_schedule_slots', 'weekly_task_schedule_cells'],
+};
+
 export function listPageScopeTables(pageKey: string): string[] {
   const key = pageKey.trim();
   if (!key) return [];
+  const child = CHILD_PAGE_SCOPE_TABLES[key];
+  if (child) return [...child];
   return PAGE_SCOPE_TABLES[key] ? [...PAGE_SCOPE_TABLES[key]!] : [];
 }
 

@@ -10,6 +10,7 @@ import {
   upsertFinanceAccountsReferencedByTransactions,
   upsertMemoDimensionsReferencedByMemos,
   upsertHabitsReferencedByCheckIns,
+  upsertWeeklyTaskScheduleSlotsReferencedByCells,
   upsertProjectsReferencedByTasks,
   upsertParentTasksReferencedByTasks,
   upsertRowToApi,
@@ -27,6 +28,7 @@ import {
   ensureProjectCategoryRefsForApiUpload,
   ensureFinanceAccountRefsForApiUpload,
   ensureMemoDimensionRefsForApiUpload,
+  ensureWeeklyTaskScheduleSlotRefsForApiUpload,
   ensureTaskCategoryMirrorForApiUpload,
   prepareLocalRowsForUpload,
   readLocalForeignKeyRefs,
@@ -49,10 +51,12 @@ export const REST_SKIP_TABLES = new Set([
 const API_DIRTY_STATE_KEY = 'selfapp:api-dirty-tables-v1';
 /** 合并同一交互内的多次脏表标记，再串行推送到 REST */
 const COALESCE_PUSH_DELAY_MS = 50;
+const MAX_PUSH_BACKOFF_MS = 30_000;
 
 const apiDirtyTables = new Set<string>();
 let apiPersistTimer: ReturnType<typeof setTimeout> | null = null;
 let coalescedApiPushTimer: ReturnType<typeof setTimeout> | null = null;
+let coalescedApiPushBackoffMs = COALESCE_PUSH_DELAY_MS;
 let apiPushInFlight = false;
 
 const SQLITE_RESERVED_TABLE_NAMES = new Set(['on', 'off', 'begin', 'end', 'commit', 'rollback']);
@@ -259,6 +263,7 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
   await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
   await ensureFinanceAccountRefsForApiUpload(rowsByTable);
   await ensureMemoDimensionRefsForApiUpload(rowsByTable);
+  await ensureWeeklyTaskScheduleSlotRefsForApiUpload(rowsByTable);
 
   const seedWithRefs = [...filtered];
   if ((rowsByTable.get('finance_accounts')?.length ?? 0) > 0 && !seedWithRefs.includes('finance_accounts')) {
@@ -269,6 +274,12 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
   }
   if ((rowsByTable.get('habit_check_ins')?.length ?? 0) > 0 && !seedWithRefs.includes('habits')) {
     seedWithRefs.push('habits');
+  }
+  if (
+    (rowsByTable.get('weekly_task_schedule_cells')?.length ?? 0) > 0 &&
+    !seedWithRefs.includes('weekly_task_schedule_slots')
+  ) {
+    seedWithRefs.push('weekly_task_schedule_slots');
   }
 
   const effectiveOrder = (await resolveApiPushInsertOrder(seedWithRefs)).filter(
@@ -283,7 +294,15 @@ function scheduleCoalescedApiPush(): void {
   coalescedApiPushTimer = setTimeout(() => {
     coalescedApiPushTimer = null;
     void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
-  }, COALESCE_PUSH_DELAY_MS);
+  }, coalescedApiPushBackoffMs);
+}
+
+function scheduleCoalescedApiPushAfterFailure(): void {
+  coalescedApiPushBackoffMs = Math.min(
+    Math.max(COALESCE_PUSH_DELAY_MS, coalescedApiPushBackoffMs * 2),
+    MAX_PUSH_BACKOFF_MS,
+  );
+  scheduleCoalescedApiPush();
 }
 
 /** @deprecated 使用 scheduleCoalescedApiPush */
@@ -473,6 +492,16 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
         );
       }
 
+      if (table === 'weekly_task_schedule_cells') {
+        await upsertWeeklyTaskScheduleSlotsReferencedByCells(
+          rows,
+          rowsByTable,
+          pkColsByTable,
+          uploadedPkByTable,
+          fkRefsByTable,
+        );
+      }
+
       for (const row of rows) {
         try {
           const action = await upsertRowToApi(table, row, pkCols, {
@@ -500,10 +529,11 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
 
     await clearApiDirtyTablesWithoutPending(dirtyList);
     await setLastApiIncrementalSyncAtIso(new Date().toISOString());
+    coalescedApiPushBackoffMs = COALESCE_PUSH_DELAY_MS;
   } catch (e) {
     if (__DEV__) console.warn('[api incremental] 推送失败', e);
     if (opts?.rethrow) throw e;
-    scheduleCoalescedApiPush();
+    scheduleCoalescedApiPushAfterFailure();
   } finally {
     apiPushInFlight = false;
   }

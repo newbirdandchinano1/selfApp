@@ -1,6 +1,7 @@
 import { ScreenLoadingShell } from '@/components/screen-loading-shell';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { createProjectFromMemoInInbox } from '@/lib/memo-to-project';
 import { createStandaloneTodoFromMemo } from '@/lib/memo-to-task';
 import {
   MEMO_DIMENSION_MAX,
@@ -269,6 +270,28 @@ export default function MemoListScreen() {
     }
   }, [router]);
 
+  const performConvertToProject = useCallback(async (row: MemoItem) => {
+    setConvertingMemoId(row.id);
+    try {
+      const { projectId, name } = await createProjectFromMemoInInbox(row);
+      setItems(prev => prev.filter(m => m.id !== row.id));
+      delete swipeableRefs.current[row.id];
+      setAiModalId(prevId => (prevId === row.id ? null : prevId));
+      Alert.alert('已转为项目', `「${name}」已加入收集箱，原备忘已删除。`, [
+        { text: '知道了', style: 'cancel' },
+        { text: '查看项目', onPress: () => router.push({ pathname: '/edit-project', params: { id: projectId } }) },
+      ]);
+    } catch (e) {
+      if (e instanceof Error && e.message === 'duplicate_name') {
+        Alert.alert('转换失败', '已有同名项目，请修改备忘标题后再转换。');
+      } else {
+        Alert.alert('转换失败', '请稍后重试');
+      }
+    } finally {
+      setConvertingMemoId(prev => (prev === row.id ? null : prev));
+    }
+  }, [router]);
+
   const onDeleteMemo = useCallback((row: MemoItem) => {
     const title = memoListPreviewTitle(row);
     Alert.alert('删除备忘', `确定删除「${title}」？`, [
@@ -346,6 +369,14 @@ export default function MemoListScreen() {
               {isConverting ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcons name="playlist-add-check" size={22} color="#fff" />}
               <Text style={styles.swipeTodoText}>转待办</Text>
             </Pressable>
+            <Pressable
+              onPress={() => performConvertToProject(item)}
+              disabled={isConverting}
+              style={({ pressed }) => [styles.swipeProjectAction, { backgroundColor: secondary, opacity: isConverting ? 0.55 : pressed ? 0.92 : 1 }]}
+            >
+              {isConverting ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcons name="folder-special" size={22} color="#fff" />}
+              <Text style={styles.swipeProjectText}>转项目</Text>
+            </Pressable>
             <Pressable onPress={() => onDeleteMemo(item)} style={({ pressed }) => [styles.swipeDeleteAction, pressed && { opacity: 0.92 }]}>
               <MaterialIcons name="delete-outline" size={24} color="#fff" />
               <Text style={styles.swipeDeleteText}>删除</Text>
@@ -372,7 +403,7 @@ export default function MemoListScreen() {
         </View>
       </Swipeable>
     );
-  }, [borderSoft, cardBg, convertingMemoId, onDeleteMemo, openAiModal, performConvertToTodo, outline, primary, router, secondary, tertiary, text]);
+  }, [borderSoft, cardBg, convertingMemoId, onDeleteMemo, openAiModal, performConvertToProject, performConvertToTodo, outline, primary, router, secondary, tertiary, text]);
 
   const currentDimensionLabel = selectedDimension?.name.trim() || '备忘录';
 
@@ -605,6 +636,19 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   swipeTodoText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  swipeProjectAction: {
+    width: 92,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 18,
+    marginVertical: 2,
+    gap: 4,
+  },
+  swipeProjectText: {
     color: '#fff',
     fontSize: 12,
     fontWeight: '800',

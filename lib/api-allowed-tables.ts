@@ -39,6 +39,8 @@ export const API_ALLOWED_TABLES = new Set([
   'users',
   'visions',
   'weekly_review_journal',
+  'weekly_task_schedule_cells',
+  'weekly_task_schedule_slots',
   'wish_items',
 ]);
 

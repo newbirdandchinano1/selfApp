@@ -205,3 +205,4 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.sm,
   },
 });
+

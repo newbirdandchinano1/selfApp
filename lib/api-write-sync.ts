@@ -17,18 +17,19 @@ function clearWritePushDebounce(): void {
   }
 }
 
-async function runFlush(opts?: { rethrow?: boolean }): Promise<void> {
+async function runFlush(opts?: { rethrow?: boolean; awaitSync?: boolean }): Promise<void> {
   const flush = async () => {
     const { flushApiDirtyTablesNow } = await import('@/lib/api-incremental-sync');
     await flushApiDirtyTablesNow({ rethrow: opts?.rethrow ?? false });
   };
 
-  if (isSkeletonLoadingTabActive()) {
-    await flush();
+  const showGlobalLoading = opts?.awaitSync === true && !isSkeletonLoadingTabActive();
+  if (showGlobalLoading) {
+    await withApiWriteLoading(flush);
     return;
   }
 
-  await withApiWriteLoading(flush);
+  await flush();
 }
 
 export async function pushLocalChangesToApi(opts?: {
@@ -36,7 +37,7 @@ export async function pushLocalChangesToApi(opts?: {
   awaitSync?: boolean;
   rethrow?: boolean;
 }): Promise<void> {
-  const run = () => runFlush({ rethrow: opts?.rethrow });
+  const run = () => runFlush({ rethrow: opts?.rethrow, awaitSync: opts?.awaitSync });
 
   if (opts?.awaitSync) {
     clearWritePushDebounce();

@@ -27,6 +27,7 @@ const PAGE_PARENTS: Record<string, string[]> = {
   'task-detail': [TAB.tasks],
   'tasks-calendar': [TAB.tasks],
   'tasks-overview': [TAB.tasks],
+  'weekly-task-schedule': [TAB.tasks],
   'habit-manage': [TAB.tasks],
   'habit-detail': ['habit-manage', TAB.tasks],
   'add-habit': ['habit-manage', TAB.tasks],

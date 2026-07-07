@@ -130,6 +130,13 @@ async function upsertRowsToLocalTable(
           continue;
         }
         if (existing) {
+          if (table === 'memo_dimensions' && colNames.includes('name')) {
+            const apiName = typeof obj.name === 'string' ? obj.name.trim() : '';
+            const localName = typeof existing.name === 'string' ? existing.name.trim() : '';
+            if (localName && (!apiName || apiName === '未命名维度')) {
+              obj.name = localName;
+            }
+          }
           if (table === 'finance_transactions' && colNames.includes('extra_data')) {
             obj.extra_data = mergeFinanceTxnExtraOnApiSync(
               typeof obj.extra_data === 'string' ? obj.extra_data : null,

@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 34;
+export const DB_VERSION = 35;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -670,6 +670,29 @@ export async function initDatabase() {
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending_create'
     );
+
+    CREATE TABLE IF NOT EXISTS weekly_task_schedule_slots (
+      id TEXT PRIMARY KEY NOT NULL,
+      start_hour INTEGER NOT NULL,
+      end_hour INTEGER NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      CHECK (end_hour > start_hour)
+    );
+
+    CREATE TABLE IF NOT EXISTS weekly_task_schedule_cells (
+      id TEXT PRIMARY KEY NOT NULL,
+      slot_id TEXT NOT NULL,
+      day_of_week INTEGER NOT NULL CHECK (day_of_week >= 0 AND day_of_week <= 6),
+      content TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      FOREIGN KEY (slot_id) REFERENCES weekly_task_schedule_slots(id) ON DELETE CASCADE,
+      UNIQUE(slot_id, day_of_week)
+    );
   `);
 
   const { migrateAppSettingsFromAsyncStorageIfNeeded } = await import('@/lib/app-settings-store');
@@ -970,6 +993,11 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_memo_dimensions_updated_at ON memo_dimensions(updated_at);
     CREATE INDEX IF NOT EXISTS idx_memos_dimension_id ON memos(dimension_id);
     CREATE INDEX IF NOT EXISTS idx_memos_updated_at ON memos(updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_weekly_task_schedule_slots_sort_order ON weekly_task_schedule_slots(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_weekly_task_schedule_slots_updated_at ON weekly_task_schedule_slots(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_weekly_task_schedule_cells_slot_id ON weekly_task_schedule_cells(slot_id);
+    CREATE INDEX IF NOT EXISTS idx_weekly_task_schedule_cells_updated_at ON weekly_task_schedule_cells(updated_at);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
@@ -1095,6 +1123,11 @@ export async function initDatabase() {
   const { migrateUserWeaknessesStorageToSqliteIfNeeded } = await import('@/lib/user-weaknesses');
   await migrateUserWeaknessesStorageToSqliteIfNeeded(db);
 
+  const { migrateWeeklyTaskScheduleToSqliteIfNeeded } = await import(
+    '@/lib/repositories/tasks/weekly-task-schedule'
+  );
+  await migrateWeeklyTaskScheduleToSqliteIfNeeded(db);
+
   const { ensureReviewTemplateDefaults } = await import('@/lib/repositories/insights/review-template');
   await ensureReviewTemplateDefaults();
 
@@ -1140,6 +1173,8 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS cash_flow_incomes;
     DROP TABLE IF EXISTS cash_flow_holdings;
     DROP TABLE IF EXISTS cash_flow_profile;
+    DROP TABLE IF EXISTS weekly_task_schedule_cells;
+    DROP TABLE IF EXISTS weekly_task_schedule_slots;
     DROP TABLE IF EXISTS app_settings;
     DROP TABLE IF EXISTS user_desired_skills;
     DROP TABLE IF EXISTS user_skill_items;

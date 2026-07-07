@@ -359,6 +359,10 @@ async function prepareRowsForCloudInsert(
     prepared = sortRowsBySelfForeignKey(prepared, fk.toColumn, fk.fromColumn);
   }
 
+  if (table === 'habit_check_ins') {
+    prepared = filterHabitCheckInsForCloudUpload(prepared, rowsByTable);
+  }
+
   return prepared;
 }
 
@@ -764,6 +768,104 @@ export async function ensureMemoDimensionRefsForApiUpload(
   }
 }
 
+/** habit_check_ins.habit_id 引用 habits；补全待上传 bundle 中的习惯行 */
+export async function ensureHabitRefsForApiUpload(
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+): Promise<void> {
+  const checkInRows = rowsByTable.get('habit_check_ins') ?? [];
+  if (checkInRows.length === 0) return;
+
+  const neededIds = new Set<string>();
+  for (const row of checkInRows) {
+    const hid = row.habit_id;
+    if (hid != null && hid !== '') neededIds.add(String(hid));
+  }
+  if (neededIds.size === 0) return;
+
+  const existing = rowsByTable.get('habits') ?? [];
+  const byId = new Map(
+    existing
+      .filter(r => r.id != null && r.id !== '')
+      .map(r => [String(r.id), r]),
+  );
+
+  const db = await getDatabase();
+  if (!db) return;
+
+  for (const id of neededIds) {
+    if (byId.has(id)) continue;
+    const row = await db.getFirstAsync<Record<string, unknown>>(
+      'SELECT * FROM habits WHERE id = ? LIMIT 1',
+      [id],
+    );
+    if (row) {
+      existing.push(row);
+      byId.set(id, row);
+    }
+  }
+
+  if (existing.length > 0) {
+    rowsByTable.set('habits', existing);
+  }
+}
+
+/** weekly_task_schedule_cells.slot_id 引用 weekly_task_schedule_slots */
+export async function ensureWeeklyTaskScheduleSlotRefsForApiUpload(
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+): Promise<void> {
+  const cellRows = rowsByTable.get('weekly_task_schedule_cells') ?? [];
+  if (cellRows.length === 0) return;
+
+  const neededIds = new Set<string>();
+  for (const row of cellRows) {
+    const sid = row.slot_id;
+    if (sid != null && sid !== '') neededIds.add(String(sid));
+  }
+  if (neededIds.size === 0) return;
+
+  const existing = rowsByTable.get('weekly_task_schedule_slots') ?? [];
+  const byId = new Map(
+    existing
+      .filter(r => r.id != null && r.id !== '')
+      .map(r => [String(r.id), r]),
+  );
+
+  const db = await getDatabase();
+  if (!db) return;
+
+  for (const id of neededIds) {
+    if (byId.has(id)) continue;
+    const row = await db.getFirstAsync<Record<string, unknown>>(
+      'SELECT * FROM weekly_task_schedule_slots WHERE id = ? LIMIT 1',
+      [id],
+    );
+    if (row) {
+      existing.push(row);
+      byId.set(id, row);
+    }
+  }
+
+  if (existing.length > 0) {
+    rowsByTable.set('weekly_task_schedule_slots', existing);
+  }
+}
+
+function filterHabitCheckInsForCloudUpload(
+  rows: Record<string, unknown>[],
+  rowsByTable: Map<string, Record<string, unknown>[]>,
+): Record<string, unknown>[] {
+  const habitIds = new Set(
+    (rowsByTable.get('habits') ?? [])
+      .filter(r => r.id != null && r.id !== '')
+      .map(r => String(r.id)),
+  );
+  return rows.filter(row => {
+    const hid = row.habit_id;
+    if (hid == null || hid === '') return false;
+    return habitIds.has(String(hid));
+  });
+}
+
 /** 内置收集箱优先，供 REST 上传 project_categories 时使用 */
 export function sortProjectCategoriesForApiUpload(
   rows: Record<string, unknown>[],
@@ -977,6 +1079,8 @@ export async function collectLocalTablesDataForUpload(
   }
   await ensureProjectCategoryRefsForApiUpload(rowsByTable);
   await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
+  await ensureHabitRefsForApiUpload(rowsByTable);
+  await ensureWeeklyTaskScheduleSlotRefsForApiUpload(rowsByTable);
 
   return { insertOrder, rowsByTable };
 }
