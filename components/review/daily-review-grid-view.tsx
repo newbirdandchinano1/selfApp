@@ -14,6 +14,7 @@ import {
   formatDailyReviewReminderClock,
   getDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
+import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { Layout, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -145,6 +146,9 @@ export function DailyReviewGridView({
     setSaving(true);
     try {
       await upsertDailyReviewJournal(ymd, serializeReviewBody(fields, meta));
+      if (ymd === todayYmd) {
+        void syncDailyReviewReminderNotification();
+      }
       setSavedFlash(true);
       if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
       savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);
@@ -153,7 +157,7 @@ export function DailyReviewGridView({
     } finally {
       setSaving(false);
     }
-  }, [canEdit, fields, meta, ymd]);
+  }, [canEdit, fields, meta, todayYmd, ymd]);
 
   useEffect(() => {
     if (!hydratedRef.current || !canEdit) return;

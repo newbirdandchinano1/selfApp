@@ -352,6 +352,7 @@ export async function visionRowToWallCard(row: VisionRow): Promise<VisionWallCar
   const linked = await resolveLinkedTargetProgress(row, extra);
   const wall = wallFieldsFromRow(row, extra, linked);
   const imageSource = resolveVisionBgImageSource(row.bg_option_idx, extra);
+  const description = row.description?.trim() || undefined;
   if (wall.kind === 'target') {
     const subGoals = await resolveWallSubGoalItems(extra);
     const hasSubGoals = collectVisionSubGoalsFromExtra(extra).length > 0;
@@ -364,6 +365,7 @@ export async function visionRowToWallCard(row: VisionRow): Promise<VisionWallCar
       return {
         ...wall,
         imageSource,
+        description,
         subGoals,
         simpleComplete: true,
         isComplete,
@@ -371,9 +373,9 @@ export async function visionRowToWallCard(row: VisionRow): Promise<VisionWallCar
         percentText: isComplete ? '已完成' : '',
       } as VisionWallCardModel;
     }
-    return { ...wall, imageSource, subGoals } as VisionWallCardModel;
+    return { ...wall, imageSource, description, subGoals } as VisionWallCardModel;
   }
-  return { ...wall, imageSource } as VisionWallCardModel;
+  return { ...wall, imageSource, description } as VisionWallCardModel;
 }
 
 export async function visionRowToProfileCarouselItem(

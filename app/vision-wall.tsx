@@ -116,8 +116,10 @@ function computeTargetCardMinHeight(
   showPlanRemain: boolean,
   hasProgressBar: boolean,
   hasMoreHint: boolean,
+  hasDescription: boolean,
 ): number {
   const padding = 84;
+  const description = hasDescription ? 40 : 0;
   const progress = hasProgressBar ? 46 : 0;
   const planRemain = showPlanRemain ? 26 : 0;
   const subGoalsHeader = 18;
@@ -125,7 +127,17 @@ function computeTargetCardMinHeight(
   const rowGaps = Math.max(0, visibleSubGoalCount - 1) * 4;
   const sectionGaps = 12;
   const moreHint = hasMoreHint ? 18 : 0;
-  return padding + progress + planRemain + subGoalsHeader + subGoalRows + rowGaps + sectionGaps + moreHint;
+  return (
+    padding +
+    description +
+    progress +
+    planRemain +
+    subGoalsHeader +
+    subGoalRows +
+    rowGaps +
+    sectionGaps +
+    moreHint
+  );
 }
 
 type ProgressEditTarget = {
@@ -177,6 +189,8 @@ const VisionCard = ({
   const showCountAdjust = card.kind === 'count' && card.wallAdjust;
   const showPlanRemain = planRemainLabel && card.kind !== 'countdown';
   const isTargetCard = card.kind === 'target';
+  const cardDescription = card.description?.trim() ?? '';
+  const hasDescription = cardDescription.length > 0;
   const targetSubGoals = isTargetCard ? (card.subGoals ?? []) : [];
   const { visible: visibleSubGoalEntries, hiddenCount: hiddenSubGoalCount } = selectWallVisibleSubGoals(
     targetSubGoals,
@@ -188,6 +202,7 @@ const VisionCard = ({
           !!showPlanRemain,
           !card.simpleComplete,
           hiddenSubGoalCount > 0,
+          hasDescription,
         )
       : undefined;
 
@@ -218,6 +233,14 @@ const VisionCard = ({
               >
                 {card.title}
               </Text>
+              {hasDescription ? (
+                <Text
+                  style={[styles.cardDescription, styles.cardDescriptionUnderTitle, card.isComplete && styles.cardTitleDone]}
+                  numberOfLines={2}
+                >
+                  {cardDescription}
+                </Text>
+              ) : null}
               {card.isComplete ? (
                 <View style={styles.completeBadge}>
                   <MaterialIcons name="done" size={12} color="#bbf7d0" />
@@ -248,6 +271,11 @@ const VisionCard = ({
           <Text style={[styles.cardTitle, styles.cardTitlePinned]} numberOfLines={2}>
             {card.title}
           </Text>
+          {hasDescription ? (
+            <Text style={[styles.cardDescription, styles.cardDescriptionUnderTitle]} numberOfLines={2}>
+              {cardDescription}
+            </Text>
+          ) : null}
         </View>
       ) : null}
 
@@ -255,6 +283,7 @@ const VisionCard = ({
         style={[
           styles.cardContent,
           isTargetCard ? styles.cardContentWithTopTitle : null,
+          isTargetCard && hasDescription ? styles.cardContentWithTopTitleAndDesc : null,
           visibleSubGoalEntries.length > 0 ? styles.cardContentCompact : null,
         ]}
         pointerEvents="box-none"
@@ -264,6 +293,11 @@ const VisionCard = ({
           {card.kind === 'progress' && (
             <>
               <Text style={styles.cardTitle}>{card.title}</Text>
+              {hasDescription ? (
+                <Text style={styles.cardDescription} numberOfLines={2}>
+                  {cardDescription}
+                </Text>
+              ) : null}
               <View style={{ gap: 10 }}>
                 <View style={styles.progressPercentRow}>
                   <Text style={styles.cardPercentText}>{card.percentText}</Text>
@@ -317,6 +351,11 @@ const VisionCard = ({
           {card.kind === 'count' && (
             <>
               <Text style={styles.cardTitle}>{card.title}</Text>
+              {hasDescription ? (
+                <Text style={styles.cardDescription} numberOfLines={2}>
+                  {cardDescription}
+                </Text>
+              ) : null}
               <View style={styles.countRow}>
                 <View style={{ gap: 4 }}>
                   <Text style={styles.countKicker}>{card.leftKicker}</Text>
@@ -351,6 +390,11 @@ const VisionCard = ({
           {card.kind === 'countdown' && (
             <>
               <Text style={styles.cardTitle}>{card.title}</Text>
+              {hasDescription ? (
+                <Text style={styles.cardDescription} numberOfLines={2}>
+                  {cardDescription}
+                </Text>
+              ) : null}
               <View style={styles.countRow}>
                 <View style={{ gap: 4 }}>
                   <Text style={styles.countKicker}>
@@ -1640,8 +1684,20 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     overflow: 'hidden',
   },
+  cardContentWithTopTitleAndDesc: {
+    top: 108,
+  },
   cardContentCompact: {
     gap: 6,
+  },
+  cardDescription: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '500',
+  },
+  cardDescriptionUnderTitle: {
+    marginTop: 6,
   },
   adjustRow: {
     flexDirection: 'row',

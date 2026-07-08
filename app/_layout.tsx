@@ -17,8 +17,16 @@ import { ScheduledExpenseCoordinator } from '@/components/scheduled-expense-coor
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
 import { DailyReviewReminderNotificationListener } from '@/components/daily-review-reminder-notification-listener';
+import { HabitReminderNotificationListener } from '@/components/habit-reminder-notification-listener';
 import { TaskReminderNotificationListener } from '@/components/task-reminder-notification-listener';
-import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
+import {
+  shouldSuppressDailyReviewReminderNotification,
+  syncDailyReviewReminderNotification,
+} from '@/lib/daily-review-reminder-notifications';
+import {
+  resyncAllHabitReminders,
+  shouldSuppressHabitReminderNotification,
+} from '@/lib/habit-reminder-notifications';
 import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
 import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -40,12 +48,32 @@ const BOOTSTRAP_MAX_MS = 15_000;
 
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowBanner: true,
-      shouldShowList: true,
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-    }),
+    handleNotification: async (notification) => {
+      const data = notification.request.content.data;
+      let suppress = false;
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        const record = data as Record<string, unknown>;
+        if (record.type === 'habit-reminder' && typeof record.habitId === 'string') {
+          suppress = await shouldSuppressHabitReminderNotification(record.habitId);
+        } else if (record.type === 'daily-review-reminder') {
+          suppress = await shouldSuppressDailyReviewReminderNotification();
+        }
+      }
+      if (suppress) {
+        return {
+          shouldShowBanner: false,
+          shouldShowList: false,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        };
+      }
+      return {
+        shouldShowBanner: true,
+        shouldShowList: true,
+        shouldPlaySound: true,
+        shouldSetBadge: false,
+      };
+    },
   });
 }
 
@@ -73,6 +101,7 @@ function RootLayoutInner() {
           if (Platform.OS !== 'web') {
             startCloudPeriodicAlignScheduler();
             void syncDailyReviewReminderNotification();
+            void resyncAllHabitReminders();
           }
         } catch (e) {
           console.warn('后台初始化失败', e);
@@ -177,6 +206,7 @@ function RootLayoutInner() {
             <AutoLedgerCoordinator dbReady={isDbReady} />
             <ScheduledExpenseCoordinator dbReady={isDbReady} />
             <TaskReminderNotificationListener />
+            <HabitReminderNotificationListener />
             <DailyReviewReminderNotificationListener />
             <FinanceSheetHost />
             <AppErrorBoundary>

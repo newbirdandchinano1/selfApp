@@ -1,17 +1,21 @@
 import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
+
+function isDailyReviewReminderData(data: unknown): boolean {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  return (data as Record<string, unknown>).type === 'daily-review-reminder';
+}
 
 function navigateToDailyReviewFromNotification(
   router: ReturnType<typeof useRouter>,
   todayYmd: string,
   data: unknown,
 ) {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return;
-  const record = data as Record<string, unknown>;
-  if (record.type !== 'daily-review-reminder') return;
+  if (!isDailyReviewReminderData(data)) return;
   router.push({ pathname: '/daily-review/[ymd]', params: { ymd: todayYmd } });
 }
 
@@ -27,17 +31,29 @@ export function DailyReviewReminderNotificationListener() {
       const responseId = response.notification.request.identifier;
       if (responseId && handledResponseIdRef.current === responseId) return;
       if (responseId) handledResponseIdRef.current = responseId;
-      navigateToDailyReviewFromNotification(router, logicalTodayYmd, response.notification.request.content.data);
+      const data = response.notification.request.content.data;
+      navigateToDailyReviewFromNotification(router, logicalTodayYmd, data);
+      if (isDailyReviewReminderData(data)) {
+        void syncDailyReviewReminderNotification();
+      }
     };
 
-    const subscription = Notifications.addNotificationResponseReceivedListener(handleResponse);
+    const responseSub = Notifications.addNotificationResponseReceivedListener(handleResponse);
+    const receivedSub = Notifications.addNotificationReceivedListener((notification) => {
+      if (isDailyReviewReminderData(notification.request.content.data)) {
+        void syncDailyReviewReminderNotification();
+      }
+    });
 
     void Notifications.getLastNotificationResponseAsync().then((last) => {
       if (!last) return;
       handleResponse(last);
     });
 
-    return () => subscription.remove();
+    return () => {
+      responseSub.remove();
+      receivedSub.remove();
+    };
   }, [router, logicalTodayYmd]);
 
   return null;

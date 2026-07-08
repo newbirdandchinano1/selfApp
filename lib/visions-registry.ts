@@ -21,6 +21,8 @@ export type VisionWallCardModel =
   | {
       kind: 'progress';
       title: string;
+      /** 总目标描述（墙卡标题下展示） */
+      description?: string;
       percentText: string;
       percent: number;
       leftKicker: string;
@@ -34,6 +36,8 @@ export type VisionWallCardModel =
   | {
       kind: 'count';
       title: string;
+      /** 总目标描述（墙卡标题下展示） */
+      description?: string;
       leftKicker: string;
       leftValue: string;
       rightKicker: string;
@@ -45,6 +49,8 @@ export type VisionWallCardModel =
   | {
       kind: 'target';
       title: string;
+      /** 总目标描述（墙卡标题下展示） */
+      description?: string;
       percentText: string;
       percent: number;
       imageSource: VisionCardImageSource;
@@ -59,6 +65,8 @@ export type VisionWallCardModel =
   | {
       kind: 'countdown';
       title: string;
+      /** 总目标描述（墙卡标题下展示） */
+      description?: string;
       dateText: string;
       remainText: string;
       /** 正数日：左侧为记录日期，右侧为「已过去 N 天」 */
@@ -330,6 +338,11 @@ export function getVisionWallCards(): VisionWallCardModel[] {
   return VISION_WALL_IDS.map(id => {
     const v = byId[id];
     if (!v?.wall) throw new Error(`Missing wall vision: ${id}`);
-    return { ...v.wall, imageSource: v.imageSource } as VisionWallCardModel;
+    const description = v.description?.trim();
+    return {
+      ...v.wall,
+      imageSource: v.imageSource,
+      ...(description ? { description } : {}),
+    } as VisionWallCardModel;
   });
 }

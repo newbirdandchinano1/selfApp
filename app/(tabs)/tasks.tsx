@@ -139,6 +139,7 @@ import {
   taskHasRepeatingSchedule,
 } from '@/lib/task-repeat-rollover';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
+import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
 import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
 import { fetchTodayFrogs } from '@/lib/today-frogs-api';
 import { fetchProjectsListForTab, mergeProjectRowsById } from '@/lib/projects-list-api';
@@ -3484,6 +3485,7 @@ export default function TasksScreen() {
       void maybeRefreshTaskHabitVisibility(habitId);
       void syncHabitBoundTasksForHabit(habitId, nextCount);
       void loadHabits();
+      void resyncHabitReminderForHabitId(habitId);
     },
     [
       loadHabits,

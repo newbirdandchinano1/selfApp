@@ -12,6 +12,7 @@ import {
   type ReviewFieldValues,
   type ReviewJournalMeta,
 } from '@/lib/repositories/insights/review-journal-body';
+import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
 import {
   applyFontSizeToTextModel,
@@ -191,6 +192,9 @@ export function DailyReviewDimensionDetailScreen() {
     setSaving(true);
     try {
       await upsertDailyReviewJournal(ymd, serializeReviewBody(fields, meta));
+      if (ymd === todayYmd) {
+        void syncDailyReviewReminderNotification();
+      }
       setSavedFlash(true);
       if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
       savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);
@@ -199,7 +203,7 @@ export function DailyReviewDimensionDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [canEdit, fields, meta, ymd]);
+  }, [canEdit, fields, meta, todayYmd, ymd]);
 
   useEffect(() => {
     if (!hydratedRef.current || !canEdit) return;

@@ -37,6 +37,7 @@ import {
   parseTaskHabitExpectedGoal,
   parseTaskRepeatPeriod,
 } from '@/lib/repositories/habits/habit-task-period';
+import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
 import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import {
   logicalYmdToLocalDate,
@@ -642,6 +643,9 @@ export default function HabitDetailScreen() {
       });
       if (habit && parseHabitKind(habit.extra_data) === 'build') {
         await tryMarkBuildHabitCompleted(habit, logicalTodayYmd);
+      }
+      if (ymd === logicalTodayYmd) {
+        void resyncHabitReminderForHabitId(habit.id);
       }
       await reload(true);
     } catch (e) {
