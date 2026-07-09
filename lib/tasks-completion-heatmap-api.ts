@@ -5,8 +5,12 @@ import {
   type CompletionHeatmapDayDetailTodo,
 } from '@/lib/api-client';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
+import { getFrogCompletionsForAssignedDay } from '@/lib/repositories/tasks/frog-completion-events';
 import type { FrogCompletionDayItem } from '@/lib/repositories/tasks/frog-completion-events';
-import type { TaskExecutionEventWithTitle } from '@/lib/repositories/tasks/task-execution-events';
+import {
+  getNetCompletedTaskEventsForLocalDay,
+  type TaskExecutionEventWithTitle,
+} from '@/lib/repositories/tasks/task-execution-events';
 import { loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 
 export type CompletionHeatmapData = {
@@ -59,21 +63,46 @@ function readTodoTitle(row: CompletionHeatmapDayDetailTodo & Record<string, unkn
   return taskTitle || null;
 }
 
+/** 青蛙完成与待办完成互斥展示：同一 task_id 已在青蛙区则不再计入待办区 */
+export function dedupeHeatmapTodoItemsAgainstFrogs(
+  frogItems: FrogCompletionDayItem[],
+  todoItems: TaskExecutionEventWithTitle[],
+): TaskExecutionEventWithTitle[] {
+  const frogTaskIds = new Set(
+    frogItems.map((f) => f.task_id?.trim()).filter((id): id is string => Boolean(id)),
+  );
+  if (frogTaskIds.size === 0) return todoItems;
+  return todoItems.filter((t) => !frogTaskIds.has(t.task_id.trim()));
+}
+
 function mapDayDetailFromApi(detail: CompletionHeatmapDayDetail, ymd: string): CompletionHeatmapDayDetailData {
+  const frogItems = (detail.frogs ?? []).map((f, i) => ({
+    id: f.task_id ? `${f.task_id}:${ymd}` : `frog-${i}`,
+    task_id: f.task_id,
+    assigned_ymd: detail.ymd?.trim() || ymd,
+    task_title: f.task_title?.trim() || null,
+  }));
+  const todoItems = (detail.todos ?? []).map((t) => ({
+    id: t.id,
+    task_id: t.task_id ?? '',
+    action: 'completed',
+    created_at: `${detail.ymd?.trim() || ymd}T12:00:00.000Z`,
+    task_title: readTodoTitle(t as CompletionHeatmapDayDetailTodo & Record<string, unknown>),
+  }));
   return {
-    frogItems: (detail.frogs ?? []).map((f, i) => ({
-      id: f.task_id ? `${f.task_id}:${ymd}` : `frog-${i}`,
-      task_id: f.task_id,
-      assigned_ymd: detail.ymd?.trim() || ymd,
-      task_title: f.task_title?.trim() || null,
-    })),
-    todoItems: (detail.todos ?? []).map((t) => ({
-      id: t.id,
-      task_id: t.task_id ?? '',
-      action: 'completed',
-      created_at: `${detail.ymd?.trim() || ymd}T12:00:00.000Z`,
-      task_title: readTodoTitle(t as CompletionHeatmapDayDetailTodo & Record<string, unknown>),
-    })),
+    frogItems,
+    todoItems: dedupeHeatmapTodoItemsAgainstFrogs(frogItems, todoItems),
+  };
+}
+
+async function fetchCompletionHeatmapDayDetailLocal(ymd: string): Promise<CompletionHeatmapDayDetailData> {
+  const [frogItems, todoItems] = await Promise.all([
+    getFrogCompletionsForAssignedDay(ymd),
+    getNetCompletedTaskEventsForLocalDay(ymd),
+  ]);
+  return {
+    frogItems,
+    todoItems: dedupeHeatmapTodoItemsAgainstFrogs(frogItems, todoItems),
   };
 }
 
@@ -114,17 +143,22 @@ export async function fetchCompletionHeatmapDayDetail(
   const { heatmapStart, heatmapEnd, signal } = opts;
 
   throwIfAborted(signal);
-  const payload = await apiGetTasksCompletionHeatmap({
-    dayBoundaryHour: boundary.hour,
-    dayBoundaryMinute: boundary.minute,
-    heatmapStart,
-    heatmapEnd,
-    day: ymd,
-    includeDayDetail: true,
-    signal,
-  });
-  if (payload.dayDetail) {
-    return mapDayDetailFromApi(payload.dayDetail, ymd);
+  try {
+    const payload = await apiGetTasksCompletionHeatmap({
+      dayBoundaryHour: boundary.hour,
+      dayBoundaryMinute: boundary.minute,
+      heatmapStart,
+      heatmapEnd,
+      day: ymd,
+      includeDayDetail: true,
+      signal,
+    });
+    if (payload.dayDetail) {
+      return mapDayDetailFromApi(payload.dayDetail, ymd);
+    }
+    return { frogItems: [], todoItems: [] };
+  } catch (e) {
+    console.warn('[completion-heatmap] 日明细接口失败，回退本地', e);
+    return fetchCompletionHeatmapDayDetailLocal(ymd);
   }
-  return { frogItems: [], todoItems: [] };
 }

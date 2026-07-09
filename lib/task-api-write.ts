@@ -19,11 +19,31 @@ function nonEmptyId(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+async function resolveInheritedProjectIdFromParentChain(
+  startParentTaskId: string,
+): Promise<string | null> {
+  let cur: string | null = startParentTaskId;
+  const visited = new Set<string>();
+  while (cur && !visited.has(cur)) {
+    visited.add(cur);
+    const row = await readLocalRowForWrite<Record<string, unknown>>('tasks', cur);
+    if (!row) break;
+    const projectId = nonEmptyId(row.project_id);
+    if (projectId) return projectId;
+    cur = nonEmptyId(row.parent_task_id) || null;
+  }
+  return null;
+}
+
 /** 子任务可能仅挂 parent_task_id；PATCH 前补齐 project_id 以免服务端清空归属 */
 async function resolveTaskForeignKeysForApiPatch(
   taskId: string,
   taskRowSnapshot?: Record<string, unknown> | null,
-): Promise<Record<string, unknown>> {
+): Promise<{
+  local: Record<string, unknown> | null;
+  parentRow: Record<string, unknown> | null;
+  inheritedProjectSource: Record<string, unknown> | null;
+}> {
   const local = await readLocalRowForWrite<Record<string, unknown>>('tasks', taskId);
   const parentTaskId = [taskRowSnapshot, local]
     .map(row => nonEmptyId(row?.parent_task_id))
@@ -32,7 +52,15 @@ async function resolveTaskForeignKeysForApiPatch(
   if (parentTaskId) {
     parentRow = await readLocalRowForWrite<Record<string, unknown>>('tasks', parentTaskId);
   }
-  return { local, parentRow };
+  const hasProjectId = [taskRowSnapshot, local, parentRow].some(row => nonEmptyId(row?.project_id));
+  let inheritedProjectSource: Record<string, unknown> | null = null;
+  if (!hasProjectId && parentTaskId) {
+    const inheritedProjectId = await resolveInheritedProjectIdFromParentChain(parentTaskId);
+    if (inheritedProjectId) {
+      inheritedProjectSource = { project_id: inheritedProjectId };
+    }
+  }
+  return { local, parentRow, inheritedProjectSource };
 }
 
 async function ensureTaskCategoryMirrorFromSnapshot(
@@ -76,11 +104,15 @@ export async function persistTaskPatchToApi(
   patch: TaskApiPatch,
   taskRowSnapshot?: Record<string, unknown> | null,
 ): Promise<void> {
-  const { local, parentRow } = await resolveTaskForeignKeysForApiPatch(taskId, taskRowSnapshot);
+  const { local, parentRow, inheritedProjectSource } = await resolveTaskForeignKeysForApiPatch(
+    taskId,
+    taskRowSnapshot,
+  );
   const merged = mergePreservedForeignKeysIntoPatch('tasks', patch, [
     taskRowSnapshot,
     local,
     parentRow,
+    inheritedProjectSource,
   ]) as TaskApiPatch;
 
   await ensureTaskCategoryMirrorFromSnapshot(merged);

@@ -1043,9 +1043,17 @@ function TaskCompletionHeatmap({
 
   const colStride = COMPLETION_HEAT_CELL + COMPLETION_HEAT_GAP;
   const selectedFrogCount =
-    selectedYmd == null ? 0 : frogCountByYmd.get(selectedYmd) ?? selectedFrogItems.length;
+    selectedYmd == null
+      ? 0
+      : dayItemsLoading
+        ? frogCountByYmd.get(selectedYmd) ?? 0
+        : selectedFrogItems.length;
   const selectedTodoCount =
-    selectedYmd == null ? 0 : todoCountByYmd.get(selectedYmd) ?? selectedTodoItems.length;
+    selectedYmd == null
+      ? 0
+      : dayItemsLoading
+        ? todoCountByYmd.get(selectedYmd) ?? 0
+        : selectedTodoItems.length;
   const hasSelectedDayItems = selectedFrogItems.length > 0 || selectedTodoItems.length > 0;
 
   React.useEffect(() => {
@@ -2904,10 +2912,15 @@ export default function TasksScreen() {
           },
           current as Record<string, unknown>,
         );
-        try {
-          await insertTaskExecutionEvent(taskId, wasDone ? 'reopened' : 'completed', current.title ?? null);
-        } catch (logErr) {
-          console.warn('记录待办执行事件失败', logErr);
+        const frogAssigned = (parseTaskMeta(current.extra_data).frogAssignedOn ?? '').trim();
+        const frogAssignedValid = /^\d{4}-\d{2}-\d{2}$/.test(frogAssigned);
+        // 待办热力图仅统计无项目待办；青蛙完成走 frog_completion_events，避免同一任务重复计入
+        if (isStandaloneTodoTask(current) && !frogAssignedValid) {
+          try {
+            await insertTaskExecutionEvent(taskId, wasDone ? 'reopened' : 'completed', current.title ?? null);
+          } catch (logErr) {
+            console.warn('记录待办执行事件失败', logErr);
+          }
         }
         if (nextStatus === 'done') {
           await tryGrantTaskCompletionReward({
@@ -2916,8 +2929,7 @@ export default function TasksScreen() {
             extra_data: nextExtraData,
           });
         }
-        const frogAssigned = (parseTaskMeta(current.extra_data).frogAssignedOn ?? '').trim();
-        if (/^\d{4}-\d{2}-\d{2}$/.test(frogAssigned)) {
+        if (frogAssignedValid) {
           try {
             await insertFrogCompletionEvent(
               taskId,
@@ -2937,14 +2949,18 @@ export default function TasksScreen() {
               status: change.status,
               completed_at: change.completed_at,
             });
-            try {
-              await insertTaskExecutionEvent(
-                change.id,
-                change.status === 'done' ? 'completed' : 'reopened',
-                change.title ?? null
-              );
-            } catch (logErr) {
-              console.warn('记录父任务级联执行事件失败', logErr);
+            const cascadeRow =
+              findVisibleTask(change.id) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, change.id);
+            if (cascadeRow && isStandaloneTodoTask(cascadeRow)) {
+              try {
+                await insertTaskExecutionEvent(
+                  change.id,
+                  change.status === 'done' ? 'completed' : 'reopened',
+                  change.title ?? null,
+                );
+              } catch (logErr) {
+                console.warn('记录父任务级联执行事件失败', logErr);
+              }
             }
             if (change.status === 'done') {
               await tryGrantTaskCompletionReward({
@@ -3053,7 +3069,8 @@ export default function TasksScreen() {
 
   const completeFrogSessionOnly = React.useCallback(
     async (taskId: string) => {
-      const current = findVisibleTask(taskId);
+      const current =
+        findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
       if (current.project_id && lockedProjectIds.has(current.project_id)) {
@@ -3089,10 +3106,15 @@ export default function TasksScreen() {
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
         await loadTodayFrogs({ forceLocal: true });
+        if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
+          await reloadProjectTasksFromLocal();
+        } else {
+          await loadTasks({ forceLocal: true });
+        }
       } catch (err) {
         console.warn('完成青蛙会话失败', err);
         Alert.alert('操作失败', '未能完成今日青蛙，请稍后重试。');
-        await loadTasks();
+        await loadTasks({ forceLocal: true });
         await loadTodayFrogs({ forceLocal: true });
         await loadProjectTasks(projects);
       }
@@ -3109,14 +3131,15 @@ export default function TasksScreen() {
       projectLockMap,
       projectTaskTreeMap,
       projects,
-      todayFrogs,
+      reloadProjectTasksFromLocal,
       updateTaskInProjectTree,
     ]
   );
 
   const reopenFrogSessionOnly = React.useCallback(
     async (taskId: string) => {
-      const current = findVisibleTask(taskId);
+      const current =
+        findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
       const frogAssigned = getFrogAssignedOn(current.extra_data);
@@ -3147,10 +3170,15 @@ export default function TasksScreen() {
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
         await loadTodayFrogs({ forceLocal: true });
+        if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
+          await reloadProjectTasksFromLocal();
+        } else {
+          await loadTasks({ forceLocal: true });
+        }
       } catch (err) {
         console.warn('恢复青蛙会话失败', err);
         Alert.alert('操作失败', '未能恢复今日青蛙，请稍后重试。');
-        await loadTasks();
+        await loadTasks({ forceLocal: true });
         await loadTodayFrogs({ forceLocal: true });
         await loadProjectTasks(projects);
       }
@@ -3165,7 +3193,7 @@ export default function TasksScreen() {
       patchVisibleTask,
       projectTaskTreeMap,
       projects,
-      todayFrogs,
+      reloadProjectTasksFromLocal,
       updateTaskInProjectTree,
     ]
   );

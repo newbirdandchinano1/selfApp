@@ -6,9 +6,9 @@ import { getActivePageApiReadOpts } from '@/lib/page-api-session';
 import { getTasks } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
-  getLogicalLocalYmd,
-  loadTasksDayBoundary,
-  type TasksDayBoundary,
+    getLogicalLocalYmd,
+    loadTasksDayBoundary,
+    type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 
 export type TodayFrogsResult = {
@@ -64,9 +64,12 @@ export async function fetchTodayFrogs(opts?: {
       if (rows.length > 0) {
         await syncApiReadResultToLocal('tasks', rows as Record<string, unknown>[]);
       }
+      const resolvedToday = data.logicalToday?.trim() || logicalToday;
+      // 接口可能返回精简任务行（缺 project_id / parent_task_id）；展示与完成青蛙均以本地全量行为准
+      const allTasks = await getTasks();
       return {
-        logicalToday: data.logicalToday?.trim() || logicalToday,
-        tasks: rows,
+        logicalToday: resolvedToday,
+        tasks: filterTodayFrogsLocally(allTasks, resolvedToday),
       };
     } catch (e) {
       if (!opts?.offlineFallback) throw e;
