@@ -1175,7 +1175,7 @@ export default function AddHabitScreen() {
                     placeholderColor={colors.textMuted}
                     primary={colors.primary}
                     surfaceLow={colors.input}
-                    surfaceLowest={colors.surfaceSubtle}
+                    surfaceLowest={colors.surface}
                     isDark={isDark}
                   />
                 </AppCard>

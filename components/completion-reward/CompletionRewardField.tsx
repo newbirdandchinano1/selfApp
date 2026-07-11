@@ -1,6 +1,7 @@
 import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
 import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
 import { formatCompletionRewardLabel } from '@/lib/completion-reward/completion-reward-extra';
+import { isWishItemFulfilled } from '@/lib/repositories/wish-list/wish-list-extra';
 import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -61,6 +62,14 @@ export function CompletionRewardField({
   }, [value]);
 
   const wishNameById = useMemo(() => new Map(wishItems.map((w) => [w.id, w.name])), [wishItems]);
+  const selectableWishItems = useMemo(
+    () =>
+      wishItems.filter((item) => {
+        if (!isWishItemFulfilled(item)) return true;
+        return value.kind === 'wish' && value.wish_item_id === item.id;
+      }),
+    [wishItems, value],
+  );
   const summary = formatCompletionRewardLabel(value, wishNameById) ?? '无';
 
   const loadWishItems = useCallback(async () => {
@@ -189,11 +198,11 @@ export function CompletionRewardField({
             <Text style={[styles.modalTitle, { color: textColor }]}>选择心愿好物</Text>
             {wishLoading ? (
               <ActivityIndicator color={primary} style={{ marginVertical: 24 }} />
-            ) : wishItems.length === 0 ? (
-              <Text style={[styles.emptyText, { color: outline }]}>心愿单暂无好物，请先在心愿单中添加。</Text>
+            ) : selectableWishItems.length === 0 ? (
+              <Text style={[styles.emptyText, { color: outline }]}>心愿单暂无待选好物，请先在心愿单中添加未实现的条目。</Text>
             ) : (
               <ScrollView style={styles.modalScroll} keyboardShouldPersistTaps="handled">
-                {wishItems.map((item) => {
+                {selectableWishItems.map((item) => {
                   const selected = value.kind === 'wish' && value.wish_item_id === item.id;
                   return (
                     <Pressable
