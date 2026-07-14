@@ -1553,6 +1553,8 @@ export default function TasksScreen() {
   const [habitSections, setHabitSections] = React.useState<HabitSection[]>([]);
   /** 防止小习惯图标/名称快速连点产生并发打卡。 */
   const habitCheckInLockRef = React.useRef<Set<string>>(new Set());
+  /** 丢弃过期的 loadHabits 结果，避免乐观更新后被陈旧请求覆盖。 */
+  const habitLoadGenerationRef = React.useRef(0);
   const [habitLookupById, setHabitLookupById] = React.useState<
     Map<string, { name: string; icon: string }>
   >(() => new Map());
@@ -1909,22 +1911,25 @@ export default function TasksScreen() {
   }, [dayBoundary]);
 
   const loadHabits = React.useCallback(async () => {
+    const generation = ++habitLoadGenerationRef.current;
     try {
       await syncBreakHabitCompletions();
       await syncBuildHabitCompletions();
       const data = await fetchTasksHabitsGrid({ boundary: dayBoundary, offlineFallback: true });
-      const logicalToday = data.logicalToday?.trim() || getLogicalLocalYmd(new Date(), dayBoundary);
-      const recordFlags = await getHabitDayRecordFlagsForYmd(logicalToday);
+      if (generation !== habitLoadGenerationRef.current) return;
+      const recordFlags = await getHabitDayRecordFlagsForYmd(logicalTodayYmd);
+      if (generation !== habitLoadGenerationRef.current) return;
       const sections = (data.sections as HabitSection[]).map((section) => ({
         ...section,
         items: section.items.map((it) => {
           const hasTodayRecord = it.kind === 'break' ? recordFlags.get(it.id) ?? false : undefined;
           return applyHabitCountPatch(it, it.todayCount, 0, {
             hasTodayRecord,
-            logicalTodayYmd: logicalToday,
+            logicalTodayYmd,
           });
         }),
       }));
+      if (generation !== habitLoadGenerationRef.current) return;
       setHabitLookupById(
         new Map(
           sections.flatMap((s) => s.items).map((it) => [it.id, { name: it.name, icon: it.icon }]),
@@ -1939,11 +1944,12 @@ export default function TasksScreen() {
         return next;
       });
     } catch (err) {
+      if (generation !== habitLoadGenerationRef.current) return;
       console.warn('加载习惯失败', err);
       setHabitSections([]);
       setHabitLookupById(new Map());
     }
-  }, [dayBoundary]);
+  }, [dayBoundary, logicalTodayYmd]);
 
   const loadProjectTasks = React.useCallback(
     async (
@@ -3507,12 +3513,12 @@ export default function TasksScreen() {
   );
 
   const runHabitSideEffectsAfterCountChange = React.useCallback(
-    (habitId: string, nextCount: number) => {
+    (habitId: string, nextCount: number, opts?: { skipHabitReload?: boolean }) => {
       void maybeCompleteBreakHabit(habitId);
       void maybeCompleteBuildHabit(habitId);
       void maybeRefreshTaskHabitVisibility(habitId);
       void syncHabitBoundTasksForHabit(habitId, nextCount);
-      void loadHabits();
+      if (!opts?.skipHabitReload) void loadHabits();
       void resyncHabitReminderForHabitId(habitId);
     },
     [
@@ -3528,6 +3534,7 @@ export default function TasksScreen() {
     async (item: HabitGridItem) => {
       if (habitCheckInLockRef.current.has(item.id)) return;
       habitCheckInLockRef.current.add(item.id);
+      habitLoadGenerationRef.current += 1;
       markPageDirty();
       const optimistic = optimisticHabitCountDelta(item, 1);
       if (optimistic) {
@@ -3558,11 +3565,12 @@ export default function TasksScreen() {
     async (item: HabitGridItem) => {
       if (habitCheckInLockRef.current.has(item.id)) return;
       habitCheckInLockRef.current.add(item.id);
+      habitLoadGenerationRef.current += 1;
       markPageDirty();
       patchHabitTodayCount(item.id, 0, 0, { hasTodayRecord: true });
       try {
         await confirmBreakHabitDayClean(item.id, logicalTodayYmd);
-        runHabitSideEffectsAfterCountChange(item.id, 0);
+        runHabitSideEffectsAfterCountChange(item.id, 0, { skipHabitReload: true });
       } catch (err) {
         console.warn('确认保持戒除失败', err);
         restoreHabitGridItem(item);
@@ -3583,6 +3591,7 @@ export default function TasksScreen() {
     async (item: HabitGridItem) => {
       if (habitCheckInLockRef.current.has(item.id)) return;
       habitCheckInLockRef.current.add(item.id);
+      habitLoadGenerationRef.current += 1;
       markPageDirty();
       const optimistic = optimisticHabitCountDelta(item, -1);
       if (optimistic) {

@@ -584,6 +584,7 @@ function MobileDashboard({
       const force = forceAiRefreshRef.current;
       forceAiRefreshRef.current = false;
 
+      // 明细增删改只读本地缓存；指纹变化不再自动打 AI（需用户点刷新）
       if (!force) {
         try {
           const raw = await AsyncStorage.getItem(CASH_FLOW_AI_CACHE_KEY);
@@ -600,6 +601,11 @@ function MobileDashboard({
         } catch {
           /* ignore */
         }
+        if (cancelled || reqId !== aiRequestId.current) return;
+        setAiAnalysis(null);
+        setAiError(null);
+        setAiLoading(false);
+        return;
       }
 
       if (cancelled || reqId !== aiRequestId.current) return;

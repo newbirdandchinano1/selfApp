@@ -1,4 +1,4 @@
-import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { invalidateInflightApiTableFetch, readApiTable } from '@/lib/api-read';
 import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
@@ -17,6 +17,8 @@ import type {
 } from './cash-flow.types';
 
 export const CASH_FLOW_PROFILE_ID = 'default';
+
+type LocalSyncRow = { id: string; sync_status: string | null };
 
 function assertQuadrant(q: string): asserts q is CashFlowQuadrant {
   if (!['E', 'S', 'B', 'I'].includes(q)) {
@@ -69,6 +71,28 @@ function mapHoldingRow(r: CashFlowHoldingRow): Holding {
     outflow: r.outflow,
     extra: parseHoldingExtra(r.extra_data),
   };
+}
+
+/** 从未上云的行可物理删除；已同步行标记 pending_delete 以便 REST DELETE */
+async function softRemoveMissingRows(
+  table: 'cash_flow_incomes' | 'cash_flow_holdings' | 'cash_flow_expense_lines',
+  keepIds: Set<string>,
+  existing: LocalSyncRow[],
+) {
+  const db = await getDatabase();
+  for (const row of existing) {
+    if (keepIds.has(row.id)) continue;
+    if (row.sync_status === 'pending_create') {
+      await db.runAsync(`DELETE FROM ${table} WHERE id = ?`, [row.id]);
+    } else {
+      await db.runAsync(
+        `UPDATE ${table}
+         SET updated_at = datetime('now'), sync_status = 'pending_delete'
+         WHERE id = ?`,
+        [row.id],
+      );
+    }
+  }
 }
 
 export async function ensureCashFlowProfileRow() {
@@ -160,44 +184,96 @@ export async function persistCashFlowState(state: CashFlowState) {
       ]
     );
 
-    await db.runAsync(`DELETE FROM cash_flow_incomes`);
-    await db.runAsync(`DELETE FROM cash_flow_holdings`);
-    await db.runAsync(`DELETE FROM cash_flow_expense_lines`);
+    const [existingIncomes, existingHoldings, existingExpenseLines] = await Promise.all([
+      db.getAllAsync<LocalSyncRow>(`SELECT id, sync_status FROM cash_flow_incomes`),
+      db.getAllAsync<LocalSyncRow>(`SELECT id, sync_status FROM cash_flow_holdings`),
+      db.getAllAsync<LocalSyncRow>(`SELECT id, sync_status FROM cash_flow_expense_lines`),
+    ]);
+
+    const incomeById = new Map(existingIncomes.map((r) => [r.id, r]));
+    const holdingById = new Map(existingHoldings.map((r) => [r.id, r]));
+    const expenseById = new Map(existingExpenseLines.map((r) => [r.id, r]));
+
+    const keepIncomeIds = new Set(state.incomes.map((i) => i.id));
+    const keepHoldingIds = new Set(state.holdings.map((h) => h.id));
+    const keepExpenseIds = new Set(state.expenseLines.map((x) => x.id));
+
+    await softRemoveMissingRows('cash_flow_incomes', keepIncomeIds, existingIncomes);
+    await softRemoveMissingRows('cash_flow_holdings', keepHoldingIds, existingHoldings);
+    await softRemoveMissingRows('cash_flow_expense_lines', keepExpenseIds, existingExpenseLines);
 
     let sort = 0;
     for (const i of state.incomes) {
       sort += 10;
-      await db.runAsync(
-        `INSERT INTO cash_flow_incomes (
-          id, name, amount, quadrant, sort_order,
-          created_at, updated_at, sync_status, extra_data
-        ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', NULL)`,
-        [i.id, i.name, i.amount, i.quadrant, sort]
-      );
+      const prev = incomeById.get(i.id);
+      if (!prev || prev.sync_status === 'pending_delete') {
+        await db.runAsync(
+          `INSERT OR REPLACE INTO cash_flow_incomes (
+            id, name, amount, quadrant, sort_order,
+            created_at, updated_at, sync_status, extra_data
+          ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', NULL)`,
+          [i.id, i.name, i.amount, i.quadrant, sort]
+        );
+      } else {
+        await db.runAsync(
+          `UPDATE cash_flow_incomes
+           SET name = ?, amount = ?, quadrant = ?, sort_order = ?,
+               updated_at = datetime('now'),
+               sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+           WHERE id = ?`,
+          [i.name, i.amount, i.quadrant, sort, i.id]
+        );
+      }
     }
+
     sort = 0;
     for (const h of state.holdings) {
       sort += 10;
       const extraJson =
         h.extra && Object.keys(h.extra).length > 0 ? JSON.stringify(h.extra) : null;
-      await db.runAsync(
-        `INSERT INTO cash_flow_holdings (
-          id, name, principal, inflow, outflow, sort_order,
-          created_at, updated_at, sync_status, extra_data
-        ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
-        [h.id, h.name, h.principal, h.inflow, h.outflow, sort, extraJson]
-      );
+      const prev = holdingById.get(h.id);
+      if (!prev || prev.sync_status === 'pending_delete') {
+        await db.runAsync(
+          `INSERT OR REPLACE INTO cash_flow_holdings (
+            id, name, principal, inflow, outflow, sort_order,
+            created_at, updated_at, sync_status, extra_data
+          ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
+          [h.id, h.name, h.principal, h.inflow, h.outflow, sort, extraJson]
+        );
+      } else {
+        await db.runAsync(
+          `UPDATE cash_flow_holdings
+           SET name = ?, principal = ?, inflow = ?, outflow = ?, sort_order = ?, extra_data = ?,
+               updated_at = datetime('now'),
+               sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+           WHERE id = ?`,
+          [h.name, h.principal, h.inflow, h.outflow, sort, extraJson, h.id]
+        );
+      }
     }
+
     sort = 0;
     for (const x of state.expenseLines) {
       sort += 10;
-      await db.runAsync(
-        `INSERT INTO cash_flow_expense_lines (
-          id, name, amount, bucket, sort_order,
-          created_at, updated_at, sync_status, extra_data
-        ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', NULL)`,
-        [x.id, x.name, x.amount, x.bucket, sort]
-      );
+      const prev = expenseById.get(x.id);
+      if (!prev || prev.sync_status === 'pending_delete') {
+        await db.runAsync(
+          `INSERT OR REPLACE INTO cash_flow_expense_lines (
+            id, name, amount, bucket, sort_order,
+            created_at, updated_at, sync_status, extra_data
+          ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', NULL)`,
+          [x.id, x.name, x.amount, x.bucket, sort]
+        );
+      } else {
+        await db.runAsync(
+          `UPDATE cash_flow_expense_lines
+           SET name = ?, amount = ?, bucket = ?, sort_order = ?,
+               updated_at = datetime('now'),
+               sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+           WHERE id = ?`,
+          [x.name, x.amount, x.bucket, sort, x.id]
+        );
+      }
     }
 
     await db.execAsync('COMMIT');
@@ -205,6 +281,11 @@ export async function persistCashFlowState(state: CashFlowState) {
     await db.execAsync('ROLLBACK');
     throw e;
   }
+
+  invalidateInflightApiTableFetch('cash_flow_profile');
+  invalidateInflightApiTableFetch('cash_flow_incomes');
+  invalidateInflightApiTableFetch('cash_flow_holdings');
+  invalidateInflightApiTableFetch('cash_flow_expense_lines');
 }
 
 export function newCashFlowIncomeId() {
