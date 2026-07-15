@@ -3,6 +3,12 @@ import { throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
 import { parseHabitIncrementCap } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import {
+  countSubHabitsCompletedForYmd,
+  hasActiveSubHabits,
+  parseHabitSubHabitsMeta,
+  type HabitSubItem,
+} from '@/lib/repositories/habits/habit-sub';
 import { getLogicalLocalYmd, loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 
 export const TASKS_HABITS_GRID_FILTERS_VERSION = 'tasks-page-v1';
@@ -21,6 +27,10 @@ export type TasksHabitGridItem = {
   taskShowPeriodCheck: boolean;
   /** 服务端计算的今日完成态（养成/戒除/任务型） */
   displayCompleted: boolean;
+  /** 子习惯模式：首页点击改弹窗而非直接打卡 */
+  hasSubHabits: boolean;
+  subHabits: HabitSubItem[];
+  subHabitCompletedCount: number;
 };
 
 export type TasksHabitGridSection = {
@@ -42,6 +52,7 @@ function isServerFilteredHabitsGrid(meta: HabitsGridPayload['meta']): boolean {
 
 async function mergeHabitGridExtraFields(
   sections: HabitsGridSection[],
+  logicalToday: string,
 ): Promise<TasksHabitGridSection[]> {
   const localRows = await getHabits();
   const localById = new Map(localRows.map((r) => [r.id, r]));
@@ -56,19 +67,47 @@ async function mergeHabitGridExtraFields(
       const resolvedKind: HabitKind = ['build', 'break', 'task'].includes(String(kind))
         ? (kind as HabitKind)
         : parseHabitKind(extraData);
+      const subActive = hasActiveSubHabits(extraData);
+      const subMeta = parseHabitSubHabitsMeta(extraData);
+      const subCompleted = subActive ? countSubHabitsCompletedForYmd(extraData, logicalToday) : 0;
+      const subTotal = subActive ? subMeta.items.length : 0;
+      const serverTodayCount = typeof item.todayCount === 'number' ? item.todayCount : 0;
+      const serverDailyGoal = item.dailyGoal ?? null;
+      // 子习惯模式：用子项完成数驱动进度环；父习惯打卡仅在全完成时记 1 次
+      const todayCount = subActive ? subCompleted : serverTodayCount;
+      const dailyGoal = subActive ? subTotal : serverDailyGoal;
+      const periodProgress = item.periodProgress ?? null;
+      const periodGoal = item.periodGoal ?? null;
+      // 完成任务：打勾只看本周期预期目标进度，不能用当日 displayCompleted
+      // （当日有 1 次打卡时 displayCompleted 常为 true，会误显示为已完成）
+      const taskShowPeriodCheck =
+        resolvedKind === 'task' &&
+        typeof periodProgress === 'number' &&
+        typeof periodGoal === 'number' &&
+        periodGoal > 0 &&
+        periodProgress >= periodGoal &&
+        !Boolean(item.hiddenOnViewDay);
+      const displayCompleted = subActive
+        ? subTotal > 0 && subCompleted >= subTotal
+        : resolvedKind === 'task'
+          ? taskShowPeriodCheck
+          : Boolean(item.displayCompleted);
       return {
         id: item.id,
         icon: item.icon ?? local?.icon ?? '✓',
         name: item.name ?? local?.name ?? '',
-        todayCount: typeof item.todayCount === 'number' ? item.todayCount : 0,
-        dailyGoal: item.dailyGoal ?? null,
-        incrementCap: parseHabitIncrementCap(extraData, resolvedKind),
+        todayCount,
+        dailyGoal,
+        incrementCap: subActive ? subTotal : parseHabitIncrementCap(extraData, resolvedKind),
         kind: resolvedKind,
         extraData,
-        periodProgress: item.periodProgress ?? null,
-        periodGoal: item.periodGoal ?? null,
-        taskShowPeriodCheck: resolvedKind === 'task' ? Boolean(item.displayCompleted) : false,
-        displayCompleted: Boolean(item.displayCompleted),
+        periodProgress,
+        periodGoal,
+        taskShowPeriodCheck,
+        displayCompleted,
+        hasSubHabits: subActive,
+        subHabits: subActive ? subMeta.items : [],
+        subHabitCompletedCount: subCompleted,
       };
     }),
   }));
@@ -86,9 +125,13 @@ async function pullHabitsGridFromApi(opts: {
     logicalToday: opts.logicalToday,
     signal: opts.signal,
   });
-  const sections = await mergeHabitGridExtraFields(Array.isArray(payload.sections) ? payload.sections : []);
+  const logicalToday = payload.logicalToday?.trim() || opts.logicalToday;
+  const sections = await mergeHabitGridExtraFields(
+    Array.isArray(payload.sections) ? payload.sections : [],
+    logicalToday,
+  );
   return {
-    logicalToday: payload.logicalToday?.trim() || opts.logicalToday,
+    logicalToday,
     sections,
     serverFiltered: isServerFilteredHabitsGrid(payload.meta),
     filtersVersion: typeof payload.meta?.filtersVersion === 'string' ? payload.meta.filtersVersion : null,

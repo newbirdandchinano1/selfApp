@@ -1,45 +1,45 @@
 import { ReviewFieldEditor, type ReviewFieldEditorState } from '@/components/review/review-field-editor';
+import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
 import { Layout, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
-import { loadReviewPeriodSnapshot, formatReviewHeaderDate } from '@/components/review/review-utils';
-import {
-  collectColumnIds,
-  parseDailyReviewJournal,
-  serializeReviewBody,
-  type ReviewFieldValues,
-  type ReviewJournalMeta,
-} from '@/lib/repositories/insights/review-journal-body';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
 import {
-  applyFontSizeToTextModel,
-  currentFontSizeLabel,
-  emptyReviewFieldModel,
-  getNowTimeText,
-  insertImageBlock,
-  insertTextIntoTextModel,
-  parseReviewFieldContent,
-  serializeReviewFieldContent,
-  toggleTodoAtSelection,
-  type ReviewFieldModel,
-  type TextSelection,
+    collectColumnIds,
+    parseDailyReviewJournal,
+    serializeReviewBody,
+    type ReviewFieldValues,
+    type ReviewJournalMeta,
+} from '@/lib/repositories/insights/review-journal-body';
+import {
+    applyFontSizeToTextModel,
+    currentFontSizeLabel,
+    emptyReviewFieldModel,
+    getNowTimeText,
+    insertImageBlock,
+    insertTextIntoTextModel,
+    parseReviewFieldContent,
+    serializeReviewFieldContent,
+    toggleTodoAtSelection,
+    type ReviewFieldModel,
+    type TextSelection,
 } from '@/lib/review-journal-format';
-import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
+    ActivityIndicator,
+    KeyboardAvoidingView,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -98,6 +98,7 @@ export function DailyReviewDimensionDetailScreen() {
   const [controlledSelectionByColumn, setControlledSelectionByColumn] = useState<Record<string, TextSelection | undefined>>({});
 
   const hydratedRef = useRef(false);
+  const lastPersistedBodyRef = useRef<string | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoStacksRef = useRef<Record<string, string[]>>({});
@@ -156,8 +157,10 @@ export function DailyReviewDimensionDetailScreen() {
         const entry = snapshot.dailyEntries.find(e => e.ymd === ymd);
         const colIds = collectColumnIds(snapshot.dailyTemplate);
         const journal = parseDailyReviewJournal(dailyRows[0]?.body ?? null, colIds);
-        setFieldModels(fieldValuesToModels(journal.fields));
+        const models = fieldValuesToModels(journal.fields);
+        setFieldModels(models);
         setMeta(journal.meta);
+        lastPersistedBodyRef.current = serializeReviewBody(fieldModelsToValues(models), journal.meta);
 
         const dim = snapshot.dailyTemplate.find(d => d.id === dimensionId);
         const dimColIds = dim?.columns.map(c => c.id) ?? [];
@@ -171,6 +174,7 @@ export function DailyReviewDimensionDetailScreen() {
     } catch {
       setFieldModels({});
       setMeta({});
+      lastPersistedBodyRef.current = null;
       setDimensionTitle('复盘详情');
       setActiveColumnId('');
       setEditorStateByColumn({});
@@ -189,9 +193,12 @@ export function DailyReviewDimensionDetailScreen() {
 
   const persist = useCallback(async () => {
     if (!canEdit || !ymd) return;
+    const body = serializeReviewBody(fields, meta);
+    if (body === lastPersistedBodyRef.current) return;
     setSaving(true);
     try {
-      await upsertDailyReviewJournal(ymd, serializeReviewBody(fields, meta));
+      await upsertDailyReviewJournal(ymd, body);
+      lastPersistedBodyRef.current = body;
       if (ymd === todayYmd) {
         void syncDailyReviewReminderNotification();
       }

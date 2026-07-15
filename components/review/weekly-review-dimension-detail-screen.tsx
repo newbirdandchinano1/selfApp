@@ -76,6 +76,19 @@ function fieldModelsToValues(models: Record<string, ReviewFieldModel>): ReviewFi
   return out;
 }
 
+function serializeWeeklyPersistPayload(
+  fields: ReviewFieldValues,
+  meta: {
+    execution_score: number;
+    adjust_tasks: boolean;
+    adjust_savings: boolean;
+    adjust_plans: boolean;
+    ai_coaching: string | null;
+  },
+): string {
+  return JSON.stringify({ fields, meta });
+}
+
 export function WeeklyReviewDimensionDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -99,6 +112,7 @@ export function WeeklyReviewDimensionDetailScreen() {
   const [controlledSelectionByColumn, setControlledSelectionByColumn] = useState<Record<string, TextSelection | undefined>>({});
 
   const hydratedRef = useRef(false);
+  const lastPersistedPayloadRef = useRef<string | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoStacksRef = useRef<Record<string, string[]>>({});
@@ -167,7 +181,8 @@ export function WeeklyReviewDimensionDetailScreen() {
 
         const colIds = collectColumnIds(weeklyTpl);
         const parsed = parseWeeklyReviewFields(row, colIds);
-        setFieldModels(fieldValuesToModels(parsed));
+        const models = fieldValuesToModels(parsed);
+        setFieldModels(models);
 
         journalMetaRef.current = {
           execution_score: row?.execution_score ?? 0,
@@ -176,6 +191,10 @@ export function WeeklyReviewDimensionDetailScreen() {
           adjust_plans: row?.adjust_plans === 1,
           ai_coaching: row?.ai_coaching ?? null,
         };
+        lastPersistedPayloadRef.current = serializeWeeklyPersistPayload(
+          fieldModelsToValues(models),
+          journalMetaRef.current,
+        );
 
         const dim = weeklyTpl.find(d => d.id === dimensionId);
         const dimColIds = dim?.columns.map(c => c.id) ?? [];
@@ -188,6 +207,7 @@ export function WeeklyReviewDimensionDetailScreen() {
       });
     } catch {
       setFieldModels(fieldValuesToModels(emptyFieldValues([])));
+      lastPersistedPayloadRef.current = null;
       setDimensionTitle('周复盘详情');
       setActiveColumnId('');
       setEditorStateByColumn({});
@@ -207,6 +227,8 @@ export function WeeklyReviewDimensionDetailScreen() {
   const persist = useCallback(async () => {
     if (!canEdit || !weekStartYmd) return;
     const meta = journalMetaRef.current;
+    const payload = serializeWeeklyPersistPayload(fields, meta);
+    if (payload === lastPersistedPayloadRef.current) return;
     setSaving(true);
     try {
       await upsertWeeklyReviewJournal({
@@ -218,6 +240,7 @@ export function WeeklyReviewDimensionDetailScreen() {
         adjust_savings: meta.adjust_savings,
         adjust_plans: meta.adjust_plans,
       });
+      lastPersistedPayloadRef.current = payload;
       setSavedFlash(true);
       if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
       savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);

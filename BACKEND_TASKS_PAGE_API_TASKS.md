@@ -144,6 +144,8 @@ GET /api/pages/tasks?include=projects,tasks,habits,habitCheckIns
 
 **字段兼容性**：各数组元素与 `GET /api/data/{table}` 单条 JSON **完全一致**（含 datetime 格式、`extra_data` 等），可直接调用现有 `syncApiReadResultToLocal(table, rows)` 写入 SQLite。
 
+**子习惯（客户端扩展，无后端 schema 改动）**：子习惯清单与打卡态写在 `habits.extra_data` 的 `subHabitsEnabled` / `subHabits` / `subHabitCheckIns` 中；全部子习惯完成后客户端再写 `habit_check_ins`。不新增表/列，现有同步与 `habits-grid` 协议保持兼容。
+
 **范围说明（与全量 List 的差异）**：
 
 - `projects` / `tasks` / `habits` 等 7 张表：**全量**

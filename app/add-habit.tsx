@@ -35,6 +35,12 @@ import {
   type TaskRepeatPeriod,
 } from '@/lib/repositories/habits/habit-task-period';
 import { type HabitKind, parseHabitKind } from '@/lib/repositories/habits/habit-kind';
+import {
+  createHabitSubItemId,
+  mergeSubHabitsIntoExtraData,
+  parseHabitSubHabitsMeta,
+  type HabitSubItem,
+} from '@/lib/repositories/habits/habit-sub';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
@@ -244,6 +250,14 @@ export default function AddHabitScreen() {
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
   const [rewardOpen, setRewardOpen] = React.useState(false);
   const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
+  const [subHabitsOpen, setSubHabitsOpen] = React.useState(true);
+  const [subHabitsEnabled, setSubHabitsEnabled] = React.useState(false);
+  const [subHabits, setSubHabits] = React.useState<HabitSubItem[]>([]);
+  const [subHabitEditor, setSubHabitEditor] = React.useState<{
+    visible: boolean;
+    editingId: string | null;
+    name: string;
+  }>({ visible: false, editingId: null, name: '' });
 
   const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
@@ -400,6 +414,9 @@ export default function AddHabitScreen() {
               setReminderEnabled(false);
             }
             setCompletionReward(parseCompletionRewardFromExtraData(row.extra_data));
+            const subMeta = parseHabitSubHabitsMeta(row.extra_data);
+            setSubHabitsEnabled(subMeta.enabled);
+            setSubHabits(subMeta.items);
           } catch {
             // ignore extra_data parse errors
           }
@@ -470,6 +487,7 @@ export default function AddHabitScreen() {
       setQuantifyEnabled(true);
       setDailyGoal((v) => (v === null ? 0 : v));
       setExpectedGoalTab('none');
+      setSubHabitsEnabled(false);
     } else if (habitKind === 'task') {
       setDailyGoal(null);
       setExpectedGoalTab((tab) => {
@@ -588,39 +606,48 @@ export default function AddHabitScreen() {
     const buildQuantifyExtra =
       habitKind === 'build' && nextBuildExpectedGoal ? { expectedGoal: nextBuildExpectedGoal } : {};
 
-    const extraDataRaw = JSON.stringify({
-      ...existingExtra,
-      habitKind,
-      quantifyEnabled,
-      quantify: quantifyEnabled
-        ? {
-            unit: unitResolved,
-            eachPlus,
-            dailyGoal: resolvedDailyGoal,
-            ...(habitKind === 'break'
-              ? { consecutiveTargetDays: Math.min(999, Math.max(1, consecutiveTargetDays)) }
-              : {}),
-            ...taskQuantifyExtra,
-            ...buildQuantifyExtra,
-          }
-        : habitKind === 'task' && nextTaskExpectedGoal
-          ? { expectedGoal: nextTaskExpectedGoal }
-          : habitKind === 'build' && nextBuildExpectedGoal
-            ? { expectedGoal: nextBuildExpectedGoal }
-            : null,
-      schedule:
-        habitKind === 'task'
-          ? { activeTab: (TASK_CYCLE_TABS as string[]).includes(activeTab) ? activeTab : DEFAULT_TASK_REPEAT_PERIOD }
-          : {
-              activeTab,
-              selectedDays,
-              weeklyNDays,
-              monthlyFilter: activeMonthlyFilter,
-              monthlySpecificDays,
-              monthlyNDays,
-            },
-      reminder: reminderPayload,
-    });
+    const canUseSubHabits = habitKind !== 'break';
+    const resolvedSubEnabled = canUseSubHabits && subHabitsEnabled;
+
+    const extraDataRaw = mergeSubHabitsIntoExtraData(
+      JSON.stringify({
+        ...existingExtra,
+        habitKind,
+        quantifyEnabled,
+        quantify: quantifyEnabled
+          ? {
+              unit: unitResolved,
+              eachPlus,
+              dailyGoal: resolvedDailyGoal,
+              ...(habitKind === 'break'
+                ? { consecutiveTargetDays: Math.min(999, Math.max(1, consecutiveTargetDays)) }
+                : {}),
+              ...taskQuantifyExtra,
+              ...buildQuantifyExtra,
+            }
+          : habitKind === 'task' && nextTaskExpectedGoal
+            ? { expectedGoal: nextTaskExpectedGoal }
+            : habitKind === 'build' && nextBuildExpectedGoal
+              ? { expectedGoal: nextBuildExpectedGoal }
+              : null,
+        schedule:
+          habitKind === 'task'
+            ? { activeTab: (TASK_CYCLE_TABS as string[]).includes(activeTab) ? activeTab : DEFAULT_TASK_REPEAT_PERIOD }
+            : {
+                activeTab,
+                selectedDays,
+                weeklyNDays,
+                monthlyFilter: activeMonthlyFilter,
+                monthlySpecificDays,
+                monthlyNDays,
+              },
+        reminder: reminderPayload,
+      }),
+      {
+        enabled: resolvedSubEnabled,
+        items: canUseSubHabits ? subHabits : [],
+      },
+    );
     let extraData = extraDataRaw;
     if (habitKind === 'break') {
       let cycleStartedAt: string | null = null;
@@ -734,6 +761,8 @@ export default function AddHabitScreen() {
     selectedDays,
     unitInput,
     weeklyNDays,
+    subHabits,
+    subHabitsEnabled,
   ]);
 
   const renderSectionHeader = (
@@ -1105,6 +1134,136 @@ export default function AddHabitScreen() {
               </AppCard>
             ) : null}
           </View>
+
+          {habitKind !== 'break' ? (
+            <View>
+              {renderSectionHeader('account-tree', '子习惯', subHabitsOpen, () => setSubHabitsOpen((v) => !v))}
+              {subHabitsOpen ? (
+                <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
+                  <View style={styles.quantifyTop}>
+                    <View style={{ flex: 1, paddingRight: Spacing.md }}>
+                      <Text style={[Typography.bodyStrong, styles.quantifyTitle, { color: colors.text }]}>
+                        启用子习惯模式
+                      </Text>
+                      <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
+                        开启后首页点击将展示子习惯清单，全部完成后才计入父习惯打卡
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => setSubHabitsEnabled((v) => !v)}
+                      style={[
+                        styles.switchTrack,
+                        {
+                          backgroundColor: subHabitsEnabled ? colors.successSwitch : colors.capsule,
+                        },
+                      ]}>
+                      <View style={[styles.switchDot, subHabitsEnabled && styles.switchDotOn]} />
+                    </Pressable>
+                  </View>
+
+                  {subHabitsEnabled ? (
+                    <View style={[styles.quantifyBody, { borderTopColor: colors.outline, gap: Spacing.md }]}>
+                      {subHabits.length === 0 ? (
+                        <Text style={[Typography.caption, { color: colors.textSecondary }]}>
+                          尚未添加子习惯。添加后，首页将改为在弹窗中逐项完成。
+                        </Text>
+                      ) : (
+                        subHabits.map((item, index) => (
+                          <View
+                            key={item.id}
+                            style={[
+                              styles.subHabitRow,
+                              {
+                                backgroundColor: colors.surfaceSubtle,
+                                borderColor: colors.outline,
+                              },
+                            ]}>
+                            <Text style={[Typography.caption, styles.subHabitIndex, { color: colors.textMuted }]}>
+                              {index + 1}
+                            </Text>
+                            <Pressable
+                              onPress={() =>
+                                setSubHabitEditor({ visible: true, editingId: item.id, name: item.name })
+                              }
+                              style={styles.subHabitNamePress}>
+                              <Text style={[Typography.bodyStrong, { color: colors.text }]} numberOfLines={2}>
+                                {item.name}
+                              </Text>
+                            </Pressable>
+                            <View style={styles.subHabitActions}>
+                              <Pressable
+                                onPress={() => {
+                                  if (index <= 0) return;
+                                  setSubHabits((prev) => {
+                                    const next = [...prev];
+                                    const tmp = next[index - 1];
+                                    next[index - 1] = next[index];
+                                    next[index] = tmp;
+                                    return next.map((it, i) => ({ ...it, sortOrder: i }));
+                                  });
+                                }}
+                                hitSlop={8}
+                                style={({ pressed }) => [{ opacity: index <= 0 ? 0.28 : pressed ? 0.65 : 1 }]}>
+                                <MaterialIcons name="arrow-upward" size={18} color={colors.textSecondary} />
+                              </Pressable>
+                              <Pressable
+                                onPress={() => {
+                                  if (index >= subHabits.length - 1) return;
+                                  setSubHabits((prev) => {
+                                    const next = [...prev];
+                                    const tmp = next[index + 1];
+                                    next[index + 1] = next[index];
+                                    next[index] = tmp;
+                                    return next.map((it, i) => ({ ...it, sortOrder: i }));
+                                  });
+                                }}
+                                hitSlop={8}
+                                style={({ pressed }) => [
+                                  { opacity: index >= subHabits.length - 1 ? 0.28 : pressed ? 0.65 : 1 },
+                                ]}>
+                                <MaterialIcons name="arrow-downward" size={18} color={colors.textSecondary} />
+                              </Pressable>
+                              <Pressable
+                                onPress={() => {
+                                  Alert.alert('删除子习惯', `确定删除「${item.name}」？`, [
+                                    { text: '取消', style: 'cancel' },
+                                    {
+                                      text: '删除',
+                                      style: 'destructive',
+                                      onPress: () =>
+                                        setSubHabits((prev) =>
+                                          prev
+                                            .filter((it) => it.id !== item.id)
+                                            .map((it, i) => ({ ...it, sortOrder: i })),
+                                        ),
+                                    },
+                                  ]);
+                                }}
+                                hitSlop={8}
+                                style={({ pressed }) => [{ opacity: pressed ? 0.65 : 1 }]}>
+                                <MaterialIcons name="delete-outline" size={18} color={colors.danger ?? '#dc2626'} />
+                              </Pressable>
+                            </View>
+                          </View>
+                        ))
+                      )}
+                      <Pressable
+                        onPress={() => setSubHabitEditor({ visible: true, editingId: null, name: '' })}
+                        style={({ pressed }) => [
+                          styles.subHabitAddBtn,
+                          { borderColor: colors.outline, opacity: pressed ? 0.85 : 1 },
+                        ]}>
+                        <MaterialIcons name="add" size={18} color={colors.primary} />
+                        <Text style={[Typography.bodyStrong, { color: colors.primary, fontSize: 14 }]}>
+                          添加子习惯
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </AppCard>
+              ) : null}
+            </View>
+          ) : null}
 
           {habitKind === 'build' ? (
             <View>
@@ -1569,6 +1728,78 @@ export default function AddHabitScreen() {
       </Modal>
 
       <Modal
+        visible={subHabitEditor.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSubHabitEditor({ visible: false, editingId: null, name: '' })}>
+        <View style={styles.iconModalRoot}>
+          <Pressable
+            style={[styles.iconModalBackdrop, { backgroundColor: colors.overlay }]}
+            onPress={() => setSubHabitEditor({ visible: false, editingId: null, name: '' })}
+          />
+          <View style={[styles.iconModalCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+            <Text style={[Typography.title, styles.iconModalTitle, { color: colors.text }]}>
+              {subHabitEditor.editingId ? '编辑子习惯' : '添加子习惯'}
+            </Text>
+            <TextInput
+              value={subHabitEditor.name}
+              onChangeText={(name) => setSubHabitEditor((prev) => ({ ...prev, name }))}
+              placeholder="例如：叠被子、喝一杯水"
+              placeholderTextColor={colors.textMuted}
+              autoFocus
+              style={[
+                styles.subHabitEditorInput,
+                Typography.body,
+                {
+                  color: colors.text,
+                  backgroundColor: colors.surfaceSubtle,
+                  borderColor: colors.outline,
+                },
+              ]}
+            />
+            <View style={styles.subHabitEditorActions}>
+              <Pressable
+                onPress={() => setSubHabitEditor({ visible: false, editingId: null, name: '' })}
+                style={({ pressed }) => [
+                  styles.subHabitEditorBtnGhost,
+                  { borderColor: colors.outline, opacity: pressed ? 0.8 : 1 },
+                ]}>
+                <Text style={[Typography.bodyStrong, { color: colors.textSecondary }]}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  const name = subHabitEditor.name.trim();
+                  if (!name) {
+                    Alert.alert('提示', '请输入子习惯名称');
+                    return;
+                  }
+                  setSubHabits((prev) => {
+                    if (subHabitEditor.editingId) {
+                      return prev.map((it) =>
+                        it.id === subHabitEditor.editingId ? { ...it, name } : it,
+                      );
+                    }
+                    return [
+                      ...prev,
+                      { id: createHabitSubItemId(), name, sortOrder: prev.length },
+                    ];
+                  });
+                  setSubHabitEditor({ visible: false, editingId: null, name: '' });
+                }}
+                style={({ pressed }) => [
+                  styles.subHabitEditorBtnPrimary,
+                  { backgroundColor: colors.primary, opacity: pressed ? 0.88 : 1 },
+                ]}>
+                <Text style={[Typography.bodyStrong, { color: colors.onPrimary }]}>
+                  {subHabitEditor.editingId ? '保存' : '添加'}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
         visible={reminderTimePickerOpen}
         transparent
         animationType="fade"
@@ -1897,6 +2128,52 @@ const styles = StyleSheet.create({
   },
   monthNPresetText: { fontSize: 14 },
   customMonthNRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  subHabitRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+  },
+  subHabitIndex: { width: 18, textAlign: 'center', fontWeight: '700' },
+  subHabitNamePress: { flex: 1, minWidth: 0 },
+  subHabitActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  subHabitAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: 'dashed',
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.lg,
+  },
+  subHabitEditorInput: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    fontSize: 15,
+  },
+  subHabitEditorActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: Spacing.md,
+    marginTop: Spacing.lg,
+  },
+  subHabitEditorBtnGhost: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.md,
+  },
+  subHabitEditorBtnPrimary: {
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.md,
+  },
   bottomBar: {
     position: 'absolute',
     left: 0,

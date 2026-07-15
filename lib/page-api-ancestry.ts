@@ -69,8 +69,10 @@ const PAGE_PARENTS: Record<string, string[]> = {
   // —— 复盘 ——
   'daily-review': [TAB.review],
   'daily-review-edit': ['daily-review', TAB.review],
+  'daily-review-dimension-detail': [TAB.review],
   'weekly-review-form': [TAB.review],
   'weekly-review': [TAB.review],
+  'weekly-review-dimension-detail': [TAB.review],
   'review-settings': [TAB.review],
   'review-calendar': [TAB.review],
   'review-template-settings': [TAB.review],

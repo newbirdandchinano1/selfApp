@@ -1,8 +1,8 @@
-import { readApiRecord, readApiTable } from '@/lib/api-read';
+import { readApiTable } from '@/lib/api-read';
 import { getDatabase } from '../../database.native';
 import {
-  legacyWeeklyColumnsFromFields,
-  serializeWeeklyReviewExtraData,
+    legacyWeeklyColumnsFromFields,
+    serializeWeeklyReviewExtraData,
 } from './review-journal-body';
 import type { UpsertWeeklyReviewJournalInput, WeeklyReviewJournalRow } from './weekly-review-journal.types';
 

@@ -1,20 +1,20 @@
-import { shouldPreserveForeignKeyOnUpload } from '@/lib/api-fk-preserve';
 import {
-  apiCreateRecord,
-  apiDeleteRecord,
-  apiListRecords,
-  apiUpdateRecord,
-  ApiRequestError,
-  isDuplicateRecordApiError,
+    apiCreateRecord,
+    apiDeleteRecord,
+    apiListRecords,
+    ApiRequestError,
+    apiUpdateRecord,
+    isDuplicateRecordApiError,
 } from '@/lib/api-client';
+import { shouldPreserveForeignKeyOnUpload } from '@/lib/api-fk-preserve';
+import { isAbortError } from '@/lib/cloud-fetch-retry';
 import {
-  ensureProjectCategoryRefsForApiUpload,
-  ensureTaskCategoryMirrorForApiUpload,
-  readLocalForeignKeyRefs,
-  sortProjectCategoriesForApiUpload,
+    ensureProjectCategoryRefsForApiUpload,
+    ensureTaskCategoryMirrorForApiUpload,
+    readLocalForeignKeyRefs,
+    sortProjectCategoriesForApiUpload,
 } from '@/lib/cloud-sql-sync';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
-import { isAbortError } from '@/lib/cloud-fetch-retry';
 
 function rowPrimaryKeyValue(row: Record<string, unknown>, pkCols: string[]): string | null {
   if (pkCols.length === 0) {
@@ -926,3 +926,4 @@ export async function upsertParentTasksReferencedByTasks(
 }
 
 export { rowPrimaryKeyValue };
+

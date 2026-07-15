@@ -31,6 +31,7 @@ import {
   tryMarkBuildHabitCompleted,
 } from '@/lib/repositories/habits/habit-build-success';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
 import {
   computeTaskPeriodGoalProgress,
   isTaskHabitPeriodGoalMet,
@@ -575,6 +576,10 @@ export default function HabitDetailScreen() {
 
   const handleMakeUpCheckIn = React.useCallback(async () => {
     if (!habit) return;
+    if (hasActiveSubHabits(habit.extra_data)) {
+      Alert.alert('提示', '该习惯已启用子习惯，请在任务页点击习惯后，在子习惯清单中完成打卡。');
+      return;
+    }
     const ymd = focusYmd;
     if (ymd >= logicalTodayYmd) {
       Alert.alert('提示', '补卡仅适用于已过去的日期；今天请在任务页打卡，或先选择更早的日期。');

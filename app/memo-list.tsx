@@ -18,11 +18,15 @@ import {
   type MemoDimension,
   type MemoItem,
 } from '@/lib/memos';
+import {
+  addMemoAiPendingAnalysisListener,
+  addMemoAiReviewSavedListener,
+} from '@/lib/memo-ai-background';
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -79,9 +83,26 @@ export default function MemoListScreen() {
   const [aiModalId, setAiModalId] = useState<string | null>(null);
   const [aiModalLoading, setAiModalLoading] = useState(false);
   const [convertingMemoId, setConvertingMemoId] = useState<string | null>(null);
+  const [pendingAnalysisIds, setPendingAnalysisIds] = useState<ReadonlySet<string>>(() => new Set());
 
   const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
   const { wrapLoad, resetSync } = usePageApiSync(MEMO_LIST_PAGE_KEY);
+
+  useEffect(() => {
+    return addMemoAiPendingAnalysisListener(setPendingAnalysisIds);
+  }, []);
+
+  useEffect(() => {
+    return addMemoAiReviewSavedListener(row => {
+      setItems(prev => {
+        const idx = prev.findIndex(m => m.id === row.id);
+        if (idx < 0) {
+          return [row, ...prev];
+        }
+        return prev.map(m => (m.id === row.id ? { ...m, ...row } : m));
+      });
+    });
+  }, []);
 
   const reload = useCallback(
     async (forceApi = false) => {
@@ -392,7 +413,14 @@ export default function MemoListScreen() {
           >
             <Text style={[styles.rowTitle, { color: text }]} numberOfLines={2}>{memoListPreviewTitle(item)}</Text>
             <Text style={[styles.rowSub, { color: outline }]} numberOfLines={2}>{memoListPreviewBody(item)}</Text>
-            {item.ai_evaluation ? <Text style={[styles.rowAiPreview, { color: secondary }]} numberOfLines={2}>AI：{item.ai_evaluation}</Text> : null}
+            {item.ai_evaluation ? (
+              <Text style={[styles.rowAiPreview, { color: secondary }]} numberOfLines={2}>AI：{item.ai_evaluation}</Text>
+            ) : pendingAnalysisIds.has(item.id) ? (
+              <View style={styles.rowAiPendingRow}>
+                <ActivityIndicator size="small" color={primary} />
+                <Text style={[styles.rowAiPreview, { color: outline }]}>AI 分析中…</Text>
+              </View>
+            ) : null}
             <Text style={[styles.rowTime, { color: outline }]}>更新于 {new Date(item.updated_at).toLocaleString('zh-CN')}</Text>
           </Pressable>
           <View style={styles.rowActions}>
@@ -403,7 +431,7 @@ export default function MemoListScreen() {
         </View>
       </Swipeable>
     );
-  }, [borderSoft, cardBg, convertingMemoId, onDeleteMemo, openAiModal, performConvertToProject, performConvertToTodo, outline, primary, router, secondary, tertiary, text]);
+  }, [borderSoft, cardBg, convertingMemoId, onDeleteMemo, openAiModal, pendingAnalysisIds, performConvertToProject, performConvertToTodo, outline, primary, router, secondary, tertiary, text]);
 
   const currentDimensionLabel = selectedDimension?.name.trim() || '备忘录';
 
@@ -679,6 +707,7 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 16, fontWeight: '800', lineHeight: 22 },
   rowSub: { fontSize: 13, fontWeight: '600', lineHeight: 18 },
   rowAiPreview: { fontSize: 12, fontWeight: '600', lineHeight: 17, marginTop: 2 },
+  rowAiPendingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
   rowTime: { fontSize: 11, fontWeight: '600', marginTop: 4 },
   rowActions: { justifyContent: 'center', paddingRight: 8, paddingLeft: 4, gap: 4 },
   rowIconBtn: { padding: 8, alignItems: 'center', justifyContent: 'center' },

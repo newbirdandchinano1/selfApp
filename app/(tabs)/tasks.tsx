@@ -125,6 +125,13 @@ import {
 } from '@/lib/repositories/habits/habit-build-success';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
+  getSubHabitDoneMapForYmd,
+  hasActiveSubHabits,
+  parseHabitSubHabitsMeta,
+  toggleSubHabitCheckIn,
+  type HabitSubItem,
+} from '@/lib/repositories/habits/habit-sub';
+import {
   breakSlipBadgeColor,
   breakSlipBorderColor,
   buildProgressBadgeColor,
@@ -516,6 +523,10 @@ type HabitSection = {
     displayCompleted: boolean;
     /** 戒除：今日是否已有打卡记录（含 count=0 的保持戒除确认） */
     hasTodayRecord?: boolean;
+    /** 子习惯模式（extra_data） */
+    hasSubHabits?: boolean;
+    subHabits?: HabitSubItem[];
+    subHabitCompletedCount?: number;
   }>;
 };
 
@@ -544,14 +555,18 @@ function applyHabitCountPatch(
     next.taskShowPeriodCheck = nextProgress >= item.periodGoal;
   }
   const logicalTodayYmd = opts?.logicalTodayYmd;
-  next.displayCompleted = isHabitDayDisplayCompleted({
-    kind: item.kind,
-    todayCount,
-    dailyGoal: item.dailyGoal,
-    hasDayRecord: item.kind === 'break' ? next.hasTodayRecord : undefined,
-    ymd: logicalTodayYmd,
-    logicalTodayYmd,
-  });
+  // 完成任务看周期进度；养成/戒除看当日目标
+  next.displayCompleted =
+    item.kind === 'task'
+      ? next.taskShowPeriodCheck
+      : isHabitDayDisplayCompleted({
+          kind: item.kind,
+          todayCount,
+          dailyGoal: item.dailyGoal,
+          hasDayRecord: item.kind === 'break' ? next.hasTodayRecord : undefined,
+          ymd: logicalTodayYmd,
+          logicalTodayYmd,
+        });
   return next;
 }
 
@@ -1559,6 +1574,14 @@ export default function TasksScreen() {
     Map<string, { name: string; icon: string }>
   >(() => new Map());
   const [expandedHabitSections, setExpandedHabitSections] = React.useState<Record<string, boolean>>({});
+  const [subHabitModal, setSubHabitModal] = React.useState<{
+    habitId: string;
+    name: string;
+    icon: string;
+    subHabits: HabitSubItem[];
+    doneMap: Record<string, boolean>;
+  } | null>(null);
+  const [subHabitTogglingId, setSubHabitTogglingId] = React.useState<string | null>(null);
   /** 底部「无项目待办」快捷输入框内容 */
   const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
   const [quickTodoSaving, setQuickTodoSaving] = React.useState(false);
@@ -3620,8 +3643,91 @@ export default function TasksScreen() {
     [markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
   );
 
+  const openSubHabitModal = React.useCallback((item: HabitGridItem) => {
+    const meta = parseHabitSubHabitsMeta(item.extraData);
+    const subHabits =
+      item.subHabits && item.subHabits.length > 0 ? item.subHabits : meta.items;
+    if (!(item.hasSubHabits || hasActiveSubHabits(item.extraData)) || subHabits.length === 0) return;
+    setSubHabitModal({
+      habitId: item.id,
+      name: item.name,
+      icon: item.icon,
+      subHabits,
+      doneMap: getSubHabitDoneMapForYmd(item.extraData, logicalTodayYmd),
+    });
+  }, [logicalTodayYmd]);
+
+  const handleSubHabitToggle = React.useCallback(
+    async (subHabitId: string) => {
+      if (!subHabitModal || subHabitTogglingId) return;
+      const prevDone = Boolean(subHabitModal.doneMap[subHabitId]);
+      const nextDone = !prevDone;
+      setSubHabitTogglingId(subHabitId);
+      setSubHabitModal((prev) =>
+        prev
+          ? { ...prev, doneMap: { ...prev.doneMap, [subHabitId]: nextDone } }
+          : prev,
+      );
+      markPageDirty();
+      try {
+        const result = await toggleSubHabitCheckIn({
+          habitId: subHabitModal.habitId,
+          subHabitId,
+          ymd: logicalTodayYmd,
+          done: nextDone,
+        });
+        if (nextDone) void playHabitCheckInDing();
+        const completedCount = result.completedCount;
+        const total = result.total;
+        patchHabitTodayCount(subHabitModal.habitId, completedCount, 0);
+        setHabitSections((prev) =>
+          prev.map((sec) => ({
+            ...sec,
+            items: sec.items.map((it) => {
+              if (it.id !== subHabitModal.habitId) return it;
+              return {
+                ...it,
+                todayCount: completedCount,
+                dailyGoal: total,
+                displayCompleted: result.allDone,
+                hasSubHabits: true,
+                subHabits: subHabitModal.subHabits,
+                subHabitCompletedCount: completedCount,
+                extraData: result.extraData,
+                incrementCap: total,
+              };
+            }),
+          })),
+        );
+        runHabitSideEffectsAfterCountChange(subHabitModal.habitId, result.parentCount);
+      } catch (err) {
+        console.warn('子习惯打卡失败', err);
+        setSubHabitModal((prev) =>
+          prev
+            ? { ...prev, doneMap: { ...prev.doneMap, [subHabitId]: prevDone } }
+            : prev,
+        );
+        Alert.alert('提示', err instanceof Error && err.message.trim() ? err.message : '操作失败，请稍后重试');
+      } finally {
+        setSubHabitTogglingId(null);
+      }
+    },
+    [
+      logicalTodayYmd,
+      markPageDirty,
+      patchHabitTodayCount,
+      runHabitSideEffectsAfterCountChange,
+      subHabitModal,
+      subHabitTogglingId,
+    ],
+  );
+
   const handleHabitIconPress = React.useCallback(
     (item: HabitGridItem) => {
+      if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+        openSubHabitModal(item);
+        return;
+      }
       if (item.kind === 'break' && !item.hasTodayRecord && item.todayCount <= 0) {
         Alert.alert(item.name, '请确认今日戒除状态', [
           { text: '保持戒除', onPress: () => void handleBreakHabitConfirmClean(item) },
@@ -3632,7 +3738,7 @@ export default function TasksScreen() {
       }
       void handleHabitIncrement(item);
     },
-    [handleBreakHabitConfirmClean, handleHabitIncrement],
+    [handleBreakHabitConfirmClean, handleHabitIncrement, openSubHabitModal],
   );
 
   const hasChildrenDeeperThan = React.useCallback((nodes: TaskTreeNode[], level: number, maxLevel: number): boolean => {
@@ -4658,8 +4764,13 @@ export default function TasksScreen() {
                           const progressBadgeCount = isTask ? taskPeriodProgress : item.todayCount;
                           const canUndoTodayBadge =
                             scheduleAllowsToday &&
+                            !item.hasSubHabits &&
                             (item.todayCount > 0 || (isBreak && item.hasTodayRecord && item.todayCount <= 0));
                           const onHabitBadgeUndo = () => {
+                            if (item.hasSubHabits) {
+                              openSubHabitModal(item);
+                              return;
+                            }
                             if (!canUndoTodayBadge) return;
                             void handleHabitUndoOnce(item);
                           };
@@ -4766,11 +4877,11 @@ export default function TasksScreen() {
                                     ) : null}
                                   </View>
                                   {goalMet ? (
-                                    canUndoTodayBadge ? (
+                                    canUndoTodayBadge || item.hasSubHabits ? (
                                       <Pressable
                                         onPress={onHabitBadgeUndo}
                                         hitSlop={6}
-                                        accessibilityLabel="撤销一次打卡"
+                                        accessibilityLabel={item.hasSubHabits ? '查看子习惯' : '撤销一次打卡'}
                                         style={({ pressed }) => [
                                           styles.habitTodayBadge,
                                           { borderColor: card, backgroundColor: secondary },
@@ -4808,11 +4919,11 @@ export default function TasksScreen() {
                                       <Text style={styles.habitTodayBadgeCount}>?</Text>
                                     </View>
                                   ) : breakSlipping || buildProgressing || taskProgressing || (!isBreak && !isTask && hasProgress) ? (
-                                    canUndoTodayBadge ? (
+                                    canUndoTodayBadge || item.hasSubHabits ? (
                                       <Pressable
                                         onPress={onHabitBadgeUndo}
                                         hitSlop={6}
-                                        accessibilityLabel="撤销一次打卡"
+                                        accessibilityLabel={item.hasSubHabits ? '查看子习惯' : '撤销一次打卡'}
                                         style={({ pressed }) => [
                                           styles.habitTodayBadge,
                                           {
@@ -5945,6 +6056,101 @@ export default function TasksScreen() {
         </View>
       </Modal>
 
+      <Modal
+        visible={subHabitModal != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSubHabitModal(null)}>
+        <View style={styles.modalRoot}>
+          <Pressable
+            style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]}
+            onPress={() => setSubHabitModal(null)}
+          />
+          <View pointerEvents="box-none" style={styles.modalCenter}>
+            <View style={[styles.modalCard, { backgroundColor: modalCardBg, maxHeight: '78%', width: '92%' }]}>
+              <View style={styles.modalHeader}>
+                <View style={styles.subHabitModalTitleRow}>
+                  <Text style={styles.subHabitModalIcon}>{subHabitModal?.icon ?? '✓'}</Text>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={[styles.modalTitle, { color: colors.text }]} numberOfLines={1}>
+                      {subHabitModal?.name ?? '子习惯'}
+                    </Text>
+                    <Text style={[styles.subHabitModalProgress, { color: outline }]}>
+                      今日进度{' '}
+                      {subHabitModal
+                        ? `${Object.values(subHabitModal.doneMap).filter(Boolean).length}/${subHabitModal.subHabits.length}`
+                        : '0/0'}
+                    </Text>
+                  </View>
+                </View>
+                <Pressable onPress={() => setSubHabitModal(null)} hitSlop={10}>
+                  <MaterialIcons name="close" size={22} color={outline} />
+                </Pressable>
+              </View>
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
+                <View style={styles.subHabitModalList}>
+                  {(subHabitModal?.subHabits ?? []).map((sub) => {
+                    const done = Boolean(subHabitModal?.doneMap[sub.id]);
+                    const busy = subHabitTogglingId === sub.id;
+                    return (
+                      <Pressable
+                        key={sub.id}
+                        disabled={busy || subHabitTogglingId != null}
+                        onPress={() => void handleSubHabitToggle(sub.id)}
+                        style={({ pressed }) => [
+                          styles.subHabitModalRow,
+                          {
+                            backgroundColor: done
+                              ? isDark
+                                ? 'rgba(52,211,153,0.14)'
+                                : 'rgba(0,108,73,0.08)'
+                              : isDark
+                                ? 'rgba(148,163,184,0.1)'
+                                : 'rgba(148,163,184,0.08)',
+                            borderColor: done
+                              ? isDark
+                                ? 'rgba(52,211,153,0.45)'
+                                : 'rgba(0,108,73,0.35)'
+                              : colors.outline,
+                            opacity: busy ? 0.7 : pressed ? 0.88 : 1,
+                          },
+                        ]}>
+                        <View
+                          style={[
+                            styles.subHabitModalCheck,
+                            {
+                              backgroundColor: done ? secondary : 'transparent',
+                              borderColor: done ? secondary : outline,
+                            },
+                          ]}>
+                          {done ? <MaterialIcons name="check" size={16} color="#fff" /> : null}
+                        </View>
+                        <Text
+                          style={[
+                            styles.subHabitModalName,
+                            {
+                              color: colors.text,
+                              textDecorationLine: done ? 'line-through' : 'none',
+                              opacity: done ? 0.72 : 1,
+                            },
+                          ]}
+                          numberOfLines={2}>
+                          {sub.name}
+                        </Text>
+                        {busy ? <ActivityIndicator size="small" color={primary} /> : null}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </ScrollView>
+              <Text style={[styles.subHabitModalHint, { color: outline }]}>
+                点选完成子习惯；全部完成后计入父习惯当日打卡
+              </Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={categoryModalVisible} transparent animationType="fade" onRequestClose={closeCategoryMenu}>
         <View style={styles.modalRoot}>
           <Pressable style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]} onPress={closeCategoryMenu} />
@@ -6626,6 +6832,29 @@ const styles = StyleSheet.create({
   projectAiRetriggerText: { fontSize: 11, fontWeight: '700' },
   projectAiModalKicker: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 6 },
   projectAiModalBody: { fontSize: 14, fontWeight: '500', lineHeight: 22 },
+  subHabitModalTitleRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 0, paddingRight: 8 },
+  subHabitModalIcon: { fontSize: 28 },
+  subHabitModalProgress: { fontSize: 12, fontWeight: '600', marginTop: 2 },
+  subHabitModalList: { gap: 10, paddingBottom: 8 },
+  subHabitModalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.md,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  subHabitModalCheck: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  subHabitModalName: { flex: 1, fontSize: 15, fontWeight: '600', lineHeight: 20 },
+  subHabitModalHint: { fontSize: 12, marginTop: 10, lineHeight: 17 },
   projectCount: { alignItems: 'flex-end' },
   projectCountMain: { fontSize: 12, fontWeight: '900' },
   projectCountSub: { fontSize: 10, fontWeight: '700' },

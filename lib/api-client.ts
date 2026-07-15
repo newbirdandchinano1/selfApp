@@ -1,20 +1,20 @@
 import {
-  clearApiAuthToken,
-  getApiAuthToken,
-  getApiBaseUrl,
-  getApiPassword,
-  getApiUsername,
-  setApiAuthToken,
+    clearApiAuthToken,
+    getApiAuthToken,
+    getApiBaseUrl,
+    getApiPassword,
+    getApiUsername,
+    setApiAuthToken,
 } from '@/lib/api-config';
-import { normalizeRecordForMysqlApi } from '@/lib/api-mysql-datetime';
-import { mapTableRowForMysqlApiUpload } from '@/lib/api-mysql-column-map';
-import {
-  type ApiUploadSlimOptions,
-  slimRecordForMysqlApi,
-} from '@/lib/api-mysql-payload';
-import { fetchWithTimeoutAndRetry, isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { logPageListApiResponse } from '@/lib/api-debug';
+import { mapTableRowForMysqlApiUpload } from '@/lib/api-mysql-column-map';
+import { normalizeRecordForMysqlApi } from '@/lib/api-mysql-datetime';
+import {
+    type ApiUploadSlimOptions,
+    slimRecordForMysqlApi,
+} from '@/lib/api-mysql-payload';
 import { enqueueApiRequest } from '@/lib/api-request-queue';
+import { fetchWithTimeoutAndRetry, isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 import type { TasksCalendarResponse } from '@/lib/tasks-calendar-data';
 
 export function prepareRowBodyForApi(
@@ -220,6 +220,11 @@ type ApiRequestOptions = {
   retryOnUnauthorized?: boolean;
   /** 单次请求超时毫秒数，bootstrap 等大响应用更大的值 */
   perAttemptTimeoutMs?: number;
+  /**
+   * 不触发全局「正在同步数据…」全屏蒙层（后台任务、页面内自有 loading 时使用）。
+   * `/api/ai/*` 默认视为耗时长的非阻塞请求，也会跳过蒙层。
+   */
+  skipGlobalLoading?: boolean;
 };
 
 export async function apiRequest<T = unknown>(
@@ -318,7 +323,9 @@ export async function apiRequest<T = unknown>(
       }
     };
 
-    if (method !== 'GET') {
+    const isAiEndpoint = /\/api\/ai(?:\/|$)/.test(path);
+    const skipOverlay = options.skipGlobalLoading === true || isAiEndpoint;
+    if (method !== 'GET' && !skipOverlay) {
       const { withApiWriteLoading } = await import('@/lib/api-loading-tracker');
       return withApiWriteLoading(runAuth);
     }
