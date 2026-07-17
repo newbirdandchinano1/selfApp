@@ -330,7 +330,7 @@ type SentenceLedgerPreviewState =
 function parseFinanceSentenceLocal(raw: string): ({ ok: true } & ParsedOneLiner) | { ok: false } {
   const s = raw.trim().replace(/\s+/g, ' ');
   if (!s) return { ok: false };
-  const incomeHints = /(?:^|[\s,，])(收入|到账|进账|工资|奖金|补贴|退款|回款|(?:收到)?转账)/;
+  const incomeHints = /(?:^|[\s,，])(收入|到账|进账|工资|奖金|补贴|退款|回款)/;
   const transaction_type: 'income' | 'expense' = incomeHints.test(s) ? 'income' : 'expense';
   const numRe = /(\d+(?:\.\d+)?)\s*(?:元|块|￥|¥)?/;
   const m = s.match(numRe);
@@ -945,30 +945,29 @@ export default function FinanceScreen() {
   const todayExpenseTotal = React.useMemo(
     () =>
       todayTxns.reduce((sum, txn) => {
-        const displayAmount = getTxnDisplayAmount(txn);
-        return displayAmount < 0 ? sum + Math.abs(displayAmount) : sum;
+        if (txn.transaction_type !== 'expense') return sum;
+        return sum + Math.abs(txn.amount);
       }, 0),
-    [getTxnDisplayAmount, todayTxns]
+    [todayTxns]
   );
 
   const todayBudgetExpenseTotal = React.useMemo(
     () =>
       todayTxns.reduce((sum, txn) => {
-        const displayAmount = getTxnDisplayAmount(txn);
-        if (displayAmount >= 0) return sum;
+        if (txn.transaction_type !== 'expense') return sum;
         if (isFinanceTransactionExcludedFromBudget(txn.extra_data, txn.transaction_type)) return sum;
-        return sum + Math.abs(displayAmount);
+        return sum + Math.abs(txn.amount);
       }, 0),
-    [getTxnDisplayAmount, todayTxns]
+    [todayTxns]
   );
 
   const todayIncomeTotal = React.useMemo(
     () =>
       todayTxns.reduce((sum, txn) => {
-        const displayAmount = getTxnDisplayAmount(txn);
-        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
+        if (txn.transaction_type !== 'income') return sum;
+        return sum + Math.abs(txn.amount);
       }, 0),
-    [getTxnDisplayAmount, todayTxns]
+    [todayTxns]
   );
 
   const sortedTransactions = React.useMemo(() => {
@@ -1133,13 +1132,20 @@ export default function FinanceScreen() {
         const accountLabel = accountNameMap.get(txn.account_id) ?? '未知账户';
 
         const displayAmount = getTxnDisplayAmount(txn);
-        const isIncome = displayAmount > 0;
-        const isExpense = displayAmount < 0;
-        const typeLabel = txn.transaction_type === 'transfer' ? '转账' : isIncome ? '收入' : '支出';
-        const icon: keyof typeof MaterialIcons.glyphMap = isIncome ? 'savings' : isExpense ? 'shopping-bag' : 'sync-alt';
-        const iconColor = isIncome ? secondary : isExpense ? tertiary : subtle;
-        const amountColor = isIncome ? secondary : isExpense ? '#dc2626' : text;
-        const amountPrefix = isIncome ? '+' : isExpense ? '-' : '';
+        const isTransfer = txn.transaction_type === 'transfer';
+        const isIncome = !isTransfer && txn.transaction_type === 'income';
+        const isExpense = !isTransfer && txn.transaction_type === 'expense';
+        const typeLabel = isTransfer ? '转账' : isIncome ? '收入' : '支出';
+        const icon: keyof typeof MaterialIcons.glyphMap = isTransfer
+          ? 'sync-alt'
+          : isIncome
+            ? 'savings'
+            : isExpense
+              ? 'shopping-bag'
+              : 'sync-alt';
+        const iconColor = isTransfer ? subtle : isIncome ? secondary : isExpense ? tertiary : subtle;
+        const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? '#dc2626' : text;
+        const amountPrefix = displayAmount > 0 ? '+' : displayAmount < 0 ? '-' : '';
 
         const aiLine = buildTxnAiInsightLine(txn, {
           zhipuReady: zhipuTxnReady,
@@ -1216,20 +1222,27 @@ export default function FinanceScreen() {
 
       const section = upsert(dayKey);
       const displayAmount = getTxnDisplayAmount(txn);
-      if (displayAmount > 0) section.income += Math.abs(displayAmount);
-      if (displayAmount < 0) section.expense += Math.abs(displayAmount);
+      if (txn.transaction_type === 'income') section.income += Math.abs(txn.amount);
+      if (txn.transaction_type === 'expense') section.expense += Math.abs(txn.amount);
 
       const hour = String(happenedAt.getHours()).padStart(2, '0');
       const minute = String(happenedAt.getMinutes()).padStart(2, '0');
       const accountLabel = accountNameMap.get(txn.account_id) ?? '未知账户';
 
-      const isIncome = displayAmount > 0;
-      const isExpense = displayAmount < 0;
-      const typeLabel = txn.transaction_type === 'transfer' ? '转账' : isIncome ? '收入' : '支出';
-      const icon: keyof typeof MaterialIcons.glyphMap = isIncome ? 'savings' : isExpense ? 'shopping-bag' : 'sync-alt';
-      const iconColor = isIncome ? secondary : isExpense ? tertiary : subtle;
-      const amountColor = isIncome ? secondary : isExpense ? '#dc2626' : text;
-      const amountPrefix = isIncome ? '+' : isExpense ? '-' : '';
+      const isTransfer = txn.transaction_type === 'transfer';
+      const isIncome = !isTransfer && txn.transaction_type === 'income';
+      const isExpense = !isTransfer && txn.transaction_type === 'expense';
+      const typeLabel = isTransfer ? '转账' : isIncome ? '收入' : '支出';
+      const icon: keyof typeof MaterialIcons.glyphMap = isTransfer
+        ? 'sync-alt'
+        : isIncome
+          ? 'savings'
+          : isExpense
+            ? 'shopping-bag'
+            : 'sync-alt';
+      const iconColor = isTransfer ? subtle : isIncome ? secondary : isExpense ? tertiary : subtle;
+      const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? '#dc2626' : text;
+      const amountPrefix = displayAmount > 0 ? '+' : displayAmount < 0 ? '-' : '';
 
       const aiLine = buildTxnAiInsightLine(txn, {
         zhipuReady: zhipuTxnReady,
@@ -1296,13 +1309,20 @@ export default function FinanceScreen() {
       const accountLabel = accountNameMap.get(txn.account_id) ?? '未知账户';
 
       const displayAmount = getTxnDisplayAmount(txn);
-      const isIncome = displayAmount > 0;
-      const isExpense = displayAmount < 0;
-      const typeLabel = txn.transaction_type === 'transfer' ? '转账' : isIncome ? '收入' : '支出';
-      const icon: keyof typeof MaterialIcons.glyphMap = isIncome ? 'savings' : isExpense ? 'shopping-bag' : 'sync-alt';
-      const iconColor = isIncome ? secondary : isExpense ? tertiary : subtle;
-      const amountColor = isIncome ? secondary : isExpense ? '#dc2626' : text;
-      const amountPrefix = isIncome ? '+' : isExpense ? '-' : '';
+      const isTransfer = txn.transaction_type === 'transfer';
+      const isIncome = !isTransfer && txn.transaction_type === 'income';
+      const isExpense = !isTransfer && txn.transaction_type === 'expense';
+      const typeLabel = isTransfer ? '转账' : isIncome ? '收入' : '支出';
+      const icon: keyof typeof MaterialIcons.glyphMap = isTransfer
+        ? 'sync-alt'
+        : isIncome
+          ? 'savings'
+          : isExpense
+            ? 'shopping-bag'
+            : 'sync-alt';
+      const iconColor = isTransfer ? subtle : isIncome ? secondary : isExpense ? tertiary : subtle;
+      const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? '#dc2626' : text;
+      const amountPrefix = displayAmount > 0 ? '+' : displayAmount < 0 ? '-' : '';
 
       const aiLine = buildTxnAiInsightLine(txn, {
         zhipuReady: zhipuTxnReady,
@@ -1354,18 +1374,18 @@ export default function FinanceScreen() {
   const monthlyIncome = React.useMemo(
     () =>
       monthlyTransactions.reduce((sum, txn) => {
-        const displayAmount = getTxnDisplayAmount(txn);
-        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
+        if (txn.transaction_type !== 'income') return sum;
+        return sum + Math.abs(txn.amount);
       }, 0),
-    [getTxnDisplayAmount, monthlyTransactions]
+    [monthlyTransactions]
   );
   const monthlyExpense = React.useMemo(
     () =>
       monthlyTransactions.reduce((sum, txn) => {
-        const displayAmount = getTxnDisplayAmount(txn);
-        return displayAmount < 0 ? sum + Math.abs(displayAmount) : sum;
+        if (txn.transaction_type !== 'expense') return sum;
+        return sum + Math.abs(txn.amount);
       }, 0),
-    [getTxnDisplayAmount, monthlyTransactions]
+    [monthlyTransactions]
   );
 
   const budgetPeriodStart = getBudgetPeriodStartForDate(today, budgetRefreshDay);
@@ -1380,12 +1400,11 @@ export default function FinanceScreen() {
   const monthlyBudgetExpense = React.useMemo(
     () =>
       budgetPeriodTransactions.reduce((sum, txn) => {
-        const displayAmount = getTxnDisplayAmount(txn);
-        if (displayAmount >= 0) return sum;
+        if (txn.transaction_type !== 'expense') return sum;
         if (isFinanceTransactionExcludedFromBudget(txn.extra_data, txn.transaction_type)) return sum;
-        return sum + Math.abs(displayAmount);
+        return sum + Math.abs(txn.amount);
       }, 0),
-    [getTxnDisplayAmount, budgetPeriodTransactions]
+    [budgetPeriodTransactions]
   );
 
   const monthlyBudgetIncome = React.useMemo(
@@ -1393,10 +1412,9 @@ export default function FinanceScreen() {
       budgetPeriodTransactions.reduce((sum, txn) => {
         if (txn.transaction_type !== 'income') return sum;
         if (isFinanceTransactionExcludedFromBudget(txn.extra_data, txn.transaction_type)) return sum;
-        const displayAmount = getTxnDisplayAmount(txn);
-        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
+        return sum + Math.abs(txn.amount);
       }, 0),
-    [getTxnDisplayAmount, budgetPeriodTransactions]
+    [budgetPeriodTransactions]
   );
 
   /** 本预算周期内，各固定支出快速支付产生的全部流水 ID（含连点竞态产生的重复记录）。 */
@@ -1426,18 +1444,18 @@ export default function FinanceScreen() {
   const prevBudgetPeriodIncome = React.useMemo(
     () =>
       prevBudgetPeriodTransactions.reduce((sum, txn) => {
-        const displayAmount = getTxnDisplayAmount(txn);
-        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
+        if (txn.transaction_type !== 'income') return sum;
+        return sum + Math.abs(txn.amount);
       }, 0),
-    [getTxnDisplayAmount, prevBudgetPeriodTransactions]
+    [prevBudgetPeriodTransactions]
   );
   const prevBudgetPeriodExpense = React.useMemo(
     () =>
       prevBudgetPeriodTransactions.reduce((sum, txn) => {
-        const displayAmount = getTxnDisplayAmount(txn);
-        return displayAmount < 0 ? sum + Math.abs(displayAmount) : sum;
+        if (txn.transaction_type !== 'expense') return sum;
+        return sum + Math.abs(txn.amount);
       }, 0),
-    [getTxnDisplayAmount, prevBudgetPeriodTransactions]
+    [prevBudgetPeriodTransactions]
   );
   const lastMonthRemaining = Math.max(0, prevBudgetPeriodIncome - prevBudgetPeriodExpense);
 

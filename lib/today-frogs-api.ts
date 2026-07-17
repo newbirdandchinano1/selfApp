@@ -17,14 +17,25 @@ export type TodayFrogsResult = {
 };
 
 function sortTodayFrogRows(rows: TaskRow[], logicalToday: string): TaskRow[] {
+  const dueMs = (t: TaskRow) => {
+    if (!t.due_date) return Number.POSITIVE_INFINITY;
+    const ms = Date.parse(t.due_date);
+    return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+  };
+  const createdMs = (t: TaskRow) => {
+    const ms = Date.parse(t.created_at);
+    return Number.isNaN(ms) ? 0 : ms;
+  };
   return rows.slice().sort((a, b) => {
     const doneA = isFrogDoneForToday(a.extra_data, a.status, logicalToday);
     const doneB = isFrogDoneForToday(b.extra_data, b.status, logicalToday);
     if (doneA !== doneB) return doneA ? 1 : -1;
     if (a.priority !== b.priority) return b.priority - a.priority;
-    const updA = a.updated_at ? Date.parse(a.updated_at) : 0;
-    const updB = b.updated_at ? Date.parse(b.updated_at) : 0;
-    return updB - updA;
+    const byDue = dueMs(a) - dueMs(b);
+    if (byDue !== 0) return byDue;
+    const byCreated = createdMs(a) - createdMs(b);
+    if (byCreated !== 0) return byCreated;
+    return a.id.localeCompare(b.id);
   });
 }
 

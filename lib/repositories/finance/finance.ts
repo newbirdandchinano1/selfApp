@@ -851,6 +851,8 @@ export async function getFinanceDailySummariesByDateRange(startYmd: string, endY
   for (const t of rows) {
     const day = ymdFromDatetime(t.happened_at);
     if (!day || day < startYmd || day > endYmd) continue;
+    // 转账只影响账户余额，不计入收入/支出/结余统计
+    if (t.transaction_type === 'transfer') continue;
     const effect = computeTransactionLedgerEffect(t.transaction_type, t.amount, t.extra_data);
     const agg = byDay.get(day) ?? { income: 0, expense: 0, net: 0 };
     if (effect > 0) agg.income += effect;

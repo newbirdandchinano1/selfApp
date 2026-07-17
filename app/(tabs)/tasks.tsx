@@ -3321,7 +3321,7 @@ export default function TasksScreen() {
       await runExclusiveMutation('正在保存待办...', async () => {
         markPageDirty();
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        setStandaloneTodos((prev) => [optimisticTask, ...prev]);
+        setStandaloneTodos((prev) => sortStandaloneTodosLocally([optimisticTask, ...prev]));
         setQuickTodoDraft('');
         await createTask({
           id,

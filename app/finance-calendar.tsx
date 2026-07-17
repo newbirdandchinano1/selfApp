@@ -100,11 +100,26 @@ function txnIconByType(type: string): Txn['icon'] {
   return 'receipt-long';
 }
 
-/** 与财务首页 `getTxnDisplayAmount` 一致：按收支类型与金额绝对值展示，负债账户的负金额已体现在 `amount` 符号中。 */
+/** 与财务首页 `getTxnDisplayAmount` 一致：按收支类型与金额绝对值展示；转账按 transfer_leg 区分方向。 */
 function getTxnDisplayAmount(row: FinanceTransactionRow): number {
   const absAmount = Math.abs(row.amount);
   if (row.transaction_type === 'income') return absAmount;
   if (row.transaction_type === 'expense') return -absAmount;
+  if (row.transaction_type === 'transfer') {
+    try {
+      if (row.extra_data) {
+        const raw = JSON.parse(row.extra_data) as unknown;
+        if (raw && typeof raw === 'object') {
+          const leg = (raw as Record<string, unknown>).transfer_leg;
+          if (leg === 'out') return -absAmount;
+          if (leg === 'in') return absAmount;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 0;
+  }
   return row.amount;
 }
 
@@ -354,7 +369,9 @@ export default function FinanceCalendarScreen() {
       const rows = await getFinanceTransactionsByYmd(formatYMD(date));
       const ui = rows.map((row) => txnToUi(row));
       setActiveTxns(ui);
-      setDayTotal(ui.reduce((sum, t) => sum + t.displayAmount, 0));
+      setDayTotal(
+        ui.reduce((sum, t) => (t.transactionType === 'transfer' ? sum : sum + t.displayAmount), 0),
+      );
       if (ui.length > 0) {
         setSheetSnap('half');
         setSheetVisible(true);

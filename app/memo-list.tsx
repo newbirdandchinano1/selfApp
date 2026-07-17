@@ -43,9 +43,16 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const MEMO_LIST_PAGE_KEY = 'memo-list';
+/** 虚拟筛选项：展示所有维度下的备忘，不可编辑/删除 */
+const MEMO_DIMENSION_ALL_ID = '__all__';
+const MEMO_DIMENSION_ALL_LABEL = '全部分类';
 
 function sortByOrderThenTime<T extends { sort_order: number; updated_at: string }>(items: T[]): T[] {
   return [...items].sort((a, b) => a.sort_order - b.sort_order || b.updated_at.localeCompare(a.updated_at));
+}
+
+function isMemoDimensionAll(id: string | null): boolean {
+  return id === MEMO_DIMENSION_ALL_ID;
 }
 
 export default function MemoListScreen() {
@@ -111,12 +118,21 @@ export default function MemoListScreen() {
         await wrapLoad(async () => {
           const dims = sortByOrderThenTime(await listMemoDimensions());
           setDimensions(dims);
-          const activeId =
-            selectedDimensionId && dims.some(d => d.id === selectedDimensionId)
+          const activeId = isMemoDimensionAll(selectedDimensionId)
+            ? MEMO_DIMENSION_ALL_ID
+            : selectedDimensionId && dims.some(d => d.id === selectedDimensionId)
               ? selectedDimensionId
-              : dims[0]?.id ?? null;
+              : dims.length > 0
+                ? MEMO_DIMENSION_ALL_ID
+                : null;
           if (activeId !== selectedDimensionId) setSelectedDimensionId(activeId);
-          setItems(activeId ? await listMemos(activeId) : []);
+          setItems(
+            isMemoDimensionAll(activeId)
+              ? await listMemos()
+              : activeId
+                ? await listMemos(activeId)
+                : [],
+          );
         }, forceApi);
       } catch {
         setError('加载失败，请重试');
@@ -198,9 +214,12 @@ export default function MemoListScreen() {
       const nextDims = dimensions.filter(d => d.id !== dimension.id);
       setDimensions(nextDims);
       if (selectedDimensionId === dimension.id) {
-        const nextId = nextDims[0]?.id ?? null;
+        const nextId = nextDims.length > 0 ? MEMO_DIMENSION_ALL_ID : null;
         setSelectedDimensionId(nextId);
-        setItems(nextId ? await listMemos(nextId) : []);
+        setItems(nextId ? await listMemos() : []);
+      } else if (isMemoDimensionAll(selectedDimensionId)) {
+        setItems(prev => prev.filter(m => m.dimension_id !== dimension.id));
+        if (nextDims.length === 0) setSelectedDimensionId(null);
       } else {
         setItems(prev => prev.filter(m => m.dimension_id !== dimension.id));
       }
@@ -321,14 +340,17 @@ export default function MemoListScreen() {
     ]);
   }, []);
 
+  const isAllDimension = isMemoDimensionAll(selectedDimensionId);
+
   const filteredItems = useMemo(() => {
     if (!selectedDimensionId) return [];
+    if (isMemoDimensionAll(selectedDimensionId)) return items;
     return items.filter(item => item.dimension_id === selectedDimensionId);
   }, [items, selectedDimensionId]);
 
   const openNewMemo = useCallback(() => {
-    if (!selectedDimensionId) {
-      Alert.alert('请先选择维度', '请先选择一个维度，再在该维度下新建备忘。');
+    if (!selectedDimensionId || isMemoDimensionAll(selectedDimensionId)) {
+      Alert.alert('请先选择维度', '「全部分类」下不能直接新建。请先选择一个具体维度，再新建备忘。');
       return;
     }
     router.push({ pathname: '/memo-edit/[id]', params: { id: 'new', dimensionId: selectedDimensionId } });
@@ -337,6 +359,24 @@ export default function MemoListScreen() {
   const renderHeader = useMemo(() => (
     <View style={styles.pageHeaderBlock}>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dimensionPillsRow}>
+        {dimensions.length > 0 ? (
+          <Pressable
+            onPress={() => setSelectedDimensionId(MEMO_DIMENSION_ALL_ID)}
+            style={({ pressed }) => [
+              styles.dimensionPill,
+              {
+                borderColor: isAllDimension ? primary : borderSoft,
+                backgroundColor: isAllDimension ? (isDark ? 'rgba(96,165,250,0.14)' : 'rgba(0,88,190,0.08)') : cardBg,
+                opacity: pressed ? 0.9 : 1,
+              },
+            ]}
+          >
+            <MaterialIcons name="apps" size={16} color={isAllDimension ? primary : outline} />
+            <Text style={[styles.dimensionPillText, { color: isAllDimension ? primary : text }]} numberOfLines={1}>
+              {MEMO_DIMENSION_ALL_LABEL}
+            </Text>
+          </Pressable>
+        ) : null}
         {dimensions.map(d => {
           const active = d.id === selectedDimensionId;
           return (
@@ -369,12 +409,15 @@ export default function MemoListScreen() {
           <Text style={[styles.dimensionPillText, { color: primary }]}>新建维度</Text>
         </Pressable>
       </ScrollView>
-      <Text style={[styles.pageHint, { color: outline }]}>点击切换维度；长按维度可编辑或删除。右上角在当前维度下新建备忘。</Text>
+      <Text style={[styles.pageHint, { color: outline }]}>
+        点击切换维度（含「全部分类」）；长按具体维度可编辑或删除。右上角在当前维度下新建备忘。
+      </Text>
     </View>
-  ), [borderSoft, cardBg, dimensions, isDark, openCreateDimension, openDimensionActions, outline, primary, selectedDimensionId, text]);
+  ), [borderSoft, cardBg, dimensions, isAllDimension, isDark, openCreateDimension, openDimensionActions, outline, primary, selectedDimensionId, text]);
 
   const renderItem = useCallback(({ item }: { item: MemoItem }) => {
     const isConverting = convertingMemoId === item.id;
+    const dimensionLabel = item.dimension?.trim() || '未分类';
     return (
       <Swipeable
         ref={r => { swipeableRefs.current[item.id] = r; }}
@@ -411,6 +454,9 @@ export default function MemoListScreen() {
             onPress={() => router.push({ pathname: '/memo-view/[id]', params: { id: item.id } })}
             style={({ pressed }) => [styles.rowBody, { opacity: pressed ? 0.92 : 1 }]}
           >
+            {isAllDimension ? (
+              <Text style={[styles.rowDimension, { color: primary }]} numberOfLines={1}>{dimensionLabel}</Text>
+            ) : null}
             <Text style={[styles.rowTitle, { color: text }]} numberOfLines={2}>{memoListPreviewTitle(item)}</Text>
             <Text style={[styles.rowSub, { color: outline }]} numberOfLines={2}>{memoListPreviewBody(item)}</Text>
             {item.ai_evaluation ? (
@@ -431,9 +477,14 @@ export default function MemoListScreen() {
         </View>
       </Swipeable>
     );
-  }, [borderSoft, cardBg, convertingMemoId, onDeleteMemo, openAiModal, pendingAnalysisIds, performConvertToProject, performConvertToTodo, outline, primary, router, secondary, tertiary, text]);
+  }, [borderSoft, cardBg, convertingMemoId, isAllDimension, onDeleteMemo, openAiModal, pendingAnalysisIds, performConvertToProject, performConvertToTodo, outline, primary, router, secondary, tertiary, text]);
 
-  const currentDimensionLabel = selectedDimension?.name.trim() || '备忘录';
+  const currentDimensionLabel = isAllDimension
+    ? MEMO_DIMENSION_ALL_LABEL
+    : selectedDimension?.name.trim() || '备忘录';
+
+  const canCreateMemoInCurrentDimension = Boolean(selectedDimensionId) && !isAllDimension;
+  const headerAddCreatesMemo = canCreateMemoInCurrentDimension || isAllDimension;
 
   return (
     <View style={[styles.container, { backgroundColor: bg }]}>
@@ -458,8 +509,8 @@ export default function MemoListScreen() {
           >
             <Text style={[styles.topBarTitle, { color: text }]} numberOfLines={1}>{currentDimensionLabel}</Text>
           </Pressable>
-          <Pressable style={styles.roundIconBtn} onPress={selectedDimensionId ? openNewMemo : openCreateDimension}>
-            <MaterialIcons name={selectedDimensionId ? 'add' : 'folder-plus'} size={26} color={primary} />
+          <Pressable style={styles.roundIconBtn} onPress={headerAddCreatesMemo ? openNewMemo : openCreateDimension}>
+            <MaterialIcons name={headerAddCreatesMemo ? 'add' : 'folder-plus'} size={26} color={primary} />
           </Pressable>
         </View>
       </View>
@@ -490,15 +541,35 @@ export default function MemoListScreen() {
           contentContainerStyle={[styles.listContent, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]}
           ListEmptyComponent={
             <View style={[styles.emptyCard, { backgroundColor: cardBg, borderColor: borderSoft }]}>
-              <MaterialIcons name={selectedDimensionId ? 'note-add' : 'create-new-folder'} size={44} color={outline} />
-              <Text style={[styles.emptyTitle, { color: text }]}>{selectedDimensionId ? '该维度暂无备忘' : '请先新建维度'}</Text>
-              <Text style={[styles.emptySub, { color: outline }]}>{selectedDimensionId ? '点击右上角「+」在当前维度下新建备忘' : '备忘与维度在同一页面管理。先建立维度，再在维度下添加备忘。'}</Text>
-              <Pressable
-                onPress={selectedDimensionId ? openNewMemo : openCreateDimension}
-                style={({ pressed }) => [styles.primaryCta, { backgroundColor: primary, opacity: pressed ? 0.88 : 1 }]}
-              >
-                <Text style={styles.primaryCtaText}>{selectedDimensionId ? '添加备忘' : '新建维度'}</Text>
-              </Pressable>
+              <MaterialIcons
+                name={canCreateMemoInCurrentDimension ? 'note-add' : isAllDimension ? 'notes' : 'create-new-folder'}
+                size={44}
+                color={outline}
+              />
+              <Text style={[styles.emptyTitle, { color: text }]}>
+                {canCreateMemoInCurrentDimension
+                  ? '该维度暂无备忘'
+                  : isAllDimension
+                    ? '暂无备忘'
+                    : '请先新建维度'}
+              </Text>
+              <Text style={[styles.emptySub, { color: outline }]}>
+                {canCreateMemoInCurrentDimension
+                  ? '点击右上角「+」在当前维度下新建备忘'
+                  : isAllDimension
+                    ? '可切换到具体维度后新建备忘，或在此查看全部维度下的内容。'
+                    : '备忘与维度在同一页面管理。先建立维度，再在维度下添加备忘。'}
+              </Text>
+              {!isAllDimension ? (
+                <Pressable
+                  onPress={canCreateMemoInCurrentDimension ? openNewMemo : openCreateDimension}
+                  style={({ pressed }) => [styles.primaryCta, { backgroundColor: primary, opacity: pressed ? 0.88 : 1 }]}
+                >
+                  <Text style={styles.primaryCtaText}>
+                    {canCreateMemoInCurrentDimension ? '添加备忘' : '新建维度'}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           }
           showsVerticalScrollIndicator={false}
@@ -705,6 +776,7 @@ const styles = StyleSheet.create({
   rowAccent: { width: 4 },
   rowBody: { flex: 1, paddingVertical: 14, paddingHorizontal: 14, gap: 4 },
   rowTitle: { fontSize: 16, fontWeight: '800', lineHeight: 22 },
+  rowDimension: { fontSize: 11, fontWeight: '800', marginBottom: 4 },
   rowSub: { fontSize: 13, fontWeight: '600', lineHeight: 18 },
   rowAiPreview: { fontSize: 12, fontWeight: '600', lineHeight: 17, marginTop: 2 },
   rowAiPendingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },

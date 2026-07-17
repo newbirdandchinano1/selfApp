@@ -42,7 +42,7 @@ export type SentenceLedgerPreviewState =
 export function parseFinanceSentenceLocal(raw: string): ({ ok: true } & ParsedOneLiner) | { ok: false } {
   const s = raw.trim().replace(/\s+/g, ' ');
   if (!s) return { ok: false };
-  const incomeHints = /(?:^|[\s,，])(收入|到账|进账|工资|奖金|补贴|退款|回款|(?:收到)?转账)/;
+  const incomeHints = /(?:^|[\s,，])(收入|到账|进账|工资|奖金|补贴|退款|回款)/;
   const transaction_type: 'expense' | 'income' = incomeHints.test(s) ? 'income' : 'expense';
   const numRe = /(\d+(?:\.\d+)?)\s*(?:元|块|￥|¥)?/;
   const m = s.match(numRe);

@@ -385,10 +385,10 @@ function groupTasksToSections(
   });
 
   const sortDated = (a: Item, b: Item) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
     const ak = a.dueSortKey ?? Number.POSITIVE_INFINITY;
     const bk = b.dueSortKey ?? Number.POSITIVE_INFINITY;
     if (ak !== bk) return ak - bk;
-    if (b.priority !== a.priority) return b.priority - a.priority;
     return a.id.localeCompare(b.id);
   };
 

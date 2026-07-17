@@ -304,7 +304,7 @@ export function resolveMatrixProjectIds(
 
 
 
-/** 未完成在前 → 搁置置底 → 已完成/取消置底；组内按创建时间升序 */
+/** 未完成在前 → 搁置置底 → 已完成/取消置底；组内按优先级降序，其次按截止/创建时间升序 */
 export function sortStandaloneTodosLocally(rows: TaskRow[]): TaskRow[] {
 
   const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
@@ -314,6 +314,16 @@ export function sortStandaloneTodosLocally(rows: TaskRow[]): TaskRow[] {
     const ms = Date.parse(t.created_at);
 
     return Number.isNaN(ms) ? 0 : ms;
+
+  };
+
+  const dueMs = (t: TaskRow) => {
+
+    if (!t.due_date) return Number.POSITIVE_INFINITY;
+
+    const ms = Date.parse(t.due_date);
+
+    return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
 
   };
 
@@ -330,6 +340,12 @@ export function sortStandaloneTodosLocally(rows: TaskRow[]): TaskRow[] {
     const sb = b.status === 'shelved';
 
     if (sa !== sb) return sa ? 1 : -1;
+
+    if (a.priority !== b.priority) return b.priority - a.priority;
+
+    const byDue = dueMs(a) - dueMs(b);
+
+    if (byDue !== 0) return byDue;
 
     const byCreated = createdMs(a) - createdMs(b);
 
