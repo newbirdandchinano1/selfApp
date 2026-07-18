@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /** REST 后端根地址 */
-export const DEFAULT_API_BASE_URL = 'http://1.14.76.59:3000';
+export const DEFAULT_API_BASE_URL = 'http://124.223.161.79:3000';
 
 /** 内置管理员账号（应用内固定，不可在设置中修改） */
 export const DEFAULT_API_USERNAME = 'admin';
