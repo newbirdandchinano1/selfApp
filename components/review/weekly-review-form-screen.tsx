@@ -475,10 +475,8 @@ export function WeeklyReviewFormScreen({
                       <View key={dim.id}>
                         <SectionTitle color={text} n={nLabels[dimIdx] ?? String(dimIdx + 1)} title={dim.title} />
                         {dim.columns.map(col => (
-                          <View key={col.id} style={dim.columns.length > 1 ? { marginBottom: 8 } : undefined}>
-                            {dim.columns.length > 1 ? (
-                              <Text style={[styles.fieldLabel, { color: outline, marginBottom: 6 }]}>{col.title}</Text>
-                            ) : null}
+                          <View key={col.id} style={{ marginBottom: 8 }}>
+                            <Text style={[styles.fieldLabel, { color: outline, marginBottom: 6 }]}>{col.title}</Text>
                             <Field
                               value={weeklyFields[col.id] ?? ''}
                               onChangeText={t => setWeeklyField(col.id, t)}

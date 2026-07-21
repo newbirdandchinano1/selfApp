@@ -329,13 +329,16 @@ function DailyReviewGridCell({
           : null}
 
         {singleField ? (
-          <Text
-            style={[
-              styles.previewText,
-              { color: hasContent ? colors.text : colors.textMuted },
-            ]}>
-            {columnPreview(dim.columns[0].id, dim.columns[0].placeholder)}
-          </Text>
+          <View style={[styles.stackedField, { borderLeftColor: colors.primary }]}>
+            <Text style={[styles.inlineLabel, { color: colors.primary }]}>{dim.columns[0].title}</Text>
+            <Text
+              style={[
+                styles.previewText,
+                { color: hasContent ? colors.text : colors.textMuted },
+              ]}>
+              {columnPreview(dim.columns[0].id, dim.columns[0].placeholder)}
+            </Text>
+          </View>
         ) : null}
       </View>
     </View>

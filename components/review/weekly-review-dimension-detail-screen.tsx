@@ -399,9 +399,7 @@ export function WeeklyReviewDimensionDetailScreen() {
                       <View
                         key={col.id}
                         style={[styles.fieldCard, { borderColor: active ? colors.primary : colors.outline }]}>
-                        {dimension.columns.length > 1 ? (
-                          <Text style={[styles.fieldLabel, { color: active ? colors.primary : colors.textMuted }]}>{col.title}</Text>
-                        ) : null}
+                        <Text style={[styles.fieldLabel, { color: active ? colors.primary : colors.textMuted }]}>{col.title}</Text>
                         <ReviewFieldEditor
                           model={model}
                           onChange={nextModel => commitFieldModel(col.id, nextModel)}
