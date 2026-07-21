@@ -3597,6 +3597,10 @@ export default function TasksScreen() {
       } catch (err) {
         console.warn('确认保持戒除失败', err);
         restoreHabitGridItem(item);
+        Alert.alert(
+          '确认失败',
+          err instanceof Error && err.message.trim() ? err.message : '保持戒除未能保存，请稍后重试',
+        );
       } finally {
         habitCheckInLockRef.current.delete(item.id);
       }

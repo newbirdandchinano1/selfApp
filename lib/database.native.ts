@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 35;
+export const DB_VERSION = 36;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -93,6 +93,64 @@ async function migrateEarnedRewardsHabitSource(db: SQLite.SQLiteDatabase): Promi
     'earned_rewards_habit_source_v34',
     '1',
   ]);
+}
+
+/** 戒除「保持戒除」需写入 count=0；旧表 CHECK (count >= 1) 会导致确认失败 */
+async function migrateHabitCheckInsAllowZeroCount(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['habit_check_ins_allow_zero_count_v36'],
+  );
+  if (done) return;
+
+  const table = await db.getFirstAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='habit_check_ins'",
+  );
+  if (!table) {
+    await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+      'habit_check_ins_allow_zero_count_v36',
+      '1',
+    ]);
+    return;
+  }
+
+  await db.execAsync('PRAGMA foreign_keys = OFF');
+  try {
+    await db.execAsync(`
+      CREATE TABLE habit_check_ins_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        habit_id TEXT NOT NULL,
+        record_date TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 1 CHECK (count >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending_create',
+        FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE,
+        UNIQUE(habit_id, record_date)
+      );
+
+      INSERT INTO habit_check_ins_new (
+        id, habit_id, record_date, count, created_at, updated_at, sync_status
+      )
+      SELECT
+        id, habit_id, record_date, count, created_at, updated_at, sync_status
+      FROM habit_check_ins;
+
+      DROP TABLE habit_check_ins;
+      ALTER TABLE habit_check_ins_new RENAME TO habit_check_ins;
+
+      CREATE INDEX IF NOT EXISTS idx_habit_check_ins_habit_id ON habit_check_ins(habit_id);
+      CREATE INDEX IF NOT EXISTS idx_habit_check_ins_record_date ON habit_check_ins(record_date);
+    `);
+  } finally {
+    await db.execAsync('PRAGMA foreign_keys = ON');
+  }
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'habit_check_ins_allow_zero_count_v36',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
 }
 
 async function migrateDropDeletedAtAndVersionColumns(db: SQLite.SQLiteDatabase): Promise<void> {
@@ -412,7 +470,7 @@ export async function initDatabase() {
       id TEXT PRIMARY KEY NOT NULL,
       habit_id TEXT NOT NULL,
       record_date TEXT NOT NULL,
-      count INTEGER NOT NULL DEFAULT 1 CHECK (count >= 1),
+      count INTEGER NOT NULL DEFAULT 1 CHECK (count >= 0),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
@@ -1134,6 +1192,7 @@ export async function initDatabase() {
   await migrateDropDeletedAtAndVersionColumns(db);
   await migrateDropPersonaPortraitCache(db);
   await migrateEarnedRewardsHabitSource(db);
+  await migrateHabitCheckInsAllowZeroCount(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);
