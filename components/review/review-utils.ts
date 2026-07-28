@@ -34,6 +34,31 @@ export function formatReviewHeaderDate(ymd: string): string {
   return `${d.getMonth() + 1}月${d.getDate()}日 周${HEADER_WEEKDAY_LABELS[d.getDay()]}`;
 }
 
+/** 取自然月月初 YYYY-MM-01 */
+export function monthStartYmdFromYmd(ymd: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+  if (!m) return ymd;
+  return `${m[1]}-${m[2]}-01`;
+}
+
+export function formatReviewMonthLabel(monthStartYmd: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(monthStartYmd.trim());
+  if (!m) return monthStartYmd;
+  return `${m[1]}年${Number(m[2])}月`;
+}
+
+export function shiftMonthStartYmd(monthStartYmd: string, deltaMonths: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(monthStartYmd.trim());
+  if (!m) return monthStartYmd;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1 + deltaMonths, 1);
+  return toYmdLocal(d);
+}
+
+/** 月复盘：过去与当前自然月可填；未来月不可填 */
+export function isMonthlyReviewEditable(monthStartYmd: string, todayYmd: string): boolean {
+  return monthStartYmdFromYmd(monthStartYmd) <= monthStartYmdFromYmd(todayYmd);
+}
+
 export function formatRangeLabel(start: Date, end: Date): string {
   return `${start.getMonth() + 1}月${start.getDate()}日 – ${end.getMonth() + 1}月${end.getDate()}日`;
 }

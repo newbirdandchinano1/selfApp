@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 36;
+export const DB_VERSION = 37;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -148,6 +148,64 @@ async function migrateHabitCheckInsAllowZeroCount(db: SQLite.SQLiteDatabase): Pr
 
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'habit_check_ins_allow_zero_count_v36',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/** 复盘模板 scope 支持 monthly；旧 CHECK 仅 daily/weekly */
+async function migrateReviewDimensionsAllowMonthly(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['review_dimensions_allow_monthly_v37'],
+  );
+  if (done) return;
+
+  const table = await db.getFirstAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='review_dimensions'",
+  );
+  if (!table) {
+    await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+      'review_dimensions_allow_monthly_v37',
+      '1',
+    ]);
+    return;
+  }
+
+  await db.execAsync('PRAGMA foreign_keys = OFF');
+  try {
+    await db.execAsync(`
+      CREATE TABLE review_dimensions_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        scope TEXT NOT NULL CHECK (scope IN ('daily', 'weekly', 'monthly')),
+        title TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 1000,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending_create',
+        extra_data TEXT
+      );
+
+      INSERT INTO review_dimensions_new (
+        id, scope, title, sort_order, created_at, updated_at, sync_status, extra_data
+      )
+      SELECT
+        id, scope, title, sort_order, created_at, updated_at, sync_status, extra_data
+      FROM review_dimensions;
+
+      DROP TABLE review_dimensions;
+      ALTER TABLE review_dimensions_new RENAME TO review_dimensions;
+
+      CREATE INDEX IF NOT EXISTS idx_review_dimensions_scope ON review_dimensions(scope);
+      CREATE INDEX IF NOT EXISTS idx_review_dimensions_sort_order ON review_dimensions(sort_order);
+      CREATE INDEX IF NOT EXISTS idx_review_dimensions_updated_at ON review_dimensions(updated_at);
+    `);
+  } finally {
+    await db.execAsync('PRAGMA foreign_keys = ON');
+  }
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'review_dimensions_allow_monthly_v37',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
@@ -596,7 +654,7 @@ export async function initDatabase() {
 
     CREATE TABLE IF NOT EXISTS review_dimensions (
       id TEXT PRIMARY KEY NOT NULL,
-      scope TEXT NOT NULL CHECK (scope IN ('daily', 'weekly')),
+      scope TEXT NOT NULL CHECK (scope IN ('daily', 'weekly', 'monthly')),
       title TEXT NOT NULL,
       sort_order INTEGER NOT NULL DEFAULT 1000,
       created_at TEXT NOT NULL,
@@ -640,6 +698,16 @@ export async function initDatabase() {
     CREATE TABLE IF NOT EXISTS daily_review_journal (
       id TEXT PRIMARY KEY NOT NULL,
       record_date_ymd TEXT NOT NULL UNIQUE,
+      body TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS monthly_review_journal (
+      id TEXT PRIMARY KEY NOT NULL,
+      month_start_ymd TEXT NOT NULL UNIQUE,
       body TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -710,46 +778,11 @@ export async function initDatabase() {
       sync_status TEXT NOT NULL DEFAULT 'synced'
     );
 
-    CREATE TABLE IF NOT EXISTS user_weaknesses (
-      id TEXT PRIMARY KEY NOT NULL,
-      title TEXT NOT NULL DEFAULT '',
-      detail TEXT NOT NULL DEFAULT '',
-      ai_evaluation TEXT,
-      ai_suggestions TEXT,
-      ai_review_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'synced'
-    );
-
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY NOT NULL,
       value_json TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending_create'
-    );
-
-    CREATE TABLE IF NOT EXISTS weekly_task_schedule_slots (
-      id TEXT PRIMARY KEY NOT NULL,
-      start_hour INTEGER NOT NULL,
-      end_hour INTEGER NOT NULL,
-      sort_order INTEGER NOT NULL DEFAULT 1000,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      CHECK (end_hour > start_hour)
-    );
-
-    CREATE TABLE IF NOT EXISTS weekly_task_schedule_cells (
-      id TEXT PRIMARY KEY NOT NULL,
-      slot_id TEXT NOT NULL,
-      day_of_week INTEGER NOT NULL CHECK (day_of_week >= 0 AND day_of_week <= 6),
-      content TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      FOREIGN KEY (slot_id) REFERENCES weekly_task_schedule_slots(id) ON DELETE CASCADE,
-      UNIQUE(slot_id, day_of_week)
     );
   `);
 
@@ -1042,6 +1075,8 @@ export async function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_daily_review_journal_record_date ON daily_review_journal(record_date_ymd);
     CREATE INDEX IF NOT EXISTS idx_daily_review_journal_updated ON daily_review_journal(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_monthly_review_journal_month ON monthly_review_journal(month_start_ymd);
+    CREATE INDEX IF NOT EXISTS idx_monthly_review_journal_updated ON monthly_review_journal(updated_at);
 
     CREATE INDEX IF NOT EXISTS idx_recipe_categories_updated_at ON recipe_categories(updated_at);
     CREATE INDEX IF NOT EXISTS idx_recipe_items_category_id ON recipe_items(category_id);
@@ -1051,11 +1086,6 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_memo_dimensions_updated_at ON memo_dimensions(updated_at);
     CREATE INDEX IF NOT EXISTS idx_memos_dimension_id ON memos(dimension_id);
     CREATE INDEX IF NOT EXISTS idx_memos_updated_at ON memos(updated_at);
-
-    CREATE INDEX IF NOT EXISTS idx_weekly_task_schedule_slots_sort_order ON weekly_task_schedule_slots(sort_order);
-    CREATE INDEX IF NOT EXISTS idx_weekly_task_schedule_slots_updated_at ON weekly_task_schedule_slots(updated_at);
-    CREATE INDEX IF NOT EXISTS idx_weekly_task_schedule_cells_slot_id ON weekly_task_schedule_cells(slot_id);
-    CREATE INDEX IF NOT EXISTS idx_weekly_task_schedule_cells_updated_at ON weekly_task_schedule_cells(updated_at);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
@@ -1178,15 +1208,15 @@ export async function initDatabase() {
   await migrateMemosStorageToSqliteIfNeeded(db);
   await ensureMemoDimensionsBackfilled(db);
 
-  const { migrateUserWeaknessesStorageToSqliteIfNeeded } = await import('@/lib/user-weaknesses');
-  await migrateUserWeaknessesStorageToSqliteIfNeeded(db);
-
-  const { migrateWeeklyTaskScheduleToSqliteIfNeeded } = await import(
-    '@/lib/repositories/tasks/weekly-task-schedule'
-  );
-  await migrateWeeklyTaskScheduleToSqliteIfNeeded(db);
+  // 已下线功能：清理本地遗留表（本周任务表 / 我的缺点）
+  await db.execAsync(`
+    DROP TABLE IF EXISTS weekly_task_schedule_cells;
+    DROP TABLE IF EXISTS weekly_task_schedule_slots;
+    DROP TABLE IF EXISTS user_weaknesses;
+  `);
 
   const { ensureReviewTemplateDefaults } = await import('@/lib/repositories/insights/review-template');
+  await migrateReviewDimensionsAllowMonthly(db);
   await ensureReviewTemplateDefaults();
 
   await migrateDropDeletedAtAndVersionColumns(db);
@@ -1249,6 +1279,7 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS review_dimensions;
     DROP TABLE IF EXISTS weekly_review_journal;
     DROP TABLE IF EXISTS daily_review_journal;
+    DROP TABLE IF EXISTS monthly_review_journal;
     DROP TABLE IF EXISTS persona_portrait_cache;
     DROP TABLE IF EXISTS goal_dimensions;
     DROP TABLE IF EXISTS visions;

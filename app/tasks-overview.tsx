@@ -9,6 +9,7 @@ import {
   type TasksOverviewInsightCounts,
   type TasksOverviewStatKey,
 } from '@/lib/tasks-overview-api';
+import { getTaskRepeatDisplayText } from '@/lib/task-repeat-rollover';
 import { buildGlobalTaskHeatmapGrid, heatmapGridDayRange, type HeatmapCell } from '@/lib/tasks-global-heatmap';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -55,6 +56,7 @@ const STAT_CARDS: Array<{
   { key: 'open', label: '未完成', countKey: 'open', valueColor: 'text', listMode: 'tasks' },
   { key: 'doneOrCancelled', label: '当前已完成/取消', countKey: 'doneOrCancelled', valueColor: 'secondary', listMode: 'tasks' },
   { key: 'totalActive', label: '待办总数', countKey: 'totalActive', valueColor: 'primary', listMode: 'tasks' },
+  { key: 'recurring', label: '重复待办', countKey: 'recurring', valueColor: 'primary', listMode: 'tasks' },
   { key: 'completedEvents', label: '累计完成记录', countKey: 'completedEvents', valueColor: 'primary', listMode: 'events', eventAction: 'completed' },
   { key: 'reopenedEvents', label: '累计恢复记录', countKey: 'reopenedEvents', valueColor: 'primary', listMode: 'events', eventAction: 'reopened' },
 ];
@@ -631,7 +633,7 @@ export default function TasksOverviewScreen() {
         onScroll={handleMainScroll}
         scrollEventThrottle={16}>
         <Text style={[styles.hint, { color: outline }]}>
-          仅统计任务页顶部「待办」中的独立项，不含「任务列表」四象限内的项目/子任务。数据优先从服务端加载，离线时回退本地库。点击概况卡片或热力图格子，在下方「执行历史」查看明细；再次点击可取消选中。
+          仅统计任务页顶部「待办」中的独立项，不含「任务列表」四象限内的项目/子任务。点击「重复待办」可查看所有设置了重复规则的项（如每周日）。数据优先从服务端加载，离线时回退本地库。点击概况卡片或热力图格子，在下方「执行历史」查看明细；再次点击可取消选中。
         </Text>
 
         <View style={[styles.card, { backgroundColor: surface, borderColor: border }]}>
@@ -768,6 +770,8 @@ export default function TasksOverviewScreen() {
                 <>
                   {statTasks.map((t, idx) => {
                     const opening = openingTaskId === t.id;
+                    const repeatText =
+                      selectedStatKey === 'recurring' ? getTaskRepeatDisplayText(t.extra_data) : '';
                     return (
                     <Pressable
                       key={t.id}
@@ -789,6 +793,7 @@ export default function TasksOverviewScreen() {
                           {t.title?.trim() || '（无标题）'}
                         </Text>
                         <Text style={[styles.histMeta, { color: outline }]}>
+                          {repeatText ? `${repeatText} · ` : ''}
                           {formatTaskStatus(t.status)}
                           {t.due_date?.trim() ? ` · 截止 ${t.due_date.slice(0, 10)}` : ''}
                           {t.updated_at ? ` · 更新 ${formatDateTimeCN(t.updated_at)}` : ''}

@@ -3,6 +3,7 @@ import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, isYmdInRange, matchesOverviewScope, ymdFromDatetime } from '@/lib/api-read-helpers';
+import { taskHasRepeatingSchedule } from '@/lib/task-repeat-rollover';
 import { getDatabase } from '../../database.native';
 
 export type TaskExecutionEventAction = 'completed' | 'reopened';
@@ -16,6 +17,7 @@ type TaskRowLite = {
   project_id?: string | null;
   parent_task_id?: string | null;
   status?: string;
+  extra_data?: string | null;
 };
 
 type EventRowLite = {
@@ -188,6 +190,7 @@ export async function getTaskGlobalInsightCounts(): Promise<{
   totalActive: number;
   open: number;
   doneOrCancelled: number;
+  recurring: number;
   completedEvents: number;
   reopenedEvents: number;
 }> {
@@ -198,10 +201,12 @@ export async function getTaskGlobalInsightCounts(): Promise<{
   const scoped = tasks.filter(matchesOverviewScope);
   const open = scoped.filter(t => t.status !== 'done' && t.status !== 'cancelled').length;
   const doneOrCancelled = scoped.filter(t => t.status === 'done' || t.status === 'cancelled').length;
+  const recurring = scoped.filter(t => taskHasRepeatingSchedule(t.extra_data ?? null)).length;
   return {
     totalActive: scoped.length,
     open,
     doneOrCancelled,
+    recurring,
     completedEvents: events.filter(e => e.action === 'completed').length,
     reopenedEvents: events.filter(e => e.action === 'reopened').length,
   };

@@ -1,4 +1,4 @@
-/** 服务端 ALLOWED_TABLES（43 张），与 src/config/tables.ts 对齐 */
+/** 服务端 ALLOWED_TABLES，与后端 src/config/tables.ts 对齐 */
 export const API_ALLOWED_TABLES = new Set([
   'account_transactions',
   'accounts',
@@ -10,6 +10,7 @@ export const API_ALLOWED_TABLES = new Set([
   'cash_flow_incomes',
   'cash_flow_profile',
   'daily_review_journal',
+  'monthly_review_journal',
   'earned_rewards',
   'finance_account_types',
   'finance_accounts',
@@ -35,12 +36,9 @@ export const API_ALLOWED_TABLES = new Set([
   'task_execution_events',
   'task_items',
   'tasks',
-  'user_weaknesses',
   'users',
   'visions',
   'weekly_review_journal',
-  'weekly_task_schedule_cells',
-  'weekly_task_schedule_slots',
   'wish_items',
 ]);
 

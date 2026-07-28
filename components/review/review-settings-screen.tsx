@@ -283,6 +283,17 @@ export function ReviewSettingsScreen() {
             />
             <ReviewNavRow
               icon="tune"
+              title="月复盘维度与栏目"
+              onPress={() => router.push('/review-template-settings?scope=monthly')}
+              iconColor={primary}
+              iconBg={isDark ? `${primary}22` : `${primary}12`}
+              textColor={text}
+              mutedColor={outline}
+              borderColor={outlineVariant}
+              surface={surface}
+            />
+            <ReviewNavRow
+              icon="tune"
               title="全部复盘模板"
               onPress={() => router.push('/review-template-settings')}
               iconColor={primary}

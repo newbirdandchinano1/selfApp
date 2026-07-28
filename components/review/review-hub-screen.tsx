@@ -1,4 +1,5 @@
 import { DailyReviewGridView } from '@/components/review/daily-review-grid-view';
+import { MonthlyReviewGridView } from '@/components/review/monthly-review-grid-view';
 import { WeeklyReviewGridView } from '@/components/review/weekly-review-grid-view';
 import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
@@ -14,7 +15,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/review';
 
-type ReviewScope = 'daily' | 'weekly';
+type ReviewScope = 'daily' | 'weekly' | 'monthly';
+
+const SCOPE_LABEL: Record<ReviewScope, string> = {
+  daily: '日复盘',
+  weekly: '周复盘',
+  monthly: '月复盘',
+};
 
 function ReviewScopeToggle({
   value,
@@ -28,7 +35,7 @@ function ReviewScopeToggle({
   return (
     <View style={styles.scopeWrap}>
       <View style={[styles.scopeTrack, { backgroundColor: isDark ? 'rgba(30,41,59,0.65)' : colors.capsule }]}>
-        {(['daily', 'weekly'] as const).map(scope => {
+        {(['daily', 'weekly', 'monthly'] as const).map(scope => {
           const active = value === scope;
           return (
             <Pressable
@@ -36,7 +43,7 @@ function ReviewScopeToggle({
               onPress={() => onChange(scope)}
               accessibilityRole="button"
               accessibilityState={{ selected: active }}
-              accessibilityLabel={scope === 'daily' ? '日复盘' : '周复盘'}
+              accessibilityLabel={SCOPE_LABEL[scope]}
               style={({ pressed }) => [
                 styles.scopeItem,
                 active && [
@@ -53,7 +60,7 @@ function ReviewScopeToggle({
                   styles.scopeText,
                   { color: active ? colors.primary : colors.textMuted, fontWeight: active ? '800' : '600' },
                 ]}>
-                {scope === 'daily' ? '日复盘' : '周复盘'}
+                {SCOPE_LABEL[scope]}
               </Text>
             </Pressable>
           );
@@ -71,8 +78,10 @@ export function ReviewHubScreen() {
   const [selectedYmd, setSelectedYmd] = useState(todayYmd);
   const [scope, setScope] = useState<ReviewScope>('daily');
   const [weekRangeLabel, setWeekRangeLabel] = useState('');
+  const [monthLabel, setMonthLabel] = useState('');
   const scopeRef = useRef(scope);
   const weeklyReloadRef = useRef<(() => Promise<void>) | null>(null);
+  const monthlyReloadRef = useRef<(() => Promise<void>) | null>(null);
 
   scopeRef.current = scope;
 
@@ -95,6 +104,8 @@ export function ReviewHubScreen() {
       await reloadSnapshot(forceApi);
       if (scopeRef.current === 'weekly') {
         await weeklyReloadRef.current?.();
+      } else if (scopeRef.current === 'monthly') {
+        await monthlyReloadRef.current?.();
       }
     },
     [reloadSnapshot],
@@ -104,13 +115,19 @@ export function ReviewHubScreen() {
     weeklyReloadRef.current = fn;
   }, []);
 
+  const registerMonthlyReload = useCallback((fn: () => Promise<void>) => {
+    monthlyReloadRef.current = fn;
+  }, []);
+
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
   usePageFocusReload(PAGE_API_KEY, reload);
 
   const headerSubtitle =
     scope === 'daily'
       ? formatReviewHeaderDate(selectedYmd)
-      : weekRangeLabel || formatReviewHeaderDate(todayYmd);
+      : scope === 'weekly'
+        ? weekRangeLabel || formatReviewHeaderDate(todayYmd)
+        : monthLabel || formatReviewHeaderDate(todayYmd);
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['left', 'right']}>
@@ -149,11 +166,18 @@ export function ReviewHubScreen() {
             refreshControl={refreshControl}
             onSwitchToWeekly={() => setScope('weekly')}
           />
-        ) : (
+        ) : scope === 'weekly' ? (
           <WeeklyReviewGridView
             pageApiKey={PAGE_API_KEY}
             refreshControl={refreshControl}
             onRegisterReload={registerWeeklyReload}
+          />
+        ) : (
+          <MonthlyReviewGridView
+            pageApiKey={PAGE_API_KEY}
+            refreshControl={refreshControl}
+            onRegisterReload={registerMonthlyReload}
+            onMonthLabelChange={setMonthLabel}
           />
         )}
       </View>
@@ -195,7 +219,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   scopeText: {
-    fontSize: 14,
+    fontSize: 13,
     letterSpacing: 0.1,
   },
   content: {
@@ -205,18 +229,3 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.sm,
   },
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

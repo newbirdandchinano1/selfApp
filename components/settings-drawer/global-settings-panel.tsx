@@ -110,7 +110,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const outline = isDark ? 'rgba(148,163,184,0.8)' : '#727785';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.35)';
   const primary = isDark ? '#60a5fa' : '#0058be';
-  const secondary = isDark ? '#34d399' : '#006c49';
   const memoAccent = isDark ? '#fbbf24' : '#825100';
   const cardBg = isDark ? 'rgba(30,41,59,0.55)' : '#ffffff';
   const cardBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)';
@@ -524,23 +523,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
             </View>
           </Pressable>
 
-          <Pressable
-            onPress={() => {
-              closeSettingsDrawer();
-              router.push('/weakness-list');
-            }}
-            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <MaterialIcons name="psychology-alt" size={26} color={secondary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>我的缺点</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  记录待改进的缺点与具体表现；保存后可自动生成 AI 分析与建议。
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
         </View>
 
         <View

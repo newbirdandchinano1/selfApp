@@ -94,10 +94,6 @@ const TASKS_BOOTSTRAP_TABLE_MAP: [keyof TasksBootstrapPayload, string][] = [
 
   ['frogCompletionEvents', 'frog_completion_events'],
 
-  ['weeklyTaskScheduleSlots', 'weekly_task_schedule_slots'],
-
-  ['weeklyTaskScheduleCells', 'weekly_task_schedule_cells'],
-
 ];
 
 

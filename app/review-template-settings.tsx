@@ -38,7 +38,8 @@ type ScopeTab = ReviewTemplateScope;
 
 function normalizeScope(raw: string | string[] | undefined): ScopeTab {
   const s = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : '';
-  return s === 'weekly' ? 'weekly' : 'daily';
+  if (s === 'weekly' || s === 'monthly') return s;
+  return 'daily';
 }
 
 type EditorMode = 'dimension' | 'column';
@@ -236,7 +237,8 @@ export default function ReviewTemplateSettingsScreen() {
     }
   };
 
-  const scopeLabel = scope === 'daily' ? '每日复盘' : '每周复盘';
+  const scopeLabel =
+    scope === 'daily' ? '每日复盘' : scope === 'weekly' ? '每周复盘' : '每月复盘';
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right', 'bottom']}>
@@ -254,8 +256,9 @@ export default function ReviewTemplateSettingsScreen() {
         </View>
 
         <View style={[styles.tabRow, { borderBottomColor: outlineVariant }]}>
-          {(['daily', 'weekly'] as const).map(s => {
+          {(['daily', 'weekly', 'monthly'] as const).map(s => {
             const active = scope === s;
+            const label = s === 'daily' ? '日复盘' : s === 'weekly' ? '周复盘' : '月复盘';
             return (
               <Pressable
                 key={s}
@@ -268,7 +271,7 @@ export default function ReviewTemplateSettingsScreen() {
                   active && { borderBottomColor: primary, borderBottomWidth: 2 },
                 ]}>
                 <Text style={[styles.tabText, { color: active ? primary : outline, fontWeight: active ? '800' : '600' }]}>
-                  {s === 'daily' ? '日复盘' : '周复盘'}
+                  {label}
                 </Text>
               </Pressable>
             );

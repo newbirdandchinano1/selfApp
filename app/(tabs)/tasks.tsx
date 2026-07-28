@@ -4068,11 +4068,7 @@ export default function TasksScreen() {
           },
         ]}>
         <View style={styles.pageHeaderRow}>
-          <AppIconButton
-            icon="view-week"
-            onPress={() => router.push('/weekly-task-schedule')}
-            accessibilityLabel="本周任务表"
-          />
+          <View style={styles.pageHeaderSideSpacer} />
           <Text style={[styles.pageHeaderTitle, { color: colors.text }]}>{formatTasksHeaderDate(logicalTodayYmd)}</Text>
           <AppIconButton
             icon="calendar-today"

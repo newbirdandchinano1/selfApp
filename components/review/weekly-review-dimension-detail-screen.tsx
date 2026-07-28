@@ -224,11 +224,11 @@ export function WeeklyReviewDimensionDetailScreen() {
     void reload();
   }, [reload]);
 
-  const persist = useCallback(async () => {
+  const persist = useCallback(async (opts?: { force?: boolean }) => {
     if (!canEdit || !weekStartYmd) return;
     const meta = journalMetaRef.current;
     const payload = serializeWeeklyPersistPayload(fields, meta);
-    if (payload === lastPersistedPayloadRef.current) return;
+    if (!opts?.force && payload === lastPersistedPayloadRef.current) return;
     setSaving(true);
     try {
       await upsertWeeklyReviewJournal({
@@ -373,7 +373,25 @@ export function WeeklyReviewDimensionDetailScreen() {
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['left', 'right']}>
-      <ScreenHeader title={dimensionTitle || '周复盘详情'} subtitle={periodLabel || undefined} onBack={() => router.back()} />
+      <ScreenHeader
+        title={dimensionTitle || '周复盘详情'}
+        subtitle={periodLabel || undefined}
+        onBack={() => router.back()}
+        right={
+          <Pressable
+            style={styles.headerSaveBtn}
+            disabled={!canEdit || saving}
+            onPress={() => void persist({ force: true })}
+            accessibilityRole="button"
+            accessibilityLabel="保存">
+            {saving ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Text style={[Typography.bodyStrong, { color: canEdit ? colors.primary : colors.textMuted }]}>保存</Text>
+            )}
+          </Pressable>
+        }
+      />
       {loading ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={colors.primary} />
@@ -537,5 +555,12 @@ const styles = StyleSheet.create({
   toolBtnText: {
     fontSize: 10,
     fontWeight: '700',
+  },
+  headerSaveBtn: {
+    minWidth: Layout.iconButtonSize,
+    minHeight: Layout.iconButtonSize,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
   },
 });

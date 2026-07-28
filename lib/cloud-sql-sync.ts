@@ -809,47 +809,6 @@ export async function ensureHabitRefsForApiUpload(
   }
 }
 
-/** weekly_task_schedule_cells.slot_id 引用 weekly_task_schedule_slots */
-export async function ensureWeeklyTaskScheduleSlotRefsForApiUpload(
-  rowsByTable: Map<string, Record<string, unknown>[]>,
-): Promise<void> {
-  const cellRows = rowsByTable.get('weekly_task_schedule_cells') ?? [];
-  if (cellRows.length === 0) return;
-
-  const neededIds = new Set<string>();
-  for (const row of cellRows) {
-    const sid = row.slot_id;
-    if (sid != null && sid !== '') neededIds.add(String(sid));
-  }
-  if (neededIds.size === 0) return;
-
-  const existing = rowsByTable.get('weekly_task_schedule_slots') ?? [];
-  const byId = new Map(
-    existing
-      .filter(r => r.id != null && r.id !== '')
-      .map(r => [String(r.id), r]),
-  );
-
-  const db = await getDatabase();
-  if (!db) return;
-
-  for (const id of neededIds) {
-    if (byId.has(id)) continue;
-    const row = await db.getFirstAsync<Record<string, unknown>>(
-      'SELECT * FROM weekly_task_schedule_slots WHERE id = ? LIMIT 1',
-      [id],
-    );
-    if (row) {
-      existing.push(row);
-      byId.set(id, row);
-    }
-  }
-
-  if (existing.length > 0) {
-    rowsByTable.set('weekly_task_schedule_slots', existing);
-  }
-}
-
 function filterHabitCheckInsForCloudUpload(
   rows: Record<string, unknown>[],
   rowsByTable: Map<string, Record<string, unknown>[]>,
@@ -1080,7 +1039,6 @@ export async function collectLocalTablesDataForUpload(
   await ensureProjectCategoryRefsForApiUpload(rowsByTable);
   await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
   await ensureHabitRefsForApiUpload(rowsByTable);
-  await ensureWeeklyTaskScheduleSlotRefsForApiUpload(rowsByTable);
 
   return { insertOrder, rowsByTable };
 }

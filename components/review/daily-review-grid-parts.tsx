@@ -37,12 +37,6 @@ function weatherIcon(id: string | undefined) {
   return DAILY_REVIEW_WEATHER_OPTIONS.find(w => w.id === id)?.icon ?? 'wb-sunny';
 }
 
-function isChecklistDimension(dim: ReviewDimensionTemplate): boolean {
-  if (dim.columns.length < 2) return false;
-  const title = dim.title.trim();
-  return title.includes('习惯') || title.includes('打卡');
-}
-
 type PickerKind = 'weather' | 'mood' | null;
 
 export function DailyReviewMetaBar({
@@ -264,8 +258,7 @@ function DailyReviewGridCell({
     return null;
   }
 
-  const checklist = isChecklistDimension(dim);
-  const multiField = !checklist && dim.columns.length > 1;
+  const multiField = dim.columns.length > 1;
   const singleField = dim.columns.length === 1;
   const cellMinHeight = Math.max(120, dim.columns.length * 44 + 56);
 
@@ -289,24 +282,6 @@ function DailyReviewGridCell({
       </View>
 
       <View style={styles.cellBody}>
-        {checklist
-          ? dim.columns.map(col => {
-              const checked = (fields[col.id] ?? '').trim() === '1';
-              return (
-                <View key={col.id} style={styles.checkReadonly}>
-                  <MaterialIcons
-                    name={checked ? 'check-box' : 'check-box-outline-blank'}
-                    size={22}
-                    color={checked ? colors.primary : colors.outline}
-                  />
-                  <Text style={[styles.checkReadonlyLabel, { color: colors.text }]} numberOfLines={1}>
-                    {col.title}
-                  </Text>
-                </View>
-              );
-            })
-          : null}
-
         {multiField
           ? dim.columns.map(col => {
               const preview = reviewContentToPlainDisplay(fields[col.id] ?? '');
@@ -560,17 +535,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     lineHeight: 16,
     letterSpacing: 0.25,
-  },
-  checkReadonly: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  checkReadonlyLabel: {
-    flex: 1,
-    fontSize: 12,
-    fontWeight: '600',
-    lineHeight: 18,
   },
   previewText: {
     alignSelf: 'stretch',

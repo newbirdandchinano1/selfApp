@@ -21,8 +21,6 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   habit_check_ins: [TAB_PAGE_KEYS.tasks],
   task_execution_events: [TAB_PAGE_KEYS.tasks],
   frog_completion_events: [TAB_PAGE_KEYS.tasks],
-  weekly_task_schedule_slots: [TAB_PAGE_KEYS.tasks],
-  weekly_task_schedule_cells: [TAB_PAGE_KEYS.tasks],
   accounts: [TAB_PAGE_KEYS.finance],
   account_transactions: [TAB_PAGE_KEYS.finance],
   finance_accounts: [TAB_PAGE_KEYS.finance],
@@ -40,10 +38,10 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   wish_items: [TAB_PAGE_KEYS.profile],
   weekly_review_journal: [TAB_PAGE_KEYS.review],
   daily_review_journal: [TAB_PAGE_KEYS.review],
+  monthly_review_journal: [TAB_PAGE_KEYS.review],
   earned_rewards: [TAB_PAGE_KEYS.profile],
   memo_dimensions: [TAB_PAGE_KEYS.profile],
   memos: [TAB_PAGE_KEYS.profile],
-  user_weaknesses: [TAB_PAGE_KEYS.profile],
   review_dimensions: [TAB_PAGE_KEYS.review],
   review_columns: [TAB_PAGE_KEYS.review],
   recipe_categories: [TAB_PAGE_KEYS.profile],
@@ -66,9 +64,7 @@ const PAGE_SCOPE_TABLES: Record<string, string[]> = (() => {
 })();
 
 /** 非 Tab 子页面需单独拉取的表 scope */
-const CHILD_PAGE_SCOPE_TABLES: Record<string, string[]> = {
-  'weekly-task-schedule': ['weekly_task_schedule_slots', 'weekly_task_schedule_cells'],
-};
+const CHILD_PAGE_SCOPE_TABLES: Record<string, string[]> = {};
 
 export function listPageScopeTables(pageKey: string): string[] {
   const key = pageKey.trim();

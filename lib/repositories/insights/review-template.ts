@@ -193,7 +193,8 @@ async function getReviewColumnRowAny(id: string): Promise<ReviewColumnRow | null
 
 type DefaultReviewDimensionDef =
   | (typeof REVIEW_TEMPLATE_DEFAULTS)['daily'][number]
-  | (typeof REVIEW_TEMPLATE_DEFAULTS)['weekly'][number];
+  | (typeof REVIEW_TEMPLATE_DEFAULTS)['weekly'][number]
+  | (typeof REVIEW_TEMPLATE_DEFAULTS)['monthly'][number];
 
 type DefaultReviewColumnDef = DefaultReviewDimensionDef['columns'][number];
 
@@ -257,7 +258,7 @@ async function ensureDefaultReviewColumn(
 
 /** 各 scope 无活跃维度时写入内置模板（含云恢复后仅软删除占位行的场景） */
 export async function ensureReviewTemplateDefaults(): Promise<void> {
-  for (const scope of ['daily', 'weekly'] as const) {
+  for (const scope of ['daily', 'weekly', 'monthly'] as const) {
     const count = await countReviewDimensions(scope);
     if (count > 0) continue;
     const defs = REVIEW_TEMPLATE_DEFAULTS[scope];

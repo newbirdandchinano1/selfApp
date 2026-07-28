@@ -163,6 +163,23 @@ export function taskHasRepeatingSchedule(extraData: string | null): boolean {
   return parseTaskRepeatSchedule(extraData) != null;
 }
 
+/** 列表展示用的重复摘要（优先根级 repeat / schedule.repeatSummary） */
+export function getTaskRepeatDisplayText(extraData: string | null): string {
+  const root = parseExtraObject(extraData);
+  const fromRoot = typeof root.repeat === 'string' ? root.repeat.trim() : '';
+  if (fromRoot && fromRoot !== '不重复') return fromRoot;
+
+  const schedule = root.schedule;
+  if (schedule && typeof schedule === 'object' && !Array.isArray(schedule)) {
+    const summary = typeof (schedule as Record<string, unknown>).repeatSummary === 'string'
+      ? String((schedule as Record<string, unknown>).repeatSummary).trim()
+      : '';
+    if (summary && summary !== '不重复') return summary;
+  }
+
+  return parseTaskRepeatSchedule(extraData)?.repeatOption ?? '';
+}
+
 function getWeekdayMonAs1(ymd: string): number {
   const d = ymdToLocalDate(ymd);
   if (!d) return 1;

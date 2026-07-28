@@ -1,6 +1,5 @@
 import type { ReviewCharStyle, ReviewFontSize, ReviewTextModel, TextSelection } from '@/lib/review-journal-format';
 import { REVIEW_FONT_SIZES } from '@/lib/review-journal-format';
-import { MaterialIcons } from '@expo/vector-icons';
 import React, { useMemo } from 'react';
 import {
   Platform,
@@ -33,12 +32,24 @@ type Props = {
 const BASE_SIZE: ReviewFontSize = REVIEW_FONT_SIZES[0]!;
 const BASE_LINE = BASE_SIZE * 1.55;
 
+const TODO_UNCHECKED = '\u2610'; // ☐
+const TODO_CHECKED = '\u2611'; // ☑
+
 function segmentFontSize(style: ReviewCharStyle, baseSize: ReviewFontSize): number {
   return style.size ?? baseSize;
 }
 
 type LinePart =
-  | { kind: 'todo'; checked: boolean; text: string; plainStart: number; todoMarkerStart: number }
+  | {
+      kind: 'todo';
+      checked: boolean;
+      text: string;
+      plainStart: number;
+      todoMarkerStart: number;
+      /** 原文是否为「☐ 」/「☑ 」（含空格），须与 TextInput 逐字对齐 */
+      markerWithSpace: boolean;
+      leading: string;
+    }
   | { kind: 'text'; text: string; plainStart: number };
 
 function splitPlainIntoLines(plain: string): { line: string; start: number }[] {
@@ -58,40 +69,48 @@ function parseLineParts(line: string, lineStart: number): LinePart[] {
   const leading = line.match(/^\s*/)?.[0] ?? '';
   const trimmed = line.slice(leading.length);
 
-  if (trimmed.startsWith('☐ ')) {
+  if (trimmed.startsWith(`${TODO_UNCHECKED} `)) {
     return [{
       kind: 'todo',
       checked: false,
       text: trimmed.slice(2),
       plainStart: lineStart + leading.length + 2,
       todoMarkerStart: lineStart + leading.length,
+      markerWithSpace: true,
+      leading,
     }];
   }
-  if (trimmed.startsWith('☑ ')) {
+  if (trimmed.startsWith(`${TODO_CHECKED} `)) {
     return [{
       kind: 'todo',
       checked: true,
       text: trimmed.slice(2),
       plainStart: lineStart + leading.length + 2,
       todoMarkerStart: lineStart + leading.length,
+      markerWithSpace: true,
+      leading,
     }];
   }
-  if (trimmed.startsWith('☐')) {
+  if (trimmed.startsWith(TODO_UNCHECKED)) {
     return [{
       kind: 'todo',
       checked: false,
       text: trimmed.slice(1),
       plainStart: lineStart + leading.length + 1,
       todoMarkerStart: lineStart + leading.length,
+      markerWithSpace: false,
+      leading,
     }];
   }
-  if (trimmed.startsWith('☑')) {
+  if (trimmed.startsWith(TODO_CHECKED)) {
     return [{
       kind: 'todo',
       checked: true,
       text: trimmed.slice(1),
       plainStart: lineStart + leading.length + 1,
       todoMarkerStart: lineStart + leading.length,
+      markerWithSpace: false,
+      leading,
     }];
   }
 
@@ -127,27 +146,37 @@ function ReviewEditOverlay({
           <View key={`line-${lineIndex}-${start}`} style={overlayStyles.lineRow}>
             {parts.map((part, partIndex) => {
               if (part.kind === 'todo') {
+                // 用与 TextInput 相同的 ☐/☑（及空格）占位，避免图标宽度导致光标错位
+                const markerChar = part.checked ? TODO_CHECKED : TODO_UNCHECKED;
+                const marker = `${markerChar}${part.markerWithSpace ? ' ' : ''}`;
                 return (
-                  <View key={`todo-${partIndex}`} style={overlayStyles.todoRow}>
-                    <View style={overlayStyles.todoCheck}>
-                      <MaterialIcons
-                        name={part.checked ? 'check-box' : 'check-box-outline-blank'}
-                        size={20}
-                        color={part.checked ? '#0058be' : textColor}
-                      />
-                    </View>
+                  <Text
+                    key={`todo-${partIndex}`}
+                    style={[
+                      overlayStyles.base,
+                      {
+                        lineHeight: BASE_LINE,
+                        color: textColor,
+                        textDecorationLine: part.checked ? 'line-through' : 'none',
+                        opacity: part.checked ? 0.65 : 1,
+                      },
+                    ]}>
+                    {part.leading
+                      ? renderStyledText(model, part.leading, start, textColor)
+                      : null}
                     <Text
-                      style={[
-                        overlayStyles.todoText,
-                        {
-                          color: textColor,
-                          textDecorationLine: part.checked ? 'line-through' : 'none',
-                          opacity: part.checked ? 0.65 : 1,
-                        },
-                      ]}>
-                      {renderStyledText(model, part.text, part.plainStart, textColor)}
+                      style={{
+                        fontSize: BASE_SIZE,
+                        lineHeight: BASE_LINE,
+                        fontWeight: '500',
+                        color: part.checked ? '#0058be' : textColor,
+                        textDecorationLine: 'none',
+                        opacity: 1,
+                      }}>
+                      {marker}
                     </Text>
-                  </View>
+                    {renderStyledText(model, part.text, part.plainStart, textColor)}
+                  </Text>
                 );
               }
 
@@ -217,10 +246,10 @@ function collectTodoHitTargets(plain: string): TodoHitTarget[] {
     const leading = line.match(/^\s*/)?.[0] ?? '';
     const trimmed = line.slice(leading.length);
     const isTodo =
-      trimmed.startsWith('☐ ') ||
-      trimmed.startsWith('☑ ') ||
-      trimmed.startsWith('☐') ||
-      trimmed.startsWith('☑');
+      trimmed.startsWith(`${TODO_UNCHECKED} `) ||
+      trimmed.startsWith(`${TODO_CHECKED} `) ||
+      trimmed.startsWith(TODO_UNCHECKED) ||
+      trimmed.startsWith(TODO_CHECKED);
     if (isTodo) {
       targets.push({ lineStart: start, markerStart: start + leading.length, lineIndex });
     }
@@ -247,7 +276,7 @@ export function ReviewRichTextInput({
 
   return (
     <View style={[styles.wrap, containerStyle]}>
-      <View style={[styles.overlay, inputStyle]} pointerEvents="none">
+      <View style={[styles.overlay, inputStyle as StyleProp<ViewStyle>]} pointerEvents="none">
         <ReviewEditOverlay
           model={model}
           textColor={textColor}
@@ -272,12 +301,13 @@ export function ReviewRichTextInput({
           inputStyle,
           {
             color: Platform.OS === 'ios' ? 'transparent' : 'rgba(0,0,0,0.01)',
+            // @ts-expect-error RN web caretColor
             caretColor,
           },
         ]}
       />
       {editable ? (
-        <View style={[styles.todoHitLayer, inputStyle]} pointerEvents="box-none">
+        <View style={[styles.todoHitLayer, inputStyle as StyleProp<ViewStyle>]} pointerEvents="box-none">
           {todoTargets.map(target => (
             <Pressable
               key={`todo-hit-${target.markerStart}`}
@@ -303,22 +333,6 @@ const overlayStyles = StyleSheet.create({
   },
   base: {
     fontSize: BASE_SIZE,
-    fontWeight: '500',
-  },
-  todoRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 4,
-  },
-  todoCheck: {
-    width: 22,
-    marginTop: 1,
-    alignItems: 'center',
-  },
-  todoText: {
-    flex: 1,
-    fontSize: BASE_SIZE,
-    lineHeight: BASE_LINE,
     fontWeight: '500',
   },
 });

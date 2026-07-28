@@ -125,13 +125,6 @@ export async function aiProjectTasksReview(body: { project_context_text: string 
   return apiRequest(`${AI_PREFIX}/project/tasks-review`, { method: 'POST', body });
 }
 
-export async function aiWeaknessReview(body: { weakness_context_text: string }): Promise<{
-  evaluation: string;
-  suggestions: string;
-}> {
-  return apiRequest(`${AI_PREFIX}/weakness/review`, { method: 'POST', body });
-}
-
 export async function aiWeeklyReviewCoaching(body: { user_prompt: string }): Promise<{ text: string }> {
   return apiRequest(`${AI_PREFIX}/weekly-review/coaching`, { method: 'POST', body });
 }

@@ -10,6 +10,7 @@ const SKELETON_LOADING_TAB_KEYS = new Set<string>([
   TAB_PAGE_KEYS.review,
   'daily-review-dimension-detail',
   'weekly-review-dimension-detail',
+  'monthly-review-dimension-detail',
 ]);
 
 /** 使用页面内骨架屏/加载态承载，不展示全局 API 遮罩与内容变暗；同步时仅顶部进度条 */

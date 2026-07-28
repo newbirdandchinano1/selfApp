@@ -10,6 +10,8 @@ export type ReviewFieldValues = Record<string, string>;
 export type ReviewJournalMeta = {
   weather?: string;
   mood?: string;
+  /** AI 分析正文（日/月复盘） */
+  ai_analysis?: string;
 };
 
 export function emptyFieldValues(columnIds: string[]): ReviewFieldValues {
@@ -32,7 +34,7 @@ export function collectColumnIds(template: ReviewDimensionTemplate[]): string[] 
 
 export function serializeReviewBody(fields: ReviewFieldValues, meta?: ReviewJournalMeta): string {
   const payload: Record<string, unknown> = { v: REVIEW_BODY_VERSION, fields };
-  if (meta && (meta.weather || meta.mood)) {
+  if (meta && (meta.weather || meta.mood || meta.ai_analysis)) {
     payload.meta = meta;
   }
   return JSON.stringify(payload);
@@ -47,6 +49,7 @@ function parseReviewJournalMeta(raw: string | null | undefined): ReviewJournalMe
     const meta: ReviewJournalMeta = {};
     if (m.weather != null) meta.weather = String(m.weather);
     if (m.mood != null) meta.mood = String(m.mood);
+    if (m.ai_analysis != null) meta.ai_analysis = String(m.ai_analysis);
     return meta;
   } catch {
     return {};

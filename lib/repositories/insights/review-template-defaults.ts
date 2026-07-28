@@ -95,6 +95,47 @@ export const REVIEW_TEMPLATE_DEFAULTS = {
       ],
     },
   ],
+  monthly: [
+    {
+      id: 'rd_monthly_summary',
+      title: '本月回顾',
+      sort_order: 10,
+      columns: [
+        {
+          id: 'rc_monthly_summary',
+          title: '月度事件',
+          placeholder: '这个月发生了什么？完成了哪些重要事项？有哪些值得记住的结果？',
+          sort_order: 10,
+        },
+      ],
+    },
+    {
+      id: 'rd_monthly_reflect',
+      title: '本月反思',
+      sort_order: 20,
+      columns: [
+        {
+          id: 'rc_monthly_reflect',
+          title: '反思与收获',
+          placeholder: '哪些做法有效？卡在哪里？这个月学到了什么？',
+          sort_order: 10,
+        },
+      ],
+    },
+    {
+      id: 'rd_monthly_next',
+      title: '下月计划',
+      sort_order: 30,
+      columns: [
+        {
+          id: 'rc_monthly_next',
+          title: '下月安排',
+          placeholder: '下个月最想推进的 1～3 件事是什么？如何安排节奏？',
+          sort_order: 10,
+        },
+      ],
+    },
+  ],
 } as const satisfies Record<
   ReviewTemplateScope,
   readonly {

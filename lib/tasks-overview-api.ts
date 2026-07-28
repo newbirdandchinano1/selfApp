@@ -21,7 +21,7 @@ import {
 } from '@/lib/repositories/tasks/task-execution-events';
 import { getLogicalLocalYmd, loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 
-export const TASKS_OVERVIEW_FILTERS_VERSION = 'tasks-overview-v1';
+export const TASKS_OVERVIEW_FILTERS_VERSION = 'tasks-overview-v2';
 
 export type { TasksOverviewInsightCounts, TasksOverviewStatKey } from '@/lib/api-client';
 
@@ -132,12 +132,13 @@ function normalizePayload(payload: TasksOverviewPayload, eventsLimit: number, ev
       firstCompletedDay: payload.meta?.firstCompletedDay ?? null,
       filtersVersion: payload.meta?.filtersVersion ?? null,
     },
-    insightCounts: payload.insightCounts ?? {
-      open: 0,
-      doneOrCancelled: 0,
-      totalActive: 0,
-      completedEvents: 0,
-      reopenedEvents: 0,
+    insightCounts: {
+      open: payload.insightCounts?.open ?? 0,
+      doneOrCancelled: payload.insightCounts?.doneOrCancelled ?? 0,
+      totalActive: payload.insightCounts?.totalActive ?? 0,
+      recurring: payload.insightCounts?.recurring ?? 0,
+      completedEvents: payload.insightCounts?.completedEvents ?? 0,
+      reopenedEvents: payload.insightCounts?.reopenedEvents ?? 0,
     },
     countsByDay: countsRecordToMap(payload.countsByDay),
     recentEvents: normalizePagedEvents(payload.recentEvents, eventsPage, eventsLimit),
@@ -173,10 +174,11 @@ function normalizePayload(payload: TasksOverviewPayload, eventsLimit: number, ev
   return data;
 }
 
-function taskFilterForStatKey(statKey: TasksOverviewStatKey): 'open' | 'doneOrCancelled' | 'totalActive' | null {
+function taskFilterForStatKey(statKey: TasksOverviewStatKey): 'open' | 'doneOrCancelled' | 'totalActive' | 'recurring' | null {
   if (statKey === 'open') return 'open';
   if (statKey === 'doneOrCancelled') return 'doneOrCancelled';
   if (statKey === 'totalActive') return 'totalActive';
+  if (statKey === 'recurring') return 'recurring';
   return null;
 }
 
@@ -296,16 +298,56 @@ async function pullTasksOverviewFromApi(opts: FetchTasksOverviewOpts): Promise<T
   return normalizePayload(payload, eventsLimit, eventsPage);
 }
 
+/** 重复待办由本地 extra_data 判定；服务端若未支持该维度则用本地补齐计数与明细 */
+async function ensureRecurringFromLocal(
+  data: TasksOverviewData,
+  opts: FetchTasksOverviewOpts,
+): Promise<TasksOverviewData> {
+  if (opts.statKey === 'recurring') {
+    const recurringRows = await getTasksForOverviewList('recurring');
+    const statPage = opts.statPage ?? 1;
+    const statLimit = opts.statLimit ?? 25;
+    const statOffset = (statPage - 1) * statLimit;
+    const pageRows = recurringRows.slice(statOffset, statOffset + statLimit);
+    return {
+      ...data,
+      insightCounts: { ...data.insightCounts, recurring: recurringRows.length },
+      statDetail: {
+        statKey: 'recurring',
+        mode: 'tasks',
+        tasks: {
+          list: pageRows,
+          page: statPage,
+          limit: statLimit,
+          total: recurringRows.length,
+          totalPages: Math.max(1, Math.ceil(recurringRows.length / Math.max(1, statLimit))),
+        },
+      },
+    };
+  }
+
+  if (data.fromLocal) return data;
+
+  const recurringRows = await getTasksForOverviewList('recurring');
+  return {
+    ...data,
+    insightCounts: { ...data.insightCounts, recurring: recurringRows.length },
+  };
+}
+
 /** 待办总览：`GET /api/pages/tasks/tasks-overview` */
 export async function fetchTasksOverview(opts: FetchTasksOverviewOpts): Promise<TasksOverviewData> {
+  let data: TasksOverviewData;
   if (!opts.forceLocal) {
     try {
-      return await pullTasksOverviewFromApi(opts);
+      data = await pullTasksOverviewFromApi(opts);
+      return await ensureRecurringFromLocal(data, opts);
     } catch (e) {
       if (!opts.offlineFallback) throw e;
       console.warn('[tasks-overview-api] 接口失败，回退本地 SQLite', e);
     }
   }
 
-  return readTasksOverviewFromLocal(opts);
+  data = await readTasksOverviewFromLocal(opts);
+  return await ensureRecurringFromLocal(data, opts);
 }

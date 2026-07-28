@@ -9,6 +9,7 @@ import {
   sortByUpdatedDesc,
   ymdFromDatetime,
 } from '@/lib/api-read-helpers';
+import { taskHasRepeatingSchedule } from '@/lib/task-repeat-rollover';
 import { getDatabase } from '../../database.native';
 import type {
   CreateTaskCategoryInput,
@@ -429,7 +430,7 @@ export async function getTasks(opts?: { forceRefresh?: boolean }) {
   return sortByUpdatedDesc(rows);
 }
 
-export type TaskOverviewListFilter = 'open' | 'doneOrCancelled' | 'totalActive';
+export type TaskOverviewListFilter = 'open' | 'doneOrCancelled' | 'totalActive' | 'recurring';
 
 /** 待办总览概况卡片：按统计维度列出当前任务（与 getTaskGlobalInsightCounts 口径一致） */
 export async function getTasksForOverviewList(filter: TaskOverviewListFilter): Promise<TaskRow[]> {
@@ -439,6 +440,8 @@ export async function getTasksForOverviewList(filter: TaskOverviewListFilter): P
     filtered = scoped.filter(t => t.status !== 'done' && t.status !== 'cancelled');
   } else if (filter === 'doneOrCancelled') {
     filtered = scoped.filter(t => t.status === 'done' || t.status === 'cancelled');
+  } else if (filter === 'recurring') {
+    filtered = scoped.filter(t => taskHasRepeatingSchedule(t.extra_data));
   }
   return sortByUpdatedDesc(filtered);
 }

@@ -10,7 +10,6 @@ import {
   upsertFinanceAccountsReferencedByTransactions,
   upsertMemoDimensionsReferencedByMemos,
   upsertHabitsReferencedByCheckIns,
-  upsertWeeklyTaskScheduleSlotsReferencedByCells,
   upsertProjectsReferencedByTasks,
   upsertParentTasksReferencedByTasks,
   upsertRowToApi,
@@ -28,7 +27,6 @@ import {
   ensureProjectCategoryRefsForApiUpload,
   ensureFinanceAccountRefsForApiUpload,
   ensureMemoDimensionRefsForApiUpload,
-  ensureWeeklyTaskScheduleSlotRefsForApiUpload,
   ensureTaskCategoryMirrorForApiUpload,
   prepareLocalRowsForUpload,
   readLocalForeignKeyRefs,
@@ -263,7 +261,6 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
   await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
   await ensureFinanceAccountRefsForApiUpload(rowsByTable);
   await ensureMemoDimensionRefsForApiUpload(rowsByTable);
-  await ensureWeeklyTaskScheduleSlotRefsForApiUpload(rowsByTable);
 
   const seedWithRefs = [...filtered];
   if ((rowsByTable.get('finance_accounts')?.length ?? 0) > 0 && !seedWithRefs.includes('finance_accounts')) {
@@ -274,12 +271,6 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
   }
   if ((rowsByTable.get('habit_check_ins')?.length ?? 0) > 0 && !seedWithRefs.includes('habits')) {
     seedWithRefs.push('habits');
-  }
-  if (
-    (rowsByTable.get('weekly_task_schedule_cells')?.length ?? 0) > 0 &&
-    !seedWithRefs.includes('weekly_task_schedule_slots')
-  ) {
-    seedWithRefs.push('weekly_task_schedule_slots');
   }
 
   const effectiveOrder = (await resolveApiPushInsertOrder(seedWithRefs)).filter(
@@ -484,16 +475,6 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
 
       if (table === 'habit_check_ins') {
         await upsertHabitsReferencedByCheckIns(
-          rows,
-          rowsByTable,
-          pkColsByTable,
-          uploadedPkByTable,
-          fkRefsByTable,
-        );
-      }
-
-      if (table === 'weekly_task_schedule_cells') {
-        await upsertWeeklyTaskScheduleSlotsReferencedByCells(
           rows,
           rowsByTable,
           pkColsByTable,

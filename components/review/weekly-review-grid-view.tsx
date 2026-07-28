@@ -2,6 +2,7 @@ import {
   DailyReviewGrid,
   WeeklyReviewMetaBar,
 } from '@/components/review/daily-review-grid-parts';
+import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
 import {
   loadReviewPeriodSnapshot,
   WEEKLY_REVIEW_WEEKDAY_LABELS,
@@ -10,6 +11,7 @@ import { Layout, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
 import {
   collectColumnIds,
   emptyFieldValues,
@@ -22,13 +24,18 @@ import {
   getRollingSevenDayRange,
   getRollingSevenDayRangeEndingOnNextReviewDay,
 } from '@/lib/repositories/insights/weekly-review';
-import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
+import {
+  getWeeklyReviewJournalByWeek,
+  setWeeklyReviewCoachingText,
+  upsertWeeklyReviewJournal,
+} from '@/lib/repositories/insights/weekly-review-journal';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -60,6 +67,14 @@ export function WeeklyReviewGridView({
   const [configuredDow, setConfiguredDow] = useState<number | null>(null);
   const [periodStartYmd, setPeriodStartYmd] = useState('');
   const [weekRangeLabel, setWeekRangeLabel] = useState('');
+  const [aiCoaching, setAiCoaching] = useState<string | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const journalMetaRef = useRef({
+    execution_score: 0,
+    adjust_tasks: false,
+    adjust_savings: false,
+    adjust_plans: false,
+  });
 
   const skipFirstFocusReloadRef = useRef(true);
 
@@ -87,10 +102,18 @@ export function WeeklyReviewGridView({
         const wColIds = collectColumnIds(weeklyTpl);
         const row = await getWeeklyReviewJournalByWeek(startYmd);
         setFields(row ? parseWeeklyReviewFields(row, wColIds) : emptyFieldValues(wColIds));
+        setAiCoaching(row?.ai_coaching ?? null);
+        journalMetaRef.current = {
+          execution_score: row?.execution_score ?? 0,
+          adjust_tasks: row?.adjust_tasks === 1,
+          adjust_savings: row?.adjust_savings === 1,
+          adjust_plans: row?.adjust_plans === 1,
+        };
       });
     } catch {
       setFields({});
       setWeeklyTemplate([]);
+      setAiCoaching(null);
     } finally {
       setLoading(false);
     }
@@ -126,6 +149,42 @@ export function WeeklyReviewGridView({
     },
     [periodStartYmd, router],
   );
+
+  const runAi = useCallback(async () => {
+    if (!canEdit || !periodStartYmd) {
+      Alert.alert('暂不可用', '仅在已设定的周复盘日可生成 AI 分析。');
+      return;
+    }
+    if (!reviewHasEnoughTextForAi(fields)) {
+      Alert.alert('内容偏少', '请先填写至少约 30 字，再生成 AI 分析。');
+      return;
+    }
+    setAiBusy(true);
+    try {
+      const meta = journalMetaRef.current;
+      await upsertWeeklyReviewJournal({
+        week_start_ymd: periodStartYmd,
+        fields,
+        execution_score: meta.execution_score,
+        adjust_tasks: meta.adjust_tasks,
+        adjust_savings: meta.adjust_savings,
+        adjust_plans: meta.adjust_plans,
+      });
+      const text = await generateReviewAiAnalysis({
+        scope: 'weekly',
+        periodLabel: weekRangeLabel || periodStartYmd,
+        template: weeklyTemplate,
+        fields,
+      });
+      await setWeeklyReviewCoachingText(periodStartYmd, text);
+      setAiCoaching(text);
+    } catch (e) {
+      console.warn('weekly ai analysis', e);
+      Alert.alert('分析失败', '请稍后重试。');
+    } finally {
+      setAiBusy(false);
+    }
+  }, [canEdit, fields, periodStartYmd, weekRangeLabel, weeklyTemplate]);
 
   const configuredDowLabel = useMemo(
     () => (configuredDow !== null ? WEEKLY_REVIEW_WEEKDAY_LABELS[configuredDow] : undefined),
@@ -193,6 +252,20 @@ export function WeeklyReviewGridView({
               onPressDimension={openDimension}
             />
           )}
+
+          <ReviewAiAnalysisPanel
+            text={aiCoaching}
+            busy={aiBusy}
+            canRun={canEdit}
+            onAnalyze={() => void runAi()}
+            disabledReason={
+              configuredDow === null
+                ? '请先设置每周复盘日'
+                : !canEdit
+                  ? '今天不是复盘日，暂不可生成分析'
+                  : undefined
+            }
+          />
 
           {configuredDow === null ? (
             <Pressable

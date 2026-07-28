@@ -1,6 +1,6 @@
 import type { SyncStatus } from '../../database.native';
 
-export type ReviewTemplateScope = 'daily' | 'weekly';
+export type ReviewTemplateScope = 'daily' | 'weekly' | 'monthly';
 
 export type ReviewDimensionRow = {
   id: string;
@@ -8,8 +8,8 @@ export type ReviewDimensionRow = {
   title: string;
   sort_order: number;
   created_at: string;
-  updated_at: string;
-  sync_status: SyncStatus;
+  updated_at: string;
+  sync_status: SyncStatus;
   extra_data: string | null;
 };
 
@@ -20,8 +20,8 @@ export type ReviewColumnRow = {
   placeholder: string | null;
   sort_order: number;
   created_at: string;
-  updated_at: string;
-  sync_status: SyncStatus;
+  updated_at: string;
+  sync_status: SyncStatus;
   extra_data: string | null;
 };
 

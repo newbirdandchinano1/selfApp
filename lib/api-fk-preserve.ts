@@ -26,7 +26,6 @@ export const UPLOAD_PRESERVE_FK: ReadonlyArray<{ table: string } & ForeignKeyRef
   { table: 'finance_transactions', fromColumn: 'flow_category_id', parentTable: 'finance_flow_categories' },
   { table: 'recipe_items', fromColumn: 'category_id', parentTable: 'recipe_categories' },
   { table: 'habit_check_ins', fromColumn: 'habit_id', parentTable: 'habits' },
-  { table: 'weekly_task_schedule_cells', fromColumn: 'slot_id', parentTable: 'weekly_task_schedule_slots' },
 ];
 
 export function preserveLocalForeignKeysOnEmptyApi(

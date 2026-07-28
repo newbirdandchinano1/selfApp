@@ -3,6 +3,7 @@ import {
   DailyReviewMetaBar,
   DailyReviewSaveStatus,
 } from '@/components/review/daily-review-grid-parts';
+import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
 import {
   formatReviewHeaderDate,
   isDailyReviewEditableYmd,
@@ -19,6 +20,7 @@ import { Layout, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
 import {
   collectColumnIds,
   parseDailyReviewJournal,
@@ -33,6 +35,7 @@ import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -74,6 +77,7 @@ export function DailyReviewGridView({
   const [configuredDow, setConfiguredDow] = useState<number | null>(null);
   const [dailyReminderEnabled, setDailyReminderEnabled] = useState(false);
   const [dailyReminderTimeLabel, setDailyReminderTimeLabel] = useState<string | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
 
   const hydratedRef = useRef(false);
   const skipFirstFocusReloadRef = useRef(true);
@@ -189,6 +193,40 @@ export function DailyReviewGridView({
     [router, ymd],
   );
 
+  const runAi = useCallback(async () => {
+    if (!canEdit) {
+      Alert.alert('暂不可用', '当前日期不可生成 AI 分析。');
+      return;
+    }
+    if (!reviewHasEnoughTextForAi(fields)) {
+      Alert.alert('内容偏少', '请先填写至少约 30 字，再生成 AI 分析。');
+      return;
+    }
+    setAiBusy(true);
+    try {
+      const text = await generateReviewAiAnalysis({
+        scope: 'daily',
+        periodLabel: formatReviewHeaderDate(ymd),
+        template: dailyTemplate,
+        fields,
+      });
+      const nextMeta = { ...meta, ai_analysis: text };
+      setMeta(nextMeta);
+      await upsertDailyReviewJournal(ymd, serializeReviewBody(fields, nextMeta));
+      if (ymd === todayYmd) {
+        void syncDailyReviewReminderNotification();
+      }
+      setSavedFlash(true);
+      if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
+      savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);
+    } catch (e) {
+      console.warn('daily ai analysis', e);
+      Alert.alert('分析失败', '请稍后重试。');
+    } finally {
+      setAiBusy(false);
+    }
+  }, [canEdit, dailyTemplate, fields, meta, todayYmd, ymd]);
+
   const headerDateLabel = useMemo(() => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
     if (!m) return entryLabel;
@@ -274,6 +312,16 @@ export function DailyReviewGridView({
             )}
 
             <DailyReviewSaveStatus saving={saving} saved={savedFlash} colors={gridColors} />
+
+            {!skipped ? (
+              <ReviewAiAnalysisPanel
+                text={meta.ai_analysis}
+                busy={aiBusy}
+                canRun={canEdit}
+                onAnalyze={() => void runAi()}
+                disabledReason={!canEdit ? '当前日期不可生成分析' : undefined}
+              />
+            ) : null}
 
             {skipped ? (
               <Pressable

@@ -241,7 +241,6 @@ function RootLayoutInner() {
             <Stack.Screen name="scheduled-expenses" />
             <Stack.Screen name="add-scheduled-expense" />
             <Stack.Screen name="tasks-calendar" />
-            <Stack.Screen name="weekly-task-schedule" />
             <Stack.Screen name="tasks-overview" />
             <Stack.Screen name="edit-finance-transaction/[id]" />
             <Stack.Screen name="savings-plan" />
@@ -261,6 +260,7 @@ function RootLayoutInner() {
             <Stack.Screen name="weekly-review" />
             <Stack.Screen name="weekly-review-form" />
             <Stack.Screen name="weekly-review/[weekStartYmd]/[dimensionId]" />
+            <Stack.Screen name="monthly-review/[monthStartYmd]/[dimensionId]" />
             <Stack.Screen name="daily-review" />
             <Stack.Screen name="daily-review/[ymd]" />
             <Stack.Screen name="daily-review/[ymd]/[dimensionId]" />

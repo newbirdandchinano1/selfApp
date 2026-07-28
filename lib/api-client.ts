@@ -563,8 +563,6 @@ export type TasksBootstrapPayload = {
   habitCheckIns?: Record<string, unknown>[];
   taskExecutionEvents?: Record<string, unknown>[];
   frogCompletionEvents?: Record<string, unknown>[];
-  weeklyTaskScheduleSlots?: Record<string, unknown>[];
-  weeklyTaskScheduleCells?: Record<string, unknown>[];
   meta?: Record<string, unknown>;
 };
 
@@ -810,6 +808,8 @@ export type TasksOverviewInsightCounts = {
   open: number;
   doneOrCancelled: number;
   totalActive: number;
+  /** 设置了重复规则的独立待办数（含各状态） */
+  recurring: number;
   completedEvents: number;
   reopenedEvents: number;
 };
@@ -818,6 +818,7 @@ export type TasksOverviewStatKey =
   | 'open'
   | 'doneOrCancelled'
   | 'totalActive'
+  | 'recurring'
   | 'completedEvents'
   | 'reopenedEvents';
 
