@@ -1,3 +1,4 @@
+import { CompletionRewardBadge } from '@/components/completion-reward/CompletionRewardBadge';
 import {
   TasksFrogSectionSkeleton,
   TasksHabitSectionSkeleton,
@@ -6,17 +7,66 @@ import {
   TasksStandaloneSectionSkeleton,
 } from '@/components/tasks/tasks-home-skeletons';
 import { AppIconButton } from '@/components/ui';
-import { CompletionRewardBadge } from '@/components/completion-reward/CompletionRewardBadge';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
-import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
+import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
-import { shouldSkipPageFocusApiRefresh, consumeForceFullApiRefreshAfterLocalClear } from '@/lib/page-api-session';
+import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
+import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
+import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
-import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
-import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import {
+  clearFrogAssignedOn,
+  getFrogAssignedOn,
+  persistTaskFrogExtraToApi,
+  unassignFrogFromApi,
+} from '@/lib/frog-assignment';
+import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
+import {
+  clearFrogSessionCompletedOn,
+  getIsLongTermTask,
+  isFrogDoneForToday,
+  setFrogSessionCompletedOn,
+} from '@/lib/long-term-task';
+import { consumeForceFullApiRefreshAfterLocalClear, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
+import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
+import { fetchProjectsListForTab, mergeProjectRowsById } from '@/lib/projects-list-api';
+import { getHabitById } from '@/lib/repositories/habits/habit';
+import {
+  isBreakHabitSucceeded,
+  syncBreakHabitCompletions,
+  tryMarkBreakHabitCompleted,
+} from '@/lib/repositories/habits/habit-break-success';
+import {
+  isBuildHabitSucceeded,
+  syncBuildHabitCompletions,
+  tryMarkBuildHabitCompleted,
+} from '@/lib/repositories/habits/habit-build-success';
+import {
+  confirmBreakHabitDayClean,
+  decrementTodayHabitCheckIn,
+  getHabitDayRecordFlagsForYmd,
+  incrementTodayHabitCheckIn
+} from '@/lib/repositories/habits/habit-check-in';
+import {
+  breakSlipBadgeColor,
+  breakSlipBorderColor,
+  buildProgressBadgeColor,
+  buildProgressBorderColor,
+  getBreakHabitDayUiState,
+  isHabitDayDisplayCompleted,
+} from '@/lib/repositories/habits/habit-goal';
+import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import {
+  getSubHabitDoneMapForYmd,
+  hasActiveSubHabits,
+  parseHabitSubHabitsMeta,
+  toggleSubHabitCheckIn,
+  type HabitSubItem,
+} from '@/lib/repositories/habits/habit-sub';
 import {
   INBOX_PROJECT_CATEGORY_ID,
   INBOX_PROJECT_CATEGORY_NAME,
@@ -34,7 +84,6 @@ import {
   updateProject,
   updateProjectCategory,
 } from '@/lib/repositories/projects/project';
-import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import {
   buildProjectLockMap,
   sortProjectsForList,
@@ -46,6 +95,11 @@ import {
   isProjectScheduleExpired,
   isProjectScheduleNotYetStarted,
 } from '@/lib/repositories/projects/project-schedule-status';
+import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import {
+  insertFrogCompletionEvent,
+  type FrogCompletionDayItem,
+} from '@/lib/repositories/tasks/frog-completion-events';
 import {
   cascadeParentTaskStatusAfterChildChange,
   countIncompleteTasksByProjectId,
@@ -54,105 +108,27 @@ import {
   getProjectTaskTreeMap,
   getTasks,
   getTasksByProjectId,
-  type TaskTreeNode,
   updateTask,
+  type TaskTreeNode,
 } from '@/lib/repositories/tasks/task';
+import {
+  insertTaskExecutionEvent,
+  type TaskExecutionEventWithTitle,
+} from '@/lib/repositories/tasks/task-execution-events';
 import {
   completeTasksBoundToHabitIfGoalMet,
   parseBoundHabitIdsFromExtraData,
   syncAllHabitBoundTaskCompletions,
   type CompleteTasksBoundToHabitResult,
 } from '@/lib/repositories/tasks/task-habit-binding';
-import {
-  insertFrogCompletionEvent,
-  type FrogCompletionDayItem,
-} from '@/lib/repositories/tasks/frog-completion-events';
-import {
-  clearFrogAssignedOn,
-  getFrogAssignedOn,
-  persistTaskFrogExtraToApi,
-  unassignFrogFromApi,
-} from '@/lib/frog-assignment';
-import { persistTaskPatchToApi } from '@/lib/task-api-write';
-import {
-  clearFrogSessionCompletedOn,
-  getIsLongTermTask,
-  isFrogDoneForToday,
-  setFrogSessionCompletedOn,
-} from '@/lib/long-term-task';
-import {
-  insertTaskExecutionEvent,
-  type TaskExecutionEventWithTitle,
-} from '@/lib/repositories/tasks/task-execution-events';
-import {
-  computeMonthlyAverageMap,
-  heatmapLevelFromMonthlyAverage,
-} from '@/lib/tasks-global-heatmap';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
-  isTaskActiveStatus,
   isTaskShelvedStatus,
-  isTaskTerminalStatus,
+  isTaskTerminalStatus
 } from '@/lib/repositories/tasks/task.types';
-import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
-import {
-  confirmBreakHabitDayClean,
-  decrementTodayHabitCheckIn,
-  getCheckInsMapByHabitId,
-  getHabitDayRecordFlagsForYmd,
-  incrementTodayHabitCheckIn,
-} from '@/lib/repositories/habits/habit-check-in';
-import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
-import {
-  isBreakHabitSucceeded,
-  syncBreakHabitCompletions,
-  tryMarkBreakHabitCompleted,
-} from '@/lib/repositories/habits/habit-break-success';
-import {
-  isBuildHabitSucceeded,
-  syncBuildHabitCompletions,
-  tryMarkBuildHabitCompleted,
-} from '@/lib/repositories/habits/habit-build-success';
-import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
-import {
-  getSubHabitDoneMapForYmd,
-  hasActiveSubHabits,
-  parseHabitSubHabitsMeta,
-  toggleSubHabitCheckIn,
-  type HabitSubItem,
-} from '@/lib/repositories/habits/habit-sub';
-import {
-  breakSlipBadgeColor,
-  breakSlipBorderColor,
-  buildProgressBadgeColor,
-  buildProgressBorderColor,
-  getBreakHabitDayUiState,
-  isHabitDayDisplayCompleted,
-} from '@/lib/repositories/habits/habit-goal';
-import {
-  applyRepeatingTaskRollovers,
-  patchExtraDataOnRepeatTaskComplete,
-  patchExtraDataOnRepeatTaskReopen,
-  taskHasRepeatingSchedule,
-} from '@/lib/task-repeat-rollover';
-import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
-import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
-import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
-import { fetchTodayFrogs } from '@/lib/today-frogs-api';
-import { fetchProjectsListForTab, mergeProjectRowsById } from '@/lib/projects-list-api';
-import {
-  fetchMatrixWeekTasks,
-  fetchStandaloneTodos,
-  fetchTasksPageData,
-  resolveMatrixProjectIds,
-  sortStandaloneTodosLocally,
-} from '@/lib/tasks-page-api';
-import { fetchTasksHabitsGrid } from '@/lib/tasks-habits-grid-api';
-import {
-  fetchCompletionHeatmap,
-  fetchCompletionHeatmapDayDetail,
-} from '@/lib/tasks-completion-heatmap-api';
+import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
+import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
 import {
   formatScheduleDateToYMD,
   getStandaloneTodoOverdueDisplayYmd,
@@ -162,12 +138,34 @@ import {
   isTaskOverdueForList,
   isTaskRowOverdue,
 } from '@/lib/standalone-todo-visibility';
-import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
-import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
-import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
-import React from 'react';
+import { persistTaskPatchToApi } from '@/lib/task-api-write';
+import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
+import {
+  applyRepeatingTaskRollovers,
+  patchExtraDataOnRepeatTaskComplete,
+  patchExtraDataOnRepeatTaskReopen,
+  taskHasRepeatingSchedule,
+} from '@/lib/task-repeat-rollover';
+import {
+  fetchCompletionHeatmap,
+  fetchCompletionHeatmapDayDetail,
+} from '@/lib/tasks-completion-heatmap-api';
+import {
+  computeMonthlyAverageMap,
+  heatmapLevelFromMonthlyAverage,
+} from '@/lib/tasks-global-heatmap';
+import { fetchTasksHabitsGrid } from '@/lib/tasks-habits-grid-api';
+import {
+  getLogicalLocalYmd,
+  type TasksDayBoundary,
+} from '@/lib/tasks-logical-day';
+import {
+  fetchMatrixWeekTasks,
+  fetchStandaloneTodos,
+  fetchTasksPageData,
+  resolveMatrixProjectIds,
+  sortStandaloneTodosLocally,
+} from '@/lib/tasks-page-api';
 import {
   loadTasksHideCompletedProjectTasks,
   loadTasksMainListView,
@@ -177,15 +175,16 @@ import {
   saveTasksProjectExpandedState,
   type TasksMainListView,
 } from '@/lib/tasks-ui-settings';
-import {
-  getLogicalLocalYmd,
-  type TasksDayBoundary,
-} from '@/lib/tasks-logical-day';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { fetchTodayFrogs } from '@/lib/today-frogs-api';
+import { MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
+import React from 'react';
 import {
   ActivityIndicator,
   Alert,
   Animated,
+  Dimensions,
   Easing,
   InteractionManager,
   Keyboard,
@@ -196,14 +195,13 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  Dimensions,
   TextInput,
   UIManager,
   View,
   type KeyboardEvent,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/tasks';
 
