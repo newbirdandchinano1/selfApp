@@ -21,9 +21,18 @@ export async function createProject(input: CreateProjectInput) {
   const inboxAtSql = inStrictInbox ? `datetime('now')` : 'NULL';
   await db.runAsync(
     `INSERT INTO projects (
-      id, category_id, name, status, note, due_date, created_at, updated_at, sync_status, extra_data, inbox_entered_at
-    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?, ${inboxAtSql})`,
-    [input.id, categoryId, input.name, input.status ?? 'active', input.note ?? null, input.due_date ?? null, input.extra_data ?? null]
+      id, category_id, name, status, priority, note, due_date, created_at, updated_at, sync_status, extra_data, inbox_entered_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?, ${inboxAtSql})`,
+    [
+      input.id,
+      categoryId,
+      input.name,
+      input.status ?? 'active',
+      input.priority ?? 0,
+      input.note ?? null,
+      input.due_date ?? null,
+      input.extra_data ?? null,
+    ],
   );
 }
 
@@ -99,13 +108,14 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
 
   const result = await db.runAsync(
     `UPDATE projects
-     SET category_id = ?, name = ?, status = ?, note = ?, due_date = ?, extra_data = ?, inbox_entered_at = ?, updated_at = datetime('now'),
+     SET category_id = ?, name = ?, status = ?, priority = ?, note = ?, due_date = ?, extra_data = ?, inbox_entered_at = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
       nextCategoryId,
       input.name ?? current.name,
       input.status ?? current.status,
+      input.priority !== undefined ? input.priority : (current.priority ?? 0),
       input.note !== undefined ? input.note : current.note,
       input.due_date !== undefined ? input.due_date : current.due_date,
       input.extra_data !== undefined ? input.extra_data : current.extra_data,

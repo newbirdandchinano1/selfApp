@@ -68,7 +68,7 @@ export function ReviewAiAnalysisPanel({
         <Text style={[Typography.body, { color: colors.text, lineHeight: 22 }]}>{body}</Text>
       ) : (
         <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21 }]}>
-          填写一定内容后，可生成针对本周期的分析与建议。
+          填写一定内容后，可生成「目前的问题 / 潜在问题 / 建议」诊断分析。
         </Text>
       )}
     </View>

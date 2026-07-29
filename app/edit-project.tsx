@@ -12,11 +12,16 @@ import { consumeAddTaskResult } from '@/lib/add-task-bridge';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
+import {
+  ComposerPriorityMatrix,
+  taskPriorityKeyToNumber,
+  taskPriorityToKey,
+  type TaskPriorityKey,
+} from '@/components/composer';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getDatabase } from '@/lib/database.native';
 import { formatWriteError } from '@/lib/format-write-error';
 import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
-import { parseProjectExtraDataWithAi } from '@/lib/repositories/projects/project-ai-review';
 import {
   mergePrerequisiteIdsIntoExtraData,
   parsePrerequisiteProjectIds,
@@ -30,8 +35,6 @@ import {
   endCloudSqliteDirtyIgnoreBatch,
 } from '@/lib/cloud-sql-dirty-track';
 import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
-import { addProjectAiReviewSavedListener, runProjectAiReview } from '@/lib/project-ai-review-background';
-import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import {
   countIncompleteTasksByProjectId,
@@ -145,7 +148,6 @@ type ProjectScheduleMeta = Pick<
 
 type ProjectExtraData = {
   schedule?: ProjectScheduleMeta | null;
-  ai_review?: import('@/lib/repositories/projects/project-ai-review').ProjectAiReview;
   [key: string]: unknown;
 };
 
@@ -437,16 +439,13 @@ export default function EditProjectScreen() {
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
   const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
+  const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [habitNameById, setHabitNameById] = React.useState<Map<string, string>>(() => new Map());
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [toastVisible, setToastVisible] = React.useState(false);
   const [toastMessage, setToastMessage] = React.useState('');
-  const [aiReviewLoading, setAiReviewLoading] = React.useState(false);
   const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const zhipuReady = isActiveAiLlmConfigured();
-  const projectAiReview = projectExtraData.ai_review ?? null;
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const scheduleSource =
@@ -598,8 +597,9 @@ export default function EditProjectScreen() {
       categoryTouchedRef.current = false;
       setTitle(project.name);
       setSelectedCategoryId(normalizeProjectCategoryId(project.category_id));
+      setPriority(taskPriorityToKey(project.priority ?? 0));
       setNotes(project.note ?? '');
-      const extraData = parseProjectExtraDataWithAi(project.extra_data) as ProjectExtraData;
+      const extraData = parseProjectExtraData(project.extra_data);
       setProjectExtraData(extraData);
       const loadedSchedule = (extraData.schedule ?? null) as ProjectScheduleMeta | null;
       setScheduleMeta(loadedSchedule);
@@ -655,40 +655,6 @@ export default function EditProjectScreen() {
   );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadProjectPage);
-
-  React.useEffect(() => {
-    if (!projectId) return;
-    return addProjectAiReviewSavedListener((saved) => {
-      if (saved.id !== projectId) return;
-      const extraData = parseProjectExtraDataWithAi(saved.extra_data) as ProjectExtraData;
-      setProjectExtraData(extraData);
-    });
-  }, [projectId]);
-
-  const handleManualProjectAiReview = React.useCallback(async () => {
-    if (!projectId || aiReviewLoading || loading) return;
-    if (subtasks.length === 0) {
-      Alert.alert('无法分析', '项目下尚无任务，请先添加任务后再进行 AI 分析。');
-      return;
-    }
-    if (!zhipuReady) {
-      Alert.alert('无法调用 AI', '请配置智谱 API 密钥（环境变量 EXPO_PUBLIC_ZHIPU_API_KEY 或应用内置渠道）。');
-      return;
-    }
-    setAiReviewLoading(true);
-    try {
-      const r = await runProjectAiReview(projectId, { force: true });
-      if (r.ok && !r.skipped) {
-        const extraData = parseProjectExtraDataWithAi(r.project.extra_data) as ProjectExtraData;
-        setProjectExtraData(extraData);
-        showToast('AI 点评已更新');
-      } else if (!r.ok) {
-        Alert.alert('AI 分析失败', r.error);
-      }
-    } finally {
-      setAiReviewLoading(false);
-    }
-  }, [aiReviewLoading, loading, projectId, showToast, subtasks.length, zhipuReady]);
 
   React.useEffect(() => {
     readScheduleResult();
@@ -894,6 +860,7 @@ export default function EditProjectScreen() {
       await updateProject(projectId, {
         ...(categoryTouched ? { category_id: normalizedCategoryId } : {}),
         name: trimmedTitle,
+        priority: taskPriorityKeyToNumber(priority),
         note: notes.trim() || null,
         due_date: projectDueDate,
         extra_data: mergeCompletionRewardIntoExtraData(JSON.stringify(mergedExtra), completionReward),
@@ -1000,6 +967,7 @@ export default function EditProjectScreen() {
     deadlineText,
     notes,
     prerequisiteProjectIds,
+    priority,
     completionReward,
     projectExtraData,
     projectId,
@@ -1245,6 +1213,11 @@ export default function EditProjectScreen() {
             </Pressable>
           </View>
 
+          <View style={[styles.section, { opacity: loading ? 0.65 : 1 }]} pointerEvents={loading || saving ? 'none' : 'auto'}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>优先级</Text>
+            <ComposerPriorityMatrix value={priority} onChange={setPriority} />
+          </View>
+
           <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>前置项目</Text>
             <PrerequisiteProjectPickerField
@@ -1332,71 +1305,6 @@ export default function EditProjectScreen() {
                   </View>
                   <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无任务，点击右上角添加任务</Text>
                 </View>
-              )}
-            </View>
-          </View>
-
-          <View style={styles.section}>
-            <View style={styles.subtaskHeader}>
-              <Text style={[styles.sectionLabel, { color: outline }]}>AI 项目点评</Text>
-              <Pressable
-                onPress={() => void handleManualProjectAiReview()}
-                disabled={loading || aiReviewLoading || subtasks.length === 0}
-                style={({ pressed }) => [
-                  styles.linkBtn,
-                  { opacity: loading || aiReviewLoading || subtasks.length === 0 ? 0.45 : pressed ? 0.75 : 1 },
-                ]}>
-                {aiReviewLoading ? (
-                  <ActivityIndicator size="small" color={primary} />
-                ) : (
-                  <MaterialIcons name="auto-awesome" size={16} color={primary} />
-                )}
-                <Text style={[styles.linkBtnText, { color: primary }]}>
-                  {aiReviewLoading ? '分析中…' : projectAiReview?.review_at ? '重新分析' : '开始分析'}
-                </Text>
-              </Pressable>
-            </View>
-            <View style={[styles.aiReviewCard, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-              {subtasks.length === 0 ? (
-                <Text style={[styles.aiReviewHint, { color: outline }]}>添加任务后，点击右上角「开始分析」生成 AI 点评。</Text>
-              ) : aiReviewLoading ? (
-                <View style={styles.aiReviewPendingRow}>
-                  <ActivityIndicator size="small" color={primary} />
-                  <Text style={[styles.aiReviewHint, { color: outline }]}>正在汇总任务并请求 AI 分析…</Text>
-                </View>
-              ) : projectAiReview?.evaluation || projectAiReview?.suggestions ? (
-                <>
-                  {!!projectAiReview.evaluation && (
-                    <>
-                      <Text style={[styles.aiReviewKicker, { color: outline }]}>整体点评</Text>
-                      <Text style={[styles.aiReviewBody, { color: theme.text }]}>{projectAiReview.evaluation}</Text>
-                    </>
-                  )}
-                  {!!projectAiReview.suggestions && (
-                    <>
-                      <Text style={[styles.aiReviewKicker, { color: outline, marginTop: 12 }]}>行动建议</Text>
-                      <Text style={[styles.aiReviewBody, { color: theme.textSecondary }]}>{projectAiReview.suggestions}</Text>
-                    </>
-                  )}
-                  {projectAiReview.review_at ? (
-                    <Text style={[styles.aiReviewTime, { color: outline }]}>
-                      生成于{' '}
-                      {new Date(projectAiReview.review_at).toLocaleString('zh-CN', {
-                        month: 'numeric',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                      {projectAiReview.task_count > 0 ? ` · 基于 ${projectAiReview.task_count} 项任务` : ''}
-                    </Text>
-                  ) : null}
-                </>
-              ) : (
-                <Text style={[styles.aiReviewHint, { color: outline }]}>
-                  {zhipuReady
-                    ? '新增任务后将自动分析；也可点击右上角「开始分析」手动生成。'
-                    : '未配置 AI 密钥，无法生成点评。配置 EXPO_PUBLIC_ZHIPU_API_KEY 后可使用。'}
-                </Text>
               )}
             </View>
           </View>
@@ -1568,12 +1476,6 @@ const styles = StyleSheet.create({
   emptySubtaskRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 14, borderRadius: 16, borderWidth: 1, borderStyle: 'dashed' },
   emptySubtaskIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   emptySubtaskText: { flex: 1, fontSize: 13, fontWeight: '600' },
-  aiReviewCard: { borderWidth: 1, borderRadius: 16, padding: 14, gap: 8 },
-  aiReviewKicker: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase' },
-  aiReviewBody: { fontSize: 14, fontWeight: '500', lineHeight: 22 },
-  aiReviewHint: { fontSize: 13, fontWeight: '500', lineHeight: 20 },
-  aiReviewTime: { fontSize: 11, fontWeight: '600', marginTop: 8 },
-  aiReviewPendingRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   notesWrap: { borderRadius: 16, padding: 14, minHeight: 120 },
   notesInput: { minHeight: 92, fontSize: 14, fontWeight: '500', lineHeight: 20, paddingRight: 34 },
   notesIcon: { position: 'absolute', right: 12, bottom: 12 },

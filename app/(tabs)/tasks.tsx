@@ -94,16 +94,6 @@ import {
   isTaskShelvedStatus,
   isTaskTerminalStatus,
 } from '@/lib/repositories/tasks/task.types';
-import {
-  parseProjectAiReview,
-  type ProjectAiReview,
-} from '@/lib/repositories/projects/project-ai-review';
-import {
-  addProjectAiPendingAnalysisListener,
-  addProjectAiReviewSavedListener,
-  runProjectAiReview,
-} from '@/lib/project-ai-review-background';
-import { isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import {
   confirmBreakHabitDayClean,
@@ -1406,6 +1396,20 @@ function getDirectChildTaskProgress(children: TaskTreeNode[]): { total: number; 
   return { total, done, ratio: done / total };
 }
 
+/** 项目树中尚未完结（非 done/cancelled）的任务，用于左侧一键完成项目 */
+function collectIncompleteTasksFromProjectTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
+  const out: TaskTreeNode[] = [];
+  const walk = (list: TaskTreeNode[]) => {
+    for (const n of list) {
+      if (!isTaskTerminalStatus(n.status)) out.push(n);
+      const ch = Array.isArray(n.children) ? n.children : [];
+      if (ch.length > 0) walk(ch);
+    }
+  };
+  walk(nodes);
+  return out;
+}
+
 /** 是否达到可询问归纳收集箱的完成度：有截止日期对齐列表进度，否则需整棵树完成 */
 function isProjectInboxProgressComplete(project: ProjectRow, nodes: TaskTreeNode[]): boolean {
   if (nodes.length === 0) return false;
@@ -1681,26 +1685,8 @@ export default function TasksScreen() {
     };
   }, [scrollQuickTodoAboveKeyboard]);
   const { boundary: dayBoundary, logicalTodayYmd } = useDayBoundary();
-  const [projectAiPendingIds, setProjectAiPendingIds] = React.useState<ReadonlySet<string>>(() => new Set());
-  const [projectAiTriggerLoadingId, setProjectAiTriggerLoadingId] = React.useState<string | null>(null);
-  const [projectAiModal, setProjectAiModal] = React.useState<{
-    projectName: string;
-    review: ProjectAiReview;
-  } | null>(null);
-  const zhipuReady = isActiveAiLlmConfigured();
 
   const habitScheduleAnchorDate = React.useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
-
-  React.useEffect(() => {
-    const unsubPending = addProjectAiPendingAnalysisListener(setProjectAiPendingIds);
-    const unsubSaved = addProjectAiReviewSavedListener((saved) => {
-      setProjects((prev) => prev.map((p) => (p.id === saved.id ? saved : p)));
-    });
-    return () => {
-      unsubPending();
-      unsubSaved();
-    };
-  }, []);
 
   const projectLockMap = React.useMemo(
     () => buildProjectLockMap(projects, projectTaskTreeMap, logicalTodayYmd),
@@ -1758,32 +1744,6 @@ export default function TasksScreen() {
   projectsRef.current = projects;
   const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
   const [activatingShelvedTodoId, setActivatingShelvedTodoId] = React.useState<string | null>(null);
-
-  const triggerProjectAiReview = React.useCallback(
-    async (projectId: string) => {
-      if (projectAiTriggerLoadingId || projectAiPendingIds.has(projectId)) return;
-      if (!zhipuReady) {
-        Alert.alert('未配置 AI', '请先在设置中配置智谱 API 密钥后再使用 AI 点评。');
-        return;
-      }
-      const tree = projectTaskTreeMap[projectId] ?? [];
-      if (tree.length === 0) {
-        Alert.alert('无法分析', '该项目下尚无任务，请先添加任务。');
-        return;
-      }
-      markPageDirty();
-      setProjectAiTriggerLoadingId(projectId);
-      try {
-        const r = await runProjectAiReview(projectId, { force: true });
-        if (!r.ok) {
-          Alert.alert('AI 分析失败', r.error);
-        }
-      } finally {
-        setProjectAiTriggerLoadingId(null);
-      }
-    },
-    [markPageDirty, projectAiPendingIds, projectAiTriggerLoadingId, projectTaskTreeMap, zhipuReady],
-  );
 
   const loadProjects = React.useCallback(async () => {
     try {
@@ -2774,13 +2734,190 @@ export default function TasksScreen() {
     }
   }, [loadProjects, markPageDirty, projects, runExclusiveMutation]);
 
+  /** 项目列表左侧按钮：完成项目（可强制完成未完成任务）并收纳到收集箱 */
+  const completeProjectFromList = React.useCallback(
+    async (project: ProjectRow) => {
+      try {
+        await runExclusiveMutation('正在完成项目...', async () => {
+          markPageDirty();
+          const tree = projectTaskTreeMap[project.id] ?? [];
+          const incomplete = collectIncompleteTasksFromProjectTree(tree);
+          const completedAt = formatTaskAuditDatetimeLocal();
+
+          for (const task of incomplete) {
+            let nextExtraData = task.extra_data;
+            if (taskHasRepeatingSchedule(nextExtraData)) {
+              nextExtraData = patchExtraDataOnRepeatTaskComplete(nextExtraData, logicalTodayYmd);
+            }
+            nextExtraData = clearFrogSessionCompletedOn(nextExtraData);
+            await persistTaskPatchToApi(
+              task.id,
+              {
+                status: 'done',
+                completed_at: completedAt,
+                extra_data: nextExtraData,
+              },
+              task as Record<string, unknown>,
+            );
+            const frogAssigned = (parseTaskMeta(task.extra_data).frogAssignedOn ?? '').trim();
+            if (/^\d{4}-\d{2}-\d{2}$/.test(frogAssigned)) {
+              try {
+                await insertFrogCompletionEvent(task.id, frogAssigned, 'completed', task.title ?? null);
+              } catch (frogLogErr) {
+                console.warn('记录青蛙完成事件失败', frogLogErr);
+              }
+            }
+            await tryGrantTaskCompletionReward({
+              id: task.id,
+              title: task.title,
+              extra_data: nextExtraData,
+            });
+          }
+
+          if (incomplete.length > 0) {
+            setProjectTaskTreeMap((prev) => {
+              let next = prev;
+              for (const task of incomplete) {
+                let nextExtraData = task.extra_data;
+                if (taskHasRepeatingSchedule(nextExtraData)) {
+                  nextExtraData = patchExtraDataOnRepeatTaskComplete(nextExtraData, logicalTodayYmd);
+                }
+                nextExtraData = clearFrogSessionCompletedOn(nextExtraData);
+                next = updateTaskInProjectTree(next, task.id, (node) => ({
+                  ...node,
+                  status: 'done',
+                  completed_at: completedAt,
+                  extra_data: nextExtraData,
+                }));
+              }
+              return sortProjectTaskTreeMap(next);
+            });
+            setTodayFrogs((prev) =>
+              prev.map((t) => {
+                if (!incomplete.some((u) => u.id === t.id)) return t;
+                let nextExtraData = t.extra_data;
+                if (taskHasRepeatingSchedule(nextExtraData)) {
+                  nextExtraData = patchExtraDataOnRepeatTaskComplete(nextExtraData, logicalTodayYmd);
+                }
+                nextExtraData = clearFrogSessionCompletedOn(nextExtraData);
+                return { ...t, status: 'done', completed_at: completedAt, extra_data: nextExtraData };
+              }),
+            );
+            setCompletionHeatmapReloadToken((n) => n + 1);
+          }
+
+          const proj = projects.find((p) => p.id === project.id) ?? (await getProjectById(project.id)) ?? project;
+          await updateProject(project.id, {
+            category_id: INBOX_PROJECT_CATEGORY_ID,
+            status: 'completed',
+          });
+          await tryGrantProjectCompletionReward(proj);
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          projectSwipeableRefs.current[project.id]?.close();
+          const rows = await loadProjects();
+          await loadProjectTasks(rows);
+          await loadTodayFrogs();
+        }, '项目已完成');
+      } catch (err) {
+        console.warn('完成项目失败', err);
+        Alert.alert('操作失败', '未能完成项目，请稍后重试。');
+        await loadProjects();
+      }
+    },
+    [
+      loadProjectTasks,
+      loadProjects,
+      loadTodayFrogs,
+      logicalTodayYmd,
+      markPageDirty,
+      projectTaskTreeMap,
+      projects,
+      runExclusiveMutation,
+      updateTaskInProjectTree,
+    ],
+  );
+
+  /** 收集箱已完成项目：左侧按钮恢复为进行中并移出收集箱 */
+  const reopenProjectFromList = React.useCallback(
+    async (project: ProjectRow) => {
+      try {
+        await runExclusiveMutation('正在恢复项目...', async () => {
+          markPageDirty();
+          const nextCategoryId = isProjectInInboxCategory(project.category_id)
+            ? pickFirstNonInboxProjectCategoryId(projectCategories)
+            : project.category_id;
+          await updateProject(project.id, {
+            status: 'active',
+            category_id: nextCategoryId,
+          });
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          projectSwipeableRefs.current[project.id]?.close();
+          await loadProjects();
+        }, '项目已恢复');
+      } catch (err) {
+        console.warn('恢复项目失败', err);
+        Alert.alert('操作失败', '未能恢复项目，请稍后重试。');
+        await loadProjects();
+      }
+    },
+    [loadProjects, markPageDirty, projectCategories, runExclusiveMutation],
+  );
+
+  const handleProjectCompleteToggle = React.useCallback(
+    (project: ProjectRow) => {
+      const isCompleted = project.status === 'completed' || project.status === 'archived';
+      if (isCompleted) {
+        Alert.alert('恢复项目', `确定将「${project.name}」恢复为进行中吗？`, [
+          { text: '取消', style: 'cancel' },
+          { text: '恢复', onPress: () => void reopenProjectFromList(project) },
+        ]);
+        return;
+      }
+
+      const lockInfo = projectLockMap.get(project.id);
+      const isScheduleNotStarted = isProjectScheduleNotYetStarted(project, logicalTodayYmd);
+      if (lockInfo?.locked || isScheduleNotStarted) {
+        alertProjectTaskLocked({
+          locked: !!(lockInfo?.locked || isScheduleNotStarted),
+          unmetPrerequisiteNames: lockInfo?.unmetPrerequisiteNames ?? [],
+          scheduleNotStarted: isScheduleNotStarted,
+          scheduleStartYmd: lockInfo?.scheduleStartYmd ?? getProjectScheduleYmdBounds(project).startYmd,
+        });
+        return;
+      }
+
+      const tree = projectTaskTreeMap[project.id] ?? [];
+      const incomplete = collectIncompleteTasksFromProjectTree(tree);
+      if (incomplete.length > 0) {
+        Alert.alert(
+          '完成项目',
+          `「${project.name}」下还有 ${incomplete.length} 个未完成任务。\n\n确定将这些任务一并标记为完成，并将项目归纳到收集箱吗？`,
+          [
+            { text: '取消', style: 'cancel' },
+            { text: '完成项目', onPress: () => void completeProjectFromList(project) },
+          ],
+        );
+        return;
+      }
+
+      void completeProjectFromList(project);
+    },
+    [
+      completeProjectFromList,
+      logicalTodayYmd,
+      projectLockMap,
+      projectTaskTreeMap,
+      reopenProjectFromList,
+    ],
+  );
+
   const handleProjectSwipeArchive = React.useCallback(
     (project: ProjectRow) => {
       const tree = projectTaskTreeMap[project.id] ?? [];
       if (!isProjectInboxProgressComplete(project, tree)) {
         Alert.alert(
           '暂时无法收纳',
-          '请先完成项目内的全部任务（或将任务标记为取消）后，再将项目归纳到收集箱。',
+          '请先完成项目内的全部任务（或将任务标记为取消）后，再将项目归纳到收集箱。\n\n也可点击项目左侧按钮强制完成项目。',
         );
         projectSwipeableRefs.current[project.id]?.close();
         return;
@@ -5583,8 +5720,22 @@ export default function TasksScreen() {
                         style={styles.projectHeadPressable}>
                       <View style={styles.projectHead}>
                         <View style={styles.projectHeadLeft}>
-                          <View
-                            style={[
+                          <Pressable
+                            onPress={(e) => {
+                              e.stopPropagation?.();
+                              handleProjectCompleteToggle(project);
+                            }}
+                            hitSlop={8}
+                            accessibilityRole="checkbox"
+                            accessibilityLabel={
+                              isLocked && !isCompleted
+                                ? '项目已锁定，暂不可完成'
+                                : isCompleted
+                                  ? `恢复项目 ${project.name}`
+                                  : `完成项目 ${project.name}`
+                            }
+                            accessibilityState={{ disabled: isLocked && !isCompleted, checked: isCompleted }}
+                            style={({ pressed }) => [
                               styles.projectIconWrap,
                               {
                                 backgroundColor: isLocked
@@ -5599,13 +5750,20 @@ export default function TasksScreen() {
                                       ? 'rgba(96,165,250,0.14)'
                                       : 'rgba(0,88,190,0.08)',
                               },
+                              pressed && { opacity: 0.75 },
                             ]}>
                             <MaterialIcons
-                              name={isLocked ? 'lock' : isCompleted ? 'check-circle' : 'data-usage'}
+                              name={
+                                isLocked && !isCompleted
+                                  ? 'lock'
+                                  : isCompleted
+                                    ? 'check-circle'
+                                    : 'radio-button-unchecked'
+                              }
                               size={20}
                               color={projectAccent}
                             />
-                          </View>
+                          </Pressable>
                           <View style={styles.projectHeadMainColumn}>
                             <View style={styles.projectTitleRow}>
                               <Text
@@ -5738,9 +5896,25 @@ export default function TasksScreen() {
                                   {project.status === 'active' ? '进行中' : project.status === 'paused' ? '已暂停' : '未知状态'}
                                 </Text>
                               ) : null}
-                              {!isCompleted && (hasReminder || hasRepeat) ? (
+                              {!isCompleted && (hasReminder || hasRepeat || (project.priority ?? 0) >= 1) ? (
                                 <Text style={[styles.projectSub, { color: outline }]}>•</Text>
                               ) : null}
+                              {(project.priority ?? 0) >= 1 ? (() => {
+                                const projectPriority = project.priority ?? 0;
+                                const priorityLabel = formatTaskPriority(projectPriority);
+                                const priorityColor = isCompleted
+                                  ? doneMuted
+                                  : getTaskPriorityColor(projectPriority, isDark);
+                                if (!priorityLabel) return null;
+                                return (
+                                  <View style={styles.projectFlag}>
+                                    <MaterialIcons name="flag" size={11} color={priorityColor} />
+                                    <Text style={[styles.projectFlagText, { color: priorityColor }]}>
+                                      {priorityLabel}
+                                    </Text>
+                                  </View>
+                                );
+                              })() : null}
                               {hasReminder && (
                                 <View style={styles.projectFlag}>
                                   <MaterialIcons
@@ -5812,82 +5986,6 @@ export default function TasksScreen() {
                                 </View>
                               </>
                             ) : null}
-                            {hasAnyTasks ? (() => {
-                              const aiReview = parseProjectAiReview(project.extra_data);
-                              const aiPending =
-                                projectAiPendingIds.has(project.id) || projectAiTriggerLoadingId === project.id;
-                              const hasAiContent = !!(aiReview?.evaluation || aiReview?.suggestions);
-                              if (!aiPending && !hasAiContent) {
-                                return (
-                                  <Pressable
-                                    onPress={(e) => {
-                                      e.stopPropagation?.();
-                                      void triggerProjectAiReview(project.id);
-                                    }}
-                                    disabled={!zhipuReady || aiPending}
-                                    hitSlop={6}
-                                    style={({ pressed }) => [
-                                      styles.projectAiTriggerBtn,
-                                      {
-                                        borderColor: isDark ? 'rgba(96,165,250,0.35)' : 'rgba(0,88,190,0.22)',
-                                        backgroundColor: isDark ? 'rgba(96,165,250,0.12)' : 'rgba(0,88,190,0.06)',
-                                        opacity: !zhipuReady ? 0.45 : pressed ? 0.82 : 1,
-                                      },
-                                    ]}>
-                                    <MaterialIcons name="auto-awesome" size={14} color={primary} />
-                                    <Text style={[styles.projectAiTriggerText, { color: primary }]}>生成 AI 点评</Text>
-                                  </Pressable>
-                                );
-                              }
-                              return (
-                                <View style={styles.projectAiWrap}>
-                                  {aiPending ? (
-                                    <View style={styles.projectAiPendingRow}>
-                                      <ActivityIndicator size="small" color={primary} />
-                                      <Text style={[styles.projectAiPreview, { color: outline }]}>AI 分析中…</Text>
-                                    </View>
-                                  ) : aiReview ? (
-                                    <>
-                                      <Pressable
-                                        onPress={(e) => {
-                                          e.stopPropagation?.();
-                                          setProjectAiModal({ projectName: project.name, review: aiReview });
-                                        }}
-                                        hitSlop={6}
-                                        style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
-                                        <Text style={[styles.projectAiPreview, { color: colors.textSecondary }]} numberOfLines={2}>
-                                          <Text style={{ fontWeight: '800', color: primary }}>AI 点评：</Text>
-                                          {aiReview.evaluation || aiReview.suggestions}
-                                        </Text>
-                                        {aiReview.review_at ? (
-                                          <Text style={[styles.projectAiTime, { color: outline }]}>
-                                            {new Date(aiReview.review_at).toLocaleString('zh-CN', {
-                                              month: 'numeric',
-                                              day: 'numeric',
-                                              hour: '2-digit',
-                                              minute: '2-digit',
-                                            })}
-                                          </Text>
-                                        ) : null}
-                                      </Pressable>
-                                      <Pressable
-                                        onPress={(e) => {
-                                          e.stopPropagation?.();
-                                          void triggerProjectAiReview(project.id);
-                                        }}
-                                        disabled={!zhipuReady}
-                                        hitSlop={6}
-                                        style={({ pressed }) => [
-                                          styles.projectAiRetriggerBtn,
-                                          { opacity: !zhipuReady ? 0.45 : pressed ? 0.75 : 1 },
-                                        ]}>
-                                        <Text style={[styles.projectAiRetriggerText, { color: primary }]}>重新分析</Text>
-                                      </Pressable>
-                                    </>
-                                  ) : null}
-                                </View>
-                              );
-                            })() : null}
                           </View>
                         </View>
                         <View style={styles.projectHeadRight}>
@@ -6018,44 +6116,6 @@ export default function TasksScreen() {
           <View style={[styles.mutationOverlayCard, { backgroundColor: modalCardBg }]}>
             <ActivityIndicator color={primary} />
             <Text style={[styles.mutationOverlayText, { color: colors.text }]}>{mutationOverlayLabel}</Text>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={projectAiModal != null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setProjectAiModal(null)}>
-        <View style={styles.modalRoot}>
-          <Pressable style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]} onPress={() => setProjectAiModal(null)} />
-          <View pointerEvents="box-none" style={styles.modalCenter}>
-            <View style={[styles.modalCard, { backgroundColor: modalCardBg, maxHeight: '78%' }]}>
-              <View style={styles.modalHeader}>
-                <Text style={[styles.modalTitle, { color: colors.text }]} numberOfLines={1}>
-                  {projectAiModal?.projectName ?? '项目'} · AI 点评
-                </Text>
-                <Pressable onPress={() => setProjectAiModal(null)} hitSlop={10}>
-                  <MaterialIcons name="close" size={22} color={outline} />
-                </Pressable>
-              </View>
-              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
-                {!!projectAiModal?.review.evaluation && (
-                  <>
-                    <Text style={[styles.projectAiModalKicker, { color: outline }]}>整体点评</Text>
-                    <Text style={[styles.projectAiModalBody, { color: colors.text }]}>{projectAiModal.review.evaluation}</Text>
-                  </>
-                )}
-                {!!projectAiModal?.review.suggestions && (
-                  <>
-                    <Text style={[styles.projectAiModalKicker, { color: outline, marginTop: 14 }]}>行动建议</Text>
-                    <Text style={[styles.projectAiModalBody, { color: colors.textSecondary }]}>
-                      {projectAiModal.review.suggestions}
-                    </Text>
-                  </>
-                )}
-              </ScrollView>
-            </View>
           </View>
         </View>
       </Modal>
@@ -6816,26 +6876,6 @@ const styles = StyleSheet.create({
   projectProgressLabel: { fontSize: 10, fontWeight: '800' },
   projectProgressTrack: { height: 6, borderRadius: 999, overflow: 'hidden', alignSelf: 'stretch' },
   projectProgressFill: { height: '100%' },
-  projectAiWrap: { marginTop: 8 },
-  projectAiTriggerBtn: {
-    marginTop: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
-  projectAiTriggerText: { fontSize: 12, fontWeight: '700' },
-  projectAiPendingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  projectAiPreview: { fontSize: 12, fontWeight: '600', lineHeight: 18 },
-  projectAiTime: { fontSize: 10, fontWeight: '600', marginTop: 4 },
-  projectAiRetriggerBtn: { marginTop: 6, alignSelf: 'flex-start' },
-  projectAiRetriggerText: { fontSize: 11, fontWeight: '700' },
-  projectAiModalKicker: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 6 },
-  projectAiModalBody: { fontSize: 14, fontWeight: '500', lineHeight: 22 },
   subHabitModalTitleRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 0, paddingRight: 8 },
   subHabitModalIcon: { fontSize: 28 },
   subHabitModalProgress: { fontSize: 12, fontWeight: '600', marginTop: 2 },

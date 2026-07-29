@@ -1,5 +1,5 @@
 import type { ProjectRow } from './project.types';
-import { parseProjectExtraDataWithAi } from './project-ai-review';
+import { parseProjectExtraData } from './project-extra-data';
 
 type ProjectScheduleMeta = {
   mode?: 'date' | 'time';
@@ -21,7 +21,7 @@ export function formatScheduleDateToYMD(value: string): string {
 export function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
   if (!extraData) return null;
   try {
-    const parsed = parseProjectExtraDataWithAi(extraData);
+    const parsed = parseProjectExtraData(extraData);
     const schedule = parsed?.schedule;
     if (!schedule || typeof schedule !== 'object' || Array.isArray(schedule)) return null;
     return schedule as ProjectScheduleMeta;

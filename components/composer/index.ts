@@ -14,6 +14,8 @@ export {
 export { ComposerCategoryModal, type ComposerCategoryOption } from './ComposerCategoryModal';
 export {
   ComposerPriorityMatrix,
+  taskPriorityKeyToNumber,
   taskPriorityLabel,
+  taskPriorityToKey,
   type TaskPriorityKey,
 } from './task-priority-matrix';

@@ -4,12 +4,15 @@ import {
   ComposerMain,
   ComposerNoteSection,
   ComposerOptionRow,
+  ComposerPriorityMatrix,
   ComposerScheduleSection,
   ComposerSection,
   ComposerCategoryModal,
   ComposerSectionHead,
   ComposerTopBar,
   composerStyles,
+  taskPriorityKeyToNumber,
+  type TaskPriorityKey,
 } from '@/components/composer';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { Spacing } from '@/constants/design-tokens';
@@ -177,6 +180,7 @@ export default function AddProjectScreen() {
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
   const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
+  const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const appliedRouteCategoryRef = React.useRef(false);
 
   const routeCategoryId = React.useMemo(() => {
@@ -355,6 +359,7 @@ export default function AddProjectScreen() {
         id: buildProjectId(),
         name: trimmedTitle,
         category_id: selectedCategoryId,
+        priority: taskPriorityKeyToNumber(priority),
         note: notes.trim() || null,
         due_date: dueDateFromScheduleMeta(scheduleToSave, extractDueDate(deadlineText)),
         extra_data: mergeCompletionRewardIntoExtraData(JSON.stringify(extra), completionReward),
@@ -381,6 +386,7 @@ export default function AddProjectScreen() {
     notes,
     notifyAncestorsDataChanged,
     prerequisiteProjectIds,
+    priority,
     router,
     scheduleMeta,
     selectedCategoryId,
@@ -395,7 +401,7 @@ export default function AddProjectScreen() {
     <SafeAreaView style={[composerStyles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
       <ComposerTopBar
         title="新建项目"
-        subtitle="可设置分类、前置依赖与日程"
+        subtitle="可设置优先级、分类、前置依赖与日程"
         onBack={() => router.back()}
         onSubmit={() => void createProjectRecord()}
         submitting={creating}
@@ -436,6 +442,8 @@ export default function AddProjectScreen() {
                 accessibilityLabel="选择项目分类"
               />
             </ComposerSection>
+
+            <ComposerPriorityMatrix value={priority} onChange={setPriority} />
 
             <ComposerSection>
               <ComposerSectionHead

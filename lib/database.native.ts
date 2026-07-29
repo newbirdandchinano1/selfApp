@@ -319,6 +319,7 @@ export async function initDatabase() {
       category_id TEXT,
       name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
+      priority INTEGER NOT NULL DEFAULT 0,
       note TEXT,
       due_date TEXT,
       inbox_entered_at TEXT,
@@ -839,9 +840,11 @@ export async function initDatabase() {
   await ensureColumn(db, 'project_categories', 'sort_order', 'INTEGER');
   await ensureColumn(db, 'task_categories', 'sort_order', 'INTEGER');
   await ensureColumn(db, 'projects', 'category_id', 'TEXT');
+  await ensureColumn(db, 'projects', 'priority', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'projects', 'note', 'TEXT');
   await ensureColumn(db, 'projects', 'extra_data', 'TEXT');
   await ensureColumn(db, 'projects', 'inbox_entered_at', 'TEXT');
+  await db.runAsync(`UPDATE projects SET priority = 0 WHERE priority IS NULL`);
   await db.runAsync(
     `UPDATE projects
      SET inbox_entered_at = COALESCE(updated_at, created_at)

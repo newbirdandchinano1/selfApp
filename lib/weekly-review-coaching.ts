@@ -96,26 +96,35 @@ function buildLocalCoaching(input: WeeklyCoachingInput): string {
     lines.push(compact(digest, 1200));
   }
 
-  lines.push('\n【建议与修正提醒】');
+  lines.push('\n【目前的问题】');
   if (score <= 2) {
-    lines.push('· 自评偏低时，优先保护睡眠与节律，把「下周」拆成 1～2 个极小的可交付项即可。');
-    lines.push('· 未完成往往不是意志力问题，而是颗粒度太大；试试把任务写成 30 分钟内能开动的第一步。');
-  } else if (score >= 4) {
-    lines.push('· 自评较高：在保持节奏的同时，留一点缓冲给突发与家庭互动，避免「全速」后反弹。');
-    lines.push('· 可把本周一条有效做法固定成模板（例如固定晚间 15 分钟复盘），降低下周启动成本。');
+    lines.push('· 自评执行分偏低：本周交付与节律可能已明显脱节，需先缩范围再谈效率。');
+  } else if (all.trim().length < 20) {
+    lines.push('· 信息不足：周记文字过少，暂无法定位具体问题。');
   } else {
-    lines.push('· 中段自评很常见：建议下周选「一件主线任务」写进日历，其余允许弹性完成。');
-  }
-
-  if (hasAnyOf(all, ['拖延', '分心', '手机', '熬夜', '太累', '焦虑', '压力'])) {
-    lines.push('· 你提到了压力或分心：尝试把高认知任务放在精力最好的时段，低能量时段只做整理/记账类。');
-  }
-  if (hasAnyOf(all, ['家庭', '孩子', '伴侣', '父母'])) {
-    lines.push('· 家庭相关叙述：下周计划里显式预留「不可压缩时间」，再排工作，会减少内疚与冲突。');
+    lines.push('· 对照各栏目自述，优先核对「计划 vs 实际完成」是否自洽，避免只写愿景不写卡点。');
   }
   const plansCol = sections.find(s => s.dimensionTitle.includes('计划'))?.columns[0]?.value ?? '';
   if (input.metrics && input.metrics.tasksCompleted === 0 && plansCol.includes('完成')) {
-    lines.push('· 自述里谈到完成，但系统里本周期完成任务为 0：核对是否忘了在任务里点「完成」，或任务日期不在统计区间内。');
+    lines.push('· 自述谈到完成，但系统完成任务为 0：可能未在任务里点完成，或日期不在统计区间。');
+  }
+
+  lines.push('\n【潜在问题】');
+  if (hasAnyOf(all, ['拖延', '分心', '手机', '熬夜', '太累', '焦虑', '压力'])) {
+    lines.push('· 原文已出现压力/分心线索：若高认知任务仍挤在低能量时段，下周可能重复空转。');
+  }
+  if (hasAnyOf(all, ['家庭', '孩子', '伴侣', '父母'])) {
+    lines.push('· 家庭相关叙述较多：若不预留不可压缩时间，工作计划易被冲掉并累积内疚。');
+  }
+  lines.push('· 若下周计划颗粒度过大且无「第一步」，未完成项可能继续堆积。');
+
+  lines.push('\n【建议与修正提醒】');
+  if (score <= 2) {
+    lines.push('· 把「下周」拆成 1～2 个极小可交付项；每项写清 30 分钟内能开动的第一步与验收标准。');
+  } else if (score >= 4) {
+    lines.push('· 保留一条本周有效做法写成模板（如晚间 15 分钟复盘），并显式留缓冲时段防反弹。');
+  } else {
+    lines.push('· 下周只选「一件主线」写进日历（何时/何地/第一步），其余标为弹性。');
   }
 
   lines.push('\n【下周可做的一件事】');
@@ -123,8 +132,8 @@ function buildLocalCoaching(input: WeeklyCoachingInput): string {
   const nextText = nextSec?.columns.map(c => c.value).join('\n').trim() ?? '';
   lines.push(
     nextText
-      ? `· 从你「下周计划」里抽出一条，写成「何时、何地、第一步做什么」三要素。`
-      : `· 用 10 分钟只写「下周唯一主线」一条，并放进任务列表的置顶。`,
+      ? `· 从你「下周计划」里抽出一条，写成「何时、何地、第一步做什么」三要素，并写如何算完成。`
+      : `· 用 10 分钟只写「下周唯一主线」一条，放进任务置顶，并写验收标准。`,
   );
 
   lines.push('\n【是否调整】\n生成后可在页面勾选「是否愿意调整任务/存钱/时间安排」，仅作自我承诺记录，随时可改。');
@@ -142,6 +151,9 @@ async function tryZhipuWeeklyCoaching(prompt: string): Promise<string | null> {
 function buildPromptForModel(input: WeeklyCoachingInput): string {
   const sections = buildSections(input);
   const bodyParts: string[] = [
+    '【写作要求】禁止空泛鼓励与口水话；每条结论须回溯用户原文或统计数据；信息不足时写明缺什么，勿硬编。',
+    '在固定小节内务必覆盖三点实质内容：① 本周目前暴露的问题；② 若延续当前节奏的潜在风险；③ 可执行建议（做什么/何时/如何验收）。',
+    '',
     `复盘周期：${input.weekRangeLabel}`,
     `自评执行分（1-5）：${input.executionScore}`,
     '',

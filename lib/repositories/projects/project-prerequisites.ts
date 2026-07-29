@@ -1,6 +1,6 @@
 import type { TaskTreeNode } from '../tasks/task';
 import type { ProjectRow } from './project.types';
-import { parseProjectExtraDataWithAi, type ProjectExtraDataWithAi } from './project-ai-review';
+import { parseProjectExtraData, type ProjectExtraDataBag } from './project-extra-data';
 import {
   getProjectScheduleYmdBounds,
   isProjectScheduleNotYetStarted,
@@ -27,7 +27,7 @@ export function areAllTasksInProjectTreeDone(nodes: TaskTreeNode[]): boolean {
 }
 
 export function parsePrerequisiteProjectIds(extraData: string | null): string[] {
-  const extra = parseProjectExtraDataWithAi(extraData);
+  const extra = parseProjectExtraData(extraData);
   return normalizePrerequisiteProjectIds(extra[PREREQUISITE_PROJECT_IDS_KEY]);
 }
 
@@ -52,7 +52,7 @@ export function isPrerequisiteProjectFulfilled(project: ProjectRow, tree: TaskTr
   return areAllTasksInProjectTreeDone(tree);
 }
 
-export function getPrerequisiteIdsFromExtra(extra: ProjectExtraDataWithAi): string[] {
+export function getPrerequisiteIdsFromExtra(extra: ProjectExtraDataBag): string[] {
   return normalizePrerequisiteProjectIds(extra[PREREQUISITE_PROJECT_IDS_KEY]);
 }
 
@@ -192,6 +192,10 @@ export function sortProjectsForList(rows: ProjectRow[], lockedProjectIds?: Set<s
     const doneB = b.status === 'completed' || b.status === 'archived';
     if (doneA !== doneB) return doneA ? 1 : -1;
 
+    const priorityA = a.priority ?? 0;
+    const priorityB = b.priority ?? 0;
+    if (priorityA !== priorityB) return priorityB - priorityA;
+
     const dueA = getDueMs(a);
     const dueB = getDueMs(b);
     if (dueA !== dueB) return dueA - dueB;
@@ -201,11 +205,11 @@ export function sortProjectsForList(rows: ProjectRow[], lockedProjectIds?: Set<s
 }
 
 export function mergePrerequisiteIdsIntoExtraData(
-  extra: ProjectExtraDataWithAi,
+  extra: ProjectExtraDataBag,
   prerequisiteProjectIds: string[],
-): ProjectExtraDataWithAi {
+): ProjectExtraDataBag {
   const ids = normalizePrerequisiteProjectIds(prerequisiteProjectIds);
-  const next: ProjectExtraDataWithAi = { ...extra };
+  const next: ProjectExtraDataBag = { ...extra };
   if (ids.length > 0) {
     next[PREREQUISITE_PROJECT_IDS_KEY] = ids;
   } else {

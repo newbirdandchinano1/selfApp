@@ -84,6 +84,15 @@ async function sanitizeProjectRowForLocalSeed(row: Record<string, unknown>): Pro
     next.category_id = null;
   }
 
+  const priorityRaw = next.priority;
+  const priorityNum =
+    typeof priorityRaw === 'number'
+      ? priorityRaw
+      : typeof priorityRaw === 'string' && priorityRaw.trim() !== ''
+        ? Number(priorityRaw)
+        : 0;
+  next.priority = Number.isFinite(priorityNum) ? Math.max(0, Math.min(4, Math.trunc(priorityNum))) : 0;
+
   return next;
 }
 

@@ -124,3 +124,26 @@ export function ComposerPriorityMatrix({
 export function taskPriorityLabel(key: TaskPriorityKey): string {
   return PRIORITY_MATRIX.find((p) => p.key === key)?.label ?? '不紧急不重要';
 }
+
+/** 数值优先级 → 矩阵 key（0/未知视为「不紧急不重要」） */
+export function taskPriorityToKey(priority: number): TaskPriorityKey {
+  if (priority >= 4) return 'urgent-important';
+  if (priority === 3) return 'urgent-not-important';
+  if (priority === 2) return 'not-urgent-important';
+  return 'not-urgent-not-important';
+}
+
+/** 矩阵 key → 数值优先级（1–4） */
+export function taskPriorityKeyToNumber(key: TaskPriorityKey): 1 | 2 | 3 | 4 {
+  switch (key) {
+    case 'urgent-important':
+      return 4;
+    case 'urgent-not-important':
+      return 3;
+    case 'not-urgent-important':
+      return 2;
+    case 'not-urgent-not-important':
+    default:
+      return 1;
+  }
+}

@@ -678,34 +678,6 @@ export async function generateWeeklyReviewCoachingFromText(
   }
 }
 
-export type AnalyzeProjectTasksReviewFromTextOptions = {
-  apiKey: string;
-  projectContextText: string;
-  maxAttempts?: number;
-  retryDelayMs?: number;
-};
-
-export async function analyzeProjectTasksReviewFromText(
-  options: AnalyzeProjectTasksReviewFromTextOptions,
-): Promise<AnalyzeMemoReviewFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
-  const text = options.projectContextText.trim();
-  if (!text) return { ok: false, error: '项目任务摘要为空', attempts: 0 };
-  try {
-    const data = await aiApi.aiProjectTasksReview({ project_context_text: text });
-    return {
-      ok: true,
-      evaluation: data.evaluation,
-      suggestions: data.suggestions,
-      rawContent: JSON.stringify(data),
-      attempts: 1,
-    };
-  } catch (e) {
-    const err = mapApiError(e);
-    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
-  }
-}
-
 export type AnalyzeVisionWallGoalsFromTextOptions = {
   apiKey: string;
   userDisplayName?: string;
