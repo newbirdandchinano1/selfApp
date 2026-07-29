@@ -38,6 +38,8 @@ import { overlayLocalPendingOnApiTableRows } from '@/lib/api-read-pending-overla
 
 import { fetchTasksCatalog } from '@/lib/tasks-catalog-api';
 
+import { syncTasksTableFromApi } from '@/lib/tasks-table-sync';
+
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
 
 import {
@@ -672,13 +674,21 @@ async function resolveStandaloneTodosList(
 
       if (!isStandaloneTodoTask(t) || apiIds.has(String(t.id))) continue;
 
+      const syncStatus = String(t.sync_status ?? 'synced');
+
+      // 服务端筛选列表已权威：缺席的「已同步未完成」待办视为他端已完成/移出，禁止再拼回未完成。
+      // 仅保留尚未上传的本地新建，以及本地已完成且仍落在今日日界内的行。
       if (t.status === 'done' || t.status === 'cancelled') {
 
         if (standaloneTodoPassesDayBoundaryFilter(t, boundary, logicalToday)) extras.push(t);
 
-      } else if (standaloneTodoPassesStandaloneListFilter(t, boundary, logicalToday)) {
+      } else if (syncStatus === 'pending_create') {
 
-        extras.push(t);
+        if (standaloneTodoPassesStandaloneListFilter(t, boundary, logicalToday)) {
+
+          extras.push(t);
+
+        }
 
       }
 
@@ -1007,6 +1017,13 @@ async function pullTasksPageFromApi(opts: {
     opts;
 
 
+
+  // 先增量合并全表 tasks（含他端完成），再拉筛选视图；避免筛选结果缺行时本地仍显示未完成
+  try {
+    await syncTasksTableFromApi({ forceRefresh, signal });
+  } catch (e) {
+    console.warn('[tasks-page-api] tasks 表增量同步失败，继续拉筛选视图', e);
+  }
 
   const catalog = await fetchTasksCatalog({ forceRefresh, signal, offlineFallback: false });
 

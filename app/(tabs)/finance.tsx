@@ -731,10 +731,11 @@ export default function FinanceScreen() {
   React.useEffect(() => {
     return subscribeFinanceSheetSaved(() => {
       markPageDirty();
-      void loadFinanceTransactions();
-      void loadFinanceAccounts();
+      // 经 wrapLoad 读本地，与自动记账一致；勿裸调 load*（会强制 REST，列表不及时更新）
+      void reloadFinanceTransactions();
+      void reloadFinanceAccounts();
     });
-  }, [loadFinanceAccounts, loadFinanceTransactions, markPageDirty]);
+  }, [markPageDirty, reloadFinanceAccounts, reloadFinanceTransactions]);
 
   const handleDeleteFinanceTxn = React.useCallback(
     (txnId: string, displayTitle: string) => {

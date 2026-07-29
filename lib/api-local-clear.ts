@@ -61,6 +61,9 @@ async function resetLocalReadCachesAfterClear(): Promise<void> {
   const { clearTasksCatalogSyncCache } = await import('@/lib/tasks-catalog-api');
   await clearTasksCatalogSyncCache();
 
+  const { clearTasksTableSyncCache } = await import('@/lib/tasks-table-sync');
+  await clearTasksTableSyncCache();
+
   await writeAppMeta(PREFER_LOCAL_READS_META_KEY, '0');
 
   markProcessColdStart();

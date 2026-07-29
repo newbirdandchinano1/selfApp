@@ -2417,7 +2417,7 @@ export default function TasksScreen() {
   const reloadPage = React.useCallback(async (forceApi = false) => {
     try {
       await wrapLoad(async () => {
-        await reload();
+        await reload(forceApi);
       }, forceApi);
       setInitialTasksLoadPending(false);
       setCompletionHeatmapReloadToken((n) => n + 1);
@@ -2430,12 +2430,16 @@ export default function TasksScreen() {
 
   usePageFocusReload(PAGE_API_KEY, reloadPage);
 
+  const reloadPageRef = React.useRef(reloadPage);
+  reloadPageRef.current = reloadPage;
+
+  /** 后台过夜跨逻辑日后：全量重载（仅刷新习惯/青蛙会漏掉待办与四象限） */
   const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
   React.useEffect(() => {
     if (prevLogicalTodayYmdRef.current === logicalTodayYmd) return;
     prevLogicalTodayYmdRef.current = logicalTodayYmd;
-    void Promise.all([loadHabits(), loadTodayFrogs()]);
-  }, [logicalTodayYmd, loadHabits, loadTodayFrogs]);
+    void reloadPageRef.current?.().catch((e) => console.warn('逻辑日切换后刷新任务页失败', e));
+  }, [logicalTodayYmd]);
 
   const findVisibleTask = React.useCallback(
     (taskId: string): TaskRow | undefined =>

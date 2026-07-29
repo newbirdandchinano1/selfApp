@@ -1,17 +1,17 @@
 import { getApiTablePrimaryKey, isApiReadableTable } from '@/lib/api-allowed-tables';
-import { mergeFinanceTxnExtraOnApiSync } from '@/lib/repositories/finance/finance-transaction-extra';
-import { rowPrimaryKeyValue } from '@/lib/api-row-upsert';
 import {
-  beginCloudSqliteDirtyIgnoreBatch,
-  endCloudSqliteDirtyIgnoreBatch,
-} from '@/lib/cloud-sql-dirty-track';
-import { getDatabase } from '@/lib/database';
-import {
-  isLocalParentRowStillReferenced,
-  preserveLocalForeignKeysOnEmptyApi,
-  readReferencedParentIdsForReconcile,
+    isLocalParentRowStillReferenced,
+    preserveLocalForeignKeysOnEmptyApi,
+    readReferencedParentIdsForReconcile,
 } from '@/lib/api-fk-preserve';
 import { sanitizeRowForLocalSeed } from '@/lib/api-local-row-seed';
+import { rowPrimaryKeyValue } from '@/lib/api-row-upsert';
+import {
+    beginCloudSqliteDirtyIgnoreBatch,
+    endCloudSqliteDirtyIgnoreBatch,
+} from '@/lib/cloud-sql-dirty-track';
+import { getDatabase } from '@/lib/database';
+import { mergeFinanceTxnExtraOnApiSync } from '@/lib/repositories/finance/finance-transaction-extra';
 import { dedupeRowsByPrimaryKey, readTablePrimaryKeyColumns } from '@/lib/sqlite-primary-key-dedupe';
 
 export type ApplyApiReadToLocalOptions = {
@@ -127,7 +127,16 @@ async function upsertRowsToLocalTable(
           [pk],
         );
         if (existing && existing.sync_status !== 'synced') {
-          continue;
+          // 本地未推送完成时默认保留 pending，避免覆盖尚未上传的本地编辑。
+          // 若服务端 updated_at 更新（另一端已写入），按 LWW 采用服务端行，避免多端状态永久卡住。
+          if (existing.sync_status === 'pending_delete') {
+            continue;
+          }
+          const localUpdated = String(existing.updated_at ?? '').trim();
+          const apiUpdated = String(obj.updated_at ?? '').trim();
+          if (!(apiUpdated && (!localUpdated || apiUpdated > localUpdated))) {
+            continue;
+          }
         }
         if (existing) {
           if (table === 'memo_dimensions' && colNames.includes('name')) {

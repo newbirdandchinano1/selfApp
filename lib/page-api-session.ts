@@ -90,6 +90,10 @@ function markChildPagesDirtyForTable(table: string): void {
 /** 本会话内已完成首次加载的页面（切换 Tab 不再重复全量 REST/重载） */
 const sessionLoadedPages = new Set<string>();
 
+/** 热会话内任务页 focus 最短重拉间隔，兼顾多端同步与频繁切 Tab */
+const TASKS_FOCUS_REFRESH_COOLDOWN_MS = 8_000;
+const pageLastFocusRefreshAtMs = new Map<string, number>();
+
 /**
  * 进程是否为「热会话」：至少有一次页面 REST 加载成功后为 true。
  * 冷启动（新进程）为 false，Tab 二次聚焦必须走接口；热会话内同 Tab 可跳过。
@@ -145,15 +149,22 @@ export function consumePageLoadRestFailed(): boolean {
 
 export function markPageLoadedInSession(pageKey: string): void {
   const key = pageKey.trim();
-  if (key) sessionLoadedPages.add(key);
+  if (!key) return;
+  sessionLoadedPages.add(key);
+  if (key === TAB_PAGE_KEYS.tasks) {
+    pageLastFocusRefreshAtMs.set(key, Date.now());
+  }
 }
 
 export function clearPageLoadedInSession(pageKey?: string): void {
   if (pageKey?.trim()) {
-    sessionLoadedPages.delete(pageKey.trim());
+    const key = pageKey.trim();
+    sessionLoadedPages.delete(key);
+    pageLastFocusRefreshAtMs.delete(key);
     return;
   }
   sessionLoadedPages.clear();
+  pageLastFocusRefreshAtMs.clear();
 }
 
 export function hasPageLoadedInSession(pageKey: string): boolean {
@@ -259,6 +270,12 @@ export function hasPageSyncedWithApi(pageKey: string): boolean {
 export function shouldSkipPageFocusApiRefresh(pageKey: string): boolean {
   if (!warmProcessSession) return false;
   if (pageNeedsRestRefresh(pageKey)) return false;
+  const key = pageKey.trim();
+  // 任务页：多端完成/编辑需在再次聚焦时增量拉齐，不能整会话永久跳过
+  if (key === TAB_PAGE_KEYS.tasks) {
+    const last = pageLastFocusRefreshAtMs.get(key) ?? 0;
+    return Date.now() - last < TASKS_FOCUS_REFRESH_COOLDOWN_MS;
+  }
   if (isLocalFirstReads()) {
     return hasPageLoadedInSession(pageKey);
   }

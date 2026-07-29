@@ -108,7 +108,8 @@ let financeApiSyncChain: Promise<void> = Promise.resolve();
 /** 本地写入后推送到 REST；默认后台执行，不阻塞记账 UI */
 async function pushFinanceChangesToApi(opts?: { awaitSync?: boolean }): Promise<void> {
   const run = async () => {
-    const { flushApiDirtyTablesNow } = await import('@/lib/api-incremental-sync');
+    const { flushApiDirtyTablesNow, markApiTableDirty } = await import('@/lib/api-incremental-sync');
+    markApiTableDirty('finance_transactions');
     await flushApiDirtyTablesNow({ rethrow: true });
   };
 
@@ -626,6 +627,7 @@ export async function createFinanceTransaction(
       input.extra_data ?? null,
     ]
   );
+  invalidateInflightApiTableFetch('finance_transactions');
   void pushFinanceChangesToApi();
 }
 
@@ -693,6 +695,7 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
     throw e;
   }
 
+  invalidateInflightApiTableFetch('finance_transactions');
   void pushFinanceChangesToApi();
 }
 
