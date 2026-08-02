@@ -2,7 +2,14 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { ApiRequestError } from '@/lib/api-client';
-import { assignFrogToApi, getFrogAssignedOn, unassignFrogFromApi } from '@/lib/frog-assignment';
+import {
+  assignFrogToApi,
+  assignProjectFrogToApi,
+  getFrogAssignedOn,
+  unassignFrogFromApi,
+  unassignProjectFrogFromApi,
+} from '@/lib/frog-assignment';
+import { isProjectEligibleAsFrog, projectToFrogTaskRow } from '@/lib/project-frog';
 import { fetchTodayFrogs } from '@/lib/today-frogs-api';
 import {
   addDaysToLogicalYmd,
@@ -14,6 +21,7 @@ import {
 import { isLogicalDayInYmdRange } from '@/lib/repositories/projects/project-schedule-status';
 import { buildProjectLockMap } from '@/lib/repositories/projects/project-prerequisites';
 import { getProjects } from '@/lib/repositories/projects/project';
+import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getTasks, getTasksByProjectId, type TaskTreeNode } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
@@ -26,6 +34,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 type Item = {
   id: string;
+  kind: 'task' | 'project';
   title: string;
   parentLabel: string | null;
   projectLabel: string | null;
@@ -294,8 +303,32 @@ function getTaskContextLabels(
   return { parentLabel, projectLabel };
 }
 
+function pushItemToBucket(
+  bucket: TimeBucket,
+  item: Item,
+  buckets: {
+    expired: Item[];
+    today: Item[];
+    soon: Item[];
+    week: Item[];
+    seven: Item[];
+    later: Item[];
+    nodate: Item[];
+  },
+) {
+  if (bucket === 'expired') buckets.expired.push(item);
+  else if (bucket === 'today') buckets.today.push(item);
+  else if (bucket === 'soon') buckets.soon.push(item);
+  else if (bucket === 'week') buckets.week.push(item);
+  else if (bucket === 'seven') buckets.seven.push(item);
+  else if (bucket === 'later') buckets.later.push(item);
+  else buckets.nodate.push(item);
+}
+
 function groupTasksToSections(
   rows: TaskRow[],
+  projects: ProjectRow[],
+  projectTaskCountById: Record<string, number>,
   now: Date,
   todayYmd: string,
   lockedProjectIds: Set<string>,
@@ -324,13 +357,15 @@ function groupTasksToSections(
       return assignedOn !== todayYmd;
     });
 
-  const secExpired: Item[] = [];
-  const secToday: Item[] = [];
-  const secSoon: Item[] = [];
-  const secWeek: Item[] = [];
-  const secSeven: Item[] = [];
-  const secLater: Item[] = [];
-  const secNodate: Item[] = [];
+  const buckets = {
+    expired: [] as Item[],
+    today: [] as Item[],
+    soon: [] as Item[],
+    week: [] as Item[],
+    seven: [] as Item[],
+    later: [] as Item[],
+    nodate: [] as Item[],
+  };
 
   eligible.forEach((t) => {
     const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
@@ -364,24 +399,73 @@ function groupTasksToSections(
 
     const { parentLabel, projectLabel } = getTaskContextLabels(t, taskTitleById, projectNameById);
 
-    const item: Item = {
-      id: t.id,
-      title: t.title,
-      parentLabel,
-      projectLabel,
-      subtitle,
-      tone,
-      dueSortKey,
-      priority: t.priority,
-    };
+    pushItemToBucket(
+      bucket,
+      {
+        id: t.id,
+        kind: 'task',
+        title: t.title,
+        parentLabel,
+        projectLabel,
+        subtitle,
+        tone,
+        dueSortKey,
+        priority: t.priority,
+      },
+      buckets,
+    );
+  });
 
-    if (bucket === 'expired') secExpired.push(item);
-    else if (bucket === 'today') secToday.push(item);
-    else if (bucket === 'soon') secSoon.push(item);
-    else if (bucket === 'week') secWeek.push(item);
-    else if (bucket === 'seven') secSeven.push(item);
-    else if (bucket === 'later') secLater.push(item);
-    else secNodate.push(item);
+  projects.forEach((p) => {
+    const taskCount = projectTaskCountById[p.id] ?? 0;
+    if (!isProjectEligibleAsFrog(p, taskCount, lockedProjectIds.has(p.id))) return;
+    if (getFrogAssignedOn(p.extra_data) === todayYmd) return;
+
+    const asTask = projectToFrogTaskRow(p);
+    const tone: Item['tone'] = p.priority >= 4 ? 'error' : p.priority === 2 ? 'primary' : p.priority === 3 ? 'tertiary' : 'outline';
+    const placement = getFrogPlacement(asTask, todayYmd);
+    const bucket = resolveFrogTimeBucket(placement, todayYmd, soonEndYmd, weekEndYmd, sevenEndYmd);
+    const anchorYmd = placement.anchorYmd;
+    const dueSortKey = getTaskDueSortMsForFrog(asTask, todayYmd);
+    const schedule = parseTaskSchedule(p.extra_data);
+    const inTimeRangeToday =
+      schedule?.mode === 'time' &&
+      schedule.range?.start &&
+      schedule.range?.end &&
+      bucket === 'today' &&
+      isLogicalDayInYmdRange(
+        todayYmd,
+        formatScheduleDateToYMD(schedule.range.start),
+        formatScheduleDateToYMD(schedule.range.end),
+      );
+
+    let subtitle: string;
+    if (bucket === 'nodate' || !anchorYmd) {
+      subtitle = '未设置截止日期 · 空项目';
+    } else if (inTimeRangeToday && schedule?.range?.start && schedule.range.end) {
+      const startYmd = formatScheduleDateToYMD(schedule.range.start);
+      const endYmd = formatScheduleDateToYMD(schedule.range.end);
+      subtitle =
+        startYmd === endYmd ? `时段 · ${startYmd} · 空项目` : `时段 · ${startYmd} ~ ${endYmd} · 空项目`;
+    } else {
+      subtitle = `${formatDueCaption(anchorYmd, now)} · 空项目`;
+    }
+
+    pushItemToBucket(
+      bucket,
+      {
+        id: p.id,
+        kind: 'project',
+        title: p.name,
+        parentLabel: null,
+        projectLabel: '项目（无子任务）',
+        subtitle,
+        tone,
+        dueSortKey,
+        priority: p.priority ?? 0,
+      },
+      buckets,
+    );
   });
 
   const sortDated = (a: Item, b: Item) => {
@@ -397,51 +481,56 @@ function groupTasksToSections(
     return a.id.localeCompare(b.id);
   };
 
-  secExpired.sort(sortDated);
-  secToday.sort(sortDated);
-  secSoon.sort(sortDated);
-  secWeek.sort(sortDated);
-  secSeven.sort(sortDated);
-  secLater.sort(sortDated);
-  secNodate.sort(sortNodate);
+  buckets.expired.sort(sortDated);
+  buckets.today.sort(sortDated);
+  buckets.soon.sort(sortDated);
+  buckets.week.sort(sortDated);
+  buckets.seven.sort(sortDated);
+  buckets.later.sort(sortDated);
+  buckets.nodate.sort(sortNodate);
 
   const sections: Section[] = [];
-  if (secExpired.length > 0) {
+  if (buckets.expired.length > 0) {
     sections.push({
       key: 'expired',
       title: '过期',
       badge: '需尽快处理',
       tone: 'error',
-      items: secExpired,
+      items: buckets.expired,
       emphasize: true,
     });
   }
   sections.push(
-    { key: 'today', title: '今日', badge: '今日到期', tone: 'error', items: secToday },
-    { key: 'soon', title: '近三天', badge: '截止较近', tone: 'primary', items: secSoon },
-    { key: 'week', title: '本周', badge: '本周末前', tone: 'tertiary', items: secWeek },
-    { key: 'seven', title: '近七天', badge: '今起7日内', tone: 'outline', items: secSeven },
-    { key: 'later', title: '更晚', badge: '7日之后', tone: 'outline', items: secLater },
-    { key: 'nodate', title: '无截止日期', badge: '可选', tone: 'outline', items: secNodate },
+    { key: 'today', title: '今日', badge: '今日到期', tone: 'error', items: buckets.today },
+    { key: 'soon', title: '近三天', badge: '截止较近', tone: 'primary', items: buckets.soon },
+    { key: 'week', title: '本周', badge: '本周末前', tone: 'tertiary', items: buckets.week },
+    { key: 'seven', title: '近七天', badge: '今起7日内', tone: 'outline', items: buckets.seven },
+    { key: 'later', title: '更晚', badge: '7日之后', tone: 'outline', items: buckets.later },
+    { key: 'nodate', title: '无截止日期', badge: '可选', tone: 'outline', items: buckets.nodate },
   );
 
-  return { sections, assignedToday: buildAssignedTodayItems(rows, todayYmd, taskTitleById, projectNameById) };
+  return {
+    sections,
+    assignedToday: buildAssignedTodayItems(rows, projects, todayYmd, taskTitleById, projectNameById),
+  };
 }
 
 function buildAssignedTodayItems(
   rows: TaskRow[],
+  projects: ProjectRow[],
   assignYmd: string,
   taskTitleById: Map<string, string>,
   projectNameById: Record<string, string>,
   isTomorrowTarget = false,
 ): Item[] {
-  return rows
+  const taskItems = rows
     .filter((t) => getFrogAssignedOn(t.extra_data) === assignYmd)
-    .map((t) => {
+    .map((t): Item => {
       const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
       const { parentLabel, projectLabel } = getTaskContextLabels(t, taskTitleById, projectNameById);
       return {
         id: t.id,
+        kind: 'task',
         title: t.title,
         parentLabel,
         projectLabel,
@@ -455,11 +544,34 @@ function buildAssignedTodayItems(
         dueSortKey: null,
         priority: t.priority,
       };
-    })
-    .sort((a, b) => {
-      if (b.priority !== a.priority) return b.priority - a.priority;
-      return a.id.localeCompare(b.id);
     });
+
+  const projectItems = projects
+    .filter((p) => getFrogAssignedOn(p.extra_data) === assignYmd)
+    .map((p): Item => {
+      const tone: Item['tone'] = p.priority >= 4 ? 'error' : p.priority === 2 ? 'primary' : p.priority === 3 ? 'tertiary' : 'outline';
+      return {
+        id: p.id,
+        kind: 'project',
+        title: p.name,
+        parentLabel: null,
+        projectLabel: '项目（无子任务）',
+        subtitle:
+          p.status === 'completed' || p.status === 'archived'
+            ? '已完成或已归档'
+            : isTomorrowTarget
+              ? '明日已预定'
+              : '今日已指派',
+        tone,
+        dueSortKey: null,
+        priority: p.priority ?? 0,
+      };
+    });
+
+  return [...taskItems, ...projectItems].sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    return a.id.localeCompare(b.id);
+  });
 }
 
 const PAGE_API_KEY = 'add-frog';
@@ -483,15 +595,33 @@ export default function AddFrogScreen() {
   const isDark = colorScheme === 'dark';
 
   const [sections, setSections] = React.useState<Section[]>(() =>
-    groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {}).sections,
+    groupTasksToSections(
+      [],
+      [],
+      {},
+      new Date(),
+      getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY),
+      new Set(),
+      {},
+    ).sections,
   );
   const [assignedToday, setAssignedToday] = React.useState<Item[]>(() =>
-    groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {}).assignedToday,
+    groupTasksToSections(
+      [],
+      [],
+      {},
+      new Date(),
+      getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY),
+      new Set(),
+      {},
+    ).assignedToday,
   );
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [taskMap, setTaskMap] = React.useState<Record<string, TaskRow>>({});
+  const [projectMap, setProjectMap] = React.useState<Record<string, ProjectRow>>({});
+  const [itemKindById, setItemKindById] = React.useState<Record<string, 'task' | 'project'>>({});
   const [lockedProjectIds, setLockedProjectIds] = React.useState<Set<string>>(() => new Set());
 
   const reload = React.useCallback(async (forceApi = false) => {
@@ -504,45 +634,96 @@ export default function AddFrogScreen() {
             getProjects(),
             fetchTodayFrogs({ offlineFallback: true }),
           ]);
-      const treeMap: Record<string, TaskTreeNode[]> = {};
-      await Promise.all(
-        projectRows.map(async (p) => {
-          treeMap[p.id] = await getTasksByProjectId(p.id);
-        }),
-      );
-      const now = new Date();
-      const boundary = await loadTasksDayBoundary();
-      const todayYmd = todayFrogResult.logicalToday || getLogicalLocalYmd(now, boundary);
-      const assignYmd = isTomorrowTarget ? addDaysToLogicalYmd(todayYmd, 1) : todayYmd;
-      const anchorNow = isTomorrowTarget ? logicalYmdToLocalDate(assignYmd) : now;
-      const lockMap = buildProjectLockMap(projectRows, treeMap, todayYmd);
-      const locked = new Set<string>();
-      lockMap.forEach((info, id) => {
-        if (info.locked) locked.add(id);
-      });
-      setTaskMap(Object.fromEntries(rows.map((r) => [r.id, r])));
-      setLockedProjectIds(locked);
-      const projectNameById = Object.fromEntries(projectRows.map((p) => [p.id, p.name]));
-      const taskTitleById = new Map(rows.map((r) => [r.id, r.title]));
-      const grouped = groupTasksToSections(rows, anchorNow, assignYmd, locked, projectNameById);
-      setSections(grouped.sections);
-      const assignedRows = isTomorrowTarget ? rows : todayFrogResult.tasks;
-      setAssignedToday(buildAssignedTodayItems(assignedRows, assignYmd, taskTitleById, projectNameById, isTomorrowTarget));
-      setSelected((prev) => {
-        const allowed = new Set(rows.filter((r) => !isStandaloneTodoTask(r)).map((r) => r.id));
-        const next: Record<string, boolean> = {};
-        Object.keys(prev).forEach((k) => {
-          if (allowed.has(k) && prev[k]) next[k] = true;
-        });
-        return next;
-      });
+          const treeMap: Record<string, TaskTreeNode[]> = {};
+          const projectTaskCountById: Record<string, number> = {};
+          await Promise.all(
+            projectRows.map(async (p) => {
+              const tree = await getTasksByProjectId(p.id);
+              treeMap[p.id] = tree;
+              const countTasks = (nodes: TaskTreeNode[]): number =>
+                nodes.reduce((acc, n) => acc + 1 + countTasks(n.children ?? []), 0);
+              projectTaskCountById[p.id] = countTasks(tree);
+            }),
+          );
+          const now = new Date();
+          const boundary = await loadTasksDayBoundary();
+          const todayYmd = todayFrogResult.logicalToday || getLogicalLocalYmd(now, boundary);
+          const assignYmd = isTomorrowTarget ? addDaysToLogicalYmd(todayYmd, 1) : todayYmd;
+          const anchorNow = isTomorrowTarget ? logicalYmdToLocalDate(assignYmd) : now;
+          // 日程锁定按「指派目标日」判断：预定明日青蛙时，开始日为明天的项目应可选
+          const lockMap = buildProjectLockMap(projectRows, treeMap, assignYmd);
+          const locked = new Set<string>();
+          lockMap.forEach((info, id) => {
+            if (info.locked) locked.add(id);
+          });
+          setTaskMap(Object.fromEntries(rows.map((r) => [r.id, r])));
+          setProjectMap(Object.fromEntries(projectRows.map((p) => [p.id, p])));
+          setLockedProjectIds(locked);
+          const projectNameById = Object.fromEntries(projectRows.map((p) => [p.id, p.name]));
+          const taskTitleById = new Map(rows.map((r) => [r.id, r.title]));
+          const grouped = groupTasksToSections(
+            rows,
+            projectRows,
+            projectTaskCountById,
+            anchorNow,
+            assignYmd,
+            locked,
+            projectNameById,
+          );
+          setSections(grouped.sections);
+          const kindMap: Record<string, 'task' | 'project'> = {};
+          grouped.sections.forEach((sec) => {
+            sec.items.forEach((it) => {
+              kindMap[it.id] = it.kind;
+            });
+          });
+          const assignedItems = isTomorrowTarget
+            ? buildAssignedTodayItems(rows, projectRows, assignYmd, taskTitleById, projectNameById, true)
+            : buildAssignedTodayItems(
+                todayFrogResult.tasks.filter((t) => !todayFrogResult.projectFrogIds.includes(t.id)),
+                projectRows.filter((p) => todayFrogResult.projectFrogIds.includes(p.id)),
+                assignYmd,
+                taskTitleById,
+                projectNameById,
+                false,
+              );
+          assignedItems.forEach((it) => {
+            kindMap[it.id] = it.kind;
+          });
+          setItemKindById(kindMap);
+          setAssignedToday(assignedItems);
+          setSelected((prev) => {
+            const allowed = new Set([
+              ...rows.filter((r) => !isStandaloneTodoTask(r)).map((r) => r.id),
+              ...projectRows
+                .filter((p) =>
+                  isProjectEligibleAsFrog(p, projectTaskCountById[p.id] ?? 0, locked.has(p.id)),
+                )
+                .map((p) => p.id),
+            ]);
+            const next: Record<string, boolean> = {};
+            Object.keys(prev).forEach((k) => {
+              if (allowed.has(k) && prev[k]) next[k] = true;
+            });
+            return next;
+          });
         } catch (e) {
           console.warn('加载青蛙候选任务失败', e);
-          const empty = groupTasksToSections([], new Date(), getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY), new Set(), {});
+          const empty = groupTasksToSections(
+            [],
+            [],
+            {},
+            new Date(),
+            getLogicalLocalYmd(new Date(), DEFAULT_TASKS_DAY_BOUNDARY),
+            new Set(),
+            {},
+          );
           setSections(empty.sections);
           setAssignedToday(empty.assignedToday);
           setSelected({});
           setTaskMap({});
+          setProjectMap({});
+          setItemKindById({});
           setLockedProjectIds(new Set());
         }
       }, forceApi);
@@ -582,10 +763,30 @@ export default function AddFrogScreen() {
   const selectedIds = React.useMemo(() => Object.keys(selected).filter((k) => selected[k]), [selected]);
   const hasAnyCandidates = React.useMemo(() => sections.some((s) => s.items.length > 0), [sections]);
 
+  const openFrogItem = React.useCallback(
+    (it: Item) => {
+      if (it.kind === 'project') {
+        router.push({ pathname: '/edit-project', params: { id: it.id } });
+        return;
+      }
+      router.push(
+        !it.parentLabel && !it.projectLabel
+          ? standaloneTodoEditorHref(it.id)
+          : { pathname: '/task/[id]', params: { id: it.id } },
+      );
+    },
+    [router],
+  );
+
   const unassignFrog = React.useCallback(
     (id: string) => {
-      const row = taskMap[id];
-      const titleLabel = (row?.title ?? '').trim() || '该任务';
+      const kind = itemKindById[id] ?? (projectMap[id] ? 'project' : 'task');
+      const row = kind === 'project' ? projectMap[id] : taskMap[id];
+      const titleLabel =
+        (kind === 'project'
+          ? (row as ProjectRow | undefined)?.name
+          : (row as TaskRow | undefined)?.title
+        )?.trim() || (kind === 'project' ? '该项目' : '该任务');
       Alert.alert('取消指派', `确定将「${titleLabel}」从${isTomorrowTarget ? '明日' : '今日'}青蛙中移除吗？`, [
         { text: '保留', style: 'cancel' },
         {
@@ -596,7 +797,11 @@ export default function AddFrogScreen() {
               if (!row) return;
               setSaving(true);
               try {
-                await unassignFrogFromApi(id, row.extra_data, row as Record<string, unknown>);
+                if (kind === 'project') {
+                  await unassignProjectFrogFromApi(id, row.extra_data, row as Record<string, unknown>);
+                } else {
+                  await unassignFrogFromApi(id, row.extra_data, row as Record<string, unknown>);
+                }
                 notifyAncestorsDataChanged();
                 await reload(true);
               } catch (e) {
@@ -616,7 +821,7 @@ export default function AddFrogScreen() {
         },
       ]);
     },
-    [isTomorrowTarget, notifyAncestorsDataChanged, reload, taskMap]
+    [isTomorrowTarget, itemKindById, notifyAncestorsDataChanged, projectMap, reload, taskMap],
   );
 
   const assignFrogs = React.useCallback(async () => {
@@ -628,25 +833,32 @@ export default function AddFrogScreen() {
       const assignYmd = isTomorrowTarget ? addDaysToLogicalYmd(todayYmd, 1) : todayYmd;
       const ids = selectedIds.slice();
       const lockedPick = ids.find((id) => {
+        const kind = itemKindById[id] ?? (projectMap[id] ? 'project' : 'task');
+        if (kind === 'project') return lockedProjectIds.has(id);
         const row = taskMap[id];
-        return row?.project_id && lockedProjectIds.has(row.project_id);
+        return !!(row?.project_id && lockedProjectIds.has(row.project_id));
       });
       if (lockedPick) {
-        Alert.alert('无法指派', '所选任务所属项目仍被前置项目锁定，请先完成前置项目。');
+        Alert.alert('无法指派', '所选任务/项目仍被前置项目锁定，请先完成前置项目。');
         return;
       }
       for (const id of ids) {
-        const row = taskMap[id];
-        if (!row) {
-          throw new Error('任务数据已过期，请下拉刷新后重试');
+        const kind = itemKindById[id] ?? (projectMap[id] ? 'project' : 'task');
+        if (kind === 'project') {
+          const row = projectMap[id];
+          if (!row) throw new Error('项目数据已过期，请下拉刷新后重试');
+          await assignProjectFrogToApi(id, row.extra_data ?? null, assignYmd, row as Record<string, unknown>);
+        } else {
+          const row = taskMap[id];
+          if (!row) throw new Error('任务数据已过期，请下拉刷新后重试');
+          await assignFrogToApi(id, row.extra_data ?? null, assignYmd, row as Record<string, unknown>);
         }
-        await assignFrogToApi(id, row.extra_data ?? null, assignYmd, row as Record<string, unknown>);
       }
       Alert.alert(
         isTomorrowTarget ? '已预定' : '已指派',
         isTomorrowTarget
-          ? `已将 ${ids.length} 个任务预定为明日青蛙。`
-          : `已将 ${ids.length} 个任务指派为今日青蛙。`,
+          ? `已将 ${ids.length} 项预定为明日青蛙。`
+          : `已将 ${ids.length} 项指派为今日青蛙。`,
       );
       notifyAncestorsDataChanged();
       router.back();
@@ -662,7 +874,17 @@ export default function AddFrogScreen() {
     } finally {
       setSaving(false);
     }
-  }, [isTomorrowTarget, lockedProjectIds, notifyAncestorsDataChanged, router, saving, selectedIds, taskMap]);
+  }, [
+    isTomorrowTarget,
+    itemKindById,
+    lockedProjectIds,
+    notifyAncestorsDataChanged,
+    projectMap,
+    router,
+    saving,
+    selectedIds,
+    taskMap,
+  ]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: surface }]} edges={['top']}>
@@ -729,13 +951,7 @@ export default function AddFrogScreen() {
                       </Pressable>
                       <Pressable
                         style={({ pressed }) => [styles.itemText, pressed && { opacity: 0.82 }]}
-                        onPress={() =>
-                          router.push(
-                            !it.parentLabel && !it.projectLabel
-                              ? standaloneTodoEditorHref(it.id)
-                              : { pathname: '/task/[id]', params: { id: it.id } },
-                          )
-                        }>
+                        onPress={() => openFrogItem(it)}>
                         <Text style={[styles.itemTitle, { color: theme.text }]}>{it.title}</Text>
                         {it.parentLabel ? (
                           <Text style={[styles.itemContextHint, { color: outline }]} numberOfLines={1}>
@@ -762,7 +978,7 @@ export default function AddFrogScreen() {
             <View style={[styles.section, { opacity: 0.85 }]}>
               <Text style={[styles.sectionTitle, { color: theme.text }]}>暂无可选青蛙</Text>
               <Text style={[styles.itemSubtitle, { color: theme.textSecondary, marginTop: 8 }]}>
-                可选范围：已过期任务、今日到期/时段内、今起三天内、本周日内、近七天内、更晚的已设日期任务，或未设置截止日期的任务。请先在任务中设置截止时间，或稍后再试。
+                可选范围：项目内任务，以及没有任何子任务的项目。也可按截止时间筛选（过期、今日、近三天等）。独立待办不可指派为青蛙。
               </Text>
             </View>
           ) : null}
@@ -853,13 +1069,7 @@ export default function AddFrogScreen() {
                           </Pressable>
                           <Pressable
                             style={({ pressed }) => [styles.itemText, pressed && { opacity: 0.82 }]}
-                            onPress={() =>
-                              router.push(
-                                !it.parentLabel && !it.projectLabel
-                                  ? standaloneTodoEditorHref(it.id)
-                                  : { pathname: '/task/[id]', params: { id: it.id } },
-                              )
-                            }>
+                            onPress={() => openFrogItem(it)}>
                             <Text style={[styles.itemTitle, { color: checked ? hoverColor : titleColor }]}>{it.title}</Text>
                             {it.parentLabel ? (
                               <Text style={[styles.itemContextHint, { color: outline }]} numberOfLines={1}>

@@ -21,7 +21,12 @@ import {
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getDatabase } from '@/lib/database.native';
 import { formatWriteError } from '@/lib/format-write-error';
-import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
+import {
+  getIsLongTermProject,
+  mergeLongTermProjectIntoExtraData,
+  mergeLongTermTaskIntoExtraData,
+} from '@/lib/long-term-task';
+import { clearProjectFrogFields } from '@/lib/frog-assignment';
 import {
   mergePrerequisiteIdsIntoExtraData,
   parsePrerequisiteProjectIds,
@@ -439,6 +444,7 @@ export default function EditProjectScreen() {
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
   const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
+  const [isLongTermProject, setIsLongTermProject] = React.useState(false);
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [habitNameById, setHabitNameById] = React.useState<Map<string, string>>(() => new Map());
   const [saving, setSaving] = React.useState(false);
@@ -567,6 +573,16 @@ export default function EditProjectScreen() {
           task.isLongTermTask === true,
         ),
       });
+      // 项目一旦有子任务，不再可作为青蛙实体
+      const snap = projectSnapshotRef.current;
+      if (snap) {
+        const cleared = clearProjectFrogFields(snap.extra_data);
+        if (cleared !== snap.extra_data) {
+          await updateProject(projectId, { extra_data: cleared });
+          projectSnapshotRef.current = { ...snap, extra_data: cleared };
+          setProjectExtraData(parseProjectExtraData(cleared));
+        }
+      }
       setSubtasks((prev) => [...prev, { ...task, children: [] }]);
       setPersistedTaskIds((prev) => new Set(prev).add(task.id));
       showToast('已加入项目');
@@ -608,6 +624,7 @@ export default function EditProjectScreen() {
       setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
       setPrerequisiteProjectIds(parsePrerequisiteProjectIds(project.extra_data));
       setCompletionReward(parseCompletionRewardFromExtraData(project.extra_data));
+      setIsLongTermProject(getIsLongTermProject(project.extra_data));
       const projectTasks = await getTasksByProjectId(projectId);
       const tree = mapTaskTreeToSubtaskNodes(projectTasks);
       setSubtasks(tree);
@@ -856,6 +873,10 @@ export default function EditProjectScreen() {
         { ...projectExtraData, schedule: scheduleToSave },
         prerequisiteProjectIds,
       );
+      const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(mergedExtra), isLongTermProject);
+      // 保存后若已有任务，清除项目级青蛙标记（项目不可再作青蛙）
+      const nextExtraAfterTasks =
+        subtasks.length > 0 ? clearProjectFrogFields(withLongTerm) : withLongTerm;
       const projectDueDate = dueDateFromScheduleMeta(scheduleToSave, extractDueDate(deadlineText));
       await updateProject(projectId, {
         ...(categoryTouched ? { category_id: normalizedCategoryId } : {}),
@@ -863,7 +884,7 @@ export default function EditProjectScreen() {
         priority: taskPriorityKeyToNumber(priority),
         note: notes.trim() || null,
         due_date: projectDueDate,
-        extra_data: mergeCompletionRewardIntoExtraData(JSON.stringify(mergedExtra), completionReward),
+        extra_data: mergeCompletionRewardIntoExtraData(nextExtraAfterTasks, completionReward),
       });
       const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleToSave), {
         end: projectDueDate ?? undefined,
@@ -965,6 +986,7 @@ export default function EditProjectScreen() {
   }, [
     allProjects,
     deadlineText,
+    isLongTermProject,
     notes,
     prerequisiteProjectIds,
     priority,
@@ -1310,6 +1332,35 @@ export default function EditProjectScreen() {
           </View>
 
           <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>长期项目</Text>
+            <Pressable
+              onPress={() => setIsLongTermProject((v) => !v)}
+              disabled={loading || saving}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: isLongTermProject }}
+              style={({ pressed }) => [
+                styles.longTermRow,
+                {
+                  backgroundColor: isLongTermProject ? `${primary}12` : surfaceLow,
+                  borderColor: isLongTermProject ? primary : `${outlineVariant}70`,
+                  opacity: loading || saving ? 0.65 : pressed ? 0.88 : 1,
+                },
+              ]}>
+              <View style={styles.longTermTextWrap}>
+                <Text style={[styles.longTermTitle, { color: theme.text }]}>标记为长期项目</Text>
+                <Text style={[styles.longTermHint, { color: outline }]}>
+                  无子任务时可指派为青蛙；完成时会询问是否已完成整个项目
+                </Text>
+              </View>
+              <MaterialIcons
+                name={isLongTermProject ? 'check-box' : 'check-box-outline-blank'}
+                size={24}
+                color={isLongTermProject ? primary : outline}
+              />
+            </Pressable>
+          </View>
+
+          <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>完成奖励</Text>
             <CompletionRewardField
               value={completionReward}
@@ -1476,6 +1527,18 @@ const styles = StyleSheet.create({
   emptySubtaskRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 14, borderRadius: 16, borderWidth: 1, borderStyle: 'dashed' },
   emptySubtaskIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   emptySubtaskText: { flex: 1, fontSize: 13, fontWeight: '600' },
+  longTermRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  longTermTextWrap: { flex: 1, gap: 4 },
+  longTermTitle: { fontSize: 15, fontWeight: '700' },
+  longTermHint: { fontSize: 12, lineHeight: 17 },
   notesWrap: { borderRadius: 16, padding: 14, minHeight: 120 },
   notesInput: { minHeight: 92, fontSize: 14, fontWeight: '500', lineHeight: 20, paddingRight: 34 },
   notesIcon: { position: 'absolute', right: 12, bottom: 12 },

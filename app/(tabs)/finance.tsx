@@ -89,6 +89,7 @@ import {
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { formatFinanceHappenedAt, parseStoredDatetime } from '@/lib/api-mysql-datetime';
+import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import {
     addDaysToLogicalYmd,
     getLogicalLocalYmd,
@@ -973,9 +974,9 @@ export default function FinanceScreen() {
 
   const sortedTransactions = React.useMemo(() => {
     return [...financeTransactions].sort((a, b) => {
-      const aTime = new Date(a.happened_at).getTime();
-      const bTime = new Date(b.happened_at).getTime();
-      return bTime - aTime;
+      const u = compareDatetimeDesc(a.updated_at, b.updated_at);
+      if (u !== 0) return u;
+      return compareDatetimeDesc(a.happened_at, b.happened_at);
     });
   }, [financeTransactions]);
   const todayDayKey = logicalTodayYmd;
@@ -989,7 +990,8 @@ export default function FinanceScreen() {
         keys.add(dayKey);
       }
     });
-    return Array.from(keys);
+    // 按发生日从近到远，与「更新时间」排序解耦，避免「加载更多」日期错乱
+    return Array.from(keys).sort((a, b) => b.localeCompare(a));
   }, [getDayKey, logicalTodayYmd, sortedTransactions]);
   const historyDayKeys = React.useMemo(() => sortedDayKeys.filter((k) => k !== todayDayKey), [sortedDayKeys, todayDayKey]);
   const hasMoreHistoryDays = visibleDayCount < historyDayKeys.length;
@@ -1125,7 +1127,11 @@ export default function FinanceScreen() {
     const pendingRows = pendingAutoLedgers.map((row) => buildPendingAutoLedgerTxn(row, todayDayKey, subtle));
     const savedRows = todayTxns
       .slice()
-      .sort((a, b) => new Date(b.happened_at).getTime() - new Date(a.happened_at).getTime())
+      .sort((a, b) => {
+        const u = compareDatetimeDesc(a.updated_at, b.updated_at);
+        if (u !== 0) return u;
+        return compareDatetimeDesc(a.happened_at, b.happened_at);
+      })
       .map((txn) => {
         const happenedAt = parseStoredDatetime(txn.happened_at);
         const hour = Number.isNaN(happenedAt.getTime()) ? '00' : String(happenedAt.getHours()).padStart(2, '0');

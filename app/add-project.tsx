@@ -15,7 +15,7 @@ import {
   type TaskPriorityKey,
 } from '@/components/composer';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
-import { Spacing } from '@/constants/design-tokens';
+import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
@@ -36,10 +36,12 @@ import { CompletionRewardField } from '@/components/completion-reward/Completion
 import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
 import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
 import { mergeCompletionRewardIntoExtraData } from '@/lib/completion-reward/completion-reward-extra';
+import { mergeLongTermProjectIntoExtraData } from '@/lib/long-term-task';
+import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { useFocusEffect } from '@react-navigation/native';
-import { Alert, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Subtask = { id: string; title: string; done: boolean };
@@ -180,6 +182,7 @@ export default function AddProjectScreen() {
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
   const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
+  const [isLongTermProject, setIsLongTermProject] = React.useState(false);
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const appliedRouteCategoryRef = React.useRef(false);
 
@@ -355,6 +358,7 @@ export default function AddProjectScreen() {
     try {
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
       const extra = mergePrerequisiteIdsIntoExtraData({ schedule: scheduleToSave }, prerequisiteProjectIds);
+      const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(extra), isLongTermProject);
       await createProject({
         id: buildProjectId(),
         name: trimmedTitle,
@@ -362,7 +366,7 @@ export default function AddProjectScreen() {
         priority: taskPriorityKeyToNumber(priority),
         note: notes.trim() || null,
         due_date: dueDateFromScheduleMeta(scheduleToSave, extractDueDate(deadlineText)),
-        extra_data: mergeCompletionRewardIntoExtraData(JSON.stringify(extra), completionReward),
+        extra_data: mergeCompletionRewardIntoExtraData(withLongTerm, completionReward),
       });
       try {
         await markPendingTablesDirty(['projects']);
@@ -383,6 +387,7 @@ export default function AddProjectScreen() {
     completionReward,
     creating,
     deadlineText,
+    isLongTermProject,
     notes,
     notifyAncestorsDataChanged,
     prerequisiteProjectIds,
@@ -480,6 +485,41 @@ export default function AddProjectScreen() {
 
             <ComposerSection>
               <ComposerSectionHead
+                accentColor={colors.primary}
+                title="长期项目"
+                description="无子任务时可指派为青蛙；完成时可仅结束今日会话"
+                rightIcon="timeline"
+              />
+              <ComposerEditorialCard>
+                <Pressable
+                  onPress={() => setIsLongTermProject((v) => !v)}
+                  accessibilityRole="switch"
+                  accessibilityState={{ checked: isLongTermProject }}
+                  style={({ pressed }) => [
+                    styles.longTermRow,
+                    {
+                      backgroundColor: isLongTermProject ? `${colors.primary}12` : colors.surfaceSubtle,
+                      borderColor: isLongTermProject ? colors.primary : colors.outline,
+                      opacity: pressed ? 0.88 : 1,
+                    },
+                  ]}>
+                  <View style={styles.longTermTextWrap}>
+                    <Text style={[Typography.bodyStrong, { color: colors.text }]}>标记为长期项目</Text>
+                    <Text style={[Typography.caption, { color: colors.textSecondary }]}>
+                      完成青蛙时会询问是否已完成整个项目
+                    </Text>
+                  </View>
+                  <MaterialIcons
+                    name={isLongTermProject ? 'check-box' : 'check-box-outline-blank'}
+                    size={24}
+                    color={isLongTermProject ? colors.primary : colors.textSecondary}
+                  />
+                </Pressable>
+              </ComposerEditorialCard>
+            </ComposerSection>
+
+            <ComposerSection>
+              <ComposerSectionHead
                 accentColor={colors.secondary}
                 title="完成奖励"
                 description="项目完成时可领取的小激励"
@@ -523,3 +563,19 @@ export default function AddProjectScreen() {
     </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  longTermRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  longTermTextWrap: {
+    flex: 1,
+    gap: 4,
+  },
+});

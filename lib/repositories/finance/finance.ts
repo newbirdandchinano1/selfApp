@@ -72,9 +72,9 @@ async function ensureFinanceTablesSyncedFromApi(opts?: {
 
 function sortFinanceTransactionsDesc(rows: FinanceTransactionRow[]): FinanceTransactionRow[] {
   return [...rows].sort((a, b) => {
-    const h = compareDatetimeDesc(a.happened_at, b.happened_at);
-    if (h !== 0) return h;
-    return compareDatetimeDesc(a.updated_at, b.updated_at);
+    const u = compareDatetimeDesc(a.updated_at, b.updated_at);
+    if (u !== 0) return u;
+    return compareDatetimeDesc(a.happened_at, b.happened_at);
   });
 }
 

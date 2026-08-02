@@ -30,6 +30,27 @@ export function mergeLongTermTaskIntoExtraData(extraData: string | null, isLongT
   return JSON.stringify({ ...parsed, isLongTermTask: true });
 }
 
+/** 项目是否为长期项目（无子任务时可作青蛙；完成时可仅结束当日会话） */
+export function getIsLongTermProject(extraData: string | null): boolean {
+  const parsed = parseExtraRecord(extraData);
+  return parsed.isLongTermProject === true;
+}
+
+export function mergeLongTermProjectIntoExtraData(extraData: string | null, isLongTerm: boolean): string | null {
+  const parsed = parseExtraRecord(extraData);
+  if (!isLongTerm) {
+    if (!('isLongTermProject' in parsed)) return extraData;
+    const { isLongTermProject: _removed, ...rest } = parsed;
+    return Object.keys(rest).length === 0 ? null : JSON.stringify(rest);
+  }
+  return JSON.stringify({ ...parsed, isLongTermProject: true });
+}
+
+/** 今日青蛙卡片：任务或项目是否显示为长期 */
+export function getIsLongTermFrog(extraData: string | null): boolean {
+  return getIsLongTermTask(extraData) || getIsLongTermProject(extraData);
+}
+
 /** 当日青蛙会话已结束（任务本身可仍为未完成） */
 export function getFrogSessionCompletedOn(extraData: string | null): string {
   const parsed = parseExtraRecord(extraData);

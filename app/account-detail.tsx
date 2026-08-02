@@ -370,7 +370,9 @@ export default function AccountDetailScreen() {
         else dayMap.set(dayKey, [tx]);
       }
 
-      const details = Array.from(dayMap.entries()).map(([dayKey, dayRows]) => {
+      const details = Array.from(dayMap.entries())
+        .sort(([a], [b]) => b.localeCompare(a))
+        .map(([dayKey, dayRows]) => {
         const dt = new Date(dayKey);
         const dateLabel = Number.isNaN(dt.getTime())
           ? dayKey

@@ -24,9 +24,10 @@ import type { CompletionReward } from '@/lib/completion-reward/completion-reward
 import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
+import { clearProjectFrogFields } from '@/lib/frog-assignment';
 import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
-import { getProjectById } from '@/lib/repositories/projects/project';
+import { getProjectById, updateProject } from '@/lib/repositories/projects/project';
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { createTask, deleteTask, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
@@ -607,6 +608,24 @@ export default function AddTaskScreen() {
             isLongTermTask,
           ),
         });
+        try {
+          const hostProject = await getProjectById(quickProjectId);
+          if (hostProject) {
+            const cleared = clearProjectFrogFields(hostProject.extra_data);
+            if (cleared !== hostProject.extra_data) {
+              await updateProject(quickProjectId, { extra_data: cleared });
+            }
+          }
+        } catch (clearErr) {
+          console.warn('清除空项目青蛙指派失败', clearErr);
+        }
+        try {
+          await markPendingTablesDirty(['tasks', 'projects']);
+          await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+        } catch (syncErr) {
+          console.warn('任务保存后同步到服务器失败', syncErr);
+        }
+        notifyAncestorsDataChanged();
         router.back();
       } catch (error) {
         console.warn('创建任务失败', error);

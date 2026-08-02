@@ -21,16 +21,21 @@ import { formatWriteError } from '@/lib/format-write-error';
 import {
   clearFrogAssignedOn,
   getFrogAssignedOn,
+  persistProjectFrogExtraToApi,
   persistTaskFrogExtraToApi,
   unassignFrogFromApi,
+  unassignProjectFrogFromApi,
 } from '@/lib/frog-assignment';
 import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
 import {
   clearFrogSessionCompletedOn,
+  getIsLongTermFrog,
+  getIsLongTermProject,
   getIsLongTermTask,
   isFrogDoneForToday,
   setFrogSessionCompletedOn,
 } from '@/lib/long-term-task';
+import { projectToFrogTaskRow } from '@/lib/project-frog';
 import { consumeForceFullApiRefreshAfterLocalClear, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import { fetchProjectsListForTab, mergeProjectRowsById } from '@/lib/projects-list-api';
@@ -1556,6 +1561,7 @@ export default function TasksScreen() {
   const [standaloneTodos, setStandaloneTodos] = React.useState<TaskRow[]>([]);
   const [matrixWeekTasks, setMatrixWeekTasks] = React.useState<TaskRow[]>([]);
   const [todayFrogs, setTodayFrogs] = React.useState<TaskRow[]>([]);
+  const [projectFrogIds, setProjectFrogIds] = React.useState<Set<string>>(() => new Set());
   const [completionHeatmapReloadToken, setCompletionHeatmapReloadToken] = React.useState(0);
   const [projectTaskTreeMap, setProjectTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
   const [expandedProjectIds, setExpandedProjectIds] = React.useState<Record<string, boolean>>({});
@@ -1886,6 +1892,7 @@ export default function TasksScreen() {
         forceLocal: opts?.forceLocal,
       });
       setTodayFrogs(result.tasks);
+      setProjectFrogIds(new Set(result.projectFrogIds));
     } catch (err) {
       console.warn('加载今日青蛙失败', err);
     }
@@ -2536,17 +2543,21 @@ export default function TasksScreen() {
     return [...base, ...extra];
   }, [projectCategories]);
 
+  const openProject = (id: string) => {
+    router.push({ pathname: '/edit-project', params: { id } });
+  };
+
   const openTask = (id: string) => {
+    if (projectFrogIds.has(id) || projects.some((p) => p.id === id)) {
+      openProject(id);
+      return;
+    }
     const row = findVisibleTask(id);
     if (row && isStandaloneTodoTask(row)) {
       router.push(standaloneTodoEditorHref(id));
       return;
     }
     router.push({ pathname: '/task/[id]', params: { id } });
-  };
-
-  const openProject = (id: string) => {
-    router.push({ pathname: '/edit-project', params: { id } });
   };
 
   const openQuickAddTaskForProject = (project: ProjectRow) => {
@@ -2674,9 +2685,15 @@ export default function TasksScreen() {
 
   const unassignFrog = React.useCallback(
     (taskId: string) => {
-      const frog = findVisibleTask(taskId);
+      const isProjectFrog = projectFrogIds.has(taskId);
+      const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
+      const frog = isProjectFrog
+        ? project
+          ? projectToFrogTaskRow(project)
+          : todayFrogs.find((t) => t.id === taskId)
+        : findVisibleTask(taskId);
       if (!frog) return;
-      const titleLabel = (frog.title ?? '').trim() || '该任务';
+      const titleLabel = (frog.title ?? '').trim() || (isProjectFrog ? '该项目' : '该任务');
       Alert.alert('取消指派', `确定将「${titleLabel}」从今日青蛙中移除吗？`, [
         { text: '保留', style: 'cancel' },
         {
@@ -2687,13 +2704,31 @@ export default function TasksScreen() {
               markPageDirty();
               const nextExtra = clearFrogAssignedOn(frog.extra_data);
               LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-              patchVisibleTask(taskId, { extra_data: nextExtra });
               setTodayFrogs((prev) => prev.filter((t) => t.id !== taskId));
-              setProjectTaskTreeMap((prev) =>
-                updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtra }))
-              );
+              setProjectFrogIds((prev) => {
+                if (!prev.has(taskId)) return prev;
+                const next = new Set(prev);
+                next.delete(taskId);
+                return next;
+              });
+              if (!isProjectFrog) {
+                patchVisibleTask(taskId, { extra_data: nextExtra });
+                setProjectTaskTreeMap((prev) =>
+                  updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtra })),
+                );
+              }
               try {
-                await unassignFrogFromApi(taskId, frog.extra_data, frog as Record<string, unknown>);
+                if (isProjectFrog) {
+                  const snap = project ?? (await getProjectById(taskId));
+                  await unassignProjectFrogFromApi(
+                    taskId,
+                    snap?.extra_data ?? frog.extra_data,
+                    (snap ?? frog) as Record<string, unknown>,
+                  );
+                  await loadProjects();
+                } else {
+                  await unassignFrogFromApi(taskId, frog.extra_data, frog as Record<string, unknown>);
+                }
                 await loadTodayFrogs({ forceLocal: true });
               } catch (err) {
                 console.warn('取消青蛙指派失败', err);
@@ -2707,7 +2742,20 @@ export default function TasksScreen() {
         },
       ]);
     },
-    [findVisibleTask, loadProjectTasks, loadTasks, loadTodayFrogs, markPageDirty, patchVisibleTask, projects, projectTaskTreeMap, todayFrogs, updateTaskInProjectTree]
+    [
+      findVisibleTask,
+      loadProjectTasks,
+      loadProjects,
+      loadTasks,
+      loadTodayFrogs,
+      markPageDirty,
+      patchVisibleTask,
+      projectFrogIds,
+      projects,
+      projectTaskTreeMap,
+      todayFrogs,
+      updateTaskInProjectTree,
+    ],
   );
 
   const moveProjectToInboxById = React.useCallback(async (projectId: string) => {
@@ -2805,9 +2853,25 @@ export default function TasksScreen() {
           }
 
           const proj = projects.find((p) => p.id === project.id) ?? (await getProjectById(project.id)) ?? project;
+          const projectFrogAssigned = (getFrogAssignedOn(proj.extra_data) ?? '').trim();
+          let nextProjectExtra = clearFrogSessionCompletedOn(proj.extra_data);
+          if (/^\d{4}-\d{2}-\d{2}$/.test(projectFrogAssigned)) {
+            try {
+              await insertFrogCompletionEvent(
+                project.id,
+                projectFrogAssigned,
+                'completed',
+                proj.name ?? null,
+              );
+            } catch (frogLogErr) {
+              console.warn('记录项目青蛙完成事件失败', frogLogErr);
+            }
+            setCompletionHeatmapReloadToken((n) => n + 1);
+          }
           await updateProject(project.id, {
             category_id: INBOX_PROJECT_CATEGORY_ID,
             status: 'completed',
+            ...(nextProjectExtra !== proj.extra_data ? { extra_data: nextProjectExtra } : {}),
           });
           await tryGrantProjectCompletionReward(proj);
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -3237,12 +3301,21 @@ export default function TasksScreen() {
 
   const completeFrogSessionOnly = React.useCallback(
     async (taskId: string) => {
-      const current =
-        findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      const isProjectFrog = projectFrogIds.has(taskId);
+      const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
+      const current = isProjectFrog
+        ? project
+          ? projectToFrogTaskRow(project)
+          : todayFrogs.find((t) => t.id === taskId)
+        : findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
-      if (current.project_id && lockedProjectIds.has(current.project_id)) {
+      if (!isProjectFrog && current.project_id && lockedProjectIds.has(current.project_id)) {
         alertProjectTaskLocked(projectLockMap.get(current.project_id));
+        return;
+      }
+      if (isProjectFrog && lockedProjectIds.has(taskId)) {
+        alertProjectTaskLocked(projectLockMap.get(taskId));
         return;
       }
 
@@ -3253,20 +3326,31 @@ export default function TasksScreen() {
       const nextExtraData = setFrogSessionCompletedOn(current.extra_data, logicalTodayYmd);
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      patchVisibleTask(taskId, { extra_data: nextExtraData });
       setTodayFrogs((prev) =>
-        prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtraData } : t))
+        prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtraData } : t)),
       );
-      setProjectTaskTreeMap((prev) =>
-        updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtraData }))
-      );
+      if (!isProjectFrog) {
+        patchVisibleTask(taskId, { extra_data: nextExtraData });
+        setProjectTaskTreeMap((prev) =>
+          updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtraData })),
+        );
+      }
 
       try {
-        await persistTaskFrogExtraToApi(
-          taskId,
-          nextExtraData,
-          current as Record<string, unknown>,
-        );
+        if (isProjectFrog) {
+          const snap = project ?? (await getProjectById(taskId));
+          await persistProjectFrogExtraToApi(
+            taskId,
+            nextExtraData,
+            (snap ?? current) as Record<string, unknown>,
+          );
+        } else {
+          await persistTaskFrogExtraToApi(
+            taskId,
+            nextExtraData,
+            current as Record<string, unknown>,
+          );
+        }
         try {
           await insertFrogCompletionEvent(taskId, frogAssigned, 'completed', current.title ?? null);
         } catch (frogLogErr) {
@@ -3274,7 +3358,9 @@ export default function TasksScreen() {
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
         await loadTodayFrogs({ forceLocal: true });
-        if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
+        if (isProjectFrog) {
+          await loadProjects();
+        } else if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
           await reloadProjectTasksFromLocal();
         } else {
           await loadTasks({ forceLocal: true });
@@ -3290,24 +3376,32 @@ export default function TasksScreen() {
     [
       findVisibleTask,
       loadProjectTasks,
+      loadProjects,
       loadTasks,
       loadTodayFrogs,
       lockedProjectIds,
       logicalTodayYmd,
       markPageDirty,
       patchVisibleTask,
+      projectFrogIds,
       projectLockMap,
       projectTaskTreeMap,
       projects,
       reloadProjectTasksFromLocal,
+      todayFrogs,
       updateTaskInProjectTree,
-    ]
+    ],
   );
 
   const reopenFrogSessionOnly = React.useCallback(
     async (taskId: string) => {
-      const current =
-        findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      const isProjectFrog = projectFrogIds.has(taskId);
+      const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
+      const current = isProjectFrog
+        ? project
+          ? projectToFrogTaskRow(project)
+          : todayFrogs.find((t) => t.id === taskId)
+        : findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
       const frogAssigned = getFrogAssignedOn(current.extra_data);
@@ -3317,20 +3411,31 @@ export default function TasksScreen() {
       const nextExtraData = clearFrogSessionCompletedOn(current.extra_data);
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      patchVisibleTask(taskId, { extra_data: nextExtraData });
       setTodayFrogs((prev) =>
-        prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtraData } : t))
+        prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtraData } : t)),
       );
-      setProjectTaskTreeMap((prev) =>
-        updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtraData }))
-      );
+      if (!isProjectFrog) {
+        patchVisibleTask(taskId, { extra_data: nextExtraData });
+        setProjectTaskTreeMap((prev) =>
+          updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtraData })),
+        );
+      }
 
       try {
-        await persistTaskFrogExtraToApi(
-          taskId,
-          nextExtraData,
-          current as Record<string, unknown>,
-        );
+        if (isProjectFrog) {
+          const snap = project ?? (await getProjectById(taskId));
+          await persistProjectFrogExtraToApi(
+            taskId,
+            nextExtraData,
+            (snap ?? current) as Record<string, unknown>,
+          );
+        } else {
+          await persistTaskFrogExtraToApi(
+            taskId,
+            nextExtraData,
+            current as Record<string, unknown>,
+          );
+        }
         try {
           await insertFrogCompletionEvent(taskId, frogAssigned, 'reopened', current.title ?? null);
         } catch (frogLogErr) {
@@ -3338,7 +3443,9 @@ export default function TasksScreen() {
         }
         setCompletionHeatmapReloadToken((n) => n + 1);
         await loadTodayFrogs({ forceLocal: true });
-        if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
+        if (isProjectFrog) {
+          await loadProjects();
+        } else if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
           await reloadProjectTasksFromLocal();
         } else {
           await loadTasks({ forceLocal: true });
@@ -3354,21 +3461,30 @@ export default function TasksScreen() {
     [
       findVisibleTask,
       loadProjectTasks,
+      loadProjects,
       loadTasks,
       loadTodayFrogs,
       logicalTodayYmd,
       markPageDirty,
       patchVisibleTask,
+      projectFrogIds,
       projectTaskTreeMap,
       projects,
       reloadProjectTasksFromLocal,
+      todayFrogs,
       updateTaskInProjectTree,
-    ]
+    ],
   );
 
   const toggleFrogDone = React.useCallback(
     (taskId: string) => {
-      const current = findVisibleTask(taskId);
+      const isProjectFrog = projectFrogIds.has(taskId);
+      const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
+      const current = isProjectFrog
+        ? project
+          ? projectToFrogTaskRow(project)
+          : todayFrogs.find((t) => t.id === taskId)
+        : findVisibleTask(taskId);
       if (!current || isTaskShelvedStatus(current.status)) return;
 
       const frogAssigned = getFrogAssignedOn(current.extra_data);
@@ -3383,15 +3499,24 @@ export default function TasksScreen() {
 
       if (frogDone) {
         playFrogDoneBounce(taskId);
-        void toggleTaskDone(taskId);
+        if (isProjectFrog && project) {
+          void reopenProjectFromList(project);
+        } else {
+          void toggleTaskDone(taskId);
+        }
         return;
       }
 
-      if (isAssignedToday && getIsLongTermTask(current.extra_data)) {
-        const titleLabel = (current.title ?? '').trim() || '该任务';
+      const isLongTerm = isProjectFrog
+        ? getIsLongTermProject(current.extra_data)
+        : getIsLongTermTask(current.extra_data);
+      if (isAssignedToday && isLongTerm) {
+        const titleLabel = (current.title ?? '').trim() || (isProjectFrog ? '该项目' : '该任务');
         Alert.alert(
-          '完成长期任务？',
-          `「${titleLabel}」是长期任务。是否已完成此任务？`,
+          isProjectFrog ? '完成长期项目？' : '完成长期任务？',
+          isProjectFrog
+            ? `「${titleLabel}」是长期项目。是否已完成此项目？`
+            : `「${titleLabel}」是长期任务。是否已完成此任务？`,
           [
             { text: '取消', style: 'cancel' },
             {
@@ -3405,26 +3530,38 @@ export default function TasksScreen() {
               text: '完成',
               onPress: () => {
                 playFrogDoneBounce(taskId);
-                void toggleTaskDone(taskId);
+                if (isProjectFrog && project) {
+                  void completeProjectFromList(project);
+                } else {
+                  void toggleTaskDone(taskId);
+                }
               },
             },
-          ]
+          ],
         );
         return;
       }
 
       playFrogDoneBounce(taskId);
-      void toggleTaskDone(taskId);
+      if (isProjectFrog && project) {
+        void completeProjectFromList(project);
+      } else {
+        void toggleTaskDone(taskId);
+      }
     },
     [
       completeFrogSessionOnly,
+      completeProjectFromList,
       findVisibleTask,
       logicalTodayYmd,
       playFrogDoneBounce,
+      projectFrogIds,
+      projects,
       reopenFrogSessionOnly,
+      reopenProjectFromList,
       todayFrogs,
       toggleTaskDone,
-    ]
+    ],
   );
 
   /** 从任务 Tab 底部快捷创建「无项目」待办 */
@@ -4289,7 +4426,8 @@ export default function TasksScreen() {
                     contentContainerStyle={styles.frogCarouselContent}>
                     {todayFrogs.map((frog) => {
                       const isDone = isFrogDoneForToday(frog.extra_data, frog.status, logicalTodayYmd);
-                      const isLongTerm = getIsLongTermTask(frog.extra_data);
+                      const isProjectFrog = projectFrogIds.has(frog.id);
+                      const isLongTerm = getIsLongTermFrog(frog.extra_data);
                       return (
                         <ScalePressable
                           key={frog.id}
@@ -4310,11 +4448,17 @@ export default function TasksScreen() {
                           <View style={styles.frogTopRowCompact}>
                             <View style={styles.frogTopLeft}>
                               <View style={[styles.frogIconBadge, { backgroundColor: colors.primaryMuted }]}>
-                                <MaterialIcons name="eco" size={18} color={primary} />
+                                <MaterialIcons name={isProjectFrog ? 'folder-special' : 'eco'} size={18} color={primary} />
                               </View>
                               <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
                                 <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>
-                                  {isLongTerm ? '长期 · 今日已指派' : '今日已指派'}
+                                  {isLongTerm
+                                    ? isProjectFrog
+                                      ? '长期项目 · 今日已指派'
+                                      : '长期 · 今日已指派'
+                                    : isProjectFrog
+                                      ? '项目 · 今日已指派'
+                                      : '今日已指派'}
                                 </Text>
                               </View>
                             </View>
@@ -4346,7 +4490,16 @@ export default function TasksScreen() {
                               </Pressable>
                             </View>
                           </View>
-                          {frog.parent_task_id ? (
+                          {isProjectFrog ? (
+                            <Text
+                              style={[
+                                styles.taskParentHint,
+                                { color: outline, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.65 : 1 },
+                              ]}
+                              numberOfLines={1}>
+                              空项目（无子任务）
+                            </Text>
+                          ) : frog.parent_task_id ? (
                             <Text
                               style={[
                                 styles.taskParentHint,
