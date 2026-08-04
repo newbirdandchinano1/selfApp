@@ -231,17 +231,17 @@ export default function VisionCreateScreen() {
       {
         kind: 'image',
         selectedRing: true,
-        source: require('../assets/vision-bg/bg1.png'),
+        source: require('../../assets/vision-bg/bg1.png'),
         alt: '自定义背景1',
       },
       {
         kind: 'image',
-        source: require('../assets/vision-bg/bg2.png'),
+        source: require('../../assets/vision-bg/bg2.png'),
         alt: '自定义背景2',
       },
       {
         kind: 'image',
-        source: require('../assets/vision-bg/bg3.png'),
+        source: require('../../assets/vision-bg/bg3.png'),
         alt: '自定义背景3',
       },
       { kind: 'custom' },

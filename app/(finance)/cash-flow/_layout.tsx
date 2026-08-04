@@ -1,6 +1,6 @@
 import { Stack } from 'expo-router';
 
-import { CashFlowProvider } from './cash-flow-ui';
+import { CashFlowProvider } from '@/screens/finance/cash-flow/cash-flow-ui';
 
 export default function CashFlowLayout() {
   return (

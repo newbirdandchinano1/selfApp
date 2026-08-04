@@ -1,6 +1,6 @@
 import { Redirect, useLocalSearchParams } from 'expo-router';
 
-import { CashFlowShell, parseCashFlowSectionSlug } from './cash-flow-ui';
+import { CashFlowShell, parseCashFlowSectionSlug } from '@/screens/finance/cash-flow/cash-flow-ui';
 
 export default function CashFlowSectionRoute() {
   const { section } = useLocalSearchParams<{ section: string | string[] }>();

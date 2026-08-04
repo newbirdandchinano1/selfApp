@@ -1,5 +1,6 @@
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { getCalendarLunarLabel } from '@/lib/lunar-day-label';
 import {
   normalizeRouteParam,
   setSchedulePickerResult,
@@ -29,6 +30,9 @@ type MonthInfo = {
 
 type CalendarCell = {
   key: string;
+  year: number;
+  /** 0–11，与 Date#getMonth 一致 */
+  month: number;
   day: number;
   inCurrentMonth: boolean;
 };
@@ -48,7 +52,6 @@ type SchedulePickerInitialValue = Omit<SchedulePickerResult, 'source'>;
 
 const dateQuickChips = ['今天', '今晚', '明天', '本周六', '下周一'];
 const timeQuickChips = ['本周', '下周', '本月', '下月', '未来半年'];
-const lunarLabels = ['十五', '十六', '十七', '十八', '清明', '廿十', '廿一', '廿二', '廿三', '廿四', '廿五', '廿六', '廿七', '廿八', '廿九', '三十', '三月', '初二', '初三', '初四', '初五', '谷雨', '初七', '初八', '初九', '初十', '十一', '十二', '十三', '十四'];
 
 const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
 const MONTH_PAGE_SPAN = 481;
@@ -241,18 +244,36 @@ function buildCalendarCells(current: MonthInfo, previous: MonthInfo, next: Month
   for (let i = 0; i < totalCells; i += 1) {
     if (i < prevMonthVisibleCount) {
       const day = previous.daysInMonth - prevMonthVisibleCount + i + 1;
-      cells.push({ key: `prev-${previous.year}-${previous.month}-${day}`, day, inCurrentMonth: false });
+      cells.push({
+        key: `prev-${previous.year}-${previous.month}-${day}`,
+        year: previous.year,
+        month: previous.month,
+        day,
+        inCurrentMonth: false,
+      });
       continue;
     }
 
     const currentDayIndex = i - prevMonthVisibleCount + 1;
     if (currentDayIndex <= current.daysInMonth) {
-      cells.push({ key: `curr-${current.year}-${current.month}-${currentDayIndex}`, day: currentDayIndex, inCurrentMonth: true });
+      cells.push({
+        key: `curr-${current.year}-${current.month}-${currentDayIndex}`,
+        year: current.year,
+        month: current.month,
+        day: currentDayIndex,
+        inCurrentMonth: true,
+      });
       continue;
     }
 
     const day = i - (prevMonthVisibleCount + current.daysInMonth) + 1;
-    cells.push({ key: `next-${next.year}-${next.month}-${day}`, day, inCurrentMonth: false });
+    cells.push({
+      key: `next-${next.year}-${next.month}-${day}`,
+      year: next.year,
+      month: next.month,
+      day,
+      inCurrentMonth: false,
+    });
   }
 
   return cells;
@@ -1101,8 +1122,8 @@ export default function SchedulePickerScreen() {
                 <View style={styles.grid}>
                   {days.map((cell, index) => {
                     const day = cell.day;
-                    const lunar = lunarLabels[(day - 1) % lunarLabels.length] ?? '农历';
-                    const cellDate = new Date(currentMonthInfo.year, currentMonthInfo.month, day);
+                    const lunar = getCalendarLunarLabel(cell.year, cell.month + 1, day);
+                    const cellDate = new Date(cell.year, cell.month, day);
                     const isPastDate = cell.inCurrentMonth && cellDate.getTime() < todayStart.getTime();
                     const isOutOfLimit = cell.inCurrentMonth && !isDateInLimit(cellDate, dateLimit);
                     const isSelected =

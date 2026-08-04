@@ -27,9 +27,9 @@ import {
 
 const visionPrimary = '#0058be';
 
-const bg1 = require('../../assets/vision-bg/bg1.png');
-const bg2 = require('../../assets/vision-bg/bg2.png');
-const bg3 = require('../../assets/vision-bg/bg3.png');
+const bg1 = require('../../../assets/vision-bg/bg1.png');
+const bg2 = require('../../../assets/vision-bg/bg2.png');
+const bg3 = require('../../../assets/vision-bg/bg3.png');
 
 const BG_THUMBS = [bg1, bg2, bg3] as const;
 

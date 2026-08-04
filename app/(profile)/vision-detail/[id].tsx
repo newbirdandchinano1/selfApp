@@ -40,8 +40,8 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { draftFromRow, validateAndBuildVisionUpdate, type VisionEditDraft } from './vision-detail-edit-helpers';
-import { VisionDetailEditor } from './vision-detail-editor';
+import { draftFromRow, validateAndBuildVisionUpdate, type VisionEditDraft } from '@/screens/profile/vision-detail/vision-detail-edit-helpers';
+import { VisionDetailEditor } from '@/screens/profile/vision-detail/vision-detail-editor';
 
 const visionPrimary = '#0058be';
 const PAGE_API_KEY = 'vision-detail';

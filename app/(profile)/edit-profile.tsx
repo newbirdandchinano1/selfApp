@@ -289,7 +289,7 @@ export default function EditProfileScreen() {
                 ]}
               >
                 <Image
-                  source={avatarUri ? { uri: avatarUri } : require('../assets/profile/avatar.png')}
+                  source={avatarUri ? { uri: avatarUri } : require('../../assets/profile/avatar.png')}
                   style={styles.avatarImg}
                   contentFit="cover"
                 />
