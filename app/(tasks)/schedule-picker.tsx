@@ -75,11 +75,15 @@ function getLocalWeekdayMon1(date = new Date()): number {
 }
 
 function getMonthInfo(year: number, month: number): MonthInfo {
+  // Date 会自动进位（如 month=12 → 次年 1 月），这里必须写回归一化后的 year/month，
+  // 否则跨年格子会把 month=12 再 +1 传给农历库，触发 "wrong month 13"。
   const first = new Date(year, month, 1);
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const normalizedYear = first.getFullYear();
+  const normalizedMonth = first.getMonth();
+  const daysInMonth = new Date(normalizedYear, normalizedMonth + 1, 0).getDate();
   const jsDay = first.getDay(); // 0 = Sun
   const firstDayOffset = (jsDay + 6) % 7; // 0 = Mon
-  return { year, month, daysInMonth, firstDayOffset };
+  return { year: normalizedYear, month: normalizedMonth, daysInMonth, firstDayOffset };
 }
 
 function startOfDay(date: Date): Date {
