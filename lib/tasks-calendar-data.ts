@@ -15,6 +15,7 @@ import { getLogicalLocalYmd, type TasksDayBoundary } from '@/lib/tasks-logical-d
 import { parseTaskAuditDatetimeForLogicalDay } from '@/lib/api-mysql-datetime';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import { getFrogAssignedDates } from '@/lib/frog-assignment';
 import { getFrogSessionCompletedOn } from '@/lib/long-term-task';
 import { isTaskActiveStatus, isTaskTerminalStatus, type TaskRow } from '@/lib/repositories/tasks/task.types';
 
@@ -88,8 +89,6 @@ type ProjectScheduleMeta = {
   range?: { start: string; end: string };
 };
 
-type TaskMetaExtra = { frogAssignedOn?: string };
-
 function formatYmd(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -105,19 +104,6 @@ function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | n
   } catch {
     return null;
   }
-}
-
-function parseTaskMeta(extraData: string | null): TaskMetaExtra {
-  if (!extraData) return {};
-  try {
-    const parsed = JSON.parse(extraData) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as TaskMetaExtra;
-    }
-  } catch {
-    /* ignore */
-  }
-  return {};
 }
 
 function isMatrixTask(task: TaskRow): boolean {
@@ -374,11 +360,12 @@ export function buildTasksCalendarSummaries(params: {
       }
     }
 
-    const frogOn = (parseTaskMeta(task.extra_data).frogAssignedOn ?? '').trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(frogOn) && frogOn >= startYmd && frogOn <= endYmd) {
-      const day = map.get(frogOn)!;
-      const item = toTaskItem(task, 'frog');
-      if (!day.frogs.some((x) => x.id === item.id)) day.frogs.push(item);
+    for (const frogOn of getFrogAssignedDates(task.extra_data)) {
+      if (frogOn >= startYmd && frogOn <= endYmd) {
+        const day = map.get(frogOn)!;
+        const item = toTaskItem(task, 'frog');
+        if (!day.frogs.some((x) => x.id === item.id)) day.frogs.push(item);
+      }
     }
   }
 

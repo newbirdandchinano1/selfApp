@@ -1,4 +1,4 @@
-import { getFrogAssignedOn } from '@/lib/frog-assignment';
+import { isFrogAssignedOn } from '@/lib/frog-assignment';
 import { isTaskTerminalStatus, type TaskStatus } from '@/lib/repositories/tasks/task.types';
 
 function parseExtraRecord(extraData: string | null): Record<string, unknown> {
@@ -76,7 +76,6 @@ export function isFrogDoneForToday(
   todayYmd: string,
 ): boolean {
   if (isTaskTerminalStatus(status)) return true;
-  const assignedOn = getFrogAssignedOn(extraData);
-  if (assignedOn !== todayYmd) return false;
+  if (!isFrogAssignedOn(extraData, todayYmd)) return false;
   return getFrogSessionCompletedOn(extraData) === todayYmd;
 }

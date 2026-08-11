@@ -5,7 +5,7 @@ import { ApiRequestError } from '@/lib/api-client';
 import {
   assignFrogToApi,
   assignProjectFrogToApi,
-  getFrogAssignedOn,
+  isFrogAssignedOn,
   unassignFrogFromApi,
   unassignProjectFrogFromApi,
 } from '@/lib/frog-assignment';
@@ -80,17 +80,6 @@ function formatScheduleDateToYMD(value: string): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
-}
-
-function parseTaskExtraData(raw: string | null): Record<string, unknown> {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
-    return {};
-  } catch {
-    return {};
-  }
 }
 
 function formatLocalYmd(date: Date): string {
@@ -352,9 +341,7 @@ function groupTasksToSections(
     .filter((t) => !t.project_id || !lockedProjectIds.has(t.project_id))
     .filter((t) => !hasUnfinishedChild.has(t.id))
     .filter((t) => {
-      const extra = parseTaskExtraData(t.extra_data);
-      const assignedOn = typeof extra.frogAssignedOn === 'string' ? extra.frogAssignedOn : '';
-      return assignedOn !== todayYmd;
+      return !isFrogAssignedOn(t.extra_data, todayYmd);
     });
 
   const buckets = {
@@ -419,7 +406,7 @@ function groupTasksToSections(
   projects.forEach((p) => {
     const taskCount = projectTaskCountById[p.id] ?? 0;
     if (!isProjectEligibleAsFrog(p, taskCount, lockedProjectIds.has(p.id))) return;
-    if (getFrogAssignedOn(p.extra_data) === todayYmd) return;
+    if (isFrogAssignedOn(p.extra_data, todayYmd)) return;
 
     const asTask = projectToFrogTaskRow(p);
     const tone: Item['tone'] = p.priority >= 4 ? 'error' : p.priority === 2 ? 'primary' : p.priority === 3 ? 'tertiary' : 'outline';
@@ -524,7 +511,7 @@ function buildAssignedTodayItems(
   isTomorrowTarget = false,
 ): Item[] {
   const taskItems = rows
-    .filter((t) => getFrogAssignedOn(t.extra_data) === assignYmd)
+    .filter((t) => isFrogAssignedOn(t.extra_data, assignYmd))
     .map((t): Item => {
       const tone: Item['tone'] = t.priority >= 4 ? 'error' : t.priority === 2 ? 'primary' : t.priority === 3 ? 'tertiary' : 'outline';
       const { parentLabel, projectLabel } = getTaskContextLabels(t, taskTitleById, projectNameById);
@@ -547,7 +534,7 @@ function buildAssignedTodayItems(
     });
 
   const projectItems = projects
-    .filter((p) => getFrogAssignedOn(p.extra_data) === assignYmd)
+    .filter((p) => isFrogAssignedOn(p.extra_data, assignYmd))
     .map((p): Item => {
       const tone: Item['tone'] = p.priority >= 4 ? 'error' : p.priority === 2 ? 'primary' : p.priority === 3 ? 'tertiary' : 'outline';
       return {
@@ -797,10 +784,23 @@ export default function AddFrogScreen() {
               if (!row) return;
               setSaving(true);
               try {
+                const boundary = await loadTasksDayBoundary();
+                const todayYmd = getLogicalLocalYmd(new Date(), boundary);
+                const assignYmd = isTomorrowTarget ? addDaysToLogicalYmd(todayYmd, 1) : todayYmd;
                 if (kind === 'project') {
-                  await unassignProjectFrogFromApi(id, row.extra_data, row as Record<string, unknown>);
+                  await unassignProjectFrogFromApi(
+                    id,
+                    row.extra_data,
+                    row as Record<string, unknown>,
+                    assignYmd,
+                  );
                 } else {
-                  await unassignFrogFromApi(id, row.extra_data, row as Record<string, unknown>);
+                  await unassignFrogFromApi(
+                    id,
+                    row.extra_data,
+                    row as Record<string, unknown>,
+                    assignYmd,
+                  );
                 }
                 notifyAncestorsDataChanged();
                 await reload(true);

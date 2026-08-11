@@ -19,10 +19,11 @@ import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import {
-  clearFrogAssignedOn,
   getFrogAssignedOn,
+  isFrogAssignedOn,
   persistProjectFrogExtraToApi,
   persistTaskFrogExtraToApi,
+  removeFrogAssignedOn,
   unassignFrogFromApi,
   unassignProjectFrogFromApi,
 } from '@/lib/frog-assignment';
@@ -2702,7 +2703,7 @@ export default function TasksScreen() {
           onPress: () => {
             void (async () => {
               markPageDirty();
-              const nextExtra = clearFrogAssignedOn(frog.extra_data);
+              const nextExtra = removeFrogAssignedOn(frog.extra_data, logicalTodayYmd);
               LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
               setTodayFrogs((prev) => prev.filter((t) => t.id !== taskId));
               setProjectFrogIds((prev) => {
@@ -2724,10 +2725,16 @@ export default function TasksScreen() {
                     taskId,
                     snap?.extra_data ?? frog.extra_data,
                     (snap ?? frog) as Record<string, unknown>,
+                    logicalTodayYmd,
                   );
                   await loadProjects();
                 } else {
-                  await unassignFrogFromApi(taskId, frog.extra_data, frog as Record<string, unknown>);
+                  await unassignFrogFromApi(
+                    taskId,
+                    frog.extra_data,
+                    frog as Record<string, unknown>,
+                    logicalTodayYmd,
+                  );
                 }
                 await loadTodayFrogs({ forceLocal: true });
               } catch (err) {
@@ -2748,6 +2755,7 @@ export default function TasksScreen() {
       loadProjects,
       loadTasks,
       loadTodayFrogs,
+      logicalTodayYmd,
       markPageDirty,
       patchVisibleTask,
       projectFrogIds,
@@ -2805,10 +2813,10 @@ export default function TasksScreen() {
               },
               task as Record<string, unknown>,
             );
-            const frogAssigned = (parseTaskMeta(task.extra_data).frogAssignedOn ?? '').trim();
-            if (/^\d{4}-\d{2}-\d{2}$/.test(frogAssigned)) {
+            const frogAssignedToday = isFrogAssignedOn(task.extra_data, logicalTodayYmd);
+            if (frogAssignedToday) {
               try {
-                await insertFrogCompletionEvent(task.id, frogAssigned, 'completed', task.title ?? null);
+                await insertFrogCompletionEvent(task.id, logicalTodayYmd, 'completed', task.title ?? null);
               } catch (frogLogErr) {
                 console.warn('记录青蛙完成事件失败', frogLogErr);
               }
@@ -2853,13 +2861,13 @@ export default function TasksScreen() {
           }
 
           const proj = projects.find((p) => p.id === project.id) ?? (await getProjectById(project.id)) ?? project;
-          const projectFrogAssigned = (getFrogAssignedOn(proj.extra_data) ?? '').trim();
+          const projectFrogAssignedToday = isFrogAssignedOn(proj.extra_data, logicalTodayYmd);
           let nextProjectExtra = clearFrogSessionCompletedOn(proj.extra_data);
-          if (/^\d{4}-\d{2}-\d{2}$/.test(projectFrogAssigned)) {
+          if (projectFrogAssignedToday) {
             try {
               await insertFrogCompletionEvent(
                 project.id,
-                projectFrogAssigned,
+                logicalTodayYmd,
                 'completed',
                 proj.name ?? null,
               );
@@ -3144,10 +3152,9 @@ export default function TasksScreen() {
           },
           current as Record<string, unknown>,
         );
-        const frogAssigned = (parseTaskMeta(current.extra_data).frogAssignedOn ?? '').trim();
-        const frogAssignedValid = /^\d{4}-\d{2}-\d{2}$/.test(frogAssigned);
+        const frogAssignedToday = isFrogAssignedOn(current.extra_data, logicalTodayYmd);
         // 待办热力图仅统计无项目待办；青蛙完成走 frog_completion_events，避免同一任务重复计入
-        if (isStandaloneTodoTask(current) && !frogAssignedValid) {
+        if (isStandaloneTodoTask(current) && !frogAssignedToday && !getFrogAssignedOn(current.extra_data)) {
           try {
             await insertTaskExecutionEvent(taskId, wasDone ? 'reopened' : 'completed', current.title ?? null);
           } catch (logErr) {
@@ -3161,11 +3168,11 @@ export default function TasksScreen() {
             extra_data: nextExtraData,
           });
         }
-        if (frogAssignedValid) {
+        if (frogAssignedToday) {
           try {
             await insertFrogCompletionEvent(
               taskId,
-              frogAssigned,
+              logicalTodayYmd,
               wasDone ? 'reopened' : 'completed',
               current.title ?? null
             );
@@ -3319,8 +3326,7 @@ export default function TasksScreen() {
         return;
       }
 
-      const frogAssigned = getFrogAssignedOn(current.extra_data);
-      if (frogAssigned !== logicalTodayYmd) return;
+      if (!isFrogAssignedOn(current.extra_data, logicalTodayYmd)) return;
 
       markPageDirty();
       const nextExtraData = setFrogSessionCompletedOn(current.extra_data, logicalTodayYmd);
@@ -3352,7 +3358,7 @@ export default function TasksScreen() {
           );
         }
         try {
-          await insertFrogCompletionEvent(taskId, frogAssigned, 'completed', current.title ?? null);
+          await insertFrogCompletionEvent(taskId, logicalTodayYmd, 'completed', current.title ?? null);
         } catch (frogLogErr) {
           console.warn('记录青蛙完成事件失败', frogLogErr);
         }
@@ -3404,8 +3410,7 @@ export default function TasksScreen() {
         : findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
-      const frogAssigned = getFrogAssignedOn(current.extra_data);
-      if (frogAssigned !== logicalTodayYmd) return;
+      if (!isFrogAssignedOn(current.extra_data, logicalTodayYmd)) return;
 
       markPageDirty();
       const nextExtraData = clearFrogSessionCompletedOn(current.extra_data);
@@ -3437,7 +3442,7 @@ export default function TasksScreen() {
           );
         }
         try {
-          await insertFrogCompletionEvent(taskId, frogAssigned, 'reopened', current.title ?? null);
+          await insertFrogCompletionEvent(taskId, logicalTodayYmd, 'reopened', current.title ?? null);
         } catch (frogLogErr) {
           console.warn('记录青蛙重开事件失败', frogLogErr);
         }
@@ -3487,8 +3492,7 @@ export default function TasksScreen() {
         : findVisibleTask(taskId);
       if (!current || isTaskShelvedStatus(current.status)) return;
 
-      const frogAssigned = getFrogAssignedOn(current.extra_data);
-      const isAssignedToday = frogAssigned === logicalTodayYmd;
+      const isAssignedToday = isFrogAssignedOn(current.extra_data, logicalTodayYmd);
       const frogDone = isFrogDoneForToday(current.extra_data, current.status, logicalTodayYmd);
 
       if (frogDone && !isTaskTerminalStatus(current.status)) {

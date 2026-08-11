@@ -1,6 +1,6 @@
 import { apiGetTodayFrogs } from '@/lib/api-client';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
-import { getFrogAssignedOn } from '@/lib/frog-assignment';
+import { isFrogAssignedOn } from '@/lib/frog-assignment';
 import { isFrogDoneForToday } from '@/lib/long-term-task';
 import { getActivePageApiReadOpts } from '@/lib/page-api-session';
 import { projectToFrogTaskRow } from '@/lib/project-frog';
@@ -45,12 +45,12 @@ function sortTodayFrogRows(rows: TaskRow[], logicalToday: string): TaskRow[] {
 }
 
 export function filterTodayProjectFrogsLocally(projects: ProjectRow[], logicalToday: string): ProjectRow[] {
-  return projects.filter((p) => getFrogAssignedOn(p.extra_data) === logicalToday);
+  return projects.filter((p) => isFrogAssignedOn(p.extra_data, logicalToday));
 }
 
 export function filterTodayFrogsLocally(tasks: TaskRow[], logicalToday: string): TaskRow[] {
   return sortTodayFrogRows(
-    tasks.filter((t) => getFrogAssignedOn(t.extra_data) === logicalToday),
+    tasks.filter((t) => isFrogAssignedOn(t.extra_data, logicalToday)),
     logicalToday,
   );
 }
