@@ -1,4 +1,3 @@
-import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
 import {
     ComposerEditorialCard,
     ComposerHero,
@@ -19,13 +18,16 @@ import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { setAddTaskResult } from '@/lib/add-task-bridge';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
-import { mergeCompletionRewardIntoExtraData } from '@/lib/completion-reward/completion-reward-extra';
-import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
-import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import { clearProjectFrogFields } from '@/lib/frog-assignment';
 import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
+import {
+  mergeRewardPointsIntoExtraData,
+  normalizeRewardPoints,
+  parseRewardPointsFromExtraData,
+} from '@/lib/reward-points';
+import { AppInput } from '@/components/ui';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getProjectById, updateProject } from '@/lib/repositories/projects/project';
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
@@ -243,6 +245,7 @@ export default function AddTaskScreen() {
   const [title, setTitle] = React.useState('');
   const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
   const [notes, setNotes] = React.useState('');
+  const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [mainTaskOpen, setMainTaskOpen] = React.useState(false);
   const [mainTaskQuery, setMainTaskQuery] = React.useState('');
@@ -253,7 +256,6 @@ export default function AddTaskScreen() {
   const [scheduleMeta, setScheduleMeta] = React.useState<TaskScheduleMeta | null>(null);
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
-  const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [projectName, setProjectName] = React.useState<string | null>(null);
   /** 独立待办：正常待办 vs 暂时搁置（时间未定，不可直接完成） */
@@ -332,6 +334,7 @@ export default function AddTaskScreen() {
     setTitle(task.title ?? '');
     setAcceptanceCriteria(task.description ?? '');
     setNotes(task.note ?? '');
+    setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
     setPriority(taskPriorityToKey(task.priority ?? 0));
     editTaskStatusRef.current = task.status;
     const shelved = task.status === 'shelved';
@@ -531,13 +534,16 @@ export default function AddTaskScreen() {
         const dueDate = shelved
           ? null
           : dueDateFromScheduleMeta(scheduleMeta, extractDueDateFromDeadlineText(deadlineText));
-        const extraPayload = shelved
-          ? JSON.stringify({ reminder: '', repeat: '', schedule: null })
-          : JSON.stringify({
-              reminder: reminderText || '',
-              repeat: repeatText || '',
-              schedule: scheduleMeta,
-            });
+        const extraPayload = mergeRewardPointsIntoExtraData(
+          shelved
+            ? JSON.stringify({ reminder: '', repeat: '', schedule: null })
+            : JSON.stringify({
+                reminder: reminderText || '',
+                repeat: repeatText || '',
+                schedule: scheduleMeta,
+              }),
+          normalizeRewardPoints(rewardPointsText),
+        );
         const trimmedAcceptanceCriteria = acceptanceCriteria.trim() || null;
         if (isEditStandalone) {
           await updateTask(editTaskId, {
@@ -596,16 +602,16 @@ export default function AddTaskScreen() {
           status: 'todo',
           priority: labelToTaskPriority(priorityLabel),
           due_date: dueDateFromScheduleMeta(scheduleMeta, extractDueDateFromDeadlineText(deadlineText)),
-          extra_data: mergeLongTermTaskIntoExtraData(
-            mergeCompletionRewardIntoExtraData(
+          extra_data: mergeRewardPointsIntoExtraData(
+            mergeLongTermTaskIntoExtraData(
               JSON.stringify({
                 reminder: reminderText || '',
                 repeat: repeatText || '',
                 schedule: scheduleMeta,
               }),
-              completionReward,
+              isLongTermTask,
             ),
-            isLongTermTask,
+            normalizeRewardPoints(rewardPointsText),
           ),
         });
         try {
@@ -844,29 +850,24 @@ export default function AddTaskScreen() {
               </ComposerSection>
             ) : null}
 
-            {!isStandalone ? (
-              <ComposerSection>
-                <ComposerSectionHead
-                  accentColor={colors.secondary}
-                  title="完成奖励"
-                  description="完成后可领取的小激励"
-                  rightIcon="emoji-events"
+            <ComposerSection>
+              <ComposerSectionHead
+                accentColor={colors.tertiary}
+                title="奖励积分"
+                description="完成任务后计入心愿板积分；0 表示无奖励"
+                rightIcon="stars"
+              />
+              <ComposerEditorialCard>
+                <AppInput
+                  label="奖励积分"
+                  value={rewardPointsText}
+                  onChangeText={setRewardPointsText}
+                  placeholder="0"
+                  keyboardType="number-pad"
+                  inputWrapStyle={styles.rewardPointsWrap}
                 />
-                <ComposerEditorialCard>
-                  <CompletionRewardField
-                    value={completionReward}
-                    onChange={setCompletionReward}
-                    textColor={colors.text}
-                    outline={colors.textSecondary}
-                    placeholderColor={colors.textMuted}
-                    primary={colors.primary}
-                    surfaceLow={colors.input}
-                    surfaceLowest={colors.surfaceSubtle}
-                    isDark={isDark}
-                  />
-                </ComposerEditorialCard>
-              </ComposerSection>
-            ) : null}
+              </ComposerEditorialCard>
+            </ComposerSection>
 
             <ComposerNoteSection
               value={acceptanceCriteria}
@@ -1125,6 +1126,10 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing['2xl'],
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  rewardPointsWrap: {
+    minHeight: 40,
+    paddingVertical: Spacing.md,
   },
 });
 

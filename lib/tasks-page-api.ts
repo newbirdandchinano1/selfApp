@@ -121,26 +121,6 @@ export type TasksPageData = {
 
 
 
-export type TasksPageSyncResult = {
-
-  logicalToday: string;
-
-  weekStart: string;
-
-  weekEnd: string;
-
-  serverFiltered: boolean;
-
-  filtersVersion: string | null;
-
-  taskCount: number;
-
-  tablesSynced: number;
-
-};
-
-
-
 const TASKS_PAGE_INCLUDE = 'tasks';
 
 
@@ -1321,47 +1301,4 @@ export async function fetchTasksPageData(opts?: {
   return readTasksPageFromLocal(boundary, opts?.taskTab ?? 'all');
 
 }
-
-
-
-/** @deprecated 请使用 fetchTasksPageData */
-
-export async function syncTasksPageFilteredFromApi(opts?: {
-
-  boundary?: TasksDayBoundary;
-
-  signal?: AbortSignal;
-
-}): Promise<TasksPageSyncResult> {
-
-  const data = await fetchTasksPageData({
-
-    boundary: opts?.boundary,
-
-    signal: opts?.signal,
-
-    offlineFallback: false,
-
-  });
-
-  return {
-
-    logicalToday: data.logicalToday,
-
-    weekStart: data.weekStart,
-
-    weekEnd: data.weekEnd,
-
-    serverFiltered: data.standaloneServerFiltered && data.matrixServerFiltered,
-
-    filtersVersion: data.filtersVersion,
-
-    taskCount: data.standaloneTodos.length + data.matrixWeekTasks.length,
-
-    tablesSynced: 4,
-
-  };
-
-}
-
 

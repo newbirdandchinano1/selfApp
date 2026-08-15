@@ -1,14 +1,6 @@
 import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
-import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
-import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
-import {
-  hasCompletionReward,
-  mergeCompletionRewardIntoExtraData,
-  parseCompletionRewardFromExtraData,
-} from '@/lib/completion-reward/completion-reward-extra';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
 import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
@@ -36,6 +28,10 @@ import {
 } from '@/lib/repositories/habits/habit-task-period';
 import { type HabitKind, parseHabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
+  normalizeHabitRewardPoints,
+  parseHabitRewardPoints,
+} from '@/lib/repositories/habits/habit-reward-points';
+import {
   createHabitSubItemId,
   mergeSubHabitsIntoExtraData,
   parseHabitSubHabitsMeta,
@@ -62,15 +58,15 @@ const EXPECTED_GOAL_TABS: { key: ExpectedGoalTab; label: string }[] = [
   { key: 'times', label: '按次数' },
 ];
 
-const BUILD_REWARD_GOAL_TABS: { key: BuildHabitExpectedGoalType; label: string }[] = [
+const BUILD_EXPECTED_GOAL_TABS: { key: BuildHabitExpectedGoalType; label: string }[] = [
   { key: 'days', label: '累计天数' },
   { key: 'times', label: '累计次数' },
   { key: 'consecutive_days', label: '连续天数' },
 ];
 
-const BUILD_REWARD_CONDITION_TABS: { key: ExpectedGoalTab; label: string }[] = [
+const BUILD_EXPECTED_CONDITION_TABS: { key: ExpectedGoalTab; label: string }[] = [
   { key: 'none', label: '不设' },
-  ...BUILD_REWARD_GOAL_TABS,
+  ...BUILD_EXPECTED_GOAL_TABS,
 ];
 
 const WORK_DAYS = ['周一', '周二', '周三', '周四', '周五'];
@@ -242,14 +238,14 @@ export default function AddHabitScreen() {
   const [expectedGoalTab, setExpectedGoalTab] = React.useState<ExpectedGoalTab>('none');
   const [expectedGoalValue, setExpectedGoalValue] = React.useState(7);
   const [habitNote, setHabitNote] = React.useState('');
+  const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [habitKind, setHabitKind] = React.useState<HabitKind>('build');
   const [iconPickerOpen, setIconPickerOpen] = React.useState(false);
   const [reminderOpen, setReminderOpen] = React.useState(false);
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
-  const [rewardOpen, setRewardOpen] = React.useState(false);
-  const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
+  const [expectedGoalOpen, setExpectedGoalOpen] = React.useState(false);
   const [subHabitsOpen, setSubHabitsOpen] = React.useState(true);
   const [subHabitsEnabled, setSubHabitsEnabled] = React.useState(false);
   const [subHabits, setSubHabits] = React.useState<HabitSubItem[]>([]);
@@ -335,6 +331,7 @@ export default function AddHabitScreen() {
         setSelectedContext(rawCtx);
         setHabitNote(row.note?.trim() ? row.note : '');
         setHabitKind(parseHabitKind(row.extra_data));
+        setRewardPointsText(String(parseHabitRewardPoints(row.extra_data)));
         if (row.extra_data) {
           try {
             const parsed = JSON.parse(row.extra_data) as any;
@@ -413,7 +410,6 @@ export default function AddHabitScreen() {
             } else {
               setReminderEnabled(false);
             }
-            setCompletionReward(parseCompletionRewardFromExtraData(row.extra_data));
             const subMeta = parseHabitSubHabitsMeta(row.extra_data);
             setSubHabitsEnabled(subMeta.enabled);
             setSubHabits(subMeta.items);
@@ -548,18 +544,7 @@ export default function AddHabitScreen() {
         }
       }
     }
-
-    if (
-      habitKind === 'build' &&
-      hasCompletionReward(completionReward) &&
-      (expectedGoalTab === 'none' ||
-        (expectedGoalTab !== 'days' &&
-          expectedGoalTab !== 'times' &&
-          expectedGoalTab !== 'consecutive_days'))
-    ) {
-      Alert.alert('提示', '设置完成奖励前，请先选择达成条件：累计天数、累计次数或连续天数。');
-      return;
-    }
+    delete existingExtra.completion_reward;
 
     const unitResolved = unitInput.trim() || DEFAULT_QUANTIFY_UNIT;
 
@@ -613,6 +598,7 @@ export default function AddHabitScreen() {
       JSON.stringify({
         ...existingExtra,
         habitKind,
+        reward_points: normalizeHabitRewardPoints(rewardPointsText),
         quantifyEnabled,
         quantify: quantifyEnabled
           ? {
@@ -657,10 +643,12 @@ export default function AddHabitScreen() {
       extraData = ensureBreakHabitCycleExtra(extraDataRaw, cycleStartedAt);
       const extraObj = JSON.parse(extraData) as Record<string, unknown>;
       delete extraObj.buildHabitCycle;
-      extraData = mergeCompletionRewardIntoExtraData(JSON.stringify(extraObj), completionReward);
+      delete extraObj.completion_reward;
+      extraData = JSON.stringify(extraObj);
     } else if (habitKind === 'build') {
       const extraObj = JSON.parse(extraData) as Record<string, unknown>;
       delete extraObj.breakHabitCycle;
+      delete extraObj.completion_reward;
       let merged = JSON.stringify(extraObj);
       const goalRemoved = nextBuildExpectedGoal == null;
       const goalChanged =
@@ -671,14 +659,13 @@ export default function AddHabitScreen() {
       if (goalRemoved || goalChanged || (goalRemoved && isBuildHabitSucceeded(merged))) {
         merged = mergeBuildHabitCycleExtra(merged, { completedAt: null, completedValue: null });
       }
-      extraData = mergeCompletionRewardIntoExtraData(merged, completionReward);
+      extraData = merged;
     } else if (habitKind === 'task') {
       const extraObj = JSON.parse(extraData) as Record<string, unknown>;
       delete extraObj.breakHabitCycle;
       delete extraObj.buildHabitCycle;
-      extraData = mergeCompletionRewardIntoExtraData(JSON.stringify(extraObj), completionReward);
-    } else {
-      extraData = mergeCompletionRewardIntoExtraData(extraData, completionReward);
+      delete extraObj.completion_reward;
+      extraData = JSON.stringify(extraObj);
     }
 
     const note = habitNote.trim() || null;
@@ -736,7 +723,6 @@ export default function AddHabitScreen() {
     activeMonthlyFilter,
     activeTab,
     consecutiveTargetDays,
-    completionReward,
     dailyGoal,
     expectedGoalTab,
     expectedGoalValue,
@@ -748,6 +734,7 @@ export default function AddHabitScreen() {
     habitKind,
     habitName,
     habitNote,
+    rewardPointsText,
     eachPlus,
     isEditMode,
     monthlyNDays,
@@ -852,6 +839,16 @@ export default function AddHabitScreen() {
             textAlignVertical="top"
             inputWrapStyle={styles.noteInputWrap}
             inputStyle={[Typography.body, styles.noteInputText]}
+          />
+
+          <AppInput
+            label="奖励积分"
+            value={rewardPointsText}
+            onChangeText={setRewardPointsText}
+            placeholder="0"
+            keyboardType="number-pad"
+            hint="每次完成打卡计入心愿板积分；0 表示无奖励"
+            inputWrapStyle={styles.rewardPointsWrap}
           />
 
           <View style={styles.kindBlock}>
@@ -1267,15 +1264,15 @@ export default function AddHabitScreen() {
 
           {habitKind === 'build' ? (
             <View>
-              {renderSectionHeader('emoji-events', '完成奖励', rewardOpen, () => setRewardOpen((v) => !v))}
-              {rewardOpen ? (
+              {renderSectionHeader('flag', '预期目标', expectedGoalOpen, () => setExpectedGoalOpen((v) => !v))}
+              {expectedGoalOpen ? (
                 <AppCard variant="default" padded style={styles.sectionCardInner}>
                   <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>达成条件</Text>
                   <Text style={[Typography.caption, styles.expectedGoalHint, { color: colors.textSecondary }]}>
-                    选择用累计天数、累计次数或连续天数作为完成与发奖依据
+                    选择用累计天数、累计次数或连续天数作为完成依据
                   </Text>
                   <View style={styles.expectedGoalTabs}>
-                    {BUILD_REWARD_CONDITION_TABS.map((tab) => {
+                    {BUILD_EXPECTED_CONDITION_TABS.map((tab) => {
                       const active = expectedGoalTab === tab.key;
                       return (
                         <Pressable
@@ -1323,20 +1320,6 @@ export default function AddHabitScreen() {
                       mutedColor={colors.textSecondary}
                     />
                   ) : null}
-                  <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text, marginTop: Spacing.sm }]}>
-                    奖励内容
-                  </Text>
-                  <CompletionRewardField
-                    value={completionReward}
-                    onChange={setCompletionReward}
-                    textColor={colors.text}
-                    outline={colors.textSecondary}
-                    placeholderColor={colors.textMuted}
-                    primary={colors.primary}
-                    surfaceLow={colors.input}
-                    surfaceLowest={colors.surface}
-                    isDark={isDark}
-                  />
                 </AppCard>
               ) : null}
             </View>
@@ -1962,6 +1945,10 @@ const styles = StyleSheet.create({
     minHeight: 72,
     lineHeight: 22,
     fontSize: 15,
+  },
+  rewardPointsWrap: {
+    minHeight: 40,
+    paddingVertical: Spacing.md,
   },
   kindBlock: { gap: Spacing.md },
   kindBlockLabel: { paddingLeft: Spacing.xs },

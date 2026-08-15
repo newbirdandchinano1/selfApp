@@ -1,7 +1,6 @@
-import { HealthNutrientAccents } from '@/constants/design-tokens';
+import { HealthNutrientAccents, Radius, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { buildUserHealthCalendarSnapshot } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import { getDefaultUser } from '@/lib/repositories/users/user';
@@ -15,11 +14,9 @@ import {
   Text,
   TouchableOpacity,
   View,
-  useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Defs, LinearGradient, Path, Stop } from 'react-native-svg';
 
 type MetricMode = 'overall' | 'hydration' | 'protein' | 'carbohydrate' | 'calories';
@@ -453,17 +450,25 @@ function TrendChartPanel({
   );
 }
 
-const PAGE_API_KEY = 'health-calendar';
+export type HealthIntakeTrendSectionProps = {
+  logicalToday: Date;
+  /** 首页下拉刷新 / 摄入变更后递增，触发重载 */
+  refreshNonce?: number;
+  /** 外层已有标题（如 Tab）时隐藏本组件标题行 */
+  hideSectionHeader?: boolean;
+};
 
-export default function HealthCalendarScreen() {
-  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+export function HealthIntakeTrendSection({
+  logicalToday,
+  refreshNonce = 0,
+  hideSectionHeader = false,
+}: HealthIntakeTrendSectionProps) {
   const router = useRouter();
   const scheme = useColorScheme();
   const theme = Colors[scheme ?? 'light'];
   const isDark = scheme === 'dark';
-  const today = React.useMemo(() => normalizeDate(new Date()), []);
-  const { width: windowWidth } = useWindowDimensions();
-  const chartPagerWidth = Math.max(1, windowWidth - 48 - 32);
+  const today = React.useMemo(() => normalizeDate(logicalToday), [logicalToday]);
+  const [chartPagerWidth, setChartPagerWidth] = React.useState(1);
 
   const [dayMetricsMap, setDayMetricsMap] = React.useState<Map<string, DayMetrics>>(new Map());
   const [historyStartDate, setHistoryStartDate] = React.useState(() => addDays(today, -29));
@@ -493,41 +498,40 @@ export default function HealthCalendarScreen() {
   const canGoOlder = canShiftWindowOlder(windowEndDate, windowSize, historyStartDate);
   const canGoNewer = canShiftWindowNewer(windowEndDate, today);
 
-  const reloadCalendar = React.useCallback(
-    async (forceApi = false) => {
-      await wrapLoad(async () => {
-        setLoading(true);
-        try {
-          const user = await getDefaultUser();
-          if (!user?.id) {
-            setDayMetricsMap(new Map());
-            setHistoryStartDate(addDays(today, -29));
-            setWindowEndDate(today);
-            setSelectedIndex(null);
-            return false;
-          }
+  const reloadCalendar = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const user = await getDefaultUser();
+      if (!user?.id) {
+        setDayMetricsMap(new Map());
+        setHistoryStartDate(addDays(today, -29));
+        setWindowEndDate(today);
+        setSelectedIndex(null);
+        return;
+      }
 
-          const { records, completionMap, startDate } = await buildUserHealthCalendarSnapshot(user.id, today);
-          setDayMetricsMap(buildDayMetricsMap(records, completionMap));
-          setHistoryStartDate(startDate);
-          setWindowEndDate(today);
-          setSelectedIndex(null);
-          return true;
-        } finally {
-          setLoading(false);
-        }
-      }, forceApi);
-    },
-    [today, wrapLoad],
-  );
-
-  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadCalendar);
+      const { records, completionMap, startDate } = await buildUserHealthCalendarSnapshot(user.id, today, {
+        localOnly: true,
+      });
+      setDayMetricsMap(buildDayMetricsMap(records, completionMap));
+      setHistoryStartDate(startDate);
+      setWindowEndDate(today);
+      setSelectedIndex(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [today]);
 
   useFocusEffect(
     React.useCallback(() => {
-      void reloadCalendar().catch((e) => console.warn('刷新健康日历失败', e));
+      void reloadCalendar().catch((e) => console.warn('刷新健康摄入趋势失败', e));
     }, [reloadCalendar]),
   );
+
+  React.useEffect(() => {
+    if (refreshNonce <= 0) return;
+    void reloadCalendar().catch((e) => console.warn('刷新健康摄入趋势失败', e));
+  }, [refreshNonce, reloadCalendar]);
 
   React.useEffect(() => {
     chartPagerRef.current?.scrollTo({ x: chartPagerWidth, animated: false });
@@ -612,298 +616,288 @@ export default function HealthCalendarScreen() {
   const currentRangeLabel = formatWindowRangeLabel(currentWindow.start, currentWindow.end);
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top', 'left', 'right']}>
-      <View style={[styles.header, { backgroundColor: isDark ? 'rgba(15,23,42,0.95)' : 'rgba(248,250,252,0.95)' }]}>
-        <TouchableOpacity style={[styles.iconBtn, { backgroundColor: theme.surface }]} onPress={() => router.back()}>
-          <MaterialIcons name="chevron-left" size={22} color={theme.text} />
-        </TouchableOpacity>
-        <View style={styles.headerCenter}>
-          <Text style={[styles.headerTitle, { color: theme.text }]}>健康摄入趋势</Text>
-          <Text style={styles.headerSub}>{currentRangeLabel}</Text>
+    <View style={[styles.root, hideSectionHeader && styles.rootEmbedded]}>
+      {hideSectionHeader ? null : (
+        <View style={styles.sectionHeader}>
+          <Text style={[styles.sectionTitle, { color: theme.text }]}>健康摄入趋势</Text>
+          <Text style={[styles.sectionSub, { color: theme.primary }]}>{currentRangeLabel}</Text>
         </View>
-        <View style={styles.headerSpacer} />
+      )}
+
+      <View style={styles.filterSection}>
+        <View style={styles.pillRow}>
+          {RANGE_MODES.map((item) => {
+            const active = rangeMode === item.key;
+            return (
+              <Pressable
+                key={item.key}
+                onPress={() => {
+                  setRangeMode(item.key);
+                  setWindowEndDate(today);
+                }}
+                style={[
+                  styles.pill,
+                  {
+                    backgroundColor: active ? `${metricAccent}18` : theme.surface,
+                    borderColor: active ? metricAccent : isDark ? 'rgba(148,163,184,0.22)' : '#e2e8f0',
+                  },
+                ]}
+              >
+                <Text style={[styles.pillText, { color: active ? metricAccent : theme.textSecondary }]}>{item.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.metricPillRow}>
+          {METRIC_MODES.map((item) => {
+            const active = metricMode === item.key;
+            return (
+              <Pressable
+                key={item.key}
+                onPress={() => setMetricMode(item.key)}
+                style={[
+                  styles.metricPill,
+                  {
+                    backgroundColor: active ? `${item.color}18` : theme.surface,
+                    borderColor: active ? item.color : isDark ? 'rgba(148,163,184,0.22)' : '#e2e8f0',
+                  },
+                ]}
+              >
+                <View style={[styles.metricDot, { backgroundColor: item.color }]} />
+                <Text style={[styles.metricPillText, { color: active ? item.color : theme.textSecondary }]}>{item.label}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
       </View>
 
-      <ScrollView
-        refreshControl={refreshControl}
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
+      <View
+        style={[
+          styles.trendCard,
+          {
+            backgroundColor: theme.surface,
+            borderColor: isDark ? 'rgba(148,163,184,0.22)' : '#f1f5f9',
+          },
+        ]}
+        onLayout={(e) => {
+          const next = Math.max(1, e.nativeEvent.layout.width - 32);
+          setChartPagerWidth((prev) => (Math.abs(prev - next) < 1 ? prev : next));
+        }}
       >
-        <View style={styles.filterSection}>
-          <View style={styles.pillRow}>
-            {RANGE_MODES.map((item) => {
-              const active = rangeMode === item.key;
-              return (
-                <Pressable
-                  key={item.key}
-                  onPress={() => {
-                    setRangeMode(item.key);
-                    setWindowEndDate(today);
-                  }}
-                  style={[
-                    styles.pill,
-                    {
-                      backgroundColor: active ? `${metricAccent}18` : theme.surface,
-                      borderColor: active ? metricAccent : isDark ? 'rgba(148,163,184,0.22)' : '#e2e8f0',
-                    },
-                  ]}
-                >
-                  <Text style={[styles.pillText, { color: active ? metricAccent : theme.textSecondary }]}>{item.label}</Text>
-                </Pressable>
-              );
-            })}
+        <View style={styles.trendSummaryRow}>
+          <View>
+            <Text style={[styles.trendDayLabel, { color: isSelectedToday ? theme.textSecondary : metricAccent }]}>
+              {selectedTrendPoint?.label ?? '今天'}
+              {!isSelectedToday ? ` · ${currentMetricLabel}` : ''}
+            </Text>
+            <Text style={[styles.trendValue, { color: theme.text }]}>
+              {selectedTrendPoint?.hasRecord ? `${activeTrendValue}%` : '--'}
+            </Text>
           </View>
-
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.metricPillRow}>
-            {METRIC_MODES.map((item) => {
-              const active = metricMode === item.key;
-              return (
-                <Pressable
-                  key={item.key}
-                  onPress={() => setMetricMode(item.key)}
-                  style={[
-                    styles.metricPill,
-                    {
-                      backgroundColor: active ? `${item.color}18` : theme.surface,
-                      borderColor: active ? item.color : isDark ? 'rgba(148,163,184,0.22)' : '#e2e8f0',
-                    },
-                  ]}
-                >
-                  <View style={[styles.metricDot, { backgroundColor: item.color }]} />
-                  <Text style={[styles.metricPillText, { color: active ? item.color : theme.textSecondary }]}>{item.label}</Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
+          <View style={[styles.trendBadge, { backgroundColor: `${metricAccent}14` }]}>
+            <MaterialIcons name="show-chart" size={18} color={metricAccent} />
+            <Text style={[styles.trendBadgeText, { color: metricAccent }]}>{currentMetricLabel}</Text>
+          </View>
         </View>
 
+        <View style={styles.trendNavRow}>
+          <TouchableOpacity
+            style={[
+              styles.trendNavBtn,
+              {
+                backgroundColor: theme.surface,
+                borderColor: isDark ? 'rgba(148,163,184,0.22)' : '#e2e8f0',
+                opacity: canGoOlder ? 1 : 0.35,
+              },
+            ]}
+            disabled={!canGoOlder}
+            onPress={() => setWindowEndDate((prev) => addDays(prev, -windowSize))}
+            accessibilityLabel="查看更早记录"
+          >
+            <MaterialIcons name="chevron-left" size={20} color={theme.textSecondary} />
+          </TouchableOpacity>
+          <Text style={[styles.trendRangeText, { color: theme.textSecondary }]}>{currentRangeLabel}</Text>
+          <TouchableOpacity
+            style={[
+              styles.trendNavBtn,
+              {
+                backgroundColor: theme.surface,
+                borderColor: isDark ? 'rgba(148,163,184,0.22)' : '#e2e8f0',
+                opacity: canGoNewer ? 1 : 0.35,
+              },
+            ]}
+            disabled={!canGoNewer}
+            onPress={() =>
+              setWindowEndDate((prev) => {
+                const nextEnd = addDays(prev, windowSize);
+                return nextEnd > today ? today : nextEnd;
+              })
+            }
+            accessibilityLabel="查看更近记录"
+          >
+            <MaterialIcons name="chevron-right" size={20} color={theme.textSecondary} />
+          </TouchableOpacity>
+        </View>
+
+        <View style={[styles.trendTip, { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : '#f8fafc' }]}>
+          <Text style={[styles.trendTipText, { color: theme.textSecondary }]}>{trendTipText}</Text>
+        </View>
+
+        <ScrollView
+          ref={chartPagerRef}
+          horizontal
+          pagingEnabled
+          nestedScrollEnabled
+          directionalLockEnabled
+          showsHorizontalScrollIndicator={false}
+          scrollEventThrottle={16}
+          onMomentumScrollEnd={onChartPagerEnd}
+          style={styles.chartPager}
+        >
+          {pagerTrendWindows.map((page) => (
+            <View key={`${page.key}-${currentWindow.end.getTime()}`} style={{ width: chartPagerWidth }}>
+              <TrendChartPanel
+                chartKey={page.key}
+                trendPoints={page.points}
+                logicalToday={today}
+                metricAccent={metricAccent}
+                theme={theme}
+                isDark={isDark}
+                selectedIndex={page.key === 'current' ? selectedIndex : null}
+                onSelectIndex={page.key === 'current' ? setSelectedIndex : () => {}}
+              />
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+
+      {selectedTrendPoint && selectedMetrics ? (
         <View
           style={[
-            styles.trendCard,
+            styles.detailCard,
             {
               backgroundColor: theme.surface,
               borderColor: isDark ? 'rgba(148,163,184,0.22)' : '#f1f5f9',
             },
           ]}
         >
-          <View style={styles.trendSummaryRow}>
+          <View style={styles.detailHeader}>
             <View>
-              <Text style={[styles.trendDayLabel, { color: isSelectedToday ? theme.textSecondary : metricAccent }]}>
-                {selectedTrendPoint?.label ?? '今天'}
-                {!isSelectedToday ? ` · ${currentMetricLabel}` : ''}
-              </Text>
-              <Text style={[styles.trendValue, { color: theme.text }]}>
-                {selectedTrendPoint?.hasRecord ? `${activeTrendValue}%` : '--'}
-              </Text>
+              <Text style={[styles.detailDate, { color: theme.text }]}>{formatDateLabel(selectedTrendPoint.date)}</Text>
+              <Text style={[styles.detailDesc, { color: theme.textSecondary }]}>你已经完成了 {progress}% 的目标</Text>
             </View>
-            <View style={[styles.trendBadge, { backgroundColor: `${metricAccent}14` }]}>
-              <MaterialIcons name="show-chart" size={18} color={metricAccent} />
-              <Text style={[styles.trendBadgeText, { color: metricAccent }]}>{currentMetricLabel}</Text>
-            </View>
-          </View>
-
-          <View style={styles.trendNavRow}>
             <TouchableOpacity
-              style={[
-                styles.trendNavBtn,
-                {
-                  backgroundColor: theme.surface,
-                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : '#e2e8f0',
-                  opacity: canGoOlder ? 1 : 0.35,
-                },
-              ]}
-              disabled={!canGoOlder}
-              onPress={() => setWindowEndDate((prev) => addDays(prev, -windowSize))}
-              accessibilityLabel="查看更早记录"
+              style={styles.trendIconWrap}
+              activeOpacity={0.8}
+              onPress={() => router.push({ pathname: '/intake-history', params: { date: selectedTrendPoint.key } })}
             >
-              <MaterialIcons name="chevron-left" size={20} color={theme.textSecondary} />
-            </TouchableOpacity>
-            <Text style={[styles.trendRangeText, { color: theme.textSecondary }]}>{currentRangeLabel}</Text>
-            <TouchableOpacity
-              style={[
-                styles.trendNavBtn,
-                {
-                  backgroundColor: theme.surface,
-                  borderColor: isDark ? 'rgba(148,163,184,0.22)' : '#e2e8f0',
-                  opacity: canGoNewer ? 1 : 0.35,
-                },
-              ]}
-              disabled={!canGoNewer}
-              onPress={() =>
-                setWindowEndDate((prev) => {
-                  const nextEnd = addDays(prev, windowSize);
-                  return nextEnd > today ? today : nextEnd;
-                })
-              }
-              accessibilityLabel="查看更近记录"
-            >
-              <MaterialIcons name="chevron-right" size={20} color={theme.textSecondary} />
+              <MaterialIcons name="history" size={20} color="#10b981" />
             </TouchableOpacity>
           </View>
-
-          <View style={[styles.trendTip, { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : '#f8fafc' }]}>
-            <Text style={[styles.trendTipText, { color: theme.textSecondary }]}>{trendTipText}</Text>
-          </View>
-
-          <ScrollView
-            ref={chartPagerRef}
-            horizontal
-            pagingEnabled
-            nestedScrollEnabled
-            directionalLockEnabled
-            showsHorizontalScrollIndicator={false}
-            scrollEventThrottle={16}
-            onMomentumScrollEnd={onChartPagerEnd}
-            style={styles.chartPager}
-          >
-            {pagerTrendWindows.map((page) => (
-              <View key={`${page.key}-${currentWindow.end.getTime()}`} style={{ width: chartPagerWidth }}>
-                <TrendChartPanel
-                  chartKey={page.key}
-                  trendPoints={page.points}
-                  logicalToday={today}
-                  metricAccent={metricAccent}
-                  theme={theme}
-                  isDark={isDark}
-                  selectedIndex={page.key === 'current' ? selectedIndex : null}
-                  onSelectIndex={page.key === 'current' ? setSelectedIndex : () => {}}
-                />
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-
-        {selectedTrendPoint && selectedMetrics ? (
-          <View
-            style={[
-              styles.detailCard,
-              {
-                backgroundColor: theme.surface,
-                borderColor: isDark ? 'rgba(148,163,184,0.22)' : '#f1f5f9',
-              },
-            ]}
-          >
-            <View style={styles.detailHeader}>
-              <View>
-                <Text style={[styles.detailDate, { color: theme.text }]}>{formatDateLabel(selectedTrendPoint.date)}</Text>
-                <Text style={[styles.detailDesc, { color: theme.textSecondary }]}>你已经完成了 {progress}% 的目标</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.trendIconWrap}
-                activeOpacity={0.8}
-                onPress={() => router.push({ pathname: '/intake-history', params: { date: selectedTrendPoint.key } })}
-              >
-                <MaterialIcons name="history" size={20} color="#10b981" />
-              </TouchableOpacity>
-            </View>
-            {[
-              {
-                key: 'hydration',
-                label: '水分',
-                icon: 'water-drop' as const,
-                color: HealthNutrientAccents.hydration,
-                value: selectedMetrics.hydration,
-                target: selectedMetrics.hydrationTarget,
-                unit: 'ML',
-              },
-              {
-                key: 'protein',
-                label: '蛋白质',
-                icon: 'restaurant' as const,
-                color: HealthNutrientAccents.protein,
-                value: selectedMetrics.protein,
-                target: selectedMetrics.proteinTarget,
-                unit: 'G',
-              },
-              {
-                key: 'carbohydrate',
-                label: '碳水',
-                icon: 'rice-bowl' as const,
-                color: HealthNutrientAccents.carbohydrate,
-                value: selectedMetrics.carbohydrate,
-                target: selectedMetrics.carbohydrateTarget,
-                unit: 'G',
-              },
-              {
-                key: 'calories',
-                label: '热量',
-                icon: 'local-fire-department' as const,
-                color: HealthNutrientAccents.calories,
-                value: selectedMetrics.calories,
-                target: selectedMetrics.caloriesTarget,
-                unit: 'KCAL',
-              },
-            ].map((metric) => {
-              const pct = calcPercent(metric.value, metric.target);
-              return (
-                <View key={metric.key} style={styles.metricRow}>
-                  <View style={[styles.metricIconWrap, { backgroundColor: `${metric.color}1A` }]}>
-                    <MaterialIcons name={metric.icon} size={20} color={metric.color} />
-                  </View>
-                  <View style={styles.metricMain}>
-                    <View style={styles.metricTopLine}>
-                      <Text style={[styles.metricLabel, { color: theme.text }]}>{metric.label}</Text>
-                      <Text style={[styles.metricValue, { color: theme.textSecondary }]}>
-                        {Math.round(metric.value).toLocaleString()} / {Math.round(metric.target).toLocaleString()} {metric.unit}
-                      </Text>
-                    </View>
-                    <View style={[styles.progressBg, { backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : '#f1f5f9' }]}>
-                      <View style={[styles.progressFill, { width: `${pct}%`, backgroundColor: metric.color }]} />
-                    </View>
-                  </View>
-                  <Text style={[styles.metricPercent, { color: theme.text }]}>{pct}%</Text>
+          {[
+            {
+              key: 'hydration',
+              label: '水分',
+              icon: 'water-drop' as const,
+              color: HealthNutrientAccents.hydration,
+              value: selectedMetrics.hydration,
+              target: selectedMetrics.hydrationTarget,
+              unit: 'ML',
+            },
+            {
+              key: 'protein',
+              label: '蛋白质',
+              icon: 'restaurant' as const,
+              color: HealthNutrientAccents.protein,
+              value: selectedMetrics.protein,
+              target: selectedMetrics.proteinTarget,
+              unit: 'G',
+            },
+            {
+              key: 'carbohydrate',
+              label: '碳水',
+              icon: 'rice-bowl' as const,
+              color: HealthNutrientAccents.carbohydrate,
+              value: selectedMetrics.carbohydrate,
+              target: selectedMetrics.carbohydrateTarget,
+              unit: 'G',
+            },
+            {
+              key: 'calories',
+              label: '热量',
+              icon: 'local-fire-department' as const,
+              color: HealthNutrientAccents.calories,
+              value: selectedMetrics.calories,
+              target: selectedMetrics.caloriesTarget,
+              unit: 'KCAL',
+            },
+          ].map((metric) => {
+            const pct = calcPercent(metric.value, metric.target);
+            return (
+              <View key={metric.key} style={styles.metricRow}>
+                <View style={[styles.metricIconWrap, { backgroundColor: `${metric.color}1A` }]}>
+                  <MaterialIcons name={metric.icon} size={20} color={metric.color} />
                 </View>
-              );
-            })}
-          </View>
-        ) : (
-          <View
-            style={[
-              styles.emptyTipCard,
-              { backgroundColor: theme.surface, borderColor: isDark ? 'rgba(148,163,184,0.16)' : '#e2e8f0' },
-            ]}
-          >
-            <Text style={[styles.emptyTipText, { color: theme.textSecondary }]}>
-              {loading
-                ? '正在加载健康趋势...'
-                : selectedTrendPoint && !selectedTrendPoint.hasRecord
-                  ? `${formatDateLabel(selectedTrendPoint.date)} 暂无摄入记录`
-                  : '滑动图表选择有记录的日期查看摄入详情'}
-            </Text>
-          </View>
-        )}
-      </ScrollView>
-    </SafeAreaView>
+                <View style={styles.metricMain}>
+                  <View style={styles.metricTopLine}>
+                    <Text style={[styles.metricLabel, { color: theme.text }]}>{metric.label}</Text>
+                    <Text style={[styles.metricValue, { color: theme.textSecondary }]}>
+                      {Math.round(metric.value).toLocaleString()} / {Math.round(metric.target).toLocaleString()} {metric.unit}
+                    </Text>
+                  </View>
+                  <View style={[styles.progressBg, { backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : '#f1f5f9' }]}>
+                    <View style={[styles.progressFill, { width: `${pct}%`, backgroundColor: metric.color }]} />
+                  </View>
+                </View>
+                <Text style={[styles.metricPercent, { color: theme.text }]}>{pct}%</Text>
+              </View>
+            );
+          })}
+        </View>
+      ) : (
+        <View
+          style={[
+            styles.emptyTipCard,
+            { backgroundColor: theme.surface, borderColor: isDark ? 'rgba(148,163,184,0.16)' : '#e2e8f0' },
+          ]}
+        >
+          <Text style={[styles.emptyTipText, { color: theme.textSecondary }]}>
+            {loading
+              ? '正在加载健康趋势...'
+              : selectedTrendPoint && !selectedTrendPoint.hasRecord
+                ? `${formatDateLabel(selectedTrendPoint.date)} 暂无摄入记录`
+                : '滑动图表选择有记录的日期查看摄入详情'}
+          </Text>
+        </View>
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1 },
-  header: {
+  root: {
+    marginTop: Spacing['3xl'],
+  },
+  rootEmbedded: {
+    marginTop: 0,
+  },
+  sectionHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingTop: 10,
-    paddingBottom: 12,
-  },
-  iconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
     alignItems: 'center',
-    justifyContent: 'center',
+    marginBottom: Spacing.lg,
   },
-  headerSpacer: { width: 40, height: 40 },
-  headerCenter: { alignItems: 'center' },
-  headerTitle: { fontSize: 18, fontWeight: '700' },
-  headerSub: { marginTop: 2, fontSize: 10, letterSpacing: 1.1, fontWeight: '800', color: '#10b981' },
-  scroll: { flex: 1 },
-  scrollContent: { paddingBottom: 24 },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: -0.2,
+  },
+  sectionSub: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
   filterSection: {
-    paddingHorizontal: 24,
-    paddingTop: 8,
     gap: 12,
   },
   pillRow: {
@@ -944,9 +938,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   trendCard: {
-    marginHorizontal: 24,
     marginTop: 16,
-    borderRadius: 24,
+    borderRadius: Radius['2xl'],
     borderWidth: 1,
     padding: 16,
   },
@@ -1070,9 +1063,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   detailCard: {
-    marginHorizontal: 24,
     marginTop: 16,
-    borderRadius: 24,
+    borderRadius: Radius['2xl'],
     borderWidth: 1,
     padding: 16,
   },
@@ -1102,7 +1094,6 @@ const styles = StyleSheet.create({
   progressFill: { height: '100%', borderRadius: 999 },
   metricPercent: { width: 34, textAlign: 'right', fontSize: 12, fontWeight: '800' },
   emptyTipCard: {
-    marginHorizontal: 24,
     marginTop: 16,
     borderRadius: 20,
     borderWidth: 1,

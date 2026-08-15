@@ -99,12 +99,20 @@ export async function getDefaultUser() {
   }
   if (!row) return row;
 
-  if (!Object.prototype.hasOwnProperty.call(row, 'birthday')) {
-    return row;
+  const withPortrait: UserRow = {
+    ...row,
+    persona_portrait:
+      row.persona_portrait == null || row.persona_portrait === undefined
+        ? null
+        : String(row.persona_portrait),
+  };
+
+  if (!Object.prototype.hasOwnProperty.call(withPortrait, 'birthday')) {
+    return withPortrait;
   }
 
-  const computed = computeAgeFromBirthdayIso(row.birthday);
-  if (row.age !== computed) {
+  const computed = computeAgeFromBirthdayIso(withPortrait.birthday);
+  if (withPortrait.age !== computed) {
     const db = await getDatabase();
     await db.runAsync(
       `UPDATE users SET age = ?, updated_at = datetime('now'),
@@ -113,9 +121,9 @@ export async function getDefaultUser() {
       [computed, 'default'],
     );
     notifyDefaultUserUpdated();
-    return { ...row, age: computed };
+    return { ...withPortrait, age: computed };
   }
-  return row;
+  return withPortrait;
 }
 
 export async function updateDefaultUser(input: UpdateDefaultUserInput) {
@@ -123,7 +131,7 @@ export async function updateDefaultUser(input: UpdateDefaultUserInput) {
   let columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(users)');
   let columnSet = new Set(columns.map((c) => c.name));
   const ensureUserColumn = async (
-    column: 'gender' | 'lifestyle' | 'goal' | 'birthday' | 'workout_days' | 'rest_days',
+    column: 'gender' | 'lifestyle' | 'goal' | 'birthday' | 'workout_days' | 'rest_days' | 'persona_portrait',
     defaultValue?: string
   ) => {
     if (columnSet.has(column)) return;
@@ -145,16 +153,24 @@ export async function updateDefaultUser(input: UpdateDefaultUserInput) {
   await ensureUserColumn('workout_days', '[]');
   await ensureUserColumn('rest_days', '[]');
   await ensureUserColumn('birthday');
+  await ensureUserColumn('persona_portrait');
 
   const computedAge = computeAgeFromBirthdayIso(input.birthday);
+  const personaPortrait =
+    input.persona_portrait == null ? null : String(input.persona_portrait).trim().slice(0, 500);
 
   const updatable: Array<{ sql: string; value: string | number | null }> = [
     { sql: 'name = ?', value: input.name },
-    { sql: 'avatar_uri = ?', value: input.avatar_uri ?? null },
     { sql: 'height = ?', value: input.height },
     { sql: 'weight = ?', value: input.weight },
     { sql: 'age = ?', value: computedAge },
   ];
+  if (input.avatar_uri !== undefined) {
+    updatable.push({ sql: 'avatar_uri = ?', value: input.avatar_uri ?? null });
+  }
+  if (columnSet.has('persona_portrait')) {
+    updatable.push({ sql: 'persona_portrait = ?', value: personaPortrait });
+  }
   if (columnSet.has('gender')) updatable.push({ sql: 'gender = ?', value: input.gender });
   if (columnSet.has('lifestyle')) updatable.push({ sql: 'lifestyle = ?', value: input.lifestyle });
   if (columnSet.has('goal')) updatable.push({ sql: 'goal = ?', value: input.goal });

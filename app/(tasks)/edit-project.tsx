@@ -28,6 +28,11 @@ import {
 } from '@/lib/long-term-task';
 import { clearProjectFrogFields } from '@/lib/frog-assignment';
 import {
+  mergeRewardPointsIntoExtraObject,
+  normalizeRewardPoints,
+  parseRewardPointsFromExtraData,
+} from '@/lib/reward-points';
+import {
   mergePrerequisiteIdsIntoExtraData,
   parsePrerequisiteProjectIds,
   validatePrerequisiteSelection,
@@ -67,13 +72,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
-import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
-import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
-import {
-  mergeCompletionRewardIntoExtraData,
-  parseCompletionRewardFromExtraData,
-} from '@/lib/completion-reward/completion-reward-extra';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { parseBoundHabitIdsFromExtraData } from '@/lib/repositories/tasks/task-habit-binding';
 
@@ -443,8 +441,8 @@ export default function EditProjectScreen() {
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
-  const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
+  const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [habitNameById, setHabitNameById] = React.useState<Map<string, string>>(() => new Map());
   const [saving, setSaving] = React.useState(false);
@@ -623,8 +621,8 @@ export default function EditProjectScreen() {
       setRepeatText(loadedSchedule?.repeatOption === '不重复' ? '' : loadedSchedule?.repeatSummary ?? '');
       setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
       setPrerequisiteProjectIds(parsePrerequisiteProjectIds(project.extra_data));
-      setCompletionReward(parseCompletionRewardFromExtraData(project.extra_data));
       setIsLongTermProject(getIsLongTermProject(project.extra_data));
+      setRewardPointsText(String(parseRewardPointsFromExtraData(project.extra_data)));
       const projectTasks = await getTasksByProjectId(projectId);
       const tree = mapTaskTreeToSubtaskNodes(projectTasks);
       setSubtasks(tree);
@@ -873,7 +871,12 @@ export default function EditProjectScreen() {
         { ...projectExtraData, schedule: scheduleToSave },
         prerequisiteProjectIds,
       );
-      const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(mergedExtra), isLongTermProject);
+      delete (mergedExtra as Record<string, unknown>).completion_reward;
+      const withReward = mergeRewardPointsIntoExtraObject(
+        mergedExtra as Record<string, unknown>,
+        normalizeRewardPoints(rewardPointsText),
+      );
+      const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(withReward), isLongTermProject);
       // 保存后若已有任务，清除项目级青蛙标记（项目不可再作青蛙）
       const nextExtraAfterTasks =
         subtasks.length > 0 ? clearProjectFrogFields(withLongTerm) : withLongTerm;
@@ -884,7 +887,7 @@ export default function EditProjectScreen() {
         priority: taskPriorityKeyToNumber(priority),
         note: notes.trim() || null,
         due_date: projectDueDate,
-        extra_data: mergeCompletionRewardIntoExtraData(nextExtraAfterTasks, completionReward),
+        extra_data: nextExtraAfterTasks,
       });
       const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleToSave), {
         end: projectDueDate ?? undefined,
@@ -990,9 +993,9 @@ export default function EditProjectScreen() {
     notes,
     prerequisiteProjectIds,
     priority,
-    completionReward,
     projectExtraData,
     projectId,
+    rewardPointsText,
     notifyAncestorsDataChanged,
     router,
     saving,
@@ -1361,19 +1364,21 @@ export default function EditProjectScreen() {
           </View>
 
           <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>完成奖励</Text>
-            <CompletionRewardField
-              value={completionReward}
-              onChange={setCompletionReward}
-              disabled={loading || saving}
-              textColor={theme.text}
-              outline={outline}
-              placeholderColor={outlineVariant}
-              primary={primary}
-              surfaceLow={surfaceLow}
-              surfaceLowest={surfaceLowest}
-              isDark={isDark}
-            />
+            <Text style={[styles.sectionLabel, { color: outline }]}>奖励积分</Text>
+            <View style={[styles.rewardPointsWrap, { backgroundColor: surfaceLow }]}>
+              <TextInput
+                value={rewardPointsText}
+                onChangeText={setRewardPointsText}
+                placeholder="0"
+                placeholderTextColor={outline}
+                keyboardType="number-pad"
+                editable={!loading && !saving}
+                style={[styles.rewardPointsInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]}
+              />
+            </View>
+            <Text style={[styles.longTermHint, { color: outline, marginTop: 8 }]}>
+              完成整个项目后计入心愿板积分；0 表示无奖励
+            </Text>
           </View>
 
           <View style={styles.section}>
@@ -1541,6 +1546,20 @@ const styles = StyleSheet.create({
   longTermHint: { fontSize: 12, lineHeight: 17 },
   notesWrap: { borderRadius: 16, padding: 14, minHeight: 120 },
   notesInput: { minHeight: 92, fontSize: 14, fontWeight: '500', lineHeight: 20, paddingRight: 34 },
+  rewardPointsWrap: {
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    minHeight: 40,
+    justifyContent: 'center',
+  },
+  rewardPointsInput: {
+    padding: 0,
+    margin: 0,
+    fontSize: 15,
+    fontWeight: '700',
+    minHeight: 20,
+  },
   notesIcon: { position: 'absolute', right: 12, bottom: 12 },
   bottomBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1 },
   bottomInner: { maxWidth: 520, width: '100%', alignSelf: 'center' },

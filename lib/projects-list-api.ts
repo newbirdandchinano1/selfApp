@@ -306,12 +306,3 @@ export async function fetchProjectsListForTab(
     projects: filterProjectsForTab(projectTab, data.projects),
   };
 }
-
-/**
- * 直接按 query 拉取项目列表（含任务树），供增量同步等场景使用。
- */
-export async function fetchProjectsList(
-  query: ProjectsListQueryParams,
-): Promise<ProjectsListData> {
-  return pullProjectsListFromApi([query]);
-}

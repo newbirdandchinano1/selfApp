@@ -1,4 +1,3 @@
-import { CompletionRewardBadge } from '@/components/completion-reward/CompletionRewardBadge';
 import {
   TasksFrogSectionSkeleton,
   TasksHabitSectionSkeleton,
@@ -15,7 +14,6 @@ import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
-import { tryGrantProjectCompletionReward, tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import {
@@ -66,6 +64,11 @@ import {
   isHabitDayDisplayCompleted,
 } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import {
+  applyHabitCheckInPointsReward,
+  applyProjectCompletionPointsReward,
+  applyTaskCompletionPointsReward,
+} from '@/lib/repositories/habits/habit-points-grant';
 import {
   getSubHabitDoneMapForYmd,
   hasActiveSubHabits,
@@ -132,7 +135,6 @@ import {
   isTaskShelvedStatus,
   isTaskTerminalStatus
 } from '@/lib/repositories/tasks/task.types';
-import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
 import {
@@ -182,6 +184,7 @@ import {
   type TasksMainListView,
 } from '@/lib/tasks-ui-settings';
 import { fetchTodayFrogs } from '@/lib/today-frogs-api';
+import { getPointsBalance } from '@/lib/repositories/wish-board/wish-board';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -216,9 +219,44 @@ const MAIN_LIST_VIEW_TABS: Array<{ key: TasksMainListView; label: string }> = [
   { key: 'tasks', label: '本周列表' },
 ];
 
-/** Tasks「小习惯」网格：固定每行列数，单元宽度按行宽均分 */
-const HABIT_GRID_GAP = 16;
-const HABIT_GRID_COLUMNS = 4;
+/** Tasks「小习惯」卡片列表间距 */
+const HABIT_CARD_GAP = 10;
+
+function habitKindLabel(kind: HabitKind): string {
+  if (kind === 'break') return '戒除';
+  if (kind === 'task') return '任务';
+  return '养成';
+}
+
+function HabitProgressDots({
+  current,
+  total,
+  activeColor,
+  idleColor,
+}: {
+  current: number;
+  total: number;
+  activeColor: string;
+  idleColor: string;
+}) {
+  const cur = Math.max(0, Math.floor(current));
+  const tot = Math.max(1, Math.floor(total));
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+      {Array.from({ length: tot }).map((_, i) => (
+        <View
+          key={i}
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 4,
+            backgroundColor: i < cur ? activeColor : idleColor,
+          }}
+        />
+      ))}
+    </View>
+  );
+}
 
 /** 无项目待办标题长度上限（与 add-task 页面一致，避免列表与详情不一致） */
 const STANDALONE_TODO_TITLE_MAX = 50;
@@ -500,6 +538,8 @@ type HabitSection = {
     id: string;
     icon: string;
     name: string;
+    note: string | null;
+    rewardPoints: number;
     todayCount: number;
     /** `extra_data.quantify.dailyGoal`；戒除可为 0，养成为 null 表示不限 */
     dailyGoal: number | null;
@@ -1514,6 +1554,11 @@ async function reactivateInboxCompletedProjectsWithOpenTasks(
         status: 'active',
         category_id: nextCategoryId,
       });
+      try {
+        await applyProjectCompletionPointsReward(p.id, 'undo', p.extra_data);
+      } catch (ptsErr) {
+        console.warn('收集箱项目恢复扣回积分失败', p.id, ptsErr);
+      }
       changed += 1;
     } catch (e) {
       console.warn('收集箱已完成项目恢复进行中失败', p.id, e);
@@ -1535,19 +1580,60 @@ export default function TasksScreen() {
   /** Measured width of the habit grid row — avoids guessing padding (tabs / safe area / web max-width). */
   const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
   const habitGridItemWidth = React.useMemo(() => {
-    const gap = HABIT_GRID_GAP;
-    const cols = HABIT_GRID_COLUMNS;
     const rowWidth =
       habitItemsRowWidth > 1
         ? habitItemsRowWidth
         : Math.max(120, Dimensions.get('window').width - Spacing['5xl'] * 2 - Spacing['4xl'] * 2);
-    return (rowWidth - gap * (cols - 1)) / cols;
+    return rowWidth;
   }, [habitItemsRowWidth]);
 
   const onHabitItemsRowLayout = React.useCallback((e: { nativeEvent: { layout: { width: number } } }) => {
     const w = e.nativeEvent.layout.width;
     setHabitItemsRowWidth((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
   }, []);
+
+  const [pointsBalance, setPointsBalance] = React.useState(0);
+
+  const applyPointsDeltaToBalance = React.useCallback((delta: number) => {
+    if (!delta) return;
+    setPointsBalance((prev) => Math.max(0, prev + delta));
+  }, []);
+
+  const grantHabitPointsWithToast = React.useCallback(
+    async (habitId: string, direction: 'earn' | 'undo') => {
+      try {
+        const delta = await applyHabitCheckInPointsReward(habitId, direction);
+        applyPointsDeltaToBalance(delta);
+      } catch (e) {
+        if (__DEV__) console.warn('[habit-points]', e);
+      }
+    },
+    [applyPointsDeltaToBalance],
+  );
+
+  const grantTaskPointsWithToast = React.useCallback(
+    async (taskId: string, direction: 'earn' | 'undo', extraData?: string | null) => {
+      try {
+        const delta = await applyTaskCompletionPointsReward(taskId, direction, extraData);
+        applyPointsDeltaToBalance(delta);
+      } catch (e) {
+        if (__DEV__) console.warn('[task-points]', e);
+      }
+    },
+    [applyPointsDeltaToBalance],
+  );
+
+  const grantProjectPointsWithToast = React.useCallback(
+    async (projectId: string, direction: 'earn' | 'undo', extraData?: string | null) => {
+      try {
+        const delta = await applyProjectCompletionPointsReward(projectId, direction, extraData);
+        applyPointsDeltaToBalance(delta);
+      } catch (e) {
+        if (__DEV__) console.warn('[project-points]', e);
+      }
+    },
+    [applyPointsDeltaToBalance],
+  );
 
   const router = useRouter();
   const { colors, isDark, shadows } = useAppTheme();
@@ -1598,7 +1684,6 @@ export default function TasksScreen() {
   const [operationToast, setOperationToast] = React.useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const mutationInFlightRef = React.useRef(false);
   const operationToastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [wishNameById, setWishNameById] = React.useState<Map<string, string>>(() => new Map());
   /** 键盘占用高度：用于主列表底部留白，避免快捷待办被键盘挡住后无法滚到位 */
   const [mainScrollKeyboardPad, setMainScrollKeyboardPad] = React.useState(0);
   const mainScrollRef = React.useRef<ScrollView>(null);
@@ -1912,10 +1997,19 @@ export default function TasksScreen() {
         ...section,
         items: section.items.map((it) => {
           const hasTodayRecord = it.kind === 'break' ? recordFlags.get(it.id) ?? false : undefined;
-          return applyHabitCountPatch(it, it.todayCount, 0, {
-            hasTodayRecord,
-            logicalTodayYmd,
-          });
+          return applyHabitCountPatch(
+            {
+              ...it,
+              note: it.note ?? null,
+              rewardPoints: Math.max(0, Math.floor(Number(it.rewardPoints) || 0)),
+            },
+            it.todayCount,
+            0,
+            {
+              hasTodayRecord,
+              logicalTodayYmd,
+            },
+          );
         }),
       }));
       if (generation !== habitLoadGenerationRef.current) return;
@@ -2356,12 +2450,10 @@ export default function TasksScreen() {
     if (isStale()) return;
 
     try {
-      const wishRows = await listWishItems();
-      if (!isStale()) {
-        setWishNameById(new Map(wishRows.map((r) => [r.id, r.name])));
-      }
-    } catch {
-      if (!isStale()) setWishNameById(new Map());
+      const balance = await getPointsBalance({ offlineFallback: true });
+      if (!isStale()) setPointsBalance(balance);
+    } catch (err) {
+      if (__DEV__) console.warn('加载积分余额失败', err);
     }
   }, [
     loadExpandedProjectState,
@@ -2775,8 +2867,8 @@ export default function TasksScreen() {
           category_id: INBOX_PROJECT_CATEGORY_ID,
           status: 'completed',
         });
-        if (proj) {
-          await tryGrantProjectCompletionReward(proj);
+        if (proj && proj.status !== 'completed' && proj.status !== 'archived') {
+          await grantProjectPointsWithToast(projectId, 'earn', proj.extra_data);
         }
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         projectSwipeableRefs.current[projectId]?.close();
@@ -2786,7 +2878,7 @@ export default function TasksScreen() {
       console.warn('收纳项目失败', err);
       Alert.alert('操作失败', '未能将项目移至收集箱，请稍后重试。');
     }
-  }, [loadProjects, markPageDirty, projects, runExclusiveMutation]);
+  }, [grantProjectPointsWithToast, loadProjects, markPageDirty, projects, runExclusiveMutation]);
 
   /** 项目列表左侧按钮：完成项目（可强制完成未完成任务）并收纳到收集箱 */
   const completeProjectFromList = React.useCallback(
@@ -2813,6 +2905,7 @@ export default function TasksScreen() {
               },
               task as Record<string, unknown>,
             );
+            await grantTaskPointsWithToast(task.id, 'earn', nextExtraData);
             const frogAssignedToday = isFrogAssignedOn(task.extra_data, logicalTodayYmd);
             if (frogAssignedToday) {
               try {
@@ -2821,11 +2914,6 @@ export default function TasksScreen() {
                 console.warn('记录青蛙完成事件失败', frogLogErr);
               }
             }
-            await tryGrantTaskCompletionReward({
-              id: task.id,
-              title: task.title,
-              extra_data: nextExtraData,
-            });
           }
 
           if (incomplete.length > 0) {
@@ -2881,7 +2969,7 @@ export default function TasksScreen() {
             status: 'completed',
             ...(nextProjectExtra !== proj.extra_data ? { extra_data: nextProjectExtra } : {}),
           });
-          await tryGrantProjectCompletionReward(proj);
+          await grantProjectPointsWithToast(project.id, 'earn', nextProjectExtra ?? proj.extra_data);
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           projectSwipeableRefs.current[project.id]?.close();
           const rows = await loadProjects();
@@ -2900,6 +2988,8 @@ export default function TasksScreen() {
       loadTodayFrogs,
       logicalTodayYmd,
       markPageDirty,
+      grantProjectPointsWithToast,
+      grantTaskPointsWithToast,
       projectTaskTreeMap,
       projects,
       runExclusiveMutation,
@@ -2920,6 +3010,9 @@ export default function TasksScreen() {
             status: 'active',
             category_id: nextCategoryId,
           });
+          if (project.status === 'completed' || project.status === 'archived') {
+            await grantProjectPointsWithToast(project.id, 'undo', project.extra_data);
+          }
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           projectSwipeableRefs.current[project.id]?.close();
           await loadProjects();
@@ -2930,7 +3023,7 @@ export default function TasksScreen() {
         await loadProjects();
       }
     },
-    [loadProjects, markPageDirty, projectCategories, runExclusiveMutation],
+    [grantProjectPointsWithToast, loadProjects, markPageDirty, projectCategories, runExclusiveMutation],
   );
 
   const handleProjectCompleteToggle = React.useCallback(
@@ -3152,6 +3245,11 @@ export default function TasksScreen() {
           },
           current as Record<string, unknown>,
         );
+        await grantTaskPointsWithToast(
+          taskId,
+          wasDone ? 'undo' : 'earn',
+          nextExtraData ?? current.extra_data,
+        );
         const frogAssignedToday = isFrogAssignedOn(current.extra_data, logicalTodayYmd);
         // 待办热力图仅统计无项目待办；青蛙完成走 frog_completion_events，避免同一任务重复计入
         if (isStandaloneTodoTask(current) && !frogAssignedToday && !getFrogAssignedOn(current.extra_data)) {
@@ -3160,13 +3258,6 @@ export default function TasksScreen() {
           } catch (logErr) {
             console.warn('记录待办执行事件失败', logErr);
           }
-        }
-        if (nextStatus === 'done') {
-          await tryGrantTaskCompletionReward({
-            id: current.id,
-            title: current.title,
-            extra_data: nextExtraData,
-          });
         }
         if (frogAssignedToday) {
           try {
@@ -3201,12 +3292,12 @@ export default function TasksScreen() {
                 console.warn('记录父任务级联执行事件失败', logErr);
               }
             }
-            if (change.status === 'done') {
-              await tryGrantTaskCompletionReward({
-                id: change.id,
-                title: change.title,
-                extra_data: change.extra_data,
-              });
+            if (change.status === 'done' || change.status === 'todo') {
+              await grantTaskPointsWithToast(
+                change.id,
+                change.status === 'done' ? 'earn' : 'undo',
+                cascadeRow?.extra_data,
+              );
             }
           }
           setProjectTaskTreeMap((prev) => {
@@ -3289,6 +3380,7 @@ export default function TasksScreen() {
     },
     [
       findVisibleTask,
+      grantTaskPointsWithToast,
       loadProjectTasks,
       loadProjects,
       loadTasks,
@@ -3853,6 +3945,7 @@ export default function TasksScreen() {
           });
         }
         if (increased) void playHabitCheckInDing();
+        if (increased) await grantHabitPointsWithToast(item.id, 'earn');
         runHabitSideEffectsAfterCountChange(item.id, nextCount);
       } catch (err) {
         console.warn('习惯打卡失败', err);
@@ -3861,7 +3954,7 @@ export default function TasksScreen() {
         habitCheckInLockRef.current.delete(item.id);
       }
     },
-    [markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
+    [grantHabitPointsWithToast, markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
   );
 
   const handleBreakHabitConfirmClean = React.useCallback(
@@ -3873,6 +3966,7 @@ export default function TasksScreen() {
       patchHabitTodayCount(item.id, 0, 0, { hasTodayRecord: true });
       try {
         await confirmBreakHabitDayClean(item.id, logicalTodayYmd);
+        await grantHabitPointsWithToast(item.id, 'earn');
         runHabitSideEffectsAfterCountChange(item.id, 0, { skipHabitReload: true });
       } catch (err) {
         console.warn('确认保持戒除失败', err);
@@ -3886,6 +3980,7 @@ export default function TasksScreen() {
       }
     },
     [
+      grantHabitPointsWithToast,
       logicalTodayYmd,
       markPageDirty,
       patchHabitTodayCount,
@@ -3917,6 +4012,9 @@ export default function TasksScreen() {
           });
         }
         runHabitSideEffectsAfterCountChange(item.id, nextCount);
+        if (nextCount < item.todayCount || (item.kind === 'break' && item.hasTodayRecord)) {
+          await grantHabitPointsWithToast(item.id, 'undo');
+        }
       } catch (err) {
         console.warn('撤销打卡失败', err);
         restoreHabitGridItem(item);
@@ -3924,7 +4022,7 @@ export default function TasksScreen() {
         habitCheckInLockRef.current.delete(item.id);
       }
     },
-    [markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
+    [grantHabitPointsWithToast, markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
   );
 
   const openSubHabitModal = React.useCallback((item: HabitGridItem) => {
@@ -3946,6 +4044,9 @@ export default function TasksScreen() {
       if (!subHabitModal || subHabitTogglingId) return;
       const prevDone = Boolean(subHabitModal.doneMap[subHabitId]);
       const nextDone = !prevDone;
+      const prevCompleted = Object.values(subHabitModal.doneMap).filter(Boolean).length;
+      const prevAllDone =
+        subHabitModal.subHabits.length > 0 && prevCompleted >= subHabitModal.subHabits.length;
       setSubHabitTogglingId(subHabitId);
       setSubHabitModal((prev) =>
         prev
@@ -3984,6 +4085,11 @@ export default function TasksScreen() {
           })),
         );
         runHabitSideEffectsAfterCountChange(subHabitModal.habitId, result.parentCount);
+        if (nextDone && result.allDone && !prevAllDone) {
+          await grantHabitPointsWithToast(subHabitModal.habitId, 'earn');
+        } else if (!nextDone && prevAllDone && !result.allDone) {
+          await grantHabitPointsWithToast(subHabitModal.habitId, 'undo');
+        }
       } catch (err) {
         console.warn('子习惯打卡失败', err);
         setSubHabitModal((prev) =>
@@ -3997,6 +4103,7 @@ export default function TasksScreen() {
       }
     },
     [
+      grantHabitPointsWithToast,
       logicalTodayYmd,
       markPageDirty,
       patchHabitTodayCount,
@@ -4274,13 +4381,6 @@ export default function TasksScreen() {
                 ) : null}
               </View>
             ) : null}
-            <CompletionRewardBadge
-              extraData={t.extra_data}
-              wishNameById={wishNameById}
-              outline={outline}
-              accent={tertiary}
-              isDark={isDark}
-            />
           </View>
         </ScalePressable>
       </View>
@@ -4348,13 +4448,34 @@ export default function TasksScreen() {
           },
         ]}>
         <View style={styles.pageHeaderRow}>
-          <View style={styles.pageHeaderSideSpacer} />
+          <View style={styles.pageHeaderSide}>
+            <Pressable
+              onPress={() => router.push('/wish-board')}
+              accessibilityRole="button"
+              accessibilityLabel={`当前积分 ${pointsBalance}，打开心愿板`}
+              hitSlop={6}
+              style={({ pressed }) => [
+                styles.pointsBalanceChip,
+                {
+                  backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : 'rgba(251,191,36,0.12)',
+                  borderColor: isDark ? 'rgba(251,191,36,0.28)' : 'rgba(217,119,6,0.22)',
+                  opacity: pressed ? 0.82 : 1,
+                },
+              ]}>
+              <MaterialIcons name="stars" size={15} color="#f59e0b" />
+              <Text style={[styles.pointsBalanceValue, { color: colors.text }]} numberOfLines={1}>
+                {pointsBalance}
+              </Text>
+            </Pressable>
+          </View>
           <Text style={[styles.pageHeaderTitle, { color: colors.text }]}>{formatTasksHeaderDate(logicalTodayYmd)}</Text>
-          <AppIconButton
-            icon="calendar-today"
-            onPress={() => router.push('/tasks-calendar')}
-            accessibilityLabel="任务日历"
-          />
+          <View style={[styles.pageHeaderSide, styles.pageHeaderSideRight]}>
+            <AppIconButton
+              icon="calendar-today"
+              onPress={() => router.push('/tasks-calendar')}
+              accessibilityLabel="任务日历"
+            />
+          </View>
         </View>
       </View>
 
@@ -4922,13 +5043,6 @@ export default function TasksScreen() {
                                 ) : null}
                               </View>
                             ) : null}
-                            <CompletionRewardBadge
-                              extraData={t.extra_data}
-                              wishNameById={wishNameById}
-                              outline={outline}
-                              accent={tertiary}
-                              isDark={isDark}
-                            />
                           </Pressable>
                           {isShelved ? (
                             <View style={styles.shelvedActivateAside}>
@@ -5008,7 +5122,6 @@ export default function TasksScreen() {
                           const isBreak = item.kind === 'break';
                           const isTask = item.kind === 'task';
                           const taskPeriodProgress = item.periodProgress ?? 0;
-                          const hasProgress = isTask ? taskPeriodProgress > 0 : item.todayCount > 0;
                           const breakUi = isBreak
                             ? getBreakHabitDayUiState(item.todayCount, item.dailyGoal, {
                                 hasDayRecord: item.hasTodayRecord,
@@ -5029,19 +5142,25 @@ export default function TasksScreen() {
                           const goalMet = isBreak
                             ? scheduleAllowsToday && displayCompleted
                             : displayCompleted;
-                          const breakPending = isBreak && scheduleAllowsToday && breakUi === 'pending';
                           const goalFailed = isBreak && scheduleAllowsToday && breakUi === 'failed';
-                          const breakSlipping = isBreak && scheduleAllowsToday && breakUi === 'slipping';
-                          const taskProgressing =
-                            isTask && scheduleAllowsToday && taskPeriodProgress > 0 && !goalMet;
-                          const buildProgressing =
-                            !isBreak &&
-                            !isTask &&
-                            scheduleAllowsToday &&
-                            item.todayCount > 0 &&
-                            !goalMet &&
-                            item.dailyGoal != null &&
-                            item.dailyGoal > 0;
+                          const progressCurrent = isTask ? taskPeriodProgress : item.todayCount;
+                          const progressTotal = isTask
+                            ? item.periodGoal
+                            : item.dailyGoal != null && item.dailyGoal > 0
+                              ? item.dailyGoal
+                              : null;
+                          const rewardPoints = Math.max(0, Math.floor(Number(item.rewardPoints) || 0));
+                          const rewardBadgeBg = isDark ? '#f472b6' : '#be185d';
+                          const kindTone =
+                            item.kind === 'break'
+                              ? isDark
+                                ? '#fb923c'
+                                : '#c2410c'
+                              : item.kind === 'task'
+                                ? isDark
+                                  ? '#60a5fa'
+                                  : '#1d4ed8'
+                                : secondary;
 
                           const openHabitDetail = () =>
                             router.push({
@@ -5049,239 +5168,134 @@ export default function TasksScreen() {
                               params: { habitId: item.id },
                             });
 
-                          const partialBorderBuild = isDark ? 'rgba(52,211,153,0.5)' : 'rgba(0,108,73,0.42)';
-                          const failBorder = isDark ? 'rgba(248,113,113,0.85)' : 'rgba(220,38,38,0.78)';
-                          const slipBorder = breakSlipping
-                            ? breakSlipBorderColor(item.todayCount, item.dailyGoal, isDark)
-                            : null;
-                          const buildBorder = buildProgressing
-                            ? buildProgressBorderColor(item.todayCount, item.dailyGoal, isDark)
-                            : null;
-                          const progressBadgeCount = isTask ? taskPeriodProgress : item.todayCount;
-                          const canUndoTodayBadge =
-                            scheduleAllowsToday &&
-                            !item.hasSubHabits &&
-                            (item.todayCount > 0 || (isBreak && item.hasTodayRecord && item.todayCount <= 0));
-                          const onHabitBadgeUndo = () => {
-                            if (item.hasSubHabits) {
-                              openSubHabitModal(item);
-                              return;
-                            }
-                            if (!canUndoTodayBadge) return;
-                            void handleHabitUndoOnce(item);
-                          };
-                          const progressBadgeBg = isBreak
-                            ? breakSlipping
-                              ? breakSlipBadgeColor(item.todayCount, item.dailyGoal, isDark)
-                              : isDark
-                                ? 'rgba(234,88,12,0.92)'
-                                : 'rgba(194,65,12,0.9)'
-                            : taskProgressing
-                              ? isDark
-                                ? 'rgba(59,130,246,0.92)'
-                                : 'rgba(59,130,246,0.88)'
-                            : buildProgressing
-                              ? buildProgressBadgeColor(item.todayCount, item.dailyGoal, isDark)
-                              : isDark
-                                ? 'rgba(52,211,153,0.92)'
-                                : 'rgba(0,108,73,0.88)';
-
                           return (
-                            <View key={item.id} style={[styles.habitItem, { width: habitGridItemWidth }]}>
-                              <Pressable
-                                onPress={() => {
-                                  if (!scheduleAllowsToday) return;
-                                  handleHabitIconPress(item);
-                                }}
-                                onLongPress={openHabitDetail}
-                                delayLongPress={260}
-                                style={({ pressed }) => [
-                                  styles.habitIconPressable,
-                                  pressed && scheduleAllowsToday && { opacity: 0.86 },
-                                ]}>
-                                <View style={styles.habitIconWrap}>
-                                  {isBreak ? (
-                                    <View style={[styles.habitKindBadge, { borderColor: card }]}>
-                                      <Text style={styles.habitKindBadgeText}>戒</Text>
-                                    </View>
-                                  ) : isTask ? (
-                                    <View style={[styles.habitKindBadge, styles.habitKindBadgeTask, { borderColor: card }]}>
-                                      <Text style={styles.habitKindBadgeText}>任</Text>
+                            <Pressable
+                              key={item.id}
+                              onPress={() => {
+                                if (!scheduleAllowsToday) return;
+                                handleHabitIconPress(item);
+                              }}
+                              onLongPress={openHabitDetail}
+                              delayLongPress={260}
+                              style={({ pressed }) => [
+                                styles.habitCard,
+                                {
+                                  width: habitGridItemWidth,
+                                  backgroundColor: isDark ? 'rgba(30,41,59,0.72)' : '#fff',
+                                  borderColor: goalMet
+                                    ? secondary
+                                    : goalFailed
+                                      ? isDark
+                                        ? 'rgba(248,113,113,0.7)'
+                                        : 'rgba(220,38,38,0.55)'
+                                      : outlineVariant,
+                                  opacity: scheduleAllowsToday ? (pressed ? 0.9 : 1) : 0.55,
+                                },
+                              ]}>
+                              {rewardPoints > 0 ? (
+                                <View style={[styles.habitRewardBadge, { backgroundColor: rewardBadgeBg }]}>
+                                  <Text style={styles.habitRewardBadgeText}>+{rewardPoints}</Text>
+                                </View>
+                              ) : null}
+
+                              <View style={styles.habitCardMain}>
+                                <View
+                                  style={[
+                                    styles.habitCardIconWrap,
+                                    {
+                                      backgroundColor: isDark
+                                        ? 'rgba(148,163,184,0.12)'
+                                        : 'rgba(148,163,184,0.1)',
+                                    },
+                                  ]}>
+                                  <Text style={styles.habitCardIcon}>{item.icon}</Text>
+                                  {goalMet ? (
+                                    <View style={styles.habitCardDoneMark} pointerEvents="none">
+                                      <MaterialIcons name="check-circle" size={16} color={secondary} />
                                     </View>
                                   ) : null}
-                                  <View
-                                    style={[
-                                      styles.habitIconCircle,
-                                      {
-                                        borderColor: isBreak
-                                          ? goalFailed
-                                            ? failBorder
-                                            : breakSlipping && slipBorder
-                                              ? slipBorder
-                                              : goalMet
-                                                ? secondary
-                                                : breakPending
-                                                  ? isDark
-                                                    ? 'rgba(148,163,184,0.55)'
-                                                    : 'rgba(148,163,184,0.62)'
-                                                  : isDark
-                                                    ? 'rgba(148,163,184,0.42)'
-                                                    : 'rgba(148,163,184,0.5)'
-                                          : goalMet
-                                            ? secondary
-                                            : buildProgressing && buildBorder
-                                              ? buildBorder
-                                              : taskProgressing || hasProgress
-                                                ? partialBorderBuild
-                                                : isDark
-                                                  ? 'rgba(148,163,184,0.42)'
-                                                  : 'rgba(148,163,184,0.5)',
-                                        borderStyle:
-                                          goalMet || goalFailed
-                                            ? 'solid'
-                                            : breakSlipping || buildProgressing || taskProgressing
-                                              ? 'solid'
-                                              : 'dashed',
-                                        borderWidth:
-                                          goalFailed || breakSlipping || buildProgressing || taskProgressing
-                                            ? 2
-                                            : StyleSheet.hairlineWidth,
-                                        backgroundColor: card,
-                                        opacity: scheduleAllowsToday ? 1 : 0.45,
-                                      },
-                                    ]}>
-                                    <Text
-                                      style={[
-                                        styles.habitIconText,
-                                        (goalMet || goalFailed) && styles.habitIconTextDone,
-                                      ]}>
-                                      {item.icon}
-                                    </Text>
-                                    {goalMet ? (
-                                      <View style={styles.habitIconDoneOverlay} pointerEvents="none">
-                                        <MaterialIcons name="check" size={30} color={secondary} />
-                                      </View>
-                                    ) : goalFailed ? (
-                                      <View style={styles.habitIconDoneOverlay} pointerEvents="none">
-                                        <Text style={styles.habitIconFailMark}>❌</Text>
-                                      </View>
-                                    ) : null}
-                                    {!scheduleAllowsToday ? (
-                                      <View style={styles.habitIconLockOverlay} pointerEvents="none">
-                                        <MaterialIcons name="lock" size={26} color={colors.textSecondary} />
-                                      </View>
-                                    ) : null}
-                                  </View>
-                                  {goalMet ? (
-                                    canUndoTodayBadge || item.hasSubHabits ? (
-                                      <Pressable
-                                        onPress={onHabitBadgeUndo}
-                                        hitSlop={6}
-                                        accessibilityLabel={item.hasSubHabits ? '查看子习惯' : '撤销一次打卡'}
-                                        style={({ pressed }) => [
-                                          styles.habitTodayBadge,
-                                          { borderColor: card, backgroundColor: secondary },
-                                          pressed && { opacity: 0.86 },
-                                        ]}>
-                                        <MaterialIcons name="check" size={11} color="#fff" />
-                                      </Pressable>
-                                    ) : (
-                                      <View style={[styles.habitTodayBadge, { borderColor: card, backgroundColor: secondary }]}>
-                                        <MaterialIcons name="check" size={11} color="#fff" />
-                                      </View>
-                                    )
-                                  ) : goalFailed ? (
-                                    <View
-                                      style={[
-                                        styles.habitTodayBadge,
-                                        {
-                                          borderColor: card,
-                                          backgroundColor: isDark ? 'rgba(220,38,38,0.92)' : 'rgba(220,38,38,0.88)',
-                                        },
-                                      ]}>
-                                      <Text style={styles.habitTodayBadgeFail}>❌</Text>
+                                  {!scheduleAllowsToday ? (
+                                    <View style={styles.habitCardLockMark} pointerEvents="none">
+                                      <MaterialIcons name="lock" size={14} color={colors.textSecondary} />
                                     </View>
-                                  ) : breakPending ? (
-                                    <View
-                                      style={[
-                                        styles.habitTodayBadge,
-                                        {
-                                          borderColor: card,
-                                          backgroundColor: isDark
-                                            ? 'rgba(148,163,184,0.92)'
-                                            : 'rgba(148,163,184,0.88)',
-                                        },
-                                      ]}>
-                                      <Text style={styles.habitTodayBadgeCount}>?</Text>
-                                    </View>
-                                  ) : breakSlipping || buildProgressing || taskProgressing || (!isBreak && !isTask && hasProgress) ? (
-                                    canUndoTodayBadge || item.hasSubHabits ? (
-                                      <Pressable
-                                        onPress={onHabitBadgeUndo}
-                                        hitSlop={6}
-                                        accessibilityLabel={item.hasSubHabits ? '查看子习惯' : '撤销一次打卡'}
-                                        style={({ pressed }) => [
-                                          styles.habitTodayBadge,
-                                          {
-                                            borderColor: card,
-                                            backgroundColor: progressBadgeBg,
-                                          },
-                                          pressed && { opacity: 0.86 },
-                                        ]}>
-                                        <Text style={styles.habitTodayBadgeCount}>{progressBadgeCount}</Text>
-                                      </Pressable>
-                                    ) : (
-                                      <View
-                                        style={[
-                                          styles.habitTodayBadge,
-                                          {
-                                            borderColor: card,
-                                            backgroundColor: progressBadgeBg,
-                                          },
-                                        ]}>
-                                        <Text style={styles.habitTodayBadgeCount}>{progressBadgeCount}</Text>
-                                      </View>
-                                    )
                                   ) : null}
                                 </View>
-                              </Pressable>
-                              <Pressable
-                                onPress={() => {
-                                  if (!scheduleAllowsToday) return;
-                                  handleHabitIconPress(item);
-                                }}
-                                onLongPress={openHabitDetail}
-                                delayLongPress={260}
-                                style={({ pressed }) => [
-                                  styles.habitNamePressable,
-                                  pressed && scheduleAllowsToday && { opacity: 0.86 },
-                                ]}>
-                                <Text
-                                  style={[
-                                    styles.habitItemText,
-                                    { color: colors.text, opacity: scheduleAllowsToday ? 1 : 0.5 },
-                                  ]}
-                                  numberOfLines={2}>
-                                  {item.name}
-                                </Text>
-                              </Pressable>
-                            </View>
+
+                                <View style={styles.habitCardBody}>
+                                  <Text
+                                    style={[styles.habitCardTitle, { color: colors.text }]}
+                                    numberOfLines={1}>
+                                    {item.name}
+                                  </Text>
+                                  {item.note ? (
+                                    <Text
+                                      style={[styles.habitCardNote, { color: outline }]}
+                                      numberOfLines={2}>
+                                      {item.note}
+                                    </Text>
+                                  ) : null}
+                                  <View style={styles.habitCardMetaRow}>
+                                    <View
+                                      style={[
+                                        styles.habitTypeChip,
+                                        {
+                                          backgroundColor: isDark
+                                            ? 'rgba(148,163,184,0.14)'
+                                            : 'rgba(148,163,184,0.12)',
+                                        },
+                                      ]}>
+                                      <Text style={[styles.habitTypeChipText, { color: kindTone }]}>
+                                        {habitKindLabel(item.kind)}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.habitProgressWrap}>
+                                      {progressTotal != null && progressTotal > 0 ? (
+                                        progressTotal < 5 ? (
+                                          <HabitProgressDots
+                                            current={progressCurrent}
+                                            total={progressTotal}
+                                            activeColor={kindTone}
+                                            idleColor={
+                                              isDark
+                                                ? 'rgba(148,163,184,0.35)'
+                                                : 'rgba(148,163,184,0.4)'
+                                            }
+                                          />
+                                        ) : (
+                                          <Text style={[styles.habitProgressText, { color: outline }]}>
+                                            {Math.max(0, Math.floor(progressCurrent))}/{progressTotal}
+                                          </Text>
+                                        )
+                                      ) : (
+                                        <Text style={[styles.habitProgressText, { color: outline }]}>
+                                          {goalMet
+                                            ? '已完成'
+                                            : Math.max(0, Math.floor(progressCurrent)) > 0
+                                              ? `${Math.floor(progressCurrent)} 次`
+                                              : '未开始'}
+                                        </Text>
+                                      )}
+                                    </View>
+                                  </View>
+                                </View>
+                              </View>
+                            </Pressable>
                           );
                         })}
                         <Pressable
                           onPress={() => router.push('/add-habit')}
                           style={({ pressed }) => [
-                            styles.habitItem,
-                            { width: habitGridItemWidth },
-                            pressed && { opacity: 0.86 },
+                            styles.habitAddCard,
+                            {
+                              width: habitGridItemWidth,
+                              borderColor: outlineVariant,
+                              backgroundColor: isDark
+                                ? 'rgba(148,163,184,0.06)'
+                                : 'rgba(148,163,184,0.06)',
+                              opacity: pressed ? 0.86 : 1,
+                            },
                           ]}>
-                          <View
-                            style={[
-                              styles.habitAddCircle,
-                              { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.12)' },
-                            ]}>
-                            <MaterialIcons name="add" size={34} color={colors.textMuted} />
-                          </View>
+                          <MaterialIcons name="add" size={22} color={colors.textMuted} />
                           <Text style={[styles.habitAddText, { color: colors.textMuted }]}>添加打卡</Text>
                         </Pressable>
                       </View>
@@ -5716,13 +5730,6 @@ export default function TasksScreen() {
                                         <Text style={[styles.projectTaskMetaText, { color: outline }]}>{reminder}</Text>
                                       </View>
                                     )}
-                                    <CompletionRewardBadge
-                                      extraData={node.extra_data}
-                                      wishNameById={wishNameById}
-                                      outline={outline}
-                                      accent={tertiary}
-                                      isDark={isDark}
-                                    />
                                   </View>
                                 );
                               })()}
@@ -6090,13 +6097,6 @@ export default function TasksScreen() {
                                   </Text>
                                 </View>
                               )}
-                              <CompletionRewardBadge
-                                extraData={project.extra_data}
-                                wishNameById={wishNameById}
-                                outline={outline}
-                                accent={tertiary}
-                                isDark={isDark}
-                              />
                             </View>
                             {progress.total > 0 ? (
                               <>
@@ -6521,9 +6521,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  pageHeaderSideSpacer: {
-    width: Layout.iconButtonSize,
-    height: Layout.iconButtonSize,
+  pageHeaderSide: {
+    minWidth: 72,
+    height: Layout.headerHeight,
+    justifyContent: 'center',
+  },
+  pageHeaderSideRight: {
+    alignItems: 'flex-end',
+  },
+  pointsBalanceChip: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  pointsBalanceValue: {
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+    maxWidth: 72,
   },
   pageHeaderTitle: {
     flex: 1,
@@ -7230,88 +7250,82 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   habitSectionToggleText: { fontSize: 13, fontWeight: '800' },
-  habitItemsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: HABIT_GRID_GAP },
-  habitItem: {
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    gap: 10,
-  },
-  habitIconPressable: { alignItems: 'center' },
-  habitNamePressable: { alignItems: 'center', alignSelf: 'stretch', paddingHorizontal: 2 },
-  habitIconWrap: {
+  habitItemsRow: { flexDirection: 'column', gap: HABIT_CARD_GAP },
+  habitCard: {
     position: 'relative',
-    width: 76,
-    height: 76,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius['2xl'],
+    paddingHorizontal: Spacing['4xl'],
+    paddingVertical: Spacing['3xl'],
+    overflow: 'hidden',
+  },
+  habitCardMain: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing['3xl'],
+    paddingRight: 36,
+  },
+  habitCardIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  habitKindBadge: {
+  habitCardIcon: { fontSize: 24 },
+  habitCardDoneMark: {
     position: 'absolute',
-    left: -2,
-    top: -2,
-    zIndex: 3,
-    minWidth: 20,
-    height: 18,
-    paddingHorizontal: 4,
-    borderRadius: 7,
+    right: -4,
+    bottom: -4,
+  },
+  habitCardLockMark: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#ea580c',
-    borderWidth: 2,
+    borderRadius: 14,
+    backgroundColor: 'rgba(15,23,42,0.28)',
   },
-  habitKindBadgeTask: {
-    backgroundColor: '#3b82f6',
+  habitCardBody: { flex: 1, gap: 4, minWidth: 0 },
+  habitCardTitle: { fontSize: 15, fontWeight: '800', lineHeight: 20 },
+  habitCardNote: { fontSize: 12, fontWeight: '500', lineHeight: 17 },
+  habitCardMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 4,
   },
-  habitKindBadgeText: { color: '#fff', fontSize: 10, fontWeight: '900' },
-  habitIconCircle: {
-    position: 'relative',
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    borderWidth: 2,
+  habitTypeChip: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  habitTypeChipText: { fontSize: 11, fontWeight: '800' },
+  habitProgressWrap: { flexDirection: 'row', alignItems: 'center' },
+  habitProgressText: { fontSize: 12, fontWeight: '700' },
+  habitRewardBadge: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    zIndex: 2,
+    minWidth: 28,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    alignItems: 'center',
+  },
+  habitRewardBadgeText: { color: '#fff', fontSize: 11, fontWeight: '800' },
+  habitAddCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1,
     borderStyle: 'dashed',
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing['4xl'],
   },
-  habitIconText: { fontSize: 34 },
-  habitIconTextDone: { opacity: 0.35 },
-  habitIconDoneOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  habitIconFailMark: { fontSize: 28, lineHeight: 32 },
-  habitIconLockOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 38,
-    backgroundColor: 'rgba(15, 23, 42, 0.22)',
-  },
-  habitTodayBadge: {
-    position: 'absolute',
-    right: -2,
-    bottom: -2,
-    zIndex: 4,
-    minWidth: 18,
-    height: 18,
-    paddingHorizontal: 4,
-    borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-  },
-  habitTodayBadgeCount: { color: '#fff', fontSize: 10, fontWeight: '800' },
-  habitTodayBadgeFail: { fontSize: 9, lineHeight: 11 },
-  habitItemText: { fontSize: 13, fontWeight: '800', textAlign: 'center', lineHeight: 19 },
-  habitAddCircle: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  habitAddText: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
+  habitAddText: { fontSize: 13, fontWeight: '700', textAlign: 'center' },
 
   standaloneTodoSubtitle: { fontSize: 12, fontWeight: '600' },
   standaloneTodoNote: { fontSize: 12, fontWeight: '500', lineHeight: 16 },

@@ -32,11 +32,12 @@ import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/pr
 import { createProject, getProjectCategories, getProjects, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import { dueDateFromScheduleMeta } from '@/lib/schedule-inherit';
-import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
-import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
-import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
-import { mergeCompletionRewardIntoExtraData } from '@/lib/completion-reward/completion-reward-extra';
 import { mergeLongTermProjectIntoExtraData } from '@/lib/long-term-task';
+import {
+  mergeRewardPointsIntoExtraData,
+  normalizeRewardPoints,
+} from '@/lib/reward-points';
+import { AppInput } from '@/components/ui';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
@@ -181,8 +182,8 @@ export default function AddProjectScreen() {
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
-  const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
+  const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const appliedRouteCategoryRef = React.useRef(false);
 
@@ -359,6 +360,10 @@ export default function AddProjectScreen() {
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
       const extra = mergePrerequisiteIdsIntoExtraData({ schedule: scheduleToSave }, prerequisiteProjectIds);
       const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(extra), isLongTermProject);
+      const withReward = mergeRewardPointsIntoExtraData(
+        withLongTerm,
+        normalizeRewardPoints(rewardPointsText),
+      );
       await createProject({
         id: buildProjectId(),
         name: trimmedTitle,
@@ -366,7 +371,7 @@ export default function AddProjectScreen() {
         priority: taskPriorityKeyToNumber(priority),
         note: notes.trim() || null,
         due_date: dueDateFromScheduleMeta(scheduleToSave, extractDueDate(deadlineText)),
-        extra_data: mergeCompletionRewardIntoExtraData(withLongTerm, completionReward),
+        extra_data: withReward,
       });
       try {
         await markPendingTablesDirty(['projects']);
@@ -384,7 +389,6 @@ export default function AddProjectScreen() {
     }
   }, [
     allProjects,
-    completionReward,
     creating,
     deadlineText,
     isLongTermProject,
@@ -392,6 +396,7 @@ export default function AddProjectScreen() {
     notifyAncestorsDataChanged,
     prerequisiteProjectIds,
     priority,
+    rewardPointsText,
     router,
     scheduleMeta,
     selectedCategoryId,
@@ -520,22 +525,19 @@ export default function AddProjectScreen() {
 
             <ComposerSection>
               <ComposerSectionHead
-                accentColor={colors.secondary}
-                title="完成奖励"
-                description="项目完成时可领取的小激励"
-                rightIcon="emoji-events"
+                accentColor={colors.tertiary}
+                title="奖励积分"
+                description="完成整个项目后计入心愿板积分；0 表示无奖励"
+                rightIcon="stars"
               />
               <ComposerEditorialCard>
-                <CompletionRewardField
-                  value={completionReward}
-                  onChange={setCompletionReward}
-                  textColor={colors.text}
-                  outline={colors.textSecondary}
-                  placeholderColor={colors.textMuted}
-                  primary={colors.primary}
-                  surfaceLow={colors.input}
-                  surfaceLowest={colors.surfaceSubtle}
-                  isDark={isDark}
+                <AppInput
+                  label="奖励积分"
+                  value={rewardPointsText}
+                  onChangeText={setRewardPointsText}
+                  placeholder="0"
+                  keyboardType="number-pad"
+                  inputWrapStyle={styles.rewardPointsWrap}
                 />
               </ComposerEditorialCard>
             </ComposerSection>
@@ -577,5 +579,9 @@ const styles = StyleSheet.create({
   longTermTextWrap: {
     flex: 1,
     gap: 4,
+  },
+  rewardPointsWrap: {
+    minHeight: 40,
+    paddingVertical: Spacing.md,
   },
 });

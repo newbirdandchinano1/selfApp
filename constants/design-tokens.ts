@@ -1,6 +1,6 @@
 /**
  * 全局设计令牌 — 以财务页 `(tabs)/finance` 为基准提取。
- * React Native 项目通过 `useAppTheme` 消费；Web 可选用 `design-tokens.css`。
+ * React Native 项目通过 `useAppTheme` 消费。
  */
 
 /** 4pt 网格间距 */

@@ -6,7 +6,7 @@ import {
   HealthStatusCardSkeleton,
   HealthTrendCardSkeleton,
 } from '@/components/health/health-home-skeletons';
-import { AppIconButton } from '@/components/ui';
+import { HealthIntakeTrendSection } from '@/components/health/health-intake-trend-section';
 import { HealthNutrientAccents, Layout, Radius, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -784,6 +784,8 @@ export default function HealthScreen() {
     null
   );
   const intakeParseLocked = pendingIntake != null;
+  const [intakeTrendRefreshNonce, setIntakeTrendRefreshNonce] = React.useState(0);
+  const [trendPanelTab, setTrendPanelTab] = React.useState<'weekly' | 'intake'>('weekly');
 
   const reload = React.useCallback(async (forceApi = false): Promise<false | HomeHealthReloadResult> => {
     const currentUser = await getDefaultUser();
@@ -860,6 +862,7 @@ export default function HealthScreen() {
         setPageLoadError(null);
       }
       setInitialHealthLoadPending(false);
+      setIntakeTrendRefreshNonce((n) => n + 1);
 
       // 本地空库或 REST 同步后仍无数据：自动强制全量拉取（与下拉刷新一致）
       if (!forceApi && !result.restFailed && fnResult?.sliceEmpty && !emptyLocalEscalatedRef.current) {
@@ -1106,6 +1109,7 @@ export default function HealthScreen() {
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
+        setIntakeTrendRefreshNonce((n) => n + 1);
         playIntakeFeedbackAnimation();
       } catch {
         /* 忽略写入失败 */
@@ -1154,6 +1158,7 @@ export default function HealthScreen() {
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
+        setIntakeTrendRefreshNonce((n) => n + 1);
         playIntakeFeedbackAnimation();
         return true;
       } catch {
@@ -1203,6 +1208,7 @@ export default function HealthScreen() {
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
+        setIntakeTrendRefreshNonce((n) => n + 1);
         playIntakeFeedbackAnimation();
         return true;
       } catch {
@@ -1234,6 +1240,7 @@ export default function HealthScreen() {
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
+        setIntakeTrendRefreshNonce((n) => n + 1);
         playIntakeFeedbackAnimation();
       } catch {
         /* 忽略删除失败 */
@@ -1791,11 +1798,7 @@ export default function HealthScreen() {
         <View style={styles.headerTopRow}>
           <View style={styles.headerSideSpacer} />
           <Text style={[styles.headerTitle, { color: colors.text }]}>{formatHeaderDate(selectedDate)}</Text>
-          <AppIconButton
-            icon="calendar-today"
-            onPress={() => router.push('/health-calendar')}
-            accessibilityLabel="健康日历"
-          />
+          <View style={styles.headerSideSpacer} />
         </View>
 
         <ScrollView
@@ -2490,156 +2493,196 @@ export default function HealthScreen() {
             ],
           }}
         >
-        <View style={[styles.trendCard, { backgroundColor: isDark ? colors.surfaceMuted : colors.capsule, borderColor: colors.outline }]}>
-          <View style={styles.trendHeader}>
-            <Text style={[styles.trendTitle, { color: colors.text }]}>每周趋势</Text>
-            <Text style={[styles.trendSub, { color: colors.primary }]}>{weeklyTrendDeltaText}</Text>
+          <View style={[styles.trendPanelTabs, { backgroundColor: isDark ? colors.input : colors.background }]}>
+            {(
+              [
+                { key: 'weekly' as const, label: '每周趋势' },
+                { key: 'intake' as const, label: '健康摄入趋势' },
+              ] as const
+            ).map((tab) => {
+              const active = trendPanelTab === tab.key;
+              return (
+                <Pressable
+                  key={tab.key}
+                  onPress={() => setTrendPanelTab(tab.key)}
+                  style={[
+                    styles.trendPanelTabBtn,
+                    active
+                      ? {
+                          backgroundColor: colors.surface,
+                          borderColor: colors.outline,
+                        }
+                      : undefined,
+                  ]}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: active }}
+                >
+                  <Text style={[styles.trendPanelTabText, { color: active ? colors.text : colors.textSecondary }]}>
+                    {tab.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
 
-          <View style={styles.legendRow}>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.hydration }]} />
-              <Text style={[styles.legendText, { color: colors.textSecondary }]}>水分</Text>
-              <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.hydration}</Text>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.protein }]} />
-              <Text style={[styles.legendText, { color: colors.textSecondary }]}>蛋白质</Text>
-              <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.protein}</Text>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.calories }]} />
-              <Text style={[styles.legendText, { color: colors.textSecondary }]}>热量</Text>
-              <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.calories}</Text>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.carbohydrate }]} />
-              <Text style={[styles.legendText, { color: colors.textSecondary }]}>碳水</Text>
-              <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.carbohydrate}</Text>
-            </View>
-          </View>
-
-          <View style={styles.chartContainer}>
-            <View style={styles.chartInner}>
-              <View style={styles.yAxis}>
-                {[100, 75, 50, 25, 0].map((tick) => (
-                  <Text key={tick} style={[styles.yTickText, { color: colors.textSecondary }]}>{tick}</Text>
-                ))}
+          {trendPanelTab === 'weekly' ? (
+            <View style={[styles.trendCard, { backgroundColor: isDark ? colors.surfaceMuted : colors.capsule, borderColor: colors.outline }]}>
+              <View style={styles.trendHeader}>
+                <Text style={[styles.trendTitle, { color: colors.text }]}>每周趋势</Text>
+                <Text style={[styles.trendSub, { color: colors.primary }]}>{weeklyTrendDeltaText}</Text>
               </View>
 
-              <View style={styles.plotArea}>
-                {[100, 75, 50, 25, 0].map((tick, index) => (
-                  <View
-                    key={tick}
-                    style={[
-                      styles.gridLine,
-                      {
-                        top: `${index * 25}%`,
-                        borderColor: colors.outline,
-                      },
-                    ]}
-                  />
-                ))}
+              <View style={styles.legendRow}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.hydration }]} />
+                  <Text style={[styles.legendText, { color: colors.textSecondary }]}>水分</Text>
+                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.hydration}</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.protein }]} />
+                  <Text style={[styles.legendText, { color: colors.textSecondary }]}>蛋白质</Text>
+                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.protein}</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.calories }]} />
+                  <Text style={[styles.legendText, { color: colors.textSecondary }]}>热量</Text>
+                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.calories}</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.carbohydrate }]} />
+                  <Text style={[styles.legendText, { color: colors.textSecondary }]}>碳水</Text>
+                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.carbohydrate}</Text>
+                </View>
+              </View>
 
-                <View style={styles.barsRow}>
-                  {weeklyTrend.map((item, index) => {
-                    const faded = item.active ? 1 : 0.4;
-                    const hydrationHeight = barGrowAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, trendBarHeight(item.hydration)],
-                    });
-                    const proteinHeight = barGrowAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, trendBarHeight(item.protein)],
-                    });
-                    const caloriesHeight = barGrowAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, trendBarHeight(item.calories)],
-                    });
-                    const carbohydrateHeight = barGrowAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, trendBarHeight(item.carbohydrate)],
-                    });
-                    const barOpacity = barGrowAnim.interpolate({
-                      inputRange: [0, 0.2, 1],
-                      outputRange: [0, 0.6, 1],
-                    });
+              <View style={styles.chartContainer}>
+                <View style={styles.chartInner}>
+                  <View style={styles.yAxis}>
+                    {[100, 75, 50, 25, 0].map((tick) => (
+                      <Text key={tick} style={[styles.yTickText, { color: colors.textSecondary }]}>{tick}</Text>
+                    ))}
+                  </View>
 
-                    return (
-                      <Pressable
-                        key={`${item.day}-${index}`}
-                        style={styles.barGroup}
-                        onPress={() => {
-                          Animated.sequence([
-                            Animated.spring(selectedDayPopAnim, {
-                              toValue: 0.92,
-                              speed: 24,
-                              bounciness: 0,
-                              useNativeDriver: true,
-                            }),
-                            Animated.spring(selectedDayPopAnim, {
-                              toValue: 1,
-                              speed: 20,
-                              bounciness: 9,
-                              useNativeDriver: true,
-                            }),
-                          ]).start();
-                          setSelectedDate(normalizeDate(item.date));
-                        }}
-                      >
-                        <View style={styles.barsInner}>
-                          <Animated.View
-                            style={[
-                              styles.miniBar,
-                              {
-                                height: hydrationHeight,
-                                backgroundColor: `rgba(16,185,129,${faded})`,
-                                opacity: barOpacity,
-                              },
-                            ]}
-                          />
-                          <Animated.View
-                            style={[
-                              styles.miniBar,
-                              {
-                                height: proteinHeight,
-                                backgroundColor: `rgba(245,158,11,${faded})`,
-                                opacity: barOpacity,
-                              },
-                            ]}
-                          />
-                          <Animated.View
-                            style={[
-                              styles.miniBar,
-                              {
-                                height: carbohydrateHeight,
-                                backgroundColor: `rgba(234,179,8,${faded})`,
-                                opacity: barOpacity,
-                              },
-                            ]}
-                          />
-                          <Animated.View
-                            style={[
-                              styles.miniBar,
-                              {
-                                height: caloriesHeight,
-                                backgroundColor: `rgba(168,85,247,${faded})`,
-                                opacity: barOpacity,
-                              },
-                            ]}
-                          />
-                        </View>
-                        <Text style={[styles.barLabel, { color: item.active ? colors.text : colors.textSecondary, fontWeight: item.active ? '700' : '500' }]}>
-                          {item.day}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
+                  <View style={styles.plotArea}>
+                    {[100, 75, 50, 25, 0].map((tick, index) => (
+                      <View
+                        key={tick}
+                        style={[
+                          styles.gridLine,
+                          {
+                            top: `${index * 25}%`,
+                            borderColor: colors.outline,
+                          },
+                        ]}
+                      />
+                    ))}
+
+                    <View style={styles.barsRow}>
+                      {weeklyTrend.map((item, index) => {
+                        const faded = item.active ? 1 : 0.4;
+                        const hydrationHeight = barGrowAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0, trendBarHeight(item.hydration)],
+                        });
+                        const proteinHeight = barGrowAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0, trendBarHeight(item.protein)],
+                        });
+                        const caloriesHeight = barGrowAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0, trendBarHeight(item.calories)],
+                        });
+                        const carbohydrateHeight = barGrowAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0, trendBarHeight(item.carbohydrate)],
+                        });
+                        const barOpacity = barGrowAnim.interpolate({
+                          inputRange: [0, 0.2, 1],
+                          outputRange: [0, 0.6, 1],
+                        });
+
+                        return (
+                          <Pressable
+                            key={`${item.day}-${index}`}
+                            style={styles.barGroup}
+                            onPress={() => {
+                              Animated.sequence([
+                                Animated.spring(selectedDayPopAnim, {
+                                  toValue: 0.92,
+                                  speed: 24,
+                                  bounciness: 0,
+                                  useNativeDriver: true,
+                                }),
+                                Animated.spring(selectedDayPopAnim, {
+                                  toValue: 1,
+                                  speed: 20,
+                                  bounciness: 9,
+                                  useNativeDriver: true,
+                                }),
+                              ]).start();
+                              setSelectedDate(normalizeDate(item.date));
+                            }}
+                          >
+                            <View style={styles.barsInner}>
+                              <Animated.View
+                                style={[
+                                  styles.miniBar,
+                                  {
+                                    height: hydrationHeight,
+                                    backgroundColor: `rgba(16,185,129,${faded})`,
+                                    opacity: barOpacity,
+                                  },
+                                ]}
+                              />
+                              <Animated.View
+                                style={[
+                                  styles.miniBar,
+                                  {
+                                    height: proteinHeight,
+                                    backgroundColor: `rgba(245,158,11,${faded})`,
+                                    opacity: barOpacity,
+                                  },
+                                ]}
+                              />
+                              <Animated.View
+                                style={[
+                                  styles.miniBar,
+                                  {
+                                    height: carbohydrateHeight,
+                                    backgroundColor: `rgba(234,179,8,${faded})`,
+                                    opacity: barOpacity,
+                                  },
+                                ]}
+                              />
+                              <Animated.View
+                                style={[
+                                  styles.miniBar,
+                                  {
+                                    height: caloriesHeight,
+                                    backgroundColor: `rgba(168,85,247,${faded})`,
+                                    opacity: barOpacity,
+                                  },
+                                ]}
+                              />
+                            </View>
+                            <Text style={[styles.barLabel, { color: item.active ? colors.text : colors.textSecondary, fontWeight: item.active ? '700' : '500' }]}>
+                              {item.day}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
                 </View>
               </View>
             </View>
-          </View>
-        </View>
+          ) : (
+            <HealthIntakeTrendSection
+              logicalToday={today}
+              refreshNonce={intakeTrendRefreshNonce}
+              hideSectionHeader
+            />
+          )}
         </Animated.View>
 
         <View style={{ height: 40 }} />
@@ -3336,6 +3379,26 @@ const styles = StyleSheet.create({
     borderRadius: Radius['2xl'],
     padding: Spacing['5xl'],
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  trendPanelTabs: {
+    borderRadius: 16,
+    padding: 6,
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 12,
+  },
+  trendPanelTabBtn: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
+  },
+  trendPanelTabText: {
+    fontSize: 13,
+    fontWeight: '800',
   },
   trendHeader: {
     flexDirection: 'row',

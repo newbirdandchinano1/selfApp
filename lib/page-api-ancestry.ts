@@ -13,7 +13,6 @@ const TAB = {
  */
 const PAGE_PARENTS: Record<string, string[]> = {
   // —— 健康 ——
-  'health-calendar': [TAB.health],
   'intake-history': [TAB.health],
   'intake-record-detail': ['intake-history', TAB.health],
   'quick-add-edit': [TAB.health],
@@ -56,10 +55,12 @@ const PAGE_PARENTS: Record<string, string[]> = {
   'wish-list': [TAB.profile],
   'add-wish-item': ['wish-list', TAB.profile],
   'edit-wish-item': ['wish-list', TAB.profile],
+  'wish-board': [TAB.profile],
+  'add-wish-board-item': ['wish-board', TAB.profile],
+  'edit-wish-board-item': ['wish-board', TAB.profile],
   'my-recipes': [TAB.profile],
   'recipe-view': ['my-recipes', TAB.profile],
   'recipe-edit': ['recipe-view', 'my-recipes', TAB.profile],
-  'earned-rewards': [TAB.profile],
   'edit-profile': [TAB.profile],
   'edit-goal-dimension': ['vision-wall', TAB.profile],
 

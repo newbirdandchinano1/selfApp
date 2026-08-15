@@ -36,10 +36,12 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   visions: [TAB_PAGE_KEYS.profile],
   goal_dimensions: [TAB_PAGE_KEYS.profile],
   wish_items: [TAB_PAGE_KEYS.profile],
+  points_wallet: [TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
+  wish_board_items: [TAB_PAGE_KEYS.profile],
+  points_ledger: [TAB_PAGE_KEYS.profile],
   weekly_review_journal: [TAB_PAGE_KEYS.review],
   daily_review_journal: [TAB_PAGE_KEYS.review],
   monthly_review_journal: [TAB_PAGE_KEYS.review],
-  earned_rewards: [TAB_PAGE_KEYS.profile],
   memo_dimensions: [TAB_PAGE_KEYS.profile],
   memos: [TAB_PAGE_KEYS.profile],
   review_dimensions: [TAB_PAGE_KEYS.review],
@@ -64,7 +66,11 @@ const PAGE_SCOPE_TABLES: Record<string, string[]> = (() => {
 })();
 
 /** 非 Tab 子页面需单独拉取的表 scope */
-const CHILD_PAGE_SCOPE_TABLES: Record<string, string[]> = {};
+const CHILD_PAGE_SCOPE_TABLES: Record<string, string[]> = {
+  'wish-board': ['points_wallet', 'wish_board_items', 'points_ledger'],
+  'add-wish-board-item': ['wish_board_items'],
+  'edit-wish-board-item': ['wish_board_items', 'points_wallet'],
+};
 
 export function listPageScopeTables(pageKey: string): string[] {
   const key = pageKey.trim();

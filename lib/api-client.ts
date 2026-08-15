@@ -936,19 +936,6 @@ export type ProjectsListQueryParams = {
   signal?: AbortSignal;
 };
 
-export type TasksListQueryParams = {
-  categoryId?: string;
-  categoryIds?: string;
-  uncategorized?: boolean;
-  includeCompleted?: boolean;
-  includeCancelled?: boolean;
-  includeShelved?: boolean;
-  page?: number;
-  limit?: number;
-  updatedSince?: string;
-  signal?: AbortSignal;
-};
-
 /** 项目列表（含服务端组装的任务树） */
 export async function apiGetProjectsList(
   params?: ProjectsListQueryParams,
@@ -979,39 +966,6 @@ export async function apiGetProjectsList(
     meta: data?.meta,
   };
   logPageListApiResponse('projects-list', `/api/pages/projects${qs}`, params as Record<string, unknown>, result);
-  return result;
-}
-
-/** 任务扁平列表（按任务分类筛选） */
-export async function apiGetTasksList(
-  params?: TasksListQueryParams,
-): Promise<PageListResponse<Record<string, unknown>>> {
-  const qs = buildQuery({
-    categoryId: params?.categoryId,
-    categoryIds: params?.categoryIds,
-    uncategorized: params?.uncategorized === true ? true : undefined,
-    includeCompleted: params?.includeCompleted === true ? true : undefined,
-    includeCancelled: params?.includeCancelled === true ? true : undefined,
-    includeShelved: params?.includeShelved === false ? false : undefined,
-    page: params?.page,
-    limit: params?.limit,
-    updatedSince: params?.updatedSince,
-  });
-  const data = await apiRequest<PageListResponse<Record<string, unknown>>>(
-    `/api/pages/tasks/list${qs}`,
-    { method: 'GET', signal: params?.signal },
-  );
-  const result = {
-    list: Array.isArray(data?.list) ? data.list : [],
-    pagination: data?.pagination ?? {
-      page: params?.page ?? 1,
-      limit: params?.limit ?? 50,
-      total: 0,
-      totalPages: 0,
-    },
-    meta: data?.meta,
-  };
-  logPageListApiResponse('tasks-list', `/api/pages/tasks/list${qs}`, params as Record<string, unknown>, result);
   return result;
 }
 

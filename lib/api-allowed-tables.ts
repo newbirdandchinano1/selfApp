@@ -11,7 +11,6 @@ export const API_ALLOWED_TABLES = new Set([
   'cash_flow_profile',
   'daily_review_journal',
   'monthly_review_journal',
-  'earned_rewards',
   'finance_account_types',
   'finance_accounts',
   'finance_flow_categories',
@@ -40,6 +39,9 @@ export const API_ALLOWED_TABLES = new Set([
   'visions',
   'weekly_review_journal',
   'wish_items',
+  'points_wallet',
+  'wish_board_items',
+  'points_ledger',
 ]);
 
 /** 非 id 主键表 */

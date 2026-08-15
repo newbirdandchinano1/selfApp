@@ -3,6 +3,7 @@ import { throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
 import { parseHabitIncrementCap } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import { parseHabitRewardPoints } from '@/lib/repositories/habits/habit-reward-points';
 import {
   countSubHabitsCompletedForYmd,
   hasActiveSubHabits,
@@ -17,6 +18,8 @@ export type TasksHabitGridItem = {
   id: string;
   icon: string;
   name: string;
+  note: string | null;
+  rewardPoints: number;
   todayCount: number;
   dailyGoal: number | null;
   incrementCap: number | null;
@@ -96,6 +99,8 @@ async function mergeHabitGridExtraFields(
         id: item.id,
         icon: item.icon ?? local?.icon ?? '✓',
         name: item.name ?? local?.name ?? '',
+        note: local?.note?.trim() ? local.note.trim() : null,
+        rewardPoints: parseHabitRewardPoints(extraData),
         todayCount,
         dailyGoal,
         incrementCap: subActive ? subTotal : parseHabitIncrementCap(extraData, resolvedKind),

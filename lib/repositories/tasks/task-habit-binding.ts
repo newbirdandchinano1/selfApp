@@ -1,4 +1,3 @@
-import { tryGrantTaskCompletionReward } from '@/lib/completion-reward/completion-reward-grant';
 import { getCheckInsMapByHabitId, getTodayHabitCountsMap } from '@/lib/repositories/habits/habit-check-in';
 import { isBreakHabitSucceeded } from '@/lib/repositories/habits/habit-break-success';
 import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
@@ -190,13 +189,12 @@ async function markTaskDoneFromHabitBinding(task: TaskRow): Promise<HabitBoundTa
     console.warn('记录习惯绑定任务完成事件失败', err);
   }
   try {
-    await tryGrantTaskCompletionReward({
-      id: task.id,
-      title: task.title,
-      extra_data: task.extra_data,
-    });
-  } catch (err) {
-    console.warn('发放习惯绑定任务完成奖励失败', err);
+    const { applyTaskCompletionPointsReward } = await import(
+      '@/lib/repositories/habits/habit-points-grant'
+    );
+    await applyTaskCompletionPointsReward(task.id, 'earn', task.extra_data);
+  } catch (ptsErr) {
+    console.warn('习惯绑定任务完成发奖失败', ptsErr);
   }
   return {
     id: task.id,
@@ -231,17 +229,6 @@ async function completeTaskIfAllBoundHabitsMet(
       );
     } catch (err) {
       console.warn('记录习惯绑定父任务联动事件失败', err);
-    }
-    if (cascade.status === 'done') {
-      try {
-        await tryGrantTaskCompletionReward({
-          id: cascade.id,
-          title: cascade.title,
-          extra_data: cascade.extra_data,
-        });
-      } catch (err) {
-        console.warn('发放习惯绑定父任务完成奖励失败', err);
-      }
     }
   }
   return { completedTasks: [change], cascadeChanges };

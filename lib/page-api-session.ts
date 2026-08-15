@@ -57,10 +57,12 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   visions: [TAB_PAGE_KEYS.profile],
   goal_dimensions: [TAB_PAGE_KEYS.profile],
   wish_items: [TAB_PAGE_KEYS.profile],
+  points_wallet: [TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
+  wish_board_items: [TAB_PAGE_KEYS.profile],
+  points_ledger: [TAB_PAGE_KEYS.profile],
   weekly_review_journal: [TAB_PAGE_KEYS.review],
   daily_review_journal: [TAB_PAGE_KEYS.review],
   monthly_review_journal: [TAB_PAGE_KEYS.review],
-  earned_rewards: [TAB_PAGE_KEYS.profile],
   memo_dimensions: [TAB_PAGE_KEYS.profile],
   memos: [TAB_PAGE_KEYS.profile],
   review_dimensions: [TAB_PAGE_KEYS.review],
@@ -73,6 +75,9 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
 const TABLE_CHILD_PAGE_DIRTY_MAP: Record<string, string[]> = {
   habit_check_ins: ['habit-detail', 'habit-manage', 'tasks-calendar'],
   habits: ['habit-detail', 'habit-manage'],
+  points_wallet: ['wish-board', 'edit-wish-board-item'],
+  wish_board_items: ['wish-board', 'edit-wish-board-item'],
+  points_ledger: ['wish-board'],
 };
 
 function markChildPagesDirtyForTable(table: string): void {

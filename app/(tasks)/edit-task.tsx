@@ -46,15 +46,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CompletionRewardField } from '@/components/completion-reward/CompletionRewardField';
-import type { CompletionReward } from '@/lib/completion-reward/completion-reward.types';
-import { DEFAULT_COMPLETION_REWARD } from '@/lib/completion-reward/completion-reward.types';
-import {
-  mergeCompletionRewardIntoExtraData,
-  parseCompletionRewardFromExtraData,
-} from '@/lib/completion-reward/completion-reward-extra';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
+import {
+  mergeRewardPointsIntoExtraData,
+  normalizeRewardPoints,
+  parseRewardPointsFromExtraData,
+} from '@/lib/reward-points';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
@@ -269,9 +267,9 @@ type EditTaskFormSnapshot = {
   reminderText: string;
   repeatText: string;
   scheduleMeta: TaskScheduleMeta | null;
-  completionReward: CompletionReward;
   boundHabitIds: string[];
   isLongTermTask: boolean;
+  rewardPointsText: string;
 };
 
 function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
@@ -303,9 +301,9 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
     reminderText,
     repeatText,
     scheduleMeta,
-    completionReward: parseCompletionRewardFromExtraData(task.extra_data),
     boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
     isLongTermTask: getIsLongTermTask(task.extra_data),
+    rewardPointsText: String(parseRewardPointsFromExtraData(task.extra_data)),
   };
 }
 
@@ -318,9 +316,9 @@ function buildFormSnapshotFromFields(input: {
   reminderText: string;
   repeatText: string;
   scheduleMeta: TaskScheduleMeta | null;
-  completionReward: CompletionReward;
   boundHabitIds: string[];
   isLongTermTask: boolean;
+  rewardPointsText: string;
 }): EditTaskFormSnapshot {
   return {
     title: input.title.trim(),
@@ -331,9 +329,9 @@ function buildFormSnapshotFromFields(input: {
     reminderText: input.reminderText,
     repeatText: input.repeatText,
     scheduleMeta: input.scheduleMeta,
-    completionReward: input.completionReward,
     boundHabitIds: input.boundHabitIds,
     isLongTermTask: input.isLongTermTask,
+    rewardPointsText: String(normalizeRewardPoints(input.rewardPointsText)),
   };
 }
 
@@ -382,9 +380,9 @@ export default function EditTaskScreen() {
   const [parentTask, setParentTask] = React.useState<SubtaskDraft | null>(null);
   const [parentDateLimit, setParentDateLimit] = React.useState<DateLimitYmd>({});
   const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
-  const [completionReward, setCompletionReward] = React.useState<CompletionReward>(DEFAULT_COMPLETION_REWARD);
   const [boundHabitIds, setBoundHabitIds] = React.useState<string[]>([]);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
+  const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [habitSections, setHabitSections] = React.useState<
     Array<{ contextId: string; contextName: string; habits: HabitRow[] }>
   >([]);
@@ -403,9 +401,9 @@ export default function EditTaskScreen() {
   const repeatTextRef = React.useRef(repeatText);
   const scheduleMetaRef = React.useRef(scheduleMeta);
   const taskSnapshotRef = React.useRef(taskSnapshot);
-  const completionRewardRef = React.useRef(completionReward);
   const boundHabitIdsRef = React.useRef(boundHabitIds);
   const isLongTermTaskRef = React.useRef(isLongTermTask);
+  const rewardPointsTextRef = React.useRef(rewardPointsText);
   titleRef.current = title;
   acceptanceCriteriaRef.current = acceptanceCriteria;
   notesRef.current = notes;
@@ -415,9 +413,9 @@ export default function EditTaskScreen() {
   repeatTextRef.current = repeatText;
   scheduleMetaRef.current = scheduleMeta;
   taskSnapshotRef.current = taskSnapshot;
-  completionRewardRef.current = completionReward;
   boundHabitIdsRef.current = boundHabitIds;
   isLongTermTaskRef.current = isLongTermTask;
+  rewardPointsTextRef.current = rewardPointsText;
 
   const subtaskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const selfLimit = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
@@ -466,12 +464,12 @@ export default function EditTaskScreen() {
       reminderText,
       repeatText,
       scheduleMeta,
-      completionReward,
       boundHabitIds,
       isLongTermTask,
+      rewardPointsText,
     });
     return !formSnapshotsEqual(loadedFormSnapshot, current);
-  }, [acceptanceCriteria, boundHabitIds, completionReward, deadlineText, isLongTermTask, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, scheduleMeta, title]);
+  }, [acceptanceCriteria, boundHabitIds, deadlineText, isLongTermTask, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, rewardPointsText, scheduleMeta, title]);
 
   const reload = React.useCallback(async (forceApi = false) => {
     if (!taskId) return;
@@ -708,9 +706,9 @@ export default function EditTaskScreen() {
         setReminderText(reminder);
         setRepeatText(repeat);
       }
-      setCompletionReward(parseCompletionRewardFromExtraData(task.extra_data));
       setBoundHabitIds(parseBoundHabitIdsFromExtraData(task.extra_data));
       setIsLongTermTask(getIsLongTermTask(task.extra_data));
+      setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
 
       try {
         setHabitsLoading(true);
@@ -808,20 +806,22 @@ export default function EditTaskScreen() {
       setSaving(true);
       const meta = scheduleMetaRef.current;
       const dueDate = dueDateFromScheduleMeta(meta, extractDueDate(deadlineTextRef.current));
-      const mergedExtra = mergeLongTermTaskIntoExtraData(
-        mergeBoundHabitIdsIntoExtraData(
-          mergeCompletionRewardIntoExtraData(
+      const parsedExtra = parseTaskExtraData(snapshot.extra_data);
+      delete (parsedExtra as Record<string, unknown>).completion_reward;
+      const mergedExtra = mergeRewardPointsIntoExtraData(
+        mergeLongTermTaskIntoExtraData(
+          mergeBoundHabitIdsIntoExtraData(
             JSON.stringify({
-              ...parseTaskExtraData(snapshot.extra_data),
+              ...parsedExtra,
               reminder: reminderTextRef.current,
               repeat: repeatTextRef.current,
               schedule: meta,
             }),
-            completionRewardRef.current,
+            boundHabitIdsRef.current,
           ),
-          boundHabitIdsRef.current,
+          isLongTermTaskRef.current,
         ),
-        isLongTermTaskRef.current,
+        normalizeRewardPoints(rewardPointsTextRef.current),
       );
       await updateTask(taskId, {
         title: trimmedTitle,
@@ -847,9 +847,9 @@ export default function EditTaskScreen() {
         reminderText: reminderTextRef.current,
         repeatText: repeatTextRef.current,
         scheduleMeta: meta,
-        completionReward: completionRewardRef.current,
         boundHabitIds: boundHabitIdsRef.current,
         isLongTermTask: isLongTermTaskRef.current,
+        rewardPointsText: rewardPointsTextRef.current,
       });
       setLoadedFormSnapshot(nextSnapshot);
       if (boundHabitIdsRef.current.length > 0) {
@@ -1386,19 +1386,21 @@ export default function EditTaskScreen() {
           </View>
 
           <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>完成奖励</Text>
-            <CompletionRewardField
-              value={completionReward}
-              onChange={setCompletionReward}
-              disabled={loading}
-              textColor={theme.text}
-              outline={outline}
-              placeholderColor={outlineVariant}
-              primary={primary}
-              surfaceLow={surfaceLow}
-              surfaceLowest={surfaceLowest}
-              isDark={isDark}
-            />
+            <Text style={[styles.sectionLabel, { color: outline }]}>奖励积分</Text>
+            <View style={[styles.rewardPointsWrap, { backgroundColor: surfaceLow }]}>
+              <TextInput
+                value={rewardPointsText}
+                onChangeText={setRewardPointsText}
+                placeholder="0"
+                placeholderTextColor={outline}
+                keyboardType="number-pad"
+                editable={!loading}
+                style={[styles.rewardPointsInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
+              />
+            </View>
+            <Text style={{ color: outline, fontSize: 12, fontWeight: '600', marginTop: 8 }}>
+              完成任务后计入心愿板积分；0 表示无奖励
+            </Text>
           </View>
 
           <View style={styles.section}>
@@ -1630,6 +1632,20 @@ const styles = StyleSheet.create({
   emptySubtaskText: { flex: 1, fontSize: 13, fontWeight: '600' },
   notesWrap: { borderRadius: 16, padding: 14, minHeight: 120 },
   notesInput: { minHeight: 92, fontSize: 14, fontWeight: '500', lineHeight: 20, paddingRight: 34 },
+  rewardPointsWrap: {
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    minHeight: 40,
+    justifyContent: 'center',
+  },
+  rewardPointsInput: {
+    padding: 0,
+    margin: 0,
+    fontSize: 15,
+    fontWeight: '700',
+    minHeight: 20,
+  },
   notesIcon: { position: 'absolute', right: 12, bottom: 12 },
   bottomBar: {
     position: 'absolute',

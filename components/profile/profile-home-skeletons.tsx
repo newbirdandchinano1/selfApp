@@ -19,11 +19,9 @@ type ProfileSkeletonProps = {
 export function ProfileHeaderSkeleton({ colors, isDark = false }: ProfileSkeletonProps) {
   return (
     <View style={[styles.header, { backgroundColor: isDark ? colors.surface : '#ffffff' }]}>
-      <View style={styles.headerTopRow}>
-        <Skeleton width={96} height={96} borderRadius={48} />
-        <View style={styles.headerInfo}>
-          <Skeleton width={148} height={32} borderRadius={8} />
-        </View>
+      <View style={styles.headerActions}>
+        <Skeleton width={120} height={32} borderRadius={8} />
+        <Skeleton width={132} height={36} borderRadius={999} />
       </View>
 
       <View style={[styles.statsRow, { borderTopColor: colors.outline }]}>
@@ -130,16 +128,14 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     overflow: 'hidden',
   },
-  headerTopRow: {
+  headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
-  },
-  headerInfo: {
-    flex: 1,
+    justifyContent: 'space-between',
+    gap: 12,
   },
   statsRow: {
-    marginTop: 24,
+    marginTop: 20,
     paddingTop: 16,
     borderTopWidth: 1,
     flexDirection: 'row',

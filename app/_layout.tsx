@@ -14,6 +14,7 @@ import { ApiLoadingIndicator } from '@/components/api-loading-indicator';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { ScheduledExpenseCoordinator } from '@/components/scheduled-expense-coordinator';
+import { PointsEarnedToastHost } from '@/components/points-earned-toast-host';
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
 import { DailyReviewReminderNotificationListener } from '@/components/daily-review-reminder-notification-listener';
@@ -235,7 +236,6 @@ function RootLayoutInner() {
               name="task/[id]"
               options={{ gestureEnabled: false, headerBackButtonMenuEnabled: false }}
             />
-            <Stack.Screen name="health-calendar" />
             <Stack.Screen name="intake-history" />
             <Stack.Screen name="finance-calendar" />
             <Stack.Screen name="scheduled-expenses" />
@@ -251,7 +251,9 @@ function RootLayoutInner() {
             <Stack.Screen name="habit-detail" />
             <Stack.Screen name="add-item" />
             <Stack.Screen name="wish-list" />
-            <Stack.Screen name="earned-rewards" />
+            <Stack.Screen name="wish-board" />
+            <Stack.Screen name="add-wish-board-item" />
+            <Stack.Screen name="edit-wish-board-item/[id]" />
             <Stack.Screen name="memo-list" />
             <Stack.Screen name="memo-view/[id]" />
             <Stack.Screen name="memo-edit/[id]" />
@@ -272,13 +274,13 @@ function RootLayoutInner() {
             <Stack.Screen name="recipe-edit/[id]" />
             <Stack.Screen name="zhipu-api-test" />
             <Stack.Screen name="category-sort" />
-            <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
             <Stack.Screen name="screenshot" />
             <Stack.Screen name="auto-ledger" />
           </Stack>
             </ApiContentTransition>
             </AppErrorBoundary>
             <ApiLoadingIndicator />
+            <PointsEarnedToastHost />
           </View>
         ) : null}
         {!showMainApp ? (

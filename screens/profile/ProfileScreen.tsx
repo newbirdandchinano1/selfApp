@@ -86,7 +86,6 @@ export default function ProfileScreen() {
   const secondary = isDark ? '#34d399' : '#006c49';
   const tertiary = isDark ? '#fbbf24' : '#825100';
   const wishAccent = isDark ? '#f472b6' : '#b42375';
-  const avatarUrl = user?.avatar_uri ? { uri: user.avatar_uri } : require('../../assets/profile/avatar.png');
   const visionSectionYear = new Date().getFullYear();
   const displayName = user?.name?.trim() || '默认用户';
   const heightText = user?.height ? String(user.height) : '0';
@@ -244,7 +243,6 @@ export default function ProfileScreen() {
 
   const headerFadeAnim = useRef(new Animated.Value(0)).current;
   const headerLiftAnim = useRef(new Animated.Value(12)).current;
-  const profilePulseAnim = useRef(new Animated.Value(1)).current;
   const contentFadeAnim = useRef(new Animated.Value(0)).current;
   const contentLiftAnim = useRef(new Animated.Value(20)).current;
 
@@ -306,27 +304,6 @@ export default function ProfileScreen() {
       contentLiftAnim.setValue(0);
       profileContentOpacity.setValue(1);
     }
-
-    const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(profilePulseAnim, {
-          toValue: 1.05,
-          duration: 1800,
-          useNativeDriver: true,
-        }),
-        Animated.timing(profilePulseAnim, {
-          toValue: 1,
-          duration: 1800,
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-
-    pulse.start();
-
-    return () => {
-      pulse.stop();
-    };
   }, [
     contentFadeAnim,
     contentLiftAnim,
@@ -334,7 +311,6 @@ export default function ProfileScreen() {
     headerLiftAnim,
     initialProfileLoadPending,
     profileContentOpacity,
-    profilePulseAnim,
     profileSkeletonOpacity,
   ]);
 
@@ -363,27 +339,17 @@ export default function ProfileScreen() {
           ]}>
           <View style={[styles.headerBlob, { backgroundColor: `${primary}12` }]} />
 
-          <View style={styles.headerTopRow}>
-            <Animated.View style={[styles.avatarWrap, { transform: [{ scale: profilePulseAnim }] }]}>
-              <View style={[styles.avatarRing, { borderColor: isDark ? 'rgba(148,163,184,0.3)' : 'rgba(242,243,255,0.95)' }]}>
-                <Image source={avatarUrl} style={styles.avatarImg} contentFit="cover" />
-              </View>
-              <View style={[styles.verifyBadge, { backgroundColor: primary, borderColor: isDark ? surface : '#fff' }]}>
-                <MaterialIcons name="verified" size={16} color="#fff" />
-              </View>
-            </Animated.View>
-
-            <View style={styles.headerInfo}>
-              <View style={styles.nameRow}>
-                <Text style={[styles.name, { color: text }]}>{displayName}</Text>
-                <Pressable
-                  onPress={() => onProfileAction(() => router.push('/edit-profile'))}
-                  style={[styles.iconBtn, { borderColor: `${primary}30` }]}
-                >
-                  <MaterialIcons name="edit" size={18} color={primary} />
-                </Pressable>
-              </View>
-            </View>
+          <View style={styles.headerActions}>
+            <Text style={[styles.name, { color: text }]} numberOfLines={1}>
+              {displayName}
+            </Text>
+            <Pressable
+              onPress={() => onProfileAction(() => router.push('/edit-profile'))}
+              style={[styles.editProfileBtn, { borderColor: `${primary}30`, backgroundColor: `${primary}10` }]}
+            >
+              <MaterialIcons name="edit" size={18} color={primary} />
+              <Text style={[styles.editProfileBtnText, { color: primary }]}>编辑个人信息</Text>
+            </Pressable>
           </View>
 
           <View style={[styles.statsRow, { borderTopColor: outlineVariant }]}>
@@ -737,61 +703,33 @@ const styles = StyleSheet.create({
     height: 160,
     borderRadius: 999,
   },
-  headerTopRow: {
+  headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
-  },
-  avatarWrap: {
-    width: 96,
-    height: 96,
-    position: 'relative',
-  },
-  avatarRing: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    overflow: 'hidden',
-    borderWidth: 4,
-  },
-  avatarImg: {
-    width: '100%',
-    height: '100%',
-  },
-  verifyBadge: {
-    position: 'absolute',
-    right: -2,
-    bottom: -2,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 4,
-  },
-  headerInfo: {
-    flex: 1,
-  },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    justifyContent: 'space-between',
+    gap: 12,
   },
   name: {
+    flex: 1,
     fontSize: 32,
     fontWeight: '900',
     letterSpacing: -0.8,
   },
-  iconBtn: {
-    width: 34,
-    height: 34,
+  editProfileBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 36,
+    paddingHorizontal: 14,
     borderRadius: 999,
     borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+  },
+  editProfileBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
   },
   statsRow: {
-    marginTop: 24,
+    marginTop: 20,
     paddingTop: 16,
     borderTopWidth: 1,
     flexDirection: 'row',

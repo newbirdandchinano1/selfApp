@@ -4,6 +4,8 @@ export type UserRow = {
   id: string;
   name: string;
   avatar_uri: string | null;
+  /** 人物画像 / 自我介绍，最多 500 字 */
+  persona_portrait: string | null;
   gender: string;
   lifestyle: string;
   goal: string;
@@ -16,14 +18,14 @@ export type UserRow = {
   weight: number;
   age: number;
   created_at: string;
-  updated_at: string;
-  sync_status: SyncStatus;
+  updated_at: string;
+  sync_status: SyncStatus;
 };
 
 export type UpdateDefaultUserInput = Pick<
   UserRow,
   | 'name'
-  | 'avatar_uri'
+  | 'persona_portrait'
   | 'gender'
   | 'lifestyle'
   | 'goal'
@@ -31,4 +33,7 @@ export type UpdateDefaultUserInput = Pick<
   | 'birthday'
   | 'height'
   | 'weight'
->;
+> & {
+  /** 可选；未传时不改写本地 avatar_uri */
+  avatar_uri?: string | null;
+};

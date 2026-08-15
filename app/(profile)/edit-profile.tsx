@@ -2,8 +2,6 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Image } from 'expo-image';
-import * as ImagePicker from 'expo-image-picker';
 import { Stack, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
@@ -19,9 +17,6 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-
-
-
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { getDefaultUser, updateDefaultUser } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
@@ -35,6 +30,7 @@ const WEEK_DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '
 const DEFAULT_GENDER: (typeof GENDER_OPTIONS)[number] = '男';
 const DEFAULT_LIFESTYLE: (typeof LIFESTYLE_OPTIONS)[number] = '长期静坐不运动';
 const DEFAULT_GOAL: (typeof GOAL_OPTIONS)[number] = '无';
+const PERSONA_PORTRAIT_MAX = 500;
 
 function isFitnessLifestyle(lifestyle: (typeof LIFESTYLE_OPTIONS)[number]): boolean {
   return lifestyle === '健身' || lifestyle === '高强度锻炼';
@@ -85,9 +81,8 @@ export default function EditProfileScreen() {
 
   const [user, setUser] = useState<UserRow | null>(null);
 
-
   const [name, setName] = useState('默认用户');
-  const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [personaPortrait, setPersonaPortrait] = useState('');
   const [gender, setGender] = useState<(typeof GENDER_OPTIONS)[number]>(DEFAULT_GENDER);
   const [lifestyle, setLifestyle] = useState<(typeof LIFESTYLE_OPTIONS)[number]>(DEFAULT_LIFESTYLE);
   const [goal, setGoal] = useState<(typeof GOAL_OPTIONS)[number]>(DEFAULT_GOAL);
@@ -101,7 +96,6 @@ export default function EditProfileScreen() {
   const handleNumericInput = (value: string, setter: (next: string) => void) => {
     setter(value.replace(/\D+/g, ''));
   };
-
 
   const showFitnessFields = isFitnessLifestyle(lifestyle);
 
@@ -120,9 +114,10 @@ export default function EditProfileScreen() {
   const saveProfile = async () => {
     try {
       const fitnessActive = isFitnessLifestyle(lifestyle);
+      const portrait = personaPortrait.trim().slice(0, PERSONA_PORTRAIT_MAX);
       await updateDefaultUser({
         name,
-        avatar_uri: avatarUri,
+        persona_portrait: portrait || null,
         gender,
         lifestyle,
         goal: fitnessActive ? goal : DEFAULT_GOAL,
@@ -140,31 +135,9 @@ export default function EditProfileScreen() {
     }
   };
 
-  const pickAvatar = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('权限不足', '需要相册权限才能选择头像');
-      return;
-    }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 1,
-    });
-
-    if (!result.canceled && result.assets[0]?.uri) {
-      setAvatarUri(result.assets[0].uri);
-      setUser(prev => (prev ? { ...prev, avatar_uri: result.assets[0].uri } : prev));
-    }
-  };
-
-
-
   useEffect(() => {
     let mounted = true;
-  
+
     const loadUser = async () => {
       try {
         const data = await getDefaultUser();
@@ -176,9 +149,9 @@ export default function EditProfileScreen() {
         setUser(null);
       }
     };
-  
+
     loadUser();
-  
+
     return () => {
       mounted = false;
     };
@@ -193,9 +166,9 @@ export default function EditProfileScreen() {
 
   useEffect(() => {
     if (!user) return;
-  
+
     setName(user.name ?? '默认用户');
-    setAvatarUri(user.avatar_uri ?? null);
+    setPersonaPortrait(user.persona_portrait ?? '');
     setGender(
       GENDER_OPTIONS.includes(user.gender as (typeof GENDER_OPTIONS)[number])
         ? (user.gender as (typeof GENDER_OPTIONS)[number])
@@ -269,7 +242,6 @@ export default function EditProfileScreen() {
             </Pressable>
             <Text style={[styles.topTitle, { color: palette.text }]}>编辑个人资料</Text>
           </View>
-
         </View>
       </View>
 
@@ -279,37 +251,13 @@ export default function EditProfileScreen() {
         contentContainerStyle={{ paddingTop: 18, paddingBottom: Math.max(insets.bottom + 20, 32) }}
       >
         <View style={styles.main}>
-          <View style={styles.avatarSection}>
-            <View style={styles.avatarWrap}>
-              <Pressable
-                onPress={pickAvatar}
-                style={[
-                  styles.avatarRing,
-                  { borderColor: isDark ? 'rgba(148,163,184,0.25)' : 'rgba(242,243,255,1)' },
-                ]}
-              >
-                <Image
-                  source={avatarUri ? { uri: avatarUri } : require('../../assets/profile/avatar.png')}
-                  style={styles.avatarImg}
-                  contentFit="cover"
-                />
-              </Pressable>
-              <Pressable onPress={pickAvatar} style={[styles.cameraBtn, { backgroundColor: palette.primary }]}>
-                <MaterialIcons name="photo-camera" size={20} color="#fff" />
-              </Pressable>
-            </View>
-
-            <Text style={[styles.avatarKicker, { color: palette.outline }]}>账号身份</Text>
-            <Text style={[styles.avatarTitle, { color: palette.text }]}>编辑个人资料</Text>
-          </View>
-
           <View style={styles.group}>
             <View style={styles.groupTitleRow}>
               <View style={[styles.groupMark, { backgroundColor: palette.primary }]} />
               <Text style={[styles.groupTitle, { color: palette.outline }]}>基本信息</Text>
             </View>
 
-            <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}> 
+            <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
               <Text style={[styles.fieldLabel, { color: palette.outline }]}>姓名</Text>
               <TextInput
                 value={name}
@@ -438,6 +386,37 @@ export default function EditProfileScreen() {
 
           <View style={styles.group}>
             <View style={styles.groupTitleRow}>
+              <View style={[styles.groupMark, { backgroundColor: palette.primary }]} />
+              <Text style={[styles.groupTitle, { color: palette.outline }]}>人物画像</Text>
+            </View>
+
+            <View style={[styles.fieldCard, { backgroundColor: palette.surface, borderColor: palette.outlineVariant }]}>
+              <Text style={[styles.fieldLabel, { color: palette.outline }]}>自我介绍</Text>
+              <TextInput
+                value={personaPortrait}
+                onChangeText={(value) => setPersonaPortrait(value.slice(0, PERSONA_PORTRAIT_MAX))}
+                placeholder="用一段话介绍自己，例如性格、兴趣、日常节奏等"
+                placeholderTextColor={isDark ? 'rgba(148,163,184,0.6)' : 'rgba(114,119,133,0.5)'}
+                multiline
+                textAlignVertical="top"
+                maxLength={PERSONA_PORTRAIT_MAX}
+                style={[
+                  styles.personaInput,
+                  {
+                    color: palette.text,
+                    borderColor: palette.outlineVariant,
+                    backgroundColor: isDark ? 'rgba(15,23,42,0.35)' : 'rgba(250,248,255,0.9)',
+                  },
+                ]}
+              />
+              <Text style={[styles.personaCounter, { color: palette.outline }]}>
+                {personaPortrait.length}/{PERSONA_PORTRAIT_MAX}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.group}>
+            <View style={styles.groupTitleRow}>
               <View style={[styles.groupMark, { backgroundColor: palette.secondary }]} />
               <Text style={[styles.groupTitle, { color: palette.outline }]}>体征数据</Text>
             </View>
@@ -545,38 +524,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   topTitle: { fontSize: 18, fontWeight: '800', letterSpacing: -0.3 },
-  saveText: { fontSize: 16, fontWeight: '800' },
   main: { paddingHorizontal: 22, gap: 26 },
-  avatarSection: { alignItems: 'center', marginTop: 8, marginBottom: 10 },
-  avatarWrap: { width: 132, height: 132, position: 'relative' },
-  avatarRing: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 66,
-    overflow: 'hidden',
-    borderWidth: 4,
-  },
-  avatarImg: { width: '100%', height: '100%' },
-  cameraBtn: {
-    position: 'absolute',
-    right: 2,
-    bottom: 2,
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 4,
-    borderColor: '#faf8ff',
-  },
-  avatarKicker: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.8,
-    marginTop: 18,
-    textTransform: 'uppercase',
-  },
-  avatarTitle: { fontSize: 28, fontWeight: '900', marginTop: 6, letterSpacing: -0.5 },
   group: { gap: 12 },
   groupTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   groupMark: { width: 4, height: 16, borderRadius: 999 },
@@ -595,6 +543,23 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   fieldInput: { borderBottomWidth: 1, paddingBottom: 8, fontSize: 24, fontWeight: '700' },
+  personaInput: {
+    minHeight: 180,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 12,
+    fontSize: 16,
+    lineHeight: 24,
+    fontWeight: '500',
+  },
+  personaCounter: {
+    marginTop: 10,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
   birthdayRow: {
     flexDirection: 'row',
     alignItems: 'center',
