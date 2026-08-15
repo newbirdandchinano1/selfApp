@@ -1,26 +1,72 @@
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Radius, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { subscribePointsEarnedToast } from '@/lib/points-earned-toast-events';
 
-/** 根级挂载：获得积分时底部短暂提示约 1 秒。 */
+const SLIDE_DISTANCE = 48;
+const HOLD_MS = 900;
+const SLIDE_MS = 700;
+const FADE_MS = 650;
+
+/** 根级挂载：获得积分时底部提示，上滑一段距离后渐隐。 */
 export function PointsEarnedToastHost() {
   const { isDark } = useAppTheme();
   const insets = useSafeAreaInsets();
   const [points, setPoints] = React.useState<number | null>(null);
+  const opacity = React.useRef(new Animated.Value(0)).current;
+  const translateY = React.useRef(new Animated.Value(0)).current;
+  const animRef = React.useRef<Animated.CompositeAnimation | null>(null);
 
-  React.useEffect(() => subscribePointsEarnedToast(setPoints), []);
+  React.useEffect(() => {
+    return subscribePointsEarnedToast((next) => {
+      if (next == null || next <= 0) return;
+
+      animRef.current?.stop();
+      setPoints(next);
+      opacity.setValue(1);
+      translateY.setValue(0);
+
+      const anim = Animated.sequence([
+        Animated.delay(HOLD_MS),
+        Animated.timing(translateY, {
+          toValue: -SLIDE_DISTANCE,
+          duration: SLIDE_MS,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(opacity, {
+          toValue: 0,
+          duration: FADE_MS,
+          easing: Easing.in(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]);
+      animRef.current = anim;
+      anim.start(({ finished }) => {
+        if (!finished) return;
+        animRef.current = null;
+        setPoints(null);
+      });
+    });
+  }, [opacity, translateY]);
 
   if (points == null || points <= 0) return null;
 
   return (
-    <View
+    <Animated.View
       pointerEvents="none"
-      style={[styles.wrap, { bottom: Math.max(insets.bottom, 12) + 88 }]}>
+      style={[
+        styles.wrap,
+        {
+          bottom: Math.max(insets.bottom, 12) + 88,
+          opacity,
+          transform: [{ translateY }],
+        },
+      ]}>
       <View
         style={[
           styles.toast,
@@ -29,7 +75,7 @@ export function PointsEarnedToastHost() {
         <MaterialIcons name="stars" size={16} color="#fbbf24" />
         <Text style={styles.text}>获得 +{points} 积分</Text>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 

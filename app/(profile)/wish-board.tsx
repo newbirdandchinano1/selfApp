@@ -6,18 +6,28 @@ import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { resolveWishBoardIcon } from '@/lib/constants/wish-board-icons';
 import {
   deleteWishBoardItem,
+  deleteWishRedeemRecord,
   getPointsBalance,
   listWishBoardItems,
+  listWishRedeemRecords,
   redeemWishBoardItem,
+  resetPointsBalance,
 } from '@/lib/repositories/wish-board/wish-board';
-import type { WishBoardItemRow } from '@/lib/repositories/wish-board/wish-board.types';
+import type { WishBoardItemRow, WishRedeemRecord } from '@/lib/repositories/wish-board/wish-board.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 
 const WISH_BOARD_PAGE_KEY = 'wish-board';
+
+function formatRedeemedAt(raw: string | null): string | null {
+  if (!raw) return null;
+  const d = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
+}
 
 export default function WishBoardScreen() {
   const router = useRouter();
@@ -26,21 +36,27 @@ export default function WishBoardScreen() {
 
   const [balance, setBalance] = useState(0);
   const [items, setItems] = useState<WishBoardItemRow[]>([]);
+  const [redeemRecords, setRedeemRecords] = useState<WishRedeemRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [addVisible, setAddVisible] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const activeItems = useMemo(() => items.filter(i => i.status === 'active'), [items]);
 
   const reload = useCallback(
     async (forceApi = false) => {
       setLoadError(null);
       try {
         await wrapLoad(async () => {
-          const [nextBalance, nextItems] = await Promise.all([
+          const [nextBalance, nextItems, nextRedeems] = await Promise.all([
             getPointsBalance(),
             listWishBoardItems(),
+            listWishRedeemRecords(),
           ]);
           setBalance(nextBalance);
           setItems(nextItems);
+          setRedeemRecords(nextRedeems);
         }, forceApi);
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : '加载失败');
@@ -59,9 +75,42 @@ export default function WishBoardScreen() {
     }, [reload]),
   );
 
+  const onResetPoints = useCallback(() => {
+    if (balance <= 0 || resetting) return;
+    Alert.alert(
+      '重置积分',
+      `确定将当前 ${balance} 积分清零吗？此操作会写入流水，不可自动恢复。`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '清零',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              setResetting(true);
+              try {
+                const result = await resetPointsBalance();
+                setBalance(result.balance);
+                await reload();
+              } catch (e) {
+                Alert.alert('重置失败', e instanceof Error ? e.message : '请稍后重试');
+              } finally {
+                setResetting(false);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  }, [balance, reload, resetting]);
+
   const onRedeem = useCallback(
     (item: WishBoardItemRow) => {
       if (item.wish_type === 'once' && item.status === 'redeemed') return;
+      if (balance < item.cost_points) {
+        Alert.alert('积分不足', `兑换「${item.title}」需要 ${item.cost_points} 积分，当前余额 ${balance}。`);
+        return;
+      }
       const typeHint = item.wish_type === 'repeat' ? '（可重复兑换）' : '';
       Alert.alert(
         '兑换心愿',
@@ -86,7 +135,7 @@ export default function WishBoardScreen() {
         ],
       );
     },
-    [reload],
+    [balance, reload],
   );
 
   const onDelete = useCallback(
@@ -100,6 +149,29 @@ export default function WishBoardScreen() {
             void (async () => {
               try {
                 await deleteWishBoardItem(item.id);
+                await reload();
+              } catch (e) {
+                Alert.alert('删除失败', e instanceof Error ? e.message : '请稍后重试');
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [reload],
+  );
+
+  const onDeleteRedeemRecord = useCallback(
+    (record: WishRedeemRecord) => {
+      Alert.alert('删除兑换记录', `确定删除「${record.title}」这条兑换记录？`, [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              try {
+                await deleteWishRedeemRecord(record);
                 await reload();
               } catch (e) {
                 Alert.alert('删除失败', e instanceof Error ? e.message : '请稍后重试');
@@ -128,6 +200,27 @@ export default function WishBoardScreen() {
           <Text style={[styles.balanceHint, { color: 'rgba(255,255,255,0.65)' }]}>
             完成任务等行为可获得积分，用于兑换心愿
           </Text>
+          <Pressable
+            onPress={onResetPoints}
+            disabled={balance <= 0 || resetting}
+            style={({ pressed }) => [
+              styles.resetBtn,
+              {
+                borderColor: 'rgba(255,255,255,0.35)',
+                opacity: balance <= 0 || resetting ? 0.45 : pressed ? 0.85 : 1,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="重置积分">
+            {resetting ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <>
+                <MaterialIcons name="restart-alt" size={16} color="#fff" />
+                <Text style={styles.resetBtnText}>重置积分</Text>
+              </>
+            )}
+          </Pressable>
         </AppCard>
 
         <AppButton
@@ -138,6 +231,9 @@ export default function WishBoardScreen() {
         />
 
         <Text style={[styles.sectionTitle, { color: colors.text }]}>心愿列表</Text>
+        <Text style={[styles.sectionHint, { color: muted }]}>
+          左滑可删除 · 点击编辑
+        </Text>
 
         {loadError ? (
           <Text style={[styles.empty, { color: colors.danger }]}>{loadError}</Text>
@@ -150,24 +246,22 @@ export default function WishBoardScreen() {
           </View>
         ) : null}
 
-        {items.map(item => {
-          const redeemedOnce = item.wish_type === 'once' && item.status === 'redeemed';
-          const canRedeem = !redeemedOnce;
+        {!loadError && items.length > 0 && activeItems.length === 0 ? (
+          <Text style={[styles.empty, { color: muted }]}>
+            可兑换心愿已全部兑完，可在下方「已兑换」中查看记录。
+          </Text>
+        ) : null}
+
+        {activeItems.map(item => {
           const iconName = resolveWishBoardIcon(item.icon_key);
+          const lastRedeemed = item.wish_type === 'repeat' ? formatRedeemedAt(item.redeemed_at) : null;
+          const canRedeem = balance >= item.cost_points;
           return (
             <Swipeable
               key={item.id}
               overshootRight={false}
               renderRightActions={() => (
                 <View style={styles.swipeTrack}>
-                  {canRedeem ? (
-                    <Pressable
-                      onPress={() => onRedeem(item)}
-                      style={[styles.swipeAction, { backgroundColor: accent }]}>
-                      <MaterialIcons name="redeem" size={20} color="#fff" />
-                      <Text style={styles.swipeText}>兑换</Text>
-                    </Pressable>
-                  ) : null}
                   <Pressable
                     onPress={() => onDelete(item)}
                     style={[styles.swipeAction, { backgroundColor: colors.danger }]}>
@@ -177,11 +271,9 @@ export default function WishBoardScreen() {
                 </View>
               )}>
               <Pressable
-                onPress={() => {
-                  if (!redeemedOnce) router.push(`/edit-wish-board-item/${item.id}`);
-                }}
+                onPress={() => router.push(`/edit-wish-board-item/${item.id}`)}
                 style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1 }]}>
-                <AppCard style={[styles.itemCard, redeemedOnce && { opacity: 0.72 }]}>
+                <AppCard style={styles.itemCard}>
                   <View style={styles.itemRow}>
                     <View
                       style={[
@@ -201,19 +293,109 @@ export default function WishBoardScreen() {
                       ) : null}
                       <Text style={[styles.typeTag, { color: muted }]}>
                         {item.wish_type === 'repeat' ? '重复性心愿' : '一次性心愿'}
-                        {redeemedOnce ? ' · 已兑换' : ''}
+                        {lastRedeemed ? ` · 上次兑换 ${lastRedeemed}` : ''}
                       </Text>
                     </View>
-                    <View style={styles.costWrap}>
-                      <Text style={[styles.costValue, { color: accent }]}>{item.cost_points}</Text>
-                      <Text style={[styles.costUnit, { color: muted }]}>积分</Text>
-                    </View>
+                    {canRedeem ? (
+                      <Pressable
+                        onPress={() => onRedeem(item)}
+                        style={({ pressed }) => [
+                          styles.redeemBtn,
+                          { backgroundColor: accent, opacity: pressed ? 0.88 : 1 },
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`兑换${item.title}`}>
+                        <Text style={styles.redeemBtnText}>兑换</Text>
+                      </Pressable>
+                    ) : (
+                      <View
+                        style={[
+                          styles.redeemBtn,
+                          styles.insufficientBtn,
+                          {
+                            backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+                          },
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityLabel="积分不足"
+                        accessibilityState={{ disabled: true }}>
+                        <Text style={[styles.insufficientBtnText, { color: muted }]}>积分不足</Text>
+                      </View>
+                    )}
+                  </View>
+                  <View style={styles.costBottom}>
+                    <Text style={[styles.costValue, { color: accent }]}>{item.cost_points}</Text>
+                    <Text style={[styles.costUnit, { color: muted }]}>积分</Text>
                   </View>
                 </AppCard>
               </Pressable>
             </Swipeable>
           );
         })}
+
+        {redeemRecords.length > 0 ? (
+          <>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>已兑换</Text>
+            <Text style={[styles.sectionHint, { color: muted }]}>
+              {redeemRecords.length} 条 · 仅作记录不可编辑 · 左滑可删除
+            </Text>
+            {redeemRecords.map(record => {
+              const iconName = resolveWishBoardIcon(record.icon_key);
+              const redeemedAtLabel = formatRedeemedAt(record.redeemed_at);
+              const typeLabel =
+                record.wish_type === 'repeat' ? '重复性心愿 · 兑换记录' : '一次性心愿 · 已兑换';
+              return (
+                <Swipeable
+                  key={record.ledger_id}
+                  overshootRight={false}
+                  renderRightActions={() => (
+                    <View style={styles.swipeTrack}>
+                      <Pressable
+                        onPress={() => onDeleteRedeemRecord(record)}
+                        style={[styles.swipeAction, { backgroundColor: colors.danger }]}>
+                        <MaterialIcons name="delete-outline" size={20} color="#fff" />
+                        <Text style={styles.swipeText}>删除</Text>
+                      </Pressable>
+                    </View>
+                  )}>
+                  <AppCard style={[styles.itemCard, { opacity: 0.72 }]}>
+                    <View style={styles.itemRow}>
+                      <View
+                        style={[
+                          styles.iconBadge,
+                          {
+                            backgroundColor: isDark
+                              ? 'rgba(244,114,182,0.15)'
+                              : 'rgba(190,24,93,0.08)',
+                          },
+                        ]}>
+                        <MaterialIcons name={iconName} size={22} color={accent} />
+                      </View>
+                      <View style={{ flex: 1, gap: 4 }}>
+                        <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={2}>
+                          {record.title}
+                        </Text>
+                        {record.description ? (
+                          <Text style={[styles.itemNote, { color: muted }]} numberOfLines={2}>
+                            {record.description}
+                          </Text>
+                        ) : null}
+                        <Text style={[styles.typeTag, { color: muted }]}>
+                          {typeLabel}
+                          {redeemedAtLabel ? ` · ${redeemedAtLabel}` : ''}
+                        </Text>
+                      </View>
+                      <View style={styles.costWrap}>
+                        <Text style={[styles.costValue, { color: accent }]}>{record.cost_points}</Text>
+                        <Text style={[styles.costUnit, { color: muted }]}>积分</Text>
+                      </View>
+                    </View>
+                  </AppCard>
+                </Swipeable>
+              );
+            })}
+          </>
+        ) : null}
       </AppScreen>
 
       <AddWishBoardModal
@@ -248,12 +430,32 @@ const styles = StyleSheet.create({
     ...Typography.caption,
     lineHeight: 18,
   },
+  resetBtn: {
+    marginTop: Spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  resetBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
   addBtn: {
     marginTop: Spacing.xs,
   },
   sectionTitle: {
     ...Typography.h3,
     marginTop: Spacing.sm,
+  },
+  sectionHint: {
+    ...Typography.caption,
+    marginTop: -Spacing.xs,
+    marginBottom: Spacing.xs,
   },
   emptyWrap: {
     alignItems: 'center',
@@ -294,13 +496,43 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     minWidth: 56,
   },
+  costBottom: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'flex-end',
+    gap: 4,
+    marginTop: Spacing.sm,
+    paddingTop: Spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(127,127,127,0.25)',
+  },
   costValue: {
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: '800',
   },
   costUnit: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '600',
+  },
+  redeemBtn: {
+    minWidth: 72,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  redeemBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  insufficientBtn: {
+    minWidth: 80,
+  },
+  insufficientBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   swipeTrack: {
     flexDirection: 'row',

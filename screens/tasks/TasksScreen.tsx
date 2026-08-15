@@ -70,6 +70,7 @@ import {
   applyTaskCompletionPointsReward,
 } from '@/lib/repositories/habits/habit-points-grant';
 import {
+  areAllSubHabitsCompletedForYmd,
   getSubHabitDoneMapForYmd,
   hasActiveSubHabits,
   parseHabitSubHabitsMeta,
@@ -618,6 +619,22 @@ function patchHabitSectionsCount(
       return applyHabitCountPatch(it, todayCount, periodDelta, opts);
     }),
   }));
+}
+
+/** 任务页小习惯卡片是否已达今日完成态（完成后点击无效、不可再打卡发奖） */
+function isHabitGridItemCompletedToday(item: HabitGridItem, logicalTodayYmd: string): boolean {
+  if (item.kind === 'task') return item.taskShowPeriodCheck;
+  if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+    return Boolean(item.displayCompleted);
+  }
+  return isHabitDayDisplayCompleted({
+    kind: item.kind,
+    todayCount: item.todayCount,
+    dailyGoal: item.dailyGoal,
+    hasDayRecord: item.kind === 'break' ? item.hasTodayRecord : undefined,
+    ymd: logicalTodayYmd,
+    logicalTodayYmd,
+  });
 }
 
 function optimisticHabitCountDelta(
@@ -1600,10 +1617,14 @@ export default function TasksScreen() {
   }, []);
 
   const grantHabitPointsWithToast = React.useCallback(
-    async (habitId: string, direction: 'earn' | 'undo') => {
+    async (habitId: string, direction: 'earn' | 'undo', opts?: { forceUndo?: boolean }) => {
       try {
-        const delta = await applyHabitCheckInPointsReward(habitId, direction);
+        const delta = await applyHabitCheckInPointsReward(habitId, direction, opts);
         applyPointsDeltaToBalance(delta);
+        if (delta !== 0) {
+          const bal = await getPointsBalance({ localOnly: true, offlineFallback: true });
+          setPointsBalance(bal);
+        }
       } catch (e) {
         if (__DEV__) console.warn('[habit-points]', e);
       }
@@ -3927,6 +3948,7 @@ export default function TasksScreen() {
 
   const handleHabitIncrement = React.useCallback(
     async (item: HabitGridItem) => {
+      if (isHabitGridItemCompletedToday(item, logicalTodayYmd)) return;
       if (habitCheckInLockRef.current.has(item.id)) return;
       habitCheckInLockRef.current.add(item.id);
       habitLoadGenerationRef.current += 1;
@@ -3954,7 +3976,14 @@ export default function TasksScreen() {
         habitCheckInLockRef.current.delete(item.id);
       }
     },
-    [grantHabitPointsWithToast, markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
+    [
+      grantHabitPointsWithToast,
+      logicalTodayYmd,
+      markPageDirty,
+      patchHabitTodayCount,
+      restoreHabitGridItem,
+      runHabitSideEffectsAfterCountChange,
+    ]
   );
 
   const handleBreakHabitConfirmClean = React.useCallback(
@@ -4013,7 +4042,7 @@ export default function TasksScreen() {
         }
         runHabitSideEffectsAfterCountChange(item.id, nextCount);
         if (nextCount < item.todayCount || (item.kind === 'break' && item.hasTodayRecord)) {
-          await grantHabitPointsWithToast(item.id, 'undo');
+          await grantHabitPointsWithToast(item.id, 'undo', { forceUndo: true });
         }
       } catch (err) {
         console.warn('撤销打卡失败', err);
@@ -4045,7 +4074,7 @@ export default function TasksScreen() {
       const prevDone = Boolean(subHabitModal.doneMap[subHabitId]);
       const nextDone = !prevDone;
       const prevCompleted = Object.values(subHabitModal.doneMap).filter(Boolean).length;
-      const prevAllDone =
+      const prevAllDoneFromModal =
         subHabitModal.subHabits.length > 0 && prevCompleted >= subHabitModal.subHabits.length;
       setSubHabitTogglingId(subHabitId);
       setSubHabitModal((prev) =>
@@ -4055,6 +4084,11 @@ export default function TasksScreen() {
       );
       markPageDirty();
       try {
+        const habitBefore = await getHabitById(subHabitModal.habitId);
+        const prevAllDone =
+          prevAllDoneFromModal ||
+          areAllSubHabitsCompletedForYmd(habitBefore?.extra_data ?? null, logicalTodayYmd);
+
         const result = await toggleSubHabitCheckIn({
           habitId: subHabitModal.habitId,
           subHabitId,
@@ -4084,12 +4118,13 @@ export default function TasksScreen() {
             }),
           })),
         );
-        runHabitSideEffectsAfterCountChange(subHabitModal.habitId, result.parentCount);
+        // 先调账再跑副作用，避免绑定任务发奖与习惯扣回乱序
         if (nextDone && result.allDone && !prevAllDone) {
           await grantHabitPointsWithToast(subHabitModal.habitId, 'earn');
         } else if (!nextDone && prevAllDone && !result.allDone) {
-          await grantHabitPointsWithToast(subHabitModal.habitId, 'undo');
+          await grantHabitPointsWithToast(subHabitModal.habitId, 'undo', { forceUndo: true });
         }
+        runHabitSideEffectsAfterCountChange(subHabitModal.habitId, result.parentCount);
       } catch (err) {
         console.warn('子习惯打卡失败', err);
         setSubHabitModal((prev) =>
@@ -4115,6 +4150,8 @@ export default function TasksScreen() {
 
   const handleHabitIconPress = React.useCallback(
     (item: HabitGridItem) => {
+      // 已完成：点击无效（长按仍可进详情撤销）
+      if (isHabitGridItemCompletedToday(item, logicalTodayYmd)) return;
       if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
         openSubHabitModal(item);
         return;
@@ -4129,7 +4166,7 @@ export default function TasksScreen() {
       }
       void handleHabitIncrement(item);
     },
-    [handleBreakHabitConfirmClean, handleHabitIncrement, openSubHabitModal],
+    [handleBreakHabitConfirmClean, handleHabitIncrement, logicalTodayYmd, openSubHabitModal],
   );
 
   const hasChildrenDeeperThan = React.useCallback((nodes: TaskTreeNode[], level: number, maxLevel: number): boolean => {
@@ -5115,12 +5152,33 @@ export default function TasksScreen() {
 
                     {isOpen ? (
                       <View style={styles.habitItemsRow} onLayout={onHabitItemsRowLayout}>
-                        {visibleHabitItems.map((item) => {
-                          const scheduleAllowsToday = item.extraData
-                            ? isHabitScheduledToday(item.extraData, habitScheduleAnchorDate)
-                            : true;
-                          const isBreak = item.kind === 'break';
-                          const isTask = item.kind === 'task';
+                        {[...visibleHabitItems]
+                          .map((item) => {
+                            const scheduleAllowsToday = item.extraData
+                              ? isHabitScheduledToday(item.extraData, habitScheduleAnchorDate)
+                              : true;
+                            const isBreak = item.kind === 'break';
+                            const isTask = item.kind === 'task';
+                            const displayCompleted = isTask
+                              ? item.taskShowPeriodCheck
+                              : isHabitDayDisplayCompleted({
+                                  kind: item.kind,
+                                  todayCount: item.todayCount,
+                                  dailyGoal: item.dailyGoal,
+                                  hasDayRecord: isBreak ? item.hasTodayRecord : undefined,
+                                  ymd: logicalTodayYmd,
+                                  logicalTodayYmd,
+                                });
+                            const goalMet = isBreak
+                              ? scheduleAllowsToday && displayCompleted
+                              : displayCompleted;
+                            return { item, scheduleAllowsToday, isBreak, isTask, goalMet };
+                          })
+                          .sort((a, b) => {
+                            if (a.goalMet !== b.goalMet) return a.goalMet ? 1 : -1;
+                            return 0;
+                          })
+                          .map(({ item, scheduleAllowsToday, isBreak, isTask, goalMet }) => {
                           const taskPeriodProgress = item.periodProgress ?? 0;
                           const breakUi = isBreak
                             ? getBreakHabitDayUiState(item.todayCount, item.dailyGoal, {
@@ -5129,19 +5187,6 @@ export default function TasksScreen() {
                                 logicalTodayYmd,
                               })
                             : null;
-                          const displayCompleted = isTask
-                            ? item.taskShowPeriodCheck
-                            : isHabitDayDisplayCompleted({
-                                kind: item.kind,
-                                todayCount: item.todayCount,
-                                dailyGoal: item.dailyGoal,
-                                hasDayRecord: isBreak ? item.hasTodayRecord : undefined,
-                                ymd: logicalTodayYmd,
-                                logicalTodayYmd,
-                              });
-                          const goalMet = isBreak
-                            ? scheduleAllowsToday && displayCompleted
-                            : displayCompleted;
                           const goalFailed = isBreak && scheduleAllowsToday && breakUi === 'failed';
                           const progressCurrent = isTask ? taskPeriodProgress : item.todayCount;
                           const progressTotal = isTask
@@ -5172,7 +5217,7 @@ export default function TasksScreen() {
                             <Pressable
                               key={item.id}
                               onPress={() => {
-                                if (!scheduleAllowsToday) return;
+                                if (!scheduleAllowsToday || goalMet) return;
                                 handleHabitIconPress(item);
                               }}
                               onLongPress={openHabitDetail}
@@ -5189,7 +5234,13 @@ export default function TasksScreen() {
                                         ? 'rgba(248,113,113,0.7)'
                                         : 'rgba(220,38,38,0.55)'
                                       : outlineVariant,
-                                  opacity: scheduleAllowsToday ? (pressed ? 0.9 : 1) : 0.55,
+                                  opacity: scheduleAllowsToday
+                                    ? pressed && !goalMet
+                                      ? 0.9
+                                      : goalMet
+                                        ? 0.72
+                                        : 1
+                                    : 0.55,
                                 },
                               ]}>
                               {rewardPoints > 0 ? (
@@ -5223,13 +5274,27 @@ export default function TasksScreen() {
 
                                 <View style={styles.habitCardBody}>
                                   <Text
-                                    style={[styles.habitCardTitle, { color: colors.text }]}
+                                    style={[
+                                      styles.habitCardTitle,
+                                      {
+                                        color: colors.text,
+                                        textDecorationLine: goalMet ? 'line-through' : 'none',
+                                        opacity: goalMet ? 0.55 : 1,
+                                      },
+                                    ]}
                                     numberOfLines={1}>
                                     {item.name}
                                   </Text>
                                   {item.note ? (
                                     <Text
-                                      style={[styles.habitCardNote, { color: outline }]}
+                                      style={[
+                                        styles.habitCardNote,
+                                        {
+                                          color: outline,
+                                          textDecorationLine: goalMet ? 'line-through' : 'none',
+                                          opacity: goalMet ? 0.58 : 1,
+                                        },
+                                      ]}
                                       numberOfLines={2}>
                                       {item.note}
                                     </Text>

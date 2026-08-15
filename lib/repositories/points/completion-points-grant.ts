@@ -4,7 +4,7 @@ import { getProjectById } from '@/lib/repositories/projects/project';
 import { getTaskById } from '@/lib/repositories/tasks/task';
 import {
   adjustPointsBalance,
-  getPointsBalance,
+  getLocalPointsBalance,
 } from '@/lib/repositories/wish-board/wish-board';
 import { getDatabase } from '@/lib/database';
 
@@ -42,7 +42,8 @@ async function resolveExtraData(opts: {
 
 /**
  * 按实体配置发奖 / 按流水净额扣回。
- * undo 时最多扣回「该 ref 流水净获得」与「当前余额」的较小值，避免静默失败。
+ * undo 时最多扣回「该 ref 流水净获得」与「当前余额」的较小值。
+ * `forceUndo`：已知刚从「已完成」撤销时，若流水净额异常为 0，仍按配置与余额扣回。
  */
 export async function applyEntityPointsReward(opts: {
   refType: PointsRewardRefType;
@@ -53,6 +54,7 @@ export async function applyEntityPointsReward(opts: {
   points?: number;
   earnReason: string;
   undoReason: string;
+  forceUndo?: boolean;
 }): Promise<number> {
   return enqueuePointsAdjust(async () => {
     const configured =
@@ -76,8 +78,11 @@ export async function applyEntityPointsReward(opts: {
     }
 
     const net = await sumLedgerDeltaForRef(opts.refType, opts.refId);
-    const balance = await getPointsBalance({ localOnly: true, offlineFallback: true });
-    const deduct = Math.min(configured, Math.max(0, net), Math.max(0, balance));
+    const balance = await getLocalPointsBalance();
+    let deduct = Math.min(configured, Math.max(0, net), Math.max(0, balance));
+    if (deduct <= 0 && opts.forceUndo && balance > 0) {
+      deduct = Math.min(configured, balance);
+    }
     if (deduct <= 0) return 0;
 
     try {
@@ -105,6 +110,7 @@ export async function applyCompletionPointsReward(opts: {
   direction: 'earn' | 'undo';
   /** 若已持有 extra_data，可传入以避免再读库 */
   extraData?: string | null;
+  forceUndo?: boolean;
 }): Promise<number> {
   return applyEntityPointsReward({
     ...opts,

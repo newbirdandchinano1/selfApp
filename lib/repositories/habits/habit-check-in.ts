@@ -18,7 +18,15 @@ export async function pushHabitCheckInChangesToApi(opts?: { awaitSync?: boolean 
 
   const run = async () => {
     const { flushApiDirtyTablesNow } = await import('@/lib/api-incremental-sync');
-    await flushApiDirtyTablesNow({ rethrow: true });
+    // 只推送打卡相关表，避免 points_wallet 等无关脏表的乐观锁冲突拖垮打卡
+    await flushApiDirtyTablesNow({ rethrow: true, onlyTables: ['habit_check_ins', 'habits'] });
+    // 其余脏表（含积分钱包）后台继续推，不阻塞打卡成功路径
+    void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
+  };
+
+  const isNonBlockingSyncNoise = (e: unknown): boolean => {
+    const msg = e instanceof Error ? e.message : String(e);
+    return /积分钱包|已有更新版本|过期数据覆盖|points_wallet/i.test(msg);
   };
 
   const task = habitCheckInApiSyncChain.then(run);
@@ -28,6 +36,12 @@ export async function pushHabitCheckInChangesToApi(opts?: { awaitSync?: boolean 
     try {
       await task;
     } catch (e) {
+      // 打卡本地已落库；积分钱包 OCC 等无关失败不得阻断打卡/撤销
+      if (isNonBlockingSyncNoise(e)) {
+        if (__DEV__) console.warn('[habit-check-in] 忽略无关同步失败（本地打卡已保存）', e);
+        void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
+        return;
+      }
       const detail = e instanceof Error && e.message.trim() ? e.message : '未知错误';
       throw new Error(`本地已保存，但同步到服务器失败：${detail}\n请检查网络或登录状态后重试。`);
     }

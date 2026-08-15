@@ -44,6 +44,22 @@ export type PointsLedgerRow = {
   extra_data: string | null;
 };
 
+/** 心愿兑换记录（来自 points_ledger.reason = wish_redeem；含一次性与重复性每次兑换） */
+export type WishRedeemRecord = {
+  ledger_id: string;
+  wish_id: string;
+  title: string;
+  description: string | null;
+  icon_key: string | null;
+  wish_type: WishBoardWishType;
+  cost_points: number;
+  redeemed_at: string;
+  /** 关联心愿是否仍存在于 wish_board_items */
+  item_exists: boolean;
+  /** 无真实流水、由已归档 once 兜底生成的展示行 */
+  is_fallback: boolean;
+};
+
 export type CreateWishBoardItemInput = {
   id?: string;
   title: string;

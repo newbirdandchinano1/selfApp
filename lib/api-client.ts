@@ -8,7 +8,7 @@ import {
 } from '@/lib/api-config';
 import { logPageListApiResponse } from '@/lib/api-debug';
 import { mapTableRowForMysqlApiUpload } from '@/lib/api-mysql-column-map';
-import { normalizeRecordForMysqlApi } from '@/lib/api-mysql-datetime';
+import { formatWallClockDatetimeLocal, normalizeRecordForMysqlApi } from '@/lib/api-mysql-datetime';
 import {
     type ApiUploadSlimOptions,
     slimRecordForMysqlApi,
@@ -23,7 +23,15 @@ export function prepareRowBodyForApi(
   opts?: ApiUploadSlimOptions,
 ): Record<string, unknown> {
   const mapped = mapTableRowForMysqlApiUpload(table, row);
-  return slimRecordForMysqlApi(normalizeRecordForMysqlApi(mapped), opts);
+  const normalized = normalizeRecordForMysqlApi(mapped) as Record<string, unknown>;
+  /**
+   * 积分钱包服务端用 updated_at 乐观锁，库内多为会话时区墙上时钟。
+   * 通用 normalize 会把时间收成 UTC，东八区下会固定「旧 8 小时」而被永久拒绝。
+   */
+  if (table === 'points_wallet') {
+    normalized.updated_at = formatWallClockDatetimeLocal(new Date());
+  }
+  return slimRecordForMysqlApi(normalized, opts);
 }
 
 /** 上传失败时依次尝试更小 payload（避免网关 413） */

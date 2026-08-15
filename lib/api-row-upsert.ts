@@ -1,11 +1,14 @@
 import {
     apiCreateRecord,
     apiDeleteRecord,
+    apiGetRecord,
     apiListRecords,
+    apiPatchRecord,
     ApiRequestError,
     apiUpdateRecord,
     isDuplicateRecordApiError,
 } from '@/lib/api-client';
+import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { shouldPreserveForeignKeyOnUpload } from '@/lib/api-fk-preserve';
 import { isAbortError } from '@/lib/cloud-fetch-retry';
 import {
@@ -15,6 +18,101 @@ import {
     sortProjectCategoriesForApiUpload,
 } from '@/lib/cloud-sql-sync';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
+
+function isStaleRowVersionApiError(err: unknown): boolean {
+  if (!(err instanceof ApiRequestError)) return false;
+  const msg = err.message || '';
+  return /已有更新版本|过期数据覆盖|stale\s*version|newer\s*version/i.test(msg);
+}
+
+async function persistLocalPointsWalletUpdatedAt(id: string, updatedAt: string): Promise<void> {
+  const { getDatabase } = await import('@/lib/database');
+  const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+    '@/lib/cloud-sql-dirty-track'
+  );
+  const db = await getDatabase();
+  if (!db) return;
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.runAsync(`UPDATE points_wallet SET updated_at = ? WHERE id = ?`, [updatedAt, id]);
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+}
+
+/**
+ * 积分钱包为单例行，服务端用 updated_at 做乐观锁。
+ * 上传必须用本地墙上时钟（见 prepareRowBodyForApi）；冲突时再抬高时间并重试，仍失败则跳过以免拖垮整次同步。
+ */
+async function upsertPointsWalletRowToApi(
+  payload: Record<string, unknown>,
+  localPk: string | null,
+  signal?: AbortSignal,
+): Promise<'created' | 'updated'> {
+  const withFreshUpdatedAt = (row: Record<string, unknown>, base?: Date): Record<string, unknown> => ({
+    ...row,
+    updated_at: formatWallClockDatetimeLocal(base ?? new Date()),
+  });
+
+  const tryCreateOrUpdate = async (row: Record<string, unknown>): Promise<'created' | 'updated'> => {
+    try {
+      await apiCreateRecord('points_wallet', row, { signal });
+      return 'created';
+    } catch (e) {
+      if (!isDuplicateRecordApiError(e)) throw e;
+      if (!localPk) throw e;
+      await apiUpdateRecord('points_wallet', localPk, row, { signal });
+      return 'updated';
+    }
+  };
+
+  const first = withFreshUpdatedAt(payload);
+  try {
+    const action = await tryCreateOrUpdate(first);
+    if (localPk) await persistLocalPointsWalletUpdatedAt(localPk, String(first.updated_at));
+    return action;
+  } catch (e) {
+    if (!isStaleRowVersionApiError(e) || !localPk) throw e;
+    if (__DEV__) console.warn('[api-sync] points_wallet 版本冲突，抬高 updated_at 后重试', localPk);
+
+    let bumpFrom = new Date();
+    try {
+      const server = await apiGetRecord<{ updated_at?: string }>('points_wallet', localPk, { signal });
+      const raw = typeof server.updated_at === 'string' ? server.updated_at : '';
+      const serverAt = raw ? new Date(raw.includes('T') ? raw : raw.replace(' ', 'T')) : null;
+      if (serverAt && !Number.isNaN(serverAt.getTime()) && serverAt.getTime() >= bumpFrom.getTime()) {
+        bumpFrom = new Date(serverAt.getTime() + 1000);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const retry = withFreshUpdatedAt(payload, bumpFrom);
+    try {
+      await apiUpdateRecord('points_wallet', localPk, retry, { signal });
+      await persistLocalPointsWalletUpdatedAt(localPk, String(retry.updated_at));
+      return 'updated';
+    } catch (retryErr) {
+      if (!isStaleRowVersionApiError(retryErr)) throw retryErr;
+      try {
+        await apiPatchRecord(
+          'points_wallet',
+          localPk,
+          { balance: Math.max(0, Math.floor(Number(payload.balance) || 0)) },
+          { signal },
+        );
+        await persistLocalPointsWalletUpdatedAt(localPk, formatWallClockDatetimeLocal(new Date()));
+        return 'updated';
+      } catch {
+        throw new ApiRowUploadSkippedError(
+          'points_wallet',
+          localPk,
+          retryErr instanceof Error ? retryErr.message : '积分钱包版本冲突，已跳过以免阻塞其它同步',
+        );
+      }
+    }
+  }
+}
 
 function rowPrimaryKeyValue(row: Record<string, unknown>, pkCols: string[]): string | null {
   if (pkCols.length === 0) {
@@ -235,6 +333,9 @@ export async function upsertRowToApi(
   const runUpsert = async (payload: Record<string, unknown>): Promise<'created' | 'updated'> => {
     if (table === 'habit_check_ins') {
       return upsertHabitCheckInRowToApi(payload, pk, opts?.signal);
+    }
+    if (table === 'points_wallet') {
+      return upsertPointsWalletRowToApi(payload, pk, opts?.signal);
     }
     try {
       await apiCreateRecord(table, payload, { signal: opts?.signal });

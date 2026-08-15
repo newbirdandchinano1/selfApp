@@ -8,7 +8,8 @@ let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
 const COALESCE_MS = 80;
-const TOAST_VISIBLE_MS = 1000;
+/** 与 host 停留 + 上滑 + 渐隐总时长对齐，供晚订阅者清状态。 */
+const TOAST_VISIBLE_MS = 2250;
 
 function emit(points: number | null): void {
   visiblePoints = points;

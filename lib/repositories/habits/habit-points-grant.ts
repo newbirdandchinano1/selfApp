@@ -12,19 +12,22 @@ import { getHabitById } from '@/lib/repositories/habits/habit';
 export async function applyHabitCheckInPointsReward(
   habitId: string,
   direction: 'earn' | 'undo',
+  opts?: { forceUndo?: boolean; extraData?: string | null },
 ): Promise<number> {
   const row = await getHabitById(habitId);
   if (!row) return 0;
-  const points = parseHabitRewardPoints(row.extra_data);
+  const extraData = opts?.extraData !== undefined ? opts.extraData : row.extra_data;
+  const points = parseHabitRewardPoints(extraData);
   if (points <= 0) return 0;
   return applyEntityPointsReward({
     refType: 'habit',
     refId: habitId,
     direction,
     points,
-    extraData: row.extra_data,
+    extraData,
     earnReason: 'habit_check_in',
     undoReason: 'habit_check_in_undo',
+    forceUndo: opts?.forceUndo,
   });
 }
 
@@ -32,12 +35,14 @@ export async function applyTaskCompletionPointsReward(
   taskId: string,
   direction: 'earn' | 'undo',
   extraData?: string | null,
+  opts?: { forceUndo?: boolean },
 ): Promise<number> {
   return applyCompletionPointsReward({
     refType: 'task',
     refId: taskId,
     direction,
     extraData,
+    forceUndo: opts?.forceUndo,
   });
 }
 
@@ -45,11 +50,13 @@ export async function applyProjectCompletionPointsReward(
   projectId: string,
   direction: 'earn' | 'undo',
   extraData?: string | null,
+  opts?: { forceUndo?: boolean },
 ): Promise<number> {
   return applyCompletionPointsReward({
     refType: 'project',
     refId: projectId,
     direction,
     extraData,
+    forceUndo: opts?.forceUndo,
   });
 }

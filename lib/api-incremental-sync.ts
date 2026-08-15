@@ -302,7 +302,11 @@ export function scheduleApiPushDebounced(): void {
 }
 
 /** 取消 debounce 并立即推送脏表（财务记账等需即时入库后端的场景） */
-export async function flushApiDirtyTablesNow(opts?: { rethrow?: boolean }): Promise<void> {
+export async function flushApiDirtyTablesNow(opts?: {
+  rethrow?: boolean;
+  /** 仅推送这些表（及其 FK 父表扩展）；未指定则推送全部脏表 */
+  onlyTables?: string[];
+}): Promise<void> {
   if (coalescedApiPushTimer) {
     clearTimeout(coalescedApiPushTimer);
     coalescedApiPushTimer = null;
@@ -353,14 +357,37 @@ async function listPendingApiSyncTableNames(): Promise<string[]> {
 }
 
 /** 脏表增量：将本地待同步行推送到 REST 后端 */
-export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): Promise<void> {
-  if (apiPushInFlight) return;
+export async function pushApiDirtyTablesIfNeeded(opts?: {
+  rethrow?: boolean;
+  onlyTables?: string[];
+}): Promise<void> {
+  const only = (opts?.onlyTables ?? [])
+    .map(t => t.trim())
+    .filter(t => t && isSafeTableName(t) && !REST_SKIP_TABLES.has(t));
+  const mustRun = only.length > 0 || opts?.rethrow === true;
+
+  // 关键路径若碰上正在推送，不可直接 return（否则 awaitSync 会误判成功且未推打卡）
+  if (apiPushInFlight) {
+    if (!mustRun) return;
+    const maxWaitMs = 30000;
+    const start = Date.now();
+    while (apiPushInFlight) {
+      if (Date.now() - start > maxWaitMs) {
+        if (opts?.rethrow) throw new Error('同步繁忙，请稍后重试');
+        scheduleCoalescedApiPush();
+        return;
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 50));
+    }
+  }
+
   if (isSilentCloudRestoreInFlight()) {
     scheduleCoalescedApiPush();
     return;
   }
 
-  const dirtyList = peekApiDirtyTables().filter(t => !REST_SKIP_TABLES.has(t));
+  const dirtyList =
+    only.length > 0 ? only : peekApiDirtyTables().filter(t => !REST_SKIP_TABLES.has(t));
   if (dirtyList.length === 0) return;
 
   const db = await getDatabase();
@@ -375,16 +402,46 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
     return;
   }
 
+  if (apiPushInFlight) {
+    if (mustRun) {
+      // 等待空档后重入，避免与其它推送交错丢 onlyTables
+      const maxWaitMs = 30000;
+      const start = Date.now();
+      while (apiPushInFlight) {
+        if (Date.now() - start > maxWaitMs) {
+          if (opts?.rethrow) throw new Error('同步繁忙，请稍后重试');
+          scheduleCoalescedApiPush();
+          return;
+        }
+        await new Promise<void>(resolve => setTimeout(resolve, 50));
+      }
+      return pushApiDirtyTablesIfNeeded(opts);
+    }
+    return;
+  }
+
   apiPushInFlight = true;
   try {
     const { insertOrder, rowsByTable } = await collectPendingDataForApiPush(dirtyList);
-    if (insertOrder.length === 0) {
+    // onlyTables 时禁止把未请求的脏表（如 points_wallet）捎带进同一次推送
+    const allowed =
+      only.length > 0
+        ? new Set(
+            insertOrder.filter(
+              t => only.includes(t) || t === 'habits' || t === 'habit_check_ins',
+            ),
+          )
+        : null;
+    const effectiveOrder =
+      allowed != null ? insertOrder.filter(t => allowed.has(t)) : insertOrder;
+
+    if (effectiveOrder.length === 0) {
       await clearApiDirtyTablesWithoutPending(dirtyList);
       return;
     }
 
     const pkColsByTable = new Map<string, string[]>();
-    for (const table of insertOrder) {
+    for (const table of effectiveOrder) {
       pkColsByTable.set(table, await readTablePrimaryKeyColumns(db, table));
     }
 
@@ -397,12 +454,12 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
 
     const uploadedPkByTable = new Map<string, Set<string>>();
     const fkRefsByTable = new Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>();
-    for (const table of insertOrder) {
+    for (const table of effectiveOrder) {
       fkRefsByTable.set(table, await readLocalForeignKeyRefs(table));
       uploadedPkByTable.set(table, new Set<string>());
     }
 
-    for (const table of insertOrder) {
+    for (const table of effectiveOrder) {
       const rawRows = rowsByTable.get(table) ?? [];
       if (rawRows.length === 0) continue;
 
@@ -499,6 +556,15 @@ export async function pushApiDirtyTablesIfNeeded(opts?: { rethrow?: boolean }): 
         } catch (e) {
           if (e instanceof ApiRowUploadSkippedError) {
             if (__DEV__) console.warn('[api incremental] 跳过', table, e.message);
+            continue;
+          }
+          // 积分钱包 OCC 不得中断同批其它表（打卡/流水）
+          if (
+            table === 'points_wallet' &&
+            e instanceof Error &&
+            /已有更新版本|过期数据覆盖|points_wallet/i.test(e.message)
+          ) {
+            if (__DEV__) console.warn('[api incremental] points_wallet 冲突已隔离', e.message);
             continue;
           }
           throw e;
