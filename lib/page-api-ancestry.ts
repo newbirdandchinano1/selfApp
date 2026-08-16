@@ -40,7 +40,6 @@ const PAGE_PARENTS: Record<string, string[]> = {
   'add-scheduled-expense': ['scheduled-expenses', TAB.finance],
   'finance-calendar': [TAB.finance],
   'finance-stats': [TAB.finance],
-  'savings-plan': [TAB.finance],
   'cash-flow': [TAB.finance],
   'auto-ledger': [TAB.finance],
 

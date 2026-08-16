@@ -16,7 +16,7 @@ import {
   getDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
-import { Layout, Spacing, Typography } from '@/constants/design-tokens';
+import { Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
@@ -299,7 +299,7 @@ export function DailyReviewGridView({
             ) : null}
 
             {dailyTemplate.length === 0 ? (
-              <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21, paddingHorizontal: Layout.pagePaddingX }]}>
+              <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21, paddingHorizontal: Spacing.md }]}>
                 尚未配置日复盘维度，请点右上角「模板」按钮编辑标题与栏目。
               </Text>
             ) : (
@@ -343,8 +343,6 @@ const styles = StyleSheet.create({
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: {
     gap: Spacing.xl,
-    maxWidth: Layout.contentMaxWidth,
-    alignSelf: 'center',
     width: '100%',
   },
   notice: {
@@ -354,14 +352,14 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     padding: Spacing['3xl'],
-    marginHorizontal: Layout.pagePaddingX,
+    marginHorizontal: Spacing.md,
   },
   actionBtn: {
     borderRadius: 12,
     minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    marginHorizontal: Layout.pagePaddingX,
+    marginHorizontal: Spacing.md,
   },
   actionBtnText: { color: '#fff', fontSize: 15, fontWeight: '900' },
 });

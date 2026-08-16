@@ -9,13 +9,10 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 import {
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
 } from 'react-native';
 import Svg, { Defs, LinearGradient, Path, Stop } from 'react-native-svg';
 
@@ -282,7 +279,7 @@ type TrendChartPanelProps = {
   trendPoints: TrendPoint[];
   logicalToday: Date;
   metricAccent: string;
-  theme: (typeof Colors)['light'];
+  theme: (typeof Colors)['light'] | (typeof Colors)['dark'];
   isDark: boolean;
   selectedIndex: number | null;
   onSelectIndex: (index: number) => void;
@@ -468,7 +465,6 @@ export function HealthIntakeTrendSection({
   const theme = Colors[scheme ?? 'light'];
   const isDark = scheme === 'dark';
   const today = React.useMemo(() => normalizeDate(logicalToday), [logicalToday]);
-  const [chartPagerWidth, setChartPagerWidth] = React.useState(1);
 
   const [dayMetricsMap, setDayMetricsMap] = React.useState<Map<string, DayMetrics>>(new Map());
   const [historyStartDate, setHistoryStartDate] = React.useState(() => addDays(today, -29));
@@ -477,23 +473,12 @@ export function HealthIntakeTrendSection({
   const [metricMode, setMetricMode] = React.useState<MetricMode>('overall');
   const [selectedIndex, setSelectedIndex] = React.useState<number | null>(null);
   const [loading, setLoading] = React.useState(true);
-  const chartPagerRef = React.useRef<ScrollView>(null);
 
   const windowSize = getWindowSize(rangeMode);
   const currentWindow = React.useMemo(
     () => buildTrendWindow(windowEndDate, windowSize, today, historyStartDate),
     [historyStartDate, today, windowEndDate, windowSize],
   );
-  const prevWindowEnd = addDays(windowEndDate, -windowSize);
-  const nextWindowEnd = addDays(windowEndDate, windowSize);
-  const prevWindow = React.useMemo(
-    () => buildTrendWindow(prevWindowEnd, windowSize, today, historyStartDate),
-    [historyStartDate, prevWindowEnd, today, windowSize],
-  );
-  const nextWindow = React.useMemo(() => {
-    const cappedEnd = nextWindowEnd > today ? today : nextWindowEnd;
-    return buildTrendWindow(cappedEnd, windowSize, today, historyStartDate);
-  }, [historyStartDate, nextWindowEnd, today, windowSize]);
 
   const canGoOlder = canShiftWindowOlder(windowEndDate, windowSize, historyStartDate);
   const canGoNewer = canShiftWindowNewer(windowEndDate, today);
@@ -533,27 +518,9 @@ export function HealthIntakeTrendSection({
     void reloadCalendar().catch((e) => console.warn('刷新健康摄入趋势失败', e));
   }, [refreshNonce, reloadCalendar]);
 
-  React.useEffect(() => {
-    chartPagerRef.current?.scrollTo({ x: chartPagerWidth, animated: false });
-  }, [chartPagerWidth, windowEndDate, rangeMode]);
-
-  const buildWindowTrendPoints = React.useCallback(
-    (window: { start: Date; end: Date }) =>
-      buildTrendPoints(window.end, window.start, dayMetricsMap, metricMode, today),
-    [dayMetricsMap, metricMode, today],
-  );
-
   const trendPoints = React.useMemo(
-    () => buildWindowTrendPoints(currentWindow),
-    [buildWindowTrendPoints, currentWindow],
-  );
-  const pagerTrendWindows = React.useMemo(
-    () => [
-      { key: 'prev', points: buildWindowTrendPoints(prevWindow) },
-      { key: 'current', points: trendPoints },
-      { key: 'next', points: buildWindowTrendPoints(nextWindow) },
-    ],
-    [buildWindowTrendPoints, nextWindow, prevWindow, trendPoints],
+    () => buildTrendPoints(currentWindow.end, currentWindow.start, dayMetricsMap, metricMode, today),
+    [currentWindow.end, currentWindow.start, dayMetricsMap, metricMode, today],
   );
 
   const lastTrendIndex = Math.max(0, trendPoints.length - 1);
@@ -565,33 +532,6 @@ export function HealthIntakeTrendSection({
   React.useEffect(() => {
     setSelectedIndex(null);
   }, [rangeMode, metricMode, windowEndDate]);
-
-  const onChartPagerEnd = React.useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const x = e.nativeEvent.contentOffset.x;
-      if (x < chartPagerWidth * 0.5) {
-        if (canGoOlder) {
-          setWindowEndDate((prev) => addDays(prev, -windowSize));
-        } else {
-          chartPagerRef.current?.scrollTo({ x: chartPagerWidth, animated: true });
-        }
-        return;
-      }
-      if (x > chartPagerWidth * 1.5) {
-        if (canGoNewer) {
-          setWindowEndDate((prev) => {
-            const nextEnd = addDays(prev, windowSize);
-            return nextEnd > today ? today : nextEnd;
-          });
-        } else {
-          chartPagerRef.current?.scrollTo({ x: chartPagerWidth, animated: true });
-        }
-        return;
-      }
-      chartPagerRef.current?.scrollTo({ x: chartPagerWidth, animated: false });
-    },
-    [canGoNewer, canGoOlder, chartPagerWidth, today, windowSize],
-  );
 
   const metricAccent = METRIC_MODES.find((item) => item.key === metricMode)?.color ?? '#10b981';
   const currentMetricLabel = METRIC_MODES.find((item) => item.key === metricMode)?.label ?? '综合';
@@ -609,7 +549,7 @@ export function HealthIntakeTrendSection({
     : loading
       ? '正在加载趋势...'
       : recordedDays > 0
-        ? `${formatWindowRangeLabel(currentWindow.start, currentWindow.end)} 平均 ${currentMetricLabel} ${averageValue}% · 右滑更早 · 左滑更近 · 点按图表选日`
+        ? `${formatWindowRangeLabel(currentWindow.start, currentWindow.end)} 平均 ${currentMetricLabel} ${averageValue}% · 点按图表选日`
         : '当前区间暂无健康记录';
 
   const progress = selectedMetrics?.overallPercent ?? 0;
@@ -649,12 +589,13 @@ export function HealthIntakeTrendSection({
           })}
         </View>
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.metricPillRow}>
+        <View style={styles.metricPillRow}>
           {METRIC_MODES.map((item) => {
             const active = metricMode === item.key;
             return (
-              <Pressable
+              <TouchableOpacity
                 key={item.key}
+                activeOpacity={0.82}
                 onPress={() => setMetricMode(item.key)}
                 style={[
                   styles.metricPill,
@@ -666,10 +607,10 @@ export function HealthIntakeTrendSection({
               >
                 <View style={[styles.metricDot, { backgroundColor: item.color }]} />
                 <Text style={[styles.metricPillText, { color: active ? item.color : theme.textSecondary }]}>{item.label}</Text>
-              </Pressable>
+              </TouchableOpacity>
             );
           })}
-        </ScrollView>
+        </View>
       </View>
 
       <View
@@ -680,10 +621,6 @@ export function HealthIntakeTrendSection({
             borderColor: isDark ? 'rgba(148,163,184,0.22)' : '#f1f5f9',
           },
         ]}
-        onLayout={(e) => {
-          const next = Math.max(1, e.nativeEvent.layout.width - 32);
-          setChartPagerWidth((prev) => (Math.abs(prev - next) < 1 ? prev : next));
-        }}
       >
         <View style={styles.trendSummaryRow}>
           <View>
@@ -744,32 +681,18 @@ export function HealthIntakeTrendSection({
           <Text style={[styles.trendTipText, { color: theme.textSecondary }]}>{trendTipText}</Text>
         </View>
 
-        <ScrollView
-          ref={chartPagerRef}
-          horizontal
-          pagingEnabled
-          nestedScrollEnabled
-          directionalLockEnabled
-          showsHorizontalScrollIndicator={false}
-          scrollEventThrottle={16}
-          onMomentumScrollEnd={onChartPagerEnd}
-          style={styles.chartPager}
-        >
-          {pagerTrendWindows.map((page) => (
-            <View key={`${page.key}-${currentWindow.end.getTime()}`} style={{ width: chartPagerWidth }}>
-              <TrendChartPanel
-                chartKey={page.key}
-                trendPoints={page.points}
-                logicalToday={today}
-                metricAccent={metricAccent}
-                theme={theme}
-                isDark={isDark}
-                selectedIndex={page.key === 'current' ? selectedIndex : null}
-                onSelectIndex={page.key === 'current' ? setSelectedIndex : () => {}}
-              />
-            </View>
-          ))}
-        </ScrollView>
+        <View style={styles.chartPager}>
+          <TrendChartPanel
+            chartKey="current"
+            trendPoints={trendPoints}
+            logicalToday={today}
+            metricAccent={metricAccent}
+            theme={theme}
+            isDark={isDark}
+            selectedIndex={selectedIndex}
+            onSelectIndex={setSelectedIndex}
+          />
+        </View>
       </View>
 
       {selectedTrendPoint && selectedMetrics ? (
@@ -916,8 +839,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   metricPillRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
-    paddingRight: 8,
   },
   metricPill: {
     flexDirection: 'row',

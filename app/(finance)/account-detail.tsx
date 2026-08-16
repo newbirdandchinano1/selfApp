@@ -2,7 +2,7 @@ import { AppButton, AppCard, AppIconButton, AppInput, ScreenHeader } from '@/com
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
-import { clearFinanceDefaultAccountIfDeleted } from '@/lib/finance-default-accounts';
+import { clearFinanceLastUsedAccountIfDeleted } from '@/lib/finance-last-used-account';
 import { openFinanceSheet, subscribeFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import {
   applyFinanceAccountBalanceCorrection,
@@ -308,7 +308,7 @@ export default function AccountDetailScreen() {
           try {
             setDeleting(true);
             await deleteFinanceAccount(targetId);
-            await clearFinanceDefaultAccountIfDeleted(targetId);
+            await clearFinanceLastUsedAccountIfDeleted(targetId);
             router.back();
           } catch (error) {
             console.warn('Failed to delete finance account:', error);

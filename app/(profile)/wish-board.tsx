@@ -3,7 +3,11 @@ import { AppButton, AppCard, AppScreen, ScreenHeader } from '@/components/ui';
 import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { resolveWishBoardIcon } from '@/lib/constants/wish-board-icons';
+import {
+  resolveWishBoardIconOption,
+  wishBoardIconTintSoft,
+} from '@/lib/constants/wish-board-icons';
+import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
 import {
   deleteWishBoardItem,
   deleteWishRedeemRecord,
@@ -16,7 +20,7 @@ import {
 import type { WishBoardItemRow, WishRedeemRecord } from '@/lib/repositories/wish-board/wish-board.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 
@@ -32,7 +36,7 @@ function formatRedeemedAt(raw: string | null): string | null {
 export default function WishBoardScreen() {
   const router = useRouter();
   const { colors, isDark } = useAppTheme();
-  const { wrapLoad } = usePageApiSync(WISH_BOARD_PAGE_KEY);
+  const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(WISH_BOARD_PAGE_KEY);
 
   const [balance, setBalance] = useState(0);
   const [items, setItems] = useState<WishBoardItemRow[]>([]);
@@ -75,6 +79,10 @@ export default function WishBoardScreen() {
     }, [reload]),
   );
 
+  useEffect(() => {
+    return subscribePointsBalanceChanged(setBalance);
+  }, []);
+
   const onResetPoints = useCallback(() => {
     if (balance <= 0 || resetting) return;
     Alert.alert(
@@ -91,6 +99,7 @@ export default function WishBoardScreen() {
               try {
                 const result = await resetPointsBalance();
                 setBalance(result.balance);
+                notifyAncestorsDataChanged();
                 await reload();
               } catch (e) {
                 Alert.alert('重置失败', e instanceof Error ? e.message : '请稍后重试');
@@ -102,7 +111,7 @@ export default function WishBoardScreen() {
         },
       ],
     );
-  }, [balance, reload, resetting]);
+  }, [balance, notifyAncestorsDataChanged, reload, resetting]);
 
   const onRedeem = useCallback(
     (item: WishBoardItemRow) => {
@@ -125,6 +134,7 @@ export default function WishBoardScreen() {
                 try {
                   const result = await redeemWishBoardItem(item.id);
                   setBalance(result.balance);
+                  notifyAncestorsDataChanged();
                   await reload();
                 } catch (e) {
                   Alert.alert('兑换失败', e instanceof Error ? e.message : '请稍后重试');
@@ -135,7 +145,7 @@ export default function WishBoardScreen() {
         ],
       );
     },
-    [balance, reload],
+    [balance, notifyAncestorsDataChanged, reload],
   );
 
   const onDelete = useCallback(
@@ -241,7 +251,7 @@ export default function WishBoardScreen() {
 
         {items.length === 0 && !loadError ? (
           <View style={styles.emptyWrap}>
-            <MaterialIcons name="card-giftcard" size={36} color={muted} />
+            <Text style={styles.emptyEmoji}>🎁</Text>
             <Text style={[styles.empty, { color: muted }]}>还没有心愿，点上方按钮添加一条吧</Text>
           </View>
         ) : null}
@@ -253,7 +263,7 @@ export default function WishBoardScreen() {
         ) : null}
 
         {activeItems.map(item => {
-          const iconName = resolveWishBoardIcon(item.icon_key);
+          const icon = resolveWishBoardIconOption(item.icon_key);
           const lastRedeemed = item.wish_type === 'repeat' ? formatRedeemedAt(item.redeemed_at) : null;
           const canRedeem = balance >= item.cost_points;
           return (
@@ -278,9 +288,9 @@ export default function WishBoardScreen() {
                     <View
                       style={[
                         styles.iconBadge,
-                        { backgroundColor: isDark ? 'rgba(244,114,182,0.15)' : 'rgba(190,24,93,0.08)' },
+                        { backgroundColor: wishBoardIconTintSoft(icon.tint, isDark) },
                       ]}>
-                      <MaterialIcons name={iconName} size={22} color={accent} />
+                      <Text style={styles.iconEmoji}>{icon.emoji}</Text>
                     </View>
                     <View style={{ flex: 1, gap: 4 }}>
                       <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={2}>
@@ -340,7 +350,7 @@ export default function WishBoardScreen() {
               {redeemRecords.length} 条 · 仅作记录不可编辑 · 左滑可删除
             </Text>
             {redeemRecords.map(record => {
-              const iconName = resolveWishBoardIcon(record.icon_key);
+              const icon = resolveWishBoardIconOption(record.icon_key);
               const redeemedAtLabel = formatRedeemedAt(record.redeemed_at);
               const typeLabel =
                 record.wish_type === 'repeat' ? '重复性心愿 · 兑换记录' : '一次性心愿 · 已兑换';
@@ -363,13 +373,9 @@ export default function WishBoardScreen() {
                       <View
                         style={[
                           styles.iconBadge,
-                          {
-                            backgroundColor: isDark
-                              ? 'rgba(244,114,182,0.15)'
-                              : 'rgba(190,24,93,0.08)',
-                          },
+                          { backgroundColor: wishBoardIconTintSoft(icon.tint, isDark) },
                         ]}>
-                        <MaterialIcons name={iconName} size={22} color={accent} />
+                        <Text style={styles.iconEmoji}>{icon.emoji}</Text>
                       </View>
                       <View style={{ flex: 1, gap: 4 }}>
                         <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={2}>
@@ -480,6 +486,14 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  iconEmoji: {
+    fontSize: 22,
+    lineHeight: 28,
+  },
+  emptyEmoji: {
+    fontSize: 36,
+    lineHeight: 44,
   },
   itemTitle: {
     ...Typography.bodyStrong,

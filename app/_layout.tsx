@@ -243,7 +243,6 @@ function RootLayoutInner() {
             <Stack.Screen name="tasks-calendar" />
             <Stack.Screen name="tasks-overview" />
             <Stack.Screen name="edit-finance-transaction/[id]" />
-            <Stack.Screen name="savings-plan" />
             <Stack.Screen name="cash-flow" />
             <Stack.Screen name="schedule-picker" />
             <Stack.Screen name="edit-profile" />

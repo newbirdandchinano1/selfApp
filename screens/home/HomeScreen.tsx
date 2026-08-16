@@ -7,7 +7,7 @@ import {
   HealthTrendCardSkeleton,
 } from '@/components/health/health-home-skeletons';
 import { HealthIntakeTrendSection } from '@/components/health/health-intake-trend-section';
-import { HealthNutrientAccents, Layout, Radius, Spacing } from '@/constants/design-tokens';
+import { HealthNutrientAccents, Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -612,9 +612,10 @@ export default function HealthScreen() {
   const { colors, isDark } = useAppTheme();
   const { boundary: dayBoundary, logicalTodayYmd, logicalTodayDate } = useDayBoundary();
   const insets = useSafeAreaInsets();
-  const pageInset = Spacing['5xl'] * 2;
+  const pageInset = Spacing.md * 2;
   const weekPagerWidth = width - pageInset;
-  const cardWidth = (width - pageInset - Spacing.md * 3) / 4;
+  const sectionPanelPad = Spacing['3xl'] * 2;
+  const cardWidth = (width - pageInset - sectionPanelPad - Spacing.md * 3) / 4;
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [assistantOpen, setAssistantOpen] = React.useState(false);
   const [assistantTab, setAssistantTab] = React.useState<'水分' | '蛋白质' | '碳水' | '热量'>('水分');
@@ -647,7 +648,6 @@ export default function HealthScreen() {
   const ctaScaleAnim = React.useRef(new Animated.Value(1)).current;
   const ctaPressAnim = React.useRef(new Animated.Value(1)).current;
   const barGrowAnim = React.useRef(new Animated.Value(0)).current;
-  const statusFloatAnim = React.useRef(new Animated.Value(0)).current;
   const selectedDayPopAnim = React.useRef(new Animated.Value(1)).current;
   const bgFloatAnim = React.useRef(new Animated.Value(0)).current;
   const statusShimmerAnim = React.useRef(new Animated.Value(-1)).current;
@@ -727,7 +727,6 @@ export default function HealthScreen() {
   const [healthSkeletonMounted, setHealthSkeletonMounted] = React.useState(true);
   const healthContentRevealDoneRef = React.useRef(false);
   const healthSkeletonOpacity = React.useRef(new Animated.Value(1)).current;
-  const healthContentOpacity = React.useRef(new Animated.Value(0)).current;
 
   // 获取用户信息
   const [user, setUser] = React.useState<UserRow | null>(null);
@@ -1434,25 +1433,16 @@ export default function HealthScreen() {
       healthContentRevealDoneRef.current = true;
       setHealthSkeletonMounted(true);
       healthSkeletonOpacity.setValue(1);
-      healthContentOpacity.setValue(0);
-      Animated.parallel([
-        Animated.timing(healthSkeletonOpacity, {
-          toValue: 0,
-          duration: 280,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(healthContentOpacity, {
-          toValue: 1,
-          duration: 320,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]).start(({ finished }) => {
+      Animated.timing(healthSkeletonOpacity, {
+        toValue: 0,
+        duration: 280,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
         if (finished) setHealthSkeletonMounted(false);
       });
     }
-  }, [fadeAnim, translateYAnim, metricCardAnims, sectionEntranceAnims, initialHealthLoadPending, healthSkeletonOpacity, healthContentOpacity]);
+  }, [fadeAnim, translateYAnim, metricCardAnims, sectionEntranceAnims, initialHealthLoadPending, healthSkeletonOpacity]);
 
   React.useEffect(() => {
     const pulse = Animated.loop(
@@ -1485,28 +1475,6 @@ export default function HealthScreen() {
       useNativeDriver: false,
     }).start();
   }, [barGrowAnim]);
-
-  React.useEffect(() => {
-    const float = Animated.loop(
-      Animated.sequence([
-        Animated.timing(statusFloatAnim, {
-          toValue: 1,
-          duration: 2600,
-          easing: Easing.inOut(Easing.sin),
-          useNativeDriver: true,
-        }),
-        Animated.timing(statusFloatAnim, {
-          toValue: 0,
-          duration: 2600,
-          easing: Easing.inOut(Easing.sin),
-          useNativeDriver: true,
-        }),
-      ])
-    );
-
-    float.start();
-    return () => float.stop();
-  }, [statusFloatAnim]);
 
   React.useEffect(() => {
     const bgFloat = Animated.loop(
@@ -1884,6 +1852,7 @@ export default function HealthScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         directionalLockEnabled
+        keyboardShouldPersistTaps="handled"
       >
         {pageLoadError ? (
           <View
@@ -1968,13 +1937,11 @@ export default function HealthScreen() {
 
         <View style={styles.healthBodyStack}>
           {!initialHealthLoadPending ? (
-            <Animated.View style={{ opacity: healthContentOpacity }}>
-        <Animated.View
-          style={{
-            opacity: fadeAnim,
-            transform: [{ translateY: translateYAnim }],
-          }}
-        >
+              <View style={styles.sectionStack}>
+        <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
+        <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>今日指标</Text>
+        </View>
         <View style={styles.metricsRow}>
           {nutrientMetricMeta.map((item, index) => {
             const row = dayIntakeDisplay[item.key];
@@ -2000,18 +1967,6 @@ export default function HealthScreen() {
               }
             };
 
-            const cardOpacity = metricCardAnims[index].interpolate({
-              inputRange: [0, 1],
-              outputRange: [0, 1],
-            });
-            const cardTranslateY = metricCardAnims[index].interpolate({
-              inputRange: [0, 1],
-              outputRange: [20, 0],
-            });
-            const cardScale = metricCardAnims[index].interpolate({
-              inputRange: [0, 1],
-              outputRange: [0.96, 1],
-            });
             const impactScale = metricImpactAnims[index].interpolate({
               inputRange: [0, 1],
               outputRange: [1, 1.06],
@@ -2032,11 +1987,19 @@ export default function HealthScreen() {
             const card = (
               <Animated.View
                 style={{
-                  opacity: cardOpacity,
-                  transform: [{ translateY: cardTranslateY }, { translateY: impactLift }, { scale: cardScale }, { scale: impactScale }],
+                  transform: [{ translateY: impactLift }, { scale: impactScale }],
                 }}
               >
-                <View style={[styles.metricCard, { backgroundColor: colors.surface, borderColor: colors.outline, width: cardWidth }]}>
+                <View
+                  style={[
+                    styles.metricCard,
+                    {
+                      backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
+                      borderColor: colors.outline,
+                      width: cardWidth,
+                    },
+                  ]}
+                >
                   <View style={[styles.metricCardGlow, { backgroundColor: `${colors.primary}14` }]} />
                   <Animated.View style={{ transform: [{ rotate: wheelRotate }, { scale: wheelScale }] }}>
                     <CircularProgress
@@ -2063,28 +2026,14 @@ export default function HealthScreen() {
             );
           })}
         </View>
+        </View>
 
-        <Animated.View
-          style={{
-            opacity: sectionEntranceAnims[0],
-            transform: [
-              {
-                translateY: sectionEntranceAnims[0].interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [16, 0],
-                }),
-              },
-              {
-                translateY: statusFloatAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [0, -4],
-                }),
-              },
-            ],
-          }}
-        >
-          <View style={[styles.statusCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
-            <View style={styles.statusItem}>
+        <View>
+          <View style={[styles.sectionPanel, styles.statusPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
+            <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>今日状态</Text>
+            </View>
+            <View style={[styles.statusItem, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle }]}>
               <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.hydration }]} />
               <View style={styles.statusItemBody}>
                 <View style={styles.statusLineRow}>
@@ -2115,7 +2064,7 @@ export default function HealthScreen() {
               </View>
             </View>
 
-            <View style={[styles.statusItem, styles.statusItemSpacing]}>
+            <View style={[styles.statusItem, styles.statusItemSpacing, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle }]}>
               <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.protein }]} />
               <View style={styles.statusItemBody}>
                 <View style={styles.statusLineRow}>
@@ -2146,7 +2095,7 @@ export default function HealthScreen() {
               </View>
             </View>
 
-            <View style={[styles.statusItem, styles.statusItemSpacing]}>
+            <View style={[styles.statusItem, styles.statusItemSpacing, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle }]}>
               <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.carbohydrate }]} />
               <View style={styles.statusItemBody}>
                 <View style={styles.statusLineRow}>
@@ -2177,7 +2126,7 @@ export default function HealthScreen() {
               </View>
             </View>
 
-            <View style={[styles.statusItem, styles.statusItemSpacing]}>
+            <View style={[styles.statusItem, styles.statusItemSpacing, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle }]}>
               <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.calories }]} />
               <View style={styles.statusItemBody}>
                 <View style={styles.statusLineRow}>
@@ -2213,23 +2162,11 @@ export default function HealthScreen() {
               </View>
             </View>
           </View>
-        </Animated.View>
+        </View>
 
-        <Animated.View
-          style={{
-            opacity: sectionEntranceAnims[1],
-            transform: [
-              {
-                translateY: sectionEntranceAnims[1].interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [18, 0],
-                }),
-              },
-            ],
-          }}
-        >
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
+        <View>
+        <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
+          <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>快速添加</Text>
             <TouchableOpacity activeOpacity={0.75} onPress={() => router.push('/quick-add-edit')}>
               <Text style={[styles.editBtn, { color: colors.primary }]}>编辑</Text>
@@ -2264,7 +2201,15 @@ export default function HealthScreen() {
                   }}
                 >
                   <TouchableOpacity
-                    style={[styles.quickAddCard, { backgroundColor: colors.surface, borderColor: colors.outline, width: cardWidth, opacity: intakeParseLocked ? 0.45 : 1 }]}
+                    style={[
+                      styles.quickAddCard,
+                      {
+                        backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
+                        borderColor: colors.outline,
+                        width: cardWidth,
+                        opacity: intakeParseLocked ? 0.45 : 1,
+                      },
+                    ]}
                     activeOpacity={0.82}
                     onPress={() => {
                       if (intakeParseLocked) {
@@ -2284,23 +2229,11 @@ export default function HealthScreen() {
           </ScrollView>
 
         </View>
-        </Animated.View>
+        </View>
 
-        <Animated.View
-          style={{
-            opacity: sectionEntranceAnims[2],
-            transform: [
-              {
-                translateY: sectionEntranceAnims[2].interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [18, 0],
-                }),
-              },
-            ],
-          }}
-        >
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
+        <View>
+        <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
+          <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>摄入记录</Text>
             <TouchableOpacity
               activeOpacity={0.75}
@@ -2319,7 +2252,7 @@ export default function HealthScreen() {
             <View
               style={[
                 styles.intakeEmptyBox,
-                { backgroundColor: colors.surfaceMuted, borderColor: colors.outline },
+                { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle, borderColor: colors.outline },
               ]}
             >
               <Text style={[styles.intakeEmptyText, { color: colors.textSecondary }]}>暂无摄入记录，点击上方添加或记录新摄入</Text>
@@ -2336,7 +2269,7 @@ export default function HealthScreen() {
                         styles.intakeRow,
                         isCombinedIntake && styles.intakeRowStacked,
                         {
-                          backgroundColor: colors.surface,
+                          backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
                           borderColor: colors.outline,
                           opacity: 0.92,
                         },
@@ -2404,7 +2337,7 @@ export default function HealthScreen() {
                       styles.intakeRow,
                       isCombinedIntake && styles.intakeRowStacked,
                       {
-                        backgroundColor: colors.surface,
+                        backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
                         borderColor: colors.outline,
                       },
                     ]}
@@ -2478,22 +2411,10 @@ export default function HealthScreen() {
             </View>
           )}
         </View>
-        </Animated.View>
+        </View>
 
-        <Animated.View
-          style={{
-            opacity: sectionEntranceAnims[3],
-            transform: [
-              {
-                translateY: sectionEntranceAnims[3].interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [20, 0],
-                }),
-              },
-            ],
-          }}
-        >
-          <View style={[styles.trendPanelTabs, { backgroundColor: isDark ? colors.input : colors.background }]}>
+        <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
+          <View style={[styles.trendPanelTabs, { backgroundColor: isDark ? colors.input : colors.surfaceSubtle }]}>
             {(
               [
                 { key: 'weekly' as const, label: '每周趋势' },
@@ -2502,14 +2423,15 @@ export default function HealthScreen() {
             ).map((tab) => {
               const active = trendPanelTab === tab.key;
               return (
-                <Pressable
+                <TouchableOpacity
                   key={tab.key}
+                  activeOpacity={0.82}
                   onPress={() => setTrendPanelTab(tab.key)}
                   style={[
                     styles.trendPanelTabBtn,
                     active
                       ? {
-                          backgroundColor: colors.surface,
+                          backgroundColor: isDark ? colors.surfaceMuted : colors.surface,
                           borderColor: colors.outline,
                         }
                       : undefined,
@@ -2520,13 +2442,13 @@ export default function HealthScreen() {
                   <Text style={[styles.trendPanelTabText, { color: active ? colors.text : colors.textSecondary }]}>
                     {tab.label}
                   </Text>
-                </Pressable>
+                </TouchableOpacity>
               );
             })}
           </View>
 
           {trendPanelTab === 'weekly' ? (
-            <View style={[styles.trendCard, { backgroundColor: isDark ? colors.surfaceMuted : colors.capsule, borderColor: colors.outline }]}>
+            <View style={[styles.trendCard, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle, borderColor: colors.outline }]}>
               <View style={styles.trendHeader}>
                 <Text style={[styles.trendTitle, { color: colors.text }]}>每周趋势</Text>
                 <Text style={[styles.trendSub, { color: colors.primary }]}>{weeklyTrendDeltaText}</Text>
@@ -2683,11 +2605,10 @@ export default function HealthScreen() {
               hideSectionHeader
             />
           )}
-        </Animated.View>
+          </View>
 
         <View style={{ height: 40 }} />
-        </Animated.View>
-            </Animated.View>
+        </View>
           ) : null}
 
           {initialHealthLoadPending || healthSkeletonMounted ? (
@@ -2701,21 +2622,33 @@ export default function HealthScreen() {
                 },
               ]}
             >
-              <HealthMetricsSkeleton cardWidth={cardWidth} colors={colors} />
-              <HealthStatusCardSkeleton colors={colors} />
-              <View style={styles.section}>
-                <View style={styles.sectionHeader}>
+              <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
+                <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
+                  <Text style={[styles.sectionTitle, { color: colors.text }]}>今日指标</Text>
+                </View>
+                <HealthMetricsSkeleton cardWidth={cardWidth} colors={colors} />
+              </View>
+              <View style={[styles.sectionPanel, styles.statusPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
+                <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
+                  <Text style={[styles.sectionTitle, { color: colors.text }]}>今日状态</Text>
+                </View>
+                <HealthStatusCardSkeleton colors={colors} />
+              </View>
+              <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
+                <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
                   <Text style={[styles.sectionTitle, { color: colors.text }]}>快速添加</Text>
                 </View>
                 <HealthQuickAddSkeleton cardWidth={cardWidth} colors={colors} />
               </View>
-              <View style={styles.section}>
-                <View style={styles.sectionHeader}>
+              <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
+                <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
                   <Text style={[styles.sectionTitle, { color: colors.text }]}>摄入记录</Text>
                 </View>
                 <HealthIntakeListSkeleton colors={colors} />
               </View>
-              <HealthTrendCardSkeleton colors={colors} isDark={isDark} />
+              <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
+                <HealthTrendCardSkeleton colors={colors} isDark={isDark} />
+              </View>
               <View style={{ height: 40 }} />
             </Animated.View>
           ) : null}
@@ -2934,7 +2867,7 @@ export default function HealthScreen() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
   header: {
-    paddingHorizontal: Spacing['5xl'],
+    paddingHorizontal: Spacing.md,
     paddingBottom: Spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
     zIndex: 10,
@@ -2997,11 +2930,9 @@ const styles = StyleSheet.create({
   },
   scroll: { flex: 1 },
   scrollContent: {
-    maxWidth: Layout.contentMaxWidth,
-    alignSelf: 'center',
     width: '100%',
-    paddingHorizontal: Spacing['5xl'],
-    paddingTop: 0,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.xl,
     paddingBottom: Spacing['6xl'],
   },
   loadErrorBanner: {
@@ -3057,25 +2988,33 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 2,
+    gap: Spacing.xl,
+  },
+  sectionStack: {
+    gap: Spacing.xl,
+  },
+  sectionPanel: {
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['3xl'],
+    ...Shadows.card,
+    overflow: 'hidden',
+  },
+  statusPanel: {
+    paddingBottom: Spacing['3xl'],
   },
   metricsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: 8,
-    marginBottom: 24,
   },
   metricCard: {
-    borderRadius: Radius['2xl'],
-    paddingVertical: Spacing['3xl'],
-    paddingHorizontal: Spacing.lg,
+    borderRadius: Radius.xl,
+    paddingVertical: Spacing['2xl'],
+    paddingHorizontal: Spacing.md,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: StyleSheet.hairlineWidth,
-    elevation: 2,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
     overflow: 'hidden',
   },
   metricCardGlow: {
@@ -3112,24 +3051,14 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 4,
   },
-  statusCard: {
-    borderRadius: Radius['2xl'],
-    padding: Spacing['4xl'],
-    marginBottom: Spacing['4xl'],
-    borderWidth: StyleSheet.hairlineWidth,
-    elevation: 2,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    overflow: 'hidden',
-  },
   statusItem: {
     flexDirection: 'row',
     gap: 12,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
   },
   statusItemSpacing: {
-    marginTop: 14,
+    marginTop: Spacing.md,
   },
   statusItemAccent: {
     width: 4,
@@ -3186,14 +3115,13 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 999,
   },
-  section: {
-    marginBottom: 24,
-  },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-end',
-    marginBottom: 16,
+    marginBottom: Spacing.xl,
+    paddingBottom: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   sectionTitle: {
     fontSize: 18,
@@ -3206,26 +3134,21 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   quickAddScroll: {
-    marginBottom: 20,
-    marginHorizontal: -Spacing['5xl'],
+    marginBottom: 0,
+    marginHorizontal: -Spacing.md,
   },
   quickAddScrollContent: {
     flexDirection: 'row',
     gap: Spacing.md,
-    paddingHorizontal: Spacing['5xl'],
+    paddingHorizontal: Spacing.md,
   },
   quickAddCard: {
-    borderRadius: Radius['2xl'],
+    borderRadius: Radius.xl,
     paddingVertical: Spacing['2xl'],
     paddingHorizontal: Spacing.md,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: StyleSheet.hairlineWidth,
-    elevation: 2,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
   },
   quickAddIcon: {
     marginBottom: 8,
@@ -3256,12 +3179,12 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
   },
   intakeEmptyBox: {
-    borderRadius: Radius['2xl'],
+    borderRadius: Radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
     paddingVertical: 22,
     paddingHorizontal: 16,
     alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 0,
   },
   intakeEmptyText: {
     fontSize: 13,
@@ -3270,8 +3193,8 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   intakeList: {
-    gap: 12,
-    marginBottom: 4,
+    gap: 10,
+    marginBottom: 0,
   },
   intakeRow: {
     flexDirection: 'row',
@@ -3281,11 +3204,6 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing['2xl'],
     paddingHorizontal: Spacing['3xl'],
     borderWidth: StyleSheet.hairlineWidth,
-    elevation: 2,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
   },
   intakeRowStacked: {
     flexDirection: 'column',
@@ -3360,7 +3278,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
     marginTop: 2,
-    marginBottom: 4,
+    marginBottom: 0,
   },
   swipeDeleteAction: {
     width: 86,
@@ -3376,8 +3294,8 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   trendCard: {
-    borderRadius: Radius['2xl'],
-    padding: Spacing['5xl'],
+    borderRadius: Radius.xl,
+    padding: Spacing['4xl'],
     borderWidth: StyleSheet.hairlineWidth,
   },
   trendPanelTabs: {

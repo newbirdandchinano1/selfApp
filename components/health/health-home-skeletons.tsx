@@ -18,7 +18,7 @@ export function HealthMetricsSkeleton({ cardWidth, colors }: HealthSkeletonProps
           key={index}
           style={[
             styles.metricCard,
-            { backgroundColor: colors.surface, borderColor: colors.outline, width: cardWidth },
+            { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline, width: cardWidth },
           ]}
         >
           <Skeleton width={64} height={64} borderRadius={32} style={styles.metricCircle} />
@@ -33,9 +33,16 @@ export function HealthMetricsSkeleton({ cardWidth, colors }: HealthSkeletonProps
 
 export function HealthStatusCardSkeleton({ colors }: Pick<HealthSkeletonProps, 'colors'>) {
   return (
-    <View style={[styles.statusCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+    <View style={styles.statusList}>
       {Array.from({ length: 4 }).map((_, index) => (
-        <View key={index} style={[styles.statusItem, index > 0 && styles.statusItemSpacing]}>
+        <View
+          key={index}
+          style={[
+            styles.statusItem,
+            index > 0 && styles.statusItemSpacing,
+            { backgroundColor: colors.surfaceSubtle },
+          ]}
+        >
           <Skeleton width={4} height={52} borderRadius={2} />
           <View style={styles.statusItemBody}>
             <View style={styles.statusLineRow}>
@@ -63,7 +70,7 @@ export function HealthQuickAddSkeleton({ cardWidth, colors }: HealthSkeletonProp
           key={index}
           style={[
             styles.quickAddCard,
-            { backgroundColor: colors.surface, borderColor: colors.outline, width: cardWidth },
+            { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline, width: cardWidth },
           ]}
         >
           <Skeleton width={30} height={30} borderRadius={15} style={styles.quickAddIcon} />
@@ -81,7 +88,7 @@ export function HealthIntakeListSkeleton({ colors }: Pick<HealthSkeletonProps, '
       {Array.from({ length: 2 }).map((_, index) => (
         <View
           key={index}
-          style={[styles.intakeRow, { backgroundColor: colors.surface, borderColor: colors.outline }]}
+          style={[styles.intakeRow, { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline }]}
         >
           <View style={styles.intakeRowLeft}>
             <Skeleton width={40} height={40} borderRadius={20} />
@@ -106,7 +113,7 @@ export function HealthTrendCardSkeleton({ colors, isDark = false }: Pick<HealthS
     <View
       style={[
         styles.trendCard,
-        { backgroundColor: isDark ? colors.surfaceMuted : colors.capsule, borderColor: colors.outline },
+        { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle, borderColor: colors.outline },
       ]}
     >
       <View style={styles.trendHeader}>
@@ -143,12 +150,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: 8,
-    marginBottom: 24,
   },
   metricCard: {
-    borderRadius: Radius['2xl'],
-    paddingVertical: Spacing['3xl'],
-    paddingHorizontal: Spacing.lg,
+    borderRadius: Radius.xl,
+    paddingVertical: Spacing['2xl'],
+    paddingHorizontal: Spacing.md,
     alignItems: 'center',
     borderWidth: StyleSheet.hairlineWidth,
   },
@@ -161,19 +167,18 @@ const styles = StyleSheet.create({
   metricSub: {
     marginTop: 4,
   },
-  statusCard: {
-    borderRadius: Radius['2xl'],
-    padding: Spacing['4xl'],
-    marginBottom: Spacing['4xl'],
-    borderWidth: StyleSheet.hairlineWidth,
+  statusList: {
+    gap: 0,
   },
   statusItem: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 12,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
   },
   statusItemSpacing: {
-    marginTop: 18,
+    marginTop: Spacing.md,
   },
   statusItemBody: {
     flex: 1,
@@ -199,9 +204,9 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
   },
   quickAddCard: {
-    borderRadius: Radius['2xl'],
-    paddingVertical: Spacing['3xl'],
-    paddingHorizontal: Spacing.lg,
+    borderRadius: Radius.xl,
+    paddingVertical: Spacing['2xl'],
+    paddingHorizontal: Spacing.md,
     alignItems: 'center',
     borderWidth: StyleSheet.hairlineWidth,
   },
@@ -244,8 +249,8 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   trendCard: {
-    borderRadius: Radius['2xl'],
-    padding: Spacing['5xl'],
+    borderRadius: Radius.xl,
+    padding: Spacing['4xl'],
     borderWidth: StyleSheet.hairlineWidth,
   },
   trendHeader: {

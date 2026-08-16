@@ -93,7 +93,7 @@ const styles = StyleSheet.create({
   sticky: {},
   inner: {
     height: Layout.headerHeight,
-    paddingHorizontal: Spacing['5xl'],
+    paddingHorizontal: Spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
   },

@@ -4,6 +4,7 @@ import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import type { PageApiReadOpts } from '@/lib/page-api-session';
 import { DEFAULT_WISH_BOARD_ICON_KEY } from '@/lib/constants/wish-board-icons';
+import { notifyPointsBalanceChanged } from '@/lib/points-balance-events';
 import { notifyPointsEarned } from '@/lib/points-earned-toast-events';
 import { enqueuePointsAdjust } from '@/lib/points-adjust-queue';
 import { getDatabase } from '../../database.native';
@@ -365,6 +366,7 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
       );
     }
     await db.execAsync('COMMIT');
+    notifyPointsBalanceChanged(next);
     return { balance: next };
   } catch (e) {
     await db.execAsync('ROLLBACK');
@@ -426,6 +428,7 @@ export async function adjustPointsBalance(input: {
       [ledgerId, delta, next, reason, refType, refId, nowIso, nowIso],
     );
     await db.execAsync('COMMIT');
+    notifyPointsBalanceChanged(next);
     if (delta > 0) notifyPointsEarned(delta);
     return { balance: next, delta, ledger_id: ledgerId };
   } catch (e) {
@@ -441,7 +444,10 @@ export async function adjustPointsBalance(input: {
 export async function resetPointsBalance(): Promise<{ balance: number; delta: number; ledger_id: string | null }> {
   return enqueuePointsAdjust(async () => {
     const balance = await getLocalPointsBalance();
-    if (balance <= 0) return { balance: 0, delta: 0, ledger_id: null };
+    if (balance <= 0) {
+      notifyPointsBalanceChanged(0);
+      return { balance: 0, delta: 0, ledger_id: null };
+    }
     return adjustPointsBalance({
       delta: -balance,
       reason: 'points_reset',

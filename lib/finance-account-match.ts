@@ -51,7 +51,7 @@ function pickBestAccountByLabel(
 
 /**
  * 根据 AI 从用户账户列表中选择的名称，或截图上的付款方式文案，解析应记账的账户。
- * 无法匹配时返回 `null`（由调用方决定是否回退到默认账户）。
+ * 无法匹配时返回 `null`（由调用方决定是否回退到上次记账账户）。
  */
 export function resolveFinanceAccountForAutoLedger(
   accounts: FinanceAccountMatchCandidate[],
@@ -74,7 +74,7 @@ export function resolveFinanceAccountForAutoLedger(
 }
 
 /**
- * 自动记账账户解析：先 AI/文案匹配，再按收支类型取默认账户，最后回退列表首项。
+ * 自动记账账户解析：先 AI/文案匹配，再取上次记账账户，最后回退列表首项。
  */
 export function resolveFinanceAccountForAutoLedgerWithDefaults(
   accounts: FinanceAccountMatchCandidate[],
@@ -82,8 +82,7 @@ export function resolveFinanceAccountForAutoLedgerWithDefaults(
     transactionType: 'expense' | 'income';
     accountName?: string | null;
     paymentAccountLabel?: string | null;
-    defaultPaymentAccountId?: string | null;
-    defaultIncomeAccountId?: string | null;
+    lastUsedAccountId?: string | null;
   },
 ): FinanceAccountMatchCandidate | null {
   if (!accounts.length) return null;
@@ -94,13 +93,10 @@ export function resolveFinanceAccountForAutoLedgerWithDefaults(
   });
   if (matched) return matched;
 
-  const defaultId =
-    options.transactionType === 'income'
-      ? options.defaultIncomeAccountId
-      : options.defaultPaymentAccountId;
-  if (defaultId) {
-    const fromDefault = accounts.find((a) => a.id === defaultId);
-    if (fromDefault) return fromDefault;
+  const lastUsedId = options.lastUsedAccountId;
+  if (lastUsedId) {
+    const fromLastUsed = accounts.find((a) => a.id === lastUsedId);
+    if (fromLastUsed) return fromLastUsed;
   }
 
   return accounts[0] ?? null;

@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -30,6 +31,8 @@ export function AppInput({
   inputWrapStyle,
   inputStyle,
   placeholderTextColor,
+  style,
+  multiline,
   ...inputProps
 }: AppInputProps) {
   const { colors } = useAppTheme();
@@ -49,8 +52,20 @@ export function AppInput({
           inputWrapStyle,
         ]}>
         <TextInput
+          multiline={multiline}
           placeholderTextColor={placeholderTextColor ?? colors.textMuted}
-          style={[styles.input, { color: colors.text }, inputStyle]}
+          style={[
+            styles.input,
+            { color: colors.text },
+            Platform.OS === 'android'
+              ? {
+                  textAlignVertical: multiline ? 'top' : 'center',
+                  includeFontPadding: false,
+                }
+              : null,
+            inputStyle,
+            style,
+          ]}
           {...inputProps}
         />
       </View>
@@ -83,6 +98,7 @@ const styles = StyleSheet.create({
   input: {
     fontSize: 15,
     fontWeight: '600',
+    lineHeight: 22,
     padding: 0,
     margin: 0,
   },

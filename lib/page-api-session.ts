@@ -322,10 +322,15 @@ export function markTabPagesDirtyForTable(table: string): void {
   const childPages = TABLE_CHILD_PAGE_DIRTY_MAP[table.trim()];
   if (!pages?.length && !childPages?.length) return;
   if (isLocalFirstReads()) {
+    // local-first：本地写入已即时可见，只清会话加载标记以便下次聚焦重读 SQLite。
+    // 切勿对子页 force REST，否则会用服务端旧快照盖掉刚写入的 pending（如重置积分）。
     for (const key of pages ?? []) {
       clearPageLoadedInSession(key);
     }
-    markChildPagesDirtyForTable(table);
+    for (const key of childPages ?? []) {
+      const trimmed = key.trim();
+      if (trimmed) clearPageLoadedInSession(trimmed);
+    }
     return;
   }
   for (const key of pages ?? []) {

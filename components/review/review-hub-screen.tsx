@@ -3,7 +3,7 @@ import { MonthlyReviewGridView } from '@/components/review/monthly-review-grid-v
 import { WeeklyReviewGridView } from '@/components/review/weekly-review-grid-view';
 import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
-import { Layout, Radius, Spacing } from '@/constants/design-tokens';
+import { Radius, Spacing } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -193,11 +193,9 @@ const styles = StyleSheet.create({
     gap: Spacing.xs,
   },
   scopeWrap: {
-    paddingHorizontal: Layout.pagePaddingX,
+    paddingHorizontal: Spacing.md,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.sm,
-    maxWidth: Layout.contentMaxWidth,
-    alignSelf: 'center',
     width: '100%',
   },
   scopeTrack: {

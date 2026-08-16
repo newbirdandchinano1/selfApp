@@ -112,7 +112,7 @@ export default function EditWishBoardItemScreen() {
           editable={!redeemed}
           multiline
           maxLength={500}
-          style={{ minHeight: 96, textAlignVertical: 'top' }}
+          inputStyle={{ minHeight: 96, textAlignVertical: 'top' }}
         />
       </View>
       {!redeemed ? (

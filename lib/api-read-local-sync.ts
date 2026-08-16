@@ -5,6 +5,7 @@ import {
     readReferencedParentIdsForReconcile,
 } from '@/lib/api-fk-preserve';
 import { sanitizeRowForLocalSeed } from '@/lib/api-local-row-seed';
+import { parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import { rowPrimaryKeyValue } from '@/lib/api-row-upsert';
 import {
     beginCloudSqliteDirtyIgnoreBatch,
@@ -13,6 +14,18 @@ import {
 import { getDatabase } from '@/lib/database';
 import { mergeFinanceTxnExtraOnApiSync } from '@/lib/repositories/finance/finance-transaction-extra';
 import { dedupeRowsByPrimaryKey, readTablePrimaryKeyColumns } from '@/lib/sqlite-primary-key-dedupe';
+
+/** LWW：按解析后的时刻比较，避免 ISO 与 MySQL DATETIME 字符串直接比大小误判 */
+function isApiUpdatedAtNewer(apiUpdated: string, localUpdated: string): boolean {
+  if (!apiUpdated) return false;
+  if (!localUpdated) return true;
+  const apiMs = parseStoredDatetime(apiUpdated).getTime();
+  const localMs = parseStoredDatetime(localUpdated).getTime();
+  if (Number.isFinite(apiMs) && Number.isFinite(localMs)) {
+    return apiMs > localMs;
+  }
+  return apiUpdated > localUpdated;
+}
 
 export type ApplyApiReadToLocalOptions = {
   /**
@@ -134,7 +147,7 @@ async function upsertRowsToLocalTable(
           }
           const localUpdated = String(existing.updated_at ?? '').trim();
           const apiUpdated = String(obj.updated_at ?? '').trim();
-          if (!(apiUpdated && (!localUpdated || apiUpdated > localUpdated))) {
+          if (!isApiUpdatedAtNewer(apiUpdated, localUpdated)) {
             continue;
           }
         }

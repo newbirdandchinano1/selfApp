@@ -3,6 +3,7 @@ import { ensureLocalRowForWrite, readLocalRowForWrite } from '@/lib/api-local-ro
 import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, sortBySortOrderAsc, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
+import { rememberFinanceLastUsedAccount } from '@/lib/finance-last-used-account';
 import { dedupeRowsByPrimaryKey } from '@/lib/sqlite-primary-key-dedupe';
 import { getDatabase } from '../../database.native';
 import {
@@ -629,6 +630,24 @@ export async function createFinanceTransaction(
   );
   invalidateInflightApiTableFetch('finance_transactions');
   void pushFinanceChangesToApi();
+
+  const txnType = input.transaction_type ?? 'expense';
+  if (txnType === 'expense' || txnType === 'income') {
+    let skipRemember = false;
+    if (input.extra_data) {
+      try {
+        const extra = JSON.parse(input.extra_data) as unknown;
+        if (extra && typeof extra === 'object' && (extra as { reason?: unknown }).reason === 'initial_balance') {
+          skipRemember = true;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!skipRemember) {
+      void rememberFinanceLastUsedAccount(input.account_id);
+    }
+  }
 }
 
 /**

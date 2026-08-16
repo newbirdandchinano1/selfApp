@@ -262,7 +262,7 @@ export function MonthlyReviewGridView({
             <Text
               style={[
                 Typography.body,
-                { color: colors.textMuted, lineHeight: 21, paddingHorizontal: Layout.pagePaddingX },
+                { color: colors.textMuted, lineHeight: 21, paddingHorizontal: Spacing.md },
               ]}>
               尚未配置月复盘维度，请点右上角「模板」按钮编辑标题与栏目。
             </Text>
@@ -293,12 +293,10 @@ const styles = StyleSheet.create({
   scroll: {
     gap: Spacing.xl,
     paddingTop: Spacing.sm,
-    maxWidth: Layout.contentMaxWidth,
-    alignSelf: 'center',
     width: '100%',
   },
   metaBar: {
-    paddingHorizontal: Layout.pagePaddingX,
+    paddingHorizontal: Spacing.md,
     gap: Spacing.sm,
   },
   monthNav: {
@@ -326,6 +324,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     padding: Spacing['3xl'],
-    marginHorizontal: Layout.pagePaddingX,
+    marginHorizontal: Spacing.md,
   },
 });

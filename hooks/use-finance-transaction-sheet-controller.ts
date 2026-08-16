@@ -4,10 +4,10 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import {
-    loadFinanceDefaultAccounts,
-    sanitizeFinanceDefaultAccounts,
-    type FinanceDefaultAccounts,
-} from '@/lib/finance-default-accounts';
+    getCachedFinanceLastUsedAccountId,
+    loadFinanceLastUsedAccountId,
+    sanitizeFinanceLastUsedAccountId,
+} from '@/lib/finance-last-used-account';
 import { notifyFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import type { FinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import {
@@ -115,10 +115,6 @@ export function useFinanceTransactionSheetController({
   const [sheetKeyboardInset, setSheetKeyboardInset] = React.useState(0);
 
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
-  const defaultAccountsRef = React.useRef<FinanceDefaultAccounts>({
-    defaultPaymentAccountId: null,
-    defaultIncomeAccountId: null,
-  });
 
   const sheetCategories = useFinanceSheetCategories({ primary, secondary, tertiary, subtle });
   const {
@@ -208,16 +204,10 @@ export function useFinanceTransactionSheetController({
     }
   }, []);
 
-  const getDefaultSheetAccountIdForTab = React.useCallback((tab: SheetTab, accounts: FinanceAccountBalanceRow[]) => {
+  const getDefaultSheetAccountIdForTab = React.useCallback((_tab: SheetTab, accounts: FinanceAccountBalanceRow[]) => {
     if (!accounts.length) return null;
-    const defaults = defaultAccountsRef.current;
-    if (tab === 'income') {
-      const id = defaults.defaultIncomeAccountId;
-      if (id && accounts.some((a) => a.id === id)) return id;
-    } else if (tab === 'expense' || tab === 'sentence') {
-      const id = defaults.defaultPaymentAccountId;
-      if (id && accounts.some((a) => a.id === id)) return id;
-    }
+    const lastUsedId = sanitizeFinanceLastUsedAccountId(getCachedFinanceLastUsedAccountId(), accounts);
+    if (lastUsedId) return lastUsedId;
     return accounts[0]?.id ?? null;
   }, []);
 
@@ -225,7 +215,7 @@ export function useFinanceTransactionSheetController({
     (
       accounts: FinanceAccountBalanceRow[],
       parsed: Pick<ParsedOneLiner, 'transaction_type' | 'account_name' | 'payment_account_label'>,
-      defaults: FinanceDefaultAccounts,
+      lastUsedAccountId: string | null,
     ) => {
       if (!accounts.length) return null;
       const candidates = accounts.map((a) => ({ id: a.id, name: a.name, account_no: a.account_no }));
@@ -233,8 +223,7 @@ export function useFinanceTransactionSheetController({
         transactionType: parsed.transaction_type,
         accountName: parsed.account_name ?? null,
         paymentAccountLabel: parsed.payment_account_label ?? null,
-        defaultPaymentAccountId: defaults.defaultPaymentAccountId,
-        defaultIncomeAccountId: defaults.defaultIncomeAccountId,
+        lastUsedAccountId,
       });
       if (!matched) return accounts[0] ?? null;
       return accounts.find((a) => a.id === matched.id) ?? accounts[0] ?? null;
@@ -376,8 +365,7 @@ export function useFinanceTransactionSheetController({
   React.useEffect(() => {
     if (!visible) return;
     void (async () => {
-      const rawDefaults = await loadFinanceDefaultAccounts();
-      defaultAccountsRef.current = sanitizeFinanceDefaultAccounts(rawDefaults, financeAccountsRef.current);
+      await loadFinanceLastUsedAccountId();
       await loadFinanceAccounts();
     })();
   }, [loadFinanceAccounts, visible]);
@@ -687,11 +675,14 @@ export function useFinanceTransactionSheetController({
           return;
         }
         const parsed = resolved.parsed;
-        const defaults = sanitizeFinanceDefaultAccounts(defaultAccountsRef.current, financeAccountsRef.current);
+        const lastUsedAccountId = sanitizeFinanceLastUsedAccountId(
+          getCachedFinanceLastUsedAccountId(),
+          financeAccountsRef.current,
+        );
         const account = manualAccount;
         const aiSuggestedAccount =
           resolved.source === 'ai'
-            ? pickAccountForAutoLedger(financeAccountsRef.current, parsed, defaults)
+            ? pickAccountForAutoLedger(financeAccountsRef.current, parsed, lastUsedAccountId)
             : null;
         if (!account) {
           Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');

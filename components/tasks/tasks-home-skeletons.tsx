@@ -138,14 +138,15 @@ export function TasksHabitSectionSkeleton({
       </View>
       <Skeleton width={96} height={28} borderRadius={14} />
       <View style={styles.habitGrid}>
-        {Array.from({ length: 3 }).map((_, index) => (
+        {Array.from({ length: 4 }).map((_, index) => (
           <View key={index} style={[styles.habitCardSkeleton, { width: habitItemWidth }]}>
             <Skeleton width={44} height={44} borderRadius={14} />
             <View style={styles.habitCardSkeletonBody}>
-              <Skeleton width="72%" height={14} borderRadius={6} />
-              <Skeleton width="92%" height={11} borderRadius={5} />
-              <Skeleton width={120} height={12} borderRadius={5} />
+              <Skeleton width="88%" height={13} borderRadius={6} />
+              <Skeleton width="62%" height={10} borderRadius={5} />
             </View>
+            <Skeleton width={40} height={16} borderRadius={999} />
+            <Skeleton width={48} height={10} borderRadius={5} />
           </View>
         ))}
       </View>
@@ -318,18 +319,20 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   habitGrid: {
-    flexDirection: 'column',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
   },
   habitCardSkeleton: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 8,
     paddingVertical: 4,
   },
   habitCardSkeletonBody: {
-    flex: 1,
-    gap: 8,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    gap: 6,
     minWidth: 0,
   },
   habitItem: {

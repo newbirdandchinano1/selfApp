@@ -18,6 +18,7 @@ import {
   saveWishListRationalAiCache,
 } from '@/lib/repositories/wish-list/wish-list-rational-ai-cache';
 import { analyzeWishListRationalReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
+import { SavingsOverviewCard } from '@/components/wish-list/savings-overview-card';
 import { WishListAiPanel } from '@/components/wish-list/wish-list-ai-panel';
 import { WishListItemCard } from '@/components/wish-list/wish-list-item-card';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -132,6 +133,7 @@ export default function WishListScreen() {
 
   const [items, setItems] = useState<WishItemRow[]>([]);
   const [depositByPlanId, setDepositByPlanId] = useState<Record<string, number>>({});
+  const [overviewRefreshKey, setOverviewRefreshKey] = useState(0);
   const [initialLoading, setInitialLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -161,6 +163,7 @@ export default function WishListScreen() {
           const [rows, deposits] = await Promise.all([listWishItems(), getDepositSumsByActivePlanId()]);
           setItems(rows);
           setDepositByPlanId(deposits);
+          setOverviewRefreshKey(k => k + 1);
         }, forceApi);
       } catch {
         setLoadError('加载失败，请点击重试');
@@ -189,6 +192,16 @@ export default function WishListScreen() {
     const progress = quarterTarget > 0 ? Math.min(999, Math.round((total / quarterTarget) * 100)) : 0;
     return { total, progress, count: activeItems.length };
   }, [activeItems]);
+
+  /** 待购心愿关联计划的已存合计（用于存款总览「总进度」） */
+  const planSavedTotal = useMemo(() => {
+    let sum = 0;
+    for (const row of activeItems) {
+      const planId = getLinkedSavingsPlanId(row);
+      if (planId) sum += depositByPlanId[planId] ?? 0;
+    }
+    return sum;
+  }, [activeItems, depositByPlanId]);
 
   const topDesireName = useMemo(() => {
     const sorted = [...activeItems].sort((a, b) => b.desire_level - a.desire_level || b.price - a.price);
@@ -406,6 +419,12 @@ export default function WishListScreen() {
           </View>
         </View>
       </AppCard>
+
+      <SavingsOverviewCard
+        planSavedTotal={planSavedTotal}
+        planTargetTotal={summary.total}
+        refreshKey={overviewRefreshKey}
+      />
 
       <View style={styles.section}>
         <View style={styles.sectionHead}>

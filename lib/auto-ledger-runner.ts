@@ -22,10 +22,9 @@ import { enterAutoLedgerSession, leaveAutoLedgerSession } from '@/lib/auto-ledge
 import { resolveHappenedAtForBillLedger } from '@/lib/finance-bill-happened-at';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import {
-    loadFinanceDefaultAccounts,
-    sanitizeFinanceDefaultAccounts,
-    type FinanceDefaultAccounts,
-} from '@/lib/finance-default-accounts';
+    loadFinanceLastUsedAccountId,
+    sanitizeFinanceLastUsedAccountId,
+} from '@/lib/finance-last-used-account';
 import {
     consumeFinanceSheetLaunchIntent,
     peekFinanceSheetLaunchIntent,
@@ -82,7 +81,7 @@ let handoffSessionHeld = false;
 function pickAccountForAutoLedger(
   accounts: FinanceAccountBalanceRow[],
   parsed: Pick<ParsedOneLiner, 'transaction_type' | 'account_name' | 'payment_account_label'>,
-  defaults: FinanceDefaultAccounts,
+  lastUsedAccountId: string | null,
 ): FinanceAccountBalanceRow | null {
   if (!accounts.length) return null;
   const candidates = accounts.map((a) => ({ id: a.id, name: a.name, account_no: a.account_no }));
@@ -90,8 +89,7 @@ function pickAccountForAutoLedger(
     transactionType: parsed.transaction_type,
     accountName: parsed.account_name ?? null,
     paymentAccountLabel: parsed.payment_account_label ?? null,
-    defaultPaymentAccountId: defaults.defaultPaymentAccountId,
-    defaultIncomeAccountId: defaults.defaultIncomeAccountId,
+    lastUsedAccountId,
   });
   if (!matched) return accounts[0] ?? null;
   return accounts.find((a) => a.id === matched.id) ?? accounts[0] ?? null;
@@ -228,8 +226,10 @@ export async function processAutoLedgerFromImage(
     let lastError = '请稍后重试。';
 
     const { expenseCategories, incomeCategories } = await loadSheetCategories();
-    const rawDefaults = await loadFinanceDefaultAccounts();
-    const defaults = sanitizeFinanceDefaultAccounts(rawDefaults, accounts);
+    const lastUsedAccountId = sanitizeFinanceLastUsedAccountId(
+      await loadFinanceLastUsedAccountId(),
+      accounts,
+    );
 
     try {
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -272,7 +272,7 @@ export async function processAutoLedgerFromImage(
               account_name: resolved.account_name,
               payment_account_label: resolved.payment_account_label,
             },
-            defaults,
+            lastUsedAccountId,
           );
           if (!account) {
             reportAutoLedgerError('请先添加至少一个账户。', opts);

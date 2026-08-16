@@ -31,6 +31,7 @@ import {
   tryMarkBuildHabitCompleted,
 } from '@/lib/repositories/habits/habit-build-success';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import { applyHabitCheckInPointsReward } from '@/lib/repositories/habits/habit-points-grant';
 import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
 import {
   computeTaskPeriodGoalProgress,
@@ -563,6 +564,7 @@ export default function HabitDetailScreen() {
         icon: habit.icon,
         context: habit.context,
         habitId: habit.id,
+        from: 'detail',
       },
     });
   };
@@ -637,8 +639,10 @@ export default function HabitDetailScreen() {
     }
     setCancelMakeUpSaving(true);
     try {
+      const prevCount = checkIns[ymd] ?? 0;
+      const isBreak = parseHabitKind(habit.extra_data) === 'break';
       const nextCount = await decrementHabitCheckInForDay(habit.id, ymd, {
-        breakHabit: parseHabitKind(habit.extra_data) === 'break',
+        breakHabit: isBreak,
       });
       setCheckIns((prev) => {
         const next = { ...prev };
@@ -646,6 +650,17 @@ export default function HabitDetailScreen() {
         else next[ymd] = nextCount;
         return next;
       });
+      // 今日打卡才会发奖，撤销今日记录时扣回；补卡未发奖故不扣
+      if (ymd === logicalTodayYmd && (nextCount < prevCount || (isBreak && hasRecord))) {
+        try {
+          await applyHabitCheckInPointsReward(habit.id, 'undo', {
+            forceUndo: true,
+            extraData: habit.extra_data,
+          });
+        } catch (ptsErr) {
+          if (__DEV__) console.warn('[habit-detail] 撤销打卡扣回积分失败', ptsErr);
+        }
+      }
       if (habit && parseHabitKind(habit.extra_data) === 'build') {
         await tryMarkBuildHabitCompleted(habit, logicalTodayYmd);
       }

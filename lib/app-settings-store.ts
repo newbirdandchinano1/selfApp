@@ -16,6 +16,7 @@ export const AppSettingKey = {
   wishDefaultCategoryNames: '@wish_default_category_names_v1',
   wishHiddenDefaultCategoryIds: '@wish_hidden_default_category_ids_v1',
   financeDefaultAccounts: '@finance_default_accounts_v1',
+  financeLastUsedAccount: '@finance_last_used_account_v1',
   financeMonthlyBudget: '@finance_monthly_budget_settings_v2',
   financeBudgetRefreshDay: '@finance_budget_refresh_day_v1',
   financeMonthlyBudgetLegacy: '@finance_monthly_budget_override_v1',

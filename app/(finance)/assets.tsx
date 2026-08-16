@@ -3,12 +3,6 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
-import {
-  loadFinanceDefaultAccounts,
-  persistFinanceDefaultAccounts,
-  sanitizeFinanceDefaultAccounts,
-  type FinanceDefaultAccounts,
-} from '@/lib/finance-default-accounts';
 import { getFinanceAccountTypes, getFinanceAccountsWithBalance } from '@/lib/repositories/finance/finance';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import type { FinanceAccountBalanceRow, FinanceAccountTypeRow } from '@/lib/repositories/finance/finance.types';
@@ -16,7 +10,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle } from 'react-native-svg';
 
@@ -47,37 +41,16 @@ export default function AssetsScreen() {
 
   const [accounts, setAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [accountTypes, setAccountTypes] = React.useState<FinanceAccountTypeRow[]>([]);
-  const [defaultAccounts, setDefaultAccounts] = React.useState<FinanceDefaultAccounts>({
-    defaultPaymentAccountId: null,
-    defaultIncomeAccountId: null,
-  });
-  const [defaultPickerTarget, setDefaultPickerTarget] = React.useState<'payment' | 'income' | null>(null);
-
-  const assetAccounts = React.useMemo(
-    () => accounts.filter((a) => a.sign_rule > 0),
-    [accounts],
-  );
-
-  const defaultPaymentAccount = React.useMemo(
-    () => assetAccounts.find((a) => a.id === defaultAccounts.defaultPaymentAccountId) ?? null,
-    [assetAccounts, defaultAccounts.defaultPaymentAccountId],
-  );
-  const defaultIncomeAccount = React.useMemo(
-    () => assetAccounts.find((a) => a.id === defaultAccounts.defaultIncomeAccountId) ?? null,
-    [assetAccounts, defaultAccounts.defaultIncomeAccountId],
-  );
 
   const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
       try {
-        const [rows, typeRows, rawDefaults] = await Promise.all([
+        const [rows, typeRows] = await Promise.all([
           getFinanceAccountsWithBalance(),
           getFinanceAccountTypes(),
-          loadFinanceDefaultAccounts(),
         ]);
         setAccounts(rows);
         setAccountTypes(typeRows);
-        setDefaultAccounts(sanitizeFinanceDefaultAccounts(rawDefaults, rows));
       } catch (e) {
         console.warn('Failed to load finance accounts:', e);
         setAccounts([]);
@@ -87,22 +60,6 @@ export default function AssetsScreen() {
   }, [wrapLoad]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
-
-  const saveDefaultAccount = React.useCallback(
-    async (target: 'payment' | 'income', accountId: string | null) => {
-      const next: FinanceDefaultAccounts = {
-        ...defaultAccounts,
-        ...(target === 'payment'
-          ? { defaultPaymentAccountId: accountId }
-          : { defaultIncomeAccountId: accountId }),
-      };
-      const sanitized = sanitizeFinanceDefaultAccounts(next, accounts);
-      setDefaultAccounts(sanitized);
-      await persistFinanceDefaultAccounts(sanitized);
-      setDefaultPickerTarget(null);
-    },
-    [accounts, defaultAccounts],
-  );
 
   React.useEffect(() => {
     void reload();
@@ -437,43 +394,6 @@ export default function AssetsScreen() {
           </AppCard>
         </View>
 
-        <AppCard style={[shadows.card, styles.defaultAccountsCard]}>
-          <Text style={[Typography.title, { color: colors.text }]}>默认记账账户</Text>
-          <Text style={[Typography.caption, styles.defaultAccountsHint, { color: colors.textSecondary }]}>
-            截图/一句话自动记账未识别到账户时，支出用默认支付账户、收入用默认收入账户
-          </Text>
-          <Pressable
-            onPress={() => setDefaultPickerTarget('payment')}
-            style={({ pressed }) => [
-              styles.defaultAccountRow,
-              { borderColor: colors.outline, backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle },
-              pressed && { opacity: 0.85 },
-            ]}>
-            <View style={styles.defaultAccountRowLeft}>
-              <MaterialIcons name="shopping-bag" size={18} color={colors.primary} />
-              <Text style={[Typography.bodyStrong, { color: colors.text }]}>默认支付账户</Text>
-            </View>
-            <Text style={[Typography.bodyStrong, styles.defaultAccountRowValue, { color: defaultPaymentAccount ? colors.text : colors.textSecondary }]}>
-              {defaultPaymentAccount?.name ?? '未设置'}
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setDefaultPickerTarget('income')}
-            style={({ pressed }) => [
-              styles.defaultAccountRow,
-              { borderColor: colors.outline, backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle },
-              pressed && { opacity: 0.85 },
-            ]}>
-            <View style={styles.defaultAccountRowLeft}>
-              <MaterialIcons name="savings" size={18} color={colors.secondary} />
-              <Text style={[Typography.bodyStrong, { color: colors.text }]}>默认收入账户</Text>
-            </View>
-            <Text style={[Typography.bodyStrong, styles.defaultAccountRowValue, { color: defaultIncomeAccount ? colors.text : colors.textSecondary }]}>
-              {defaultIncomeAccount?.name ?? '未设置'}
-            </Text>
-          </Pressable>
-        </AppCard>
-
         <View style={styles.accounts}>
           <View style={styles.addAccountRow}>
             <Pressable
@@ -790,40 +710,6 @@ export default function AssetsScreen() {
         </View>
 
       </ScrollView>
-
-      <Modal visible={defaultPickerTarget != null} transparent animationType="fade" onRequestClose={() => setDefaultPickerTarget(null)}>
-        <Pressable style={[styles.defaultPickerBackdrop, { backgroundColor: colors.overlay }]} onPress={() => setDefaultPickerTarget(null)}>
-          <Pressable
-            style={[styles.defaultPickerSheet, { backgroundColor: colors.surface, borderColor: colors.outline }]}
-            onPress={(e) => e.stopPropagation()}>
-            <Text style={[Typography.title, styles.defaultPickerTitle, { color: colors.text }]}>
-              {defaultPickerTarget === 'income' ? '选择默认收入账户' : '选择默认支付账户'}
-            </Text>
-            <ScrollView style={styles.defaultPickerList} showsVerticalScrollIndicator={false}>
-              <Pressable
-                onPress={() => void saveDefaultAccount(defaultPickerTarget!, null)}
-                style={({ pressed }) => [styles.defaultPickerItem, pressed && { opacity: 0.85 }]}>
-                <Text style={[Typography.bodyStrong, { color: colors.textSecondary }]}>不设置</Text>
-              </Pressable>
-              {assetAccounts.map((acc) => {
-                const selected =
-                  defaultPickerTarget === 'payment'
-                    ? acc.id === defaultAccounts.defaultPaymentAccountId
-                    : acc.id === defaultAccounts.defaultIncomeAccountId;
-                return (
-                  <Pressable
-                    key={acc.id}
-                    onPress={() => void saveDefaultAccount(defaultPickerTarget!, acc.id)}
-                    style={({ pressed }) => [styles.defaultPickerItem, pressed && { opacity: 0.85 }]}>
-                    <Text style={[Typography.bodyStrong, { color: colors.text }]}>{acc.name}</Text>
-                    {selected ? <MaterialIcons name="check" size={20} color={colors.primary} /> : null}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -888,52 +774,6 @@ const styles = StyleSheet.create({
   legend: { flex: 1, gap: Spacing.lg },
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
-  defaultAccountsCard: { gap: Spacing.lg },
-  defaultAccountsHint: { lineHeight: 18 },
-  defaultAccountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: Spacing.xl,
-    paddingHorizontal: Spacing.xl,
-    borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    gap: Spacing.xl,
-  },
-  defaultAccountRowLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    flex: 1,
-  },
-  defaultAccountRowValue: {
-    maxWidth: '46%',
-    textAlign: 'right',
-  },
-  defaultPickerBackdrop: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    padding: Spacing['3xl'],
-  },
-  defaultPickerSheet: {
-    borderRadius: Radius.sheet,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing['4xl'],
-    maxHeight: '70%',
-  },
-  defaultPickerTitle: {
-    marginBottom: Spacing.md,
-  },
-  defaultPickerList: {
-    maxHeight: 360,
-  },
-  defaultPickerItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: Spacing['2xl'],
-    paddingHorizontal: Spacing.xs,
-  },
   accounts: { gap: Spacing['4xl'] },
   addAccountRow: { alignItems: 'flex-end' },
   addAccountBtn: {

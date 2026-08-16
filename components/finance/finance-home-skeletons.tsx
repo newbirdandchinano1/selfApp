@@ -1,5 +1,5 @@
 import { Skeleton } from '@/components/ui/skeleton';
-import { Radius, Spacing } from '@/constants/design-tokens';
+import { Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 
@@ -18,41 +18,47 @@ export function FinanceBudgetCardSkeleton({ colors }: FinanceSkeletonProps) {
     <View
       style={[
         styles.budgetCard,
+        Shadows.card,
         { backgroundColor: colors.cardBg, borderColor: colors.outline },
       ]}
     >
       <View style={styles.budgetTopRow}>
         <View style={styles.budgetTopMain}>
-          <Skeleton width={88} height={12} borderRadius={6} />
-          <View style={styles.budgetPeriodRow}>
-            <Skeleton width={72} height={11} borderRadius={5} />
-            <Skeleton width={96} height={11} borderRadius={5} />
+          <View style={styles.budgetTitleRow}>
+            <Skeleton width={88} height={13} borderRadius={6} />
+            <Skeleton width={64} height={20} borderRadius={10} />
           </View>
+          <Skeleton width={110} height={11} borderRadius={5} />
           <Skeleton width={148} height={28} borderRadius={8} style={styles.budgetAmount} />
-          <Skeleton width={44} height={22} borderRadius={11} />
           <View style={styles.budgetProgressBlock}>
             <View style={styles.budgetProgressLabels}>
-              <Skeleton width={64} height={10} borderRadius={5} />
-              <Skeleton width={64} height={10} borderRadius={5} />
+              <Skeleton width={72} height={11} borderRadius={5} />
+              <Skeleton width={88} height={11} borderRadius={5} />
             </View>
-            <Skeleton width="100%" height={5} borderRadius={3} />
+            <Skeleton width="100%" height={6} borderRadius={3} />
           </View>
         </View>
-        <Skeleton width={78} height={78} borderRadius={39} />
+        <Skeleton width={96} height={96} borderRadius={48} />
       </View>
+
+      <View style={[styles.trendDivider, { backgroundColor: colors.outline }]} />
 
       <View style={styles.trendBlock}>
         <View style={styles.trendHeader}>
-          <Skeleton width={72} height={14} borderRadius={6} />
-          <Skeleton width={96} height={12} borderRadius={6} />
+          <Skeleton width={64} height={15} borderRadius={6} />
+          <Skeleton width={64} height={24} borderRadius={12} />
         </View>
-        <Skeleton width="100%" height={120} borderRadius={10} style={styles.trendChart} />
-        <Skeleton width={160} height={10} borderRadius={5} style={styles.trendHint} />
+        <Skeleton width={132} height={24} borderRadius={8} />
+        <Skeleton width={96} height={12} borderRadius={5} />
+        <Skeleton width="100%" height={120} borderRadius={14} style={styles.trendChart} />
+        <Skeleton width={140} height={10} borderRadius={5} style={styles.trendHint} />
       </View>
 
       <View style={styles.assetsBtnRow}>
         {Array.from({ length: 3 }).map((_, index) => (
-          <Skeleton key={index} width={96} height={36} borderRadius={12} />
+          <View key={index} style={styles.assetsBtn}>
+            <Skeleton width="100%" height={52} borderRadius={12} />
+          </View>
         ))}
       </View>
     </View>
@@ -62,7 +68,7 @@ export function FinanceBudgetCardSkeleton({ colors }: FinanceSkeletonProps) {
 export function FinanceAccountCarouselSkeleton({ colors }: Pick<FinanceSkeletonProps, 'colors'>) {
   return (
     <View>
-      <View style={styles.sectionHeaderRow}>
+      <View style={[styles.sectionHeaderRow, { borderBottomColor: colors.outline }]}>
         <Skeleton width={72} height={18} borderRadius={6} />
         <Skeleton width={36} height={12} borderRadius={6} />
       </View>
@@ -75,8 +81,8 @@ export function FinanceAccountCarouselSkeleton({ colors }: Pick<FinanceSkeletonP
               { backgroundColor: colors.surface, borderColor: colors.outline },
             ]}
           >
-            <Skeleton width={22} height={22} borderRadius={11} />
-            <Skeleton width="72%" height={11} borderRadius={5} style={styles.accountKicker} />
+            <Skeleton width={36} height={36} borderRadius={12} />
+            <Skeleton width="72%" height={12} borderRadius={5} style={styles.accountKicker} />
             <Skeleton width="48%" height={18} borderRadius={6} />
           </View>
         ))}
@@ -88,34 +94,35 @@ export function FinanceAccountCarouselSkeleton({ colors }: Pick<FinanceSkeletonP
 export function FinanceTxnListSkeleton({ colors }: Pick<FinanceSkeletonProps, 'colors'>) {
   return (
     <View>
-      <View style={[styles.sectionHeaderRow, { marginTop: 6 }]}>
+      <View style={[styles.sectionHeaderRow, { borderBottomColor: colors.outline }]}>
         <Skeleton width={72} height={18} borderRadius={6} />
         <Skeleton width={48} height={11} borderRadius={5} />
       </View>
-      <View style={styles.sectionMetaRow}>
-        <Skeleton width={120} height={12} borderRadius={6} />
-        <Skeleton width={140} height={11} borderRadius={5} />
-      </View>
-      <View style={[styles.sectionDivider, { backgroundColor: colors.outline }]} />
-      <View style={styles.txnList}>
+      <View style={[styles.dayGroup, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+        <View style={[styles.dayGroupHeader, { borderBottomColor: colors.outline }]}>
+          <View style={styles.dayGroupTitleCol}>
+            <Skeleton width={36} height={15} borderRadius={5} />
+            <Skeleton width={96} height={11} borderRadius={5} />
+          </View>
+          <View style={styles.dayGroupTotals}>
+            <Skeleton width={72} height={11} borderRadius={5} />
+            <Skeleton width={64} height={11} borderRadius={5} />
+          </View>
+        </View>
         {Array.from({ length: 3 }).map((_, index) => (
-          <View
-            key={index}
-            style={[
-              styles.txnRow,
-              { backgroundColor: colors.surface, borderColor: colors.outline },
-            ]}
-          >
-            <Skeleton width={40} height={40} borderRadius={20} />
-            <View style={styles.txnMain}>
+          <View key={index} style={styles.txnRow}>
+            <Skeleton width={36} height={36} borderRadius={12} />
+            <View style={[styles.txnMain, index < 2 ? { borderBottomColor: colors.outline, borderBottomWidth: StyleSheet.hairlineWidth } : null]}>
               <View style={styles.txnTopRow}>
-                <View style={styles.txnTextCol}>
-                  <Skeleton width="62%" height={14} borderRadius={6} />
-                  <Skeleton width="44%" height={11} borderRadius={5} style={styles.txnMeta} />
-                </View>
-                <Skeleton width={56} height={14} borderRadius={6} />
+                <Skeleton width="58%" height={14} borderRadius={6} />
+                <Skeleton width={56} height={15} borderRadius={6} />
               </View>
-              <Skeleton width="88%" height={24} borderRadius={8} style={styles.txnInsight} />
+              <View style={styles.txnTagRow}>
+                <Skeleton width={40} height={18} borderRadius={7} />
+                <Skeleton width={32} height={18} borderRadius={7} />
+                <Skeleton width={56} height={18} borderRadius={7} />
+              </View>
+              <Skeleton width="78%" height={12} borderRadius={5} style={styles.txnInsight} />
             </View>
           </View>
         ))}
@@ -126,37 +133,33 @@ export function FinanceTxnListSkeleton({ colors }: Pick<FinanceSkeletonProps, 'c
 
 const styles = StyleSheet.create({
   budgetCard: {
-    borderRadius: 18,
-    padding: 18,
+    borderRadius: Radius['2xl'],
+    padding: Spacing['4xl'],
     borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
-    gap: 14,
   },
   budgetTopRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: 12,
   },
   budgetTopMain: {
     flex: 1,
     minWidth: 0,
     gap: 8,
   },
-  budgetPeriodRow: {
+  budgetTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
     gap: 8,
-    marginTop: -2,
   },
   budgetAmount: {
     marginTop: 2,
   },
   budgetProgressBlock: {
     gap: 8,
-    marginTop: 4,
-    paddingRight: 4,
+    marginTop: 6,
   },
   budgetProgressLabels: {
     flexDirection: 'row',
@@ -164,9 +167,13 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 8,
   },
+  trendDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginTop: 18,
+    marginBottom: 14,
+  },
   trendBlock: {
     gap: 8,
-    marginTop: 4,
   },
   trendHeader: {
     flexDirection: 'row',
@@ -177,81 +184,90 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   trendHint: {
-    alignSelf: 'center',
-    marginTop: 4,
+    alignSelf: 'flex-start',
+    marginTop: 2,
   },
   assetsBtnRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 10,
-    marginTop: 4,
+    alignItems: 'stretch',
+    gap: 8,
+    marginTop: 12,
+    width: '100%',
+  },
+  assetsBtn: {
+    flex: 1,
   },
   sectionHeaderRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'space-between',
-    marginTop: 4,
+    marginBottom: Spacing.xl,
+    paddingBottom: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   carousel: {
     flexDirection: 'row',
-    paddingVertical: 10,
+    paddingVertical: 4,
     gap: 12,
-    paddingRight: 20,
   },
   accountCard: {
-    width: 200,
-    borderRadius: Radius.lg,
-    padding: Spacing['4xl'],
+    width: 168,
+    borderRadius: Radius.xl,
+    padding: 14,
     borderWidth: StyleSheet.hairlineWidth,
     gap: 10,
   },
   accountKicker: {
     marginTop: 2,
   },
-  sectionMetaRow: {
-    marginTop: 6,
+  dayGroup: {
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+  },
+  dayGroupHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingLeft: 16,
-  },
-  sectionDivider: {
-    height: 1,
-    marginTop: 14,
-    marginBottom: 4,
-    opacity: 0.72,
-  },
-  txnList: {
-    gap: 10,
-    marginTop: 8,
-  },
-  txnRow: {
-    flexDirection: 'row',
     gap: 12,
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
     paddingVertical: 12,
-    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  txnMain: {
-    flex: 1,
-    minWidth: 0,
-    gap: 8,
-  },
-  txnTopRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  txnTextCol: {
+  dayGroupTitleCol: {
     flex: 1,
     minWidth: 0,
     gap: 4,
   },
-  txnMeta: {
-    marginTop: 2,
+  dayGroupTotals: {
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  txnRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 12,
+    paddingLeft: 14,
+    paddingRight: 14,
+  },
+  txnMain: {
+    flex: 1,
+    minWidth: 0,
+    paddingTop: 12,
+    paddingBottom: 12,
+    gap: 6,
+  },
+  txnTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  txnTagRow: {
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    alignItems: 'center',
+    gap: 5,
   },
   txnInsight: {
     marginTop: 2,

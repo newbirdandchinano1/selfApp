@@ -2,8 +2,9 @@ import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
-import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
-import { createHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
+import { syncHabitReminderNotification, cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
+import { createHabit, deleteHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
+import { formatWriteError } from '@/lib/format-write-error';
 import { ensureBreakHabitCycleExtra } from '@/lib/repositories/habits/habit-break-success';
 import {
   isBuildHabitSucceeded,
@@ -203,12 +204,14 @@ export default function AddHabitScreen() {
     icon?: string;
     context?: string;
     habitId?: string;
+    from?: string;
   }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark, scheme, shadows } = useAppTheme();
   const { boundary: dayBoundary, logicalTodayYmd } = useDayBoundary();
 
   const isEditMode = pickParam(params.mode) === 'edit';
+  const openedFromDetail = pickParam(params.from) === 'detail';
   const initialName = pickParam(params.name) ?? '';
   const initialIcon = pickParam(params.icon) ?? '🥛';
   const initialContext = pickParam(params.context);
@@ -241,6 +244,7 @@ export default function AddHabitScreen() {
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [habitKind, setHabitKind] = React.useState<HabitKind>('build');
   const [iconPickerOpen, setIconPickerOpen] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
   const [reminderOpen, setReminderOpen] = React.useState(false);
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
@@ -752,6 +756,51 @@ export default function AddHabitScreen() {
     subHabitsEnabled,
   ]);
 
+  const leaveAfterDelete = React.useCallback(() => {
+    notifyAncestorsDataChanged();
+    if (openedFromDetail) {
+      // 详情 → 编辑：连同详情一并退出，避免停在「未找到该习惯」
+      if (typeof router.dismiss === 'function') {
+        try {
+          router.dismiss(2);
+          return;
+        } catch {
+          /* fall through */
+        }
+      }
+      router.replace('/habit-manage');
+      return;
+    }
+    router.back();
+  }, [notifyAncestorsDataChanged, openedFromDetail, router]);
+
+  const handleDelete = React.useCallback(() => {
+    if (!isEditMode || !habitId || deleting) return;
+    const name = habitName.trim() || '该习惯';
+    Alert.alert('删除习惯', `确认删除「${name}」吗？删除后打卡记录一并清除，且无法找回。`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            setDeleting(true);
+            try {
+              await deleteHabit(habitId);
+              void cancelScheduledHabitReminder(habitId);
+              leaveAfterDelete();
+            } catch (err) {
+              console.warn('删除习惯失败', err);
+              Alert.alert('删除失败', formatWriteError(err, '习惯删除失败，请稍后重试。'));
+            } finally {
+              setDeleting(false);
+            }
+          })();
+        },
+      },
+    ]);
+  }, [deleting, habitId, habitName, isEditMode, leaveAfterDelete]);
+
   const renderSectionHeader = (
     icon: React.ComponentProps<typeof MaterialIcons>['name'],
     title: string,
@@ -780,8 +829,9 @@ export default function AddHabitScreen() {
         right={
           <Pressable
             onPress={() => void handleSave()}
+            disabled={deleting}
             hitSlop={Layout.hitSlop}
-            style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
+            style={({ pressed }) => [pressed && { opacity: 0.85 }, deleting && { opacity: 0.5 }]}>
             <Text style={[Typography.bodyStrong, styles.headerActionText, { color: colors.primary }]} numberOfLines={1}>
               {isEditMode ? '保存' : '创建打卡'}
             </Text>
@@ -1658,13 +1708,26 @@ export default function AddHabitScreen() {
             borderTopColor: colors.outline,
           },
         ]}>
-        <AppButton
-          variant="primary"
-          size="lg"
-          fullWidth
-          label={isEditMode ? '保存修改' : '创建打卡'}
-          onPress={() => void handleSave()}
-        />
+        {isEditMode ? (
+          <AppButton
+            variant="danger"
+            size="lg"
+            fullWidth
+            label="删除习惯"
+            loading={deleting}
+            disabled={deleting}
+            onPress={handleDelete}
+          />
+        ) : (
+          <AppButton
+            variant="primary"
+            size="lg"
+            fullWidth
+            label="创建打卡"
+            disabled={deleting}
+            onPress={() => void handleSave()}
+          />
+        )}
       </View>
 
       <Modal visible={iconPickerOpen} transparent animationType="fade" onRequestClose={() => setIconPickerOpen(false)}>

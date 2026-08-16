@@ -1,4 +1,4 @@
-import { Layout, Spacing, Typography } from '@/constants/design-tokens';
+import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
@@ -77,7 +77,7 @@ export function ReviewAiAnalysisPanel({
 
 const styles = StyleSheet.create({
   wrap: {
-    marginHorizontal: Layout.pagePaddingX,
+    marginHorizontal: Spacing.md,
     borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
     padding: Spacing['3xl'],

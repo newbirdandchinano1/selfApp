@@ -38,6 +38,7 @@ import { projectToFrogTaskRow } from '@/lib/project-frog';
 import { consumeForceFullApiRefreshAfterLocalClear, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import { fetchProjectsListForTab, mergeProjectRowsById } from '@/lib/projects-list-api';
+import { getRewardBadgeBackgroundColor, parseRewardPointsFromExtraData } from '@/lib/reward-points';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import {
   isBreakHabitSucceeded,
@@ -185,6 +186,7 @@ import {
   type TasksMainListView,
 } from '@/lib/tasks-ui-settings';
 import { fetchTodayFrogs } from '@/lib/today-frogs-api';
+import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
 import { getPointsBalance } from '@/lib/repositories/wish-board/wish-board';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -220,8 +222,9 @@ const MAIN_LIST_VIEW_TABS: Array<{ key: TasksMainListView; label: string }> = [
   { key: 'tasks', label: '本周列表' },
 ];
 
-/** Tasks「小习惯」卡片列表间距 */
+/** Tasks「小习惯」两列卡片网格 */
 const HABIT_CARD_GAP = 10;
+const HABIT_GRID_COLUMNS = 2;
 
 function habitKindLabel(kind: HabitKind): string {
   if (kind === 'break') return '戒除';
@@ -636,6 +639,9 @@ function isHabitGridItemCompletedToday(item: HabitGridItem, logicalTodayYmd: str
     logicalTodayYmd,
   });
 }
+
+/** 小习惯卡片连点防抖间隔 */
+const HABIT_CARD_PRESS_DEBOUNCE_MS = 500;
 
 function optimisticHabitCountDelta(
   item: HabitGridItem,
@@ -1597,11 +1603,13 @@ export default function TasksScreen() {
   /** Measured width of the habit grid row — avoids guessing padding (tabs / safe area / web max-width). */
   const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
   const habitGridItemWidth = React.useMemo(() => {
+    const gap = HABIT_CARD_GAP;
+    const cols = HABIT_GRID_COLUMNS;
     const rowWidth =
       habitItemsRowWidth > 1
         ? habitItemsRowWidth
-        : Math.max(120, Dimensions.get('window').width - Spacing['5xl'] * 2 - Spacing['4xl'] * 2);
-    return rowWidth;
+        : Math.max(120, Dimensions.get('window').width - Spacing.md * 2 - Spacing['4xl'] * 2);
+    return (rowWidth - gap * (cols - 1)) / cols;
   }, [habitItemsRowWidth]);
 
   const onHabitItemsRowLayout = React.useCallback((e: { nativeEvent: { layout: { width: number } } }) => {
@@ -1611,49 +1619,42 @@ export default function TasksScreen() {
 
   const [pointsBalance, setPointsBalance] = React.useState(0);
 
-  const applyPointsDeltaToBalance = React.useCallback((delta: number) => {
-    if (!delta) return;
-    setPointsBalance((prev) => Math.max(0, prev + delta));
+  // 余额以仓库写入后的 notifyPointsBalanceChanged 为准，勿再本地 +delta（会叠成双倍）
+  React.useEffect(() => {
+    return subscribePointsBalanceChanged(setPointsBalance);
   }, []);
 
   const grantHabitPointsWithToast = React.useCallback(
     async (habitId: string, direction: 'earn' | 'undo', opts?: { forceUndo?: boolean }) => {
       try {
-        const delta = await applyHabitCheckInPointsReward(habitId, direction, opts);
-        applyPointsDeltaToBalance(delta);
-        if (delta !== 0) {
-          const bal = await getPointsBalance({ localOnly: true, offlineFallback: true });
-          setPointsBalance(bal);
-        }
+        await applyHabitCheckInPointsReward(habitId, direction, opts);
       } catch (e) {
         if (__DEV__) console.warn('[habit-points]', e);
       }
     },
-    [applyPointsDeltaToBalance],
+    [],
   );
 
   const grantTaskPointsWithToast = React.useCallback(
     async (taskId: string, direction: 'earn' | 'undo', extraData?: string | null) => {
       try {
-        const delta = await applyTaskCompletionPointsReward(taskId, direction, extraData);
-        applyPointsDeltaToBalance(delta);
+        await applyTaskCompletionPointsReward(taskId, direction, extraData);
       } catch (e) {
         if (__DEV__) console.warn('[task-points]', e);
       }
     },
-    [applyPointsDeltaToBalance],
+    [],
   );
 
   const grantProjectPointsWithToast = React.useCallback(
     async (projectId: string, direction: 'earn' | 'undo', extraData?: string | null) => {
       try {
-        const delta = await applyProjectCompletionPointsReward(projectId, direction, extraData);
-        applyPointsDeltaToBalance(delta);
+        await applyProjectCompletionPointsReward(projectId, direction, extraData);
       } catch (e) {
         if (__DEV__) console.warn('[project-points]', e);
       }
     },
-    [applyPointsDeltaToBalance],
+    [],
   );
 
   const router = useRouter();
@@ -1684,6 +1685,8 @@ export default function TasksScreen() {
   const [habitSections, setHabitSections] = React.useState<HabitSection[]>([]);
   /** 防止小习惯图标/名称快速连点产生并发打卡。 */
   const habitCheckInLockRef = React.useRef<Set<string>>(new Set());
+  /** 同一习惯卡片点击防抖（避免连点打卡后又立刻撤销）。 */
+  const habitPressAtByIdRef = React.useRef(new Map<string, number>());
   /** 丢弃过期的 loadHabits 结果，避免乐观更新后被陈旧请求覆盖。 */
   const habitLoadGenerationRef = React.useRef(0);
   const [habitLookupById, setHabitLookupById] = React.useState<
@@ -3848,6 +3851,14 @@ export default function TasksScreen() {
     setExpandedHabitSections((prev) => ({ ...prev, [sectionId]: !prev[sectionId] }));
   }, []);
 
+  /** @returns true 表示本次点击可继续处理 */
+  const consumeHabitCardPressDebounce = React.useCallback((habitId: string) => {
+    const now = Date.now();
+    const last = habitPressAtByIdRef.current.get(habitId) ?? 0;
+    if (now - last < HABIT_CARD_PRESS_DEBOUNCE_MS) return false;
+    habitPressAtByIdRef.current.set(habitId, now);
+    return true;
+  }, []);
 
   const patchHabitTodayCount = React.useCallback(
     (
@@ -4040,10 +4051,11 @@ export default function TasksScreen() {
             hasTodayRecord: item.kind === 'break' ? nextCount > 0 : undefined,
           });
         }
-        runHabitSideEffectsAfterCountChange(item.id, nextCount);
+        // 先扣回积分再跑副作用，避免绑定任务调账与习惯扣回乱序
         if (nextCount < item.todayCount || (item.kind === 'break' && item.hasTodayRecord)) {
           await grantHabitPointsWithToast(item.id, 'undo', { forceUndo: true });
         }
+        runHabitSideEffectsAfterCountChange(item.id, nextCount);
       } catch (err) {
         console.warn('撤销打卡失败', err);
         restoreHabitGridItem(item);
@@ -4150,8 +4162,11 @@ export default function TasksScreen() {
 
   const handleHabitIconPress = React.useCallback(
     (item: HabitGridItem) => {
-      // 已完成：点击无效（长按仍可进详情撤销）
-      if (isHabitGridItemCompletedToday(item, logicalTodayYmd)) return;
+      // 已完成：再点一次撤销（扣回积分）；长按仍可进详情
+      if (isHabitGridItemCompletedToday(item, logicalTodayYmd)) {
+        void handleHabitUndoOnce(item);
+        return;
+      }
       if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
         openSubHabitModal(item);
         return;
@@ -4166,7 +4181,7 @@ export default function TasksScreen() {
       }
       void handleHabitIncrement(item);
     },
-    [handleBreakHabitConfirmClean, handleHabitIncrement, logicalTodayYmd, openSubHabitModal],
+    [handleBreakHabitConfirmClean, handleHabitIncrement, handleHabitUndoOnce, logicalTodayYmd, openSubHabitModal],
   );
 
   const hasChildrenDeeperThan = React.useCallback((nodes: TaskTreeNode[], level: number, maxLevel: number): boolean => {
@@ -4861,6 +4876,8 @@ export default function TasksScreen() {
                     const noteText = (t.note ?? '').trim();
                     const acceptanceText = trimTaskAcceptanceCriteria(t);
                     const meta = parseTaskMeta(t.extra_data);
+                    const rewardPoints = parseRewardPointsFromExtraData(t.extra_data);
+                    const rewardBadgeBg = getRewardBadgeBackgroundColor(rewardPoints, isDark);
                     const due = t.due_date?.slice(0, 10) ?? '';
                     const repeat = (meta.repeat ?? '').trim();
                     const reminder = (meta.reminder ?? '').trim();
@@ -4981,23 +4998,33 @@ export default function TasksScreen() {
                           <Pressable
                             style={[styles.taskBody, isShelved && !isDone && styles.shelvedTodoBodyMuted]}
                             onPress={() => openTask(t.id)}>
-                            <Text
-                              style={[
-                                styles.taskText,
-                                {
-                                  color: isShelved
-                                    ? colors.textSecondary
-                                    : overdue
-                                      ? error
-                                      : colors.text,
-                                  fontWeight: overdue && !isShelved ? '800' : '600',
-                                  textDecorationLine: isDone ? 'line-through' : 'none',
-                                  opacity: isDone ? 0.45 : isShelved ? 0.82 : 1,
-                                },
-                              ]}
-                              numberOfLines={2}>
-                              {t.title}
-                            </Text>
+                            <View style={styles.standaloneTodoTitleRow}>
+                              <Text
+                                style={[
+                                  styles.taskText,
+                                  styles.standaloneTodoTitleText,
+                                  {
+                                    color: isShelved
+                                      ? colors.textSecondary
+                                      : overdue
+                                        ? error
+                                        : colors.text,
+                                    fontWeight: overdue && !isShelved ? '800' : '600',
+                                    textDecorationLine: isDone ? 'line-through' : 'none',
+                                    opacity: isDone ? 0.45 : isShelved ? 0.82 : 1,
+                                  },
+                                ]}
+                                numberOfLines={2}>
+                                {t.title}
+                              </Text>
+                              {rewardPoints > 0 ? (
+                                <View
+                                  style={[styles.todoRewardBadge, { backgroundColor: rewardBadgeBg }]}
+                                  accessibilityLabel={`完成可获得 ${rewardPoints} 积分`}>
+                                  <Text style={styles.habitRewardBadgeText}>+{rewardPoints}</Text>
+                                </View>
+                              ) : null}
+                            </View>
                             {isShelved ? (
                               <View style={[styles.shelvedPill, { backgroundColor: `${outline}18` }]}>
                                 <MaterialIcons name="inventory-2" size={12} color={outline} />
@@ -5195,7 +5222,7 @@ export default function TasksScreen() {
                               ? item.dailyGoal
                               : null;
                           const rewardPoints = Math.max(0, Math.floor(Number(item.rewardPoints) || 0));
-                          const rewardBadgeBg = isDark ? '#f472b6' : '#be185d';
+                          const rewardBadgeBg = getRewardBadgeBackgroundColor(rewardPoints, isDark);
                           const kindTone =
                             item.kind === 'break'
                               ? isDark
@@ -5206,6 +5233,13 @@ export default function TasksScreen() {
                                   ? '#60a5fa'
                                   : '#1d4ed8'
                                 : secondary;
+                          const useProgressDots =
+                            progressTotal != null && progressTotal > 0 && progressTotal < 5;
+                          const useProgressBar =
+                            progressTotal != null && progressTotal > 0 && !useProgressDots;
+                          const progressRatio = useProgressBar
+                            ? Math.min(1, Math.max(0, progressCurrent / progressTotal))
+                            : 0;
 
                           const openHabitDetail = () =>
                             router.push({
@@ -5217,7 +5251,12 @@ export default function TasksScreen() {
                             <Pressable
                               key={item.id}
                               onPress={() => {
-                                if (!scheduleAllowsToday || goalMet) return;
+                                if (!scheduleAllowsToday) return;
+                                if (!consumeHabitCardPressDebounce(item.id)) return;
+                                if (goalMet) {
+                                  void handleHabitUndoOnce(item);
+                                  return;
+                                }
                                 handleHabitIconPress(item);
                               }}
                               onLongPress={openHabitDetail}
@@ -5233,9 +5272,11 @@ export default function TasksScreen() {
                                       ? isDark
                                         ? 'rgba(248,113,113,0.7)'
                                         : 'rgba(220,38,38,0.55)'
-                                      : outlineVariant,
+                                      : isDark
+                                        ? 'rgba(148,163,184,0.32)'
+                                        : 'rgba(148,163,184,0.4)',
                                   opacity: scheduleAllowsToday
-                                    ? pressed && !goalMet
+                                    ? pressed
                                       ? 0.9
                                       : goalMet
                                         ? 0.72
@@ -5262,12 +5303,12 @@ export default function TasksScreen() {
                                   <Text style={styles.habitCardIcon}>{item.icon}</Text>
                                   {goalMet ? (
                                     <View style={styles.habitCardDoneMark} pointerEvents="none">
-                                      <MaterialIcons name="check-circle" size={16} color={secondary} />
+                                      <MaterialIcons name="check-circle" size={15} color={secondary} />
                                     </View>
                                   ) : null}
                                   {!scheduleAllowsToday ? (
                                     <View style={styles.habitCardLockMark} pointerEvents="none">
-                                      <MaterialIcons name="lock" size={14} color={colors.textSecondary} />
+                                      <MaterialIcons name="lock" size={13} color={colors.textSecondary} />
                                     </View>
                                   ) : null}
                                 </View>
@@ -5281,8 +5322,7 @@ export default function TasksScreen() {
                                         textDecorationLine: goalMet ? 'line-through' : 'none',
                                         opacity: goalMet ? 0.55 : 1,
                                       },
-                                    ]}
-                                    numberOfLines={1}>
+                                    ]}>
                                     {item.name}
                                   </Text>
                                   {item.note ? (
@@ -5295,53 +5335,75 @@ export default function TasksScreen() {
                                           opacity: goalMet ? 0.58 : 1,
                                         },
                                       ]}
-                                      numberOfLines={2}>
+                                      numberOfLines={1}>
                                       {item.note}
                                     </Text>
                                   ) : null}
-                                  <View style={styles.habitCardMetaRow}>
-                                    <View
-                                      style={[
-                                        styles.habitTypeChip,
-                                        {
-                                          backgroundColor: isDark
-                                            ? 'rgba(148,163,184,0.14)'
-                                            : 'rgba(148,163,184,0.12)',
-                                        },
-                                      ]}>
-                                      <Text style={[styles.habitTypeChipText, { color: kindTone }]}>
-                                        {habitKindLabel(item.kind)}
+                                </View>
+
+                                <View
+                                  style={[
+                                    styles.habitTypeChip,
+                                    {
+                                      backgroundColor: isDark ? `${kindTone}24` : `${kindTone}18`,
+                                      borderColor: isDark ? `${kindTone}40` : `${kindTone}30`,
+                                    },
+                                  ]}>
+                                  <Text style={[styles.habitTypeChipText, { color: kindTone }]}>
+                                    {habitKindLabel(item.kind)}
+                                  </Text>
+                                </View>
+
+                                <View style={styles.habitProgressBlock}>
+                                  {useProgressDots ? (
+                                    <View style={styles.habitProgressMeta}>
+                                      <HabitProgressDots
+                                        current={progressCurrent}
+                                        total={progressTotal!}
+                                        activeColor={kindTone}
+                                        idleColor={
+                                          isDark
+                                            ? 'rgba(148,163,184,0.35)'
+                                            : 'rgba(148,163,184,0.4)'
+                                        }
+                                      />
+                                    </View>
+                                  ) : useProgressBar ? (
+                                    <>
+                                      <View
+                                        style={[
+                                          styles.habitProgressTrack,
+                                          {
+                                            backgroundColor: isDark
+                                              ? 'rgba(148,163,184,0.22)'
+                                              : 'rgba(148,163,184,0.28)',
+                                          },
+                                        ]}>
+                                        <View
+                                          style={[
+                                            styles.habitProgressFill,
+                                            {
+                                              width: `${Math.round(progressRatio * 100)}%`,
+                                              backgroundColor: kindTone,
+                                            },
+                                          ]}
+                                        />
+                                      </View>
+                                      <Text style={[styles.habitProgressText, { color: outline }]}>
+                                        {Math.max(0, Math.floor(progressCurrent))}/{progressTotal}
+                                      </Text>
+                                    </>
+                                  ) : (
+                                    <View style={styles.habitProgressMeta}>
+                                      <Text style={[styles.habitProgressText, { color: outline }]}>
+                                        {goalMet
+                                          ? '已完成'
+                                          : Math.max(0, Math.floor(progressCurrent)) > 0
+                                            ? `${Math.floor(progressCurrent)} 次`
+                                            : '未开始'}
                                       </Text>
                                     </View>
-                                    <View style={styles.habitProgressWrap}>
-                                      {progressTotal != null && progressTotal > 0 ? (
-                                        progressTotal < 5 ? (
-                                          <HabitProgressDots
-                                            current={progressCurrent}
-                                            total={progressTotal}
-                                            activeColor={kindTone}
-                                            idleColor={
-                                              isDark
-                                                ? 'rgba(148,163,184,0.35)'
-                                                : 'rgba(148,163,184,0.4)'
-                                            }
-                                          />
-                                        ) : (
-                                          <Text style={[styles.habitProgressText, { color: outline }]}>
-                                            {Math.max(0, Math.floor(progressCurrent))}/{progressTotal}
-                                          </Text>
-                                        )
-                                      ) : (
-                                        <Text style={[styles.habitProgressText, { color: outline }]}>
-                                          {goalMet
-                                            ? '已完成'
-                                            : Math.max(0, Math.floor(progressCurrent)) > 0
-                                              ? `${Math.floor(progressCurrent)} 次`
-                                              : '未开始'}
-                                        </Text>
-                                      )}
-                                    </View>
-                                  </View>
+                                  )}
                                 </View>
                               </View>
                             </Pressable>
@@ -5353,14 +5415,16 @@ export default function TasksScreen() {
                             styles.habitAddCard,
                             {
                               width: habitGridItemWidth,
-                              borderColor: outlineVariant,
+                              borderColor: isDark ? 'rgba(148,163,184,0.35)' : 'rgba(148,163,184,0.4)',
                               backgroundColor: isDark
-                                ? 'rgba(148,163,184,0.06)'
-                                : 'rgba(148,163,184,0.06)',
+                                ? 'rgba(30, 41, 59, 0.35)'
+                                : 'rgba(248, 250, 252, 0.72)',
                               opacity: pressed ? 0.86 : 1,
                             },
                           ]}>
-                          <MaterialIcons name="add" size={22} color={colors.textMuted} />
+                          <View style={[styles.habitAddIconWrap, { borderColor: outlineVariant }]}>
+                            <MaterialIcons name="add" size={20} color={colors.textMuted} />
+                          </View>
                           <Text style={[styles.habitAddText, { color: colors.textMuted }]}>添加打卡</Text>
                         </Pressable>
                       </View>
@@ -5558,6 +5622,8 @@ export default function TasksScreen() {
                   const categoryLabel = !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? '收集箱' : projectCategoryMap.get(project.category_id) ?? '未分类';
                   const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
                   const hasRepeat = !!schedule?.repeatOption && schedule.repeatOption !== '不重复';
+                  const projectRewardPoints = parseRewardPointsFromExtraData(project.extra_data);
+                  const projectRewardBadgeBg = getRewardBadgeBackgroundColor(projectRewardPoints, isDark);
                   const taskTree = sortTaskTree(projectTaskTreeMap[project.id] ?? []);
                   const displayTaskTree = filterProjectListTaskTree(taskTree, hideCompletedProjectTasks);
                   const taskNodeById = buildProjectTaskNodeById(taskTree);
@@ -5598,6 +5664,7 @@ export default function TasksScreen() {
                       const boundHabitLabel = boundHabitIds
                         .map((id) => habitLookupById.get(id)?.name?.trim() || '已删除')
                         .join('、');
+                      const taskRewardPoints = parseRewardPointsFromExtraData(node.extra_data);
                       return (
                         <View key={node.id}>
                           <View
@@ -5732,6 +5799,21 @@ export default function TasksScreen() {
                                   </Text>
                                 </View>
                                 <View style={styles.projectTaskTitleTags}>
+                                  {taskRewardPoints > 0 ? (
+                                    <View
+                                      style={[
+                                        styles.todoRewardBadge,
+                                        {
+                                          backgroundColor: getRewardBadgeBackgroundColor(
+                                            taskRewardPoints,
+                                            isDark,
+                                          ),
+                                        },
+                                      ]}
+                                      accessibilityLabel={`完成可获得 ${taskRewardPoints} 积分`}>
+                                      <Text style={styles.habitRewardBadgeText}>+{taskRewardPoints}</Text>
+                                    </View>
+                                  ) : null}
                                   {boundHabitIds.length > 0 ? (
                                     <Text style={[styles.projectTaskHabitBindPillText, { color: outline }]}>
                                       {boundHabitIds.length > 1 ? `${boundHabitIds.length}项习惯` : '习惯'}
@@ -6209,6 +6291,28 @@ export default function TasksScreen() {
                           </View>
                         </View>
                         <View style={styles.projectHeadRight}>
+                          {projectRewardPoints > 0 || hasAnyTasks ? (
+                            <View style={styles.projectHeadRightTop}>
+                              {projectRewardPoints > 0 ? (
+                                <View
+                                  style={[styles.projectRewardBadge, { backgroundColor: projectRewardBadgeBg }]}
+                                  accessibilityLabel={`完成项目可获得 ${projectRewardPoints} 积分`}>
+                                  <Text style={styles.habitRewardBadgeText}>+{projectRewardPoints}</Text>
+                                </View>
+                              ) : null}
+                              {hasAnyTasks ? (
+                                <Pressable
+                                  onPress={(e) => {
+                                    e.stopPropagation();
+                                    toggleProjectExpand(project.id);
+                                  }}
+                                  hitSlop={8}
+                                  style={({ pressed }) => [styles.projectExpandBtn, pressed && { opacity: 0.75 }]}>
+                                  <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={20} color={outline} />
+                                </Pressable>
+                              ) : null}
+                            </View>
+                          ) : null}
                           <Pressable
                             onPress={(e) => {
                               e.stopPropagation();
@@ -6219,22 +6323,12 @@ export default function TasksScreen() {
                             accessibilityLabel={`为「${project.name}」快捷添加任务`}
                             style={({ pressed }) => [
                               styles.projectQuickAddBtn,
+                              styles.projectQuickAddBtnBottom,
                               isCompleted && { opacity: 0.55 },
                               pressed && { opacity: 0.75 },
                             ]}>
                             <MaterialIcons name="add-task" size={20} color={isCompleted ? doneMuted : primary} />
                           </Pressable>
-                          {hasAnyTasks ? (
-                            <Pressable
-                              onPress={(e) => {
-                                e.stopPropagation();
-                                toggleProjectExpand(project.id);
-                              }}
-                              hitSlop={8}
-                              style={({ pressed }) => [styles.projectExpandBtn, pressed && { opacity: 0.75 }]}>
-                              <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={20} color={outline} />
-                            </Pressable>
-                          ) : null}
                         </View>
                       </View>
                       </ScalePressable>
@@ -6575,7 +6669,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   pageHeader: {
-    paddingHorizontal: Spacing['5xl'],
+    paddingHorizontal: Spacing.md,
     paddingBottom: Spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
     zIndex: 10,
@@ -6619,10 +6713,8 @@ const styles = StyleSheet.create({
   },
   scroll: { flex: 1 },
   content: {
-    maxWidth: Layout.contentMaxWidth,
-    alignSelf: 'center',
     width: '100%',
-    paddingHorizontal: Spacing['5xl'],
+    paddingHorizontal: Spacing.md,
     paddingBottom: Spacing['4xl'],
     gap: Spacing['4xl'],
   },
@@ -7036,7 +7128,7 @@ const styles = StyleSheet.create({
   projectHeadPressable: { alignSelf: 'stretch' },
   projectHead: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'stretch',
     justifyContent: 'space-between',
     paddingHorizontal: Spacing['2xl'],
     paddingVertical: Spacing['2xl'],
@@ -7051,7 +7143,24 @@ const styles = StyleSheet.create({
   },
   projectHeadLeft: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, flex: 1, paddingRight: 10 },
   projectHeadMainColumn: { flex: 1, minWidth: 0 },
-  projectHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  projectHeadRight: {
+    alignSelf: 'stretch',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    gap: 8,
+    minWidth: 28,
+  },
+  projectHeadRightTop: {
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  projectRewardBadge: {
+    minWidth: 28,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    alignItems: 'center',
+  },
   projectEditBtn: {
     width: 28,
     height: 28,
@@ -7072,6 +7181,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  projectQuickAddBtnBottom: {
+    marginTop: 'auto',
   },
   projectTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 2 },
   projectTitle: { fontSize: 16, fontWeight: '800' },
@@ -7315,20 +7427,18 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   habitSectionToggleText: { fontSize: 13, fontWeight: '800' },
-  habitItemsRow: { flexDirection: 'column', gap: HABIT_CARD_GAP },
+  habitItemsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: HABIT_CARD_GAP },
   habitCard: {
     position: 'relative',
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
     borderRadius: Radius['2xl'],
-    paddingHorizontal: Spacing['4xl'],
-    paddingVertical: Spacing['3xl'],
-    overflow: 'hidden',
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.lg,
   },
   habitCardMain: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing['3xl'],
-    paddingRight: 36,
+    alignItems: 'center',
+    gap: Spacing.md,
   },
   habitCardIconWrap: {
     width: 44,
@@ -7337,11 +7447,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  habitCardIcon: { fontSize: 24 },
+  habitCardIcon: { fontSize: 23 },
   habitCardDoneMark: {
     position: 'absolute',
-    right: -4,
-    bottom: -4,
+    right: -5,
+    bottom: -5,
   },
   habitCardLockMark: {
     ...StyleSheet.absoluteFillObject,
@@ -7350,38 +7460,59 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     backgroundColor: 'rgba(15,23,42,0.28)',
   },
-  habitCardBody: { flex: 1, gap: 4, minWidth: 0 },
-  habitCardTitle: { fontSize: 15, fontWeight: '800', lineHeight: 20 },
-  habitCardNote: { fontSize: 12, fontWeight: '500', lineHeight: 17 },
-  habitCardMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 4,
+  habitCardBody: { alignSelf: 'stretch', gap: 3, minWidth: 0 },
+  habitCardTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    lineHeight: 19,
+    letterSpacing: -0.2,
+    textAlign: 'center',
+  },
+  habitCardNote: {
+    fontSize: 11,
+    fontWeight: '500',
+    lineHeight: 15,
+    textAlign: 'center',
   },
   habitTypeChip: {
+    alignSelf: 'center',
     borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingVertical: 2,
   },
-  habitTypeChipText: { fontSize: 11, fontWeight: '800' },
-  habitProgressWrap: { flexDirection: 'row', alignItems: 'center' },
-  habitProgressText: { fontSize: 12, fontWeight: '700' },
+  habitTypeChipText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.2 },
+  habitProgressBlock: { alignSelf: 'stretch', gap: 6, alignItems: 'center' },
+  habitProgressTrack: {
+    alignSelf: 'stretch',
+    height: 5,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  habitProgressFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  habitProgressMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  habitProgressText: { fontSize: 11, fontWeight: '700', textAlign: 'center' },
   habitRewardBadge: {
     position: 'absolute',
     top: 10,
     right: 10,
     zIndex: 2,
-    minWidth: 28,
+    minWidth: 26,
     borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
     alignItems: 'center',
   },
-  habitRewardBadgeText: { color: '#fff', fontSize: 11, fontWeight: '800' },
+  habitRewardBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
   habitAddCard: {
-    flexDirection: 'row',
+    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
@@ -7389,10 +7520,35 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
     borderRadius: Radius['2xl'],
     paddingVertical: Spacing['4xl'],
+    minHeight: 126,
   },
-  habitAddText: { fontSize: 13, fontWeight: '700', textAlign: 'center' },
+  habitAddIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(148,163,184,0.12)',
+  },
+  habitAddText: { fontSize: 12, fontWeight: '700', textAlign: 'center' },
 
   standaloneTodoSubtitle: { fontSize: 12, fontWeight: '600' },
+  standaloneTodoTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  standaloneTodoTitleText: { flex: 1, minWidth: 0 },
+  todoRewardBadge: {
+    flexShrink: 0,
+    minWidth: 28,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    alignItems: 'center',
+    marginTop: 1,
+  },
   standaloneTodoNote: { fontSize: 12, fontWeight: '500', lineHeight: 16 },
   standaloneTodoAcceptanceRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 4 },
   standaloneTodoAcceptance: { flex: 1, fontSize: 12, fontWeight: '600', lineHeight: 16 },

@@ -4,6 +4,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import {
   DEFAULT_WISH_BOARD_ICON_KEY,
   WISH_BOARD_ICON_OPTIONS,
+  wishBoardIconTintSoft,
 } from '@/lib/constants/wish-board-icons';
 import { createWishBoardItem } from '@/lib/repositories/wish-board/wish-board';
 import type { WishBoardWishType } from '@/lib/repositories/wish-board/wish-board.types';
@@ -123,7 +124,7 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
               placeholder="补充说明或兑换规则"
               multiline
               maxLength={500}
-              style={{ minHeight: 72, textAlignVertical: 'top' }}
+              inputStyle={{ minHeight: 72, textAlignVertical: 'top' }}
             />
 
             <Text style={[styles.fieldLabel, { color: muted }]}>图标</Text>
@@ -134,22 +135,19 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
                   <Pressable
                     key={opt.key}
                     onPress={() => setIconKey(opt.key)}
+                    accessibilityRole="button"
+                    accessibilityLabel={opt.label}
+                    accessibilityState={{ selected }}
                     style={[
                       styles.iconCell,
                       {
-                        borderColor: selected ? selectedBorder : outline,
+                        borderColor: selected ? opt.tint : outline,
                         backgroundColor: selected
-                          ? isDark
-                            ? 'rgba(96,165,250,0.16)'
-                            : 'rgba(0,88,190,0.08)'
+                          ? wishBoardIconTintSoft(opt.tint, isDark)
                           : colors.surfaceSubtle,
                       },
                     ]}>
-                    <MaterialIcons
-                      name={opt.icon}
-                      size={22}
-                      color={selected ? colors.primary : colors.text}
-                    />
+                    <Text style={styles.iconEmoji}>{opt.emoji}</Text>
                   </Pressable>
                 );
               })}
@@ -258,6 +256,10 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  iconEmoji: {
+    fontSize: 22,
+    lineHeight: 28,
   },
   typeRow: {
     gap: Spacing.md,

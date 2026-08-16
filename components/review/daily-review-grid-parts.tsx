@@ -339,7 +339,7 @@ export function DailyReviewGrid({
   onPressDimension: (dimensionId: string) => void;
 }) {
   const { width } = useWindowDimensions();
-  const gridWidth = Math.max(0, Math.min(width - Layout.pagePaddingX * 2, Layout.contentMaxWidth));
+  const gridWidth = Math.max(0, width - Spacing.md * 2);
   const columns = getAdaptiveGridColumns(gridWidth);
   const rows = Array.from({ length: Math.ceil(dimensions.length / columns) }, (_, rowIndex) =>
     dimensions.slice(rowIndex * columns, rowIndex * columns + columns),
@@ -404,7 +404,7 @@ export function DailyReviewSaveStatus({
 
 const styles = StyleSheet.create({
   metaBar: {
-    paddingHorizontal: Layout.pagePaddingX,
+    paddingHorizontal: Spacing.md,
     paddingBottom: Spacing.md,
     gap: Spacing.md,
   },

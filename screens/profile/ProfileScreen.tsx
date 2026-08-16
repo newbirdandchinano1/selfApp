@@ -4,6 +4,7 @@ import {
   ProfileWishListSectionSkeleton,
 } from '@/components/profile/profile-home-skeletons';
 import { Colors } from '@/constants/theme';
+import { Spacing } from '@/constants/design-tokens';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
@@ -690,7 +691,7 @@ const styles = StyleSheet.create({
     paddingTop: 0,
   },
   header: {
-    paddingHorizontal: 24,
+    paddingHorizontal: Spacing.md,
     paddingTop: 58,
     paddingBottom: 20,
     overflow: 'hidden',
@@ -755,12 +756,10 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   main: {
-    paddingHorizontal: 18,
+    paddingHorizontal: Spacing.md,
     paddingTop: 20,
     gap: 26,
-    maxWidth: 960,
     width: '100%',
-    alignSelf: 'center',
   },
   sectionHead: {
     paddingHorizontal: 6,
