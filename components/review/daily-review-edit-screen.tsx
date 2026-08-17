@@ -1,7 +1,7 @@
 import { DailyReviewGridView } from '@/components/review/daily-review-grid-view';
 import { formatReviewHeaderDate } from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
-import { Spacing } from '@/constants/design-tokens';
+import { Layout, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useMemo } from 'react';
@@ -43,7 +43,10 @@ const styles = StyleSheet.create({
   safe: { flex: 1 },
   content: {
     flex: 1,
-    paddingTop: Spacing.xl,
+    width: '100%',
+    maxWidth: Layout.contentMaxWidth,
+    alignSelf: 'center',
+    paddingTop: Spacing.sm,
   },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });

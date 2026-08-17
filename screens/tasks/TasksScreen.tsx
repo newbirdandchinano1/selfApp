@@ -144,6 +144,7 @@ import {
   getStandaloneTodoOverdueDisplayYmd,
   isStandaloneTodoOpen,
   isStandaloneTodoOverdue,
+  isStandaloneTodoRepeatWaiting,
   isTaskDueOverdue,
   isTaskOverdueForList,
   isTaskRowOverdue,
@@ -2536,11 +2537,14 @@ export default function TasksScreen() {
     (taskId: string, patch: Partial<TaskRow> | ((row: TaskRow) => TaskRow)) => {
       const apply = (row: TaskRow) => (typeof patch === 'function' ? patch(row) : { ...row, ...patch });
       setStandaloneTodos((prev) =>
-        sortStandaloneTodosLocally(prev.map((t) => (t.id === taskId ? apply(t) : t))),
+        sortStandaloneTodosLocally(
+          prev.map((t) => (t.id === taskId ? apply(t) : t)),
+          logicalTodayYmd,
+        ),
       );
       setMatrixWeekTasks((prev) => prev.map((t) => (t.id === taskId ? apply(t) : t)));
     },
-    [],
+    [logicalTodayYmd],
   );
 
   const reloadMatrixWeekTasks = React.useCallback(async () => {
@@ -2733,6 +2737,7 @@ export default function TasksScreen() {
             if (!change) return task;
             return { ...task, status: change.status, completed_at: change.completed_at };
           }),
+          logicalTodayYmd,
         ),
       );
       setMatrixWeekTasks((prev) =>
@@ -2754,7 +2759,7 @@ export default function TasksScreen() {
         return next;
       });
     },
-    [updateTaskInProjectTree],
+    [logicalTodayYmd, updateTaskInProjectTree],
   );
 
   const syncHabitBoundTasksForHabit = React.useCallback(
@@ -3717,7 +3722,9 @@ export default function TasksScreen() {
       await runExclusiveMutation('正在保存待办...', async () => {
         markPageDirty();
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        setStandaloneTodos((prev) => sortStandaloneTodosLocally([optimisticTask, ...prev]));
+        setStandaloneTodos((prev) =>
+          sortStandaloneTodosLocally([optimisticTask, ...prev], logicalTodayYmd),
+        );
         setQuickTodoDraft('');
         await createTask({
           id,
@@ -3740,7 +3747,7 @@ export default function TasksScreen() {
     } finally {
       setQuickTodoSaving(false);
     }
-  }, [loadTasks, markPageDirty, quickTodoDraft, quickTodoSaving, runExclusiveMutation]);
+  }, [loadTasks, logicalTodayYmd, markPageDirty, quickTodoDraft, quickTodoSaving, runExclusiveMutation]);
 
   /** 左滑删除：软删除整棵子树，并刷新列表（与 DB deleteTask 行为一致） */
   const handleUpgradeStandaloneTodo = React.useCallback(
@@ -4763,35 +4770,60 @@ export default function TasksScreen() {
 
           <View style={stackedSectionStyle}>
             <View style={sectionCardStyle}>
-              <View style={styles.habitHeaderRow}>
-                <View style={{ flex: 1, gap: 4 }}>
-                  <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 18 }]}>待办</Text>
-                  <Text style={[styles.standaloneTodoSubtitle, { color: outline }]}>
-                    暂不挂项目 · 进行中 {standaloneTodoOpenCount} 条
-                    {standaloneTodos.length > 0 ? ' · 左滑可升级或删除' : ''}
+              <View style={{ gap: 6 }}>
+                <View style={styles.habitHeaderRow}>
+                  <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 18, flex: 1, minWidth: 0 }]}>
+                    待办
                   </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    <ScalePressable
+                      onPress={() => router.push('/tasks-overview')}
+                      style={({ pressed }) => [
+                        styles.ghostBtn,
+                        { borderColor: `${primary}44` },
+                        pressed && { opacity: 0.8 },
+                      ]}>
+                      <MaterialIcons name="insights" size={14} color={primary} />
+                      <Text style={[styles.ghostBtnText, { color: primary }]}>待办总览</Text>
+                    </ScalePressable>
+                    <ScalePressable
+                      onPress={openStandaloneTaskComposer}
+                      style={({ pressed }) => [
+                        styles.ghostBtn,
+                        { borderColor: `${tertiary}44` },
+                        pressed && { opacity: 0.8 },
+                      ]}>
+                      <MaterialIcons name="playlist-add" size={14} color={tertiary} />
+                      <Text style={[styles.ghostBtnText, { color: tertiary }]}>详细新建</Text>
+                    </ScalePressable>
+                  </View>
                 </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                  <ScalePressable
-                    onPress={() => router.push('/tasks-overview')}
-                    style={({ pressed }) => [
-                      styles.ghostBtn,
-                      { borderColor: `${primary}44` },
-                      pressed && { opacity: 0.8 },
+                <View style={styles.standaloneTodoMetaRow}>
+                  <View
+                    style={[
+                      styles.standaloneTodoCountChip,
+                      { backgroundColor: isDark ? `${secondary}28` : `${secondary}16` },
                     ]}>
-                    <MaterialIcons name="insights" size={14} color={primary} />
-                    <Text style={[styles.ghostBtnText, { color: primary }]}>待办总览</Text>
-                  </ScalePressable>
-                  <ScalePressable
-                    onPress={openStandaloneTaskComposer}
-                    style={({ pressed }) => [
-                      styles.ghostBtn,
-                      { borderColor: `${tertiary}44` },
-                      pressed && { opacity: 0.8 },
-                    ]}>
-                    <MaterialIcons name="playlist-add" size={14} color={tertiary} />
-                    <Text style={[styles.ghostBtnText, { color: tertiary }]}>详细新建</Text>
-                  </ScalePressable>
+                    <View style={[styles.standaloneTodoCountDot, { backgroundColor: secondary }]} />
+                    <Text style={[styles.standaloneTodoCountChipText, { color: secondary }]}>进行中</Text>
+                    <Text style={[styles.standaloneTodoCountChipNum, { color: secondary }]}>
+                      {standaloneTodoOpenCount}
+                    </Text>
+                  </View>
+                  {standaloneTodos.length > 0 ? (
+                    <View
+                      style={[
+                        styles.standaloneTodoHintChip,
+                        {
+                          backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(148,163,184,0.12)',
+                        },
+                      ]}>
+                      <MaterialIcons name="swipe" size={13} color={outline} />
+                      <Text style={[styles.standaloneTodoHintChipText, { color: outline }]}>
+                        左滑升级 / 删除
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
               </View>
 
@@ -4882,9 +4914,13 @@ export default function TasksScreen() {
                     const repeat = (meta.repeat ?? '').trim();
                     const reminder = (meta.reminder ?? '').trim();
                     const overdue = isStandaloneTodoOverdue(t, logicalTodayYmd);
+                    const isRepeatWaiting =
+                      !isDone && !isShelved && isStandaloneTodoRepeatWaiting(t, logicalTodayYmd);
                     const dueDisplayYmd = getStandaloneTodoOverdueDisplayYmd(t);
                     const effectivePriority = getEffectiveTaskPriority(t, logicalTodayYmd);
-                    const checkColor = getTaskPriorityCheckColor(effectivePriority, isDark);
+                    const checkColor = isRepeatWaiting
+                      ? colors.textMuted
+                      : getTaskPriorityCheckColor(effectivePriority, isDark);
                     const isUpgrading = upgradingStandaloneTodoId === t.id;
                     const isActivating = activatingShelvedTodoId === t.id;
                     const swipeBusy = !!upgradingStandaloneTodoId || !!activatingShelvedTodoId;
@@ -4975,7 +5011,10 @@ export default function TasksScreen() {
                                       ? error
                                       : outlineVariant,
                                 borderWidth: overdue && !isDone && !isShelved ? 1.5 : StyleSheet.hairlineWidth,
-                                ...(isShelved && !isDone ? { shadowOpacity: 0.03, elevation: 0 } : null),
+                                ...((isShelved || isRepeatWaiting) && !isDone
+                                  ? { shadowOpacity: 0.03, elevation: 0 }
+                                  : null),
+                                opacity: isRepeatWaiting ? 0.55 : 1,
                               },
                             ]}>
                           {isShelved ? (
@@ -4996,7 +5035,10 @@ export default function TasksScreen() {
                             </Pressable>
                           )}
                           <Pressable
-                            style={[styles.taskBody, isShelved && !isDone && styles.shelvedTodoBodyMuted]}
+                            style={[
+                              styles.taskBody,
+                              (isShelved || isRepeatWaiting) && !isDone && styles.shelvedTodoBodyMuted,
+                            ]}
                             onPress={() => openTask(t.id)}>
                             <View style={styles.standaloneTodoTitleRow}>
                               <Text
@@ -5004,14 +5046,15 @@ export default function TasksScreen() {
                                   styles.taskText,
                                   styles.standaloneTodoTitleText,
                                   {
-                                    color: isShelved
-                                      ? colors.textSecondary
-                                      : overdue
-                                        ? error
-                                        : colors.text,
-                                    fontWeight: overdue && !isShelved ? '800' : '600',
+                                    color:
+                                      isShelved || isRepeatWaiting
+                                        ? colors.textSecondary
+                                        : overdue
+                                          ? error
+                                          : colors.text,
+                                    fontWeight: overdue && !isShelved && !isRepeatWaiting ? '800' : '600',
                                     textDecorationLine: isDone ? 'line-through' : 'none',
-                                    opacity: isDone ? 0.45 : isShelved ? 0.82 : 1,
+                                    opacity: isDone ? 0.45 : isShelved || isRepeatWaiting ? 0.82 : 1,
                                   },
                                 ]}
                                 numberOfLines={2}>
@@ -5029,6 +5072,11 @@ export default function TasksScreen() {
                               <View style={[styles.shelvedPill, { backgroundColor: `${outline}18` }]}>
                                 <MaterialIcons name="inventory-2" size={12} color={outline} />
                                 <Text style={[styles.shelvedPillText, { color: outline }]}>暂时搁置</Text>
+                              </View>
+                            ) : isRepeatWaiting ? (
+                              <View style={[styles.shelvedPill, { backgroundColor: `${outline}14` }]}>
+                                <MaterialIcons name="event-busy" size={12} color={outline} />
+                                <Text style={[styles.shelvedPillText, { color: outline }]}>未到执行日</Text>
                               </View>
                             ) : null}
                             {!!acceptanceText ? (
@@ -5335,8 +5383,8 @@ export default function TasksScreen() {
                                           opacity: goalMet ? 0.58 : 1,
                                         },
                                       ]}
-                                      numberOfLines={1}>
-                                      {item.note}
+                                      numberOfLines={3}>
+                                      {item.note.trim().slice(0, 50)}
                                     </Text>
                                   ) : null}
                                 </View>
@@ -6136,34 +6184,103 @@ export default function TasksScreen() {
                               ) : null}
                             </View>
                             <View style={styles.projectSubRow}>
-                              {dueDateLabel ? (
+                              <View
+                                style={[
+                                  styles.projectMetaChip,
+                                  {
+                                    backgroundColor: isScheduleExpired
+                                      ? isDark
+                                        ? 'rgba(248,113,113,0.18)'
+                                        : 'rgba(186,26,26,0.1)'
+                                      : isCompleted
+                                        ? isDark
+                                          ? 'rgba(148,163,184,0.16)'
+                                          : 'rgba(114,119,133,0.1)'
+                                        : isDark
+                                          ? `${primary}28`
+                                          : `${primary}14`,
+                                    borderColor: isScheduleExpired
+                                      ? isDark
+                                        ? 'rgba(248,113,113,0.4)'
+                                        : 'rgba(186,26,26,0.28)'
+                                      : isCompleted
+                                        ? isDark
+                                          ? 'rgba(148,163,184,0.36)'
+                                          : 'rgba(114,119,133,0.24)'
+                                        : isDark
+                                          ? `${primary}44`
+                                          : `${primary}30`,
+                                  },
+                                ]}>
+                                <MaterialIcons
+                                  name={isScheduleExpired ? 'event-busy' : 'event'}
+                                  size={13}
+                                  color={
+                                    isScheduleExpired ? error : isCompleted ? doneMuted : primary
+                                  }
+                                />
                                 <Text
                                   style={[
-                                    styles.projectSub,
+                                    styles.projectMetaChipText,
                                     {
-                                      color: isScheduleExpired ? error : isCompleted ? doneMuted : outline,
-                                      fontWeight: isScheduleExpired ? '800' : '600',
+                                      color: isScheduleExpired
+                                        ? error
+                                        : isCompleted
+                                          ? doneMuted
+                                          : primary,
+                                      fontWeight: isScheduleExpired ? '800' : '700',
                                     },
-                                  ]}>
-                                  {isScheduleExpired
-                                    ? isRangeSchedule && rangeEndYmd
-                                      ? `已于：${formatYmdCN(rangeEndYmd)} 过期`
-                                      : dueYmd
-                                        ? `已于：${formatYmdCN(dueYmd)} 过期`
-                                        : `已于：${dueDateLabel} 过期`
-                                    : isRangeSchedule
-                                      ? dueDateLabel
-                                      : dueYmd
-                                        ? formatProjectDueText(dueYmd, logicalTodayYmd)
-                                        : `截止 ${dueDateLabel}`}
+                                  ]}
+                                  numberOfLines={1}>
+                                  {dueDateLabel
+                                    ? isScheduleExpired
+                                      ? isRangeSchedule && rangeEndYmd
+                                        ? `已于 ${formatYmdCN(rangeEndYmd)} 过期`
+                                        : dueYmd
+                                          ? `已于 ${formatYmdCN(dueYmd)} 过期`
+                                          : `已于 ${dueDateLabel} 过期`
+                                      : isRangeSchedule
+                                        ? dueDateLabel
+                                        : dueYmd
+                                          ? formatProjectDueText(dueYmd, logicalTodayYmd)
+                                          : `截止 ${dueDateLabel}`
+                                    : '无截止日期'}
                                 </Text>
-                              ) : (
-                                <Text style={[styles.projectSub, { color: isCompleted ? doneMuted : outline }]}>无截止日期</Text>
-                              )}
-                              <Text style={[styles.projectSub, { color: isCompleted ? doneMuted : outline }]}>•</Text>
-                              <Text style={[styles.projectSub, { color: isCompleted ? doneMuted : outline }]}>
-                                分类 {categoryLabel}
-                              </Text>
+                              </View>
+                              <View
+                                style={[
+                                  styles.projectMetaChip,
+                                  {
+                                    backgroundColor: isCompleted
+                                      ? isDark
+                                        ? 'rgba(148,163,184,0.16)'
+                                        : 'rgba(114,119,133,0.1)'
+                                      : isDark
+                                        ? `${tertiary}28`
+                                        : `${tertiary}14`,
+                                    borderColor: isCompleted
+                                      ? isDark
+                                        ? 'rgba(148,163,184,0.36)'
+                                        : 'rgba(114,119,133,0.24)'
+                                      : isDark
+                                        ? `${tertiary}44`
+                                        : `${tertiary}30`,
+                                  },
+                                ]}>
+                                <MaterialIcons
+                                  name="folder"
+                                  size={13}
+                                  color={isCompleted ? doneMuted : tertiary}
+                                />
+                                <Text
+                                  style={[
+                                    styles.projectMetaChipText,
+                                    { color: isCompleted ? doneMuted : tertiary },
+                                  ]}
+                                  numberOfLines={1}>
+                                  {categoryLabel}
+                                </Text>
+                              </View>
                             </View>
                             {isLocked && (lockInfo?.unmetPrerequisiteNames.length ?? 0) > 0 ? (
                               <Text style={[styles.projectLockHint, { color: outline }]} numberOfLines={2}>
@@ -6200,50 +6317,140 @@ export default function TasksScreen() {
                               </View>
                             ) : null}
                             <View style={styles.projectMetaRow}>
-                              {!isCompleted ? (
-                                <Text style={[styles.projectSubStrong, { color: primary }]}>
-                                  {project.status === 'active' ? '进行中' : project.status === 'paused' ? '已暂停' : '未知状态'}
-                                </Text>
-                              ) : null}
-                              {!isCompleted && (hasReminder || hasRepeat || (project.priority ?? 0) >= 1) ? (
-                                <Text style={[styles.projectSub, { color: outline }]}>•</Text>
-                              ) : null}
-                              {(project.priority ?? 0) >= 1 ? (() => {
-                                const projectPriority = project.priority ?? 0;
-                                const priorityLabel = formatTaskPriority(projectPriority);
-                                const priorityColor = isCompleted
-                                  ? doneMuted
-                                  : getTaskPriorityColor(projectPriority, isDark);
-                                if (!priorityLabel) return null;
+                              {!isCompleted ? (() => {
+                                const isPaused = project.status === 'paused';
+                                const statusLabel =
+                                  project.status === 'active'
+                                    ? '进行中'
+                                    : isPaused
+                                      ? '已暂停'
+                                      : '未知状态';
+                                const statusColor = isPaused
+                                  ? isDark
+                                    ? '#fbbf24'
+                                    : '#9a5b00'
+                                  : secondary;
                                 return (
-                                  <View style={styles.projectFlag}>
-                                    <MaterialIcons name="flag" size={11} color={priorityColor} />
-                                    <Text style={[styles.projectFlagText, { color: priorityColor }]}>
-                                      {priorityLabel}
+                                  <View
+                                    style={[
+                                      styles.projectMetaChip,
+                                      {
+                                        backgroundColor: isDark ? `${statusColor}28` : `${statusColor}14`,
+                                        borderColor: isDark ? `${statusColor}44` : `${statusColor}30`,
+                                      },
+                                    ]}>
+                                    <MaterialIcons
+                                      name={isPaused ? 'pause-circle-filled' : 'play-circle-filled'}
+                                      size={13}
+                                      color={statusColor}
+                                    />
+                                    <Text style={[styles.projectMetaChipText, { color: statusColor }]}>
+                                      {statusLabel}
                                     </Text>
                                   </View>
                                 );
                               })() : null}
-                              {hasReminder && (
-                                <View style={styles.projectFlag}>
+                              {(project.priority ?? 0) >= 1
+                                ? (() => {
+                                    const projectPriority = project.priority ?? 0;
+                                    const priorityLabel = formatTaskPriority(projectPriority);
+                                    const priorityColor = isCompleted
+                                      ? doneMuted
+                                      : getTaskPriorityColor(projectPriority, isDark);
+                                    if (!priorityLabel) return null;
+                                    return (
+                                      <View
+                                        style={[
+                                          styles.projectMetaChip,
+                                          {
+                                            backgroundColor: isDark
+                                              ? `${priorityColor}28`
+                                              : `${priorityColor}14`,
+                                            borderColor: isDark
+                                              ? `${priorityColor}44`
+                                              : `${priorityColor}40`,
+                                          },
+                                        ]}>
+                                        <MaterialIcons name="flag" size={13} color={priorityColor} />
+                                        <Text
+                                          style={[styles.projectMetaChipText, { color: priorityColor }]}
+                                          numberOfLines={1}>
+                                          {priorityLabel}
+                                        </Text>
+                                      </View>
+                                    );
+                                  })()
+                                : null}
+                              {hasReminder ? (
+                                <View
+                                  style={[
+                                    styles.projectMetaChip,
+                                    {
+                                      backgroundColor: isCompleted
+                                        ? isDark
+                                          ? 'rgba(148,163,184,0.16)'
+                                          : 'rgba(114,119,133,0.1)'
+                                        : isDark
+                                          ? `${primary}28`
+                                          : `${primary}14`,
+                                      borderColor: isCompleted
+                                        ? isDark
+                                          ? 'rgba(148,163,184,0.36)'
+                                          : 'rgba(114,119,133,0.24)'
+                                        : isDark
+                                          ? `${primary}44`
+                                          : `${primary}30`,
+                                    },
+                                  ]}>
                                   <MaterialIcons
                                     name="notifications-active"
-                                    size={11}
+                                    size={13}
                                     color={isCompleted ? doneMuted : primary}
                                   />
-                                  <Text style={[styles.projectFlagText, { color: isCompleted ? doneMuted : primary }]}>
+                                  <Text
+                                    style={[
+                                      styles.projectMetaChipText,
+                                      { color: isCompleted ? doneMuted : primary },
+                                    ]}>
                                     提醒
                                   </Text>
                                 </View>
-                              )}
-                              {hasRepeat && (
-                                <View style={styles.projectFlag}>
-                                  <MaterialIcons name="repeat" size={11} color={isCompleted ? doneMuted : primary} />
-                                  <Text style={[styles.projectFlagText, { color: isCompleted ? doneMuted : primary }]}>
+                              ) : null}
+                              {hasRepeat ? (
+                                <View
+                                  style={[
+                                    styles.projectMetaChip,
+                                    {
+                                      backgroundColor: isCompleted
+                                        ? isDark
+                                          ? 'rgba(148,163,184,0.16)'
+                                          : 'rgba(114,119,133,0.1)'
+                                        : isDark
+                                          ? `${primary}28`
+                                          : `${primary}14`,
+                                      borderColor: isCompleted
+                                        ? isDark
+                                          ? 'rgba(148,163,184,0.36)'
+                                          : 'rgba(114,119,133,0.24)'
+                                        : isDark
+                                          ? `${primary}44`
+                                          : `${primary}30`,
+                                    },
+                                  ]}>
+                                  <MaterialIcons
+                                    name="repeat"
+                                    size={13}
+                                    color={isCompleted ? doneMuted : primary}
+                                  />
+                                  <Text
+                                    style={[
+                                      styles.projectMetaChipText,
+                                      { color: isCompleted ? doneMuted : primary },
+                                    ]}>
                                     重复
                                   </Text>
                                 </View>
-                              )}
+                              ) : null}
                             </View>
                             {progress.total > 0 ? (
                               <>
@@ -7207,7 +7414,29 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   projectDoneBadgeText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.4 },
-  projectSubRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  projectSubRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 2,
+  },
+  projectMetaChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    maxWidth: '100%',
+  },
+  projectMetaChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.1,
+    flexShrink: 1,
+  },
   projectNoteRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -7219,7 +7448,13 @@ const styles = StyleSheet.create({
   projectNoteIcon: { marginTop: 1 },
   projectNoteText: { flex: 1, fontSize: 12, fontWeight: '500', lineHeight: 18, fontStyle: 'italic' },
   projectLockHint: { fontSize: 11, fontWeight: '600', lineHeight: 16, marginTop: 4 },
-  projectMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 },
+  projectMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 6,
+  },
   projectSub: { fontSize: 10, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
   projectSubStrong: { fontSize: 10, fontWeight: '900', letterSpacing: 0.6 },
   projectFlag: { flexDirection: 'row', alignItems: 'center', gap: 2 },
@@ -7533,7 +7768,51 @@ const styles = StyleSheet.create({
   },
   habitAddText: { fontSize: 12, fontWeight: '700', textAlign: 'center' },
 
-  standaloneTodoSubtitle: { fontSize: 12, fontWeight: '600' },
+  standaloneTodoMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'nowrap',
+    gap: 6,
+  },
+  standaloneTodoCountChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: 5,
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  standaloneTodoCountDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  standaloneTodoCountChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  standaloneTodoCountChipNum: {
+    fontSize: 13,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+    minWidth: 10,
+    textAlign: 'center',
+  },
+  standaloneTodoHintChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: 4,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  standaloneTodoHintChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
   standaloneTodoTitleRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',

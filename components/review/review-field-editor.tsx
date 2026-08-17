@@ -10,7 +10,8 @@ import {
   updateReviewTextModelPlain,
 } from '@/lib/review-journal-format';
 import { ReviewRichTextInput } from '@/components/review/review-rich-text-input';
-import { Spacing } from '@/constants/design-tokens';
+import { Radius, Spacing } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import React, { useCallback } from 'react';
@@ -52,6 +53,7 @@ export function ReviewFieldEditor({
   backgroundColor,
   containerStyle,
 }: Props) {
+  const { colors } = useAppTheme();
   const updateTextBlock = useCallback(
     (blockIndex: number, nextModel: ReviewTextModel, selection?: TextSelection) => {
       const nextBlocks = model.blocks.map((block, idx) =>
@@ -107,8 +109,11 @@ export function ReviewFieldEditor({
                 <Pressable
                   onPress={() => handleDeleteImage(blockIndex)}
                   hitSlop={8}
-                  style={({ pressed }) => [styles.imageDeleteBtn, { opacity: pressed ? 0.75 : 1 }]}>
-                  <MaterialIcons name="close" size={16} color="#fff" />
+                  style={({ pressed }) => [
+                    styles.imageDeleteBtn,
+                    { backgroundColor: colors.overlay, opacity: pressed ? 0.75 : 1 },
+                  ]}>
+                  <MaterialIcons name="close" size={16} color={colors.onPrimary} />
                 </Pressable>
               ) : null}
             </View>
@@ -163,7 +168,7 @@ export function updateFieldModelTextBlock(
 const styles = StyleSheet.create({
   root: {
     gap: Spacing.md,
-    borderRadius: 16,
+    borderRadius: Radius.xl,
     overflow: 'hidden',
   },
   textBlock: {
@@ -173,14 +178,14 @@ const styles = StyleSheet.create({
     minHeight: 120,
   },
   imageWrap: {
-    borderRadius: 12,
+    borderRadius: Radius.md,
     overflow: 'hidden',
     position: 'relative',
   },
   image: {
     width: '100%',
     height: 200,
-    borderRadius: 12,
+    borderRadius: Radius.md,
   },
   imageDeleteBtn: {
     position: 'absolute',
@@ -188,8 +193,7 @@ const styles = StyleSheet.create({
     right: 8,
     width: 28,
     height: 28,
-    borderRadius: 14,
-    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: Radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
   },

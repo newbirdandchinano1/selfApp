@@ -176,16 +176,28 @@ export function standaloneTodoPassesStandaloneListFilter(
   );
 }
 
-/** 设置了重复的独立待办：重复日展示；非重复日仅当截止/计划已过期或错过重复日时保留 */
-export function standaloneTodoPassesRepeatDayFilter(task: TaskRow, logicalTodayYmd: string): boolean {
-  if (isTaskShelvedStatus(task.status)) return true;
+/**
+ * 设置了重复的独立待办始终保留在待办列表中。
+ * 非执行日由 UI 变灰置底（见 `isStandaloneTodoRepeatWaiting`）。
+ */
+export function standaloneTodoPassesRepeatDayFilter(
+  _task: TaskRow,
+  _logicalTodayYmd: string,
+): boolean {
+  return true;
+}
+
+/**
+ * 重复性待办尚未到规定执行日（且未过期/未错过）：列表中变灰置底。
+ * 已过期或错过既往执行日的仍视为需处理，不高亮为 waiting。
+ */
+export function isStandaloneTodoRepeatWaiting(task: TaskRow, logicalTodayYmd: string): boolean {
+  if (!isStandaloneTodoOpen(task) || isTaskShelvedStatus(task.status)) return false;
   const schedule = parseTaskRepeatSchedule(task.extra_data);
-  if (!schedule) return true;
-  if (isTaskRepeatDueOnLogicalDay(logicalTodayYmd, schedule)) return true;
-  if (!isStandaloneTodoOpen(task)) return false;
-  if (isTaskRowOverdue(task, logicalTodayYmd)) return true;
-  if (isStandaloneTodoScheduleExpired(task, logicalTodayYmd)) return true;
-  return hasMissedRepeatOccurrenceBeforeToday(task, logicalTodayYmd, schedule);
+  if (!schedule) return false;
+  if (isTaskRepeatDueOnLogicalDay(logicalTodayYmd, schedule)) return false;
+  if (isTaskOverdueForList(task, logicalTodayYmd)) return false;
+  return true;
 }
 
 /** 独立待办：计划日/区间内展示；过期未完成仍保留在列表（重复规则由 repeat 过滤器处理） */

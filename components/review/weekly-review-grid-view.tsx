@@ -3,13 +3,19 @@ import {
   WeeklyReviewMetaBar,
 } from '@/components/review/daily-review-grid-parts';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
+import { ReviewGridSkeleton } from '@/components/review/review-home-skeletons';
+import {
+  ReviewEmptyState,
+  ReviewNoticeBanner,
+  ReviewPageContent,
+  ReviewPrimaryButton,
+} from '@/components/review/review-shared-ui';
 import {
   loadReviewPeriodSnapshot,
   WEEKLY_REVIEW_WEEKDAY_LABELS,
 } from '@/components/review/review-utils';
-import { Spacing, Typography } from '@/constants/design-tokens';
+import { Spacing } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
-import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
 import {
@@ -29,18 +35,13 @@ import {
   setWeeklyReviewCoachingText,
   upsertWeeklyReviewJournal,
 } from '@/lib/repositories/insights/weekly-review-journal';
-import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
-  Pressable,
   ScrollView,
   StyleSheet,
-  Text,
-  View,
   type RefreshControlProps,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -56,7 +57,6 @@ export function WeeklyReviewGridView({
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { colors, isDark } = useAppTheme();
   const { logicalTodayYmd: todayYmd } = useDayBoundary();
   const { wrapLoad } = usePageApiSync(pageApiKey);
 
@@ -191,120 +191,79 @@ export function WeeklyReviewGridView({
     [configuredDow],
   );
 
-  const gridColors = useMemo(
-    () => ({
-      text: colors.text,
-      textMuted: colors.textMuted,
-      outline: colors.outline,
-      primary: colors.primary,
-      input: isDark ? 'rgba(15,23,42,0.55)' : colors.input,
-      background: colors.background,
-    }),
-    [colors, isDark],
-  );
+  if (loading) {
+    return <ReviewGridSkeleton />;
+  }
 
   return (
-    <>
-      {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
-        </View>
-      ) : (
-        <ScrollView
-          refreshControl={refreshControl}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={[
-            styles.scroll,
-            { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.xl) },
-          ]}>
-          <WeeklyReviewMetaBar
-            weekRangeLabel={weekRangeLabel}
-            configuredDowLabel={configuredDowLabel}
-            colors={gridColors}
-            onOpenReviewDaySettings={() => router.push('/review-settings')}
+    <ScrollView
+      refreshControl={refreshControl}
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={[
+        styles.scroll,
+        { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.xl) },
+      ]}>
+      <ReviewPageContent style={styles.pageGap}>
+        <WeeklyReviewMetaBar
+          weekRangeLabel={weekRangeLabel}
+          configuredDowLabel={configuredDowLabel}
+          onOpenReviewDaySettings={() => router.push('/review-settings')}
+        />
+
+        {configuredDow === null ? (
+          <ReviewNoticeBanner
+            icon="event-available"
+            message="尚未设置每周复盘日。设置后可在对应日期填写与保存周复盘。"
           />
-
-          {configuredDow === null ? (
-            <View style={[styles.notice, { backgroundColor: colors.surfaceMuted, borderColor: colors.outline }]}>
-              <MaterialIcons name="event-available" size={22} color={colors.primary} />
-              <Text style={[Typography.body, { color: colors.text, flex: 1, lineHeight: 21 }]}>
-                尚未设置每周复盘日。设置后可在对应日期填写与保存周复盘。
-              </Text>
-            </View>
-          ) : !canEdit ? (
-            <View style={[styles.notice, { backgroundColor: colors.surfaceMuted, borderColor: colors.outline }]}>
-              <MaterialIcons name="lock-clock" size={22} color={colors.textMuted} />
-              <Text style={[Typography.body, { color: colors.textMuted, flex: 1, lineHeight: 21 }]}>
-                今天不是复盘日，仅可查看本周期内容；请在每周「{configuredDowLabel}」填写与保存。
-              </Text>
-            </View>
-          ) : null}
-
-          {weeklyTemplate.length === 0 ? (
-            <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21, paddingHorizontal: Spacing.md }]}>
-              尚未配置周复盘维度，请点右上角「模板」按钮编辑标题与栏目。
-            </Text>
-          ) : (
-            <DailyReviewGrid
-              dimensions={weeklyTemplate}
-              fields={fields}
-              colors={gridColors}
-              onPressDimension={openDimension}
-            />
-          )}
-
-          <ReviewAiAnalysisPanel
-            text={aiCoaching}
-            busy={aiBusy}
-            canRun={canEdit}
-            onAnalyze={() => void runAi()}
-            disabledReason={
-              configuredDow === null
-                ? '请先设置每周复盘日'
-                : !canEdit
-                  ? '今天不是复盘日，暂不可生成分析'
-                  : undefined
-            }
+        ) : !canEdit ? (
+          <ReviewNoticeBanner
+            icon="lock-clock"
+            tone="muted"
+            message={`今天不是复盘日，仅可查看本周期内容；请在每周「${configuredDowLabel}」填写与保存。`}
           />
+        ) : null}
 
-          {configuredDow === null ? (
-            <Pressable
-              onPress={() => router.push('/review-settings')}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                { backgroundColor: colors.primary, opacity: pressed ? 0.88 : 1 },
-              ]}>
-              <Text style={styles.actionBtnText}>设置周复盘日</Text>
-            </Pressable>
-          ) : null}
-        </ScrollView>
-      )}
-    </>
+        {weeklyTemplate.length === 0 ? (
+          <ReviewEmptyState
+            title="尚未配置周复盘维度"
+            subtitle="请点右上角「模板」按钮编辑标题与栏目。"
+          />
+        ) : (
+          <DailyReviewGrid
+            dimensions={weeklyTemplate}
+            fields={fields}
+            onPressDimension={openDimension}
+          />
+        )}
+
+        <ReviewAiAnalysisPanel
+          text={aiCoaching}
+          busy={aiBusy}
+          canRun={canEdit}
+          onAnalyze={() => void runAi()}
+          disabledReason={
+            configuredDow === null
+              ? '请先设置每周复盘日'
+              : !canEdit
+                ? '今天不是复盘日，暂不可生成分析'
+                : undefined
+          }
+        />
+
+        {configuredDow === null ? (
+          <ReviewPrimaryButton label="设置周复盘日" onPress={() => router.push('/review-settings')} />
+        ) : null}
+      </ReviewPageContent>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: {
-    gap: Spacing.xl,
-    paddingTop: Spacing.sm,
     width: '100%',
+    paddingTop: Spacing.sm,
   },
-  notice: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.lg,
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: Spacing['3xl'],
-    marginHorizontal: Spacing.md,
+  pageGap: {
+    gap: Spacing.xl,
   },
-  actionBtn: {
-    borderRadius: 12,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginHorizontal: Spacing.md,
-  },
-  actionBtnText: { color: '#fff', fontSize: 15, fontWeight: '900' },
 });

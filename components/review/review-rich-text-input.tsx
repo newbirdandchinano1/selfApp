@@ -169,7 +169,7 @@ function ReviewEditOverlay({
                         fontSize: BASE_SIZE,
                         lineHeight: BASE_LINE,
                         fontWeight: '500',
-                        color: part.checked ? '#0058be' : textColor,
+                        color: part.checked ? caretColor : textColor,
                         textDecorationLine: 'none',
                         opacity: 1,
                       }}>

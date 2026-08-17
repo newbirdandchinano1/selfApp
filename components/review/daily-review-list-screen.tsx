@@ -6,8 +6,9 @@ import {
   loadReviewPeriodSnapshot,
   type DailyEntry,
 } from '@/components/review/review-utils';
+import { ReviewListSkeleton } from '@/components/review/review-home-skeletons';
 import { ScreenHeader } from '@/components/ui';
-import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -17,7 +18,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'daily-review';
@@ -25,7 +26,7 @@ const PAGE_API_KEY = 'daily-review';
 export function DailyReviewListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { colors, isDark } = useAppTheme();
+  const { colors } = useAppTheme();
   const { logicalTodayYmd: todayYmd } = useDayBoundary();
   const params = useLocalSearchParams<{ focusYmd?: string | string[] }>();
   const focusYmdParam = Array.isArray(params.focusYmd) ? params.focusYmd[0] : params.focusYmd;
@@ -90,9 +91,7 @@ export function DailyReviewListScreen() {
       <ScreenHeader title="每日复盘" subtitle={dailyPeriodLabel || undefined} onBack={() => router.back()} />
 
       {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
-        </View>
+        <ReviewListSkeleton />
       ) : (
         <ScrollView
           refreshControl={refreshControl}
@@ -125,13 +124,7 @@ export function DailyReviewListScreen() {
                     styles.dayChip,
                     {
                       borderColor: isToday ? colors.success : colors.outline,
-                      backgroundColor: isToday
-                        ? isDark
-                          ? 'rgba(52,211,153,0.18)'
-                          : 'rgba(236,253,245,0.95)'
-                        : isDark
-                          ? 'rgba(15,23,42,0.45)'
-                          : colors.surface,
+                      backgroundColor: isToday ? colors.primaryMuted : colors.surface,
                       opacity: pressed ? 0.88 : 1,
                     },
                   ]}>
@@ -144,7 +137,7 @@ export function DailyReviewListScreen() {
                       style={[
                         styles.dayChipDot,
                         {
-                          backgroundColor: filled ? colors.success : isDark ? 'rgba(148,163,184,0.35)' : '#d1d5db',
+                          backgroundColor: filled ? colors.success : colors.outlineStrong,
                         },
                       ]}
                     />
@@ -173,6 +166,7 @@ export function DailyReviewListScreen() {
                   onPress={() => router.push({ pathname: '/daily-review/[ymd]', params: { ymd: entry.ymd } })}
                   style={({ pressed }) => [
                     styles.row,
+                    Shadows.card,
                     {
                       backgroundColor: colors.surface,
                       borderColor: entry.ymd === todayYmd ? colors.success : colors.outline,
@@ -183,11 +177,11 @@ export function DailyReviewListScreen() {
                     <View style={styles.rowHead}>
                       <Text style={[Typography.title, { color: colors.text }]}>{entry.label}</Text>
                       {entry.ymd === todayYmd ? (
-                        <View style={[styles.tag, { backgroundColor: isDark ? `${colors.success}30` : `${colors.success}18` }]}>
+                        <View style={[styles.tag, { backgroundColor: colors.primaryMuted }]}>
                           <Text style={{ fontSize: 10, fontWeight: '900', color: colors.success }}>今天</Text>
                         </View>
                       ) : entry.ymd === yesterdayYmd ? (
-                        <View style={[styles.tag, { backgroundColor: isDark ? `${colors.primary}30` : `${colors.primary}14` }]}>
+                        <View style={[styles.tag, { backgroundColor: colors.primaryMuted }]}>
                           <Text style={{ fontSize: 10, fontWeight: '900', color: colors.primary }}>昨天</Text>
                         </View>
                       ) : null}
@@ -218,7 +212,6 @@ export function DailyReviewListScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1 },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: {
     paddingHorizontal: Layout.pagePaddingX,
     paddingTop: Spacing.xl,
@@ -233,7 +226,7 @@ const styles = StyleSheet.create({
     width: 56,
     alignItems: 'center',
     borderRadius: Radius.lg,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingVertical: Spacing.lg,
     paddingHorizontal: Spacing.sm,
     gap: Spacing.xs,
@@ -247,8 +240,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.lg,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
     paddingVertical: Spacing['3xl'],
     paddingHorizontal: Spacing['3xl'],
   },

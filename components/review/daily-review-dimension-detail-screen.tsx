@@ -1,7 +1,8 @@
 import { ReviewFieldEditor, type ReviewFieldEditorState } from '@/components/review/review-field-editor';
+import { ReviewDimensionSkeleton } from '@/components/review/review-home-skeletons';
 import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
-import { Layout, Spacing, Typography } from '@/constants/design-tokens';
+import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
@@ -77,7 +78,7 @@ function fieldModelsToValues(models: Record<string, ReviewFieldModel>): ReviewFi
 export function DailyReviewDimensionDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { colors, isDark } = useAppTheme();
+  const { colors } = useAppTheme();
   const { logicalTodayYmd: todayYmd } = useDayBoundary();
   const params = useLocalSearchParams<{ ymd?: string | string[]; dimensionId?: string | string[] }>();
   const ymd = (Array.isArray(params.ymd) ? params.ymd[0] : params.ymd)?.trim() ?? '';
@@ -354,9 +355,7 @@ export function DailyReviewDimensionDetailScreen() {
         }
       />
       {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
-        </View>
+        <ReviewDimensionSkeleton />
       ) : (
         <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={8}>
           <View style={styles.screenBody}>
@@ -377,8 +376,15 @@ export function DailyReviewDimensionDetailScreen() {
                     return (
                       <View
                         key={col.id}
-                        style={[styles.fieldCard, { borderColor: active ? colors.primary : colors.outline }]}>
-                        <Text style={[styles.fieldLabel, { color: active ? colors.primary : colors.textMuted }]}>{col.title}</Text>
+                        style={[
+                          styles.fieldCard,
+                          Shadows.card,
+                          {
+                            backgroundColor: colors.surface,
+                            borderColor: active ? colors.primary : colors.outline,
+                          },
+                        ]}>
+                        <Text style={[Typography.caption, { color: active ? colors.primary : colors.textMuted }]}>{col.title}</Text>
                         <ReviewFieldEditor
                           model={model}
                           onChange={nextModel => commitFieldModel(col.id, nextModel)}
@@ -396,7 +402,7 @@ export function DailyReviewDimensionDetailScreen() {
                           textColor={colors.text}
                           placeholderColor={colors.textMuted}
                           caretColor={colors.primary}
-                          backgroundColor={isDark ? 'rgba(15,23,42,0.35)' : colors.surface}
+                          backgroundColor={colors.input}
                           containerStyle={styles.editor}
                         />
                       </View>
@@ -412,7 +418,16 @@ export function DailyReviewDimensionDetailScreen() {
               ) : null}
             </ScrollView>
 
-            <View style={[styles.toolbarWrap, { backgroundColor: colors.background, borderTopColor: colors.outline, paddingBottom: Math.max(insets.bottom, Spacing.sm) }]}>
+            <View
+              style={[
+                styles.toolbarWrap,
+                Shadows.composer,
+                {
+                  backgroundColor: colors.surface,
+                  borderTopColor: colors.outline,
+                  paddingBottom: Math.max(insets.bottom, Spacing.sm),
+                },
+              ]}>
               <View style={styles.toolbarRow}>
                 <ToolButton label={`A${fontSizeLabel}`} icon="format-size" color={colors.textMuted} onPress={() => applyToolbarAction('font')} disabled={!canEdit || !activeColumn || !activeTextModel} />
                 <ToolButton label="待办" icon="check-box-outline-blank" color={colors.textMuted} onPress={() => applyToolbarAction('todo')} disabled={!canEdit || !activeColumn || !activeTextModel} />
@@ -477,44 +492,36 @@ const styles = StyleSheet.create({
     gap: Spacing['3xl'],
   },
   fieldCard: {
-    gap: Spacing.sm,
-    borderRadius: 20,
-    borderWidth: 1,
-    padding: Spacing.md,
-  },
-  fieldLabel: {
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-    paddingHorizontal: 2,
+    gap: Spacing.md,
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['3xl'],
   },
   editor: {
     minHeight: 320,
-    borderRadius: 16,
+    borderRadius: Radius.xl,
     paddingHorizontal: Spacing['3xl'],
     paddingVertical: Spacing['3xl'],
   },
   toolbarWrap: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: Spacing.sm,
+    paddingTop: Spacing.md,
     paddingHorizontal: Layout.pagePaddingX,
   },
   toolbarRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: Spacing.sm,
     justifyContent: 'space-between',
   },
   toolBtn: {
-    minWidth: 42,
-    minHeight: 42,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'transparent',
+    minWidth: 44,
+    minHeight: 44,
+    borderRadius: Radius.md,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
     gap: 2,
   },
   toolBtnText: {

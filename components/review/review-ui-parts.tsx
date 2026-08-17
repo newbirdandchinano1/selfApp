@@ -4,6 +4,8 @@ import {
   type ReviewFieldValues,
 } from '@/lib/repositories/insights/review-journal-body';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
+import { useAppTheme } from '@/hooks/use-app-theme';
+import { Radius, Shadows } from '@/constants/design-tokens';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { type ComponentProps } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -159,12 +161,13 @@ export function WeeklyMetricsReferenceCard({
   secondary: string;
   tertiary: string;
 }) {
-  const cardBg = isDark ? 'rgba(30,41,59,0.65)' : surface;
-  const tileBg = isDark ? 'rgba(15,23,42,0.55)' : 'rgba(0,88,190,0.05)';
+  const { colors } = useAppTheme();
+  const cardBg = isDark ? colors.surface : surface;
+  const tileBg = isDark ? colors.input : colors.primaryMuted;
   const iconWrap = (bg: string) => ({
     width: 40,
     height: 40,
-    borderRadius: 12,
+    borderRadius: Radius.md,
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
     backgroundColor: bg,
@@ -179,6 +182,7 @@ export function WeeklyMetricsReferenceCard({
     <View
       style={[
         styles.metricsCard,
+        Shadows.card,
         {
           backgroundColor: cardBg,
           borderColor: outlineVariant,
@@ -202,7 +206,7 @@ export function WeeklyMetricsReferenceCard({
               {open ? '以下为应用内自动汇总，可与上方文字复盘对照，不必逐条一致。' : preview}
             </Text>
           </View>
-          <View style={[styles.metricsChevronWrap, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,88,190,0.08)' }]}>
+          <View style={[styles.metricsChevronWrap, { backgroundColor: colors.primaryMuted }]}>
             <MaterialIcons name={open ? 'expand-less' : 'expand-more'} size={26} color={primary} />
           </View>
         </Pressable>
@@ -249,8 +253,8 @@ export function WeeklyMetricsReferenceCard({
                       value={formatMetricInt(metrics.habitCheckInTotal)}
                       unit="次"
                       icon="local-fire-department"
-                      iconColor="#e11d48"
-                      iconBg={isDark ? 'rgba(225,29,72,0.22)' : 'rgba(225,29,72,0.1)'}
+                      iconColor={colors.dangerSoft}
+                      iconBg={isDark ? `${colors.danger}22` : `${colors.danger}10`}
                       tileBg={tileBg}
                       borderColor={outlineVariant}
                       textColor={text}
@@ -287,8 +291,8 @@ export function WeeklyMetricsReferenceCard({
                       value={formatMetricMoney(metrics.financeExpense)}
                       unit=""
                       icon="trending-down"
-                      iconColor="#dc2626"
-                      iconBg={isDark ? 'rgba(220,38,38,0.22)' : 'rgba(220,38,38,0.1)'}
+                      iconColor={colors.danger}
+                      iconBg={isDark ? `${colors.danger}22` : `${colors.danger}10`}
                       tileBg={tileBg}
                       borderColor={outlineVariant}
                       textColor={text}
@@ -355,9 +359,10 @@ export function WeeklyReviewQuickRefBar({
   onInsertDigest: () => void;
   onTemplateSettings: () => void;
 }) {
+  const { colors } = useAppTheme();
   const chip = (active: boolean, color: string) => ({
     borderColor: active ? color : outlineVariant,
-    backgroundColor: active ? (isDark ? `${color}22` : `${color}10`) : isDark ? 'rgba(15,23,42,0.4)' : 'rgba(255,255,255,0.92)',
+    backgroundColor: active ? (isDark ? `${color}22` : `${color}10`) : isDark ? colors.input : colors.surface,
   });
 
   return (
@@ -472,7 +477,8 @@ export function WeeklyDailyReviewsReferenceCard({
   /** false 时仅展示周期条与摘要，不渲染逐日大卡（周复盘页用） */
   showEntryCards?: boolean;
 }) {
-  const cardBg = isDark ? 'rgba(30,41,59,0.65)' : surface;
+  const { colors } = useAppTheme();
+  const cardBg = isDark ? colors.surface : surface;
   const preview =
     filledCount === 0
       ? '点开展开 · 本周期尚无已填写的日复盘'
@@ -482,6 +488,7 @@ export function WeeklyDailyReviewsReferenceCard({
     <View
       style={[
         styles.metricsCard,
+        Shadows.card,
         {
           backgroundColor: cardBg,
           borderColor: outlineVariant,
@@ -500,7 +507,7 @@ export function WeeklyDailyReviewsReferenceCard({
             style={{
               width: 40,
               height: 40,
-              borderRadius: 12,
+              borderRadius: Radius.md,
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: isDark ? `${secondary}28` : `${secondary}14`,
@@ -513,7 +520,7 @@ export function WeeklyDailyReviewsReferenceCard({
               {open ? '对照下方每日记录撰写周复盘；可一键复制或插入摘要。' : preview}
             </Text>
           </View>
-          <View style={[styles.metricsChevronWrap, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : `${secondary}10` }]}>
+          <View style={[styles.metricsChevronWrap, { backgroundColor: colors.primaryMuted }]}>
             <MaterialIcons name={open ? 'expand-less' : 'expand-more'} size={26} color={secondary} />
           </View>
         </Pressable>
@@ -575,7 +582,7 @@ export function WeeklyDailyReviewsReferenceCard({
               )}
 
             {hasDigest ? (
-              <View style={[styles.dailyDigestBox, { backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : 'rgba(0,108,73,0.06)', borderColor: outlineVariant }]}>
+              <View style={[styles.dailyDigestBox, { backgroundColor: isDark ? colors.input : colors.primaryMuted, borderColor: outlineVariant }]}>
                 <Text style={[styles.dailyDigestTitle, { color: text }]}>本周期摘要预览</Text>
                 <Text style={[styles.dailyDigestBody, { color: outline }]} numberOfLines={6}>
                   {digestPreview}
@@ -795,6 +802,7 @@ export function ReviewWeekStrip({
   onDayPress: (ymd: string) => void;
   onListPress: () => void;
 }) {
+  const { colors: themeColors } = useAppTheme();
   return (
     <View style={styles.weekStripWrap}>
       <View style={styles.weekStripHead}>
@@ -824,15 +832,11 @@ export function ReviewWeekStrip({
                 {
                   borderColor: isToday ? colors.success : isYesterday ? colors.primary : colors.outline,
                   backgroundColor: isToday
-                    ? isDark
-                      ? 'rgba(52,211,153,0.16)'
-                      : 'rgba(236,253,245,0.95)'
+                    ? themeColors.primaryMuted
                     : isYesterday
-                      ? isDark
-                        ? 'rgba(59,130,246,0.14)'
-                        : 'rgba(239,246,255,0.95)'
+                      ? themeColors.primaryMuted
                       : isDark
-                        ? 'rgba(15,23,42,0.4)'
+                        ? themeColors.input
                         : colors.surface,
                   opacity: pressed ? 0.88 : 1,
                 },
@@ -846,11 +850,7 @@ export function ReviewWeekStrip({
                   style={[
                     styles.weekDayDot,
                     {
-                      backgroundColor: filled
-                        ? colors.success
-                        : isDark
-                          ? 'rgba(148,163,184,0.35)'
-                          : '#d1d5db',
+                      backgroundColor: filled ? colors.success : themeColors.outlineStrong,
                     },
                   ]}
                 />

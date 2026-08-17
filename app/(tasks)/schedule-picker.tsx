@@ -469,7 +469,7 @@ export default function SchedulePickerScreen() {
     setTimeSelectingEnd(false);
     setSelectedDate(nextRange.start);
     setMonthOffset(getMonthDiff(todayStart, nextRange.start));
-    setAllDay(false);
+    setAllDay(true);
     setHasExactTime(false);
   };
 

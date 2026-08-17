@@ -1,3 +1,4 @@
+import { ReviewCalendarSkeleton } from '@/components/review/review-home-skeletons';
 import { DailyReviewContentCard } from '@/components/review/review-ui-parts';
 import {
   dailyEntryHasContent,
@@ -25,7 +26,6 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -246,9 +246,7 @@ export default function ReviewCalendarScreen() {
         </View>
 
         {loading ? (
-          <View style={styles.loadingWrap}>
-            <ActivityIndicator color={colors.primary} />
-          </View>
+          <ReviewCalendarSkeleton />
         ) : (
           <View style={[styles.grid, { paddingHorizontal: Spacing['3xl'], gap: GRID_GAP }]}>
             {cells.map(cell => {
@@ -267,17 +265,11 @@ export default function ReviewCalendarScreen() {
                       height: cellSize,
                       borderColor: isSelected ? colors.primary : isToday ? colors.success : colors.outline,
                       backgroundColor: isSelected
-                        ? isDark
-                          ? `${colors.primary}22`
-                          : `${colors.primary}12`
+                        ? colors.primaryMuted
                         : isFuture
-                          ? isDark
-                            ? 'rgba(15,23,42,0.35)'
-                            : 'rgba(241,245,249,0.95)'
+                          ? colors.surfaceMuted
                           : filled
-                            ? isDark
-                              ? 'rgba(52,211,153,0.12)'
-                              : 'rgba(236,253,245,0.95)'
+                            ? colors.primaryMuted
                             : colors.surface,
                       opacity: cell.inCurrentMonth ? (pressed ? 0.88 : isFuture ? 0.72 : 1) : 0.42,
                     },
@@ -311,15 +303,15 @@ export default function ReviewCalendarScreen() {
           <View style={styles.detailHead}>
             <Text style={[Typography.label, { color: colors.textMuted }]}>选中日复盘</Text>
             {detailStatusLabel === '已填写' ? (
-              <View style={[styles.statusBadge, { backgroundColor: isDark ? `${colors.success}28` : `${colors.success}16` }]}>
+              <View style={[styles.statusBadge, { backgroundColor: colors.primaryMuted }]}>
                 <Text style={{ fontSize: 10, fontWeight: '900', color: colors.success }}>已填写</Text>
               </View>
             ) : detailStatusLabel === '周复盘日' ? (
-              <View style={[styles.statusBadge, { backgroundColor: isDark ? `${colors.primary}28` : `${colors.primary}14` }]}>
+              <View style={[styles.statusBadge, { backgroundColor: colors.primaryMuted }]}>
                 <Text style={{ fontSize: 10, fontWeight: '900', color: colors.primary }}>周复盘日</Text>
               </View>
             ) : detailStatusLabel === '未来' ? (
-              <View style={[styles.statusBadge, { backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(148,163,184,0.14)' }]}>
+              <View style={[styles.statusBadge, { backgroundColor: colors.surfaceMuted }]}>
                 <Text style={{ fontSize: 10, fontWeight: '900', color: colors.textMuted }}>未来</Text>
               </View>
             ) : (
@@ -343,9 +335,7 @@ export default function ReviewCalendarScreen() {
               isSelectedFuture
                 ? colors.outline
                 : isSelectedToday
-                  ? isDark
-                    ? 'rgba(52,211,153,0.35)'
-                    : 'rgba(0,108,73,0.22)'
+                  ? colors.success
                   : colors.outline
             }
             readOnly={selectedOnPress == null}

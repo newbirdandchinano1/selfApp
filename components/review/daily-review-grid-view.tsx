@@ -4,6 +4,13 @@ import {
   DailyReviewSaveStatus,
 } from '@/components/review/daily-review-grid-parts';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
+import { ReviewGridSkeleton } from '@/components/review/review-home-skeletons';
+import {
+  ReviewEmptyState,
+  ReviewNoticeBanner,
+  ReviewPageContent,
+  ReviewPrimaryButton,
+} from '@/components/review/review-shared-ui';
 import {
   formatReviewHeaderDate,
   isDailyReviewEditableYmd,
@@ -16,7 +23,7 @@ import {
   getDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
-import { Spacing, Typography } from '@/constants/design-tokens';
+import { Layout, Spacing } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
@@ -29,14 +36,11 @@ import {
   type ReviewJournalMeta,
 } from '@/lib/repositories/insights/review-journal-body';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
-import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -62,7 +66,7 @@ export function DailyReviewGridView({
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { colors, isDark } = useAppTheme();
+  const { colors } = useAppTheme();
   const { logicalTodayYmd: todayYmd } = useDayBoundary();
   const { wrapLoad } = usePageApiSync(pageApiKey);
 
@@ -233,18 +237,6 @@ export function DailyReviewGridView({
     return `${Number(m[2])}/${Number(m[3])}`;
   }, [entryLabel, ymd]);
 
-  const gridColors = useMemo(
-    () => ({
-      text: colors.text,
-      textMuted: colors.textMuted,
-      outline: colors.outline,
-      primary: colors.primary,
-      input: isDark ? 'rgba(15,23,42,0.55)' : colors.input,
-      background: colors.background,
-    }),
-    [colors, isDark],
-  );
-
   if (!ymd) {
     return (
       <View style={styles.centered}>
@@ -253,113 +245,90 @@ export function DailyReviewGridView({
     );
   }
 
+  if (loading) {
+    return <ReviewGridSkeleton />;
+  }
+
   return (
-    <>
-      {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
-        </View>
-      ) : (
-        <ScrollView
-          refreshControl={refreshControl}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={[
-            styles.scroll,
-            { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.xl) },
-          ]}>
-          <DailyReviewMetaBar
-            meta={meta}
-            dateLabel={headerDateLabel}
-            canEdit={canEdit}
-            canGoNext
-            colors={gridColors}
-            onMetaChange={setMetaPatch}
-            onPrevDay={() => navigateDay(-1)}
-            onNextDay={() => navigateDay(1)}
-            reminderEnabled={dailyReminderEnabled}
-            reminderTimeLabel={dailyReminderTimeLabel}
-            onOpenReminderSettings={() => router.push('/review-settings')}
+    <ScrollView
+      refreshControl={refreshControl}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={[
+        styles.scroll,
+        { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.xl) },
+      ]}>
+      <ReviewPageContent style={styles.pageGap}>
+        <DailyReviewMetaBar
+          meta={meta}
+          dateLabel={headerDateLabel}
+          canEdit={canEdit}
+          canGoNext
+          onMetaChange={setMetaPatch}
+          onPrevDay={() => navigateDay(-1)}
+          onNextDay={() => navigateDay(1)}
+          reminderEnabled={dailyReminderEnabled}
+          reminderTimeLabel={dailyReminderTimeLabel}
+          onOpenReminderSettings={() => router.push('/review-settings')}
+        />
+
+        {skipped ? (
+          <ReviewNoticeBanner
+            icon="event-available"
+            message="本日为已设定的每周复盘日，请前往「每周复盘」填写，无需单独做日复盘。"
           />
+        ) : !canEdit ? (
+          <ReviewNoticeBanner
+            icon="lock-outline"
+            tone="muted"
+            message="未来日期仅可查看，不可编辑与保存。"
+          />
+        ) : null}
 
-          {skipped ? (
-              <View style={[styles.notice, { backgroundColor: colors.surfaceMuted, borderColor: colors.outline }]}>
-                <MaterialIcons name="event-available" size={22} color={colors.primary} />
-                <Text style={[Typography.body, { color: colors.text, flex: 1, lineHeight: 21 }]}>
-                  本日为已设定的每周复盘日，请前往「每周复盘」填写，无需单独做日复盘。
-                </Text>
-              </View>
-            ) : !canEdit ? (
-              <View style={[styles.notice, { backgroundColor: colors.surfaceMuted, borderColor: colors.outline }]}>
-                <MaterialIcons name="lock-outline" size={22} color={colors.textMuted} />
-                <Text style={[Typography.body, { color: colors.textMuted, flex: 1, lineHeight: 21 }]}>
-                  未来日期仅可查看，不可编辑与保存。
-                </Text>
-              </View>
-            ) : null}
-
-            {dailyTemplate.length === 0 ? (
-              <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21, paddingHorizontal: Spacing.md }]}>
-                尚未配置日复盘维度，请点右上角「模板」按钮编辑标题与栏目。
-              </Text>
-            ) : (
-              <DailyReviewGrid
-                dimensions={dailyTemplate}
-                fields={fields}
-                colors={gridColors}
-                onPressDimension={openDimension}
-              />
-            )}
-
-            <DailyReviewSaveStatus saving={saving} saved={savedFlash} colors={gridColors} />
-
-            {!skipped ? (
-              <ReviewAiAnalysisPanel
-                text={meta.ai_analysis}
-                busy={aiBusy}
-                canRun={canEdit}
-                onAnalyze={() => void runAi()}
-                disabledReason={!canEdit ? '当前日期不可生成分析' : undefined}
-              />
-            ) : null}
-
-            {skipped ? (
-              <Pressable
-                onPress={() => (onSwitchToWeekly ? onSwitchToWeekly() : router.push('/weekly-review-form'))}
-                style={({ pressed }) => [
-                  styles.actionBtn,
-                  { backgroundColor: colors.primary, opacity: pressed ? 0.88 : 1 },
-                ]}>
-                <Text style={styles.actionBtnText}>去填写每周复盘</Text>
-              </Pressable>
-            ) : null}
-          </ScrollView>
+        {dailyTemplate.length === 0 ? (
+          <ReviewEmptyState
+            title="尚未配置日复盘维度"
+            subtitle="请点右上角「模板」按钮编辑标题与栏目。"
+          />
+        ) : (
+          <DailyReviewGrid
+            dimensions={dailyTemplate}
+            fields={fields}
+            onPressDimension={openDimension}
+          />
         )}
-    </>
+
+        <DailyReviewSaveStatus saving={saving} saved={savedFlash} />
+
+        {!skipped ? (
+          <ReviewAiAnalysisPanel
+            text={meta.ai_analysis}
+            busy={aiBusy}
+            canRun={canEdit}
+            onAnalyze={() => void runAi()}
+            disabledReason={!canEdit ? '当前日期不可生成分析' : undefined}
+          />
+        ) : null}
+
+        {skipped ? (
+          <ReviewPrimaryButton
+            label="去填写每周复盘"
+            onPress={() => (onSwitchToWeekly ? onSwitchToWeekly() : router.push('/weekly-review-form'))}
+          />
+        ) : null}
+      </ReviewPageContent>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: {
-    gap: Spacing.xl,
     width: '100%',
+    paddingTop: Spacing.sm,
   },
-  notice: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.lg,
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: Spacing['3xl'],
-    marginHorizontal: Spacing.md,
+  pageGap: {
+    gap: Spacing.xl,
+    paddingHorizontal: 0,
   },
-  actionBtn: {
-    borderRadius: 12,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginHorizontal: Spacing.md,
-  },
-  actionBtnText: { color: '#fff', fontSize: 15, fontWeight: '900' },
 });

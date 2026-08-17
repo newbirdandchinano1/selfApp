@@ -75,6 +75,8 @@ const WEEKEND_DAYS = ['周六', '周日'];
 const MONTH_FILTERS = ['上旬', '中旬', '下旬', '单号', '双号', '全选'];
 const PRESET_MONTHLY_N_DAYS = [5, 10, 15, 20, 25];
 const DEFAULT_QUANTIFY_UNIT = '次';
+/** 小习惯简介（note）最大字数 */
+const HABIT_NOTE_MAX_LEN = 50;
 
 /** Habit kind accents — semantic (not global primary) */
 const HABIT_KIND_BUILD = '#14b8a6';
@@ -333,7 +335,7 @@ export default function AddHabitScreen() {
           return opts;
         });
         setSelectedContext(rawCtx);
-        setHabitNote(row.note?.trim() ? row.note : '');
+        setHabitNote(row.note?.trim() ? row.note.trim().slice(0, HABIT_NOTE_MAX_LEN) : '');
         setHabitKind(parseHabitKind(row.extra_data));
         setRewardPointsText(String(parseHabitRewardPoints(row.extra_data)));
         if (row.extra_data) {
@@ -672,7 +674,7 @@ export default function AddHabitScreen() {
       extraData = JSON.stringify(extraObj);
     }
 
-    const note = habitNote.trim() || null;
+    const note = habitNote.trim().slice(0, HABIT_NOTE_MAX_LEN) || null;
 
     let savedHabitId: string;
     try {
@@ -881,12 +883,14 @@ export default function AddHabitScreen() {
           </View>
 
           <AppInput
-            label="备注"
+            label="简介"
             value={habitNote}
-            onChangeText={setHabitNote}
-            placeholder="补充说明、提醒事项…（可选）"
+            onChangeText={(t) => setHabitNote(t.slice(0, HABIT_NOTE_MAX_LEN))}
+            placeholder="一句话说明这个习惯…（可选）"
             multiline
+            maxLength={HABIT_NOTE_MAX_LEN}
             textAlignVertical="top"
+            hint={`${habitNote.length}/${HABIT_NOTE_MAX_LEN}`}
             inputWrapStyle={styles.noteInputWrap}
             inputStyle={[Typography.body, styles.noteInputText]}
           />

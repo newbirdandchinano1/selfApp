@@ -56,11 +56,15 @@ import {
 
 import {
 
+  isStandaloneTodoRepeatWaiting,
+
   standaloneTodoPassesDayBoundaryFilter,
 
   standaloneTodoPassesStandaloneListFilter,
 
 } from '@/lib/standalone-todo-visibility';
+
+import { taskHasRepeatingSchedule } from '@/lib/task-repeat-rollover';
 
 
 
@@ -286,8 +290,11 @@ export function resolveMatrixProjectIds(
 
 
 
-/** 未完成在前 → 搁置置底 → 已完成/取消置底；组内按优先级降序，其次按截止/创建时间升序 */
-export function sortStandaloneTodosLocally(rows: TaskRow[]): TaskRow[] {
+/**
+ * 未完成在前 → 未到执行日的重复待办置底 → 搁置置底 → 已完成/取消置底；
+ * 组内按优先级降序，其次按截止/创建时间升序。
+ */
+export function sortStandaloneTodosLocally(rows: TaskRow[], logicalTodayYmd?: string): TaskRow[] {
 
   const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
 
@@ -309,6 +316,9 @@ export function sortStandaloneTodosLocally(rows: TaskRow[]): TaskRow[] {
 
   };
 
+  const isWaiting = (t: TaskRow) =>
+    !!logicalTodayYmd && isStandaloneTodoRepeatWaiting(t, logicalTodayYmd);
+
   return rows.slice().sort((a, b) => {
 
     const da = isDoneRow(a);
@@ -322,6 +332,12 @@ export function sortStandaloneTodosLocally(rows: TaskRow[]): TaskRow[] {
     const sb = b.status === 'shelved';
 
     if (sa !== sb) return sa ? 1 : -1;
+
+    const wa = isWaiting(a);
+
+    const wb = isWaiting(b);
+
+    if (wa !== wb) return wa ? 1 : -1;
 
     if (a.priority !== b.priority) return b.priority - a.priority;
 
@@ -354,6 +370,8 @@ function filterStandaloneTodosOffline(
   return sortStandaloneTodosLocally(
 
     rows.filter((t) => standaloneTodoPassesStandaloneListFilter(t, boundary, logicalToday)),
+
+    logicalToday,
 
   );
 
@@ -579,7 +597,7 @@ function buildTasksViewData(
 
   const orderedTasks =
 
-    taskView === 'standaloneTodos' ? sortStandaloneTodosLocally(tasks) : tasks;
+    taskView === 'standaloneTodos' ? sortStandaloneTodosLocally(tasks, ctx.logicalToday) : tasks;
 
   return {
 
@@ -657,7 +675,8 @@ async function resolveStandaloneTodosList(
       const syncStatus = String(t.sync_status ?? 'synced');
 
       // 服务端筛选列表已权威：缺席的「已同步未完成」待办视为他端已完成/移出，禁止再拼回未完成。
-      // 仅保留尚未上传的本地新建，以及本地已完成且仍落在今日日界内的行。
+      // 仅保留尚未上传的本地新建、本地已完成且仍落在今日日界内的行，
+      // 以及可能仍被旧版服务端按「非重复日」隐藏的开放重复待办。
       if (t.status === 'done' || t.status === 'cancelled') {
 
         if (standaloneTodoPassesDayBoundaryFilter(t, boundary, logicalToday)) extras.push(t);
@@ -670,11 +689,18 @@ async function resolveStandaloneTodosList(
 
         }
 
+      } else if (
+        taskHasRepeatingSchedule(t.extra_data) &&
+        standaloneTodoPassesStandaloneListFilter(t, boundary, logicalToday)
+      ) {
+
+        extras.push(t);
+
       }
 
     }
 
-    return sortStandaloneTodosLocally([...withPending, ...extras]);
+    return sortStandaloneTodosLocally([...withPending, ...extras], logicalToday);
 
   }
 

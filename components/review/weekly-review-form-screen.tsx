@@ -16,10 +16,9 @@ import {
   WEEKLY_REVIEW_WEEKDAY_LABELS,
 } from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
-import { Colors } from '@/constants/theme';
 import { Layout, Radius, Spacing } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { generateWeeklyReviewCoaching, weeklyReviewHasEnoughText } from '@/lib/weekly-review-coaching';
 import {
@@ -77,21 +76,20 @@ export function WeeklyReviewFormScreen({
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const apiKey = pageApiKey ?? PAGE_API_KEY;
-  const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const { colors, isDark } = useAppTheme();
   const { logicalTodayYmd: todayYmd } = useDayBoundary();
   const { wrapLoad } = usePageApiSync(apiKey);
 
-  const bg = isDark ? theme.background : '#faf8ff';
-  const surface = isDark ? theme.surface : '#ffffff';
-  const text = isDark ? theme.text : '#131b2e';
-  const outline = isDark ? 'rgba(148,163,184,0.85)' : '#727785';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.4)';
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const secondary = isDark ? '#34d399' : '#006c49';
-  const tertiary = isDark ? '#fbbf24' : '#825100';
-  const inputSurface = isDark ? 'rgba(15,23,42,0.55)' : '#f4f6ff';
+  const bg = colors.background;
+  const surface = colors.surface;
+  const text = colors.text;
+  const outline = colors.textMuted;
+  const outlineVariant = colors.outline;
+  const primary = colors.primary;
+  const secondary = colors.secondary;
+  const tertiary = colors.tertiary;
+  const inputSurface = colors.input;
+  const onPrimary = colors.onPrimary;
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -425,7 +423,7 @@ export function WeeklyReviewFormScreen({
             { paddingBottom: 28 + Math.max(insets.bottom, 12) },
           ]}>
             {!canEdit ? (
-              <View style={[styles.gateCard, { backgroundColor: isDark ? 'rgba(30,41,59,0.65)' : '#fff7ed', borderColor: outlineVariant }]}>
+              <View style={[styles.gateCard, { backgroundColor: colors.surfaceMuted, borderColor: outlineVariant }]}>
                 <MaterialIcons name="lock-clock" size={22} color={tertiary} />
                 <Text style={[styles.gateTitle, { color: text }]}>
                   {configuredDow === null ? '请先设置每周复盘日' : '今天不是复盘日'}
@@ -441,7 +439,7 @@ export function WeeklyReviewFormScreen({
                   onPress={() => router.push('/review-settings')}
                   style={({ pressed }) => [
                     styles.gateBtn,
-                    { borderColor: outlineVariant, opacity: pressed ? 0.88 : 1 },
+                    { borderColor: outlineVariant, backgroundColor: colors.primaryMuted, opacity: pressed ? 0.88 : 1 },
                   ]}>
                   <Text style={[styles.gateBtnText, { color: primary }]}>去设置复盘日</Text>
                 </Pressable>
@@ -529,7 +527,7 @@ export function WeeklyReviewFormScreen({
                       styles.btnPrimary,
                       { backgroundColor: primary, opacity: pressed || aiBusy || !canEdit ? 0.55 : 1 },
                     ]}>
-                    {aiBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnPrimaryText}>生成 AI 建议</Text>}
+                    {aiBusy ? <ActivityIndicator color={onPrimary} /> : <Text style={[styles.btnPrimaryText, { color: onPrimary }]}>生成 AI 建议</Text>}
                   </Pressable>
                 </View>
 
@@ -575,7 +573,7 @@ export function WeeklyReviewFormScreen({
                         styles.btnWide,
                         { backgroundColor: secondary, opacity: pressed || !canEdit ? 0.55 : 1 },
                       ]}>
-                      <Text style={styles.btnWideText}>保存调整意向</Text>
+                      <Text style={[styles.btnWideText, { color: onPrimary }]}>保存调整意向</Text>
                     </Pressable>
 
                     <View style={styles.linkRow}>
@@ -702,16 +700,16 @@ const styles = StyleSheet.create({
   btnSecondaryText: { fontSize: 15, fontWeight: '800' },
   btnPrimary: {
     flex: 1,
-    borderRadius: 16,
+    borderRadius: Radius.xl,
     minHeight: 48,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  btnPrimaryText: { color: '#fff', fontSize: 15, fontWeight: '900' },
+  btnPrimaryText: { fontSize: 15, fontWeight: '900' },
   aiCard: {
     marginTop: 8,
-    borderRadius: 20,
-    borderWidth: 1,
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
     padding: 16,
     overflow: 'hidden',
     gap: 10,
@@ -722,11 +720,11 @@ const styles = StyleSheet.create({
   adjustTitle: { fontSize: 15, fontWeight: '900', marginTop: 8, marginLeft: 8 },
   btnWide: {
     marginTop: 8,
-    borderRadius: 14,
+    borderRadius: Radius.lg,
     paddingVertical: 14,
     alignItems: 'center',
   },
-  btnWideText: { color: '#fff', fontSize: 15, fontWeight: '900' },
+  btnWideText: { fontSize: 15, fontWeight: '900' },
   linkRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',

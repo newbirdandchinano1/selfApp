@@ -1,4 +1,6 @@
+import { ReviewSectionCard } from '@/components/review/review-shared-ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import type { ReviewJournalMeta } from '@/lib/repositories/insights/review-journal-body';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { reviewContentToPlainDisplay } from '@/lib/review-journal-format';
@@ -10,8 +12,6 @@ import {
   Text,
   useWindowDimensions,
   View,
-  type StyleProp,
-  type ViewStyle,
 } from 'react-native';
 
 const MIN_GRID_CELL_WIDTH = 150;
@@ -44,7 +44,6 @@ export function DailyReviewMetaBar({
   dateLabel,
   canEdit,
   canGoNext,
-  colors,
   onMetaChange,
   onPrevDay,
   onNextDay,
@@ -56,13 +55,6 @@ export function DailyReviewMetaBar({
   dateLabel: string;
   canEdit: boolean;
   canGoNext: boolean;
-  colors: {
-    text: string;
-    textMuted: string;
-    outline: string;
-    primary: string;
-    background: string;
-  };
   onMetaChange: (patch: Partial<ReviewJournalMeta>) => void;
   onPrevDay: () => void;
   onNextDay: () => void;
@@ -70,6 +62,7 @@ export function DailyReviewMetaBar({
   reminderTimeLabel?: string | null;
   onOpenReminderSettings?: () => void;
 }) {
+  const { colors } = useAppTheme();
   const [picker, setPicker] = useState<PickerKind>(null);
 
   const togglePicker = (kind: PickerKind) => {
@@ -78,7 +71,7 @@ export function DailyReviewMetaBar({
   };
 
   return (
-    <View style={styles.metaBar}>
+    <ReviewSectionCard style={styles.metaCard}>
       <View style={styles.toolbarRow}>
         <View style={styles.toolbarLeft}>
           <Pressable
@@ -102,7 +95,7 @@ export function DailyReviewMetaBar({
             style={({ pressed }) => [styles.iconBtn, { opacity: pressed ? 0.7 : 1 }]}>
             <MaterialIcons name="chevron-left" size={28} color={colors.textMuted} />
           </Pressable>
-          <Text style={[styles.dateLabel, { color: colors.textMuted }]} numberOfLines={1}>
+          <Text style={[Typography.caption, { color: colors.textMuted, maxWidth: 88, textAlign: 'center' }]} numberOfLines={1}>
             {dateLabel}
           </Text>
           <Pressable
@@ -124,7 +117,12 @@ export function DailyReviewMetaBar({
           hitSlop={Layout.hitSlop}
           style={({ pressed }) => [
             styles.reviewDayBtn,
-            { borderColor: colors.outline, opacity: pressed ? 0.82 : 1, alignSelf: 'flex-start' },
+            {
+              borderColor: colors.outline,
+              backgroundColor: colors.primaryMuted,
+              opacity: pressed ? 0.82 : 1,
+              alignSelf: 'flex-start',
+            },
           ]}
           accessibilityRole="button"
           accessibilityLabel={reminderEnabled ? '每日复盘提醒设置' : '设置每日复盘提醒'}>
@@ -133,7 +131,7 @@ export function DailyReviewMetaBar({
             size={18}
             color={colors.primary}
           />
-          <Text style={[styles.reviewDayBtnText, { color: colors.primary }]} numberOfLines={1}>
+          <Text style={[Typography.caption, { color: colors.primary }]} numberOfLines={1}>
             {reminderEnabled && reminderTimeLabel ? `每日 ${reminderTimeLabel} 提醒` : '设置每日提醒'}
           </Text>
         </Pressable>
@@ -154,7 +152,7 @@ export function DailyReviewMetaBar({
                   styles.pickerChip,
                   {
                     borderColor: active ? colors.primary : colors.outline,
-                    backgroundColor: active ? `${colors.primary}14` : 'transparent',
+                    backgroundColor: active ? colors.primaryMuted : colors.surfaceSubtle,
                     opacity: pressed ? 0.8 : 1,
                   },
                 ]}>
@@ -180,7 +178,7 @@ export function DailyReviewMetaBar({
                   styles.pickerChip,
                   {
                     borderColor: active ? colors.primary : colors.outline,
-                    backgroundColor: active ? `${colors.primary}14` : 'transparent',
+                    backgroundColor: active ? colors.primaryMuted : colors.surfaceSubtle,
                     opacity: pressed ? 0.8 : 1,
                   },
                 ]}>
@@ -190,74 +188,61 @@ export function DailyReviewMetaBar({
           })}
         </View>
       ) : null}
-    </View>
+    </ReviewSectionCard>
   );
 }
 
 export function WeeklyReviewMetaBar({
   weekRangeLabel,
   configuredDowLabel,
-  colors,
   onOpenReviewDaySettings,
 }: {
   weekRangeLabel: string;
   configuredDowLabel?: string;
-  colors: {
-    text: string;
-    textMuted: string;
-    outline: string;
-    primary: string;
-  };
   onOpenReviewDaySettings: () => void;
 }) {
+  const { colors } = useAppTheme();
+
   return (
-    <View style={styles.metaBar}>
+    <ReviewSectionCard style={styles.metaCard}>
       <View style={styles.toolbarRow}>
         <Pressable
           onPress={onOpenReviewDaySettings}
           hitSlop={Layout.hitSlop}
           style={({ pressed }) => [
             styles.reviewDayBtn,
-            { borderColor: colors.outline, opacity: pressed ? 0.82 : 1 },
+            {
+              borderColor: colors.outline,
+              backgroundColor: colors.primaryMuted,
+              opacity: pressed ? 0.82 : 1,
+            },
           ]}
           accessibilityRole="button"
           accessibilityLabel="设置周复盘日">
           <MaterialIcons name="event" size={18} color={colors.primary} />
-          <Text style={[styles.reviewDayBtnText, { color: colors.primary }]} numberOfLines={1}>
+          <Text style={[Typography.caption, { color: colors.primary }]} numberOfLines={1}>
             {configuredDowLabel ? `每周${configuredDowLabel}` : '设置周复盘日'}
           </Text>
         </Pressable>
 
         <View style={styles.toolbarRight}>
-          <Text style={[styles.weekRangeLabel, { color: colors.textMuted }]} numberOfLines={1}>
+          <Text style={[Typography.caption, { color: colors.textMuted, textAlign: 'right', flexShrink: 1 }]} numberOfLines={1}>
             {weekRangeLabel || '本周期'}
           </Text>
         </View>
       </View>
-    </View>
+    </ReviewSectionCard>
   );
 }
 
 function DailyReviewGridCell({
   dim,
   fields,
-  colors,
-  style,
 }: {
-  dim: ReviewDimensionTemplate | null;
+  dim: ReviewDimensionTemplate;
   fields: Record<string, string>;
-  colors: {
-    text: string;
-    textMuted: string;
-    outline: string;
-    primary: string;
-  };
-  style?: StyleProp<ViewStyle>;
 }) {
-  if (!dim) {
-    return null;
-  }
-
+  const { colors } = useAppTheme();
   const multiField = dim.columns.length > 1;
   const singleField = dim.columns.length === 1;
   const cellMinHeight = Math.max(120, dim.columns.length * 44 + 56);
@@ -270,13 +255,18 @@ function DailyReviewGridCell({
   const hasContent = dim.columns.some(col => reviewContentToPlainDisplay(fields[col.id] ?? '').length > 0);
 
   return (
-    <View pointerEvents="none" style={[styles.cell, { minHeight: cellMinHeight, borderColor: colors.outline }, style]}>
-      <View
-        style={[
-          styles.cellTitleWrap,
-          { borderBottomColor: colors.outline, backgroundColor: `${colors.primary}10` },
-        ]}>
-        <Text style={[styles.cellTitle, { color: colors.text }]} numberOfLines={2}>
+    <View
+      pointerEvents="none"
+      style={[
+        styles.cell,
+        {
+          minHeight: cellMinHeight,
+          backgroundColor: colors.surface,
+          borderColor: colors.outline,
+        },
+      ]}>
+      <View style={[styles.cellTitleWrap, { backgroundColor: colors.primaryMuted }]}>
+        <Text style={[Typography.bodyStrong, { color: colors.text, textAlign: 'center' }]} numberOfLines={2}>
           {dim.title}
         </Text>
       </View>
@@ -287,14 +277,13 @@ function DailyReviewGridCell({
               const preview = reviewContentToPlainDisplay(fields[col.id] ?? '');
               const empty = !preview;
               return (
-                <View
-                  key={col.id}
-                  style={[styles.stackedField, { borderLeftColor: colors.primary }]}>
-                  <Text style={[styles.inlineLabel, { color: colors.primary }]}>{col.title}</Text>
+                <View key={col.id} style={[styles.stackedField, { borderLeftColor: colors.primary }]}>
+                  <Text style={[Typography.caption, { color: colors.primary }]}>{col.title}</Text>
                   <Text
                     style={[
-                      styles.previewText,
-                      { color: empty ? colors.textMuted : colors.text },
+                      Typography.body,
+                      { color: empty ? colors.textMuted : colors.text, lineHeight: 21 },
+                      empty && styles.emptyPreview,
                     ]}>
                     {columnPreview(col.id, col.placeholder)}
                   </Text>
@@ -305,11 +294,12 @@ function DailyReviewGridCell({
 
         {singleField ? (
           <View style={[styles.stackedField, { borderLeftColor: colors.primary }]}>
-            <Text style={[styles.inlineLabel, { color: colors.primary }]}>{dim.columns[0].title}</Text>
+            <Text style={[Typography.caption, { color: colors.primary }]}>{dim.columns[0].title}</Text>
             <Text
               style={[
-                styles.previewText,
-                { color: hasContent ? colors.text : colors.textMuted },
+                Typography.body,
+                { color: hasContent ? colors.text : colors.textMuted, lineHeight: 21 },
+                !hasContent && styles.emptyPreview,
               ]}>
               {columnPreview(dim.columns[0].id, dim.columns[0].placeholder)}
             </Text>
@@ -323,64 +313,36 @@ function DailyReviewGridCell({
 export function DailyReviewGrid({
   dimensions,
   fields,
-  colors,
   onPressDimension,
 }: {
   dimensions: ReviewDimensionTemplate[];
   fields: Record<string, string>;
-  colors: {
-    text: string;
-    textMuted: string;
-    outline: string;
-    primary: string;
-    input: string;
-    background: string;
-  };
   onPressDimension: (dimensionId: string) => void;
 }) {
   const { width } = useWindowDimensions();
-  const gridWidth = Math.max(0, width - Spacing.md * 2);
+  const gridWidth = Math.max(0, width - Layout.pagePaddingX * 2);
   const columns = getAdaptiveGridColumns(gridWidth);
-  const rows = Array.from({ length: Math.ceil(dimensions.length / columns) }, (_, rowIndex) =>
-    dimensions.slice(rowIndex * columns, rowIndex * columns + columns),
-  );
+  const gap = Spacing.md;
+  const cellWidth = columns <= 1 ? gridWidth : (gridWidth - gap * (columns - 1)) / columns;
 
   return (
-    <View style={[styles.grid, { width: gridWidth, borderColor: colors.outline, alignSelf: 'center' }]}>
-      {rows.map((row, rowIndex) => {
-        const isLastRow = rowIndex === rows.length - 1;
-
-        return (
-          <View
-            key={`row-${rowIndex}`}
-            style={[
-              styles.gridRow,
-              !isLastRow && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.outline },
-            ]}>
-            {row.map((dim, colIndex) => {
-              const isLastCol = colIndex === columns - 1 || colIndex === row.length - 1;
-
-              return (
-                <Pressable
-                  key={dim.id}
-                  onPress={() => onPressDimension(dim.id)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${dim.title}，点击查看或编辑`}
-                  style={({ pressed }) => [
-                    styles.gridCellSlot,
-                    {
-                      opacity: pressed ? 0.92 : 1,
-                      borderRightWidth: !isLastCol ? StyleSheet.hairlineWidth : 0,
-                      borderRightColor: colors.outline,
-                    },
-                  ]}>
-                  <DailyReviewGridCell dim={dim} fields={fields} colors={colors} />
-                </Pressable>
-              );
-            })}
-          </View>
-        );
-      })}
+    <View style={[styles.grid, { width: gridWidth, alignSelf: 'center' }]}>
+      {dimensions.map(dim => (
+        <Pressable
+          key={dim.id}
+          onPress={() => onPressDimension(dim.id)}
+          accessibilityRole="button"
+          accessibilityLabel={`${dim.title}，点击查看或编辑`}
+          style={({ pressed }) => [
+            styles.gridCellSlot,
+            {
+              width: cellWidth,
+              opacity: pressed ? 0.92 : 1,
+            },
+          ]}>
+          <DailyReviewGridCell dim={dim} fields={fields} />
+        </Pressable>
+      ))}
     </View>
   );
 }
@@ -388,12 +350,11 @@ export function DailyReviewGrid({
 export function DailyReviewSaveStatus({
   saving,
   saved,
-  colors,
 }: {
   saving: boolean;
   saved: boolean;
-  colors: { textMuted: string; primary: string };
 }) {
+  const { colors } = useAppTheme();
   if (!saving && !saved) return null;
   return (
     <Text style={[Typography.caption, { color: saving ? colors.textMuted : colors.primary, textAlign: 'center' }]}>
@@ -403,10 +364,9 @@ export function DailyReviewSaveStatus({
 }
 
 const styles = StyleSheet.create({
-  metaBar: {
-    paddingHorizontal: Spacing.md,
-    paddingBottom: Spacing.md,
+  metaCard: {
     gap: Spacing.md,
+    paddingVertical: Spacing['3xl'],
   },
   toolbarRow: {
     flexDirection: 'row',
@@ -428,44 +388,27 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   iconBtn: {
-    width: 36,
-    height: 36,
+    width: Layout.iconButtonSize,
+    height: Layout.iconButtonSize,
     alignItems: 'center',
     justifyContent: 'center',
   },
   moodBtn: {
-    width: 36,
-    height: 36,
+    width: Layout.iconButtonSize,
+    height: Layout.iconButtonSize,
     alignItems: 'center',
     justifyContent: 'center',
   },
   moodEmoji: { fontSize: 22 },
-  dateLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    maxWidth: 88,
-    textAlign: 'center',
-  },
   reviewDayBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.xs,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderRadius: Radius.md,
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
-    maxWidth: '58%',
-  },
-  reviewDayBtnText: {
-    fontSize: 12,
-    fontWeight: '800',
-    flexShrink: 1,
-  },
-  weekRangeLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'right',
-    flexShrink: 1,
+    maxWidth: '70%',
   },
   pickerRow: {
     flexDirection: 'row',
@@ -477,52 +420,37 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: Radius.md,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
   pickerEmoji: { fontSize: 20 },
   grid: {
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  gridRow: {
     flexDirection: 'row',
-    alignItems: 'stretch',
-    width: '100%',
+    flexWrap: 'wrap',
+    gap: Spacing.md,
   },
   gridCellSlot: {
-    flex: 1,
-    alignSelf: 'stretch',
     minWidth: 0,
   },
   cell: {
     flex: 1,
     minWidth: 0,
-    minHeight: 148,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    gap: Spacing.md,
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
   },
   cellTitleWrap: {
     alignSelf: 'stretch',
-    marginHorizontal: -Spacing.lg,
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.sm,
-    paddingBottom: Spacing.sm,
-    marginBottom: Spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  cellTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    lineHeight: 20,
-    letterSpacing: 0.15,
-    textAlign: 'center',
+    paddingVertical: Spacing.md,
   },
   cellBody: {
     flex: 1,
     gap: Spacing.md,
     alignSelf: 'stretch',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.lg,
   },
   stackedField: {
     gap: Spacing.sm,
@@ -530,16 +458,7 @@ const styles = StyleSheet.create({
     paddingLeft: Spacing.md,
     borderLeftWidth: 2,
   },
-  inlineLabel: {
-    fontSize: 12,
-    fontWeight: '800',
-    lineHeight: 16,
-    letterSpacing: 0.25,
-  },
-  previewText: {
-    alignSelf: 'stretch',
-    fontSize: 13,
+  emptyPreview: {
     fontWeight: '500',
-    lineHeight: 21,
   },
 });

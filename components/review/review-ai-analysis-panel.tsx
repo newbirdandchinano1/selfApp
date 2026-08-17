@@ -1,14 +1,10 @@
-import { Spacing, Typography } from '@/constants/design-tokens';
+import { ReviewSectionCard } from '@/components/review/review-shared-ui';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 export function ReviewAiAnalysisPanel({
   text,
@@ -23,18 +19,11 @@ export function ReviewAiAnalysisPanel({
   onAnalyze: () => void;
   disabledReason?: string;
 }) {
-  const { colors, isDark } = useAppTheme();
+  const { colors } = useAppTheme();
   const body = (text ?? '').trim();
 
   return (
-    <View
-      style={[
-        styles.wrap,
-        {
-          backgroundColor: isDark ? 'rgba(15,23,42,0.45)' : colors.surfaceMuted,
-          borderColor: colors.outline,
-        },
-      ]}>
+    <ReviewSectionCard variant="muted" style={styles.wrap}>
       <View style={styles.head}>
         <View style={styles.headLeft}>
           <MaterialIcons name="auto-awesome" size={18} color={colors.primary} />
@@ -53,9 +42,11 @@ export function ReviewAiAnalysisPanel({
           accessibilityRole="button"
           accessibilityLabel="AI 分析">
           {busy ? (
-            <ActivityIndicator color="#fff" size="small" />
+            <ActivityIndicator color={colors.onPrimary} size="small" />
           ) : (
-            <Text style={styles.btnText}>{body ? '重新分析' : 'AI 分析'}</Text>
+            <Text style={[styles.btnText, { color: colors.onPrimary }]}>
+              {body ? '重新分析' : 'AI 分析'}
+            </Text>
           )}
         </Pressable>
       </View>
@@ -64,23 +55,30 @@ export function ReviewAiAnalysisPanel({
           {disabledReason}
         </Text>
       ) : null}
-      {body ? (
+      {busy && !body ? (
+        <View style={styles.busySkeleton}>
+          <Skeleton width="100%" height={12} borderRadius={5} />
+          <Skeleton width="92%" height={12} borderRadius={5} />
+          <Skeleton width="78%" height={12} borderRadius={5} />
+        </View>
+      ) : body ? (
         <Text style={[Typography.body, { color: colors.text, lineHeight: 22 }]}>{body}</Text>
       ) : (
-        <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21 }]}>
-          填写一定内容后，可生成「目前的问题 / 潜在问题 / 建议」诊断分析。
-        </Text>
+        <View style={styles.emptyRow}>
+          <View style={[styles.emptyIcon, { backgroundColor: colors.primaryMuted }]}>
+            <MaterialIcons name="auto-awesome" size={18} color={colors.primary} />
+          </View>
+          <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21, flex: 1 }]}>
+            填写一定内容后，可生成「目前的问题 / 潜在问题 / 建议」诊断分析。
+          </Text>
+        </View>
       )}
-    </View>
+    </ReviewSectionCard>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: {
-    marginHorizontal: Spacing.md,
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing['3xl'],
     gap: Spacing.lg,
   },
   head: {
@@ -96,15 +94,29 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   btn: {
-    borderRadius: 10,
+    borderRadius: Radius.sm,
     minHeight: 34,
     paddingHorizontal: Spacing.xl,
     alignItems: 'center',
     justifyContent: 'center',
   },
   btnText: {
-    color: '#fff',
     fontSize: 13,
     fontWeight: '800',
+  },
+  busySkeleton: {
+    gap: Spacing.sm,
+  },
+  emptyRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.md,
+  },
+  emptyIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: Radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

@@ -2,6 +2,13 @@ import {
   DailyReviewGrid,
 } from '@/components/review/daily-review-grid-parts';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
+import { ReviewGridSkeleton } from '@/components/review/review-home-skeletons';
+import {
+  ReviewEmptyState,
+  ReviewNoticeBanner,
+  ReviewPageContent,
+  ReviewSectionCard,
+} from '@/components/review/review-shared-ui';
 import {
   formatReviewMonthLabel,
   isMonthlyReviewEditable,
@@ -29,9 +36,8 @@ import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Pressable,
   ScrollView,
@@ -57,7 +63,7 @@ export function MonthlyReviewGridView({
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { colors, isDark } = useAppTheme();
+  const { colors } = useAppTheme();
   const { logicalTodayYmd: todayYmd } = useDayBoundary();
   const { wrapLoad } = usePageApiSync(pageApiKey);
 
@@ -157,7 +163,6 @@ export function MonthlyReviewGridView({
 
   const openDimension = useCallback(
     (dimensionId: string) => {
-      // 新路由尚未写入 expo-router 生成类型时，先按路径跳转
       router.push(`/monthly-review/${monthStartYmd}/${dimensionId}` as never);
     },
     [monthStartYmd, router],
@@ -194,110 +199,92 @@ export function MonthlyReviewGridView({
     }
   }, [canEdit, fields, meta, monthLabel, monthStartYmd, monthlyTemplate, persist]);
 
-  const gridColors = useMemo(
-    () => ({
-      text: colors.text,
-      textMuted: colors.textMuted,
-      outline: colors.outline,
-      primary: colors.primary,
-      input: isDark ? 'rgba(15,23,42,0.55)' : colors.input,
-      background: colors.background,
-    }),
-    [colors, isDark],
-  );
+  if (loading) {
+    return <ReviewGridSkeleton />;
+  }
 
   return (
-    <>
-      {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
-        </View>
-      ) : (
-        <ScrollView
-          refreshControl={refreshControl}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={[
-            styles.scroll,
-            { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.xl) },
-          ]}>
-          <View style={styles.metaBar}>
-            <View style={styles.monthNav}>
-              <Pressable
-                onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, -1))}
-                hitSlop={Layout.hitSlop}
-                style={({ pressed }) => [styles.iconBtn, { opacity: pressed ? 0.7 : 1 }]}>
-                <MaterialIcons name="chevron-left" size={28} color={colors.textMuted} />
-              </Pressable>
-              <Text style={[styles.monthLabel, { color: colors.textMuted }]} numberOfLines={1}>
-                {monthLabel}
-              </Text>
-              <Pressable
-                onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, 1))}
-                disabled={!canGoNext}
-                hitSlop={Layout.hitSlop}
-                style={({ pressed }) => [
-                  styles.iconBtn,
-                  { opacity: !canGoNext ? 0.3 : pressed ? 0.7 : 1 },
-                ]}>
-                <MaterialIcons name="chevron-right" size={28} color={colors.textMuted} />
-              </Pressable>
-            </View>
-            {saving ? (
-              <Text style={[Typography.caption, { color: colors.textMuted, textAlign: 'center' }]}>
-                保存中…
-              </Text>
-            ) : null}
-          </View>
-
-          {!canEdit ? (
-            <View style={[styles.notice, { backgroundColor: colors.surfaceMuted, borderColor: colors.outline }]}>
-              <MaterialIcons name="lock-clock" size={22} color={colors.textMuted} />
-              <Text style={[Typography.body, { color: colors.textMuted, flex: 1, lineHeight: 21 }]}>
-                未来月份仅可查看，暂不可填写。
-              </Text>
-            </View>
-          ) : null}
-
-          {monthlyTemplate.length === 0 ? (
-            <Text
-              style={[
-                Typography.body,
-                { color: colors.textMuted, lineHeight: 21, paddingHorizontal: Spacing.md },
-              ]}>
-              尚未配置月复盘维度，请点右上角「模板」按钮编辑标题与栏目。
+    <ScrollView
+      refreshControl={refreshControl}
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={[
+        styles.scroll,
+        { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.xl) },
+      ]}>
+      <ReviewPageContent style={styles.pageGap}>
+        <ReviewSectionCard style={styles.metaCard}>
+          <View style={styles.monthNav}>
+            <Pressable
+              onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, -1))}
+              hitSlop={Layout.hitSlop}
+              style={({ pressed }) => [styles.iconBtn, { opacity: pressed ? 0.7 : 1 }]}>
+              <MaterialIcons name="chevron-left" size={28} color={colors.textMuted} />
+            </Pressable>
+            <Text style={[Typography.bodyStrong, { color: colors.text, minWidth: 120, textAlign: 'center' }]} numberOfLines={1}>
+              {monthLabel}
             </Text>
-          ) : (
-            <DailyReviewGrid
-              dimensions={monthlyTemplate}
-              fields={fields}
-              colors={gridColors}
-              onPressDimension={openDimension}
-            />
-          )}
+            <Pressable
+              onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, 1))}
+              disabled={!canGoNext}
+              hitSlop={Layout.hitSlop}
+              style={({ pressed }) => [
+                styles.iconBtn,
+                { opacity: !canGoNext ? 0.3 : pressed ? 0.7 : 1 },
+              ]}>
+              <MaterialIcons name="chevron-right" size={28} color={colors.textMuted} />
+            </Pressable>
+          </View>
+          {saving ? (
+            <Text style={[Typography.caption, { color: colors.textMuted, textAlign: 'center' }]}>
+              保存中…
+            </Text>
+          ) : null}
+        </ReviewSectionCard>
 
-          <ReviewAiAnalysisPanel
-            text={meta.ai_analysis}
-            busy={aiBusy}
-            canRun={canEdit}
-            onAnalyze={() => void runAi()}
-            disabledReason={!canEdit ? '未来月份不可生成分析' : undefined}
+        {!canEdit ? (
+          <ReviewNoticeBanner
+            icon="lock-clock"
+            tone="muted"
+            message="未来月份仅可查看，暂不可填写。"
           />
-        </ScrollView>
-      )}
-    </>
+        ) : null}
+
+        {monthlyTemplate.length === 0 ? (
+          <ReviewEmptyState
+            title="尚未配置月复盘维度"
+            subtitle="请点右上角「模板」按钮编辑标题与栏目。"
+          />
+        ) : (
+          <DailyReviewGrid
+            dimensions={monthlyTemplate}
+            fields={fields}
+            onPressDimension={openDimension}
+          />
+        )}
+
+        <ReviewAiAnalysisPanel
+          text={meta.ai_analysis}
+          busy={aiBusy}
+          canRun={canEdit}
+          onAnalyze={() => void runAi()}
+          disabledReason={!canEdit ? '未来月份不可生成分析' : undefined}
+        />
+      </ReviewPageContent>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: {
-    gap: Spacing.xl,
-    paddingTop: Spacing.sm,
     width: '100%',
+    paddingTop: Spacing.sm,
   },
-  metaBar: {
-    paddingHorizontal: Spacing.md,
+  pageGap: {
+    gap: Spacing.xl,
+  },
+  metaCard: {
     gap: Spacing.sm,
+    paddingVertical: Spacing['3xl'],
   },
   monthNav: {
     flexDirection: 'row',
@@ -305,25 +292,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: Spacing.sm,
   },
-  monthLabel: {
-    fontSize: 14,
-    fontWeight: '700',
-    minWidth: 120,
-    textAlign: 'center',
-  },
   iconBtn: {
-    width: 36,
-    height: 36,
+    width: Layout.iconButtonSize,
+    height: Layout.iconButtonSize,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  notice: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.lg,
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: Spacing['3xl'],
-    marginHorizontal: Spacing.md,
   },
 });

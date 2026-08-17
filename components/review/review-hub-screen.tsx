@@ -3,7 +3,7 @@ import { MonthlyReviewGridView } from '@/components/review/monthly-review-grid-v
 import { WeeklyReviewGridView } from '@/components/review/weekly-review-grid-view';
 import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
-import { Radius, Spacing } from '@/constants/design-tokens';
+import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -30,11 +30,11 @@ function ReviewScopeToggle({
   value: ReviewScope;
   onChange: (next: ReviewScope) => void;
 }) {
-  const { colors, isDark } = useAppTheme();
+  const { colors } = useAppTheme();
 
   return (
     <View style={styles.scopeWrap}>
-      <View style={[styles.scopeTrack, { backgroundColor: isDark ? 'rgba(30,41,59,0.65)' : colors.capsule }]}>
+      <View style={[styles.scopeTrack, { backgroundColor: colors.capsule }]}>
         {(['daily', 'weekly', 'monthly'] as const).map(scope => {
           const active = value === scope;
           return (
@@ -50,15 +50,18 @@ function ReviewScopeToggle({
                   styles.scopeItemActive,
                   {
                     backgroundColor: colors.surface,
-                    borderColor: isDark ? 'rgba(148,163,184,0.25)' : colors.outline,
+                    borderColor: colors.outline,
                   },
                 ],
                 pressed && { opacity: 0.88 },
               ]}>
               <Text
                 style={[
-                  styles.scopeText,
-                  { color: active ? colors.primary : colors.textMuted, fontWeight: active ? '800' : '600' },
+                  Typography.caption,
+                  {
+                    color: active ? colors.primary : colors.textMuted,
+                    fontWeight: active ? '800' : '600',
+                  },
                 ]}>
                 {SCOPE_LABEL[scope]}
               </Text>
@@ -155,31 +158,33 @@ export function ReviewHubScreen() {
         }
       />
 
-      <ReviewScopeToggle value={scope} onChange={setScope} />
+      <View style={styles.body}>
+        <ReviewScopeToggle value={scope} onChange={setScope} />
 
-      <View style={[styles.content, scope === 'daily' && styles.contentDaily]}>
-        {scope === 'daily' ? (
-          <DailyReviewGridView
-            ymd={selectedYmd}
-            onYmdChange={setSelectedYmd}
-            pageApiKey={PAGE_API_KEY}
-            refreshControl={refreshControl}
-            onSwitchToWeekly={() => setScope('weekly')}
-          />
-        ) : scope === 'weekly' ? (
-          <WeeklyReviewGridView
-            pageApiKey={PAGE_API_KEY}
-            refreshControl={refreshControl}
-            onRegisterReload={registerWeeklyReload}
-          />
-        ) : (
-          <MonthlyReviewGridView
-            pageApiKey={PAGE_API_KEY}
-            refreshControl={refreshControl}
-            onRegisterReload={registerMonthlyReload}
-            onMonthLabelChange={setMonthLabel}
-          />
-        )}
+        <View style={styles.content}>
+          {scope === 'daily' ? (
+            <DailyReviewGridView
+              ymd={selectedYmd}
+              onYmdChange={setSelectedYmd}
+              pageApiKey={PAGE_API_KEY}
+              refreshControl={refreshControl}
+              onSwitchToWeekly={() => setScope('weekly')}
+            />
+          ) : scope === 'weekly' ? (
+            <WeeklyReviewGridView
+              pageApiKey={PAGE_API_KEY}
+              refreshControl={refreshControl}
+              onRegisterReload={registerWeeklyReload}
+            />
+          ) : (
+            <MonthlyReviewGridView
+              pageApiKey={PAGE_API_KEY}
+              refreshControl={refreshControl}
+              onRegisterReload={registerMonthlyReload}
+              onMonthLabelChange={setMonthLabel}
+            />
+          )}
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -192,8 +197,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.xs,
   },
+  body: {
+    flex: 1,
+    width: '100%',
+    maxWidth: Layout.contentMaxWidth,
+    alignSelf: 'center',
+  },
   scopeWrap: {
-    paddingHorizontal: Spacing.md,
+    paddingHorizontal: Layout.pagePaddingX,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.sm,
     width: '100%',
@@ -216,14 +227,7 @@ const styles = StyleSheet.create({
   scopeItemActive: {
     borderWidth: StyleSheet.hairlineWidth,
   },
-  scopeText: {
-    fontSize: 13,
-    letterSpacing: 0.1,
-  },
   content: {
     flex: 1,
-  },
-  contentDaily: {
-    paddingTop: Spacing.sm,
   },
 });
