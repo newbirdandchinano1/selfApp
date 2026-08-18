@@ -23,6 +23,7 @@ import {
   parseBreakHabitCycle,
   resolveBreakCycleStartYmd,
   syncBreakHabitCompletions,
+  tryMarkBreakHabitCompleted,
 } from '@/lib/repositories/habits/habit-break-success';
 import {
   isBuildHabitSucceeded,
@@ -31,7 +32,10 @@ import {
   tryMarkBuildHabitCompleted,
 } from '@/lib/repositories/habits/habit-build-success';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
-import { applyHabitCheckInPointsReward } from '@/lib/repositories/habits/habit-points-grant';
+import {
+  applyHabitCheckInPointsReward,
+  syncTaskHabitPeriodPointsReward,
+} from '@/lib/repositories/habits/habit-points-grant';
 import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
 import {
   computeTaskPeriodGoalProgress,
@@ -589,6 +593,15 @@ export default function HabitDetailScreen() {
     }
     setMakeUpSaving(true);
     try {
+      const kind = parseHabitKind(habit.extra_data);
+      const wasTaskPeriodMet =
+        kind === 'task'
+          ? isTaskHabitPeriodGoalMet({
+              extraData: habit.extra_data,
+              checkIns,
+              logicalYmd: logicalTodayYmd,
+            })
+          : false;
       const { increased, nextCount } = await incrementHabitCheckInForDay(habit.id, ymd, incrementCap);
       if (!increased) {
         Alert.alert(
@@ -601,8 +614,21 @@ export default function HabitDetailScreen() {
       }
       setCheckIns((prev) => ({ ...prev, [ymd]: nextCount }));
       void playHabitCheckInDing();
-      if (habit && parseHabitKind(habit.extra_data) === 'build') {
+      if (kind === 'build') {
         await tryMarkBuildHabitCompleted(habit, logicalTodayYmd);
+      } else if (kind === 'break') {
+        await tryMarkBreakHabitCompleted(habit, logicalTodayYmd);
+      } else if (kind === 'task') {
+        try {
+          await syncTaskHabitPeriodPointsReward({
+            habitId: habit.id,
+            extraData: habit.extra_data,
+            logicalYmd: logicalTodayYmd,
+            wasPeriodMet: wasTaskPeriodMet,
+          });
+        } catch (ptsErr) {
+          if (__DEV__) console.warn('[habit-detail] 补卡任务周期积分失败', ptsErr);
+        }
       }
       await reload(true);
     } catch (e) {
@@ -612,7 +638,7 @@ export default function HabitDetailScreen() {
     } finally {
       setMakeUpSaving(false);
     }
-  }, [habit, focusYmd, incrementCap, logicalTodayYmd, reload]);
+  }, [habit, focusYmd, incrementCap, checkIns, logicalTodayYmd, reload]);
 
   const handleDecrementFocusDayCheckIn = React.useCallback(async () => {
     if (!habit) return;
@@ -640,7 +666,16 @@ export default function HabitDetailScreen() {
     setCancelMakeUpSaving(true);
     try {
       const prevCount = checkIns[ymd] ?? 0;
-      const isBreak = parseHabitKind(habit.extra_data) === 'break';
+      const kind = parseHabitKind(habit.extra_data);
+      const isBreak = kind === 'break';
+      const wasTaskPeriodMet =
+        kind === 'task'
+          ? isTaskHabitPeriodGoalMet({
+              extraData: habit.extra_data,
+              checkIns,
+              logicalYmd: logicalTodayYmd,
+            })
+          : false;
       const nextCount = await decrementHabitCheckInForDay(habit.id, ymd, {
         breakHabit: isBreak,
       });
@@ -650,8 +685,8 @@ export default function HabitDetailScreen() {
         else next[ymd] = nextCount;
         return next;
       });
-      // 今日打卡才会发奖，撤销今日记录时扣回；补卡未发奖故不扣
-      if (ymd === logicalTodayYmd && (nextCount < prevCount || (isBreak && hasRecord))) {
+      // 养成：仅今日打卡发奖，撤销今日扣回；任务：周期目标回退时扣回；戒除日常撤销不扣目标积分
+      if (kind === 'build' && ymd === logicalTodayYmd && nextCount < prevCount) {
         try {
           await applyHabitCheckInPointsReward(habit.id, 'undo', {
             forceUndo: true,
@@ -660,8 +695,19 @@ export default function HabitDetailScreen() {
         } catch (ptsErr) {
           if (__DEV__) console.warn('[habit-detail] 撤销打卡扣回积分失败', ptsErr);
         }
+      } else if (kind === 'task') {
+        try {
+          await syncTaskHabitPeriodPointsReward({
+            habitId: habit.id,
+            extraData: habit.extra_data,
+            logicalYmd: logicalTodayYmd,
+            wasPeriodMet: wasTaskPeriodMet,
+          });
+        } catch (ptsErr) {
+          if (__DEV__) console.warn('[habit-detail] 撤销任务周期积分失败', ptsErr);
+        }
       }
-      if (habit && parseHabitKind(habit.extra_data) === 'build') {
+      if (kind === 'build') {
         await tryMarkBuildHabitCompleted(habit, logicalTodayYmd);
       }
       if (ymd === logicalTodayYmd) {

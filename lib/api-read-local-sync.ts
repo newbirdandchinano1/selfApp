@@ -48,6 +48,11 @@ const API_RECONCILE_SKIP_TABLES = new Set([
   /** 完成事件增量写入后 REST 列表/聚合可能滞后，避免 reconcile 误删本地记录 */
   'task_execution_events',
   'frog_completion_events',
+  /** 健康专用列表仅近 30 天，避免 reconcile 误删更早本地记录 */
+  'health_records',
+  /** 心愿列表专用接口只返回 active，避免 reconcile 误删已兑换心愿 */
+  'wish_board_items',
+  'points_ledger',
 ]);
 
 function quoteIdent(name: string): string {

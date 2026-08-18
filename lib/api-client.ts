@@ -186,7 +186,7 @@ export async function apiLogin(opts?: {
   throwIfAborted(opts?.signal);
 
   const res = await fetchWithTimeoutAndRetry(
-    `${baseUrl}/api/auth/login`,
+    `${baseUrl}/api/app/auth/login`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -331,7 +331,7 @@ export async function apiRequest<T = unknown>(
       }
     };
 
-    const isAiEndpoint = /\/api\/ai(?:\/|$)/.test(path);
+    const isAiEndpoint = /\/api(?:\/app)?\/ai(?:\/|$)/.test(path);
     const skipOverlay = options.skipGlobalLoading === true || isAiEndpoint;
     if (method !== 'GET' && !skipOverlay) {
       const { withApiWriteLoading } = await import('@/lib/api-loading-tracker');
@@ -348,6 +348,25 @@ export async function apiCreateRecord<T = unknown>(
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
+  const {
+    AppDomainFallbackError,
+    appDomainCreateRecord,
+    isAppDomainCrudTable,
+  } = await import('@/lib/api-app-domain');
+
+  if (isAppDomainCrudTable(table)) {
+    try {
+      // 专用接口自行整理 body（如 recipes 的 JSON 数组），避免通用 slim/map 破坏字段
+      const body = { ...row };
+      delete body.sync_status;
+      return await appDomainCreateRecord<T>(table, body, {
+        signal: opts?.signal,
+      });
+    } catch (e) {
+      if (!(e instanceof AppDomainFallbackError)) throw e;
+    }
+  }
+
   const bodies = buildApiUploadBodies(table, row);
 
   let lastError: unknown;
@@ -373,6 +392,25 @@ export async function apiUpdateRecord<T = unknown>(
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
+  const {
+    AppDomainFallbackError,
+    appDomainUpdateRecord,
+    isAppDomainCrudTable,
+  } = await import('@/lib/api-app-domain');
+
+  if (isAppDomainCrudTable(table)) {
+    try {
+      const body = { ...row };
+      delete body.sync_status;
+      return await appDomainUpdateRecord<T>(table, id, body, {
+        signal: opts?.signal,
+        method: 'PUT',
+      });
+    } catch (e) {
+      if (!(e instanceof AppDomainFallbackError)) throw e;
+    }
+  }
+
   const bodies = buildApiUploadBodies(table, row);
 
   let lastError: unknown;
@@ -398,6 +436,25 @@ export async function apiPatchRecord<T = unknown>(
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
+  const {
+    AppDomainFallbackError,
+    appDomainUpdateRecord,
+    isAppDomainCrudTable,
+  } = await import('@/lib/api-app-domain');
+
+  if (isAppDomainCrudTable(table)) {
+    try {
+      const body = { ...row };
+      delete body.sync_status;
+      return await appDomainUpdateRecord<T>(table, id, body, {
+        signal: opts?.signal,
+        method: 'PATCH',
+      });
+    } catch (e) {
+      if (!(e instanceof AppDomainFallbackError)) throw e;
+    }
+  }
+
   return apiRequest<T>(`/api/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: prepareRowBodyForApi(table, row),
@@ -410,6 +467,21 @@ export async function apiDeleteRecord(
   id: string,
   opts?: { signal?: AbortSignal },
 ): Promise<void> {
+  const {
+    AppDomainFallbackError,
+    appDomainDeleteRecord,
+    isAppDomainCrudTable,
+  } = await import('@/lib/api-app-domain');
+
+  if (isAppDomainCrudTable(table)) {
+    try {
+      await appDomainDeleteRecord(table, id, { signal: opts?.signal });
+      return;
+    } catch (e) {
+      if (!(e instanceof AppDomainFallbackError)) throw e;
+    }
+  }
+
   await apiRequest<null>(`/api/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     signal: opts?.signal,
@@ -981,6 +1053,12 @@ export async function apiListRecords<T extends Record<string, unknown>>(
   table: string,
   opts?: ApiListQueryOpts & { signal?: AbortSignal },
 ): Promise<ApiListResponse<T>> {
+  const { appDomainListRecords, isAppDomainCrudTable } = await import('@/lib/api-app-domain');
+  if (isAppDomainCrudTable(table)) {
+    const domain = await appDomainListRecords<T>(table, opts);
+    if (domain) return domain;
+  }
+
   const data = await apiRequest<ApiListResponse<T>>(
     `/api/data/${encodeURIComponent(table)}${buildListQuery(opts)}`,
     { method: 'GET', signal: opts?.signal },
@@ -1001,6 +1079,20 @@ export async function apiGetRecord<T extends Record<string, unknown>>(
   id: string,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
+  const {
+    AppDomainFallbackError,
+    appDomainGetRecord,
+    isAppDomainCrudTable,
+  } = await import('@/lib/api-app-domain');
+
+  if (isAppDomainCrudTable(table)) {
+    try {
+      return await appDomainGetRecord<T>(table, id, { signal: opts?.signal });
+    } catch (e) {
+      if (!(e instanceof AppDomainFallbackError)) throw e;
+    }
+  }
+
   return apiRequest<T>(`/api/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
     method: 'GET',
     signal: opts?.signal,

@@ -633,6 +633,60 @@ export async function setMemoAiReview(
   };
 }
 
+/**
+ * 推荐：`POST /api/app/memos/:id/ai-review`（服务端分析并落库），再刷新本地。
+ * 失败时抛出，由调用方决定是否回退到纯分析接口。
+ */
+export async function runMemoAiReviewOnServer(id: string): Promise<MemoItem | null> {
+  const { appMemoAiReview } = await import('@/lib/api-app-domain');
+  const data = await appMemoAiReview(id);
+  const evaluation =
+    typeof data.ai_evaluation === 'string'
+      ? data.ai_evaluation.trim()
+      : typeof data.evaluation === 'string'
+        ? data.evaluation.trim()
+        : '';
+  const suggestions =
+    typeof data.ai_suggestions === 'string'
+      ? data.ai_suggestions.trim()
+      : typeof data.suggestions === 'string'
+        ? data.suggestions.trim()
+        : '';
+  if (!evaluation && !suggestions) return null;
+
+  const prev = await getMemo(id);
+  if (!prev) return null;
+  const now =
+    typeof data.ai_review_at === 'string' && data.ai_review_at.trim()
+      ? data.ai_review_at.trim()
+      : new Date().toISOString();
+  const updatedAt =
+    typeof data.updated_at === 'string' && data.updated_at.trim()
+      ? data.updated_at.trim()
+      : now;
+
+  const db = await getDatabase();
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.runAsync(
+      `UPDATE memos SET ai_evaluation = ?, ai_suggestions = ?, ai_review_at = ?, updated_at = ?,
+        sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_create' ELSE 'synced' END
+       WHERE id = ?`,
+      [evaluation, suggestions, now, updatedAt, id],
+    );
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+
+  return {
+    ...prev,
+    ...(evaluation ? { ai_evaluation: evaluation } : {}),
+    ...(suggestions ? { ai_suggestions: suggestions } : {}),
+    ai_review_at: now,
+    updated_at: updatedAt,
+  };
+}
+
 export async function deleteMemo(id: string): Promise<boolean> {
   const db = await getDatabase();
   await migrateMemosStorageToSqliteIfNeeded(db);

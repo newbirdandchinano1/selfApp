@@ -1,5 +1,5 @@
 /**
- * AI 能力门面：请求统一走自建后端 /api/ai/*（见 AI_API.md）。
+ * AI 能力门面：请求统一走自建后端 /api/app/ai/*（见 AI_API.md）。
  * 保留与原 `lib/zhipu-image-parse.ts` 相同的函数签名与 `{ ok, ... }` 返回形态，便于 App 各页无痛迁移。
  */
 
@@ -65,7 +65,7 @@ export type ZhipuConnectivityProbeResult = {
   bodySnippet: string;
 };
 
-/** 探测后端 → 智谱链路（GET /api/ai/health） */
+/** 探测后端 → 智谱链路（GET /api/app/ai/health） */
 export async function probeZhipuTextConnectivity(_apiKey?: string): Promise<ZhipuConnectivityProbeResult> {
   try {
     const data = await aiApi.aiGetHealth();

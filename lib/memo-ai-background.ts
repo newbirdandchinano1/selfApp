@@ -1,4 +1,4 @@
-import { memoContextForAiReview, setMemoAiReview, type MemoItem } from '@/lib/memos';
+import { memoContextForAiReview, runMemoAiReviewOnServer, setMemoAiReview, type MemoItem } from '@/lib/memos';
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 
 const memoAiInFlight = new Set<string>();
@@ -55,7 +55,7 @@ function notifyMemoAiReviewSaved(row: MemoItem): void {
 }
 
 /**
- * 新建备忘保存后调用：在后台请求智谱生成评价与建议并写入本地（不阻塞 UI；无密钥或内容为空则静默跳过）。
+ * 新建备忘保存后调用：优先 `POST /memos/:id/ai-review` 落库；失败再回退纯分析接口。
  */
 export function startMemoAiReviewInBackground(row: MemoItem): void {
   if (!memoContextForAiReview(row)) return;
@@ -66,6 +66,16 @@ export function startMemoAiReviewInBackground(row: MemoItem): void {
 
   void (async () => {
     try {
+      try {
+        const saved = await runMemoAiReviewOnServer(row.id);
+        if (saved) {
+          notifyMemoAiReviewSaved(saved);
+          return;
+        }
+      } catch {
+        // fall through
+      }
+
       const key = getActiveAiLlmApiKey().trim();
       if (!key) return;
       const ctx = memoContextForAiReview(row);

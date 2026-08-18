@@ -13,6 +13,7 @@ import {
   memoContextForAiReview,
   memoListPreviewBody,
   memoListPreviewTitle,
+  runMemoAiReviewOnServer,
   setMemoAiReview,
   updateMemoDimension,
   type MemoDimension,
@@ -257,10 +258,33 @@ export default function MemoListScreen() {
   }, [openEditDimension, requestDeleteDimension]);
 
   const runAiForMemo = useCallback(async (row: MemoItem): Promise<{ ok: true } | { ok: false; error: string }> => {
-    const key = getActiveAiLlmApiKey().trim();
-    if (!key) return { ok: false, error: '未配置智谱 API 密钥' };
     const ctx = memoContextForAiReview(row);
     if (!ctx) return { ok: false, error: '该备忘标题与正文均为空' };
+
+    try {
+      const saved = await runMemoAiReviewOnServer(row.id);
+      if (saved) {
+        setItems(prev =>
+          prev.map(m =>
+            m.id === row.id
+              ? {
+                  ...m,
+                  ai_evaluation: saved.ai_evaluation,
+                  ai_suggestions: saved.ai_suggestions,
+                  ai_review_at: saved.ai_review_at,
+                }
+              : m,
+          ),
+        );
+        return { ok: true };
+      }
+    } catch (e) {
+      // fall through to text-only AI endpoint
+      if (__DEV__) console.warn('[memo-list] ai-review failed, fallback', e);
+    }
+
+    const key = getActiveAiLlmApiKey().trim();
+    if (!key) return { ok: false, error: '未配置服务器 AI（请先登录）' };
     const r = await analyzeMemoReviewFromText({ apiKey: key, memoContextText: ctx });
     if (!r.ok) return { ok: false, error: r.error };
     const saved = await setMemoAiReview(row.id, { evaluation: r.evaluation, suggestions: r.suggestions });

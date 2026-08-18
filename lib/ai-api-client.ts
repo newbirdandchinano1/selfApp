@@ -1,6 +1,6 @@
 /**
- * App → 自建后端 /api/ai/*（智谱 Key 仅存服务端）。
- * 规范见项目根目录 AI_API.md。
+ * App → 自建后端 /api/app/ai/*（智谱 Key 仅存服务端）。
+ * 规范见项目根目录 AI_API.md 与各业务模块 APP 接入说明。
  */
 
 import { apiRequest } from '@/lib/api-client';
@@ -13,7 +13,7 @@ import type {
   VisionWallAiAssessmentPayload,
 } from '@/lib/ai-types';
 
-const AI_PREFIX = '/api/ai';
+const AI_PREFIX = '/api/app/ai';
 
 export type AiHealthData = {
   ok: boolean;

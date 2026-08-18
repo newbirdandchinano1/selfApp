@@ -196,6 +196,14 @@ export async function tryMarkBreakHabitCompleted(
     completedStreak: streak,
   });
   await updateHabit(habit.id, { extra_data: extra });
+  try {
+    const { applyHabitGoalPointsReward } = await import(
+      '@/lib/repositories/habits/habit-points-grant'
+    );
+    await applyHabitGoalPointsReward(habit.id, 'earn', { extraData: extra });
+  } catch (ptsErr) {
+    console.warn('戒除习惯达成目标发奖失败', habit.id, ptsErr);
+  }
   return true;
 }
 
@@ -232,12 +240,13 @@ export async function syncBreakHabitCompletions(): Promise<void> {
   );
 }
 
-/** 重启戒除习惯挑战：清除完成标记，从今日起重新计连续天数 */
+/** 重启戒除习惯挑战：清除完成标记，从今日起重新计连续天数；已拿过的目标积分扣回 */
 export async function restartBreakHabit(habitId: string): Promise<void> {
   const habit = await getHabitById(habitId);
   if (!habit) return;
   if (parseHabitKind(habit.extra_data) !== 'break') return;
 
+  const wasSucceeded = isBreakHabitSucceeded(habit.extra_data);
   const boundary = await loadTasksDayBoundary();
   const todayYmd = getLogicalLocalYmd(new Date(), boundary);
   const extra = mergeBreakHabitCycleExtra(habit.extra_data, {
@@ -246,4 +255,17 @@ export async function restartBreakHabit(habitId: string): Promise<void> {
     completedStreak: null,
   });
   await updateHabit(habitId, { extra_data: extra });
+  if (wasSucceeded) {
+    try {
+      const { applyHabitGoalPointsReward } = await import(
+        '@/lib/repositories/habits/habit-points-grant'
+      );
+      await applyHabitGoalPointsReward(habitId, 'undo', {
+        forceUndo: true,
+        extraData: habit.extra_data,
+      });
+    } catch (ptsErr) {
+      console.warn('戒除习惯重启扣回积分失败', habitId, ptsErr);
+    }
+  }
 }

@@ -54,7 +54,7 @@ import {
   confirmBreakHabitDayClean,
   decrementTodayHabitCheckIn,
   getHabitDayRecordFlagsForYmd,
-  incrementTodayHabitCheckIn
+  incrementTodayHabitCheckIn,
 } from '@/lib/repositories/habits/habit-check-in';
 import {
   breakSlipBadgeColor,
@@ -69,6 +69,7 @@ import {
   applyHabitCheckInPointsReward,
   applyProjectCompletionPointsReward,
   applyTaskCompletionPointsReward,
+  syncTaskHabitPeriodPointsReward,
 } from '@/lib/repositories/habits/habit-points-grant';
 import {
   areAllSubHabitsCompletedForYmd,
@@ -625,7 +626,7 @@ function patchHabitSectionsCount(
   }));
 }
 
-/** 任务页小习惯卡片是否已达今日完成态（完成后点击无效、不可再打卡发奖） */
+/** 任务页小习惯卡片是否已达今日完成态（完成后点击为撤销） */
 function isHabitGridItemCompletedToday(item: HabitGridItem, logicalTodayYmd: string): boolean {
   if (item.kind === 'task') return item.taskShowPeriodCheck;
   if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
@@ -1625,12 +1626,28 @@ export default function TasksScreen() {
     return subscribePointsBalanceChanged(setPointsBalance);
   }, []);
 
-  const grantHabitPointsWithToast = React.useCallback(
+  const grantHabitCheckInPointsWithToast = React.useCallback(
     async (habitId: string, direction: 'earn' | 'undo', opts?: { forceUndo?: boolean }) => {
       try {
         await applyHabitCheckInPointsReward(habitId, direction, opts);
       } catch (e) {
         if (__DEV__) console.warn('[habit-points]', e);
+      }
+    },
+    [],
+  );
+
+  const syncTaskHabitPeriodPointsWithToast = React.useCallback(
+    async (item: HabitGridItem, wasPeriodMet: boolean, logicalYmd: string) => {
+      try {
+        await syncTaskHabitPeriodPointsReward({
+          habitId: item.id,
+          extraData: item.extraData,
+          logicalYmd,
+          wasPeriodMet,
+        });
+      } catch (e) {
+        if (__DEV__) console.warn('[habit-task-period-points]', e);
       }
     },
     [],
@@ -3971,6 +3988,7 @@ export default function TasksScreen() {
       habitCheckInLockRef.current.add(item.id);
       habitLoadGenerationRef.current += 1;
       markPageDirty();
+      const wasTaskPeriodMet = item.kind === 'task' ? Boolean(item.taskShowPeriodCheck) : false;
       const optimistic = optimisticHabitCountDelta(item, 1);
       if (optimistic) {
         patchHabitTodayCount(item.id, optimistic.nextCount, optimistic.periodDelta, {
@@ -3985,7 +4003,12 @@ export default function TasksScreen() {
           });
         }
         if (increased) void playHabitCheckInDing();
-        if (increased) await grantHabitPointsWithToast(item.id, 'earn');
+        // 养成：每次打卡发奖；任务：周期目标刚达成时发整包；戒除：达成连续目标时由 tryMark 发奖
+        if (increased && item.kind === 'build') {
+          await grantHabitCheckInPointsWithToast(item.id, 'earn');
+        } else if (increased && item.kind === 'task') {
+          await syncTaskHabitPeriodPointsWithToast(item, wasTaskPeriodMet, logicalTodayYmd);
+        }
         runHabitSideEffectsAfterCountChange(item.id, nextCount);
       } catch (err) {
         console.warn('习惯打卡失败', err);
@@ -3995,12 +4018,13 @@ export default function TasksScreen() {
       }
     },
     [
-      grantHabitPointsWithToast,
+      grantHabitCheckInPointsWithToast,
       logicalTodayYmd,
       markPageDirty,
       patchHabitTodayCount,
       restoreHabitGridItem,
       runHabitSideEffectsAfterCountChange,
+      syncTaskHabitPeriodPointsWithToast,
     ]
   );
 
@@ -4013,7 +4037,7 @@ export default function TasksScreen() {
       patchHabitTodayCount(item.id, 0, 0, { hasTodayRecord: true });
       try {
         await confirmBreakHabitDayClean(item.id, logicalTodayYmd);
-        await grantHabitPointsWithToast(item.id, 'earn');
+        // 戒除积分仅在达成连续目标时发放（tryMarkBreakHabitCompleted）
         runHabitSideEffectsAfterCountChange(item.id, 0, { skipHabitReload: true });
       } catch (err) {
         console.warn('确认保持戒除失败', err);
@@ -4027,7 +4051,6 @@ export default function TasksScreen() {
       }
     },
     [
-      grantHabitPointsWithToast,
       logicalTodayYmd,
       markPageDirty,
       patchHabitTodayCount,
@@ -4042,6 +4065,7 @@ export default function TasksScreen() {
       habitCheckInLockRef.current.add(item.id);
       habitLoadGenerationRef.current += 1;
       markPageDirty();
+      const wasTaskPeriodMet = item.kind === 'task' ? Boolean(item.taskShowPeriodCheck) : false;
       const optimistic = optimisticHabitCountDelta(item, -1);
       if (optimistic) {
         patchHabitTodayCount(item.id, optimistic.nextCount, optimistic.periodDelta, {
@@ -4058,9 +4082,11 @@ export default function TasksScreen() {
             hasTodayRecord: item.kind === 'break' ? nextCount > 0 : undefined,
           });
         }
-        // 先扣回积分再跑副作用，避免绑定任务调账与习惯扣回乱序
-        if (nextCount < item.todayCount || (item.kind === 'break' && item.hasTodayRecord)) {
-          await grantHabitPointsWithToast(item.id, 'undo', { forceUndo: true });
+        // 养成：撤销打卡扣回；任务：周期目标刚回退时扣回；戒除日常撤销不扣目标积分
+        if (item.kind === 'build' && nextCount < item.todayCount) {
+          await grantHabitCheckInPointsWithToast(item.id, 'undo', { forceUndo: true });
+        } else if (item.kind === 'task') {
+          await syncTaskHabitPeriodPointsWithToast(item, wasTaskPeriodMet, logicalTodayYmd);
         }
         runHabitSideEffectsAfterCountChange(item.id, nextCount);
       } catch (err) {
@@ -4070,7 +4096,15 @@ export default function TasksScreen() {
         habitCheckInLockRef.current.delete(item.id);
       }
     },
-    [grantHabitPointsWithToast, markPageDirty, patchHabitTodayCount, restoreHabitGridItem, runHabitSideEffectsAfterCountChange]
+    [
+      grantHabitCheckInPointsWithToast,
+      logicalTodayYmd,
+      markPageDirty,
+      patchHabitTodayCount,
+      restoreHabitGridItem,
+      runHabitSideEffectsAfterCountChange,
+      syncTaskHabitPeriodPointsWithToast,
+    ]
   );
 
   const openSubHabitModal = React.useCallback((item: HabitGridItem) => {
@@ -4107,6 +4141,12 @@ export default function TasksScreen() {
         const prevAllDone =
           prevAllDoneFromModal ||
           areAllSubHabitsCompletedForYmd(habitBefore?.extra_data ?? null, logicalTodayYmd);
+        const habitKind = parseHabitKind(habitBefore?.extra_data ?? null);
+        const gridItem = habitSections
+          .flatMap((s) => s.items)
+          .find((it) => it.id === subHabitModal.habitId);
+        const wasTaskPeriodMet =
+          habitKind === 'task' ? Boolean(gridItem?.taskShowPeriodCheck) : false;
 
         const result = await toggleSubHabitCheckIn({
           habitId: subHabitModal.habitId,
@@ -4137,11 +4177,21 @@ export default function TasksScreen() {
             }),
           })),
         );
-        // 先调账再跑副作用，避免绑定任务发奖与习惯扣回乱序
-        if (nextDone && result.allDone && !prevAllDone) {
-          await grantHabitPointsWithToast(subHabitModal.habitId, 'earn');
-        } else if (!nextDone && prevAllDone && !result.allDone) {
-          await grantHabitPointsWithToast(subHabitModal.habitId, 'undo', { forceUndo: true });
+        // 养成：子习惯全部完成才按次发奖；任务：周期目标边界发整包
+        if (habitKind === 'build') {
+          if (nextDone && result.allDone && !prevAllDone) {
+            await grantHabitCheckInPointsWithToast(subHabitModal.habitId, 'earn');
+          } else if (!nextDone && prevAllDone && !result.allDone) {
+            await grantHabitCheckInPointsWithToast(subHabitModal.habitId, 'undo', {
+              forceUndo: true,
+            });
+          }
+        } else if (habitKind === 'task' && gridItem) {
+          await syncTaskHabitPeriodPointsWithToast(
+            { ...gridItem, extraData: result.extraData ?? gridItem.extraData },
+            wasTaskPeriodMet,
+            logicalTodayYmd,
+          );
         }
         runHabitSideEffectsAfterCountChange(subHabitModal.habitId, result.parentCount);
       } catch (err) {
@@ -4157,13 +4207,15 @@ export default function TasksScreen() {
       }
     },
     [
-      grantHabitPointsWithToast,
+      grantHabitCheckInPointsWithToast,
+      habitSections,
       logicalTodayYmd,
       markPageDirty,
       patchHabitTodayCount,
       runHabitSideEffectsAfterCountChange,
       subHabitModal,
       subHabitTogglingId,
+      syncTaskHabitPeriodPointsWithToast,
     ],
   );
 

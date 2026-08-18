@@ -901,7 +901,13 @@ export default function AddHabitScreen() {
             onChangeText={setRewardPointsText}
             placeholder="0"
             keyboardType="number-pad"
-            hint="每次完成打卡计入心愿板积分；0 表示无奖励"
+            hint={
+              habitKind === 'task'
+                ? '完成本周期任务目标后计入心愿板积分；0 表示无奖励'
+                : habitKind === 'break'
+                  ? '达成戒除连续目标后计入心愿板积分；0 表示无奖励'
+                  : '每次完成打卡计入心愿板积分；0 表示无奖励'
+            }
             inputWrapStyle={styles.rewardPointsWrap}
           />
 

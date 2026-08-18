@@ -81,6 +81,35 @@ function assertWishBoardPayload(input: CreateWishBoardItemInput | UpdateWishBoar
 }
 
 export async function getPointsBalance(opts?: PageApiReadOpts): Promise<number> {
+  if (!opts?.localOnly) {
+    try {
+      const { appWishBoardGetBalance } = await import('@/lib/api-app-domain');
+      const balance = await appWishBoardGetBalance();
+      const db = await getDatabase();
+      const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+        '@/lib/cloud-sql-dirty-track'
+      );
+      beginCloudSqliteDirtyIgnoreBatch();
+      try {
+        const nowIso = pointsAuditNowIso();
+        await db.runAsync(
+          `INSERT OR IGNORE INTO points_wallet (id, balance, created_at, updated_at, sync_status)
+           VALUES (?, ?, ?, ?, 'synced')`,
+          [POINTS_WALLET_ID, balance, nowIso, nowIso],
+        );
+        await db.runAsync(
+          `UPDATE points_wallet SET balance = ?, updated_at = ?, sync_status = 'synced' WHERE id = ?`,
+          [balance, nowIso, POINTS_WALLET_ID],
+        );
+      } finally {
+        endCloudSqliteDirtyIgnoreBatch();
+      }
+      return balance;
+    } catch {
+      // fall through to local / generic table read
+    }
+  }
+
   const row = await readApiRecord<PointsWalletRow>('points_wallet', POINTS_WALLET_ID, {
     offlineFallback: true,
     ...opts,
@@ -126,11 +155,42 @@ export async function listWishBoardItems(opts?: PageApiReadOpts): Promise<WishBo
 }
 
 /**
- * 兑换记录列表：每次 wish_redeem 流水一条（一次性归档 + 重复性每次兑换）。
- * 与「心愿列表」分离；重复性心愿本体仍保持 active。
- * 若历史一次性已兑换缺少流水，仍按 wish_board_items.status=redeemed 兜底展示。
+ * 兑换记录列表：优先 `GET /api/app/wish-board/redeemed`；失败再回退本地流水。
  */
 export async function listWishRedeemRecords(opts?: PageApiReadOpts): Promise<WishRedeemRecord[]> {
+  if (!opts?.localOnly) {
+    try {
+      const { appWishBoardListRedeemed } = await import('@/lib/api-app-domain');
+      const items = await appWishBoardListRedeemed();
+      return items
+        .map(row => {
+          const costFromLedger = Math.abs(Math.floor(Number(row.delta) || 0));
+          const costPoints = Math.max(
+            0,
+            Math.floor(Number(row.cost_points) || 0) || costFromLedger,
+          );
+          return {
+            ledger_id: String(row.ledger_id),
+            wish_id: String(row.wish_id),
+            title: (row.title ?? '').trim() || '已删除的心愿',
+            description: row.description ?? null,
+            icon_key: row.icon_key ?? null,
+            wish_type: row.wish_type === 'repeat' ? 'repeat' : 'once',
+            cost_points: costPoints,
+            redeemed_at: row.redeemed_at,
+            item_exists: Boolean(row.title || row.status),
+            is_fallback: false,
+          } satisfies WishRedeemRecord;
+        })
+        .sort(
+          (a, b) =>
+            b.redeemed_at.localeCompare(a.redeemed_at) || b.ledger_id.localeCompare(a.ledger_id),
+        );
+    } catch {
+      // fall through
+    }
+  }
+
   const [ledgers, items] = await Promise.all([
     readApiTable<PointsLedgerRow>('points_ledger', {
       offlineFallback: true,
@@ -190,9 +250,33 @@ export async function listWishRedeemRecords(opts?: PageApiReadOpts): Promise<Wis
   );
 }
 
-/** 删除「已兑换」中的一条记录：软删流水；一次性已归档则同时软删心愿条目。 */
+/** 删除「已兑换」中的一条记录：优先专用接口；失败再本地软删。 */
 export async function deleteWishRedeemRecord(record: WishRedeemRecord): Promise<void> {
   if (!record.is_fallback) {
+    try {
+      const { appWishBoardDeleteRedeemed } = await import('@/lib/api-app-domain');
+      await appWishBoardDeleteRedeemed({ id: record.wish_id });
+      // 本地对齐：软删流水；一次性已兑完则软删心愿行
+      const db = await getDatabase();
+      const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+        '@/lib/cloud-sql-dirty-track'
+      );
+      beginCloudSqliteDirtyIgnoreBatch();
+      try {
+        await db.runAsync(`DELETE FROM points_ledger WHERE id = ?`, [record.ledger_id]);
+        if (record.wish_type === 'once' && record.item_exists) {
+          await db.runAsync(`DELETE FROM wish_board_items WHERE id = ? AND status = 'redeemed'`, [
+            record.wish_id,
+          ]);
+        }
+      } finally {
+        endCloudSqliteDirtyIgnoreBatch();
+      }
+      return;
+    } catch {
+      // fall through to local
+    }
+
     await requireLocalRowForWrite('points_ledger', record.ledger_id, '兑换记录');
     const db = await getDatabase();
     await db.runAsync(
@@ -240,7 +324,7 @@ export async function createWishBoardItem(input: CreateWishBoardItemInput): Prom
 
 export async function updateWishBoardItem(id: string, input: UpdateWishBoardItemInput): Promise<void> {
   assertWishBoardPayload(input);
-  const current = await ensureLocalRowForWrite<WishBoardItemRow>('wish_board_items', id);
+  const current = await requireLocalRowForWrite<WishBoardItemRow>('wish_board_items', id, '心愿');
   const mapped = mapWishBoardRow(current);
   if (mapped.status === 'redeemed' && (input.title != null || input.cost_points != null)) {
     throw new Error('已兑换的心愿不可再改名称或积分');
@@ -295,13 +379,83 @@ export async function deleteWishBoardItem(id: string): Promise<void> {
 }
 
 /**
- * 本地兑换：校验余额 → 扣积分 → 记流水（每次兑换一条 wish_redeem，含 repeat）。
- * - once：标记 status=redeemed
- * - repeat：保持 active，仅更新 redeemed_at 为最近兑换时间；「已兑换」列表靠流水展示每次记录
- * 服务端应对齐 `POST /api/wish-board/redeem`。
+ * 兑换心愿：优先 `POST /api/app/wish-board/redeem`，成功后用返回余额刷新本地；
+ * 离线/失败时回退本地事务（再经表同步推送）。
  */
 export async function redeemWishBoardItem(id: string): Promise<{ balance: number }> {
-  const item = mapWishBoardRow(await ensureLocalRowForWrite<WishBoardItemRow>('wish_board_items', id));
+  try {
+    const { appWishBoardRedeem } = await import('@/lib/api-app-domain');
+    const result = await appWishBoardRedeem(id);
+    const balance = Math.max(0, Math.floor(Number(result.balance) || 0));
+    const nowIso = pointsAuditNowIso();
+    const db = await getDatabase();
+    const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+      '@/lib/cloud-sql-dirty-track'
+    );
+    beginCloudSqliteDirtyIgnoreBatch();
+    try {
+      await db.runAsync(
+        `INSERT OR IGNORE INTO points_wallet (id, balance, created_at, updated_at, sync_status)
+         VALUES (?, ?, ?, ?, 'synced')`,
+        [POINTS_WALLET_ID, balance, nowIso, nowIso],
+      );
+      await db.runAsync(
+        `UPDATE points_wallet SET balance = ?, updated_at = ?, sync_status = 'synced' WHERE id = ?`,
+        [balance, nowIso, POINTS_WALLET_ID],
+      );
+
+      const serverItem = result.item;
+      if (serverItem && typeof serverItem === 'object') {
+        const status = serverItem.status === 'redeemed' ? 'redeemed' : 'active';
+        const redeemedAt =
+          typeof serverItem.redeemed_at === 'string' ? serverItem.redeemed_at : nowIso;
+        await db.runAsync(
+          `UPDATE wish_board_items SET
+            status = ?,
+            redeemed_at = ?,
+            updated_at = ?,
+            sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_create' ELSE 'synced' END
+           WHERE id = ?`,
+          [status, redeemedAt, nowIso, id],
+        );
+      } else {
+        const item = mapWishBoardRow(
+          await requireLocalRowForWrite<WishBoardItemRow>('wish_board_items', id, '心愿'),
+        );
+        if (item.wish_type === 'repeat') {
+          await db.runAsync(
+            `UPDATE wish_board_items SET
+              status = 'active', redeemed_at = ?, updated_at = ?,
+              sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_create' ELSE 'synced' END
+             WHERE id = ?`,
+            [nowIso, nowIso, id],
+          );
+        } else {
+          await db.runAsync(
+            `UPDATE wish_board_items SET
+              status = 'redeemed', redeemed_at = ?, updated_at = ?,
+              sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_create' ELSE 'synced' END
+             WHERE id = ?`,
+            [nowIso, nowIso, id],
+          );
+        }
+      }
+    } finally {
+      endCloudSqliteDirtyIgnoreBatch();
+    }
+    notifyPointsBalanceChanged(balance);
+    return { balance };
+  } catch (e) {
+    // 业务错误（积分不足等）直接抛出；网络类错误走本地回退
+    if (e instanceof Error && /积分不足|已兑换|不存在|无效/.test(e.message)) {
+      throw e;
+    }
+    if (__DEV__) console.warn('[wish-board] redeem API failed, local fallback', e);
+  }
+
+  const item = mapWishBoardRow(
+    await requireLocalRowForWrite<WishBoardItemRow>('wish_board_items', id, '心愿'),
+  );
   if (item.wish_type === 'once' && item.status === 'redeemed') {
     throw new Error('该心愿已兑换');
   }
@@ -375,8 +529,7 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
 }
 
 /**
- * 调整积分余额并记流水（习惯打卡发奖 / 撤销扣回等）。
- * 服务端应对齐 `POST /api/wish-board/points/adjust`。
+ * 调整积分：优先 `POST /api/app/wish-board/points/adjust`。
  */
 export async function adjustPointsBalance(input: {
   delta: number;
@@ -392,8 +545,58 @@ export async function adjustPointsBalance(input: {
   const reason = (input.reason || 'manual_adjust').trim() || 'manual_adjust';
   const refType = input.ref_type?.trim() || null;
   const refId = input.ref_id?.trim() || null;
-  const nowIso = pointsAuditNowIso();
 
+  try {
+    const { appWishBoardAdjustPoints } = await import('@/lib/api-app-domain');
+    const result = await appWishBoardAdjustPoints({
+      delta,
+      reason,
+      ref_type: refType,
+      ref_id: refId,
+    });
+    const balance = Math.max(0, Math.floor(Number(result.balance) || 0));
+    const appliedDelta = Math.floor(Number(result.delta ?? delta) || 0);
+    const ledgerId =
+      typeof result.ledger_id === 'string' && result.ledger_id.trim()
+        ? result.ledger_id.trim()
+        : null;
+    const nowIso = pointsAuditNowIso();
+    const db = await getDatabase();
+    const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+      '@/lib/cloud-sql-dirty-track'
+    );
+    beginCloudSqliteDirtyIgnoreBatch();
+    try {
+      await db.runAsync(
+        `INSERT OR IGNORE INTO points_wallet (id, balance, created_at, updated_at, sync_status)
+         VALUES (?, ?, ?, ?, 'synced')`,
+        [POINTS_WALLET_ID, balance, nowIso, nowIso],
+      );
+      await db.runAsync(
+        `UPDATE points_wallet SET balance = ?, updated_at = ?, sync_status = 'synced' WHERE id = ?`,
+        [balance, nowIso, POINTS_WALLET_ID],
+      );
+      if (ledgerId) {
+        await db.runAsync(
+          `INSERT OR REPLACE INTO points_ledger (
+            id, delta, balance_after, reason, ref_type, ref_id,
+            created_at, updated_at, sync_status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+          [ledgerId, appliedDelta, balance, reason, refType, refId, nowIso, nowIso],
+        );
+      }
+    } finally {
+      endCloudSqliteDirtyIgnoreBatch();
+    }
+    notifyPointsBalanceChanged(balance);
+    if (appliedDelta > 0) notifyPointsEarned(appliedDelta);
+    return { balance, delta: appliedDelta, ledger_id: ledgerId };
+  } catch (e) {
+    if (e instanceof Error && /积分不足/.test(e.message)) throw e;
+    if (__DEV__) console.warn('[wish-board] adjust API failed, local fallback', e);
+  }
+
+  const nowIso = pointsAuditNowIso();
   const db = await getDatabase();
   await db.execAsync('BEGIN IMMEDIATE');
   try {
@@ -438,11 +641,53 @@ export async function adjustPointsBalance(input: {
 }
 
 /**
- * 将积分余额清零并记流水（心愿板「重置积分」）。
- * 服务端应对齐 `POST /api/wish-board/points/reset`。
+ * 重置积分：优先 `POST /api/app/wish-board/points/reset`。
  */
 export async function resetPointsBalance(): Promise<{ balance: number; delta: number; ledger_id: string | null }> {
   return enqueuePointsAdjust(async () => {
+    try {
+      const { appWishBoardResetPoints } = await import('@/lib/api-app-domain');
+      const result = await appWishBoardResetPoints();
+      const balance = Math.max(0, Math.floor(Number(result.balance) || 0));
+      const delta = Math.floor(Number(result.delta) || 0);
+      const ledgerId =
+        typeof result.ledger_id === 'string' && result.ledger_id.trim()
+          ? result.ledger_id.trim()
+          : null;
+      const nowIso = pointsAuditNowIso();
+      const db = await getDatabase();
+      const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+        '@/lib/cloud-sql-dirty-track'
+      );
+      beginCloudSqliteDirtyIgnoreBatch();
+      try {
+        await db.runAsync(
+          `INSERT OR IGNORE INTO points_wallet (id, balance, created_at, updated_at, sync_status)
+           VALUES (?, 0, ?, ?, 'synced')`,
+          [POINTS_WALLET_ID, nowIso, nowIso],
+        );
+        await db.runAsync(
+          `UPDATE points_wallet SET balance = ?, updated_at = ?, sync_status = 'synced' WHERE id = ?`,
+          [balance, nowIso, POINTS_WALLET_ID],
+        );
+        if (ledgerId && delta !== 0) {
+          await db.runAsync(
+            `INSERT OR REPLACE INTO points_ledger (
+              id, delta, balance_after, reason, ref_type, ref_id,
+              created_at, updated_at, sync_status
+            ) VALUES (?, ?, ?, 'points_reset', 'points_wallet', ?, ?, ?, 'synced')`,
+            [ledgerId, delta, balance, POINTS_WALLET_ID, nowIso, nowIso],
+          );
+        }
+      } finally {
+        endCloudSqliteDirtyIgnoreBatch();
+      }
+      notifyPointsBalanceChanged(balance);
+      return { balance, delta, ledger_id: ledgerId };
+    } catch (e) {
+      if (__DEV__) console.warn('[wish-board] reset API failed, local fallback', e);
+    }
+
     const balance = await getLocalPointsBalance();
     if (balance <= 0) {
       notifyPointsBalanceChanged(0);
