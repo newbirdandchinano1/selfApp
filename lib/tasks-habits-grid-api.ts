@@ -1,4 +1,6 @@
 import { apiGetTasksHabitsGrid, type HabitsGridPayload, type HabitsGridSection } from '@/lib/api-client';
+import { withApiTableSyncLock } from '@/lib/api-read';
+import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
 import { parseHabitIncrementCap } from '@/lib/repositories/habits/habit-goal';
@@ -53,6 +55,50 @@ function isServerFilteredHabitsGrid(meta: HabitsGridPayload['meta']): boolean {
   return meta?.serverFiltered === true && meta?.filtersVersion === TASKS_HABITS_GRID_FILTERS_VERSION;
 }
 
+function extraDataToString(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof raw === 'object') {
+    try {
+      return JSON.stringify(raw);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function readGridItemExtraData(item: HabitsGridSection['items'][number]): string | null {
+  return extraDataToString(item.extraData ?? item.extra_data);
+}
+
+async function upsertHabitsFromGrid(sections: HabitsGridSection[]): Promise<void> {
+  const rows: Record<string, unknown>[] = [];
+  for (const section of sections) {
+    for (const item of Array.isArray(section.items) ? section.items : []) {
+      const id = String(item.id ?? '').trim();
+      if (!id) continue;
+      const extraData = readGridItemExtraData(item);
+      const row: Record<string, unknown> = {
+        id,
+        name: item.name ?? '',
+        icon: item.icon ?? '✓',
+        context: item.context ?? section.title ?? section.id,
+      };
+      if (typeof item.note === 'string') row.note = item.note;
+      if (extraData != null) row.extra_data = extraData;
+      rows.push(row);
+    }
+  }
+  if (rows.length === 0) return;
+  await withApiTableSyncLock('habits', async () => {
+    await syncApiReadResultToLocal('habits', rows);
+  });
+}
+
 async function mergeHabitGridExtraFields(
   sections: HabitsGridSection[],
   logicalToday: string,
@@ -65,7 +111,7 @@ async function mergeHabitGridExtraFields(
     title: section.title,
     items: (Array.isArray(section.items) ? section.items : []).map((item) => {
       const local = localById.get(item.id);
-      const extraData = local?.extra_data ?? null;
+      const extraData = readGridItemExtraData(item) ?? local?.extra_data ?? null;
       const kind = (item.kind ?? (local ? parseHabitKind(local.extra_data) : 'build')) as HabitKind;
       const resolvedKind: HabitKind = ['build', 'break', 'task'].includes(String(kind))
         ? (kind as HabitKind)
@@ -76,13 +122,10 @@ async function mergeHabitGridExtraFields(
       const subTotal = subActive ? subMeta.items.length : 0;
       const serverTodayCount = typeof item.todayCount === 'number' ? item.todayCount : 0;
       const serverDailyGoal = item.dailyGoal ?? null;
-      // 子习惯模式：用子项完成数驱动进度环；父习惯打卡仅在全完成时记 1 次
       const todayCount = subActive ? subCompleted : serverTodayCount;
       const dailyGoal = subActive ? subTotal : serverDailyGoal;
       const periodProgress = item.periodProgress ?? null;
       const periodGoal = item.periodGoal ?? null;
-      // 完成任务：打勾只看本周期预期目标进度，不能用当日 displayCompleted
-      // （当日有 1 次打卡时 displayCompleted 常为 true，会误显示为已完成）
       const taskShowPeriodCheck =
         resolvedKind === 'task' &&
         typeof periodProgress === 'number' &&
@@ -95,12 +138,16 @@ async function mergeHabitGridExtraFields(
         : resolvedKind === 'task'
           ? taskShowPeriodCheck
           : Boolean(item.displayCompleted);
+      const noteFromApi = typeof item.note === 'string' && item.note.trim() ? item.note.trim() : null;
       return {
         id: item.id,
         icon: item.icon ?? local?.icon ?? '✓',
         name: item.name ?? local?.name ?? '',
-        note: local?.note?.trim() ? local.note.trim() : null,
-        rewardPoints: parseHabitRewardPoints(extraData),
+        note: noteFromApi ?? (local?.note?.trim() ? local.note.trim() : null),
+        rewardPoints:
+          typeof item.rewardPoints === 'number'
+            ? Math.max(0, Math.floor(item.rewardPoints))
+            : parseHabitRewardPoints(extraData),
         todayCount,
         dailyGoal,
         incrementCap: subActive ? subTotal : parseHabitIncrementCap(extraData, resolvedKind),
@@ -131,10 +178,9 @@ async function pullHabitsGridFromApi(opts: {
     signal: opts.signal,
   });
   const logicalToday = payload.logicalToday?.trim() || opts.logicalToday;
-  const sections = await mergeHabitGridExtraFields(
-    Array.isArray(payload.sections) ? payload.sections : [],
-    logicalToday,
-  );
+  const rawSections = Array.isArray(payload.sections) ? payload.sections : [];
+  await upsertHabitsFromGrid(rawSections);
+  const sections = await mergeHabitGridExtraFields(rawSections, logicalToday);
   return {
     logicalToday,
     sections,

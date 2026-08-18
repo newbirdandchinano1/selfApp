@@ -9,19 +9,26 @@ const DATETIME_FIELD_RE =
 
 /**
  * 时间字段约定（与 MySQL REST 同步）：
- * - **墙上时钟**（happened_at、completed_at 等用户可感知时刻）：按设备本地时区存 YYYY-MM-DD HH:mm:ss（国内通常为东八区）。
- * - **纯审计/同步元数据**（updated_at、created_at 等）：历史上传 REST 时曾转 UTC；任务模块写入已逐步改为墙上时钟。
+ * - **墙上时钟**：按设备本地时区存 YYYY-MM-DD HH:mm:ss，读写都不做 UTC 偏移。
+ * - 无时区的 MySQL DATETIME 一律按墙上时钟理解；带 `Z` / offset 的 ISO 仍按标准瞬间解析。
+ * - 任务模块（tasks / 执行事件 / 青蛙事件）的 created_at、updated_at、completed_at 上传时保持墙上时钟。
  * 读取「逻辑日」相关字段请用 parseTaskAuditDatetimeForLogicalDay / ymdFromAuditDatetime。
  */
 const WALL_CLOCK_DATETIME_FIELDS = new Set(['happened_at', 'completed_at']);
+const WALL_CLOCK_DATETIME_TABLES = new Set(['tasks', 'task_execution_events', 'frog_completion_events']);
 
 function looksLikeJsonString(value: string): boolean {
   const t = value.trim();
   return (t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'));
 }
 
-function isWallClockDatetimeField(fieldKey?: string): boolean {
-  return fieldKey != null && WALL_CLOCK_DATETIME_FIELDS.has(fieldKey);
+function isWallClockDatetimeField(fieldKey?: string, table?: string): boolean {
+  if (fieldKey != null && WALL_CLOCK_DATETIME_FIELDS.has(fieldKey)) return true;
+  return (
+    !!table &&
+    WALL_CLOCK_DATETIME_TABLES.has(table) &&
+    (fieldKey === 'created_at' || fieldKey === 'updated_at')
+  );
 }
 
 function pad2(n: number): string {
@@ -54,8 +61,7 @@ export function formatStoredDatetimeHm(value: string): string {
 }
 
 /**
- * 审计类 _at 字段（completed_at / updated_at 等）：REST 侧按 UTC 写入 MySQL DATETIME。
- * 与 normalizeDateTimeStringForMysql 对称，用于判断「逻辑日完成」。
+ * 仅用于带时区的 ISO 瞬间。无时区 MySQL DATETIME 不要走这里，否则东八区会错一天。
  */
 export function parseAuditDatetimeUtc(value: string): Date {
   const trimmed = value.trim();
@@ -69,32 +75,13 @@ export function parseAuditDatetimeUtc(value: string): Date {
   return new Date(trimmed);
 }
 
-function formatLocalYmdFromDate(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
 /**
- * 任务 completed_at / updated_at：新数据为本地墙上时钟；旧数据可能为 UTC 写入的 MySQL DATETIME。
- * 用于「逻辑日完成」判断，兼容两种存储。
+ * 任务 completed_at / updated_at / 执行事件 created_at：无时区 DATETIME 按墙上时钟，不做 UTC 偏移。
  */
 export function parseTaskAuditDatetimeForLogicalDay(value: string): Date {
   const trimmed = value.trim();
   if (!trimmed) return new Date(Number.NaN);
-  if (ISO_LIKE_DATETIME_RE.test(trimmed)) return new Date(trimmed);
-  if (MYSQL_DATETIME_RE.test(trimmed)) {
-    const asLocal = parseStoredDatetime(trimmed);
-    const asUtc = parseAuditDatetimeUtc(trimmed);
-    const localYmd = formatLocalYmdFromDate(asLocal);
-    const utcAsLocalYmd = formatLocalYmdFromDate(asUtc);
-    if (localYmd !== utcAsLocalYmd && utcAsLocalYmd > localYmd) {
-      return asUtc;
-    }
-    return asLocal;
-  }
-  return new Date(trimmed);
+  return parseStoredDatetime(trimmed);
 }
 
 /** 任务完成/更新时间写入本地 SQLite 与 REST（墙上时钟，与界面一致） */
@@ -102,7 +89,7 @@ export function formatTaskAuditDatetimeLocal(date: Date = new Date()): string {
   return formatWallClockDatetimeLocal(date);
 }
 
-/** 从 completed_at / updated_at 等审计时间取本地日历 YMD（兼容旧 UTC MySQL 与新墙上时钟） */
+/** 从 completed_at / updated_at 等审计时间取本地日历 YMD（墙上时钟，无 UTC 偏移） */
 export function ymdFromAuditDatetime(value: string | null | undefined): string | null {
   if (!value?.trim()) return null;
   const d = parseTaskAuditDatetimeForLogicalDay(value);
@@ -127,12 +114,12 @@ function shouldNormalizeDateTimeString(value: string, fieldKey?: string): boolea
 }
 
 /** ISO8601 / MySQL DATETIME → MySQL DATETIME（秒精度，兼容 DATETIME(0)） */
-export function normalizeDateTimeStringForMysql(value: string, fieldKey?: string): string {
+export function normalizeDateTimeStringForMysql(value: string, fieldKey?: string, table?: string): string {
   const trimmed = value.trim();
   if (!shouldNormalizeDateTimeString(trimmed, fieldKey)) return value;
   const date = parseStoredDatetime(trimmed);
   if (Number.isNaN(date.getTime())) return value;
-  if (isWallClockDatetimeField(fieldKey)) {
+  if (isWallClockDatetimeField(fieldKey, table)) {
     return formatWallClockDatetimeLocal(date);
   }
   const day = [date.getUTCFullYear(), pad2(date.getUTCMonth() + 1), pad2(date.getUTCDate())].join('-');
@@ -141,14 +128,14 @@ export function normalizeDateTimeStringForMysql(value: string, fieldKey?: string
 }
 
 /** 递归规范化行内各字段及 extra_data 等 JSON 字符串中的时间 */
-export function normalizeDeepForMysqlApi(value: unknown, fieldKey?: string): unknown {
+export function normalizeDeepForMysqlApi(value: unknown, fieldKey?: string, table?: string): unknown {
   if (value === null || value === undefined) return value;
 
   if (typeof value === 'string') {
     if (fieldKey === 'extra_data' || looksLikeJsonString(value)) {
       try {
         const parsed = JSON.parse(value) as unknown;
-        return JSON.stringify(normalizeDeepForMysqlApi(parsed));
+        return JSON.stringify(normalizeDeepForMysqlApi(parsed, undefined, table));
       } catch {
         /* 非 JSON，继续按普通字符串处理 */
       }
@@ -157,19 +144,19 @@ export function normalizeDeepForMysqlApi(value: unknown, fieldKey?: string): unk
       const trimmed = value.trim();
       /** MySQL DATE 列：纯 YYYY-MM-DD 保持原样，勿追加时间 */
       if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
-      return normalizeDateTimeStringForMysql(value, fieldKey);
+      return normalizeDateTimeStringForMysql(value, fieldKey, table);
     }
     return value;
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => normalizeDeepForMysqlApi(item));
+    return value.map((item) => normalizeDeepForMysqlApi(item, fieldKey, table));
   }
 
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = normalizeDeepForMysqlApi(v, key);
+      out[key] = normalizeDeepForMysqlApi(v, key, table);
     }
     return out;
   }
@@ -178,12 +165,12 @@ export function normalizeDeepForMysqlApi(value: unknown, fieldKey?: string): unk
 }
 
 /** 上传 REST / MySQL 前规范化整行记录（所有业务表通用） */
-export function normalizeRecordForMysqlApi(row: Record<string, unknown>): Record<string, unknown> {
+export function normalizeRecordForMysqlApi(row: Record<string, unknown>, table?: string): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(row)) {
     if (value === undefined) continue;
     if (key === 'deleted_at' || key === 'version') continue;
-    out[key] = normalizeDeepForMysqlApi(value, key);
+    out[key] = normalizeDeepForMysqlApi(value, key, table);
   }
   return out;
 }

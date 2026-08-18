@@ -5,10 +5,11 @@ import {
   type CompletionHeatmapDayDetailTodo,
 } from '@/lib/api-client';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
-import { getFrogCompletionsForAssignedDay } from '@/lib/repositories/tasks/frog-completion-events';
+import { getFrogCompletionsForAssignedDay, getFrogCompletionCountsByDayRange } from '@/lib/repositories/tasks/frog-completion-events';
 import type { FrogCompletionDayItem } from '@/lib/repositories/tasks/frog-completion-events';
 import {
   getNetCompletedTaskEventsForLocalDay,
+  getTaskCompletionCountsByDayRange,
   type TaskExecutionEventWithTitle,
 } from '@/lib/repositories/tasks/task-execution-events';
 import { loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
@@ -106,34 +107,57 @@ async function fetchCompletionHeatmapDayDetailLocal(ymd: string): Promise<Comple
   };
 }
 
+async function readCompletionHeatmapFromLocal(
+  heatmapStart?: string,
+  heatmapEnd?: string,
+): Promise<Pick<CompletionHeatmapData, 'frogCountByYmd' | 'todoCountByYmd'>> {
+  const [todoCountByYmd, frogCountByYmd] = await Promise.all([
+    heatmapStart && heatmapEnd
+      ? getTaskCompletionCountsByDayRange(heatmapStart, heatmapEnd)
+      : Promise.resolve(new Map<string, number>()),
+    heatmapStart && heatmapEnd
+      ? getFrogCompletionCountsByDayRange(heatmapStart, heatmapEnd)
+      : Promise.resolve(new Map<string, number>()),
+  ]);
+  return { frogCountByYmd, todoCountByYmd };
+}
+
 /**
- * 完成热力图（画格子）：`GET /api/pages/tasks/completion-heatmap`
- * 使用 `countsByDay` 中的 `frogs` / `todos` 字段。
+ * 完成热力图：优先专用接口计数（含待办净完成）。
+ * 不再为热力图拉通用 List；接口失败时才回退本地事件表。
  */
 export async function fetchCompletionHeatmap(opts: HeatmapRequestOpts): Promise<CompletionHeatmapData> {
   const boundary = opts.boundary ?? (await loadTasksDayBoundary());
   const { heatmapStart, heatmapEnd, signal } = opts;
 
   throwIfAborted(signal);
-  const payload = await apiGetTasksCompletionHeatmap({
-    dayBoundaryHour: boundary.hour,
-    dayBoundaryMinute: boundary.minute,
-    heatmapStart,
-    heatmapEnd,
-    signal,
-  });
-  const { frogCountByYmd, todoCountByYmd } = countsRecordToMaps(payload.countsByDay ?? {});
-  return {
-    frogCountByYmd,
-    todoCountByYmd,
-    meta: payload.meta ?? {},
-  };
+  try {
+    const payload = await apiGetTasksCompletionHeatmap({
+      dayBoundaryHour: boundary.hour,
+      dayBoundaryMinute: boundary.minute,
+      heatmapStart,
+      heatmapEnd,
+      signal,
+    });
+    const apiCounts = countsRecordToMaps(payload.countsByDay ?? {});
+    return {
+      frogCountByYmd: apiCounts.frogCountByYmd,
+      todoCountByYmd: apiCounts.todoCountByYmd,
+      meta: payload.meta ?? {},
+    };
+  } catch (e) {
+    console.warn('[completion-heatmap] 接口失败，回退本地', e);
+    const local = await readCompletionHeatmapFromLocal(heatmapStart, heatmapEnd);
+    return {
+      frogCountByYmd: local.frogCountByYmd,
+      todoCountByYmd: local.todoCountByYmd,
+      meta: {},
+    };
+  }
 }
 
 /**
- * 点击某一天：`GET /api/pages/tasks/completion-heatmap?day=YYYY-MM-DD&...`
- * 读 `dayDetail.todos`（不是 overview 的 `dayDetail.events`）。
- * `heatmapStart` / `heatmapEnd` / 日界必须与首次加载热力图一致。
+ * 点击某一天：优先专用接口明细（待办须为净完成口径）；失败再回退本地。
  */
 export async function fetchCompletionHeatmapDayDetail(
   opts: HeatmapRequestOpts & { day: string },
@@ -156,9 +180,8 @@ export async function fetchCompletionHeatmapDayDetail(
     if (payload.dayDetail) {
       return mapDayDetailFromApi(payload.dayDetail, ymd);
     }
-    return { frogItems: [], todoItems: [] };
   } catch (e) {
     console.warn('[completion-heatmap] 日明细接口失败，回退本地', e);
-    return fetchCompletionHeatmapDayDetailLocal(ymd);
   }
+  return fetchCompletionHeatmapDayDetailLocal(ymd);
 }

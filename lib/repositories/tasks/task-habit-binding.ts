@@ -15,12 +15,12 @@ import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-da
 import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
 import {
   cascadeParentTaskStatusAfterChildChange,
+  getTasks,
   type ParentTaskCascadeChange,
   updateTask,
 } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { isTaskShelvedStatus, isTaskTerminalStatus } from '@/lib/repositories/tasks/task.types';
-import { readApiTable } from '@/lib/api-read';
 
 const BOUND_HABIT_IDS_KEY = 'bound_habit_ids';
 /** @deprecated 兼容旧版单项绑定 */
@@ -126,7 +126,7 @@ export function isHabitGoalMetForTaskBinding(
 }
 
 async function loadAllTasks(): Promise<TaskRow[]> {
-  return readApiTable<TaskRow>('tasks', { offlineFallback: true });
+  return getTasks();
 }
 
 export async function getTodayHabitCount(habitId: string, logicalTodayYmd?: string): Promise<number> {

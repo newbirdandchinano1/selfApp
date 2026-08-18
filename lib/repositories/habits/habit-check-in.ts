@@ -1,5 +1,5 @@
 import { makeCompositeEntityId } from '@/lib/entity-id';
-import { invalidateInflightApiTableFetch, readApiTable } from '@/lib/api-read';
+import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { isYmdInRange } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '../../tasks-logical-day';
@@ -54,20 +54,27 @@ export async function pushHabitCheckInChangesToApi(opts?: { awaitSync?: boolean 
 }
 
 async function loadActiveHabitIds(): Promise<Set<string>> {
-  const habits = await readApiTable<{ id: string }>('habits', { offlineFallback: true });
-  return new Set(habits.map(h => h.id));
+  const db = await getDatabase();
+  if (!db) return new Set();
+  const rows = await db.getAllAsync<{ id: string }>(
+    `SELECT id FROM habits WHERE sync_status != 'pending_delete'`,
+  );
+  return new Set((rows ?? []).map((h) => h.id));
 }
 
+/** 仅读本地 SQLite，禁止 `/api/data/habit_check_ins` 全表 */
 async function loadActiveCheckIns(): Promise<
   { habit_id: string; record_date: string; count: number }[]
 > {
+  const db = await getDatabase();
+  if (!db) return [];
   const [habitIds, checkIns] = await Promise.all([
     loadActiveHabitIds(),
-    readApiTable<{ habit_id: string; record_date: string; count: number }>('habit_check_ins', {
-      offlineFallback: true,
-    }),
+    db.getAllAsync<{ habit_id: string; record_date: string; count: number }>(
+      `SELECT habit_id, record_date, count FROM habit_check_ins WHERE sync_status != 'pending_delete'`,
+    ),
   ]);
-  return checkIns.filter(c => habitIds.has(c.habit_id) && (c.count ?? 0) >= 0);
+  return (checkIns ?? []).filter((c) => habitIds.has(c.habit_id) && (c.count ?? 0) >= 0);
 }
 
 /** 本地 SQLite 中该习惯的打卡次数（pending 覆盖 synced；pending_delete 视为无记录） */
@@ -90,17 +97,9 @@ async function readLocalCheckInsForHabit(habitId: string): Promise<Record<string
   return out;
 }
 
-/** 当前习惯所有有效打卡日 → YYYY-MM-DD → 次数（REST + 本地 pending 合并，本地优先） */
+/** 当前习惯所有有效打卡日 → YYYY-MM-DD → 次数（仅本地，不打打卡全表 List） */
 export async function getCheckInsMapByHabitId(habitId: string): Promise<Record<string, number>> {
-  const [checkIns, fromLocal] = await Promise.all([loadActiveCheckIns(), readLocalCheckInsForHabit(habitId)]);
-  const out: Record<string, number> = {};
-  for (const r of checkIns.filter(c => c.habit_id === habitId)) {
-    out[r.record_date] = r.count;
-  }
-  for (const [ymd, count] of Object.entries(fromLocal)) {
-    out[ymd] = count;
-  }
-  return out;
+  return readLocalCheckInsForHabit(habitId);
 }
 
 /**
@@ -181,27 +180,20 @@ export async function hasHabitCheckInRecordForDay(habitId: string, recordDateYmd
   return Object.prototype.hasOwnProperty.call(map, recordDateYmd);
 }
 
-/** 批量查询指定逻辑日各习惯是否有打卡记录 */
+/** 批量查询指定逻辑日各习惯是否有打卡记录（仅本地当日行） */
 export async function getHabitDayRecordFlagsForYmd(recordDateYmd: string): Promise<Map<string, boolean>> {
-  const checkIns = await loadActiveCheckIns();
   const map = new Map<string, boolean>();
-  for (const r of checkIns) {
-    if (r.record_date === recordDateYmd) {
-      map.set(r.habit_id, true);
-    }
-  }
   const db = await getDatabase();
-  if (db) {
-    const rows = await db.getAllAsync<{ habit_id: string; sync_status: string }>(
-      `SELECT habit_id, sync_status FROM habit_check_ins WHERE record_date = ?`,
-      [recordDateYmd],
-    );
-    for (const r of rows) {
-      if (r.sync_status === 'pending_delete') {
-        map.delete(r.habit_id);
-      } else {
-        map.set(r.habit_id, true);
-      }
+  if (!db) return map;
+  const rows = await db.getAllAsync<{ habit_id: string; sync_status: string }>(
+    `SELECT habit_id, sync_status FROM habit_check_ins WHERE record_date = ?`,
+    [recordDateYmd],
+  );
+  for (const r of rows ?? []) {
+    if (r.sync_status === 'pending_delete') {
+      map.delete(r.habit_id);
+    } else {
+      map.set(r.habit_id, true);
     }
   }
   return map;
@@ -334,16 +326,23 @@ export async function loadHabitCheckInPageData(): Promise<{
   return { checkInsMaps, checkStats };
 }
 
-/** 各习惯在指定逻辑日的打卡次数（单次全表扫描） */
+/** 各习惯在指定逻辑日的打卡次数（仅本地当日行） */
 export async function getTodayHabitCountsMap(logicalTodayYmd?: string): Promise<Map<string, number>> {
   const boundary = await loadTasksDayBoundary();
   const today = logicalTodayYmd ?? getLogicalLocalYmd(new Date(), boundary);
-  const checkIns = await loadActiveCheckIns();
   const map = new Map<string, number>();
-  for (const r of checkIns) {
-    if (r.record_date === today) {
-      map.set(r.habit_id, r.count);
+  const db = await getDatabase();
+  if (!db) return map;
+  const rows = await db.getAllAsync<{ habit_id: string; count: number; sync_status: string }>(
+    `SELECT habit_id, count, sync_status FROM habit_check_ins WHERE record_date = ?`,
+    [today],
+  );
+  for (const r of rows ?? []) {
+    if (r.sync_status === 'pending_delete') {
+      map.delete(r.habit_id);
+      continue;
     }
+    map.set(r.habit_id, r.count ?? 0);
   }
   return map;
 }
@@ -360,26 +359,30 @@ export async function getHabitCheckInListStats(): Promise<Map<string, HabitCheck
   return checkStats;
 }
 
-/** 日期区间内各习惯每日打卡次数（record_date → habitId → count） */
+/** 日期区间内各习惯每日打卡次数（仅本地，禁止打卡全表 List） */
 export async function getHabitCheckInCountsByDateRange(
   startYmd: string,
   endYmd: string,
   opts?: { habitIds?: Set<string> },
 ): Promise<Map<string, Map<string, number>>> {
   const habitIds = opts?.habitIds ?? (await loadActiveHabitIds());
-  const checkIns = await readApiTable<{ habit_id: string; record_date: string; count: number }>(
-    'habit_check_ins',
-    {
-      offlineFallback: true,
-      startDate: startYmd,
-      endDate: endYmd,
-    },
-  );
-  const rows = checkIns.filter(
-    c => habitIds.has(c.habit_id) && (c.count ?? 0) >= 0 && isYmdInRange(c.record_date, startYmd, endYmd),
-  );
   const out = new Map<string, Map<string, number>>();
-  for (const r of rows) {
+  const db = await getDatabase();
+  if (!db) return out;
+  const checkIns = await db.getAllAsync<{
+    habit_id: string;
+    record_date: string;
+    count: number;
+    sync_status: string;
+  }>(
+    `SELECT habit_id, record_date, count, sync_status FROM habit_check_ins
+      WHERE record_date >= ? AND record_date <= ?`,
+    [startYmd, endYmd],
+  );
+  for (const r of checkIns ?? []) {
+    if (r.sync_status === 'pending_delete') continue;
+    if (!habitIds.has(r.habit_id) || (r.count ?? 0) < 0) continue;
+    if (!isYmdInRange(r.record_date, startYmd, endYmd)) continue;
     let day = out.get(r.record_date);
     if (!day) {
       day = new Map();

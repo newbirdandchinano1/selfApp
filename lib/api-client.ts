@@ -15,7 +15,11 @@ import {
 } from '@/lib/api-mysql-payload';
 import { enqueueApiRequest } from '@/lib/api-request-queue';
 import { fetchWithTimeoutAndRetry, isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
-import type { TasksCalendarResponse } from '@/lib/tasks-calendar-data';
+import type {
+    TasksCalendarDayResponse,
+    TasksCalendarGridResponse,
+    TasksCalendarResponse,
+} from '@/lib/tasks-calendar-data';
 
 export function prepareRowBodyForApi(
   table: string,
@@ -23,7 +27,7 @@ export function prepareRowBodyForApi(
   opts?: ApiUploadSlimOptions,
 ): Record<string, unknown> {
   const mapped = mapTableRowForMysqlApiUpload(table, row);
-  const normalized = normalizeRecordForMysqlApi(mapped) as Record<string, unknown>;
+  const normalized = normalizeRecordForMysqlApi(mapped, table) as Record<string, unknown>;
   /**
    * 积分钱包服务端用 updated_at 乐观锁，库内多为会话时区墙上时钟。
    * 通用 normalize 会把时间收成 UTC，东八区下会固定「旧 8 小时」而被永久拒绝。
@@ -556,10 +560,20 @@ function buildListQuery(opts?: ApiListQueryOpts): string {
   });
 }
 
+export type TodayFrogsMeta = {
+  serverFiltered?: boolean;
+  filtersVersion?: string;
+  serverTime?: string;
+};
+
 export type TodayFrogsPayload = {
   logicalToday: string;
   count: number;
   tasks: Record<string, unknown>[];
+  /** 今日指派的项目青蛙（与 projects 行一致） */
+  projectFrogs?: Record<string, unknown>[];
+  projectFrogIds?: string[];
+  meta?: TodayFrogsMeta;
 };
 
 export async function apiGetTodayFrogs(params?: {
@@ -627,6 +641,48 @@ export async function apiGetTasksCalendar(
     dayBoundaryMinute: params.dayBoundaryMinute ?? 0,
   });
   return apiRequest(`/api/calendar/tasks${qs}`, {
+    method: 'GET',
+    signal: params.signal,
+  });
+}
+
+/** 月格轻量接口 `GET /api/calendar/tasks/grid`（见 BACKEND_TASKS_CALENDAR_API.md） */
+export async function apiGetTasksCalendarGrid(
+  params: {
+    start: string;
+    end: string;
+    dayBoundaryHour?: number;
+    dayBoundaryMinute?: number;
+    signal?: AbortSignal;
+  },
+): Promise<TasksCalendarGridResponse> {
+  const qs = buildQuery({
+    start: params.start,
+    end: params.end,
+    dayBoundaryHour: params.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params.dayBoundaryMinute ?? 0,
+  });
+  return apiRequest(`/api/calendar/tasks/grid${qs}`, {
+    method: 'GET',
+    signal: params.signal,
+  });
+}
+
+/** 选中日详情 `GET /api/calendar/tasks/day` */
+export async function apiGetTasksCalendarDay(
+  params: {
+    ymd: string;
+    dayBoundaryHour?: number;
+    dayBoundaryMinute?: number;
+    signal?: AbortSignal;
+  },
+): Promise<TasksCalendarDayResponse> {
+  const qs = buildQuery({
+    ymd: params.ymd,
+    dayBoundaryHour: params.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params.dayBoundaryMinute ?? 0,
+  });
+  return apiRequest(`/api/calendar/tasks/day${qs}`, {
     method: 'GET',
     signal: params.signal,
   });
@@ -756,12 +812,11 @@ export async function apiGetTasksBootstrap(
     page: params?.page,
     limit: params?.limit,
   });
-  // bootstrap 端点一次返回 10 张表的数据，JSON 响应可能非常大，
-  // 使用更长的超时时间避免在慢网络下被截断
+  // 带 taskView 的筛选视图只返回 tasks，超时按普通 page API；无 taskView 的 10 表 bootstrap 才用长超时
   return apiRequest<TasksBootstrapPayload>(`/api/pages/tasks${qs}`, {
     method: 'GET',
     signal: params?.signal,
-    perAttemptTimeoutMs: 180_000,
+    perAttemptTimeoutMs: params?.taskView ? 20_000 : 180_000,
   });
 }
 
@@ -776,6 +831,11 @@ export type HabitsGridItem = {
   hiddenOnViewDay: boolean;
   periodProgress: number | null;
   periodGoal: number | null;
+  note?: string | null;
+  extra_data?: string | Record<string, unknown> | null;
+  extraData?: string | Record<string, unknown> | null;
+  context?: string | null;
+  rewardPoints?: number;
 };
 
 export type HabitsGridSection = {
@@ -985,6 +1045,9 @@ export type PageListMeta = {
   includeCompleted?: boolean;
   /** 后端回显：本次响应是否包含 status=cancelled 的任务 */
   includeCancelled?: boolean;
+  /** true 表示每个项目的 tasks 树已给全，未按 LIMIT 截断 */
+  tasksComplete?: boolean;
+  projectId?: string;
 };
 
 export type PageListResponse<T> = {
@@ -1001,6 +1064,8 @@ export type ApiTaskTreeNode = Record<string, unknown> & {
 export type ApiProjectListItem = Record<string, unknown> & {
   id: string;
   tasks?: ApiTaskTreeNode[];
+  /** 该项目在服务端的任务总数（含子孙）；APP 用来发现树被截断 */
+  taskCount?: number;
 };
 
 export type ProjectsListQueryParams = {
@@ -1013,6 +1078,8 @@ export type ProjectsListQueryParams = {
   page?: number;
   limit?: number;
   updatedSince?: string;
+  /** 只返回这一个项目及其完整任务树 */
+  projectId?: string;
   signal?: AbortSignal;
 };
 
@@ -1030,6 +1097,7 @@ export async function apiGetProjectsList(
     page: params?.page,
     limit: params?.limit,
     updatedSince: params?.updatedSince,
+    projectId: params?.projectId,
   });
   const data = await apiRequest<PageListResponse<ApiProjectListItem>>(`/api/pages/projects${qs}`, {
     method: 'GET',

@@ -1,3 +1,4 @@
+import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { ensureLocalRowPresent } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { makeTimestampEntityId } from '@/lib/entity-id';
@@ -52,10 +53,11 @@ export async function insertFrogCompletionEvent(
   }
   const db = await getDatabase();
   const id = makeTimestampEntityId('fevt_', 8);
+  const createdAt = formatTaskAuditDatetimeLocal();
   await db.runAsync(
     `INSERT INTO frog_completion_events (id, task_id, assigned_ymd, action, created_at, task_title, sync_status)
-     VALUES (?, ?, ?, ?, datetime('now'), ?, 'pending_create')`,
-    [id, taskId, ymd, action, taskTitle?.trim() || null]
+     VALUES (?, ?, ?, ?, ?, ?, 'pending_create')`,
+    [id, taskId, ymd, action, createdAt, taskTitle?.trim() || null]
   );
   invalidateInflightApiTableFetch('frog_completion_events');
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');

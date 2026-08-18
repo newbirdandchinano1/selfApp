@@ -6,13 +6,13 @@ import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useTasksCalendarSummaries } from '@/hooks/use-tasks-calendar-summaries';
 import { isHabitDayGoalMet } from '@/lib/repositories/habits/habit-goal';
 import type { HabitKind } from '@/lib/repositories/habits/habit-kind';
-import { isTaskActiveStatus } from '@/lib/repositories/tasks/task.types';
 import {
+  emptyCalendarDay,
   formatTasksCalendarPriority,
-  getTasksCalendarCellLevel,
   getTasksCalendarPriorityColor,
   type FrogCalendarDayStatus,
   type TasksCalendarDaySummary,
+  type TasksCalendarGridDay,
   type TasksCalendarHabitItem,
   type TasksCalendarProjectItem,
   type TasksCalendarTaskItem,
@@ -669,7 +669,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   dayCellSize,
   selectedYmd,
   onSelectDate,
-  summaries,
+  grid,
   loading,
   heatLevels,
   heatEmpty,
@@ -686,7 +686,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   dayCellSize: number;
   selectedYmd: string;
   onSelectDate: (d: Date) => void;
-  summaries: Map<string, TasksCalendarDaySummary> | undefined;
+  grid: Map<string, TasksCalendarGridDay> | undefined;
   loading: boolean;
   heatLevels: readonly string[];
   heatEmpty: string;
@@ -702,7 +702,7 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
 
   const gridTrackWidth = dayCellSize * 7 + GRID_GAP * 6;
 
-  if ((loading && !summaries) || dayCellSize <= 0) {
+  if ((loading && !grid) || dayCellSize <= 0) {
     return (
       <View style={{ width: pageWidth, minHeight: pageWidth * 0.72, justifyContent: 'center' }}>
         <ActivityIndicator color={primary} />
@@ -723,16 +723,14 @@ const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
       {gridWeeks.map((week, wi) => (
         <View key={`week-${offset}-${wi}`} style={[styles.weekRow, { gap: GRID_GAP }]}>
           {week.map((cell: GridCell) => {
-            const summary = summaries?.get(cell.ymd);
-            const level = getTasksCalendarCellLevel(summary, logicalTodayYmd);
+            const cellGrid = grid?.get(cell.ymd);
+            const level = cellGrid?.level ?? 0;
             const bg = level === 0 ? heatEmpty : heatLevels[level];
             const selected = cell.ymd === selectedYmd;
             const isToday = cell.ymd === logicalTodayYmd;
-            const frogN = summary?.frogs.length ?? 0;
-            const habitN = summary?.habits.length ?? 0;
-            const openN =
-              (summary?.standaloneTodos.filter((t) => isTaskActiveStatus(t.status)).length ?? 0) +
-              (summary?.matrixTasks.filter((t) => isTaskActiveStatus(t.status)).length ?? 0);
+            const frogN = cellGrid?.frogs ?? 0;
+            const habitN = cellGrid?.habits ?? 0;
+            const openN = cellGrid?.openTodos ?? 0;
 
             return (
               <Pressable
@@ -799,12 +797,14 @@ export default function TasksCalendarScreen() {
   const [monthOffset, setMonthOffset] = React.useState(0);
   const [visibleMonthOffset, setVisibleMonthOffset] = React.useState(0);
   const [selectedDate, setSelectedDate] = React.useState<Date>(() => today);
+  const selectedYmd = formatYmd(selectedDate);
 
-  const { summaries, detailLoading, cacheVersion, getMonthPageData, refreshControl } =
+  const { monthGrid, selectedSummary, detailLoading, cacheVersion, getMonthPageData, refreshControl } =
     useTasksCalendarSummaries({
       pageKey: PAGE_API_KEY,
       monthOffset,
       todayMonthStart,
+      selectedYmd,
       boundary,
       wrapLoad,
     });
@@ -832,7 +832,6 @@ export default function TasksCalendarScreen() {
     () => `${calendarWidth}:${dayCellSize}:${cacheVersion}`,
     [calendarWidth, dayCellSize, cacheVersion]
   );
-  const selectedYmd = formatYmd(selectedDate);
 
   React.useEffect(() => {
     calendarWidthRef.current = calendarWidth;
@@ -904,8 +903,6 @@ export default function TasksCalendarScreen() {
     setMonthOffset((prev) => prev + 1);
   }, []);
 
-  const selectedSummary = summaries.get(selectedYmd);
-
   const monthStats = React.useMemo(() => {
     let frogDays = 0;
     let habitDays = 0;
@@ -915,14 +912,14 @@ export default function TasksCalendarScreen() {
     const daysInMonth = new Date(y, m + 1, 0).getDate();
     for (let day = 1; day <= daysInMonth; day += 1) {
       const ymd = formatYmd(new Date(y, m, day));
-      const s = summaries.get(ymd);
-      if (!s) continue;
-      if (s.frogs.some((f) => f.status === 'done')) frogDays += 1;
-      if (s.habits.some((h) => h.todayCount > 0)) habitDays += 1;
-      if (s.dueTasks.length > 0) dueDays += 1;
+      const cell = monthGrid.get(ymd);
+      if (!cell) continue;
+      if (cell.frogDone) frogDays += 1;
+      if (cell.habitChecked) habitDays += 1;
+      if (cell.dueCount > 0) dueDays += 1;
     }
     return { frogDays, habitDays, dueDays };
-  }, [visibleMonth, summaries]);
+  }, [visibleMonth, monthGrid]);
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['left', 'right']}>
@@ -1080,7 +1077,7 @@ export default function TasksCalendarScreen() {
               });
             }}
             renderItem={({ item: offset }) => {
-              const { summaries: monthSummaries, loading: monthLoading } = getMonthPageData(offset);
+              const { grid: monthGridPage, loading: monthLoading } = getMonthPageData(offset);
               return (
               <TasksCalendarMonthPage
                 key={`tasks-cal-page-${offset}`}
@@ -1091,7 +1088,7 @@ export default function TasksCalendarScreen() {
                 dayCellSize={dayCellSize}
                 selectedYmd={selectedYmd}
                 onSelectDate={setSelectedDate}
-                summaries={monthSummaries}
+                grid={monthGridPage}
                 loading={monthLoading}
                 heatLevels={heatLevels}
                 heatEmpty={heatEmpty}
@@ -1135,15 +1132,7 @@ export default function TasksCalendarScreen() {
             />
           ) : (
             <DayDetailSections
-              summary={{
-                ymd: selectedYmd,
-                frogs: [],
-                standaloneTodos: [],
-                matrixTasks: [],
-                dueTasks: [],
-                habits: [],
-                projectsDue: [],
-              }}
+              summary={emptyCalendarDay(selectedYmd)}
               selectedDate={selectedDate}
               logicalTodayYmd={logicalTodayYmd}
               router={router}

@@ -1,8 +1,17 @@
 import { requireLocalRowForWrite } from '@/lib/api-local-row';
-import { invalidateInflightApiTableFetch, readApiRecord, readApiTable } from '@/lib/api-read';
+import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '../../database.native';
 import type { CreateHabitInput, HabitRow, UpdateHabitInput } from './habit.types';
+
+async function readLocalHabitsVisible(): Promise<HabitRow[]> {
+  const db = await getDatabase();
+  if (!db) return [];
+  const rows = await db.getAllAsync<HabitRow>(
+    `SELECT * FROM habits WHERE sync_status != 'pending_delete'`,
+  );
+  return rows ?? [];
+}
 
 async function pushHabitChangesToApi(): Promise<void> {
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
@@ -36,16 +45,23 @@ export async function createHabit(input: CreateHabitInput) {
 }
 
 export async function getHabitById(id: string) {
-  return readApiRecord<HabitRow>('habits', id, { offlineFallback: true });
+  const db = await getDatabase();
+  if (!db) return null;
+  const row = await db.getFirstAsync<HabitRow>(
+    `SELECT * FROM habits WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
+    [id],
+  );
+  return row ?? null;
 }
 
+/** 习惯列表：仅读本地 SQLite，禁止 `/api/data/habits` 全表 */
 export async function getHabits() {
-  const rows = await readApiTable<HabitRow>('habits', { offlineFallback: true });
+  const rows = await readLocalHabitsVisible();
   return sortByUpdatedDesc(rows);
 }
 
 export async function getHabitsByContext(context: string) {
-  const rows = await readApiTable<HabitRow>('habits', { offlineFallback: true });
+  const rows = await readLocalHabitsVisible();
   return sortByUpdatedDesc(rows.filter(r => r.context === context));
 }
 

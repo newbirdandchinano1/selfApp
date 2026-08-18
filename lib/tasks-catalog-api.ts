@@ -1,6 +1,6 @@
 import { apiGetTasksCatalog, type TasksCatalogPayload } from '@/lib/api-client';
 import { localDbHasSubstantialUserData, readAppMeta, writeAppMeta } from '@/lib/api-local-bootstrap';
-import { fetchApiTableAll, withApiTableSyncLock } from '@/lib/api-read';
+import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { sleep, throwIfAborted } from '@/lib/cloud-fetch-retry';
 import {
@@ -21,8 +21,6 @@ const CATALOG_TABLE_MAP: [keyof TasksCatalogPayload, string][] = [
   ['taskCategories', 'task_categories'],
   ['projects', 'projects'],
 ];
-
-const CATALOG_FALLBACK_TABLES = ['projects', 'project_categories', 'task_categories'] as const;
 
 export type TasksCatalogData = {
   projects: ProjectRow[];
@@ -216,43 +214,6 @@ async function validateCatalogSyncLocal(
   return { ok: true };
 }
 
-async function validateCatalogFallbackLocal(): Promise<{ ok: boolean; reason?: string }> {
-  const [projectCategories, projects] = await Promise.all([
-    getProjectCategories(),
-    getProjects(),
-  ]);
-  const categoryIds = new Set(projectCategories.map((c) => c.id));
-  const orphanProjectCategory = projects.some(
-    (p) =>
-      p.category_id &&
-      !isProjectInInboxCategory(p.category_id) &&
-      !categoryIds.has(p.category_id),
-  );
-  if (orphanProjectCategory) {
-    return { ok: false, reason: '降级后项目仍引用不存在的分类' };
-  }
-  return { ok: true };
-}
-
-/** catalog 连续失败时降级：与单表 List 共用后端查询层 */
-async function pullTasksCatalogViaTableListFallback(opts?: {
-  signal?: AbortSignal;
-}): Promise<TasksCatalogData> {
-  console.warn('[tasks-catalog-api] catalog 失败，降级逐表 List 拉取');
-  for (const table of CATALOG_FALLBACK_TABLES) {
-    throwIfAborted(opts?.signal);
-    await fetchApiTableAll<Record<string, unknown>>(table, {
-      signal: opts?.signal,
-      forceRefresh: true,
-    });
-  }
-  const validation = await validateCatalogFallbackLocal();
-  if (!validation.ok) {
-    throw new Error(`[tasks-catalog-api] 降级校验失败: ${validation.reason ?? 'unknown'}`);
-  }
-  return readTasksCatalogFromLocal();
-}
-
 async function pullTasksCatalogFromApi(opts?: {
   forceRefresh?: boolean;
   signal?: AbortSignal;
@@ -335,12 +296,7 @@ async function pullTasksCatalogFromApiWithRetry(opts?: {
     }
   }
 
-  try {
-    return await pullTasksCatalogViaTableListFallback(opts);
-  } catch (fallbackErr) {
-    console.warn('[tasks-catalog-api] 降级逐表 List 失败', fallbackErr);
-    throw lastError instanceof Error ? lastError : new Error(String(lastError));
-  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 /**

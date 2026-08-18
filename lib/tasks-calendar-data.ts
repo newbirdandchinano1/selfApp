@@ -17,7 +17,11 @@ import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getFrogAssignedDates } from '@/lib/frog-assignment';
 import { getFrogSessionCompletedOn } from '@/lib/long-term-task';
-import { isTaskActiveStatus, isTaskTerminalStatus, type TaskRow } from '@/lib/repositories/tasks/task.types';
+import {
+  isTaskActiveStatus,
+  isTaskTerminalStatus,
+  type TaskRow,
+} from '@/lib/repositories/tasks/task.types';
 
 /** 日历详情中某日青蛙的完成态（相对 logicalTodayYmd） */
 export type FrogCalendarDayStatus = 'pending' | 'completed' | 'partial' | 'incomplete';
@@ -66,12 +70,163 @@ export type TasksCalendarDaySummary = {
   projectsDue: TasksCalendarProjectItem[];
 };
 
-/** 聚合接口 `GET /api/calendar/tasks` 响应体（见 CALENDAR_API_FOR_APP.md） */
+export type TasksCalendarMeta = {
+  renderReady?: boolean;
+  view?: string;
+  logicalToday?: string;
+  serverTime?: string;
+};
+
+/** 聚合接口 `GET /api/calendar/tasks` 响应体（见 BACKEND_TASKS_CALENDAR_API.md） */
 export type TasksCalendarResponse = {
   start: string;
   end: string;
   days: Record<string, TasksCalendarDaySummary>;
+  meta?: TasksCalendarMeta;
 };
+
+/** 月格 `GET /api/calendar/tasks/grid` 单日标量 */
+export type TasksCalendarGridDay = {
+  ymd: string;
+  level: 0 | 1 | 2 | 3 | 4;
+  frogs: number;
+  openTodos: number;
+  habits: number;
+  projectsDue: number;
+  frogDone: boolean;
+  habitChecked: boolean;
+  dueCount: number;
+};
+
+export type TasksCalendarGridResponse = {
+  start: string;
+  end: string;
+  days: Record<string, TasksCalendarGridDay>;
+  meta?: TasksCalendarMeta;
+};
+
+/** 选中日 `GET /api/calendar/tasks/day` */
+export type TasksCalendarDayResponse = {
+  ymd?: string;
+  day?: TasksCalendarDaySummary;
+  meta?: TasksCalendarMeta;
+} & Partial<TasksCalendarDaySummary>;
+
+export function isTasksCalendarRenderReady(payload?: { meta?: TasksCalendarMeta } | null): boolean {
+  return payload?.meta?.renderReady === true;
+}
+
+export function emptyCalendarDay(ymd: string): TasksCalendarDaySummary {
+  return {
+    ymd,
+    frogs: [],
+    standaloneTodos: [],
+    matrixTasks: [],
+    dueTasks: [],
+    habits: [],
+    projectsDue: [],
+  };
+}
+
+export function emptyGridDay(ymd: string): TasksCalendarGridDay {
+  return {
+    ymd,
+    level: 0,
+    frogs: 0,
+    openTodos: 0,
+    habits: 0,
+    projectsDue: 0,
+    frogDone: false,
+    habitChecked: false,
+    dueCount: 0,
+  };
+}
+
+function asNonNegInt(value: unknown): number {
+  const n = Math.floor(Number(value) || 0);
+  return n > 0 ? n : 0;
+}
+
+export function normalizeTasksCalendarGridDay(ymd: string, raw: Partial<TasksCalendarGridDay> | null | undefined): TasksCalendarGridDay {
+  const levelRaw = Math.floor(Number(raw?.level) || 0);
+  const level = (levelRaw <= 0 ? 0 : levelRaw >= 4 ? 4 : levelRaw) as 0 | 1 | 2 | 3 | 4;
+  return {
+    ymd: raw?.ymd?.trim() || ymd,
+    level,
+    frogs: asNonNegInt(raw?.frogs),
+    openTodos: asNonNegInt(raw?.openTodos),
+    habits: asNonNegInt(raw?.habits),
+    projectsDue: asNonNegInt(raw?.projectsDue),
+    frogDone: raw?.frogDone === true,
+    habitChecked: raw?.habitChecked === true,
+    dueCount: asNonNegInt(raw?.dueCount),
+  };
+}
+
+export function daysRecordToGridMap(
+  days: Record<string, Partial<TasksCalendarGridDay>> | null | undefined,
+): Map<string, TasksCalendarGridDay> {
+  const map = new Map<string, TasksCalendarGridDay>();
+  if (!days) return map;
+  for (const [ymd, raw] of Object.entries(days)) {
+    map.set(ymd, normalizeTasksCalendarGridDay(ymd, raw));
+  }
+  return map;
+}
+
+export function daySummaryToGridDay(
+  summary: TasksCalendarDaySummary,
+  logicalTodayYmd?: string,
+): TasksCalendarGridDay {
+  const openTodos =
+    summary.standaloneTodos.filter((t) => isTaskActiveStatus(t.status)).length +
+    summary.matrixTasks.filter((t) => isTaskActiveStatus(t.status)).length;
+  return {
+    ymd: summary.ymd,
+    level: getTasksCalendarCellLevel(summary, logicalTodayYmd),
+    frogs: summary.frogs.length,
+    openTodos,
+    habits: summary.habits.length,
+    projectsDue: summary.projectsDue.length,
+    frogDone: summary.frogs.some((f) => f.status === 'done'),
+    habitChecked: summary.habits.some((h) => h.todayCount > 0),
+    dueCount: summary.dueTasks.length,
+  };
+}
+
+export function summariesToGridMap(
+  summaries: Map<string, TasksCalendarDaySummary>,
+  logicalTodayYmd?: string,
+): Map<string, TasksCalendarGridDay> {
+  const map = new Map<string, TasksCalendarGridDay>();
+  for (const [ymd, summary] of summaries) {
+    map.set(ymd, daySummaryToGridDay(summary, logicalTodayYmd));
+  }
+  return map;
+}
+
+export function parseTasksCalendarDayPayload(
+  data: TasksCalendarDayResponse | TasksCalendarDaySummary | null | undefined,
+  fallbackYmd: string,
+): TasksCalendarDaySummary | null {
+  if (!data || typeof data !== 'object') return null;
+  const nested = 'day' in data && data.day && typeof data.day === 'object' ? data.day : null;
+  const src = nested ?? data;
+  const ymd = (src.ymd || ('ymd' in data ? data.ymd : '') || fallbackYmd).trim();
+  if (!ymd) return null;
+  if (!Array.isArray(src.frogs) && !nested && !Array.isArray((data as TasksCalendarDaySummary).standaloneTodos)) {
+    return null;
+  }
+  return {
+    ymd,
+    frogs: Array.isArray(src.frogs) ? src.frogs : [],
+    standaloneTodos: Array.isArray(src.standaloneTodos) ? src.standaloneTodos : [],
+    matrixTasks: Array.isArray(src.matrixTasks) ? src.matrixTasks : [],
+    dueTasks: Array.isArray(src.dueTasks) ? src.dueTasks : [],
+    habits: Array.isArray(src.habits) ? src.habits : [],
+    projectsDue: Array.isArray(src.projectsDue) ? src.projectsDue : [],
+  };
+}
 
 export function daysRecordToSummariesMap(
   days: Record<string, TasksCalendarDaySummary>,
@@ -289,15 +444,7 @@ export function enrichTasksCalendarStandaloneTodos(
 }
 
 function emptyDay(ymd: string): TasksCalendarDaySummary {
-  return {
-    ymd,
-    frogs: [],
-    standaloneTodos: [],
-    matrixTasks: [],
-    dueTasks: [],
-    habits: [],
-    projectsDue: [],
-  };
+  return emptyCalendarDay(ymd);
 }
 
 /** 日历格热力等级 0–4（与任务页信息密度对应） */

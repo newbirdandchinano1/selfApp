@@ -38,8 +38,6 @@ import { overlayLocalPendingOnApiTableRows } from '@/lib/api-read-pending-overla
 
 import { fetchTasksCatalog } from '@/lib/tasks-catalog-api';
 
-import { syncTasksTableFromApi } from '@/lib/tasks-table-sync';
-
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
 
 import {
@@ -70,7 +68,7 @@ import { taskHasRepeatingSchedule } from '@/lib/task-repeat-rollover';
 
 export const TASKS_PAGE_FILTERS_VERSION = 'tasks-page-v1';
 
-/** 待办栏单视图请求分页上限（与后端契约一致） */
+/** 待办栏 / 四象限单视图请求分页上限（与后端契约一致） */
 export const STANDALONE_TODOS_API_PAGE_LIMIT = 200;
 
 
@@ -517,7 +515,7 @@ async function pullTasksViewFromApi(opts: {
 
       page,
 
-      limit: taskView === 'standaloneTodos' ? STANDALONE_TODOS_API_PAGE_LIMIT : undefined,
+      limit: STANDALONE_TODOS_API_PAGE_LIMIT,
 
       includeShelved: taskView === 'standaloneTodos' ? true : undefined,
 
@@ -1024,35 +1022,32 @@ async function pullTasksPageFromApi(opts: {
 
 
 
-  // 先增量合并全表 tasks（含他端完成），再拉筛选视图；避免筛选结果缺行时本地仍显示未完成
-  try {
-    await syncTasksTableFromApi({ forceRefresh, signal });
-  } catch (e) {
-    console.warn('[tasks-page-api] tasks 表增量同步失败，继续拉筛选视图', e);
-  }
+  const catalogPromise = fetchTasksCatalog({ forceRefresh, signal, offlineFallback: false });
 
-  const catalog = await fetchTasksCatalog({ forceRefresh, signal, offlineFallback: false });
+  const standalonePromise = pullTasksViewFromApi({
+
+    taskView: 'standaloneTodos',
+
+    boundary,
+
+    logicalToday,
+
+    weekStart,
+
+    weekEnd,
+
+    signal,
+
+  });
+
+  const catalog = await catalogPromise;
 
   const resolvedMatrixProjectIds =
     matrixProjectIds ?? resolveMatrixProjectIds(catalog.projects, taskTab ?? 'all');
 
   const [standaloneResult, matrixResult] = await Promise.all([
 
-    pullTasksViewFromApi({
-
-      taskView: 'standaloneTodos',
-
-      boundary,
-
-      logicalToday,
-
-      weekStart,
-
-      weekEnd,
-
-      signal,
-
-    }),
+    standalonePromise,
 
     pullTasksViewFromApi({
 

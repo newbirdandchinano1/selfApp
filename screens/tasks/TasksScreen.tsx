@@ -35,9 +35,9 @@ import {
   setFrogSessionCompletedOn,
 } from '@/lib/long-term-task';
 import { projectToFrogTaskRow } from '@/lib/project-frog';
-import { consumeForceFullApiRefreshAfterLocalClear, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
+import { consumeForceFullApiRefreshAfterLocalClear } from '@/lib/page-api-session';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
-import { fetchProjectsListForTab, mergeProjectRowsById } from '@/lib/projects-list-api';
+import { fetchProjectsListForProject, fetchProjectsListForTab, mergeProjectRowsById, mergeProjectTaskTreeMaps } from '@/lib/projects-list-api';
 import { getRewardBadgeBackgroundColor, parseRewardPointsFromExtraData } from '@/lib/reward-points';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import {
@@ -191,7 +191,6 @@ import { fetchTodayFrogs } from '@/lib/today-frogs-api';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
 import { getPointsBalance } from '@/lib/repositories/wish-board/wish-board';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
@@ -996,31 +995,9 @@ function TaskCompletionHeatmap({
     }
   }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd]);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      if (shouldSkipPageFocusApiRefresh(PAGE_API_KEY)) return;
-      let cancelled = false;
-      const handle = InteractionManager.runAfterInteractions(() => {
-        void (async () => {
-          try {
-            await loadCompletionHeatmap();
-          } catch (e) {
-            console.warn('加载完成热力图失败', e);
-            if (!cancelled) {
-              setFrogCountByYmd(new Map());
-              setTodoCountByYmd(new Map());
-            }
-          }
-        })();
-      });
-      return () => {
-        cancelled = true;
-        handle.cancel();
-      };
-    }, [loadCompletionHeatmap])
-  );
-
+  // 仅随父页 reloadToken 加载：首屏等 reloadPage  bump；勿再挂 useFocusEffect（会与父页 focus 重载叠打）
   React.useEffect(() => {
+    if (reloadToken <= 0) return;
     const handle = InteractionManager.runAfterInteractions(() => {
       void loadCompletionHeatmap();
     });
@@ -1874,6 +1851,8 @@ export default function TasksScreen() {
   | null>(null);
   const projectsRef = React.useRef(projects);
   projectsRef.current = projects;
+  const projectTaskRefillInflightRef = React.useRef(new Set<string>());
+  const projectTaskRefilledRef = React.useRef(new Set<string>());
   const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
   const [activatingShelvedTodoId, setActivatingShelvedTodoId] = React.useState<string | null>(null);
 
@@ -2029,9 +2008,10 @@ export default function TasksScreen() {
   const loadHabits = React.useCallback(async () => {
     const generation = ++habitLoadGenerationRef.current;
     try {
-      await syncBreakHabitCompletions();
-      await syncBuildHabitCompletions();
       const data = await fetchTasksHabitsGrid({ boundary: dayBoundary, offlineFallback: true });
+      void Promise.all([syncBreakHabitCompletions(), syncBuildHabitCompletions()]).catch((e) => {
+        console.warn('后台同步习惯完成态失败', e);
+      });
       if (generation !== habitLoadGenerationRef.current) return;
       const recordFlags = await getHabitDayRecordFlagsForYmd(logicalTodayYmd);
       if (generation !== habitLoadGenerationRef.current) return;
@@ -2142,9 +2122,7 @@ export default function TasksScreen() {
         });
         if (shouldApply()) {
           setProjects((prev) => mergeProjectRowsById(prev, result.projects));
-          setProjectTaskTreeMap((prev) =>
-            opts?.replaceMap ? result.projectTaskTreeMap : { ...prev, ...result.projectTaskTreeMap },
-          );
+          setProjectTaskTreeMap((prev) => mergeProjectTaskTreeMaps(prev, result.projectTaskTreeMap));
         }
         return result.projectTaskTreeMap;
       } catch (err) {
@@ -2372,7 +2350,7 @@ export default function TasksScreen() {
     const generation = ++reloadGenerationRef.current;
     const isStale = () => generation !== reloadGenerationRef.current;
     const forceApiRefresh = forceApi || consumeForceFullApiRefreshAfterLocalClear();
-    const taskLoadOpts = forceApiRefresh ? { forceRefresh: true as const } : undefined;
+    const localTaskOpts = { forceLocal: true as const };
     const projectTaskOpts = (extra?: { forceRefresh?: boolean; preloadedTasks?: TaskRow[] }) => ({
       ...extra,
       generation,
@@ -2386,28 +2364,52 @@ export default function TasksScreen() {
     ]);
     if (isStale()) return;
 
-    const pageData = await fetchTasksPageData({
-      boundary: dayBoundary,
-      taskTab,
-      offlineFallback: true,
-      forceLocal: false,
-      forceRefresh: forceApiRefresh,
-    });
+    const effectiveHideCompleted = storedHideCompleted ?? hideCompletedProjectTasks;
+    const habitsPromise = loadHabits();
+    const frogsPromise = loadTodayFrogs();
+    const pointsPromise = getPointsBalance({ offlineFallback: true })
+      .then((balance) => {
+        if (!isStale()) setPointsBalance(balance);
+      })
+      .catch((err) => {
+        if (__DEV__) console.warn('加载积分余额失败', err);
+      });
+
+    const [pageData, projectsListResult] = await Promise.all([
+      fetchTasksPageData({
+        boundary: dayBoundary,
+        taskTab,
+        offlineFallback: true,
+        forceLocal: false,
+        forceRefresh: forceApiRefresh,
+      }),
+      fetchProjectsListForTab(projectTab, {
+        hideCompletedProjectTasks: effectiveHideCompleted,
+        forceRefresh: forceApiRefresh,
+        offlineFallback: true,
+      }).catch((err) => {
+        console.warn('加载项目列表 API 失败，回退本地组树', err);
+        return null;
+      }),
+    ]);
     if (isStale()) return;
 
-    const rows = pageData.projects;
-    setProjects(rows);
+    const catalogProjects = pageData.projects;
+    const mergedProjects = projectsListResult
+      ? mergeProjectRowsById(catalogProjects, projectsListResult.projects)
+      : catalogProjects;
+    setProjects(mergedProjects);
     setProjectCategories(pageData.projectCategories);
     setStandaloneTodos(pageData.standaloneTodos);
     setMatrixWeekTasks(pageData.matrixWeekTasks);
 
     if (!storedExpanded) {
-      const allCollapsed = Object.fromEntries(rows.map((p) => [p.id, false] as const));
+      const allCollapsed = Object.fromEntries(mergedProjects.map((p) => [p.id, false] as const));
       setExpandedProjectIds(allCollapsed);
       await saveExpandedProjectState(allCollapsed);
     } else {
       const merged: Record<string, boolean> = { ...storedExpanded };
-      for (const p of rows) {
+      for (const p of mergedProjects) {
         if (typeof merged[p.id] !== 'boolean') merged[p.id] = false;
       }
       setExpandedProjectIds(merged);
@@ -2420,27 +2422,32 @@ export default function TasksScreen() {
       setMainListView(storedMainListView);
     }
 
-    let cachedTasks = await getTasks(taskLoadOpts);
-    if (isStale()) return;
-
-    const effectiveHideCompleted = storedHideCompleted ?? hideCompletedProjectTasks;
-    let treeMap = await loadProjectsListFromApi(projectTab, {
-      forceRefresh: forceApiRefresh,
-      generation,
-      hideCompletedProjectTasks: effectiveHideCompleted,
-    });
+    let treeMap: Record<string, TaskTreeNode[]>;
+    if (projectsListResult) {
+      treeMap = projectsListResult.projectTaskTreeMap;
+      setProjectTaskTreeMap((prev) => mergeProjectTaskTreeMaps(prev, treeMap));
+    } else {
+      const tabProjects =
+        projectTab === 'all'
+          ? mergedProjects.filter((p) => !isProjectInInboxCategory(p.category_id))
+          : projectTab === INBOX_PROJECT_CATEGORY_ID
+            ? mergedProjects.filter((p) => isProjectInInboxCategory(p.category_id))
+            : mergedProjects.filter((p) => p.category_id === projectTab);
+      treeMap = await loadProjectTasks(tabProjects, { generation });
+    }
     skipProjectsListEffectOnceRef.current = true;
     projectTabApiReadyRef.current = true;
     if (isStale()) return;
 
-    const archived = await autoArchiveProjectsPastDueIfNeeded(rows, treeMap, logicalToday);
-    let workingRows = rows;
+    const archived = await autoArchiveProjectsPastDueIfNeeded(mergedProjects, treeMap, logicalToday);
+    let workingRows = mergedProjects;
+    let cachedTasks = await getTasks(localTaskOpts);
     if (archived > 0) {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       workingRows = await loadProjects();
       if (isStale()) return;
-      cachedTasks = await getTasks(taskLoadOpts);
-      treeMap = await loadProjectTasks(workingRows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
+      cachedTasks = await getTasks(localTaskOpts);
+      treeMap = await loadProjectTasks(workingRows, projectTaskOpts({ preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
     const catRows = pageData.projectCategories;
@@ -2451,8 +2458,8 @@ export default function TasksScreen() {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       const refreshed = await loadProjects();
       if (isStale()) return;
-      cachedTasks = await getTasks(taskLoadOpts);
-      await loadProjectTasks(refreshed, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
+      cachedTasks = await getTasks(localTaskOpts);
+      await loadProjectTasks(refreshed, projectTaskOpts({ preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
     const purgedInbox = await deleteInboxProjectsPastRetentionDays(INBOX_PROJECT_RETENTION_DAYS);
@@ -2460,24 +2467,29 @@ export default function TasksScreen() {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       const afterPurge = await loadProjects();
       if (isStale()) return;
-      cachedTasks = await getTasks(taskLoadOpts);
-      await loadProjectTasks(afterPurge, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
+      cachedTasks = await getTasks(localTaskOpts);
+      await loadProjectTasks(afterPurge, projectTaskOpts({ preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
-    const taskRolled = await loadTasks(taskLoadOpts);
-    if (isStale()) return;
+
+    const rolled = await applyRepeatingTaskRollovers(cachedTasks, logicalToday, dayBoundary);
+    const overdueBumped = await applyOverdueTaskPriorityBump(cachedTasks, logicalToday);
+    const taskRolled = rolled + overdueBumped;
     if (taskRolled > 0) {
-      cachedTasks = await getTasks(taskLoadOpts);
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      cachedTasks = await getTasks(localTaskOpts);
+      await loadTasks({ forceLocal: true });
+      if (isStale()) return;
     }
 
     try {
       const habitSync = await syncAllHabitBoundTaskCompletions({ allTasks: cachedTasks });
       if (isStale()) return;
       if (habitSync.completedTasks.length > 0) {
-        cachedTasks = await getTasks(taskLoadOpts);
-        await loadTasks(taskLoadOpts);
+        cachedTasks = await getTasks(localTaskOpts);
+        await loadTasks({ forceLocal: true });
         if (isStale()) return;
-        await loadProjectTasks(workingRows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
+        await loadProjectTasks(workingRows, projectTaskOpts({ preloadedTasks: cachedTasks }));
         if (isStale()) return;
       }
     } catch (err) {
@@ -2485,31 +2497,23 @@ export default function TasksScreen() {
     }
 
     if (taskRolled > 0) {
-      await loadProjectTasks(workingRows, projectTaskOpts({ ...taskLoadOpts, preloadedTasks: cachedTasks }));
+      await loadProjectTasks(workingRows, projectTaskOpts({ preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
-    await Promise.all([loadHabits(), loadTodayFrogs()]);
-    if (isStale()) return;
-
-    try {
-      const balance = await getPointsBalance({ offlineFallback: true });
-      if (!isStale()) setPointsBalance(balance);
-    } catch (err) {
-      if (__DEV__) console.warn('加载积分余额失败', err);
-    }
+    await Promise.all([habitsPromise, frogsPromise, pointsPromise]);
   }, [
+    hideCompletedProjectTasks,
     loadExpandedProjectState,
     loadHideCompletedProjectTasks,
     loadMainListView,
-    loadProjectCategories,
     loadProjects,
     loadProjectTasks,
-    loadProjectsListFromApi,
     loadTasks,
     loadTodayFrogs,
     loadHabits,
     dayBoundary,
     logicalTodayYmd,
+    projectTab,
     taskTab,
     saveExpandedProjectState,
   ]);
@@ -3201,7 +3205,7 @@ export default function TasksScreen() {
       } catch (err) {
         console.warn('激活搁置待办失败', err);
         Alert.alert('激活失败', '请稍后重试。');
-        await loadTasks();
+        await loadTasks({ forceLocal: true });
       } finally {
         setActivatingShelvedTodoId(null);
       }
@@ -3755,12 +3759,12 @@ export default function TasksScreen() {
           due_date: null,
           extra_data: null,
         });
-        await loadTasks();
+        await loadTasks({ forceLocal: true });
       }, '待办已保存');
     } catch (err) {
       console.warn('创建无项目待办失败', err);
       Alert.alert('保存失败', formatWriteError(err, '待办未能写入，请稍后重试。'));
-      await loadTasks();
+      await loadTasks({ forceLocal: true });
     } finally {
       setQuickTodoSaving(false);
     }
@@ -3779,7 +3783,7 @@ export default function TasksScreen() {
           if (!upgradeResult.ok) return upgradeResult;
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           const rows = await loadProjects();
-          await loadTasks();
+          await loadTasks({ forceLocal: true });
           await loadProjectTasks(rows);
           setExpandedProjectIds((prev) => {
             const next = { ...prev, [upgradeResult.projectId]: true };
@@ -3798,7 +3802,7 @@ export default function TasksScreen() {
       } catch (err) {
         console.warn('待办升级为项目失败', err);
         Alert.alert('升级失败', '请稍后重试。');
-        await loadTasks();
+        await loadTasks({ forceLocal: true });
       } finally {
         setUpgradingStandaloneTodoId(null);
       }
@@ -3828,13 +3832,13 @@ export default function TasksScreen() {
                 markPageDirty();
                 LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                 await deleteTask(taskId);
-                await loadTasks();
+                await loadTasks({ forceLocal: true });
                 await loadProjectTasks(projects);
               }, '待办已删除');
             } catch (err) {
               console.warn('删除待办失败', err);
               Alert.alert('删除失败', formatWriteError(err, '任务删除失败，请稍后重试。'));
-              await loadTasks();
+              await loadTasks({ forceLocal: true });
             }
           },
         },
@@ -3856,13 +3860,43 @@ export default function TasksScreen() {
 
   const toggleProjectExpand = React.useCallback(
     (projectId: string) => {
+      let willExpand = false;
       setExpandedProjectIds((prev) => {
-        const next = { ...prev, [projectId]: !prev[projectId] };
+        willExpand = !prev[projectId];
+        const next = { ...prev, [projectId]: willExpand };
         void saveExpandedProjectState(next);
         return next;
       });
+      if (!willExpand) return;
+      if (projectTaskRefillInflightRef.current.has(projectId)) return;
+      const skipApi = projectTaskRefilledRef.current.has(projectId);
+      projectTaskRefillInflightRef.current.add(projectId);
+      void (async () => {
+        try {
+          const localTree = await getTasksByProjectId(projectId);
+          setProjectTaskTreeMap((prev) =>
+            mergeProjectTaskTreeMaps(prev, { [projectId]: localTree }),
+          );
+          if (skipApi) return;
+          const result = await fetchProjectsListForProject(projectId, {
+            hideCompletedProjectTasks,
+            offlineFallback: true,
+          });
+          const fromApi = result.projectTaskTreeMap[projectId];
+          if (fromApi) {
+            setProjectTaskTreeMap((prev) =>
+              mergeProjectTaskTreeMaps(prev, { [projectId]: fromApi }),
+            );
+          }
+          projectTaskRefilledRef.current.add(projectId);
+        } catch (err) {
+          console.warn('展开项目时补全任务失败', err);
+        } finally {
+          projectTaskRefillInflightRef.current.delete(projectId);
+        }
+      })();
     },
-    [saveExpandedProjectState]
+    [hideCompletedProjectTasks, saveExpandedProjectState]
   );
 
   const toggleTaskCollapse = React.useCallback((taskId: string) => {

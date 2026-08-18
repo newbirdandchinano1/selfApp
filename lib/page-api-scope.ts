@@ -75,6 +75,8 @@ const CHILD_PAGE_SCOPE_TABLES: Record<string, string[]> = {
 export function listPageScopeTables(pageKey: string): string[] {
   const key = pageKey.trim();
   if (!key) return [];
+  // 任务 Tab 只走专用 page API，禁止通用 List 全表同步
+  if (key === TAB_PAGE_KEYS.tasks) return [];
   const child = CHILD_PAGE_SCOPE_TABLES[key];
   if (child) return [...child];
   return PAGE_SCOPE_TABLES[key] ? [...PAGE_SCOPE_TABLES[key]!] : [];

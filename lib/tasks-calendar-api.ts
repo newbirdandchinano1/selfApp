@@ -1,5 +1,4 @@
-import { apiGetTasksCalendar } from '@/lib/api-client';
-import { fetchApiTableAll } from '@/lib/api-read';
+import { ApiRequestError, apiGetTasksCalendar, apiGetTasksCalendarDay, apiGetTasksCalendarGrid } from '@/lib/api-client';
 import { getHabitCheckInCountsByDateRange } from '@/lib/repositories/habits/habit-check-in';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getProjects } from '@/lib/repositories/projects/project';
@@ -12,11 +11,16 @@ import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import { getActivePageApiReadOpts } from '@/lib/page-api-session';
 import {
   buildTasksCalendarSummaries,
+  daysRecordToGridMap,
   daysRecordToSummariesMap,
   enrichTasksCalendarFrogDayStatus,
   enrichTasksCalendarStandaloneTodos,
   filterTasksCalendarHabitsBeforeCreation,
+  isTasksCalendarRenderReady,
+  parseTasksCalendarDayPayload,
+  summariesToGridMap,
   type TasksCalendarDaySummary,
+  type TasksCalendarGridDay,
 } from '@/lib/tasks-calendar-data';
 import { getLogicalLocalYmd, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 
@@ -26,8 +30,32 @@ type LocalAggregateBase = {
   projects: ProjectRow[];
 };
 
+type CalendarFetchOpts = {
+  dayBoundary: TasksDayBoundary;
+  offlineFallback?: boolean;
+  forceLocal?: boolean;
+  forceApi?: boolean;
+};
+
+export type TasksCalendarMonthPayload = {
+  grid: Map<string, TasksCalendarGridDay>;
+  /** 回退整月详情时带上，避免再打 /day */
+  summaries?: Map<string, TasksCalendarDaySummary>;
+};
+
 let localAggregateBaseCache: LocalAggregateBase | null = null;
 let localAggregateBaseInflight: Promise<LocalAggregateBase> | null = null;
+
+/** unknown：尚未探测；supported：P1 可用；unsupported：404 后本会话不再打 */
+let calendarSplitSupport: 'unknown' | 'supported' | 'unsupported' = 'unknown';
+
+function isCalendarEndpointMissing(e: unknown): boolean {
+  return e instanceof ApiRequestError && (e.httpStatus === 404 || e.httpStatus === 405);
+}
+
+function shouldSkipNetwork(opts: CalendarFetchOpts): boolean {
+  return !opts.forceApi && (Boolean(opts.forceLocal) || Boolean(getActivePageApiReadOpts()?.localOnly));
+}
 
 /** 下拉刷新或强制 API 时清掉本地全表缓存，避免脏数据 */
 export function invalidateTasksCalendarLocalBaseCache(): void {
@@ -35,29 +63,20 @@ export function invalidateTasksCalendarLocalBaseCache(): void {
   localAggregateBaseInflight = null;
 }
 
+/** 下拉刷新时重新探测 P1，便于后端中途部署后立刻切到 grid/day */
+export function resetTasksCalendarApiCapabilities(): void {
+  calendarSplitSupport = 'unknown';
+}
+
+export function getTasksCalendarSplitSupport(): 'unknown' | 'supported' | 'unsupported' {
+  return calendarSplitSupport;
+}
+
 async function loadLocalAggregateBase(): Promise<LocalAggregateBase> {
   if (localAggregateBaseCache) return localAggregateBaseCache;
   if (localAggregateBaseInflight) return localAggregateBaseInflight;
 
   localAggregateBaseInflight = (async () => {
-    const skipNetwork = Boolean(getActivePageApiReadOpts()?.localOnly);
-    if (!skipNetwork) {
-      try {
-        const [tasks, habits, projects] = await Promise.all([
-          getTasks(),
-          fetchApiTableAll<HabitRow>('habits', {
-            fields: 'id,context,name,tag,icon,tone,note,extra_data,created_at,updated_at',
-            limit: 200,
-          }),
-          getProjects(),
-        ]);
-        localAggregateBaseCache = { tasks, habits, projects };
-        return localAggregateBaseCache;
-      } catch {
-        /* 范围拉取失败时回退全表本地读 */
-      }
-    }
-
     const [tasks, habits, projects] = await Promise.all([getTasks(), getHabits(), getProjects()]);
     localAggregateBaseCache = { tasks, habits, projects };
     return localAggregateBaseCache;
@@ -128,8 +147,56 @@ async function enrichCalendarSummaries(
   });
 }
 
+function summariesInflightKey(params: {
+  startYmd: string;
+  endYmd: string;
+  forceApi?: boolean;
+  forceLocal?: boolean;
+}): string {
+  const skip = shouldSkipNetwork({
+    dayBoundary: { hour: 0, minute: 0 },
+    forceApi: params.forceApi,
+    forceLocal: params.forceLocal,
+  });
+  return `${params.startYmd}:${params.endYmd}:${params.forceApi ? 1 : 0}:${skip ? 1 : 0}`;
+}
+
+const summariesInflight = new Map<string, Promise<Map<string, TasksCalendarDaySummary>>>();
+
+function monthPayloadFromSummaries(
+  summaries: Map<string, TasksCalendarDaySummary>,
+  dayBoundary: TasksDayBoundary,
+): TasksCalendarMonthPayload {
+  const logicalTodayYmd = getLogicalLocalYmd(new Date(), dayBoundary);
+  return {
+    grid: summariesToGridMap(summaries, logicalTodayYmd),
+    summaries,
+  };
+}
+
 /** 拉取任务日历汇总：优先聚合接口，失败或仅本地时回退客户端聚合 */
 export async function fetchTasksCalendarSummaries(params: {
+  startYmd: string;
+  endYmd: string;
+  dayBoundary: TasksDayBoundary;
+  offlineFallback?: boolean;
+  forceLocal?: boolean;
+  forceApi?: boolean;
+}): Promise<Map<string, TasksCalendarDaySummary>> {
+  const key = summariesInflightKey(params);
+  const existing = summariesInflight.get(key);
+  if (existing) return existing;
+
+  const run = fetchTasksCalendarSummariesUncoalesced(params);
+  summariesInflight.set(key, run);
+  try {
+    return await run;
+  } finally {
+    if (summariesInflight.get(key) === run) summariesInflight.delete(key);
+  }
+}
+
+async function fetchTasksCalendarSummariesUncoalesced(params: {
   startYmd: string;
   endYmd: string;
   dayBoundary: TasksDayBoundary;
@@ -145,7 +212,7 @@ export async function fetchTasksCalendarSummaries(params: {
     forceLocal = false,
     forceApi = false,
   } = params;
-  const skipNetwork = !forceApi && (forceLocal || Boolean(getActivePageApiReadOpts()?.localOnly));
+  const skipNetwork = shouldSkipNetwork({ dayBoundary, offlineFallback, forceLocal, forceApi });
 
   if (!skipNetwork) {
     try {
@@ -156,6 +223,9 @@ export async function fetchTasksCalendarSummaries(params: {
         dayBoundaryMinute: dayBoundary.minute,
       });
       const map = daysRecordToSummariesMap(data.days);
+      if (isTasksCalendarRenderReady(data)) {
+        return map;
+      }
       const base = await loadLocalAggregateBase();
       await enrichCalendarSummaries(map, {
         startYmd,
@@ -172,4 +242,86 @@ export async function fetchTasksCalendarSummaries(params: {
   }
 
   return fetchTasksCalendarSummariesLocal({ startYmd, endYmd, dayBoundary });
+}
+
+/** 月格：优先 P1 grid，未部署则回退整月详情并投影 counts */
+export async function fetchTasksCalendarMonth(params: {
+  startYmd: string;
+  endYmd: string;
+} & CalendarFetchOpts): Promise<TasksCalendarMonthPayload> {
+  const { startYmd, endYmd, dayBoundary, offlineFallback = true, forceApi = false } = params;
+  const skipNetwork = shouldSkipNetwork(params);
+
+  if (!skipNetwork && calendarSplitSupport !== 'unsupported') {
+    try {
+      const data = await apiGetTasksCalendarGrid({
+        start: startYmd,
+        end: endYmd,
+        dayBoundaryHour: dayBoundary.hour,
+        dayBoundaryMinute: dayBoundary.minute,
+      });
+      calendarSplitSupport = 'supported';
+      return { grid: daysRecordToGridMap(data.days) };
+    } catch (e) {
+      if (isCalendarEndpointMissing(e)) {
+        calendarSplitSupport = 'unsupported';
+      } else if (!offlineFallback) {
+        throw e;
+      } else {
+        console.warn('[tasks-calendar] grid 接口失败，回退整月聚合', e);
+      }
+    }
+  }
+
+  const summaries = await fetchTasksCalendarSummaries({
+    startYmd,
+    endYmd,
+    dayBoundary,
+    offlineFallback,
+    forceLocal: params.forceLocal,
+    forceApi,
+  });
+  return monthPayloadFromSummaries(summaries, dayBoundary);
+}
+
+/** 选中日详情：优先 P1 /day，否则从整月 summaries 或本地聚合取 */
+export async function fetchTasksCalendarDay(params: {
+  ymd: string;
+  startYmd?: string;
+  endYmd?: string;
+} & CalendarFetchOpts): Promise<TasksCalendarDaySummary | null> {
+  const { ymd, dayBoundary, offlineFallback = true, forceApi = false } = params;
+  const skipNetwork = shouldSkipNetwork(params);
+
+  if (!skipNetwork && calendarSplitSupport !== 'unsupported') {
+    try {
+      const data = await apiGetTasksCalendarDay({
+        ymd,
+        dayBoundaryHour: dayBoundary.hour,
+        dayBoundaryMinute: dayBoundary.minute,
+      });
+      calendarSplitSupport = 'supported';
+      return parseTasksCalendarDayPayload(data, ymd);
+    } catch (e) {
+      if (isCalendarEndpointMissing(e)) {
+        calendarSplitSupport = 'unsupported';
+      } else if (!offlineFallback) {
+        throw e;
+      } else {
+        console.warn('[tasks-calendar] day 接口失败，回退整月聚合', e);
+      }
+    }
+  }
+
+  const startYmd = params.startYmd ?? ymd;
+  const endYmd = params.endYmd ?? ymd;
+  const summaries = await fetchTasksCalendarSummaries({
+    startYmd,
+    endYmd,
+    dayBoundary,
+    offlineFallback,
+    forceLocal: params.forceLocal,
+    forceApi,
+  });
+  return summaries.get(ymd) ?? null;
 }

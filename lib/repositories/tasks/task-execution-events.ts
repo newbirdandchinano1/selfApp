@@ -1,3 +1,4 @@
+import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { ensureLocalRowPresent } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { makeTimestampEntityId } from '@/lib/entity-id';
@@ -28,13 +29,20 @@ type EventRowLite = {
   task_title?: string | null;
 };
 
-/** 同一任务 + 本地日只保留最新一次操作；仅当最新为 completed 时计入热力图 */
-function filterNetCompletedTaskEvents<T extends EventRowLite>(events: T[]): T[] {
+/**
+ * 非重复待办：整条任务只保留最新一次操作（撤销则从热力图消失，再完成只计今天）。
+ * 重复待办：同一任务 + 本地日只保留最新一次。
+ * 仅当最新为 completed 时计入热力图。
+ */
+function filterNetCompletedTaskEvents<T extends EventRowLite>(
+  events: T[],
+  repeatingTaskIds: Set<string>,
+): T[] {
   const latestByKey = new Map<string, T>();
   for (const e of events) {
     const day = ymdFromDatetime(e.created_at);
     if (!day) continue;
-    const groupKey = `${e.task_id}\0${day}`;
+    const groupKey = repeatingTaskIds.has(e.task_id) ? `${e.task_id}\0${day}` : e.task_id;
     const prev = latestByKey.get(groupKey);
     if (!prev || compareDatetimeDesc(prev.created_at, e.created_at) > 0) {
       latestByKey.set(groupKey, e);
@@ -51,22 +59,34 @@ export type TaskExecutionEventWithTitle = {
   task_title: string | null;
 };
 
-async function loadScopedExecutionEvents(): Promise<TaskExecutionEventWithTitle[]> {
+type ScopedExecutionEvents = {
+  events: TaskExecutionEventWithTitle[];
+  repeatingTaskIds: Set<string>;
+};
+
+async function loadScopedExecutionEvents(): Promise<ScopedExecutionEvents> {
   const [events, tasks] = await Promise.all([
     readApiTable<EventRowLite>('task_execution_events', HEATMAP_EVENT_READ_OPTS),
     readApiTable<TaskRowLite>('tasks', HEATMAP_EVENT_READ_OPTS),
   ]);
   const taskById = new Map(tasks.map(t => [t.id, t]));
-  return events
-    .filter(e => {
-      const t = taskById.get(e.task_id);
-      return t && matchesOverviewScope(t);
-    })
-    .map(e => {
-      const t = taskById.get(e.task_id);
-      const title = t?.title?.trim() || e.task_title?.trim() || null;
-      return { id: e.id, task_id: e.task_id, action: e.action, created_at: e.created_at, task_title: title };
-    });
+  const repeatingTaskIds = new Set<string>();
+  for (const t of tasks) {
+    if (taskHasRepeatingSchedule(t.extra_data ?? null)) repeatingTaskIds.add(t.id);
+  }
+  return {
+    repeatingTaskIds,
+    events: events
+      .filter(e => {
+        const t = taskById.get(e.task_id);
+        return t && matchesOverviewScope(t);
+      })
+      .map(e => {
+        const t = taskById.get(e.task_id);
+        const title = t?.title?.trim() || e.task_title?.trim() || null;
+        return { id: e.id, task_id: e.task_id, action: e.action, created_at: e.created_at, task_title: title };
+      }),
+  };
 }
 
 export async function insertTaskExecutionEvent(
@@ -80,10 +100,11 @@ export async function insertTaskExecutionEvent(
   }
   const db = await getDatabase();
   const id = makeTimestampEntityId('tevt_', 8);
+  const createdAt = formatTaskAuditDatetimeLocal();
   await db.runAsync(
     `INSERT INTO task_execution_events (id, task_id, action, created_at, task_title, sync_status)
-     VALUES (?, ?, ?, datetime('now'), ?, 'pending_create')`,
-    [id, taskId, action, taskTitle?.trim() || null]
+     VALUES (?, ?, ?, ?, ?, 'pending_create')`,
+    [id, taskId, action, createdAt, taskTitle?.trim() || null]
   );
   invalidateInflightApiTableFetch('task_execution_events');
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
@@ -92,7 +113,7 @@ export async function insertTaskExecutionEvent(
 
 /** 某一本地日内的全部执行事件（含完成与恢复），按时间正序 */
 export async function getTaskExecutionEventsForLocalDay(ymd: string): Promise<TaskExecutionEventWithTitle[]> {
-  const events = await loadScopedExecutionEvents();
+  const { events } = await loadScopedExecutionEvents();
   return events
     .filter(e => ymdFromDatetime(e.created_at) === ymd)
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
@@ -100,8 +121,8 @@ export async function getTaskExecutionEventsForLocalDay(ymd: string): Promise<Ta
 
 /** 某一本地日内仍有效的「标记完成」记录（取消完成后再完成只计一次） */
 export async function getNetCompletedTaskEventsForLocalDay(ymd: string): Promise<TaskExecutionEventWithTitle[]> {
-  const events = await loadScopedExecutionEvents();
-  return filterNetCompletedTaskEvents(events)
+  const { events, repeatingTaskIds } = await loadScopedExecutionEvents();
+  return filterNetCompletedTaskEvents(events, repeatingTaskIds)
     .filter(e => ymdFromDatetime(e.created_at) === ymd)
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
 }
@@ -118,7 +139,7 @@ export async function getTaskExecutionEventsByActionPage(
   limit: number,
   offset: number
 ): Promise<TaskExecutionEventWithTitle[]> {
-  const events = await loadScopedExecutionEvents();
+  const { events } = await loadScopedExecutionEvents();
   return events
     .filter(e => e.action === action)
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at))
@@ -126,11 +147,11 @@ export async function getTaskExecutionEventsByActionPage(
 }
 
 export async function countTaskExecutionEventsInScope(): Promise<number> {
-  return (await loadScopedExecutionEvents()).length;
+  return (await loadScopedExecutionEvents()).events.length;
 }
 
 export async function countTaskExecutionEventsByAction(action: TaskExecutionEventAction): Promise<number> {
-  return (await loadScopedExecutionEvents()).filter(e => e.action === action).length;
+  return (await loadScopedExecutionEvents()).events.filter(e => e.action === action).length;
 }
 
 export async function getRecentTaskExecutionEvents(limit: number): Promise<TaskExecutionEventWithTitle[]> {
@@ -141,7 +162,7 @@ export async function getRecentTaskExecutionEventsPage(
   limit: number,
   offset: number
 ): Promise<TaskExecutionEventWithTitle[]> {
-  const events = await loadScopedExecutionEvents();
+  const { events } = await loadScopedExecutionEvents();
   return events
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at))
     .slice(offset, offset + limit);
@@ -152,9 +173,9 @@ export async function getTaskCompletedTaskIdsByDayRange(
   startYmd: string,
   endYmd: string,
 ): Promise<Map<string, Set<string>>> {
-  const events = await loadScopedExecutionEvents();
+  const { events, repeatingTaskIds } = await loadScopedExecutionEvents();
   const m = new Map<string, Set<string>>();
-  for (const e of filterNetCompletedTaskEvents(events)) {
+  for (const e of filterNetCompletedTaskEvents(events, repeatingTaskIds)) {
     const day = ymdFromDatetime(e.created_at);
     if (!day || !isYmdInRange(day, startYmd, endYmd)) continue;
     const set = m.get(day) ?? new Set<string>();
@@ -166,9 +187,9 @@ export async function getTaskCompletedTaskIdsByDayRange(
 
 /** 按本地日历日统计「标记完成」次数 */
 export async function getTaskCompletionCountsByDayRange(startYmd: string, endYmd: string): Promise<Map<string, number>> {
-  const events = await loadScopedExecutionEvents();
+  const { events, repeatingTaskIds } = await loadScopedExecutionEvents();
   const m = new Map<string, number>();
-  for (const e of filterNetCompletedTaskEvents(events)) {
+  for (const e of filterNetCompletedTaskEvents(events, repeatingTaskIds)) {
     const day = ymdFromDatetime(e.created_at);
     if (!day || !isYmdInRange(day, startYmd, endYmd)) continue;
     m.set(day, (m.get(day) ?? 0) + 1);
@@ -177,9 +198,10 @@ export async function getTaskCompletionCountsByDayRange(startYmd: string, endYmd
 }
 
 export async function getFirstCompletedEventDayYmd(): Promise<string | null> {
-  const events = await loadScopedExecutionEvents().then(filterNetCompletedTaskEvents);
-  if (events.length === 0) return null;
-  const days = events
+  const { events, repeatingTaskIds } = await loadScopedExecutionEvents();
+  const netEvents = filterNetCompletedTaskEvents(events, repeatingTaskIds);
+  if (netEvents.length === 0) return null;
+  const days = netEvents
     .map(e => ymdFromDatetime(e.created_at))
     .filter((d): d is string => Boolean(d))
     .sort();
@@ -194,7 +216,7 @@ export async function getTaskGlobalInsightCounts(): Promise<{
   completedEvents: number;
   reopenedEvents: number;
 }> {
-  const [tasks, events] = await Promise.all([
+  const [tasks, scopedEvents] = await Promise.all([
     readApiTable<TaskRowLite>('tasks', HEATMAP_EVENT_READ_OPTS),
     loadScopedExecutionEvents(),
   ]);
@@ -207,7 +229,7 @@ export async function getTaskGlobalInsightCounts(): Promise<{
     open,
     doneOrCancelled,
     recurring,
-    completedEvents: events.filter(e => e.action === 'completed').length,
-    reopenedEvents: events.filter(e => e.action === 'reopened').length,
+    completedEvents: scopedEvents.events.filter(e => e.action === 'completed').length,
+    reopenedEvents: scopedEvents.events.filter(e => e.action === 'reopened').length,
   };
 }

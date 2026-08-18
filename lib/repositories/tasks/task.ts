@@ -492,6 +492,24 @@ function buildProjectTaskTree(rows: TaskRow[]): TaskTreeNode[] {
   return buildTaskTree(sortTasksForProjectList(rows));
 }
 
+/** 由扁平任务行按 parent_task_id 重组树（父缺失时该节点升为根） */
+export function buildTaskTreeFromRows(rows: TaskRow[]): TaskTreeNode[] {
+  return buildProjectTaskTree(rows);
+}
+
+export function countTaskTreeNodes(nodes: TaskTreeNode[]): number {
+  let n = 0;
+  const walk = (list: TaskTreeNode[]) => {
+    for (const node of list) {
+      n += 1;
+      const ch = Array.isArray(node.children) ? node.children : [];
+      if (ch.length > 0) walk(ch);
+    }
+  };
+  walk(nodes);
+  return n;
+}
+
 function normalizeTaskProjectId(projectId: string | null | undefined): string {
   return typeof projectId === 'string' ? projectId.trim() : '';
 }
