@@ -12,6 +12,18 @@ import type {
   UpdateHealthRecordInput,
 } from './health.types';
 
+/** 接口常省略 user_id；空值视为当前默认用户 */
+function healthRecordBelongsToUser(row: HealthRecordRow, userId: string): boolean {
+  const rid = typeof row.user_id === 'string' ? row.user_id.trim() : '';
+  return !rid || rid === userId;
+}
+
+/** 本地/接口 record_date 可能是 YYYY-MM-DD 或 ISO */
+function healthRecordYmd(row: HealthRecordRow): string {
+  const raw = typeof row.record_date === 'string' ? row.record_date.trim() : '';
+  return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : raw;
+}
+
 export async function createHealthRecord(input: CreateHealthRecordInput) {
   const db = await getDatabase();
   const now = formatWallClockDatetimeLocal(new Date());
@@ -50,7 +62,7 @@ export async function getHealthRecordById(id: string) {
 
 export async function getHealthRecordsByUserId(userId: string) {
   const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
-  return sortByUpdatedDesc(rows.filter(r => r.user_id === userId));
+  return sortByUpdatedDesc(rows.filter(r => healthRecordBelongsToUser(r, userId)));
 }
 
 export async function getHealthRecordsLast7Days(
@@ -64,7 +76,7 @@ export async function getHealthRecordsLast7Days(
     localOnly: opts?.localOnly,
   });
   return rows
-    .filter(r => r.user_id === userId && isYmdInRange(r.record_date, startDate, endDate))
+    .filter(r => healthRecordBelongsToUser(r, userId) && isYmdInRange(healthRecordYmd(r), startDate, endDate))
     .sort((a, b) => {
       const d = a.record_date.localeCompare(b.record_date);
       if (d !== 0) return d;
@@ -74,7 +86,7 @@ export async function getHealthRecordsLast7Days(
 
 export async function getLatestHealthRecordForUserOnDate(userId: string, recordDateYmd: string) {
   const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
-  const dayRows = rows.filter(r => r.user_id === userId && r.record_date === recordDateYmd);
+  const dayRows = rows.filter(r => healthRecordBelongsToUser(r, userId) && healthRecordYmd(r) === recordDateYmd);
   if (dayRows.length === 0) return null;
   return [...dayRows].sort((a, b) => compareDatetimeDesc(a.updated_at, b.updated_at))[0] ?? null;
 }
@@ -82,7 +94,7 @@ export async function getLatestHealthRecordForUserOnDate(userId: string, recordD
 export async function getHealthRecordsForUserOnDate(userId: string, recordDateYmd: string) {
   const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
   return rows
-    .filter(r => r.user_id === userId && r.record_date === recordDateYmd)
+    .filter(r => healthRecordBelongsToUser(r, userId) && healthRecordYmd(r) === recordDateYmd)
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
 }
 
@@ -95,7 +107,7 @@ export async function getHealthDayMetricsForUser(
     offlineFallback: true,
     localOnly: opts?.localOnly,
   });
-  const dayRows = rows.filter(r => r.user_id === userId && r.record_date === recordDateYmd);
+  const dayRows = rows.filter(r => healthRecordBelongsToUser(r, userId) && healthRecordYmd(r) === recordDateYmd);
   if (dayRows.length === 0) return null;
   const latest = [...dayRows].sort((a, b) => compareDatetimeDesc(a.updated_at, b.updated_at))[0]!;
   return { totals: sumHealthIntakeDayTotals(dayRows), latest };
@@ -120,7 +132,7 @@ export async function getHealthIntakeTotalsForUserOnDate(
   recordDateYmd: string
 ): Promise<HealthIntakeDayTotals | null> {
   const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
-  const dayRows = rows.filter(r => r.user_id === userId && r.record_date === recordDateYmd);
+  const dayRows = rows.filter(r => healthRecordBelongsToUser(r, userId) && healthRecordYmd(r) === recordDateYmd);
   if (dayRows.length === 0) return null;
   return sumHealthIntakeDayTotals(dayRows);
 }
@@ -147,7 +159,7 @@ export async function fetchUserHomeHealthSlice(
     offlineFallback: true,
     localOnly: opts?.localOnly,
   });
-  const userRows = allRows.filter(r => r.user_id === userId);
+  const userRows = allRows.filter(r => healthRecordBelongsToUser(r, userId));
 
   const sortWeekRows = (a: HealthRecordRow, b: HealthRecordRow) => {
     const d = a.record_date.localeCompare(b.record_date);
@@ -156,15 +168,15 @@ export async function fetchUserHomeHealthSlice(
   };
 
   const week = userRows
-    .filter(r => isYmdInRange(r.record_date, weekStart, weekAnchorEndYmd))
+    .filter(r => isYmdInRange(healthRecordYmd(r), weekStart, weekAnchorEndYmd))
     .sort(sortWeekRows);
   const prevWeek = userRows
-    .filter(r => isYmdInRange(r.record_date, prevWeekStart, prevEndYmd))
+    .filter(r => isYmdInRange(healthRecordYmd(r), prevWeekStart, prevEndYmd))
     .sort(sortWeekRows);
   const dayRecords = userRows
-    .filter(r => r.record_date === selectedYmd)
+    .filter(r => healthRecordYmd(r) === selectedYmd)
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
-  const dayRows = userRows.filter(r => r.record_date === selectedYmd);
+  const dayRows = userRows.filter(r => healthRecordYmd(r) === selectedYmd);
   const dayTotals = dayRows.length > 0 ? sumHealthIntakeDayTotals(dayRows) : null;
 
   return { week, prevWeek, dayTotals, dayRecords };
@@ -184,14 +196,15 @@ export async function buildUserHealthCalendarSnapshot(
     offlineFallback: true,
     localOnly: opts?.localOnly,
   });
-  const records = sortByUpdatedDesc(allRows.filter(r => r.user_id === userId));
+  const records = sortByUpdatedDesc(allRows.filter(r => healthRecordBelongsToUser(r, userId)));
   const completionMap = new Map<string, 'full' | 'partial'>();
   const datesByDay = new Map<string, HealthRecordRow[]>();
 
   for (const row of records) {
-    const bucket = datesByDay.get(row.record_date);
+    const ymd = healthRecordYmd(row);
+    const bucket = datesByDay.get(ymd);
     if (bucket) bucket.push(row);
-    else datesByDay.set(row.record_date, [row]);
+    else datesByDay.set(ymd, [row]);
   }
 
   for (const [ymd, dayRows] of datesByDay) {
@@ -204,7 +217,10 @@ export async function buildUserHealthCalendarSnapshot(
 
   const earliestYmd =
     records.length > 0
-      ? records.reduce((min, row) => (row.record_date < min ? row.record_date : min), records[0].record_date)
+      ? records.reduce((min, row) => {
+          const ymd = healthRecordYmd(row);
+          return ymd < min ? ymd : min;
+        }, healthRecordYmd(records[0]!))
       : addDaysToYmd(formatHealthCalendarYmd(today), -29);
   const earliestDate = normalizeHealthCalendarDate(new Date(earliestYmd));
   const startDate = earliestDate > today ? today : earliestDate;

@@ -30,6 +30,9 @@ export async function sanitizeRowForLocalSeed(
   if (table === 'recipe_items') {
     return sanitizeRecipeItemRowForLocalSeed(row);
   }
+  if (table === 'health_records') {
+    return sanitizeHealthRecordRowForLocalSeed(row);
+  }
   return row;
 }
 
@@ -130,6 +133,18 @@ async function sanitizeMemoRowForLocalSeed(row: Record<string, unknown>): Promis
 async function sanitizeRecipeItemRowForLocalSeed(row: Record<string, unknown>): Promise<Record<string, unknown>> {
   const next = { ...row };
   await preserveFkColumnWhenMissing(next, 'category_id', 'recipe_categories');
+  return next;
+}
+
+async function sanitizeHealthRecordRowForLocalSeed(row: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const next = { ...row };
+  const userId = strId(next.user_id) || 'default';
+  next.user_id = userId;
+  await ensureFkPresent('users', userId);
+  if (typeof next.record_date === 'string' && next.record_date.length >= 10) {
+    const ymd = next.record_date.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) next.record_date = ymd;
+  }
   return next;
 }
 

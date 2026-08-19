@@ -27,6 +27,15 @@ function asRecordList(data: unknown): Record<string, unknown>[] {
   return data.map(asRecord);
 }
 
+/** 单用户 APP 本地 users.id；专用健康接口不返回 user_id */
+const DEFAULT_HEALTH_USER_ID = 'default';
+
+function extractHealthIntakeItems(data: unknown): Record<string, unknown>[] {
+  if (Array.isArray(data)) return asRecordList(data);
+  const rec = asRecord(data);
+  return asRecordList(rec.items ?? rec.list ?? rec.records);
+}
+
 function wrapList<T extends Record<string, unknown>>(list: T[]): ApiListResponse<T> {
   return {
     list,
@@ -302,13 +311,11 @@ export async function appDomainListRecords<T extends Record<string, unknown>>(
       return wrapList(asRecordList(data).map(normalizeMemoRow) as T[]);
     }
     case 'health_records': {
-      const qs = buildQuery({ user_id: undefined });
-      const data = await apiRequest<{ items?: unknown[] }>(
-        `${APP_API_PREFIX}/health/intakes/last-30-days${qs}`,
-        { method: 'GET', signal },
-      );
-      const items = Array.isArray(data?.items) ? data.items.map(r => normalizeHealthRecordRow(asRecord(r))) : [];
-      return wrapList(items as T[]);
+      const data = await apiRequest<unknown>(`${APP_API_PREFIX}/health/intakes/last-30-days`, {
+        method: 'GET',
+        signal,
+      });
+      return wrapList(extractHealthIntakeItems(data).map(normalizeHealthRecordRow) as T[]);
     }
     case 'wish_board_items': {
       const data = await apiRequest<{ items?: unknown[] }>(`${APP_API_PREFIX}/wish-board/items`, {
@@ -361,12 +368,27 @@ function normalizeMemoRow(row: Record<string, unknown>): Record<string, unknown>
 
 function normalizeHealthRecordRow(row: Record<string, unknown>): Record<string, unknown> {
   const out = { ...row };
-  // record_date 本地多为 YYYY-MM-DD；接口可能返回 ISO
+  // record_date 本地多为 YYYY-MM-DD；接口可能返回 ISO（日期在前 10 位）
   if (typeof out.record_date === 'string' && out.record_date.length >= 10) {
     const ymd = out.record_date.slice(0, 10);
     if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
       out.record_date = ymd;
     }
+  }
+  // 专用接口 / 通用 List 都不下发 user_id，缺省会触发 SQLite NOT NULL + FK，整表灌库失败
+  const userId = typeof out.user_id === 'string' ? out.user_id.trim() : '';
+  if (!userId) out.user_id = DEFAULT_HEALTH_USER_ID;
+  for (const col of [
+    'hydration',
+    'protein',
+    'carbohydrate',
+    'calories',
+    'target_hydration',
+    'target_protein',
+    'target_carbohydrate',
+    'target_calories',
+  ] as const) {
+    if (out[col] == null || out[col] === '') out[col] = 0;
   }
   return out;
 }
@@ -507,15 +529,13 @@ export async function appHealthListIntakesByDate(params: {
   signal?: AbortSignal;
 }): Promise<{ day_ymd?: string; user_id?: string; total?: number; items: Record<string, unknown>[] }> {
   const qs = buildQuery({ date: params.date, user_id: params.user_id });
-  const data = await apiRequest<{ items?: unknown[] }>(`${APP_API_PREFIX}/health/intakes${qs}`, {
+  const data = await apiRequest<unknown>(`${APP_API_PREFIX}/health/intakes${qs}`, {
     method: 'GET',
     signal: params.signal,
   });
   return {
     ...asRecord(data),
-    items: Array.isArray(data?.items)
-      ? data.items.map(r => normalizeHealthRecordRow(asRecord(r)))
-      : [],
+    items: extractHealthIntakeItems(data).map(normalizeHealthRecordRow),
   };
 }
 
@@ -529,11 +549,9 @@ export async function appHealthListIntakesLastDays(params: {
       ? `${APP_API_PREFIX}/health/intakes/last-7-days`
       : `${APP_API_PREFIX}/health/intakes/last-30-days`;
   const qs = buildQuery({ user_id: params.user_id });
-  const data = await apiRequest<{ items?: unknown[] }>(`${path}${qs}`, {
+  const data = await apiRequest<unknown>(`${path}${qs}`, {
     method: 'GET',
     signal: params.signal,
   });
-  return Array.isArray(data?.items)
-    ? data.items.map(r => normalizeHealthRecordRow(asRecord(r)))
-    : [];
+  return extractHealthIntakeItems(data).map(normalizeHealthRecordRow);
 }

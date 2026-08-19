@@ -173,7 +173,7 @@ function pickHealthRecordsForYmd(
   prevWeek: HealthRecordRow[],
 ): HealthRecordRow[] {
   return [...week, ...prevWeek]
-    .filter((r) => r.record_date === ymd)
+    .filter((r) => (typeof r.record_date === 'string' ? r.record_date.slice(0, 10) : r.record_date) === ymd)
     .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
 }
 
