@@ -21,18 +21,18 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   habit_check_ins: [TAB_PAGE_KEYS.tasks],
   task_execution_events: [TAB_PAGE_KEYS.tasks],
   frog_completion_events: [TAB_PAGE_KEYS.tasks],
-  accounts: [TAB_PAGE_KEYS.finance],
-  account_transactions: [TAB_PAGE_KEYS.finance],
+  // 财务表：dirty 仅用于 local-first 重读 SQLite；REST 走 /api/pages/finance/*，禁止 List
   finance_accounts: [TAB_PAGE_KEYS.finance],
   finance_account_types: [TAB_PAGE_KEYS.finance],
   finance_flow_categories: [TAB_PAGE_KEYS.finance],
   finance_transactions: [TAB_PAGE_KEYS.finance],
-  savings_plans: [TAB_PAGE_KEYS.finance],
-  savings_plan_deposits: [TAB_PAGE_KEYS.finance],
   cash_flow_profile: [TAB_PAGE_KEYS.finance],
   cash_flow_incomes: [TAB_PAGE_KEYS.finance],
   cash_flow_holdings: [TAB_PAGE_KEYS.finance],
   cash_flow_expense_lines: [TAB_PAGE_KEYS.finance],
+  // 攒钱计划归属心愿/画像，不再绑财务 Tab
+  savings_plans: [TAB_PAGE_KEYS.profile],
+  savings_plan_deposits: [TAB_PAGE_KEYS.profile],
   visions: [TAB_PAGE_KEYS.profile],
   goal_dimensions: [TAB_PAGE_KEYS.profile],
   wish_items: [TAB_PAGE_KEYS.profile],
@@ -75,8 +75,8 @@ const CHILD_PAGE_SCOPE_TABLES: Record<string, string[]> = {
 export function listPageScopeTables(pageKey: string): string[] {
   const key = pageKey.trim();
   if (!key) return [];
-  // 任务 Tab 只走专用 page API，禁止通用 List 全表同步
-  if (key === TAB_PAGE_KEYS.tasks) return [];
+  // 任务 / 财务 Tab 只走专用 page API，禁止通用 List 全表同步
+  if (key === TAB_PAGE_KEYS.tasks || key === TAB_PAGE_KEYS.finance) return [];
   const child = CHILD_PAGE_SCOPE_TABLES[key];
   if (child) return [...child];
   return PAGE_SCOPE_TABLES[key] ? [...PAGE_SCOPE_TABLES[key]!] : [];

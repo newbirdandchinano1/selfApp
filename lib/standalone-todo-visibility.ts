@@ -62,6 +62,42 @@ function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | n
   }
 }
 
+/** 选择器「时刻」单日槽：同日，或 end 为次日的半开区间 [start, end)。 */
+function isSingleDayMomentRange(startYmd: string, endYmd: string): boolean {
+  return startYmd === endYmd || endYmd === addDaysToYmd(startYmd, 1);
+}
+
+type StandaloneTodoScheduleWindow =
+  | { kind: 'moment'; ymd: string }
+  | { kind: 'period'; startYmd: string; endYmd: string }
+  | { kind: 'none' };
+
+/**
+ * 待办日程：日期/时刻 → 当天；跨多日时间段 → 含首尾的区间。
+ */
+function getStandaloneTodoScheduleWindow(task: TaskRow): StandaloneTodoScheduleWindow {
+  const schedule = parseProjectSchedule(task.extra_data);
+  if (!schedule) return { kind: 'none' };
+
+  if (schedule.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+    const startYmd = formatScheduleDateToYMD(schedule.range.start);
+    const endYmd = formatScheduleDateToYMD(schedule.range.end);
+    if (!startYmd || !endYmd) return { kind: 'none' };
+    if (isSingleDayMomentRange(startYmd, endYmd)) {
+      return { kind: 'moment', ymd: startYmd };
+    }
+    return { kind: 'period', startYmd, endYmd };
+  }
+
+  if (schedule.date) {
+    const ymd = formatScheduleDateToYMD(schedule.date);
+    if (!ymd) return { kind: 'none' };
+    return { kind: 'moment', ymd };
+  }
+
+  return { kind: 'none' };
+}
+
 /**
  * 判断逻辑日是否落在日程区间内。
  * 单日「时刻」槽为 [start, end)（end 常为次日）；跨多日区间为 [start, end] 含首尾。
@@ -93,22 +129,13 @@ export function isStandaloneTodoOpen(task: TaskRow): boolean {
   return isTaskActiveStatus(task.status);
 }
 
-/** 独立待办：日程日/区间已结束且未完成 */
+/** 独立待办：日程日/区间已结束且未完成（未开始的时间段不算过期） */
 export function isStandaloneTodoScheduleExpired(task: TaskRow, logicalTodayYmd: string): boolean {
   if (!isStandaloneTodoOpen(task)) return false;
 
-  const schedule = parseProjectSchedule(task.extra_data);
-  if (!schedule) return false;
-
-  if (schedule.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
-    const end = formatScheduleDateToYMD(schedule.range.end);
-    return !isLogicalDayInYmdRange(logicalTodayYmd, start, end);
-  }
-  if (schedule.date) {
-    const schedYmd = formatScheduleDateToYMD(schedule.date);
-    return logicalTodayYmd > schedYmd;
-  }
+  const window = getStandaloneTodoScheduleWindow(task);
+  if (window.kind === 'moment') return logicalTodayYmd > window.ymd;
+  if (window.kind === 'period') return logicalTodayYmd > window.endYmd;
   return false;
 }
 
@@ -200,22 +227,23 @@ export function isStandaloneTodoRepeatWaiting(task: TaskRow, logicalTodayYmd: st
   return true;
 }
 
-/** 独立待办：计划日/区间内展示；过期未完成仍保留在列表（重复规则由 repeat 过滤器处理） */
+/**
+ * 独立待办日程窗：
+ * - 时刻/单日：只在当天显示（不含过期滞留）
+ * - 时间段：区间内显示，过期未完成仍保留
+ * 重复规则由 repeat 过滤器处理。
+ */
 export function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalTodayYmd: string): boolean {
   if (isTaskShelvedStatus(task.status)) return true;
   if (parseTaskRepeatSchedule(task.extra_data)) return true;
 
-  const schedule = parseProjectSchedule(task.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
-    const end = formatScheduleDateToYMD(schedule.range.end);
-    if (isLogicalDayInYmdRange(logicalTodayYmd, start, end)) return true;
-    return isStandaloneTodoOpen(task) && isStandaloneTodoScheduleExpired(task, logicalTodayYmd);
+  const window = getStandaloneTodoScheduleWindow(task);
+  if (window.kind === 'moment') {
+    return logicalTodayYmd === window.ymd;
   }
-  if (schedule?.date) {
-    const schedYmd = formatScheduleDateToYMD(schedule.date);
-    if (logicalTodayYmd === schedYmd) return true;
-    return isStandaloneTodoOpen(task) && logicalTodayYmd > schedYmd;
+  if (window.kind === 'period') {
+    if (logicalTodayYmd >= window.startYmd && logicalTodayYmd <= window.endYmd) return true;
+    return isStandaloneTodoOpen(task) && logicalTodayYmd > window.endYmd;
   }
 
   return true;
@@ -255,14 +283,10 @@ export function getStandaloneTodoOverdueSortMs(task: TaskRow): number {
   return Number.isNaN(ms) ? 0 : ms;
 }
 
+/** 待办列表截止文案：仅时间段显示结束日；时刻/单日不展示截止。 */
 export function getStandaloneTodoOverdueDisplayYmd(task: TaskRow): string {
-  const due = task.due_date?.slice(0, 10) ?? '';
-  if (due.trim()) return due;
-  const schedule = parseProjectSchedule(task.extra_data);
-  if (schedule?.mode === 'time' && schedule.range?.end) {
-    return formatScheduleDateToYMD(schedule.range.end);
-  }
-  if (schedule?.date) return formatScheduleDateToYMD(schedule.date);
+  const window = getStandaloneTodoScheduleWindow(task);
+  if (window.kind === 'period') return window.endYmd;
   return '';
 }
 

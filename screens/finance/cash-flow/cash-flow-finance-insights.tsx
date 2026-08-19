@@ -1,6 +1,6 @@
 import { buildCashFlowAiSummaryText, type CashFlowMetrics } from '@/lib/cash-flow/cash-flow-metrics';
 import { buildSavingsForecastSeries, computeNetWorthTotal } from '@/lib/finance-net-worth';
-import { getFinanceAccountsWithBalance, getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
+import { fetchFinanceCatalog, fetchFinanceInsights, fetchFinanceTransactionsRange } from '@/lib/finance-page-api';
 import type { FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import type { CashFlowState } from '@/lib/repositories/cash-flow/cash-flow.types';
 import {
@@ -126,13 +126,26 @@ export function CashFlowFinanceInsightsProvider({
   const reloadFinanceData = useCallback(async () => {
     setBootReady(false);
     try {
-      const [transactions, categories, accounts] = await Promise.all([
-        getFinanceTransactions(),
-        getFinanceFlowCategories(),
-        getFinanceAccountsWithBalance(),
+      const insights = await fetchFinanceInsights({ months: 6, offlineFallback: true });
+      const end = new Date();
+      const start = new Date(end.getFullYear(), end.getMonth() - 6, 1);
+      const ymd = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const [txnResult, catalog] = await Promise.all([
+        fetchFinanceTransactionsRange({
+          start: ymd(start),
+          end: ymd(end),
+          offlineFallback: true,
+        }),
+        fetchFinanceCatalog({ offlineFallback: true }),
       ]);
+      const transactions = txnResult.transactions;
+      const categories = catalog.categories;
+      const accounts = catalog.accounts;
       setFinanceTransactions(transactions);
-      setCurrentNetWorth(computeNetWorthTotal(accounts));
+      setCurrentNetWorth(
+        typeof insights?.netWorth === 'number' ? insights.netWorth : computeNetWorthTotal(accounts),
+      );
       const now = new Date();
       const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);

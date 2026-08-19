@@ -1,4 +1,4 @@
-import { invalidateInflightApiTableFetch, readApiTable } from '@/lib/api-read';
+import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
@@ -109,21 +109,43 @@ export async function ensureCashFlowProfileRow() {
 export async function loadCashFlowState(): Promise<CashFlowState> {
   await ensureCashFlowProfileRow();
 
+  // 优先专用口灌库；失败只读本地，禁止 /api/data 全表 List
+  try {
+    const { fetchFinanceCashFlow } = await import('@/lib/finance-page-api');
+    const remote = await fetchFinanceCashFlow({ offlineFallback: false });
+    if (remote.fromApi) {
+      /* rows already upserted */
+    }
+  } catch {
+    /* 回退本地 */
+  }
+
+  const db = await getDatabase();
+  if (!db) return CASH_FLOW_EMPTY_STATE;
+
   const [profiles, incomeRows, holdingRows, expenseLineRows] = await Promise.all([
-    readApiTable<CashFlowProfileRow>('cash_flow_profile', { offlineFallback: true }),
-    readApiTable<CashFlowIncomeRow>('cash_flow_incomes', { offlineFallback: true }),
-    readApiTable<CashFlowHoldingRow>('cash_flow_holdings', { offlineFallback: true }),
-    readApiTable<CashFlowExpenseLineRow>('cash_flow_expense_lines', { offlineFallback: true }),
+    db.getAllAsync<CashFlowProfileRow>(
+      `SELECT * FROM cash_flow_profile WHERE sync_status != 'pending_delete'`,
+    ),
+    db.getAllAsync<CashFlowIncomeRow>(
+      `SELECT * FROM cash_flow_incomes WHERE sync_status != 'pending_delete'`,
+    ),
+    db.getAllAsync<CashFlowHoldingRow>(
+      `SELECT * FROM cash_flow_holdings WHERE sync_status != 'pending_delete'`,
+    ),
+    db.getAllAsync<CashFlowExpenseLineRow>(
+      `SELECT * FROM cash_flow_expense_lines WHERE sync_status != 'pending_delete'`,
+    ),
   ]);
 
-  const profile = profiles.find(p => p.id === CASH_FLOW_PROFILE_ID) ?? null;
+  const profile = (profiles ?? []).find(p => p.id === CASH_FLOW_PROFILE_ID) ?? null;
   if (!profile) {
     return CASH_FLOW_EMPTY_STATE;
   }
 
-  const sortedIncomes = sortBySortOrderAsc(incomeRows);
-  const sortedHoldings = sortBySortOrderAsc(holdingRows);
-  const sortedExpenseLines = sortBySortOrderAsc(expenseLineRows);
+  const sortedIncomes = sortBySortOrderAsc(incomeRows ?? []);
+  const sortedHoldings = sortBySortOrderAsc(holdingRows ?? []);
+  const sortedExpenseLines = sortBySortOrderAsc(expenseLineRows ?? []);
 
   let expenseLines: ExpenseFlowLine[] = sortedExpenseLines
     .map(mapExpenseLineRow)

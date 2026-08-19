@@ -6,10 +6,11 @@ import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-s
 import { FINANCE_SHEET_CATEGORY_ID_PREFIX } from '@/lib/repositories/finance/finance-sheet-category';
 import {
   deleteFinanceTransaction,
-  getFinanceAccountsWithBalance,
   getFinanceTransactionById,
   updateFinanceTransaction,
 } from '@/lib/repositories/finance/finance';
+import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import {
   budgetExtraPatchForTransaction,
   isExpenseIncludedInBudget,
@@ -151,7 +152,11 @@ export default function EditFinanceTransactionScreen() {
     }
     if (!silent) setLoading(true);
     try {
-      const [txn, accRows] = await Promise.all([getFinanceTransactionById(id), getFinanceAccountsWithBalance()]);
+      const [txn, catalog] = await Promise.all([
+        getFinanceTransactionById(id),
+        fetchFinanceCatalog({ offlineFallback: true }),
+      ]);
+      const accRows = catalog.accounts;
       setAccounts(accRows);
       if (!txn) {
         setRow(null);

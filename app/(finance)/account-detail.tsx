@@ -10,9 +10,9 @@ import {
   deleteFinanceAccount,
   financeBalanceInputTextFromLedger,
   financeTargetLedgerFromUserBalanceInput,
-  loadFinanceAccountDetail,
   updateFinanceAccount,
 } from '@/lib/repositories/finance/finance';
+import { fetchFinanceAccountDetail } from '@/lib/finance-page-api';
 import {
   isFinanceAccountExcludedFromAggregates,
   mergeFinanceAccountExcludeFromTotalAssets,
@@ -142,10 +142,10 @@ export default function AccountDetailScreen() {
   const loadAccountDetail = React.useCallback(async (forceRefresh = false) => {
     const seq = ++loadAccountDetailSeqRef.current;
     try {
-      const { account: target, transactions: txRows } = await loadFinanceAccountDetail({
+      const { account: target, transactions: txRows } = await fetchFinanceAccountDetail({
         accountId: routeAccountId,
         accountName: routeAccountName,
-        forceRefresh,
+        offlineFallback: true,
       });
       if (seq !== loadAccountDetailSeqRef.current) return;
       setAccount(target);

@@ -136,9 +136,6 @@ const HABIT_ICON_CHOICES = [
   '🛏️',
 ] as const;
 
-/** 数据库尚无情境时的占位列表（与 habit-context 空库行为一致） */
-const FALLBACK_CONTEXT_OPTIONS = ['起床', '晨间', '中午', '午间', '晚间', '睡前', '全天'];
-
 function pickParam(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
@@ -225,8 +222,8 @@ export default function AddHabitScreen() {
   const [contextOpen, setContextOpen] = React.useState(true);
   const [quantifyOpen, setQuantifyOpen] = React.useState(true);
   const [cycleOpen, setCycleOpen] = React.useState(true);
-  const [contextOptions, setContextOptions] = React.useState<string[]>(() => [...FALLBACK_CONTEXT_OPTIONS]);
-  /** 新建时不预设「起床」，避免用户删光情境后仍被选中被注入列表 */
+  const [contextOptions, setContextOptions] = React.useState<string[]>([]);
+  /** 新建时不预设情境；列表仅来自接口 habit_contexts */
   const [selectedContext, setSelectedContext] = React.useState(() => initialContext?.trim() ?? '');
   const [activeTab, setActiveTab] = React.useState<CycleTab | TaskRepeatPeriod>('每周N天');
   const [selectedDays, setSelectedDays] = React.useState<string[]>(['周一', '周二', '周三', '周四', '周五']);
@@ -265,11 +262,9 @@ export default function AddHabitScreen() {
     await wrapLoad(async () => {
     try {
       const rows = await getHabitContexts();
-      const names = rows.map((r) => r.name);
-      const unique = Array.from(new Set(names));
-      const nextOptions = unique.length > 0 ? unique : [...FALLBACK_CONTEXT_OPTIONS];
+      const nextOptions = Array.from(new Set(rows.map((r) => r.name)));
       setContextOptions(nextOptions);
-      // 新建打卡：选中项必须在当前可选列表中（不要用界面默认「起床」污染已删除的分类）
+      // 新建打卡：选中项必须在当前可选列表中
       if (!isEditMode) {
         setSelectedContext((prev) => {
           const p = prev.trim();

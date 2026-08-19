@@ -9,7 +9,7 @@ import {
   type ScheduledExpenseRepeat,
 } from '@/lib/finance-scheduled-expense';
 import { scheduleRunScheduledFinanceExpenses } from '@/lib/finance-scheduled-expense-runner';
-import { getFinanceAccountsWithBalance } from '@/lib/repositories/finance/finance';
+import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -141,7 +141,8 @@ export default function AddScheduledExpenseScreen() {
   React.useEffect(() => {
     void wrapLoad(async () => {
       try {
-        const accts = await getFinanceAccountsWithBalance();
+        const catalog = await fetchFinanceCatalog({ offlineFallback: true });
+        const accts = catalog.accounts;
         setAccounts(accts);
         if (!isEditMode && accts.length > 0) {
           setAccountId((prev) => prev || accts[0].id);

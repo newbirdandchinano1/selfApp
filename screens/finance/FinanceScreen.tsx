@@ -79,6 +79,7 @@ import {
     normalizeFinanceSignRule,
     validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
+import { fetchFinanceHome, fetchFinanceRecentDays } from '@/lib/finance-page-api';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import {
     budgetExtraPatchForTransaction,
@@ -649,6 +650,7 @@ export default function FinanceScreen() {
   const INITIAL_HISTORY_DAY_SLICES = 2;
   /** 触底后继续加载的历史日数（按有记录的自然日聚合） */
   const LOAD_MORE_HISTORY_DAY_STEP = 3;
+  const [historyHasMoreRemote, setHistoryHasMoreRemote] = React.useState(false);
   const [visibleDayCount, setVisibleDayCount] = React.useState(INITIAL_HISTORY_DAY_SLICES);
   const [isLoadingMoreDays, setIsLoadingMoreDays] = React.useState(false);
   const [sheetImageUris, setSheetImageUris] = React.useState<string[]>([]);
@@ -736,8 +738,8 @@ export default function FinanceScreen() {
   const loadFinanceTransactions = React.useCallback(async (forceRefresh = false) => {
     try {
       const [rows, categories] = await Promise.all([
-        getFinanceTransactions({ forceRefresh }),
-        getFinanceFlowCategories(),
+        getFinanceTransactions({ forceRefresh, localOnly: true }),
+        getFinanceFlowCategories({ localOnly: true }),
       ]);
       txnAiSkippedIdsRef.current.clear();
       flowCategoryNamesRef.current = Object.fromEntries(categories.map((c) => [c.id, c.name]));
@@ -1066,7 +1068,7 @@ export default function FinanceScreen() {
     return Array.from(keys).sort((a, b) => b.localeCompare(a));
   }, [getDayKey, logicalTodayYmd, sortedTransactions]);
   const historyDayKeys = React.useMemo(() => sortedDayKeys.filter((k) => k !== todayDayKey), [sortedDayKeys, todayDayKey]);
-  const hasMoreHistoryDays = visibleDayCount < historyDayKeys.length;
+  const hasMoreHistoryDays = visibleDayCount < historyDayKeys.length || historyHasMoreRemote;
   const visibleDayKeySet = React.useMemo(() => {
     if (historyDayKeys.length === 0) {
       return new Set<string>();
@@ -1084,11 +1086,48 @@ export default function FinanceScreen() {
       return;
     }
     setIsLoadingMoreDays(true);
-    setVisibleDayCount((prev) =>
-      Math.min(prev + LOAD_MORE_HISTORY_DAY_STEP, historyDayKeys.length),
-    );
-    setIsLoadingMoreDays(false);
-  }, [hasMoreHistoryDays, historyDayKeys.length, isLoadingMoreDays]);
+    if (visibleDayCount < historyDayKeys.length) {
+      setVisibleDayCount((prev) =>
+        Math.min(prev + LOAD_MORE_HISTORY_DAY_STEP, historyDayKeys.length),
+      );
+      setIsLoadingMoreDays(false);
+      return;
+    }
+    const oldest = historyDayKeys[historyDayKeys.length - 1] ?? todayDayKey;
+    void (async () => {
+      try {
+        const more = await fetchFinanceRecentDays({
+          before: oldest,
+          days: LOAD_MORE_HISTORY_DAY_STEP,
+          dayBoundaryHour: dayBoundary.hour,
+          dayBoundaryMinute: dayBoundary.minute,
+          offlineFallback: true,
+        });
+        if (more.transactions.length > 0) {
+          const byId = new Map(financeTransactionsRef.current.map((t) => [t.id, t]));
+          for (const t of more.transactions) byId.set(t.id, t);
+          const merged = [...byId.values()];
+          financeTransactionsRef.current = merged;
+          setFinanceTransactions(merged);
+        }
+        setHistoryHasMoreRemote(more.historyHasMore);
+        setVisibleDayCount((prev) => prev + LOAD_MORE_HISTORY_DAY_STEP);
+      } catch (e) {
+        console.warn('Failed to load more finance history days:', e);
+        setHistoryHasMoreRemote(false);
+      } finally {
+        setIsLoadingMoreDays(false);
+      }
+    })();
+  }, [
+    dayBoundary.hour,
+    dayBoundary.minute,
+    hasMoreHistoryDays,
+    historyDayKeys,
+    isLoadingMoreDays,
+    todayDayKey,
+    visibleDayCount,
+  ]);
 
   const handleMainScroll = React.useCallback(
     (event: { nativeEvent: { contentOffset: { y: number }; layoutMeasurement: { height: number }; contentSize: { height: number } } }) => {
@@ -2268,18 +2307,51 @@ export default function FinanceScreen() {
   const reload = React.useCallback(async (forceApi = false) => {
     return wrapLoad(async () => {
       try {
-        await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-        await loadFinanceLastUsedAccountId();
         const settings = await loadMonthBudgetSettings();
         setMonthBudgetSettings(settings);
         const rd = await loadBudgetRefreshDay();
         setBudgetRefreshDay(rd);
+        await loadFinanceLastUsedAccountId();
+
+        if (forceApi || !financeTransactionsRef.current.length) {
+          const home = await fetchFinanceHome({
+            logicalToday: logicalTodayYmd,
+            dayBoundaryHour: dayBoundary.hour,
+            dayBoundaryMinute: dayBoundary.minute,
+            historyDays: INITIAL_HISTORY_DAY_SLICES,
+            daysBack: 90,
+            budgetRefreshDay: rd,
+            offlineFallback: true,
+          });
+          flowCategoryNamesRef.current = Object.fromEntries(
+            home.categories.map((c) => [c.id, c.name]),
+          );
+          financeTransactionsRef.current = home.transactions;
+          setFinanceTransactions(home.transactions);
+          financeAccountsRef.current = home.accounts;
+          setFinanceAccounts(home.accounts);
+          setHistoryHasMoreRemote(home.historyHasMore);
+          setVisibleDayCount(INITIAL_HISTORY_DAY_SLICES);
+          setTxnAiFailEpoch((e) => e + 1);
+          queueMicrotask(() => {
+            void runTxnAiBackfillRef.current();
+          });
+        } else {
+          await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+        }
       } catch (e) {
         console.warn('Finance tab refresh failed:', e);
         throw e;
       }
     }, forceApi);
-  }, [loadFinanceAccounts, loadFinanceTransactions, wrapLoad]);
+  }, [
+    dayBoundary.hour,
+    dayBoundary.minute,
+    loadFinanceAccounts,
+    loadFinanceTransactions,
+    logicalTodayYmd,
+    wrapLoad,
+  ]);
 
   const reloadPage = React.useCallback(async (forceApi = false) => {
     try {

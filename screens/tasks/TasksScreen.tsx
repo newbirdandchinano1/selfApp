@@ -3909,7 +3909,7 @@ export default function TasksScreen() {
     setExpandedHabitSections((prev) => ({ ...prev, [sectionId]: !prev[sectionId] }));
   }, []);
 
-  /** @returns true 表示本次点击可继续处理 */
+  /** 同一习惯（或子习惯）连点防抖；@returns true 表示本次点击可继续处理 */
   const consumeHabitCardPressDebounce = React.useCallback((habitId: string) => {
     const now = Date.now();
     const last = habitPressAtByIdRef.current.get(habitId) ?? 0;
@@ -4018,6 +4018,7 @@ export default function TasksScreen() {
   const handleHabitIncrement = React.useCallback(
     async (item: HabitGridItem) => {
       if (isHabitGridItemCompletedToday(item, logicalTodayYmd)) return;
+      if (!consumeHabitCardPressDebounce(item.id)) return;
       if (habitCheckInLockRef.current.has(item.id)) return;
       habitCheckInLockRef.current.add(item.id);
       habitLoadGenerationRef.current += 1;
@@ -4029,29 +4030,36 @@ export default function TasksScreen() {
           hasTodayRecord: optimistic.hasTodayRecord,
         });
       }
+      let nextCount = item.todayCount;
+      let increased = false;
       try {
-        const { nextCount, increased } = await incrementTodayHabitCheckIn(item.id, item.incrementCap);
+        const result = await incrementTodayHabitCheckIn(item.id, item.incrementCap);
+        nextCount = result.nextCount;
+        increased = result.increased;
         if (!optimistic || nextCount !== optimistic.nextCount) {
           patchHabitTodayCount(item.id, nextCount, increased && item.kind === 'task' ? 1 : 0, {
             hasTodayRecord: item.kind === 'break' ? true : undefined,
           });
         }
         if (increased) void playHabitCheckInDing();
-        // 养成：每次打卡发奖；任务：周期目标刚达成时发整包；戒除：达成连续目标时由 tryMark 发奖
-        if (increased && item.kind === 'build') {
-          await grantHabitCheckInPointsWithToast(item.id, 'earn');
-        } else if (increased && item.kind === 'task') {
-          await syncTaskHabitPeriodPointsWithToast(item, wasTaskPeriodMet, logicalTodayYmd);
-        }
-        runHabitSideEffectsAfterCountChange(item.id, nextCount);
       } catch (err) {
         console.warn('习惯打卡失败', err);
         restoreHabitGridItem(item);
+        return;
       } finally {
+        // 先解锁，避免积分/刷新期间挡住「再点撤销」
         habitCheckInLockRef.current.delete(item.id);
       }
+      // 养成：每次打卡发奖；任务：周期目标刚达成时发整包；戒除：达成连续目标时由 tryMark 发奖
+      if (increased && item.kind === 'build') {
+        await grantHabitCheckInPointsWithToast(item.id, 'earn');
+      } else if (increased && item.kind === 'task') {
+        await syncTaskHabitPeriodPointsWithToast(item, wasTaskPeriodMet, logicalTodayYmd);
+      }
+      runHabitSideEffectsAfterCountChange(item.id, nextCount);
     },
     [
+      consumeHabitCardPressDebounce,
       grantHabitCheckInPointsWithToast,
       logicalTodayYmd,
       markPageDirty,
@@ -4064,6 +4072,7 @@ export default function TasksScreen() {
 
   const handleBreakHabitConfirmClean = React.useCallback(
     async (item: HabitGridItem) => {
+      if (!consumeHabitCardPressDebounce(item.id)) return;
       if (habitCheckInLockRef.current.has(item.id)) return;
       habitCheckInLockRef.current.add(item.id);
       habitLoadGenerationRef.current += 1;
@@ -4071,8 +4080,6 @@ export default function TasksScreen() {
       patchHabitTodayCount(item.id, 0, 0, { hasTodayRecord: true });
       try {
         await confirmBreakHabitDayClean(item.id, logicalTodayYmd);
-        // 戒除积分仅在达成连续目标时发放（tryMarkBreakHabitCompleted）
-        runHabitSideEffectsAfterCountChange(item.id, 0, { skipHabitReload: true });
       } catch (err) {
         console.warn('确认保持戒除失败', err);
         restoreHabitGridItem(item);
@@ -4080,11 +4087,15 @@ export default function TasksScreen() {
           '确认失败',
           err instanceof Error && err.message.trim() ? err.message : '保持戒除未能保存，请稍后重试',
         );
+        return;
       } finally {
         habitCheckInLockRef.current.delete(item.id);
       }
+      // 戒除积分仅在达成连续目标时发放（tryMarkBreakHabitCompleted）
+      runHabitSideEffectsAfterCountChange(item.id, 0, { skipHabitReload: true });
     },
     [
+      consumeHabitCardPressDebounce,
       logicalTodayYmd,
       markPageDirty,
       patchHabitTodayCount,
@@ -4095,6 +4106,7 @@ export default function TasksScreen() {
 
   const handleHabitUndoOnce = React.useCallback(
     async (item: HabitGridItem) => {
+      // 撤销不用时间防抖（否则刚打卡完成后会被 500ms 挡住）；仅用进行中锁防并发
       if (habitCheckInLockRef.current.has(item.id)) return;
       habitCheckInLockRef.current.add(item.id);
       habitLoadGenerationRef.current += 1;
@@ -4106,8 +4118,9 @@ export default function TasksScreen() {
           hasTodayRecord: optimistic.hasTodayRecord,
         });
       }
+      let nextCount = item.todayCount;
       try {
-        const nextCount = await decrementTodayHabitCheckIn(item.id, {
+        nextCount = await decrementTodayHabitCheckIn(item.id, {
           breakHabit: item.kind === 'break',
         });
         if (!optimistic || nextCount !== optimistic.nextCount) {
@@ -4116,19 +4129,21 @@ export default function TasksScreen() {
             hasTodayRecord: item.kind === 'break' ? nextCount > 0 : undefined,
           });
         }
-        // 养成：撤销打卡扣回；任务：周期目标刚回退时扣回；戒除日常撤销不扣目标积分
-        if (item.kind === 'build' && nextCount < item.todayCount) {
-          await grantHabitCheckInPointsWithToast(item.id, 'undo', { forceUndo: true });
-        } else if (item.kind === 'task') {
-          await syncTaskHabitPeriodPointsWithToast(item, wasTaskPeriodMet, logicalTodayYmd);
-        }
-        runHabitSideEffectsAfterCountChange(item.id, nextCount);
       } catch (err) {
         console.warn('撤销打卡失败', err);
         restoreHabitGridItem(item);
+        return;
       } finally {
         habitCheckInLockRef.current.delete(item.id);
       }
+      // 养成：撤销打卡扣回；任务：周期目标刚回退时扣回；戒除日常撤销不扣目标积分
+      if (item.kind === 'build' && nextCount < item.todayCount) {
+        await grantHabitCheckInPointsWithToast(item.id, 'undo', { forceUndo: true });
+      } else if (item.kind === 'task') {
+        await syncTaskHabitPeriodPointsWithToast(item, wasTaskPeriodMet, logicalTodayYmd);
+      }
+      // 跳过 habits-grid 立即重拉，避免服务端短暂旧数据把「已撤销」盖回完成态
+      runHabitSideEffectsAfterCountChange(item.id, nextCount, { skipHabitReload: true });
     },
     [
       grantHabitCheckInPointsWithToast,
@@ -4158,6 +4173,7 @@ export default function TasksScreen() {
   const handleSubHabitToggle = React.useCallback(
     async (subHabitId: string) => {
       if (!subHabitModal || subHabitTogglingId) return;
+      if (!consumeHabitCardPressDebounce(`${subHabitModal.habitId}:${subHabitId}`)) return;
       const prevDone = Boolean(subHabitModal.doneMap[subHabitId]);
       const nextDone = !prevDone;
       const prevCompleted = Object.values(subHabitModal.doneMap).filter(Boolean).length;
@@ -4241,6 +4257,7 @@ export default function TasksScreen() {
       }
     },
     [
+      consumeHabitCardPressDebounce,
       grantHabitCheckInPointsWithToast,
       habitSections,
       logicalTodayYmd,
@@ -4255,16 +4272,22 @@ export default function TasksScreen() {
 
   const handleHabitIconPress = React.useCallback(
     (item: HabitGridItem) => {
-      // 已完成：再点一次撤销（扣回积分）；长按仍可进详情
+      // 已完成：再点一次撤销；带子习惯则打开清单取消勾选。长按仍可进详情
       if (isHabitGridItemCompletedToday(item, logicalTodayYmd)) {
+        if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+          openSubHabitModal(item);
+          return;
+        }
         void handleHabitUndoOnce(item);
         return;
       }
       if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+        if (!consumeHabitCardPressDebounce(item.id)) return;
         openSubHabitModal(item);
         return;
       }
       if (item.kind === 'break' && !item.hasTodayRecord && item.todayCount <= 0) {
+        if (!consumeHabitCardPressDebounce(`${item.id}:alert`)) return;
         Alert.alert(item.name, '请确认今日戒除状态', [
           { text: '保持戒除', onPress: () => void handleBreakHabitConfirmClean(item) },
           { text: '记录破戒', onPress: () => void handleHabitIncrement(item) },
@@ -4274,7 +4297,14 @@ export default function TasksScreen() {
       }
       void handleHabitIncrement(item);
     },
-    [handleBreakHabitConfirmClean, handleHabitIncrement, handleHabitUndoOnce, logicalTodayYmd, openSubHabitModal],
+    [
+      consumeHabitCardPressDebounce,
+      handleBreakHabitConfirmClean,
+      handleHabitIncrement,
+      handleHabitUndoOnce,
+      logicalTodayYmd,
+      openSubHabitModal,
+    ],
   );
 
   const hasChildrenDeeperThan = React.useCallback((nodes: TaskTreeNode[], level: number, maxLevel: number): boolean => {
@@ -5386,8 +5416,12 @@ export default function TasksScreen() {
                               key={item.id}
                               onPress={() => {
                                 if (!scheduleAllowsToday) return;
-                                if (!consumeHabitCardPressDebounce(item.id)) return;
                                 if (goalMet) {
+                                  // 已完成：子习惯进弹窗反勾；普通习惯直接撤销（不走打卡防抖）
+                                  if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+                                    openSubHabitModal(item);
+                                    return;
+                                  }
                                   void handleHabitUndoOnce(item);
                                   return;
                                 }

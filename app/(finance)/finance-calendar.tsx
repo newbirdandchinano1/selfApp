@@ -3,7 +3,7 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { runPageApiLoad } from '@/lib/page-api-session';
-import { getFinanceDailySummariesByDateRange, getFinanceTransactionsByYmd } from '@/lib/repositories/finance/finance';
+import { fetchFinanceDailySummaries, fetchFinanceTransactionsRange } from '@/lib/finance-page-api';
 import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -215,7 +215,11 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
     let cancelled = false;
     void runPageApiLoad('finance-calendar', async () => {
       try {
-        const rows = await getFinanceDailySummariesByDateRange(formatYMD(gridStart), formatYMD(gridEnd));
+        const { days: rows } = await fetchFinanceDailySummaries({
+          start: formatYMD(gridStart),
+          end: formatYMD(gridEnd),
+          offlineFallback: true,
+        });
         if (cancelled) return;
 
         const map = new Map<string, FinanceDailySummaryRow>();
@@ -366,7 +370,12 @@ export default function FinanceCalendarScreen() {
 
   const reloadDayTxns = React.useCallback(async (date: Date) => {
     try {
-      const rows = await getFinanceTransactionsByYmd(formatYMD(date));
+      const ymd = formatYMD(date);
+      const { transactions: rows } = await fetchFinanceTransactionsRange({
+        start: ymd,
+        end: ymd,
+        offlineFallback: true,
+      });
       const ui = rows.map((row) => txnToUi(row));
       setActiveTxns(ui);
       setDayTotal(

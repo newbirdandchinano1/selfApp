@@ -1,4 +1,3 @@
-import { readApiTable } from '@/lib/api-read';
 import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
@@ -58,7 +57,12 @@ export function isFinanceSheetCategoryRow(row: FinanceFlowCategoryRow): boolean 
 }
 
 export async function getFinanceSheetCustomCategories(transactionType: FinanceSheetTransactionType) {
-  const rows = await readApiTable<FinanceFlowCategoryRow>('finance_flow_categories', { offlineFallback: true });
+  const db = await getDatabase();
+  if (!db) return [];
+  const rows =
+    (await db.getAllAsync<FinanceFlowCategoryRow>(
+      `SELECT * FROM finance_flow_categories WHERE sync_status != 'pending_delete'`,
+    )) ?? [];
   return sortBySortOrderAsc(
     rows.filter(row => {
       if (!row.id.startsWith(FINANCE_SHEET_CATEGORY_ID_PREFIX)) return false;

@@ -2,7 +2,7 @@ import { AppButton, AppCard, AppIconButton, ScreenHeader } from '@/components/ui
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { getFinanceFlowCategories, getFinanceTransactions } from '@/lib/repositories/finance/finance';
+import { fetchFinanceCatalog, fetchFinanceTransactionsRange } from '@/lib/finance-page-api';
 import {
   BUILTIN_SHEET_CATEGORY_LABELS,
   getFinanceTransactionCategoryLabel,
@@ -251,12 +251,21 @@ export default function FinanceStatsScreen() {
   const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
       try {
-        const [transactionRows, categoryRows] = await Promise.all([
-          getFinanceTransactions(),
-          getFinanceFlowCategories(),
+        const end = new Date();
+        const start = new Date();
+        start.setDate(start.getDate() - 800);
+        const ymd = (d: Date) =>
+          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const [txnResult, catalog] = await Promise.all([
+          fetchFinanceTransactionsRange({
+            start: ymd(start),
+            end: ymd(end),
+            offlineFallback: true,
+          }),
+          fetchFinanceCatalog({ offlineFallback: true }),
         ]);
-        setTransactions(transactionRows);
-        setCategories(categoryRows);
+        setTransactions(txnResult.transactions);
+        setCategories(catalog.categories);
       } catch (error) {
         console.warn('Failed to load finance stats:', error);
         setTransactions([]);

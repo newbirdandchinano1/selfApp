@@ -282,6 +282,8 @@ const TOP_BAR_BODY_H = 58;
 
 const SCREEN_TITLE = '习惯详情';
 const PAGE_API_KEY = 'habit-detail';
+/** 详情页补卡/撤销连点防抖间隔（与任务页小习惯卡片一致） */
+const HABIT_DETAIL_PRESS_DEBOUNCE_MS = 500;
 
 export default function HabitDetailScreen() {
   const router = useRouter();
@@ -307,6 +309,16 @@ export default function HabitDetailScreen() {
   const [datePickerOpen, setDatePickerOpen] = React.useState(false);
   const [makeUpSaving, setMakeUpSaving] = React.useState(false);
   const [cancelMakeUpSaving, setCancelMakeUpSaving] = React.useState(false);
+  /** 补卡/撤销连点防抖（按习惯 ID） */
+  const habitDetailPressAtByIdRef = React.useRef(new Map<string, number>());
+
+  const consumeHabitDetailPressDebounce = React.useCallback((id: string) => {
+    const now = Date.now();
+    const last = habitDetailPressAtByIdRef.current.get(id) ?? 0;
+    if (now - last < HABIT_DETAIL_PRESS_DEBOUNCE_MS) return false;
+    habitDetailPressAtByIdRef.current.set(id, now);
+    return true;
+  }, []);
 
   const focusYmd = React.useMemo(() => toYMD(focusDate), [focusDate]);
 
@@ -581,7 +593,8 @@ export default function HabitDetailScreen() {
   }, []);
 
   const handleMakeUpCheckIn = React.useCallback(async () => {
-    if (!habit) return;
+    if (!habit || makeUpSaving || cancelMakeUpSaving) return;
+    if (!consumeHabitDetailPressDebounce(habit.id)) return;
     if (hasActiveSubHabits(habit.extra_data)) {
       Alert.alert('提示', '该习惯已启用子习惯，请在任务页点击习惯后，在子习惯清单中完成打卡。');
       return;
@@ -638,10 +651,21 @@ export default function HabitDetailScreen() {
     } finally {
       setMakeUpSaving(false);
     }
-  }, [habit, focusYmd, incrementCap, checkIns, logicalTodayYmd, reload]);
+  }, [
+    cancelMakeUpSaving,
+    checkIns,
+    consumeHabitDetailPressDebounce,
+    focusYmd,
+    habit,
+    incrementCap,
+    logicalTodayYmd,
+    makeUpSaving,
+    reload,
+  ]);
 
   const handleDecrementFocusDayCheckIn = React.useCallback(async () => {
-    if (!habit) return;
+    if (!habit || makeUpSaving || cancelMakeUpSaving) return;
+    if (!consumeHabitDetailPressDebounce(habit.id)) return;
     const ymd = focusYmd;
     if (ymd > logicalTodayYmd) {
       Alert.alert('提示', '不能撤销未来日期的记录。');
@@ -721,7 +745,16 @@ export default function HabitDetailScreen() {
     } finally {
       setCancelMakeUpSaving(false);
     }
-  }, [habit, focusYmd, checkIns, logicalTodayYmd, reload]);
+  }, [
+    cancelMakeUpSaving,
+    checkIns,
+    consumeHabitDetailPressDebounce,
+    focusYmd,
+    habit,
+    logicalTodayYmd,
+    makeUpSaving,
+    reload,
+  ]);
 
   if (!habitId) {
     return (

@@ -2,6 +2,7 @@ import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import {
   deleteScheduledFinanceExpense,
   describeScheduledFinanceExpense,
@@ -11,7 +12,6 @@ import {
   type ScheduledFinanceExpense,
 } from '@/lib/finance-scheduled-expense';
 import { scheduleRunScheduledFinanceExpenses } from '@/lib/finance-scheduled-expense-runner';
-import { getFinanceAccountsWithBalance } from '@/lib/repositories/finance/finance';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -48,9 +48,12 @@ export default function ScheduledExpensesScreen() {
     setLoading(true);
     await wrapLoad(async () => {
       try {
-        const [rows, accts] = await Promise.all([loadScheduledFinanceExpenses(), getFinanceAccountsWithBalance()]);
+        const [rows, catalog] = await Promise.all([
+          loadScheduledFinanceExpenses(),
+          fetchFinanceCatalog({ offlineFallback: true }),
+        ]);
         setItems(rows);
-        setAccounts(accts);
+        setAccounts(catalog.accounts);
       } catch (e) {
         console.warn('Failed to load scheduled expenses:', e);
       } finally {

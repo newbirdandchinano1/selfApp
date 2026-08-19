@@ -64,7 +64,7 @@ export async function createHabitContext(name: string) {
   await pushHabitContextChangesToApi();
 }
 
-/** 删除情境后，仍引用该名称的习惯归入此前情境（与内置默认一致，避免界面「删了又出现」） */
+/** 删除情境后，仍引用该名称的习惯归入该占位名（若接口无此情境，界面会以 legacy 名展示） */
 const HABIT_CONTEXT_FALLBACK_NAME = '全天';
 
 export async function deleteHabitContexts(ids: string[]) {

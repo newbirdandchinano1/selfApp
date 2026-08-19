@@ -14,11 +14,10 @@ import {
   deleteFinanceAccountTypeByName,
   financeBalanceInputTextFromLedger,
   financeTargetLedgerFromUserBalanceInput,
-  getFinanceAccountTypes,
   getFinanceAccounts,
-  getFinanceAccountsWithBalance,
   updateFinanceAccount,
 } from '@/lib/repositories/finance/finance';
+import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import {
   getCustomAccountTypeDraft,
   getCustomAccountTypeOptions,
@@ -143,7 +142,8 @@ export default function AddAccountScreen() {
   const reloadCustomTypes = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
     try {
-      const rows = await getFinanceAccountTypes();
+      const catalog = await fetchFinanceCatalog({ offlineFallback: true });
+      const rows = catalog.accountTypes;
       setCustomTypeOptions(
         rows.map((row) => ({
           name: row.name,
@@ -163,7 +163,8 @@ export default function AddAccountScreen() {
       setEditSheetReady(false);
       await wrapLoad(async () => {
         try {
-          const rows = await getFinanceAccountsWithBalance();
+          const catalog = await fetchFinanceCatalog({ offlineFallback: true });
+          const rows = catalog.accounts;
           const row = rows.find((r) => r.id === editAccountId);
           if (!row) {
             Alert.alert('账户不存在', '该账户可能已被删除。', [{ text: '确定', onPress: () => router.back() }]);

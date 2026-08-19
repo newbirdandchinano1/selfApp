@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 39;
+export const DB_VERSION = 40;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -93,6 +93,35 @@ async function migrateEarnedRewardsHabitSource(db: SQLite.SQLiteDatabase): Promi
     'earned_rewards_habit_source_v34',
     '1',
   ]);
+}
+
+/**
+ * 历史版本会在本地种子写入一批内置习惯情境；情境应以接口为准。
+ * 一次性清掉这些本地种子行，后续由 API reconcile 写回真实数据。
+ */
+async function migrateRemoveSeededHabitContexts(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['remove_seeded_habit_contexts_v40'],
+  );
+  if (done) return;
+
+  const table = await db.getFirstAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='habit_contexts'",
+  );
+  if (table) {
+    await db.runAsync(
+      `DELETE FROM habit_contexts
+       WHERE is_builtin = 1
+         AND id IN ('起床', '晨间', '中午', '午间', '晚间', '睡前', '全天')`,
+    );
+  }
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'remove_seeded_habit_contexts_v40',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
 }
 
 /** 戒除「保持戒除」需写入 count=0；旧表 CHECK (count >= 1) 会导致确认失败 */
@@ -852,18 +881,7 @@ export async function initDatabase() {
       ('finance-category-dining', '餐饮', NULL, 3, 1, datetime('now'), datetime('now'), 'synced', NULL);
   `);
 
-  await db.execAsync(`
-    INSERT OR IGNORE INTO habit_contexts (
-      id, name, sort_order, is_builtin, created_at, updated_at, sync_status, extra_data
-    ) VALUES
-      ('起床', '起床', 10, 1, datetime('now'), datetime('now'), 'synced', NULL),
-      ('晨间', '晨间', 20, 1, datetime('now'), datetime('now'), 'synced', NULL),
-      ('中午', '中午', 30, 1, datetime('now'), datetime('now'), 'synced', NULL),
-      ('午间', '午间', 40, 1, datetime('now'), datetime('now'), 'synced', NULL),
-      ('晚间', '晚间', 50, 1, datetime('now'), datetime('now'), 'synced', NULL),
-      ('睡前', '睡前', 60, 1, datetime('now'), datetime('now'), 'synced', NULL),
-      ('全天', '全天', 70, 1, datetime('now'), datetime('now'), 'synced', NULL);
-  `);
+  // 习惯情境不本地种子，一律以接口 habit_contexts 为准。
 
   // 数据迁移/回填可能遇到云恢复后的孤儿外键；先关 FK，末尾 repair 后再打开。
   await db.execAsync('PRAGMA foreign_keys = OFF');
@@ -1300,6 +1318,7 @@ export async function initDatabase() {
   await migrateDropPersonaPortraitCache(db);
   await migrateEarnedRewardsHabitSource(db);
   await migrateHabitCheckInsAllowZeroCount(db);
+  await migrateRemoveSeededHabitContexts(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);

@@ -637,7 +637,7 @@ type ReadTasksViewFromLocalOpts = {
 
 
 
-/** 待办栏列表：meta 已校验时信任 API 返回的 done/cancelled；否则全量本地筛选 */
+/** 待办栏列表：信任 API 的他端完成口径，但按本地日程窗再滤一层（时刻只当天，时间段才展示） */
 async function resolveStandaloneTodosList(
 
   apiTasks: TaskRow[],
@@ -661,6 +661,10 @@ async function resolveStandaloneTodosList(
       fromApi as Record<string, unknown>[],
 
     )) as TaskRow[];
+
+    const visibleFromApi = withPending.filter((t) =>
+      standaloneTodoPassesStandaloneListFilter(t, boundary, logicalToday),
+    );
 
     const apiIds = new Set(withPending.map((t) => String(t.id)));
 
@@ -698,7 +702,7 @@ async function resolveStandaloneTodosList(
 
     }
 
-    return sortStandaloneTodosLocally([...withPending, ...extras], logicalToday);
+    return sortStandaloneTodosLocally([...visibleFromApi, ...extras], logicalToday);
 
   }
 

@@ -3,7 +3,7 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
-import { getFinanceAccountTypes, getFinanceAccountsWithBalance } from '@/lib/repositories/finance/finance';
+import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import type { FinanceAccountBalanceRow, FinanceAccountTypeRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -45,12 +45,9 @@ export default function AssetsScreen() {
   const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
       try {
-        const [rows, typeRows] = await Promise.all([
-          getFinanceAccountsWithBalance(),
-          getFinanceAccountTypes(),
-        ]);
-        setAccounts(rows);
-        setAccountTypes(typeRows);
+        const catalog = await fetchFinanceCatalog({ offlineFallback: true });
+        setAccounts(catalog.accounts);
+        setAccountTypes(catalog.accountTypes);
       } catch (e) {
         console.warn('Failed to load finance accounts:', e);
         setAccounts([]);
