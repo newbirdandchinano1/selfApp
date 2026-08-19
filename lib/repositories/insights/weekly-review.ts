@@ -1,5 +1,6 @@
-import { readApiTable } from '@/lib/api-read';
 import { isYmdInRange, ymdFromAuditDatetime, ymdFromDatetime } from '@/lib/api-read-helpers';
+import { fetchReviewWeekMetrics } from '@/lib/review-page-api';
+import { getDatabase } from '../../database.native';
 
 export type WeeklyReviewMetrics = {
   /** 统计区间类型：近 7 个自然日（含锚定日）或本地自然周（周一至周日） */
@@ -102,6 +103,10 @@ function formatRangeChinese(start: Date, end: Date): string {
   return `${start.getMonth() + 1}月${start.getDate()}日 – ${end.getMonth() + 1}月${end.getDate()}日`;
 }
 
+/**
+ * 周复盘旧表单指标：优先 `GET /api/pages/review/week-metrics`。
+ * 失败时仅用本地 SQLite 粗算，**禁止** `/api/data/*` 全表 List。
+ */
 export async function fetchWeeklyReviewMetrics(
   anchor: Date = new Date(),
   range: 'rolling-7' | 'calendar-week' = 'rolling-7',
@@ -109,48 +114,98 @@ export async function fetchWeeklyReviewMetrics(
   const { startYmd, endYmd, start, end } =
     range === 'rolling-7' ? getRollingSevenDayRange(anchor) : getCurrentWeekRange(anchor);
 
+  const rangeDisplay = formatRangeChinese(start, end);
+  const weekTitle =
+    range === 'rolling-7' ? `近七天复盘 · ${rangeDisplay}` : `本周复盘 · ${rangeDisplay}`;
+
+  const fromApi = await fetchReviewWeekMetrics({
+    start: startYmd,
+    end: endYmd,
+    rangeKind: range,
+    offlineFallback: true,
+  });
+
+  if (fromApi.fromApi) {
+    const { fromApi: _ok, ...metrics } = fromApi;
+    return {
+      ...metrics,
+      rangeKind: metrics.rangeKind ?? range,
+      rangeDisplay: metrics.rangeDisplay || rangeDisplay,
+      weekTitle: metrics.weekTitle || weekTitle,
+    };
+  }
+
+  const local = await computeWeeklyReviewMetricsFromLocal(startYmd, endYmd);
+  return {
+    rangeKind: range,
+    weekStartYmd: startYmd,
+    weekEndYmd: endYmd,
+    rangeDisplay,
+    weekTitle,
+    ...local,
+  };
+}
+
+async function computeWeeklyReviewMetricsFromLocal(
+  startYmd: string,
+  endYmd: string,
+): Promise<
+  Omit<WeeklyReviewMetrics, 'rangeKind' | 'weekStartYmd' | 'weekEndYmd' | 'rangeDisplay' | 'weekTitle'>
+> {
+  const db = await getDatabase();
+  if (!db) {
+    return {
+      tasksCompleted: 0,
+      tasksCreated: 0,
+      habitCheckInTotal: 0,
+      savingsWeekTotal: 0,
+      financeIncome: 0,
+      financeExpense: 0,
+      wishUpdates: 0,
+    };
+  }
+
   const [tasks, habitCheckIns, habits, deposits, plans, transactions, wishes] = await Promise.all([
-    readApiTable<{ status?: string; completed_at?: string | null; created_at?: string }>('tasks', {
-      offlineFallback: true,
-    }),
-    readApiTable<{ habit_id: string; record_date: string; count: number }>('habit_check_ins', {
-      offlineFallback: true,
-    }),
-    readApiTable<{ id: string }>('habits', { offlineFallback: true }),
-    readApiTable<{ savings_plan_id: string; amount: number; created_at?: string }>('savings_plan_deposits', {
-      offlineFallback: true,
-    }),
-    readApiTable<{ id: string }>('savings_plans', { offlineFallback: true }),
-    readApiTable<{ transaction_type?: string; amount?: number; happened_at?: string }>('finance_transactions', {
-      offlineFallback: true,
-    }),
-    readApiTable<{ updated_at?: string }>('wish_items', { offlineFallback: true }),
+    db.getAllAsync<{ status?: string; completed_at?: string | null; created_at?: string }>(
+      `SELECT status, completed_at, created_at FROM tasks WHERE sync_status != 'pending_delete'`,
+    ),
+    db.getAllAsync<{ habit_id: string; record_date: string; count: number }>(
+      `SELECT habit_id, record_date, count FROM habit_check_ins
+       WHERE record_date >= ? AND record_date <= ? AND sync_status != 'pending_delete'`,
+      [startYmd, endYmd],
+    ),
+    db.getAllAsync<{ id: string }>(`SELECT id FROM habits WHERE sync_status != 'pending_delete'`),
+    db.getAllAsync<{ savings_plan_id: string; amount: number; created_at?: string }>(
+      `SELECT savings_plan_id, amount, created_at FROM savings_plan_deposits WHERE sync_status != 'pending_delete'`,
+    ),
+    db.getAllAsync<{ id: string }>(`SELECT id FROM savings_plans WHERE sync_status != 'pending_delete'`),
+    db.getAllAsync<{ transaction_type?: string; amount?: number; happened_at?: string }>(
+      `SELECT transaction_type, amount, happened_at FROM finance_transactions WHERE sync_status != 'pending_delete'`,
+    ),
+    db.getAllAsync<{ updated_at?: string }>(
+      `SELECT updated_at FROM wish_items WHERE sync_status != 'pending_delete'`,
+    ),
   ]);
 
-  const activeHabitIds = new Set(habits.map(h => h.id));
-  const activePlanIds = new Set(plans.map(p => p.id));
+  const activeHabitIds = new Set((habits ?? []).map(h => h.id));
+  const activePlanIds = new Set((plans ?? []).map(p => p.id));
 
-  const tasksCompleted = tasks.filter(t => {
+  const tasksCompleted = (tasks ?? []).filter(t => {
     if (t.status !== 'done' || !t.completed_at) return false;
     const day = ymdFromAuditDatetime(t.completed_at);
     return day != null && isYmdInRange(day, startYmd, endYmd);
   }).length;
 
-  const tasksCreated = tasks.filter(t => {
+  const tasksCreated = (tasks ?? []).filter(t => {
     const day = ymdFromDatetime(t.created_at);
     return day != null && isYmdInRange(day, startYmd, endYmd);
   }).length;
 
-  const habitCheckInTotal = habitCheckIns
-    .filter(
-      c =>
-        activeHabitIds.has(c.habit_id) &&
-        (c.count ?? 0) >= 1 &&
-        isYmdInRange(c.record_date, startYmd, endYmd),
-    )
+  const habitCheckInTotal = (habitCheckIns ?? [])
+    .filter(c => activeHabitIds.has(c.habit_id) && (c.count ?? 0) >= 1)
     .reduce((sum, c) => sum + Number(c.count ?? 0), 0);
 
-  const savingsWeekTotal = deposits
+  const savingsWeekTotal = (deposits ?? [])
     .filter(d => {
       if (!activePlanIds.has(d.savings_plan_id)) return false;
       const day = ymdFromDatetime(d.created_at);
@@ -158,7 +213,7 @@ export async function fetchWeeklyReviewMetrics(
     })
     .reduce((sum, d) => sum + Number(d.amount ?? 0), 0);
 
-  const financeIncome = transactions
+  const financeIncome = (transactions ?? [])
     .filter(t => {
       if (t.transaction_type !== 'income') return false;
       const day = ymdFromDatetime(t.happened_at);
@@ -166,7 +221,7 @@ export async function fetchWeeklyReviewMetrics(
     })
     .reduce((sum, t) => sum + Math.abs(Number(t.amount ?? 0)), 0);
 
-  const financeExpense = transactions
+  const financeExpense = (transactions ?? [])
     .filter(t => {
       if (t.transaction_type !== 'expense') return false;
       const day = ymdFromDatetime(t.happened_at);
@@ -174,21 +229,12 @@ export async function fetchWeeklyReviewMetrics(
     })
     .reduce((sum, t) => sum + Math.abs(Number(t.amount ?? 0)), 0);
 
-  const wishUpdates = wishes.filter(w => {
+  const wishUpdates = (wishes ?? []).filter(w => {
     const day = ymdFromDatetime(w.updated_at);
     return day != null && isYmdInRange(day, startYmd, endYmd);
   }).length;
 
-  const rangeDisplay = formatRangeChinese(start, end);
-  const weekTitle =
-    range === 'rolling-7' ? `近七天复盘 · ${rangeDisplay}` : `本周复盘 · ${rangeDisplay}`;
-
   return {
-    rangeKind: range,
-    weekStartYmd: startYmd,
-    weekEndYmd: endYmd,
-    rangeDisplay,
-    weekTitle,
     tasksCompleted,
     tasksCreated,
     habitCheckInTotal,

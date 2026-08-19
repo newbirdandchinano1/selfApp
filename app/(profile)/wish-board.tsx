@@ -3,6 +3,7 @@ import { AppButton, AppCard, AppScreen, ScreenHeader } from '@/components/ui';
 import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { fetchProfileWishBoard } from '@/lib/profile-page-api';
 import {
   resolveWishBoardIconOption,
   wishBoardIconTintSoft,
@@ -53,6 +54,7 @@ export default function WishBoardScreen() {
       setLoadError(null);
       try {
         await wrapLoad(async () => {
+          await fetchProfileWishBoard({ offlineFallback: true });
           const [nextBalance, nextItems, nextRedeems] = await Promise.all([
             getPointsBalance(),
             listWishBoardItems(),

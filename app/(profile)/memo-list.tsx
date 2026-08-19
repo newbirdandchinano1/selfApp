@@ -26,6 +26,7 @@ import {
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { fetchProfileMemoList } from '@/lib/profile-page-api';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -117,6 +118,7 @@ export default function MemoListScreen() {
       setError(null);
       try {
         await wrapLoad(async () => {
+          await fetchProfileMemoList({ offlineFallback: true });
           const dims = sortByOrderThenTime(await listMemoDimensions());
           setDimensions(dims);
           const activeId = isMemoDimensionAll(selectedDimensionId)

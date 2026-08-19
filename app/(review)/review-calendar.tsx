@@ -21,6 +21,11 @@ import {
 } from '@/lib/repositories/insights/review-journal-body';
 import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
+import {
+  fetchReviewCatalog,
+  fetchReviewDaily,
+  shouldFetchReviewFromApi,
+} from '@/lib/review-page-api';
 import { getWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -105,18 +110,26 @@ export default function ReviewCalendarScreen() {
       setLoading(true);
       try {
         await wrapLoad(async () => {
+          const first = monthStart(visibleMonth);
+          const mondayOffset = (first.getDay() + 6) % 7;
+          const gridStart = new Date(first);
+          gridStart.setDate(first.getDate() - mondayOffset);
+          const gridEnd = new Date(gridStart);
+          gridEnd.setDate(gridStart.getDate() + 41);
+          const start = formatYmd(gridStart);
+          const end = formatYmd(gridEnd);
+
+          if (shouldFetchReviewFromApi()) {
+            await Promise.all([
+              fetchReviewCatalog({ scope: 'daily', offlineFallback: true }),
+              fetchReviewDaily({ start, end, offlineFallback: true }),
+            ]);
+          }
+
           const [tpl, dow, rows] = await Promise.all([
             listReviewTemplate('daily'),
             getWeeklyReviewConfiguredWeekday(),
-            (async () => {
-              const first = monthStart(visibleMonth);
-              const mondayOffset = (first.getDay() + 6) % 7;
-              const gridStart = new Date(first);
-              gridStart.setDate(first.getDate() - mondayOffset);
-              const gridEnd = new Date(gridStart);
-              gridEnd.setDate(gridStart.getDate() + 41);
-              return listDailyReviewsBetween(formatYmd(gridStart), formatYmd(gridEnd));
-            })(),
+            listDailyReviewsBetween(start, end),
           ]);
           const colIds = collectColumnIds(tpl);
           const nextFilled = new Set<string>();

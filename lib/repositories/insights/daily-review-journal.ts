@@ -1,4 +1,4 @@
-import { readApiTable } from '@/lib/api-read';
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { getDatabase } from '../../database.native';
 import type { DailyReviewJournalRow } from './daily-review-journal.types';
 
@@ -6,11 +6,18 @@ function journalIdForYmd(ymd: string) {
   return `drj_${ymd.replace(/-/g, '')}`;
 }
 
+/** 读路径已改走 `/api/pages/review/*`；仓库层只读 SQLite，禁止 `/api/data/daily_review_journal` List。 */
 export async function listDailyReviewsBetween(startYmd: string, endYmd: string): Promise<DailyReviewJournalRow[]> {
-  const rows = await readApiTable<DailyReviewJournalRow>('daily_review_journal', { offlineFallback: true });
-  return rows
-    .filter(r => r.record_date_ymd >= startYmd && r.record_date_ymd <= endYmd)
-    .sort((a, b) => a.record_date_ymd.localeCompare(b.record_date_ymd));
+  const db = await getDatabase();
+  if (!db) return [];
+  const rows = await db.getAllAsync<DailyReviewJournalRow>(
+    `SELECT * FROM daily_review_journal
+     WHERE record_date_ymd >= ? AND record_date_ymd <= ?
+       AND sync_status != 'pending_delete'
+     ORDER BY record_date_ymd ASC`,
+    [startYmd, endYmd],
+  );
+  return rows ?? [];
 }
 
 export async function upsertDailyReviewJournal(record_date_ymd: string, body: string): Promise<void> {

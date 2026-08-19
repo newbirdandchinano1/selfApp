@@ -1,6 +1,29 @@
 import { isProjectInInboxCategory } from '@/lib/repositories/projects/constants';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import { isMatrixTaskInCurrentWeek } from '@/lib/standalone-todo-visibility';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
+
+/** 无子任务的项目（任务树为空） */
+export function isLeafProjectWithoutTasks(project: ProjectRow, taskCount: number): boolean {
+  if (taskCount > 0) return false;
+  if (project.status === 'completed' || project.status === 'archived') return false;
+  return true;
+}
+
+/** 本周列表：项目计划时间范围与本周相交 */
+export function isMatrixProjectInCurrentWeek(
+  project: ProjectRow,
+  weekStartYmd: string,
+  weekEndYmd: string,
+  logicalTodayYmd: string,
+): boolean {
+  return isMatrixTaskInCurrentWeek(
+    projectToFrogTaskRow(project),
+    weekStartYmd,
+    weekEndYmd,
+    logicalTodayYmd,
+  );
+}
 
 /** 无子任务的活跃项目可被指派为青蛙（收集箱/终态/暂停除外） */
 export function isProjectEligibleAsFrog(

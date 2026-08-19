@@ -18,6 +18,11 @@ import {
   upsertWeeklyReviewJournal,
 } from '@/lib/repositories/insights/weekly-review-journal';
 import {
+  fetchReviewCatalog,
+  fetchReviewWeekly,
+  shouldFetchReviewFromApi,
+} from '@/lib/review-page-api';
+import {
   applyFontSizeToTextModel,
   currentFontSizeLabel,
   emptyReviewFieldModel,
@@ -171,6 +176,12 @@ export function WeeklyReviewDimensionDetailScreen() {
     setLoading(true);
     try {
       await wrapLoad(async () => {
+        if (shouldFetchReviewFromApi()) {
+          await Promise.all([
+            fetchReviewCatalog({ scope: 'weekly', offlineFallback: true }),
+            fetchReviewWeekly({ weekStart: weekStartYmd, offlineFallback: true }),
+          ]);
+        }
         const [snapshot, weeklyTpl, row] = await Promise.all([
           loadReviewPeriodSnapshot(todayYmd),
           listReviewTemplate('weekly'),

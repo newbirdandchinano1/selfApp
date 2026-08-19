@@ -1,8 +1,7 @@
-import { readApiTable } from '@/lib/api-read';
 import { getDatabase } from '../../database.native';
 import {
-    legacyWeeklyColumnsFromFields,
-    serializeWeeklyReviewExtraData,
+  legacyWeeklyColumnsFromFields,
+  serializeWeeklyReviewExtraData,
 } from './review-journal-body';
 import type { UpsertWeeklyReviewJournalInput, WeeklyReviewJournalRow } from './weekly-review-journal.types';
 
@@ -10,9 +9,16 @@ function journalIdForWeek(weekStartYmd: string) {
   return `wrj_${weekStartYmd.replace(/-/g, '')}`;
 }
 
+/** 读路径已改走 `/api/pages/review/*`；仓库层只读 SQLite，禁止 List 全表。 */
 export async function getWeeklyReviewJournalByWeek(weekStartYmd: string): Promise<WeeklyReviewJournalRow | null> {
-  const rows = await readApiTable<WeeklyReviewJournalRow>('weekly_review_journal', { offlineFallback: true });
-  return rows.find(r => r.week_start_ymd === weekStartYmd) ?? null;
+  const db = await getDatabase();
+  if (!db) return null;
+  return db.getFirstAsync<WeeklyReviewJournalRow>(
+    `SELECT * FROM weekly_review_journal
+     WHERE week_start_ymd = ? AND sync_status != 'pending_delete'
+     LIMIT 1`,
+    [weekStartYmd],
+  );
 }
 
 export async function upsertWeeklyReviewJournal(input: UpsertWeeklyReviewJournalInput): Promise<void> {

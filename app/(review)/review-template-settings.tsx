@@ -13,6 +13,7 @@ import {
   updateReviewDimension,
 } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate, ReviewTemplateScope } from '@/lib/repositories/insights/review-template.types';
+import { fetchReviewCatalog, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useFocusEffect } from '@react-navigation/native';
@@ -97,6 +98,9 @@ export default function ReviewTemplateSettingsScreen() {
     setLoading(true);
     try {
       await wrapLoad(async () => {
+        if (shouldFetchReviewFromApi()) {
+          await fetchReviewCatalog({ scope, offlineFallback: true });
+        }
         const rows = await listReviewTemplate(scope);
         setTemplate(rows);
         setExpandedDimId(prev => {

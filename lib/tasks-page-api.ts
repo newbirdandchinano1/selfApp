@@ -16,14 +16,6 @@ import { throwIfAborted } from '@/lib/cloud-fetch-retry';
 
 import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 
-import {
-
-  INBOX_PROJECT_CATEGORY_ID,
-
-  isProjectInInboxCategory,
-
-} from '@/lib/repositories/projects/constants';
-
 import { getProjectCategories, getProjects } from '@/lib/repositories/projects/project';
 
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
@@ -31,6 +23,7 @@ import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects
 import { getTaskCategories, getTasks } from '@/lib/repositories/tasks/task';
 
 import type { TaskCategoryRow, TaskRow } from '@/lib/repositories/tasks/task.types';
+import { normalizeTaskPriority } from '@/lib/repositories/tasks/task.types';
 
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 
@@ -53,6 +46,8 @@ import {
 } from '@/lib/tasks-logical-day';
 
 import {
+
+  isMatrixTaskInCurrentWeek,
 
   isStandaloneTodoRepeatWaiting,
 
@@ -125,7 +120,12 @@ export type TasksPageData = {
 
 const TASKS_PAGE_INCLUDE = 'tasks';
 
-
+function normalizeTaskRowFromApi(row: Record<string, unknown>): TaskRow {
+  return {
+    ...(row as TaskRow),
+    priority: normalizeTaskPriority(row.priority),
+  };
+}
 
 function readTasksPageFilteredMeta(
 
@@ -254,39 +254,14 @@ async function resolveTasksPageDateContext(boundary?: TasksDayBoundary): Promise
 
 
 
-/** 本周列表 Tab → bootstrap matrixWeek 的 projectIds 参数 */
 
-export function resolveMatrixProjectIds(
 
-  projects: ProjectRow[],
 
-  taskTab: string,
-
-): string | undefined {
-
-  let ids: string[];
-
-  if (taskTab === 'all') {
-
-    ids = projects.filter((p) => !isProjectInInboxCategory(p.category_id)).map((p) => p.id);
-
-  } else if (taskTab === INBOX_PROJECT_CATEGORY_ID) {
-
-    ids = projects.filter((p) => isProjectInInboxCategory(p.category_id)).map((p) => p.id);
-
-  } else {
-
-    ids = projects.filter((p) => p.category_id === taskTab).map((p) => p.id);
-
-  }
-
-  const trimmed = ids.map((id) => id.trim()).filter(Boolean);
-
+/** 本周列表：传全部项目 id（不再按分类 Tab 切分）；缺省时后端会空结果 */
+export function resolveMatrixProjectIds(projects: ProjectRow[]): string | undefined {
+  const trimmed = projects.map((p) => p.id.trim()).filter(Boolean);
   return trimmed.length > 0 ? trimmed.join(',') : undefined;
-
 }
-
-
 
 /**
  * 未完成在前 → 未到执行日的重复待办置底 → 搁置置底 → 已完成/取消置底；
@@ -377,84 +352,20 @@ function filterStandaloneTodosOffline(
 
 
 
+/** 本周列表：挂项目/父任务，且计划时间范围落在本周 */
 function filterMatrixWeekOffline(
-
   rows: TaskRow[],
-
   weekStart: string,
-
   weekEnd: string,
-
   logicalToday: string,
-
-  projects: ProjectRow[],
-
-  taskTab: string,
-
+  projects?: ProjectRow[],
 ): TaskRow[] {
-
-  const projectById = new Map(projects.map((p) => [p.id, p]));
-
-  const taskById = new Map(rows.map((t) => [t.id, t]));
-
-
-
-  const resolveCategoryId = (task: TaskRow): string | null => {
-
-    if (task.project_id) {
-
-      const project = projectById.get(task.project_id);
-
-      if (project) {
-
-        return project.category_id ?? INBOX_PROJECT_CATEGORY_ID;
-
-      }
-
-    }
-
-    if (task.parent_task_id) {
-
-      const parent = taskById.get(task.parent_task_id);
-
-      if (parent) return resolveCategoryId(parent);
-
-    }
-
-    return task.category_id ?? INBOX_PROJECT_CATEGORY_ID;
-
-  };
-
-
-
-  const inWeek = (t: TaskRow) => {
-
-    const due = t.due_date?.slice(0, 10);
-
-    if (due && due >= weekStart && due <= weekEnd) return true;
-
-    if (due && due < logicalToday) return true;
-
-    return false;
-
-  };
-
-
-
+  const projectById = new Map((projects ?? []).map((p) => [p.id, p]));
   return rows.filter((t) => {
-
     if (!t.project_id && !t.parent_task_id) return false;
-
-    if (!inWeek(t)) return false;
-
-    const catId = resolveCategoryId(t);
-
-    if (taskTab === 'all') return !isProjectInInboxCategory(catId);
-
-    return catId === taskTab;
-
+    const projectExtraData = t.project_id ? projectById.get(t.project_id)?.extra_data ?? null : null;
+    return isMatrixTaskInCurrentWeek(t, weekStart, weekEnd, logicalToday, { projectExtraData });
   });
-
 }
 
 
@@ -541,7 +452,11 @@ async function pullTasksViewFromApi(opts: {
 
     const tasks = Array.isArray(payload.tasks) ? payload.tasks : [];
 
-    allTasks.push(...tasks);
+    allTasks.push(
+      ...tasks.map((row) =>
+        normalizeTaskRowFromApi(typeof row === 'object' && row != null ? (row as Record<string, unknown>) : {}),
+      ),
+    );
 
     page += 1;
 
@@ -630,8 +545,6 @@ type ReadTasksViewFromLocalOpts = {
   weekEnd: string;
 
   projects?: ProjectRow[];
-
-  taskTab?: string;
 
 };
 
@@ -754,6 +667,15 @@ async function finalizeTasksViewFromApi(
 
   }
 
+  if (taskView === 'matrixWeek') {
+    // 接口成功返回后信任服务端筛选；本地只做「项目任务」形态校验，避免二次日程窗把结果滤空
+    const tasks = viewData.tasks.filter((t) => !!t.project_id || !!t.parent_task_id);
+    return {
+      ...viewData,
+      tasks,
+    };
+  }
+
   return viewData;
 
 }
@@ -774,8 +696,6 @@ async function readTasksViewFromLocal(opts: {
 
   projects?: ProjectRow[];
 
-  taskTab?: string;
-
 }): Promise<TaskRow[]> {
 
   const rows = await getTasks();
@@ -785,8 +705,6 @@ async function readTasksViewFromLocal(opts: {
     return filterStandaloneTodosOffline(rows, opts.boundary, opts.logicalToday);
 
   }
-
-  const projects = opts.projects ?? (await getProjects());
 
   return filterMatrixWeekOffline(
 
@@ -798,9 +716,7 @@ async function readTasksViewFromLocal(opts: {
 
     opts.logicalToday,
 
-    projects,
-
-    opts.taskTab ?? 'all',
+    opts.projects,
 
   );
 
@@ -815,8 +731,6 @@ async function pullTasksView(opts: {
   boundary?: TasksDayBoundary;
 
   projectIds?: string;
-
-  taskTab?: string;
 
   projects?: ProjectRow[];
 
@@ -880,8 +794,6 @@ async function pullTasksView(opts: {
 
           projects: opts.projects,
 
-          taskTab: opts.taskTab,
-
         },
 
         opts.offlineFallback,
@@ -913,8 +825,6 @@ async function pullTasksView(opts: {
     weekEnd,
 
     projects: opts.projects,
-
-    taskTab: opts.taskTab,
 
   });
 
@@ -964,8 +874,6 @@ export async function fetchMatrixWeekTasks(opts?: {
 
   projectIds?: string;
 
-  taskTab?: string;
-
   projects?: ProjectRow[];
 
   offlineFallback?: boolean;
@@ -996,8 +904,6 @@ async function pullTasksPageFromApi(opts: {
 
   matrixProjectIds?: string;
 
-  taskTab?: string;
-
   forceRefresh?: boolean;
 
   signal?: AbortSignal;
@@ -1020,7 +926,7 @@ async function pullTasksPageFromApi(opts: {
 
 }> {
 
-  const { boundary, logicalToday, weekStart, weekEnd, matrixProjectIds, taskTab, forceRefresh, signal } =
+  const { boundary, logicalToday, weekStart, weekEnd, matrixProjectIds, forceRefresh, signal } =
 
     opts;
 
@@ -1047,7 +953,7 @@ async function pullTasksPageFromApi(opts: {
   const catalog = await catalogPromise;
 
   const resolvedMatrixProjectIds =
-    matrixProjectIds ?? resolveMatrixProjectIds(catalog.projects, taskTab ?? 'all');
+    matrixProjectIds ?? resolveMatrixProjectIds(catalog.projects);
 
   const [standaloneResult, matrixResult] = await Promise.all([
 
@@ -1127,8 +1033,6 @@ async function pullTasksPageFromApi(opts: {
 
         projects: catalog.projects,
 
-        taskTab: taskTab ?? 'all',
-
       },
 
       true,
@@ -1154,8 +1058,6 @@ async function pullTasksPageFromApi(opts: {
 async function readTasksPageFromLocal(
 
   boundary: TasksDayBoundary,
-
-  taskTab = 'all',
 
 ): Promise<TasksPageData> {
 
@@ -1198,8 +1100,6 @@ async function readTasksPageFromLocal(
     weekEnd,
 
     projects,
-
-    taskTab,
 
   });
 
@@ -1245,8 +1145,6 @@ export async function fetchTasksPageData(opts?: {
 
   matrixProjectIds?: string;
 
-  taskTab?: string;
-
   offlineFallback?: boolean;
 
   forceLocal?: boolean;
@@ -1276,8 +1174,6 @@ export async function fetchTasksPageData(opts?: {
         weekEnd,
 
         matrixProjectIds: opts?.matrixProjectIds,
-
-        taskTab: opts?.taskTab,
 
         forceRefresh: opts?.forceRefresh,
 
@@ -1323,7 +1219,7 @@ export async function fetchTasksPageData(opts?: {
 
 
 
-  return readTasksPageFromLocal(boundary, opts?.taskTab ?? 'all');
+  return readTasksPageFromLocal(boundary);
 
 }
 

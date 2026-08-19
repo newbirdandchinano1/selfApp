@@ -15,6 +15,7 @@ import {
     type ReviewFieldValues,
     type ReviewJournalMeta,
 } from '@/lib/repositories/insights/review-journal-body';
+import { fetchReviewDaily, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import {
     applyFontSizeToTextModel,
     currentFontSizeLabel,
@@ -147,6 +148,9 @@ export function DailyReviewDimensionDetailScreen() {
     setLoading(true);
     try {
       await wrapLoad(async () => {
+        if (shouldFetchReviewFromApi() && ymd) {
+          await fetchReviewDaily({ start: ymd, end: ymd, offlineFallback: true });
+        }
         const [snapshot, dailyRows] = await Promise.all([
           loadReviewPeriodSnapshot(todayYmd),
           listDailyReviewsBetween(ymd, ymd),

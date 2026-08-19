@@ -18,6 +18,13 @@ export function isTaskActiveStatus(status: TaskStatus | string): boolean {
 }
 export type TaskPriority = 0 | 1 | 2 | 3 | 4;
 
+/** API/SQLite 读出的 priority 可能是字符串，统一为 0–4 整数 */
+export function normalizeTaskPriority(raw: unknown): TaskPriority {
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(4, Math.trunc(n))) as TaskPriority;
+}
+
 export type TaskRow = {
   id: string;
   project_id: string | null;

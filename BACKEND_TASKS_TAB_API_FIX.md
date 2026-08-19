@@ -160,7 +160,7 @@ GET /api/pages/tasks?include=tasks&taskView=matrixWeek
 | `meta.tasksScope` | 必须等于请求的 `taskView` |
 | `meta.page` `meta.limit` `meta.total` `meta.totalPages` | **必须准**。`totalPages` 缺省时 APP 只读第 1 页，多出来的行会丢 |
 | 独立待办 | 含今日日界内已完成/取消、搁置、未到执行日的重复待办 |
-| 四象限 | 本周到期 + 过期未完成；`projectIds` 为当前分类下项目 id 逗号串 |
+| 四象限 | **时间范围与本周相交**（`extra_data.schedule.range` / `date`，无日程才看 `due_date`）。**不要**只按 `due_date` 落在本周。`projectIds` 可选，缺省=全部项目。详见 `BACKEND_MATRIX_WEEK.md` |
 | 超时 | 筛选视图应在 **2s 内**；APP 对带 `taskView` 的请求超时已改为 20s（不再按 10 表 bootstrap 等 180s） |
 
 **带 `taskView` 时禁止返回** `habits`、`habitCheckIns`、`taskExecutionEvents`、`frogCompletionEvents` 等。

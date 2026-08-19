@@ -1,4 +1,3 @@
-import { readApiTable } from '@/lib/api-read';
 import { getDatabase } from '../../database.native';
 import type { MonthlyReviewJournalRow } from './monthly-review-journal.types';
 
@@ -6,13 +5,18 @@ function journalIdForMonth(monthStartYmd: string) {
   return `mrj_${monthStartYmd.replace(/-/g, '')}`;
 }
 
+/** 读路径已改走 `/api/pages/review/*`；仓库层只读 SQLite，禁止 List 全表。 */
 export async function getMonthlyReviewJournalByMonth(
   monthStartYmd: string,
 ): Promise<MonthlyReviewJournalRow | null> {
-  const rows = await readApiTable<MonthlyReviewJournalRow>('monthly_review_journal', {
-    offlineFallback: true,
-  });
-  return rows.find(r => r.month_start_ymd === monthStartYmd) ?? null;
+  const db = await getDatabase();
+  if (!db) return null;
+  return db.getFirstAsync<MonthlyReviewJournalRow>(
+    `SELECT * FROM monthly_review_journal
+     WHERE month_start_ymd = ? AND sync_status != 'pending_delete'
+     LIMIT 1`,
+    [monthStartYmd],
+  );
 }
 
 export async function upsertMonthlyReviewJournal(month_start_ymd: string, body: string): Promise<void> {

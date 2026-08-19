@@ -6,6 +6,7 @@ import { getDepositSumsByActivePlanId } from '@/lib/repositories/savings-plan/sa
 import { deleteWishItem, listWishItems, setWishItemFulfilled } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { fetchProfileWishList } from '@/lib/profile-page-api';
 import {
   deleteLinkedPlanForWish,
   getLinkedSavingsPlanId,
@@ -152,6 +153,7 @@ export default function WishListScreen() {
       setLoadError(null);
       try {
         await wrapLoad(async () => {
+          await fetchProfileWishList({ offlineFallback: true });
           if (!savingsLinksRepairedRef.current) {
             try {
               await repairWishSavingsLinks();

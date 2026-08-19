@@ -33,6 +33,11 @@ import {
 } from '@/lib/repositories/insights/monthly-review-journal';
 import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
+import {
+  fetchReviewCatalog,
+  fetchReviewMonthly,
+  shouldFetchReviewFromApi,
+} from '@/lib/review-page-api';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -93,6 +98,12 @@ export function MonthlyReviewGridView({
     setLoading(true);
     try {
       await wrapLoad(async () => {
+        if (shouldFetchReviewFromApi()) {
+          await Promise.all([
+            fetchReviewCatalog({ scope: 'monthly', offlineFallback: true }),
+            fetchReviewMonthly({ monthStart: monthStartYmd, offlineFallback: true }),
+          ]);
+        }
         const [tpl, row] = await Promise.all([
           listReviewTemplate('monthly'),
           getMonthlyReviewJournalByMonth(monthStartYmd),

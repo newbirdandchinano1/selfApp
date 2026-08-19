@@ -294,16 +294,12 @@ function isYmdInRange(ymd: string, startYmd: string, endYmd: string): boolean {
   return ymd >= startYmd && ymd <= endYmd;
 }
 
-/** 本周列表：计划落在本周，或未完成且已过期（含计划日/重复周期错过） */
-export function isMatrixTaskInCurrentWeek(
-  task: TaskRow,
+function scheduleIntersectsWeek(
+  schedule: ProjectScheduleMeta | null,
   weekStartYmd: string,
   weekEndYmd: string,
-  logicalTodayYmd: string,
 ): boolean {
-  const schedule = parseProjectSchedule(task.extra_data);
-
-  if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
+  if (schedule?.range?.start && schedule.range?.end) {
     const start = formatScheduleDateToYMD(schedule.range.start);
     const end = formatScheduleDateToYMD(schedule.range.end);
     if (start && end) return start <= weekEndYmd && weekStartYmd <= end;
@@ -314,12 +310,25 @@ export function isMatrixTaskInCurrentWeek(
     if (schedYmd) return isYmdInRange(schedYmd, weekStartYmd, weekEndYmd);
   }
 
-  const dueYmd = task.due_date?.trim().slice(0, 10) ?? '';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dueYmd)) {
-    if (isYmdInRange(dueYmd, weekStartYmd, weekEndYmd)) return true;
-  }
+  return false;
+}
 
-  if (isTaskActiveStatus(task.status) && isTaskOverdueForList(task, logicalTodayYmd)) {
+/** 本周列表：计划时间范围与本周相交（任务自身日程优先，可回落到所属项目日程） */
+export function isMatrixTaskInCurrentWeek(
+  task: TaskRow,
+  weekStartYmd: string,
+  weekEndYmd: string,
+  _logicalTodayYmd: string,
+  opts?: { projectExtraData?: string | null },
+): boolean {
+  const taskSchedule = parseProjectSchedule(task.extra_data);
+  if (scheduleIntersectsWeek(taskSchedule, weekStartYmd, weekEndYmd)) return true;
+
+  const projectSchedule = parseProjectSchedule(opts?.projectExtraData ?? null);
+  if (scheduleIntersectsWeek(projectSchedule, weekStartYmd, weekEndYmd)) return true;
+
+  const dueYmd = task.due_date?.trim().slice(0, 10) ?? '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dueYmd) && isYmdInRange(dueYmd, weekStartYmd, weekEndYmd)) {
     return true;
   }
 

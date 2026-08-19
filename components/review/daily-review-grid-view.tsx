@@ -28,6 +28,7 @@ import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
+import { fetchReviewDaily, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import {
   collectColumnIds,
   parseDailyReviewJournal,
@@ -97,6 +98,10 @@ export function DailyReviewGridView({
     setLoading(true);
     try {
       await wrapLoad(async () => {
+        // home 覆盖周期 7 天；换日到窗外时补拉单日
+        if (shouldFetchReviewFromApi()) {
+          await fetchReviewDaily({ start: ymd, end: ymd, offlineFallback: true });
+        }
         const [snapshot, dailyRows, reminderSettings] = await Promise.all([
           loadReviewPeriodSnapshot(todayYmd),
           listDailyReviewsBetween(ymd, ymd),

@@ -34,7 +34,11 @@ import {
   isFrogDoneForToday,
   setFrogSessionCompletedOn,
 } from '@/lib/long-term-task';
-import { projectToFrogTaskRow } from '@/lib/project-frog';
+import {
+  isLeafProjectWithoutTasks,
+  isMatrixProjectInCurrentWeek,
+  projectToFrogTaskRow,
+} from '@/lib/project-frog';
 import { consumeForceFullApiRefreshAfterLocalClear } from '@/lib/page-api-session';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import { fetchProjectsListForProject, fetchProjectsListForTab, mergeProjectRowsById, mergeProjectTaskTreeMaps } from '@/lib/projects-list-api';
@@ -136,13 +140,16 @@ import {
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
   isTaskShelvedStatus,
-  isTaskTerminalStatus
+  isTaskTerminalStatus,
+  normalizeTaskPriority,
 } from '@/lib/repositories/tasks/task.types';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
+import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 import {
   formatScheduleDateToYMD,
   getStandaloneTodoOverdueDisplayYmd,
+  isMatrixTaskInCurrentWeek,
   isStandaloneTodoOpen,
   isStandaloneTodoOverdue,
   isStandaloneTodoRepeatWaiting,
@@ -1351,16 +1358,40 @@ function trimTaskAcceptanceCriteria(task: Pick<TaskRow, 'description'>): string 
   return (task.description ?? '').trim();
 }
 
+function flattenProjectTaskTreeMap(map: Record<string, TaskTreeNode[]>): TaskRow[] {
+  const rows: TaskRow[] = [];
+  const walk = (node: TaskTreeNode) => {
+    const { children, ...rest } = node;
+    rows.push(rest as TaskRow);
+    for (const child of children ?? []) walk(child);
+  };
+  for (const nodes of Object.values(map)) {
+    for (const node of nodes ?? []) walk(node);
+  }
+  return rows;
+}
+
 /** 过期未完成待办在列表/四象限中按「紧急重要」展示与分组。 */
 function getEffectiveTaskPriority(task: TaskRow, logicalTodayYmd: string): number {
   if (isTaskOverdueForList(task, logicalTodayYmd)) return URGENT_IMPORTANT_PRIORITY;
-  return task.priority;
+  return normalizeTaskPriority(task.priority);
+}
+
+function bucketMatrixTaskByPriority(
+  task: TaskRow,
+  priority: number,
+  buckets: { q11: TaskRow[]; q10: TaskRow[]; q01: TaskRow[]; q00: TaskRow[] },
+) {
+  if (priority >= 4) buckets.q11.push(task);
+  else if (priority === 3) buckets.q01.push(task);
+  else if (priority === 2) buckets.q10.push(task);
+  else buckets.q00.push(task);
 }
 
 async function applyOverdueTaskPriorityBump(rows: TaskRow[], logicalTodayYmd: string): Promise<number> {
   let count = 0;
   for (const t of rows) {
-    if (t.priority >= URGENT_IMPORTANT_PRIORITY) continue;
+    if (normalizeTaskPriority(t.priority) >= URGENT_IMPORTANT_PRIORITY) continue;
     if (!isTaskRowOverdue(t, logicalTodayYmd)) continue;
     await updateTask(t.id, { priority: URGENT_IMPORTANT_PRIORITY });
     count += 1;
@@ -1657,7 +1688,6 @@ export default function TasksScreen() {
   const insets = useSafeAreaInsets();
   const TASK_INDENT = 18;
 
-  const [taskTab, setTaskTab] = React.useState<string>('all');
   const [projectTab, setProjectTab] = React.useState<string>('all');
   const [mainListView, setMainListView] = React.useState<TasksMainListView>('projects');
   const [projects, setProjects] = React.useState<ProjectRow[]>([]);
@@ -1820,10 +1850,6 @@ export default function TasksScreen() {
     return sortProjectsForList(base, lockedProjectIds);
   }, [lockedProjectIds, projects, projectTab]);
 
-  React.useEffect(() => {
-    if (taskTab === INBOX_PROJECT_CATEGORY_ID) setTaskTab('all');
-  }, [taskTab]);
-
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
   const frogCardAnim = React.useRef(new Animated.Value(0)).current;
@@ -1964,7 +1990,6 @@ export default function TasksScreen() {
         rows = await getTasks(opts);
       }
 
-      const matrixProjectIds = resolveMatrixProjectIds(projects, taskTab);
       const [standalone, matrix] = await Promise.all([
         fetchStandaloneTodos({
           boundary: dayBoundary,
@@ -1974,8 +1999,7 @@ export default function TasksScreen() {
         }),
         fetchMatrixWeekTasks({
           boundary: dayBoundary,
-          projectIds: matrixProjectIds,
-          taskTab,
+          projectIds: resolveMatrixProjectIds(projects),
           projects,
           offlineFallback: true,
           forceLocal: opts?.forceLocal,
@@ -1989,7 +2013,7 @@ export default function TasksScreen() {
       console.warn('加载任务列表失败', err);
       return 0;
     }
-  }, [dayBoundary, projects, taskTab]);
+  }, [dayBoundary, projects]);
 
   const loadTodayFrogs = React.useCallback(async (opts?: { forceLocal?: boolean }) => {
     try {
@@ -2226,18 +2250,6 @@ export default function TasksScreen() {
   ]);
 
   React.useEffect(() => {
-    matrixAnim.stopAnimation(() => {
-      matrixAnim.setValue(0.9);
-      Animated.spring(matrixAnim, {
-        toValue: 1,
-        speed: 18,
-        bounciness: 7,
-        useNativeDriver: true,
-      }).start();
-    });
-  }, [matrixAnim, taskTab]);
-
-  React.useEffect(() => {
     projectAnim.stopAnimation(() => {
       projectAnim.setValue(0.9);
       Animated.spring(projectAnim, {
@@ -2378,7 +2390,6 @@ export default function TasksScreen() {
     const [pageData, projectsListResult] = await Promise.all([
       fetchTasksPageData({
         boundary: dayBoundary,
-        taskTab,
         offlineFallback: true,
         forceLocal: false,
         forceRefresh: forceApiRefresh,
@@ -2514,7 +2525,6 @@ export default function TasksScreen() {
     dayBoundary,
     logicalTodayYmd,
     projectTab,
-    taskTab,
     saveExpandedProjectState,
   ]);
 
@@ -2546,12 +2556,20 @@ export default function TasksScreen() {
   }, [logicalTodayYmd]);
 
   const findVisibleTask = React.useCallback(
-    (taskId: string): TaskRow | undefined =>
-      standaloneTodos.find((t) => t.id === taskId) ??
-      matrixWeekTasks.find((t) => t.id === taskId) ??
-      findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId) ??
-      todayFrogs.find((t) => t.id === taskId),
-    [standaloneTodos, matrixWeekTasks, projectTaskTreeMap, todayFrogs],
+    (taskId: string): TaskRow | undefined => {
+      const fromLists =
+        standaloneTodos.find((t) => t.id === taskId) ??
+        matrixWeekTasks.find((t) => t.id === taskId) ??
+        findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId) ??
+        todayFrogs.find((t) => t.id === taskId);
+      if (fromLists) return fromLists;
+      const project = projects.find((p) => p.id === taskId);
+      if (!project || !isLeafProjectWithoutTasks(project, (projectTaskTreeMap[project.id] ?? []).length)) {
+        return undefined;
+      }
+      return projectToFrogTaskRow(project);
+    },
+    [standaloneTodos, matrixWeekTasks, projectTaskTreeMap, todayFrogs, projects],
   );
 
   const patchVisibleTask = React.useCallback(
@@ -2567,27 +2585,6 @@ export default function TasksScreen() {
     },
     [logicalTodayYmd],
   );
-
-  const reloadMatrixWeekTasks = React.useCallback(async () => {
-    try {
-      const matrixProjectIds = resolveMatrixProjectIds(projects, taskTab);
-      const matrix = await fetchMatrixWeekTasks({
-        boundary: dayBoundary,
-        projectIds: matrixProjectIds,
-        taskTab,
-        projects,
-        offlineFallback: true,
-      });
-      setMatrixWeekTasks(matrix.tasks);
-    } catch (err) {
-      console.warn('加载本周列表失败', err);
-    }
-  }, [dayBoundary, projects, taskTab]);
-
-  React.useEffect(() => {
-    if (!projectTabApiReadyRef.current) return;
-    void reloadMatrixWeekTasks();
-  }, [taskTab, reloadMatrixWeekTasks]);
 
   const taskTitleById = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -2625,19 +2622,36 @@ export default function TasksScreen() {
     const q01: TaskRow[] = [];
     const q00: TaskRow[] = [];
 
-    const forMatrix = matrixWeekTasks.filter(
-      (t) =>
-        t.status !== 'done' &&
-        t.status !== 'cancelled' &&
-        (!!t.project_id || !!t.parent_task_id),
-    );
+    const weekRange = getCurrentWeekRange(logicalYmdToLocalDate(logicalTodayYmd));
+    const projectById = new Map(projects.map((p) => [p.id, p]));
+    const byId = new Map<string, TaskRow>();
+    const considerFromApi = (t: TaskRow) => {
+      if (t.status === 'done' || t.status === 'cancelled') return;
+      if (!t.project_id && !t.parent_task_id) return;
+      byId.set(t.id, t);
+    };
+    const considerFromTree = (t: TaskRow) => {
+      if (t.status === 'done' || t.status === 'cancelled') return;
+      if (!t.project_id && !t.parent_task_id) return;
+      const projectExtraData = t.project_id ? projectById.get(t.project_id)?.extra_data ?? null : null;
+      if (!isMatrixTaskInCurrentWeek(t, weekRange.startYmd, weekRange.endYmd, logicalTodayYmd, { projectExtraData })) {
+        return;
+      }
+      byId.set(t.id, t);
+    };
+    const considerLeafProject = (project: ProjectRow) => {
+      const taskCount = (projectTaskTreeMap[project.id] ?? []).length;
+      if (!isLeafProjectWithoutTasks(project, taskCount)) return;
+      if (!isMatrixProjectInCurrentWeek(project, weekRange.startYmd, weekRange.endYmd, logicalTodayYmd)) return;
+      byId.set(project.id, projectToFrogTaskRow(project));
+    };
+    for (const t of matrixWeekTasks) considerFromApi(t);
+    for (const t of flattenProjectTaskTreeMap(projectTaskTreeMap)) considerFromTree(t);
+    for (const project of projects) considerLeafProject(project);
+    const forMatrix = [...byId.values()];
 
     forMatrix.forEach((t) => {
-      const p = getEffectiveTaskPriority(t, logicalTodayYmd);
-      if (p >= 4) q11.push(t);
-      else if (p === 2) q10.push(t);
-      else if (p === 3) q01.push(t);
-      else q00.push(t);
+      bucketMatrixTaskByPriority(t, getEffectiveTaskPriority(t, logicalTodayYmd), { q11, q10, q01, q00 });
     });
 
     const sort = (arr: TaskRow[]) =>
@@ -2656,7 +2670,7 @@ export default function TasksScreen() {
         });
 
     return { q11: sort(q11), q10: sort(q10), q01: sort(q01), q00: sort(q00) };
-  }, [matrixWeekTasks, logicalTodayYmd]);
+  }, [matrixWeekTasks, projectTaskTreeMap, logicalTodayYmd, projects]);
 
   const projectCategoryMap = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -2671,14 +2685,6 @@ export default function TasksScreen() {
       { key: 'all', label: '全部' },
       { key: INBOX_PROJECT_CATEGORY_ID, label: INBOX_PROJECT_CATEGORY_NAME },
     ];
-    const extra = projectCategories
-      .filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID)
-      .map((c) => ({ key: c.id, label: c.name }));
-    return [...base, ...extra];
-  }, [projectCategories]);
-
-  const taskTabs = React.useMemo(() => {
-    const base: Array<{ key: string; label: string }> = [{ key: 'all', label: '全部' }];
     const extra = projectCategories
       .filter((c) => c.id !== INBOX_PROJECT_CATEGORY_ID)
       .map((c) => ({ key: c.id, label: c.name }));
@@ -3232,6 +3238,20 @@ export default function TasksScreen() {
 
   const toggleTaskDone = React.useCallback(
     async (taskId: string) => {
+      const leafProject = projects.find((p) => p.id === taskId);
+      if (
+        leafProject &&
+        isLeafProjectWithoutTasks(leafProject, (projectTaskTreeMap[leafProject.id] ?? []).length)
+      ) {
+        const wasDone = leafProject.status === 'completed' || leafProject.status === 'archived';
+        if (wasDone) {
+          void reopenProjectFromList(leafProject);
+        } else {
+          void completeProjectFromList(leafProject);
+        }
+        return;
+      }
+
       const current = findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
@@ -3429,6 +3449,7 @@ export default function TasksScreen() {
       }
     },
     [
+      completeProjectFromList,
       findVisibleTask,
       grantTaskPointsWithToast,
       loadProjectTasks,
@@ -3444,6 +3465,7 @@ export default function TasksScreen() {
       projectTaskTreeMap,
       projects,
       reloadProjectTasksFromLocal,
+      reopenProjectFromList,
       updateTaskInProjectTree,
     ]
   );
@@ -4448,7 +4470,6 @@ export default function TasksScreen() {
               await loadProjectCategories();
               await markPendingTablesDirty(['project_categories']);
               await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
-              if (taskTab === activeCategoryId) setTaskTab('all');
               if (projectTab === activeCategoryId) setProjectTab('all');
               closeCategoryMenu();
             }, '分类已删除');
@@ -4469,7 +4490,6 @@ export default function TasksScreen() {
     projectTab,
     runExclusiveMutation,
     scopedCategories,
-    taskTab,
   ]);
 
   /** 四象限行：左侧勾选完成/取消，点击标题区域进入编辑 */
@@ -4481,6 +4501,10 @@ export default function TasksScreen() {
     const reminder = (meta.reminder ?? '').trim();
     const acceptanceText = trimTaskAcceptanceCriteria(t);
     const parentTitle = t.parent_task_id ? taskTitleById.get(t.parent_task_id) : null;
+    const leafProject = projects.find((p) => p.id === t.id);
+    const isLeafProjectRow =
+      !!leafProject &&
+      isLeafProjectWithoutTasks(leafProject, (projectTaskTreeMap[leafProject.id] ?? []).length);
     const overdue = isTaskDueOverdue(due, isDone, logicalTodayYmd);
     return (
       <View key={t.id} style={styles.taskRow}>
@@ -4493,6 +4517,11 @@ export default function TasksScreen() {
         </Pressable>
         <ScalePressable style={{ flex: 1, minWidth: 0 }} onPress={() => openTask(t.id)} scaleTo={0.985}>
           <View style={styles.taskBody}>
+            {isLeafProjectRow ? (
+              <Text style={[styles.taskParentHint, { color: outline }]} numberOfLines={1}>
+                项目
+              </Text>
+            ) : null}
             {!!parentTitle && (
               <Text style={[styles.taskParentHint, { color: outline }]} numberOfLines={1}>
                 上级任务：{parentTitle}
@@ -5615,19 +5644,11 @@ export default function TasksScreen() {
 
             {mainListView === 'tasks' ? (
               <>
-            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: Spacing.md, marginTop: Spacing.md }]}>本周列表</Text>
-            <SegmentTabs
-              tabs={taskTabs}
-              active={taskTab}
-              onChange={setTaskTab}
-              onLongPressTab={(key, label) => openCategoryMenu('project', label, key)}
-              color={primary}
-              muted={outline}
-            />
-
             <Animated.View style={{ opacity: matrixAnim, transform: [{ translateY: matrixAnim.interpolate({ inputRange: [0, 1], outputRange: [18, 0] }) }] }}>
-              <View style={[styles.matrixWrap, { borderColor: outlineVariant, backgroundColor: `${outlineVariant}28` }]}>
-                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+              <View style={[sectionCardStyle, { marginTop: Spacing.md }]}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>本周列表</Text>
+                <View style={[styles.matrixWrap, { borderColor: outlineVariant }]}>
+                <View style={[styles.quadrant, { borderColor: outlineVariant }]}>
                   <View style={styles.quadHead}>
                     <View style={styles.quadTitleRow}>
                       <PulseDot color={error} />
@@ -5649,29 +5670,7 @@ export default function TasksScreen() {
                     </ScrollView>
                   )}
                 </View>
-                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
-                  <View style={styles.quadHead}>
-                    <View style={styles.quadTitleRow}>
-                      <View style={[styles.dot, { backgroundColor: primary }]} />
-                      <Text style={[styles.quadTitle, { color: primary }]}>不紧急但重要 (计划执行)</Text>
-                    </View>
-                  </View>
-                  {matrixGroups.q10.length === 0 ? (
-                    <EmptyPlaceholder
-                      icon="event-available"
-                      title="暂无任务"
-                      subtitle="把重要但不紧急的任务安排进计划。"
-                      color={primary}
-                      muted={outline}
-                      cardBg={emptyCardBg}
-                    />
-                  ) : (
-                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                      {matrixGroups.q10.map((t) => renderMatrixTaskRow(t, primary, { bg: `${primary}14`, text: primary }))}
-                    </ScrollView>
-                  )}
-                </View>
-                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                <View style={[styles.quadrant, { borderColor: outlineVariant }]}>
                   <View style={styles.quadHead}>
                     <View style={styles.quadTitleRow}>
                       <View style={[styles.dot, { backgroundColor: tertiary }]} />
@@ -5693,7 +5692,29 @@ export default function TasksScreen() {
                     </ScrollView>
                   )}
                 </View>
-                <View style={[styles.quadrant, { backgroundColor: card, borderColor: outlineVariant }]}>
+                <View style={[styles.quadrant, { borderColor: outlineVariant }]}>
+                  <View style={styles.quadHead}>
+                    <View style={styles.quadTitleRow}>
+                      <View style={[styles.dot, { backgroundColor: primary }]} />
+                      <Text style={[styles.quadTitle, { color: primary }]}>不紧急但重要 (计划执行)</Text>
+                    </View>
+                  </View>
+                  {matrixGroups.q10.length === 0 ? (
+                    <EmptyPlaceholder
+                      icon="event-available"
+                      title="暂无任务"
+                      subtitle="把重要但不紧急的任务安排进计划。"
+                      color={primary}
+                      muted={outline}
+                      cardBg={emptyCardBg}
+                    />
+                  ) : (
+                    <ScrollView style={styles.quadList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                      {matrixGroups.q10.map((t) => renderMatrixTaskRow(t, primary, { bg: `${primary}14`, text: primary }))}
+                    </ScrollView>
+                  )}
+                </View>
+                <View style={[styles.quadrant, { borderColor: outlineVariant }]}>
                   <View style={styles.quadHead}>
                     <View style={styles.quadTitleRow}>
                       <View style={[styles.dot, { backgroundColor: outline }]} />
@@ -5714,6 +5735,7 @@ export default function TasksScreen() {
                       {matrixGroups.q00.map((t) => renderMatrixTaskRow(t, outline, { bg: `${outline}12`, text: outline }))}
                     </ScrollView>
                   )}
+                </View>
                 </View>
               </View>
             </Animated.View>
@@ -7291,7 +7313,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     flexDirection: 'row',
     flexWrap: 'wrap',
-    ...Shadows.card,
   },
   quadrant: {
     width: '50%',

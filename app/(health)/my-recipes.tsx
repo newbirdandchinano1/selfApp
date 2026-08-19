@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { fetchProfileRecipes } from '@/lib/profile-page-api';
 import {
   createRecipeCategory,
   deleteRecipe,
@@ -81,6 +82,7 @@ export default function MyRecipesScreen() {
   const reload = useCallback(async (forceApi = false) => {
     try {
       await wrapLoad(async () => {
+        await fetchProfileRecipes({ offlineFallback: true });
         const s = await loadRecipeStore();
         setStore(s);
       }, forceApi);

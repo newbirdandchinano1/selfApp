@@ -218,7 +218,7 @@ GET /api/pages/tasks?include=tasks&taskView=matrixWeek&logicalToday=&weekStart=&
 | `meta.filtersVersion === "tasks-page-v1"` | 与前端常量一致 |
 | `meta.tasksScope` | `standaloneTodos` 或 `matrixWeek`，必须与请求 `taskView` 一致 |
 | 独立待办 | 含今日日界内已完成/取消、搁置、未到执行日的重复待办（APP 会再排序） |
-| 四象限 | 本周到期 + 过期未完成；`projectIds` 为当前分类下项目 id 逗号串 |
+| 四象限 | **时间范围与本周相交**（见 `BACKEND_MATRIX_WEEK.md`）；`projectIds` 可选，缺省=全部项目。**禁止**只按 `due_date` 落在本周 |
 | 分页 | 待办 `limit=200`，`meta.totalPages` 必须准；APP 会翻页直到 `totalPages` |
 | 他端完成 | 已完成且超出日界的独立待办 **不要**再出现在未完成列表 |
 

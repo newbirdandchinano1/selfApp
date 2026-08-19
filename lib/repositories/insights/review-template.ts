@@ -1,5 +1,4 @@
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
-import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
@@ -27,19 +26,50 @@ export function createReviewColumnId(): string {
   return newReviewId('rc');
 }
 
+/** 读路径已改走 `/api/pages/review/*`；仓库层只读 SQLite，禁止 List。 */
+async function readReviewDimensionsLocalVisible(scope?: ReviewTemplateScope): Promise<ReviewDimensionRow[]> {
+  const db = await getDatabase();
+  if (!db) return [];
+  if (scope) {
+    const rows = await db.getAllAsync<ReviewDimensionRow>(
+      `SELECT * FROM review_dimensions WHERE scope = ? AND sync_status != 'pending_delete'`,
+      [scope],
+    );
+    return rows ?? [];
+  }
+  const rows = await db.getAllAsync<ReviewDimensionRow>(
+    `SELECT * FROM review_dimensions WHERE sync_status != 'pending_delete'`,
+  );
+  return rows ?? [];
+}
+
+async function readReviewColumnsLocalVisible(dimensionId?: string): Promise<ReviewColumnRow[]> {
+  const db = await getDatabase();
+  if (!db) return [];
+  if (dimensionId) {
+    const rows = await db.getAllAsync<ReviewColumnRow>(
+      `SELECT * FROM review_columns WHERE dimension_id = ? AND sync_status != 'pending_delete'`,
+      [dimensionId],
+    );
+    return rows ?? [];
+  }
+  const rows = await db.getAllAsync<ReviewColumnRow>(
+    `SELECT * FROM review_columns WHERE sync_status != 'pending_delete'`,
+  );
+  return rows ?? [];
+}
+
 export async function countReviewDimensions(scope: ReviewTemplateScope): Promise<number> {
-  const rows = await readApiTable<ReviewDimensionRow>('review_dimensions', { offlineFallback: true });
-  return rows.filter(r => r.scope === scope).length;
+  const rows = await readReviewDimensionsLocalVisible(scope);
+  return rows.length;
 }
 
 export async function listReviewDimensions(scope: ReviewTemplateScope): Promise<ReviewDimensionRow[]> {
-  const rows = await readApiTable<ReviewDimensionRow>('review_dimensions', { offlineFallback: true });
-  return sortBySortOrderAsc(rows.filter(r => r.scope === scope));
+  return sortBySortOrderAsc(await readReviewDimensionsLocalVisible(scope));
 }
 
 export async function listReviewColumnsForDimension(dimensionId: string): Promise<ReviewColumnRow[]> {
-  const rows = await readApiTable<ReviewColumnRow>('review_columns', { offlineFallback: true });
-  return sortBySortOrderAsc(rows.filter(r => r.dimension_id === dimensionId));
+  return sortBySortOrderAsc(await readReviewColumnsLocalVisible(dimensionId));
 }
 
 export async function listReviewTemplate(scope: ReviewTemplateScope): Promise<ReviewDimensionTemplate[]> {
@@ -65,11 +95,21 @@ export async function listReviewTemplate(scope: ReviewTemplateScope): Promise<Re
 }
 
 export async function getReviewDimensionById(id: string): Promise<ReviewDimensionRow | null> {
-  return readApiRecord<ReviewDimensionRow>('review_dimensions', id, { offlineFallback: true });
+  const db = await getDatabase();
+  if (!db) return null;
+  return db.getFirstAsync<ReviewDimensionRow>(
+    `SELECT * FROM review_dimensions WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
+    [id],
+  );
 }
 
 export async function getReviewColumnById(id: string): Promise<ReviewColumnRow | null> {
-  return readApiRecord<ReviewColumnRow>('review_columns', id, { offlineFallback: true });
+  const db = await getDatabase();
+  if (!db) return null;
+  return db.getFirstAsync<ReviewColumnRow>(
+    `SELECT * FROM review_columns WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
+    [id],
+  );
 }
 
 export async function createReviewDimension(input: CreateReviewDimensionInput): Promise<void> {

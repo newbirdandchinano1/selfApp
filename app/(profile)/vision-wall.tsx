@@ -56,6 +56,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { fetchProfileVisionWall } from '@/lib/profile-page-api';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
@@ -549,6 +550,7 @@ export default function VisionWallScreen() {
   const loadWallEntries = useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
     try {
+      await fetchProfileVisionWall({ offlineFallback: true });
       const year = new Date().getFullYear();
       const [rows, dims, ctx, cached, user] = await Promise.all([
         listVisions(),

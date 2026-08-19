@@ -46,13 +46,18 @@ export async function clearTasksBootstrapVersionCache(): Promise<void> {
 
 /**
  * 页面首次访问：按页面范围从 REST 全量拉取并覆盖本地 SQLite。
- * 任务 / 财务 Tab 不走通用 List，由专用 page API 负责读数。
+ * 任务 / 财务 / 复盘 / 我的 Tab 不走通用 List，由专用 page API 负责读数。
  */
 export async function syncPageScopeFromApi(
   pageKey: string,
   opts?: { signal?: AbortSignal },
 ): Promise<{ ok: boolean; tablesSynced: number; error?: string }> {
-  if (pageKey === TAB_PAGE_KEYS.tasks || pageKey === TAB_PAGE_KEYS.finance) {
+  if (
+    pageKey === TAB_PAGE_KEYS.tasks ||
+    pageKey === TAB_PAGE_KEYS.finance ||
+    pageKey === TAB_PAGE_KEYS.review ||
+    pageKey === TAB_PAGE_KEYS.profile
+  ) {
     return { ok: true, tablesSynced: 0 };
   }
 

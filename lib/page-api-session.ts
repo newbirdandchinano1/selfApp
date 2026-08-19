@@ -59,6 +59,7 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   points_wallet: [TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
   wish_board_items: [TAB_PAGE_KEYS.profile],
   points_ledger: [TAB_PAGE_KEYS.profile],
+  // 复盘 dirty → local-first 重读；REST 走 /api/pages/review/*（已从 page scope 移除 List）
   weekly_review_journal: [TAB_PAGE_KEYS.review],
   daily_review_journal: [TAB_PAGE_KEYS.review],
   monthly_review_journal: [TAB_PAGE_KEYS.review],

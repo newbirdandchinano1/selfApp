@@ -292,32 +292,127 @@ export type FinanceDailySummariesData = {
   fromApi: boolean;
 };
 
+function toDailyYmdKey(raw: unknown): string {
+  if (raw == null) return '';
+  const s = String(raw).trim();
+  // 兼容 "2026-08-01" / "2026-08-01T00:00:00Z" / "2026-08-01 00:00:00"
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return '';
+}
+
+function dailySummariesHaveFlow(days: FinanceDailySummaryRow[]): boolean {
+  return days.some((d) => d.income !== 0 || d.expense !== 0);
+}
+
+/** 兼容后端多种返回形状，避免成功但空/字段不对导致格子全是 -- */
+function normalizeDailySummaryDays(payload: unknown): FinanceDailySummaryRow[] {
+  let list: unknown[] = [];
+  if (Array.isArray(payload)) {
+    list = payload;
+  } else if (payload && typeof payload === 'object') {
+    const o = payload as Record<string, unknown>;
+    const candidate = o.days ?? o.items ?? o.summaries ?? o.list ?? o.data;
+    if (Array.isArray(candidate)) list = candidate;
+  }
+
+  const out: FinanceDailySummaryRow[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    const day = toDailyYmdKey(row.day ?? row.date ?? row.ymd ?? row.dayKey);
+    if (!day) continue;
+    const income = Math.abs(Number(row.income) || 0);
+    const expense = Math.abs(Number(row.expense) || 0);
+    const netRaw = row.net;
+    const net =
+      typeof netRaw === 'number' && Number.isFinite(netRaw)
+        ? netRaw
+        : Number(netRaw) || income - expense;
+    out.push({ day, income, expense, net });
+  }
+  return out;
+}
+
+async function aggregateDailySummariesFromTransactionsRange(opts: {
+  start: string;
+  end: string;
+  signal?: AbortSignal;
+}): Promise<FinanceDailySummaryRow[]> {
+  const { transactions } = await fetchFinanceTransactionsRange({
+    start: opts.start,
+    end: opts.end,
+    signal: opts.signal,
+    offlineFallback: false,
+  });
+  const { computeTransactionLedgerEffect } = await import('@/lib/repositories/finance/finance');
+  const { ymdFromDatetime } = await import('@/lib/api-read-helpers');
+  const byDay = new Map<string, { income: number; expense: number; net: number }>();
+  for (const t of transactions) {
+    const day = ymdFromDatetime(t.happened_at);
+    if (!day || day < opts.start || day > opts.end) continue;
+    if (t.transaction_type === 'transfer') continue;
+    const effect = computeTransactionLedgerEffect(t.transaction_type, t.amount, t.extra_data);
+    const agg = byDay.get(day) ?? { income: 0, expense: 0, net: 0 };
+    if (effect > 0) agg.income += effect;
+    else if (effect < 0) agg.expense += Math.abs(effect);
+    agg.net += effect;
+    byDay.set(day, agg);
+  }
+  return [...byDay.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, v]) => ({ day, ...v }));
+}
+
 export async function fetchFinanceDailySummaries(opts: {
   start: string;
   end: string;
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<FinanceDailySummariesData> {
+  let apiDays: FinanceDailySummaryRow[] | null = null;
   try {
     const payload: FinanceDailySummariesPayload = await apiGetFinanceDailySummaries({
       start: opts.start,
       end: opts.end,
       signal: opts.signal,
     });
-    const days = (Array.isArray(payload.days) ? payload.days : []).map((d) => ({
-      day: String(d.day ?? ''),
-      income: Number(d.income) || 0,
-      expense: Number(d.expense) || 0,
-      net: typeof d.net === 'number' ? d.net : (Number(d.income) || 0) - (Number(d.expense) || 0),
-    }));
-    return { days, fromApi: true };
+    apiDays = normalizeDailySummaryDays(payload);
+    if (dailySummariesHaveFlow(apiDays)) {
+      return { days: apiDays, fromApi: true };
+    }
   } catch (e) {
     if (opts.offlineFallback === false) throw e;
-    console.warn('[finance-page-api] daily-summaries 失败，回退本地聚合', e);
-    const { getFinanceDailySummariesByDateRange } = await import('@/lib/repositories/finance/finance');
-    const days = await getFinanceDailySummariesByDateRange(opts.start, opts.end, { localOnly: true });
-    return { days, fromApi: false };
+    console.warn('[finance-page-api] daily-summaries 失败，回退本地/流水聚合', e);
   }
+
+  if (opts.offlineFallback === false) {
+    return { days: apiDays ?? [], fromApi: true };
+  }
+
+  const { getFinanceDailySummariesByDateRange } = await import('@/lib/repositories/finance/finance');
+  const localDays = await getFinanceDailySummariesByDateRange(opts.start, opts.end, { localOnly: true });
+  if (dailySummariesHaveFlow(localDays)) {
+    if (apiDays) {
+      console.warn('[finance-page-api] daily-summaries 无有效流水，改用本地聚合');
+    }
+    return { days: localDays, fromApi: false };
+  }
+
+  try {
+    const fromTxns = await aggregateDailySummariesFromTransactionsRange({
+      start: opts.start,
+      end: opts.end,
+      signal: opts.signal,
+    });
+    if (dailySummariesHaveFlow(fromTxns)) {
+      console.warn('[finance-page-api] daily-summaries 无有效流水，改用 transactions 区间聚合');
+      return { days: fromTxns, fromApi: true };
+    }
+  } catch (e) {
+    console.warn('[finance-page-api] transactions 区间聚合失败', e);
+  }
+
+  return { days: apiDays ?? localDays, fromApi: apiDays != null };
 }
 
 export type FinanceAccountDetailData = {

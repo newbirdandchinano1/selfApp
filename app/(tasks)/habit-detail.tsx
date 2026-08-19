@@ -43,6 +43,7 @@ import {
   parseTaskHabitExpectedGoal,
   parseTaskRepeatPeriod,
 } from '@/lib/repositories/habits/habit-task-period';
+import { syncHabitDetailDataFromApi } from '@/lib/habit-detail-api';
 import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
 import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import {
@@ -289,7 +290,7 @@ export default function HabitDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
-  const { logicalTodayYmd, logicalTodayDate } = useDayBoundary();
+  const { boundary, logicalTodayYmd, logicalTodayDate } = useDayBoundary();
   const scrollTopPad = insets.top + TOP_BAR_BODY_H;
   const params = useLocalSearchParams<{ habitId?: string }>();
   const habitId = pickParam(params.habitId);
@@ -311,6 +312,7 @@ export default function HabitDetailScreen() {
   const [cancelMakeUpSaving, setCancelMakeUpSaving] = React.useState(false);
   /** 补卡/撤销连点防抖（按习惯 ID） */
   const habitDetailPressAtByIdRef = React.useRef(new Map<string, number>());
+  const habitLoadGenerationRef = React.useRef(0);
 
   const consumeHabitDetailPressDebounce = React.useCallback((id: string) => {
     const now = Date.now();
@@ -323,6 +325,7 @@ export default function HabitDetailScreen() {
   const focusYmd = React.useMemo(() => toYMD(focusDate), [focusDate]);
 
   const loadHabitOverview = React.useCallback(async () => {
+    const generation = ++habitLoadGenerationRef.current;
     if (!habitId) {
       setHabit(null);
       setCheckIns({});
@@ -330,19 +333,34 @@ export default function HabitDetailScreen() {
     }
     await syncBreakHabitCompletions();
     await syncBuildHabitCompletions();
-    const row = await getHabitById(habitId);
+    let row: HabitRow | null = null;
+    try {
+      row = await syncHabitDetailDataFromApi(habitId, { boundary });
+    } catch (e) {
+      console.warn('习惯详情：服务端同步失败，回退本地', e);
+      row = await getHabitById(habitId);
+    }
+    if (generation !== habitLoadGenerationRef.current) return;
     setHabit(row ?? null);
     if (!row) {
       setCheckIns({});
       return;
     }
     const fromDb = await getCheckInsMapByHabitId(row.id);
+    if (generation !== habitLoadGenerationRef.current) return;
     const merged = { ...fromDb };
     const legacy = normalizeCheckIns(parseExtra(row.extra_data).checkIns);
     for (const [k, v] of Object.entries(legacy)) {
       if (merged[k] === undefined) merged[k] = v;
     }
     setCheckIns(merged);
+  }, [boundary, habitId]);
+
+  React.useEffect(() => {
+    habitLoadGenerationRef.current += 1;
+    setLoading(true);
+    setHabit(null);
+    setCheckIns({});
   }, [habitId]);
 
   const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
@@ -387,15 +405,7 @@ export default function HabitDetailScreen() {
   useFocusEffect(
     React.useCallback(() => {
       invalidateInflightApiTableFetch('habit_check_ins');
-      void (async () => {
-        try {
-          await loadHabitOverview();
-        } catch (e) {
-          console.warn('刷新习惯概览失败', e);
-        } finally {
-          setLoading(false);
-        }
-      })();
+      void reload();
       setFocusDate((prev) => {
         const ymd = toYMD(prev);
         if (ymd >= logicalTodayYmd) {
@@ -403,7 +413,7 @@ export default function HabitDetailScreen() {
         }
         return prev;
       });
-    }, [logicalTodayYmd, loadHabitOverview])
+    }, [logicalTodayYmd, reload])
   );
 
   const extraParsed = habit ? parseExtra(habit.extra_data) : {};

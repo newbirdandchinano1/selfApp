@@ -224,7 +224,9 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
 
         const map = new Map<string, FinanceDailySummaryRow>();
         for (const r of rows) {
-          map.set(r.day, r);
+          const day = typeof r.day === 'string' ? r.day.slice(0, 10) : '';
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+          map.set(day, r);
         }
         setDailyMap(map);
       } catch {

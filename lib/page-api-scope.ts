@@ -13,8 +13,8 @@ export type TabPageKey = (typeof TAB_PAGE_KEYS)[keyof typeof TAB_PAGE_KEYS];
  * 本地表变更后需标记刷新的 Tab 主页面。
  */
 export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
-  app_settings: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
-  health_records: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
+  app_settings: [TAB_PAGE_KEYS.health],
+  health_records: [TAB_PAGE_KEYS.health],
   users: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   habits: [TAB_PAGE_KEYS.tasks],
   habit_contexts: [TAB_PAGE_KEYS.tasks],
@@ -30,24 +30,16 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   cash_flow_incomes: [TAB_PAGE_KEYS.finance],
   cash_flow_holdings: [TAB_PAGE_KEYS.finance],
   cash_flow_expense_lines: [TAB_PAGE_KEYS.finance],
-  // 攒钱计划归属心愿/画像，不再绑财务 Tab
-  savings_plans: [TAB_PAGE_KEYS.profile],
-  savings_plan_deposits: [TAB_PAGE_KEYS.profile],
+  // 画像子页走 /api/pages/profile/*；dirty 仅用于 local-first 重读 SQLite
   visions: [TAB_PAGE_KEYS.profile],
-  goal_dimensions: [TAB_PAGE_KEYS.profile],
   wish_items: [TAB_PAGE_KEYS.profile],
-  points_wallet: [TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
-  wish_board_items: [TAB_PAGE_KEYS.profile],
-  points_ledger: [TAB_PAGE_KEYS.profile],
+  points_wallet: [TAB_PAGE_KEYS.tasks],
+  // 复盘表：dirty 仅用于 local-first 重读 SQLite；REST 走 /api/pages/review/*，禁止 List
   weekly_review_journal: [TAB_PAGE_KEYS.review],
   daily_review_journal: [TAB_PAGE_KEYS.review],
   monthly_review_journal: [TAB_PAGE_KEYS.review],
-  memo_dimensions: [TAB_PAGE_KEYS.profile],
-  memos: [TAB_PAGE_KEYS.profile],
   review_dimensions: [TAB_PAGE_KEYS.review],
   review_columns: [TAB_PAGE_KEYS.review],
-  recipe_categories: [TAB_PAGE_KEYS.profile],
-  recipe_items: [TAB_PAGE_KEYS.profile],
 };
 
 const PAGE_SCOPE_TABLES: Record<string, string[]> = (() => {
@@ -65,20 +57,18 @@ const PAGE_SCOPE_TABLES: Record<string, string[]> = (() => {
   return out;
 })();
 
-/** 非 Tab 子页面需单独拉取的表 scope */
-const CHILD_PAGE_SCOPE_TABLES: Record<string, string[]> = {
-  'wish-board': ['points_wallet', 'wish_board_items', 'points_ledger'],
-  'add-wish-board-item': ['wish_board_items'],
-  'edit-wish-board-item': ['wish_board_items', 'points_wallet'],
-};
-
 export function listPageScopeTables(pageKey: string): string[] {
   const key = pageKey.trim();
   if (!key) return [];
-  // 任务 / 财务 Tab 只走专用 page API，禁止通用 List 全表同步
-  if (key === TAB_PAGE_KEYS.tasks || key === TAB_PAGE_KEYS.finance) return [];
-  const child = CHILD_PAGE_SCOPE_TABLES[key];
-  if (child) return [...child];
+  // 任务 / 财务 / 复盘 / 我的 Tab 只走专用 page API，禁止通用 List 全表同步
+  if (
+    key === TAB_PAGE_KEYS.tasks ||
+    key === TAB_PAGE_KEYS.finance ||
+    key === TAB_PAGE_KEYS.review ||
+    key === TAB_PAGE_KEYS.profile
+  ) {
+    return [];
+  }
   return PAGE_SCOPE_TABLES[key] ? [...PAGE_SCOPE_TABLES[key]!] : [];
 }
 

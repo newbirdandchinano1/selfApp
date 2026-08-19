@@ -8,6 +8,7 @@ import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-revie
 import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { getRollingSevenDayRange, getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
+import { fetchReviewHome, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import {
   getWeeklyReviewConfiguredWeekday,
   isDailyReviewSkippedOnWeeklyReviewDay,
@@ -127,11 +128,25 @@ export type ReviewPeriodSnapshot = {
 };
 
 export async function loadReviewPeriodSnapshot(todayYmd: string): Promise<ReviewPeriodSnapshot> {
-  const [dailyTpl, dow] = await Promise.all([listReviewTemplate('daily'), getWeeklyReviewConfiguredWeekday()]);
-  const dColIds = collectColumnIds(dailyTpl);
+  const dow = await getWeeklyReviewConfiguredWeekday();
   const today = new Date();
   const rolling =
     dow !== null ? getRollingSevenDayRangeEndingOnNextReviewDay(today, dow) : getRollingSevenDayRange(today);
+  const monthStart = monthStartYmdFromYmd(todayYmd);
+
+  if (shouldFetchReviewFromApi()) {
+    await fetchReviewHome({
+      logicalToday: todayYmd,
+      dailyStart: rolling.startYmd,
+      dailyEnd: rolling.endYmd,
+      weekStart: rolling.startYmd,
+      monthStart,
+      offlineFallback: true,
+    });
+  }
+
+  const dailyTpl = await listReviewTemplate('daily');
+  const dColIds = collectColumnIds(dailyTpl);
 
   const dailyPeriodLabel =
     dow !== null

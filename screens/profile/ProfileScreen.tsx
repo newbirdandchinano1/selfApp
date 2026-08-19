@@ -8,6 +8,7 @@ import { Spacing } from '@/constants/design-tokens';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
+import { fetchProfileHome } from '@/lib/profile-page-api';
 import { isWishItemFulfilled } from '@/lib/repositories/wish-list/wish-list-extra';
 import { listWishItems } from '@/lib/repositories/wish-list/wish-list';
 import type { WishItemRow } from '@/lib/repositories/wish-list/wish-list.types';
@@ -192,6 +193,7 @@ export default function ProfileScreen() {
   const reloadPage = useCallback(async (forceApi = false) => {
     try {
       const result = await wrapLoad(async () => {
+        await fetchProfileHome({ offlineFallback: true });
         await loadUser();
         await loadProfileVisions();
         await loadProfileWishItems();

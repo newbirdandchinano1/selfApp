@@ -1,4 +1,5 @@
 import { apiGetTasksHabitsGrid, type HabitsGridPayload, type HabitsGridSection } from '@/lib/api-client';
+import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
@@ -75,21 +76,57 @@ function readGridItemExtraData(item: HabitsGridSection['items'][number]): string
   return extraDataToString(item.extraData ?? item.extra_data);
 }
 
+/** habits-grid upsert 时合并 extra_data，避免服务端字段不全时覆盖本地 richer JSON */
+function mergeHabitExtraDataForGridSync(
+  localRaw: string | null | undefined,
+  gridRaw: string | null,
+): string | undefined {
+  if (!gridRaw) return localRaw?.trim() ? localRaw : undefined;
+  if (!localRaw?.trim()) return gridRaw;
+  try {
+    const local = JSON.parse(localRaw) as unknown;
+    const grid = JSON.parse(gridRaw) as unknown;
+    if (
+      typeof local === 'object' &&
+      local !== null &&
+      !Array.isArray(local) &&
+      typeof grid === 'object' &&
+      grid !== null &&
+      !Array.isArray(grid)
+    ) {
+      return JSON.stringify({ ...local, ...grid });
+    }
+  } catch {
+    /* 解析失败则采用服务端原始串 */
+  }
+  return gridRaw;
+}
+
 async function upsertHabitsFromGrid(sections: HabitsGridSection[]): Promise<void> {
+  const localById = new Map((await getHabits()).map((r) => [r.id, r]));
+  const now = formatTaskAuditDatetimeLocal();
   const rows: Record<string, unknown>[] = [];
   for (const section of sections) {
     for (const item of Array.isArray(section.items) ? section.items : []) {
       const id = String(item.id ?? '').trim();
       if (!id) continue;
       const extraData = readGridItemExtraData(item);
+      const local = localById.get(id);
       const row: Record<string, unknown> = {
         id,
-        name: item.name ?? '',
-        icon: item.icon ?? '✓',
+        name: item.name ?? local?.name ?? '',
+        icon: item.icon ?? local?.icon ?? '✓',
         context: item.context ?? section.title ?? section.id,
       };
       if (typeof item.note === 'string') row.note = item.note;
-      if (extraData != null) row.extra_data = extraData;
+      else if (local?.note) row.note = local.note;
+      const mergedExtra = mergeHabitExtraDataForGridSync(local?.extra_data, extraData);
+      if (mergedExtra != null) row.extra_data = mergedExtra;
+      // 新习惯写入本地库时必须带 created_at / updated_at，否则 INSERT 会因 NOT NULL 失败
+      if (!localById.has(id)) {
+        row.created_at = now;
+        row.updated_at = now;
+      }
       rows.push(row);
     }
   }

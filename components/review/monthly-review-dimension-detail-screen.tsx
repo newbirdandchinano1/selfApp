@@ -22,6 +22,11 @@ import {
 import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import {
+  fetchReviewCatalog,
+  fetchReviewMonthly,
+  shouldFetchReviewFromApi,
+} from '@/lib/review-page-api';
+import {
   applyFontSizeToTextModel,
   currentFontSizeLabel,
   emptyReviewFieldModel,
@@ -172,6 +177,12 @@ export function MonthlyReviewDimensionDetailScreen() {
     setLoading(true);
     try {
       await wrapLoad(async () => {
+        if (shouldFetchReviewFromApi()) {
+          await Promise.all([
+            fetchReviewCatalog({ scope: 'monthly', offlineFallback: true }),
+            fetchReviewMonthly({ monthStart: monthStartYmd, offlineFallback: true }),
+          ]);
+        }
         const [tpl, row] = await Promise.all([
           listReviewTemplate('monthly'),
           getMonthlyReviewJournalByMonth(monthStartYmd),
