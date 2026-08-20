@@ -5,6 +5,11 @@ import {
   type CompletionHeatmapDayDetailTodo,
 } from '@/lib/api-client';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
+import {
+  readFrogSubjectHints,
+  resolveFrogItemAgainstProjects,
+  type FrogHeatmapProjectHint,
+} from '@/lib/open-frog-heatmap-item';
 import { getFrogCompletionsForAssignedDay, getFrogCompletionCountsByDayRange } from '@/lib/repositories/tasks/frog-completion-events';
 import type { FrogCompletionDayItem } from '@/lib/repositories/tasks/frog-completion-events';
 import {
@@ -35,6 +40,8 @@ type HeatmapRequestOpts = {
   heatmapStart?: string;
   heatmapEnd?: string;
   signal?: AbortSignal;
+  /** 用于把同名/同 id 的青蛙纠正为项目青蛙 */
+  projects?: FrogHeatmapProjectHint[];
 };
 
 function readDayCount(row: CompletionHeatmapDayCounts | undefined, key: 'frogs' | 'todos'): number {
@@ -76,13 +83,120 @@ export function dedupeHeatmapTodoItemsAgainstFrogs(
   return todoItems.filter((t) => !frogTaskIds.has(t.task_id.trim()));
 }
 
-function mapDayDetailFromApi(detail: CompletionHeatmapDayDetail, ymd: string): CompletionHeatmapDayDetailData {
-  const frogItems = (detail.frogs ?? []).map((f, i) => ({
-    id: f.task_id ? `${f.task_id}:${ymd}` : `frog-${i}`,
-    task_id: f.task_id,
-    assigned_ymd: detail.ymd?.trim() || ymd,
-    task_title: f.task_title?.trim() || null,
-  }));
+function applyProjectHints(
+  frogItems: FrogCompletionDayItem[],
+  projects: FrogHeatmapProjectHint[] | undefined,
+): FrogCompletionDayItem[] {
+  if (!projects?.length) return frogItems;
+  return frogItems.map((item) => resolveFrogItemAgainstProjects(item, projects));
+}
+
+async function enrichFrogSubjects(
+  frogItems: FrogCompletionDayItem[],
+): Promise<FrogCompletionDayItem[]> {
+  if (frogItems.length === 0) return frogItems;
+  const ids = frogItems.map((f) => f.task_id?.trim()).filter((id): id is string => Boolean(id));
+  if (ids.length === 0) return frogItems;
+  const { ensureLocalRowForWrite } = await import('@/lib/api-local-row');
+  const resolved = await Promise.all(
+    ids.map(async (id) => {
+      if (id.startsWith('p_')) return [id, 'project' as const] as const;
+      // 即使长得像任务 id，也先问项目表（接口可能误填）
+      const asProject = await ensureLocalRowForWrite('projects', id);
+      if (asProject) return [id, 'project' as const] as const;
+      if (id.startsWith('tsk_') || id.startsWith('t_')) return [id, 'task' as const] as const;
+      const asTask = await ensureLocalRowForWrite('tasks', id);
+      if (asTask) return [id, 'task' as const] as const;
+      return [id, undefined] as const;
+    }),
+  );
+  const subjectById = new Map(resolved);
+  return frogItems.map((f) => {
+    if (f.subject === 'project') return f;
+    const sid = f.task_id?.trim() ?? '';
+    const subject = sid ? subjectById.get(sid) : undefined;
+    return subject ? { ...f, subject } : f;
+  });
+}
+
+/** 同一主体只保留一条；同名时优先保留项目青蛙 */
+function dedupeFrogDayItems(items: FrogCompletionDayItem[]): FrogCompletionDayItem[] {
+  const byId = new Map<string, FrogCompletionDayItem>();
+  for (const item of items) {
+    const key = item.task_id?.trim();
+    if (!key) continue;
+    const prev = byId.get(key);
+    if (!prev) {
+      byId.set(key, item);
+      continue;
+    }
+    const preferProject = item.subject === 'project' && prev.subject !== 'project';
+    byId.set(key, {
+      ...(preferProject ? item : prev),
+      task_title:
+        (preferProject ? item : prev).task_title?.trim() ||
+        (preferProject ? prev : item).task_title?.trim() ||
+        null,
+      subject:
+        prev.subject === 'project' || item.subject === 'project'
+          ? 'project'
+          : (prev.subject ?? item.subject),
+    });
+  }
+
+  const list = [...byId.values()];
+  const byTitle = new Map<string, FrogCompletionDayItem>();
+  const noTitle: FrogCompletionDayItem[] = [];
+  for (const item of list) {
+    const titleKey = (item.task_title ?? '').trim().toLowerCase();
+    if (!titleKey) {
+      noTitle.push(item);
+      continue;
+    }
+    const prev = byTitle.get(titleKey);
+    if (!prev) {
+      byTitle.set(titleKey, item);
+      continue;
+    }
+    if (item.subject === 'project' && prev.subject !== 'project') {
+      byTitle.set(titleKey, item);
+    } else if (prev.subject !== 'project' && item.task_id?.startsWith('p_')) {
+      byTitle.set(titleKey, { ...item, subject: 'project' });
+    }
+  }
+  return [...byTitle.values(), ...noTitle];
+}
+
+function mapFrogRowsFromApi(
+  detail: CompletionHeatmapDayDetail,
+  ymd: string,
+): FrogCompletionDayItem[] {
+  return (detail.frogs ?? []).map((f, i) => {
+    const raw = f as CompletionHeatmapDayDetail['frogs'][number] & Record<string, unknown>;
+    const hints = readFrogSubjectHints(raw);
+    const title =
+      (typeof raw.task_title === 'string' && raw.task_title.trim()) ||
+      (typeof raw.title === 'string' && raw.title.trim()) ||
+      null;
+    const subjectId = hints.subjectId ?? null;
+    return {
+      id: subjectId ? `${subjectId}:${ymd}` : `frog-${i}`,
+      task_id: subjectId,
+      assigned_ymd: detail.ymd?.trim() || ymd,
+      task_title: title,
+      subject: hints.subject,
+    };
+  });
+}
+
+async function mapDayDetailFromApi(
+  detail: CompletionHeatmapDayDetail,
+  ymd: string,
+  projects?: FrogHeatmapProjectHint[],
+): Promise<CompletionHeatmapDayDetailData> {
+  const frogItems = dedupeFrogDayItems(
+    applyProjectHints(await enrichFrogSubjects(mapFrogRowsFromApi(detail, ymd)), projects),
+  );
   const todoItems = (detail.todos ?? []).map((t) => ({
     id: t.id,
     task_id: t.task_id ?? '',
@@ -96,11 +210,15 @@ function mapDayDetailFromApi(detail: CompletionHeatmapDayDetail, ymd: string): C
   };
 }
 
-async function fetchCompletionHeatmapDayDetailLocal(ymd: string): Promise<CompletionHeatmapDayDetailData> {
-  const [frogItems, todoItems] = await Promise.all([
+async function fetchCompletionHeatmapDayDetailLocal(
+  ymd: string,
+  projects?: FrogHeatmapProjectHint[],
+): Promise<CompletionHeatmapDayDetailData> {
+  const [frogItemsRaw, todoItems] = await Promise.all([
     getFrogCompletionsForAssignedDay(ymd),
     getNetCompletedTaskEventsForLocalDay(ymd),
   ]);
+  const frogItems = dedupeFrogDayItems(applyProjectHints(frogItemsRaw, projects));
   return {
     frogItems,
     todoItems: dedupeHeatmapTodoItemsAgainstFrogs(frogItems, todoItems),
@@ -124,7 +242,7 @@ async function readCompletionHeatmapFromLocal(
 
 /**
  * 完成热力图：优先专用接口计数（含待办净完成）。
- * 不再为热力图拉通用 List；接口失败时才回退本地事件表。
+ * 接口失败时才回退本地事件表。
  */
 export async function fetchCompletionHeatmap(opts: HeatmapRequestOpts): Promise<CompletionHeatmapData> {
   const boundary = opts.boundary ?? (await loadTasksDayBoundary());
@@ -157,16 +275,18 @@ export async function fetchCompletionHeatmap(opts: HeatmapRequestOpts): Promise<
 }
 
 /**
- * 点击某一天：优先专用接口明细（待办须为净完成口径）；失败再回退本地。
+ * 点击某一天：优先专用接口明细；并用本地项目列表纠正项目青蛙的 id/跳转。
+ * 同时与本地青蛙事件按标题合并，避免接口把 project id 错填成无效 task id。
  */
 export async function fetchCompletionHeatmapDayDetail(
   opts: HeatmapRequestOpts & { day: string },
 ): Promise<CompletionHeatmapDayDetailData> {
   const boundary = opts.boundary ?? (await loadTasksDayBoundary());
   const ymd = opts.day.trim();
-  const { heatmapStart, heatmapEnd, signal } = opts;
+  const { heatmapStart, heatmapEnd, signal, projects } = opts;
 
   throwIfAborted(signal);
+  const local = await fetchCompletionHeatmapDayDetailLocal(ymd, projects);
   try {
     const payload = await apiGetTasksCompletionHeatmap({
       dayBoundaryHour: boundary.hour,
@@ -178,10 +298,17 @@ export async function fetchCompletionHeatmapDayDetail(
       signal,
     });
     if (payload.dayDetail) {
-      return mapDayDetailFromApi(payload.dayDetail, ymd);
+      const fromApi = await mapDayDetailFromApi(payload.dayDetail, ymd, projects);
+      const frogItems = dedupeFrogDayItems(
+        applyProjectHints([...fromApi.frogItems, ...local.frogItems], projects),
+      );
+      return {
+        frogItems,
+        todoItems: dedupeHeatmapTodoItemsAgainstFrogs(frogItems, fromApi.todoItems),
+      };
     }
   } catch (e) {
     console.warn('[completion-heatmap] 日明细接口失败，回退本地', e);
   }
-  return fetchCompletionHeatmapDayDetailLocal(ymd);
+  return local;
 }

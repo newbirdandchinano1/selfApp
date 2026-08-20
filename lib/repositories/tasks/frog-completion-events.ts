@@ -11,11 +11,15 @@ export type FrogCompletionEventAction = 'completed' | 'reopened';
 /** 热力图聚合只读本地，避免 REST 全量拉取 reconcile 覆盖刚写入的事件 */
 const HEATMAP_EVENT_READ_OPTS = { offlineFallback: true, localOnly: true as const };
 
+export type FrogCompletionSubject = 'task' | 'project';
+
 export type FrogCompletionDayItem = {
   id: string;
   task_id: string | null;
   assigned_ymd: string;
   task_title: string | null;
+  /** 任务青蛙 / 项目青蛙；未知时由打开逻辑再分辨 */
+  subject?: FrogCompletionSubject;
 };
 
 type FrogCompletionEventRow = {
@@ -26,7 +30,7 @@ type FrogCompletionEventRow = {
   created_at: string;
 };
 
-/** 同一青蛙任务 + 指派日只保留最新一次操作；仅当最新为 completed 时计入热力图 */
+/** 同一青蛙主体 + 指派日只保留最新一次操作；仅当最新为 completed 时计入热力图 */
 function filterNetCompletedFrogEvents<T extends FrogCompletionEventRow>(events: T[]): T[] {
   const latestByKey = new Map<string, T>();
   for (const e of events) {
@@ -39,32 +43,52 @@ function filterNetCompletedFrogEvents<T extends FrogCompletionEventRow>(events: 
   return [...latestByKey.values()].filter((e) => e.action === 'completed');
 }
 
+/**
+ * 记录青蛙完成/重开。
+ * `subjectId` 可以是任务 id，也可以是「无子任务项目青蛙」的 project id。
+ * 字段名仍为 task_id（历史契约），项目青蛙写入 project id。
+ */
 export async function insertFrogCompletionEvent(
-  taskId: string,
+  subjectId: string,
   assignedYmd: string,
   action: FrogCompletionEventAction,
-  taskTitle: string | null
+  title: string | null,
 ): Promise<void> {
   const ymd = assignedYmd.trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return;
-  const taskReady = await ensureLocalRowPresent('tasks', taskId);
-  if (!taskReady) {
-    throw new Error('任务尚未同步到本地，无法记录青蛙完成事件');
+  const id = subjectId.trim();
+  if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return;
+
+  const taskReady = await ensureLocalRowPresent('tasks', id);
+  const projectReady = taskReady ? false : await ensureLocalRowPresent('projects', id);
+  if (!taskReady && !projectReady) {
+    throw new Error('任务或项目尚未同步到本地，无法记录青蛙完成事件');
   }
+
   const db = await getDatabase();
-  const id = makeTimestampEntityId('fevt_', 8);
+  const eventId = makeTimestampEntityId('fevt_', 8);
   const createdAt = formatTaskAuditDatetimeLocal();
-  await db.runAsync(
-    `INSERT INTO frog_completion_events (id, task_id, assigned_ymd, action, created_at, task_title, sync_status)
-     VALUES (?, ?, ?, ?, ?, ?, 'pending_create')`,
-    [id, taskId, ymd, action, createdAt, taskTitle?.trim() || null]
-  );
+  const params = [eventId, id, ymd, action, createdAt, title?.trim() || null] as const;
+  const sql = `INSERT INTO frog_completion_events (id, task_id, assigned_ymd, action, created_at, task_title, sync_status)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending_create')`;
+
+  // 本地表 FK 仅指向 tasks；项目青蛙的 subjectId 是 project id，需短暂关闭外键
+  if (!taskReady && projectReady) {
+    await db.execAsync('PRAGMA foreign_keys = OFF');
+    try {
+      await db.runAsync(sql, [...params]);
+    } finally {
+      await db.execAsync('PRAGMA foreign_keys = ON');
+    }
+  } else {
+    await db.runAsync(sql, [...params]);
+  }
+
   invalidateInflightApiTableFetch('frog_completion_events');
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
   await pushLocalChangesToApi({ awaitSync: true });
 }
 
-/** 按指派日返回已完成青蛙的 task_id 集合（与热力图口径一致，仅计 net completed） */
+/** 按指派日返回已完成青蛙的 task_id / project_id 集合（与热力图口径一致，仅计 net completed） */
 export async function getFrogCompletedTaskIdsByDayRange(
   startYmd: string,
   endYmd: string,
@@ -84,7 +108,7 @@ export async function getFrogCompletedTaskIdsByDayRange(
 /** 按青蛙指派日统计「标记完成」次数（与待办总览热力图口径一致，仅计 completed） */
 export async function getFrogCompletionCountsByDayRange(
   startYmd: string,
-  endYmd: string
+  endYmd: string,
 ): Promise<Map<string, number>> {
   const rows = await readApiTable<FrogCompletionEventRow>('frog_completion_events', HEATMAP_EVENT_READ_OPTS);
   const m = new Map<string, number>();
@@ -95,25 +119,52 @@ export async function getFrogCompletionCountsByDayRange(
   return m;
 }
 
-/** 某一指派日内的已完成青蛙明细（含任务已删时的标题快照） */
+/** 某一指派日内的已完成青蛙明细（含任务/项目已删时的标题快照） */
 export async function getFrogCompletionsForAssignedDay(ymd: string): Promise<FrogCompletionDayItem[]> {
-  const [events, tasks] = await Promise.all([
-    readApiTable<{ id: string; task_id: string | null; assigned_ymd: string; action: string; task_title?: string | null; created_at: string }>(
-      'frog_completion_events',
-      HEATMAP_EVENT_READ_OPTS,
-    ),
+  const [events, tasks, projects] = await Promise.all([
+    readApiTable<{
+      id: string;
+      task_id: string | null;
+      assigned_ymd: string;
+      action: string;
+      task_title?: string | null;
+      created_at: string;
+    }>('frog_completion_events', HEATMAP_EVENT_READ_OPTS),
     readApiTable<{ id: string; title?: string | null }>('tasks', HEATMAP_EVENT_READ_OPTS),
+    readApiTable<{ id: string; name?: string | null }>('projects', HEATMAP_EVENT_READ_OPTS),
   ]);
-  const taskById = new Map(tasks.map(t => [t.id, t]));
+  const taskById = new Map(tasks.map((t) => [t.id, t]));
+  const projectById = new Map(projects.map((p) => [p.id, p]));
   return filterNetCompletedFrogEvents(events)
-    .filter(e => e.assigned_ymd === ymd)
+    .filter((e) => e.assigned_ymd === ymd)
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1)
-    .map(e => ({
-      id: e.id,
-      task_id: e.task_id,
-      assigned_ymd: e.assigned_ymd,
-      task_title: taskById.get(e.task_id ?? '')?.title?.trim() || e.task_title?.trim() || null,
-    }));
+    .map((e) => {
+      const sid = (e.task_id ?? '').trim();
+      const project = projectById.get(sid);
+      const task = taskById.get(sid);
+      // 前缀优先；否则本地有项目行则认项目
+      const subject: FrogCompletionSubject | undefined = sid.startsWith('p_')
+        ? 'project'
+        : sid.startsWith('tsk_')
+          ? 'task'
+          : project
+            ? 'project'
+            : task
+              ? 'task'
+              : undefined;
+      return {
+        id: e.id,
+        task_id: e.task_id,
+        assigned_ymd: e.assigned_ymd,
+        task_title:
+          (subject === 'project' ? project?.name?.trim() : undefined) ||
+          project?.name?.trim() ||
+          task?.title?.trim() ||
+          e.task_title?.trim() ||
+          null,
+        subject,
+      };
+    });
 }
 
 /** 将历史「已完成且带 frogAssignedOn」的任务补写入事件表（升级后执行一次） */
@@ -123,7 +174,7 @@ export async function backfillFrogCompletionEventsFromTasks(): Promise<number> {
     `SELECT id, title, extra_data FROM tasks
      WHERE status IN ('done', 'cancelled')
         AND extra_data IS NOT NULL
-        AND trim(extra_data) != ''`
+        AND trim(extra_data) != ''`,
   );
   let inserted = 0;
   for (const row of rows) {
@@ -138,7 +189,7 @@ export async function backfillFrogCompletionEventsFromTasks(): Promise<number> {
     const existing = await db.getFirstAsync<{ c: number }>(
       `SELECT COUNT(*) AS c FROM frog_completion_events
         WHERE task_id = ? AND assigned_ymd = ? AND action = 'completed'`,
-      [row.id, assigned]
+      [row.id, assigned],
     );
     if (Number(existing?.c ?? 0) > 0) continue;
     await insertFrogCompletionEvent(row.id, assigned, 'completed', row.title ?? null);

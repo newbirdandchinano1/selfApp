@@ -1192,7 +1192,7 @@ export default function EditProjectScreen() {
           style={({ pressed }) => [styles.iconBtn, { opacity: saving ? 0.45 : pressed ? 0.75 : 1 }]}>
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: primary }]}>{loading ? '项目详情' : '编辑项目'}</Text>
+        <Text style={[styles.headerTitle, { color: primary }]}>{loading ? '加载中' : '项目详情'}</Text>
         <Pressable
           onPress={saveProject}
           disabled={saving || loading}

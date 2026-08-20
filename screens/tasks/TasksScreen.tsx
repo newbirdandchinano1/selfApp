@@ -169,6 +169,7 @@ import {
   fetchCompletionHeatmap,
   fetchCompletionHeatmapDayDetail,
 } from '@/lib/tasks-completion-heatmap-api';
+import { openFrogHeatmapItem } from '@/lib/open-frog-heatmap-item';
 import {
   computeMonthlyAverageMap,
   heatmapLevelFromMonthlyAverage,
@@ -951,6 +952,7 @@ function TaskCompletionHeatmap({
   innerBorderColor,
   isDark,
   reloadToken,
+  projects,
 }: {
   logicalTodayYmd: string;
   dayBoundary: TasksDayBoundary;
@@ -963,6 +965,8 @@ function TaskCompletionHeatmap({
   isDark: boolean;
   /** 任务勾选变更后递增，触发热力图从服务端重载 */
   reloadToken: number;
+  /** 用于识别/打开项目青蛙 */
+  projects: Array<{ id: string; name: string }>;
 }) {
   const router = useRouter();
   const scrollRef = React.useRef<ScrollView>(null);
@@ -1074,6 +1078,7 @@ function TaskCompletionHeatmap({
           boundary: dayBoundary,
           heatmapStart: heatmapRange.startYmd,
           heatmapEnd: heatmapRange.endYmd,
+          projects,
         });
         if (!cancelled) {
           setSelectedFrogItems(detail.frogItems);
@@ -1092,7 +1097,7 @@ function TaskCompletionHeatmap({
     return () => {
       cancelled = true;
     };
-  }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd, selectedYmd, reloadToken]);
+  }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd, selectedYmd, reloadToken, projects]);
 
   const onHeatCellPress = React.useCallback((cell: CompletionHeatCell) => {
     if (!cell.ymd) return;
@@ -1239,13 +1244,14 @@ function TaskCompletionHeatmap({
                     {selectedFrogItems.map((item, idx) => {
                       const title = (item.task_title ?? '').trim() || '（无标题）';
                       const canOpen = Boolean(item.task_id?.trim());
+                      const isProjectFrog = item.subject === 'project';
                       const isLast = idx === selectedFrogItems.length - 1 && selectedTodoItems.length === 0;
                       return (
                         <Pressable
                           key={item.id}
                           disabled={!canOpen}
                           onPress={() => {
-                            if (item.task_id) router.push({ pathname: '/task/[id]', params: { id: item.task_id } });
+                            void openFrogHeatmapItem(router, item, projects);
                           }}
                           style={({ pressed }) => [
                             styles.frogHeatmapDetailRow,
@@ -1255,7 +1261,12 @@ function TaskCompletionHeatmap({
                             },
                             isLast && { borderBottomWidth: 0 },
                           ]}>
-                          <MaterialIcons name="eco" size={16} color={accentColor} style={{ marginTop: 1 }} />
+                          <MaterialIcons
+                            name={isProjectFrog ? 'folder-special' : 'eco'}
+                            size={16}
+                            color={accentColor}
+                            style={{ marginTop: 1 }}
+                          />
                           <Text style={[styles.frogHeatmapDetailTitle, { color: textMain }]} numberOfLines={2}>
                             {title}
                           </Text>
@@ -4909,6 +4920,7 @@ export default function TasksScreen() {
                 innerBorderColor={colors.outlineStrong}
                 isDark={isDark}
                 reloadToken={completionHeatmapReloadToken}
+                projects={projects.map((p) => ({ id: p.id, name: p.name }))}
               />
             </View>
           </View>
