@@ -897,7 +897,7 @@ export default function HabitDetailScreen() {
             )
           ) : null}
           {focusYmd < logicalTodayYmd && !buildSucceeded ? (
-            <Text style={styles.makeUpSub}>补卡、取消补卡仅针对「逻辑日」之前的日期（与应用日界设置一致）。</Text>
+            <Text style={styles.makeUpSub}>补卡、取消补卡仅针对「逻辑日」之前的日期（与任务与习惯日界设置一致）。</Text>
           ) : null}
           {focusYmd === logicalTodayYmd && !buildSucceeded ? (
             <Text style={styles.makeUpSub}>

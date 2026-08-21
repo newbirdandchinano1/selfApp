@@ -575,11 +575,11 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         <View
           onLayout={ev => onSectionLayout('dayBoundary', ev.nativeEvent.layout.y)}
           style={styles.section}>
-          {renderSectionHead('DAY BOUNDARY', '应用日界')}
+          {renderSectionHead('DAY BOUNDARY', '任务与习惯日界')}
           <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 10 }]}>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 19 }]}>
-              全应用以此时间为新一天的起点：任务与习惯、记账「今日」、首页摄入统计、热力图与 AI 日更等（默认
-              00:00）。每月预算周期仍可在记账页单独设置「预算刷新日」。
+              仅用于任务完成、习惯打卡与相关热力图：未到该时刻仍算「昨天」的打卡日（默认
+              00:00）。财务记账、首页日期与摄入统计按自然日历日（0 点）划分，不受此设置影响。每月预算周期仍可在记账页单独设置「预算刷新日」。
             </Text>
             <Pressable
               onPress={() => {
@@ -852,7 +852,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         <View style={styles.modalRoot}>
           <Pressable style={styles.modalBackdrop} onPress={() => setDayBoundaryPickerVisible(false)} />
           <View style={[styles.modalCard, { backgroundColor: cardBg }]}>
-            <Text style={[styles.sectionTitle, { color: text }]}>应用日界</Text>
+            <Text style={[styles.sectionTitle, { color: text }]}>任务与习惯日界</Text>
             <DateTimePicker
               value={new Date(2000, 0, 1, draftBoundary.hour, draftBoundary.minute)}
               mode="time"

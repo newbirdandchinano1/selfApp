@@ -38,8 +38,6 @@ import {
     parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
-import { getLogicalLocalYmd, refreshAnchorAfterLogicalDayChange } from '@/lib/tasks-logical-day';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Dimensions, Keyboard, Platform, type KeyboardEvent } from 'react-native';
@@ -60,7 +58,6 @@ export function useFinanceTransactionSheetController({
 }: FinanceTransactionSheetControllerOptions) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { boundary: dayBoundary, logicalTodayYmd } = useDayBoundary();
   const colorScheme = useColorScheme();
   const themeKey = colorScheme === 'dark' ? 'dark' : 'light';
   const baseTheme = Colors[themeKey];
@@ -83,15 +80,6 @@ export function useFinanceTransactionSheetController({
   const [selectedCategoryKey, setSelectedCategoryKey] = React.useState('food');
   const [selectedAccountId, setSelectedAccountId] = React.useState<string | null>(null);
   const [selectedHappenedAt, setSelectedHappenedAt] = React.useState(() => new Date());
-  const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
-  React.useEffect(() => {
-    const prev = prevLogicalTodayYmdRef.current;
-    if (prev === logicalTodayYmd) return;
-    prevLogicalTodayYmdRef.current = logicalTodayYmd;
-    setSelectedHappenedAt((value) =>
-      refreshAnchorAfterLogicalDayChange(value, dayBoundary, logicalTodayYmd, prev),
-    );
-  }, [dayBoundary, logicalTodayYmd]);
   const [isDatePickerVisible, setIsDatePickerVisible] = React.useState(false);
   const [isTimePickerVisible, setIsTimePickerVisible] = React.useState(false);
   const [isAccountPickerVisible, setIsAccountPickerVisible] = React.useState(false);

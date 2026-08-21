@@ -1,6 +1,6 @@
 import { AppSettingKey, getAppSetting, setAppSetting } from '@/lib/app-settings-store';
 
-/** 全应用「日界」：新一天的统计从该时刻起算（默认 0:00 即自然日） */
+/** 任务与习惯「日界」：打卡/完成统计从该时刻起算新一天（默认 0:00 即自然日）。财务与首页日期不受此影响。 */
 export type TasksDayBoundary = { hour: number; minute: number };
 
 /** @deprecated 使用 `TasksDayBoundary` */

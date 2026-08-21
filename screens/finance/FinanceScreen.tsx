@@ -7,7 +7,7 @@ import {
 import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { useCalendarToday } from '@/hooks/use-calendar-today';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
@@ -91,12 +91,7 @@ import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/financ
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { formatFinanceHappenedAt, parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
-import {
-    addDaysToLogicalYmd,
-    getLogicalLocalYmd,
-    logicalYmdToLocalDate,
-    refreshAnchorAfterLogicalDayChange,
-} from '@/lib/tasks-logical-day';
+import { addDaysToLogicalYmd, formatLocalYmdFromDate, logicalYmdToLocalDate } from '@/lib/tasks-logical-day';
 import {
     getActiveAiLlmApiKey,
     isActiveAiLlmConfigured,
@@ -559,10 +554,10 @@ export default function FinanceScreen() {
   const tertiary = isDark ? '#fbbf24' : '#825100';
   const accountTagColor = isDark ? '#2dd4bf' : '#0f766e';
   const weekdayCn = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
-  const { boundary: dayBoundary, logicalTodayYmd, logicalTodayDate: today } = useDayBoundary();
-  const logicalYesterdayYmd = React.useMemo(
-    () => addDaysToLogicalYmd(logicalTodayYmd, -1),
-    [logicalTodayYmd],
+  const { calendarTodayYmd, calendarTodayDate: today } = useCalendarToday();
+  const calendarYesterdayYmd = React.useMemo(
+    () => addDaysToLogicalYmd(calendarTodayYmd, -1),
+    [calendarTodayYmd],
   );
   const headerDateLabel = `${today.getMonth() + 1}月${today.getDate()}日 ${weekdayCn[today.getDay()]}`;
 
@@ -581,15 +576,19 @@ export default function FinanceScreen() {
   const [selectedCategoryKey, setSelectedCategoryKey] = React.useState('food');
   const [selectedAccountId, setSelectedAccountId] = React.useState<string | null>(null);
   const [selectedHappenedAt, setSelectedHappenedAt] = React.useState(() => new Date());
-  const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
+  const prevCalendarTodayYmdRef = React.useRef(calendarTodayYmd);
   React.useEffect(() => {
-    const prev = prevLogicalTodayYmdRef.current;
-    if (prev === logicalTodayYmd) return;
-    prevLogicalTodayYmdRef.current = logicalTodayYmd;
-    setSelectedHappenedAt((value) =>
-      refreshAnchorAfterLogicalDayChange(value, dayBoundary, logicalTodayYmd, prev),
-    );
-  }, [dayBoundary, logicalTodayYmd]);
+    const prev = prevCalendarTodayYmdRef.current;
+    if (prev === calendarTodayYmd) return;
+    prevCalendarTodayYmdRef.current = calendarTodayYmd;
+    // 自然日翻页后：若仍停在「今天/昨天」锚点，则跳到当前时刻
+    setSelectedHappenedAt((value) => {
+      const valueYmd = formatLocalYmdFromDate(value);
+      const staleFromYmd = addDaysToLogicalYmd(prev, -1);
+      if (valueYmd >= staleFromYmd) return new Date();
+      return value;
+    });
+  }, [calendarTodayYmd]);
   const [isDatePickerVisible, setIsDatePickerVisible] = React.useState(false);
   const [isTimePickerVisible, setIsTimePickerVisible] = React.useState(false);
   const [isAccountPickerVisible, setIsAccountPickerVisible] = React.useState(false);
@@ -912,10 +911,7 @@ export default function FinanceScreen() {
     outputRange: [0, 1],
   });
 
-  const getDayKey = React.useCallback(
-    (value: Date) => getLogicalLocalYmd(value, dayBoundary),
-    [dayBoundary],
-  );
+  const getDayKey = React.useCallback((value: Date) => formatLocalYmdFromDate(value), []);
 
   const accountNameMap = React.useMemo(() => {
     return new Map(financeAccounts.map((account) => [account.id, account.name]));
@@ -1013,9 +1009,9 @@ export default function FinanceScreen() {
       financeTransactions.filter((txn) => {
         const happenedAt = parseStoredDatetime(txn.happened_at);
         if (Number.isNaN(happenedAt.getTime())) return false;
-        return getLogicalLocalYmd(happenedAt, dayBoundary) === logicalTodayYmd;
+        return formatLocalYmdFromDate(happenedAt) === calendarTodayYmd;
       }),
-    [dayBoundary, financeTransactions, logicalTodayYmd],
+    [calendarTodayYmd, financeTransactions],
   );
 
   const todayExpenseTotal = React.useMemo(
@@ -1053,20 +1049,20 @@ export default function FinanceScreen() {
       return compareDatetimeDesc(a.happened_at, b.happened_at);
     });
   }, [financeTransactions]);
-  const todayDayKey = logicalTodayYmd;
+  const todayDayKey = calendarTodayYmd;
   const sortedDayKeys = React.useMemo(() => {
     const keys = new Set<string>();
     sortedTransactions.forEach((txn) => {
       const happenedAt = parseStoredDatetime(txn.happened_at);
       if (Number.isNaN(happenedAt.getTime())) return;
       const dayKey = getDayKey(happenedAt);
-      if (dayKey <= logicalTodayYmd) {
+      if (dayKey <= calendarTodayYmd) {
         keys.add(dayKey);
       }
     });
     // 按发生日从近到远，与「更新时间」排序解耦，避免「加载更多」日期错乱
     return Array.from(keys).sort((a, b) => b.localeCompare(a));
-  }, [getDayKey, logicalTodayYmd, sortedTransactions]);
+  }, [getDayKey, calendarTodayYmd, sortedTransactions]);
   const historyDayKeys = React.useMemo(() => sortedDayKeys.filter((k) => k !== todayDayKey), [sortedDayKeys, todayDayKey]);
   const hasMoreHistoryDays = visibleDayCount < historyDayKeys.length || historyHasMoreRemote;
   const visibleDayKeySet = React.useMemo(() => {
@@ -1099,8 +1095,9 @@ export default function FinanceScreen() {
         const more = await fetchFinanceRecentDays({
           before: oldest,
           days: LOAD_MORE_HISTORY_DAY_STEP,
-          dayBoundaryHour: dayBoundary.hour,
-          dayBoundaryMinute: dayBoundary.minute,
+          // 财务按自然日历日分桶，不传自定义日界
+          dayBoundaryHour: 0,
+          dayBoundaryMinute: 0,
           offlineFallback: true,
         });
         if (more.transactions.length > 0) {
@@ -1119,15 +1116,7 @@ export default function FinanceScreen() {
         setIsLoadingMoreDays(false);
       }
     })();
-  }, [
-    dayBoundary.hour,
-    dayBoundary.minute,
-    hasMoreHistoryDays,
-    historyDayKeys,
-    isLoadingMoreDays,
-    todayDayKey,
-    visibleDayCount,
-  ]);
+  }, [hasMoreHistoryDays, historyDayKeys, isLoadingMoreDays, todayDayKey, visibleDayCount]);
 
   const handleMainScroll = React.useCallback(
     (event: { nativeEvent: { contentOffset: { y: number }; layoutMeasurement: { height: number }; contentSize: { height: number } } }) => {
@@ -1302,7 +1291,7 @@ export default function FinanceScreen() {
   ]);
 
   const historySections = React.useMemo(() => {
-    const yesterdayDayKey = logicalYesterdayYmd;
+    const yesterdayDayKey = calendarYesterdayYmd;
     const weekdayCnLocal = weekdayCn;
 
     const sectionMap = new Map<
@@ -1401,7 +1390,7 @@ export default function FinanceScreen() {
     text,
     todayDayKey,
     visibleDayKeySet,
-    logicalYesterdayYmd,
+    calendarYesterdayYmd,
     weekdayCn,
     zhipuTxnReady,
     txnAiFailEpoch,
@@ -2315,9 +2304,9 @@ export default function FinanceScreen() {
 
         if (forceApi || !financeTransactionsRef.current.length) {
           const home = await fetchFinanceHome({
-            logicalToday: logicalTodayYmd,
-            dayBoundaryHour: dayBoundary.hour,
-            dayBoundaryMinute: dayBoundary.minute,
+            logicalToday: calendarTodayYmd,
+            dayBoundaryHour: 0,
+            dayBoundaryMinute: 0,
             historyDays: INITIAL_HISTORY_DAY_SLICES,
             daysBack: 90,
             budgetRefreshDay: rd,
@@ -2345,11 +2334,9 @@ export default function FinanceScreen() {
       }
     }, forceApi);
   }, [
-    dayBoundary.hour,
-    dayBoundary.minute,
+    calendarTodayYmd,
     loadFinanceAccounts,
     loadFinanceTransactions,
-    logicalTodayYmd,
     wrapLoad,
   ]);
 
@@ -2372,11 +2359,11 @@ export default function FinanceScreen() {
     React.useCallback(() => {
       if (isSheetVisible) return;
       setSelectedHappenedAt((prev) => {
-        const ymd = getLogicalLocalYmd(prev, dayBoundary);
-        if (ymd < logicalTodayYmd) return new Date();
+        const ymd = formatLocalYmdFromDate(prev);
+        if (ymd < calendarTodayYmd) return new Date();
         return prev;
       });
-    }, [dayBoundary, isSheetVisible, logicalTodayYmd]),
+    }, [isSheetVisible, calendarTodayYmd]),
   );
 
   useFocusEffect(
@@ -3835,7 +3822,7 @@ export default function FinanceScreen() {
             </View>
 
             {historySections.map((section) => {
-              const isYesterday = section.dayKey === logicalYesterdayYmd;
+              const isYesterday = section.dayKey === calendarYesterdayYmd;
               const dayTitle = isYesterday
                 ? '昨天'
                 : `${section.date.getMonth() + 1}月${section.date.getDate()}日`;

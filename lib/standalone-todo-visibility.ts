@@ -229,8 +229,9 @@ export function isStandaloneTodoRepeatWaiting(task: TaskRow, logicalTodayYmd: st
 
 /**
  * 独立待办日程窗：
- * - 时刻/单日：只在当天显示（不含过期滞留）
+ * - 时刻/单日：当天显示；过期未完成仍保留（特殊标识 + 置顶）
  * - 时间段：区间内显示，过期未完成仍保留
+ * - 未开始的未来日程不提前展示
  * 重复规则由 repeat 过滤器处理。
  */
 export function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalTodayYmd: string): boolean {
@@ -239,7 +240,8 @@ export function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalT
 
   const window = getStandaloneTodoScheduleWindow(task);
   if (window.kind === 'moment') {
-    return logicalTodayYmd === window.ymd;
+    if (logicalTodayYmd === window.ymd) return true;
+    return isStandaloneTodoOpen(task) && logicalTodayYmd > window.ymd;
   }
   if (window.kind === 'period') {
     if (logicalTodayYmd >= window.startYmd && logicalTodayYmd <= window.endYmd) return true;

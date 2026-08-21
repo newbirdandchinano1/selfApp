@@ -567,7 +567,7 @@ export default function EditFinanceTransactionScreen() {
             <Pressable
               onPress={() => {
                 setTimePickerOpen(false);
-                setDatePickerOpen((v) => !v);
+                setDatePickerOpen(true);
               }}
               style={({ pressed }) => [
                 styles.dateChip,
@@ -582,7 +582,7 @@ export default function EditFinanceTransactionScreen() {
             <Pressable
               onPress={() => {
                 setDatePickerOpen(false);
-                setTimePickerOpen((v) => !v);
+                setTimePickerOpen(true);
               }}
               style={({ pressed }) => [
                 styles.dateChip,
@@ -595,41 +595,6 @@ export default function EditFinanceTransactionScreen() {
               </Text>
             </Pressable>
           </View>
-
-          {datePickerOpen ? (
-            <DateTimePicker
-              value={happenedAt}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-              onChange={(_, date) => {
-                if (Platform.OS === 'android') setDatePickerOpen(false);
-                if (date) {
-                  setHappenedAt((prev) => {
-                    const n = new Date(prev);
-                    n.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
-                    return n;
-                  });
-                }
-              }}
-            />
-          ) : null}
-          {timePickerOpen ? (
-            <DateTimePicker
-              value={happenedAt}
-              mode="time"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-              onChange={(_, date) => {
-                if (Platform.OS === 'android') setTimePickerOpen(false);
-                if (date) {
-                  setHappenedAt((prev) => {
-                    const n = new Date(prev);
-                    n.setHours(date.getHours(), date.getMinutes(), 0, 0);
-                    return n;
-                  });
-                }
-              }}
-            />
-          ) : null}
         </View>
 
         <Pressable
@@ -673,6 +638,135 @@ export default function EditFinanceTransactionScreen() {
           </View>
         </View>
       </Modal>
+
+      {Platform.OS === 'ios' ? (
+        <>
+          <Modal visible={datePickerOpen} transparent animationType="fade" onRequestClose={() => setDatePickerOpen(false)}>
+            <View style={styles.pickerModalOverlay}>
+              <Pressable style={styles.modalBackdrop} onPress={() => setDatePickerOpen(false)} />
+              <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                  <Text style={[styles.pickerModalTitle, { color: text }]}>选择日期</Text>
+                  <Pressable onPress={() => setDatePickerOpen(false)} style={styles.pickerModalCloseBtn}>
+                    <MaterialIcons name="close" size={22} color={subtle} />
+                  </Pressable>
+                </View>
+                <View style={styles.pickerModalBody}>
+                  <DateTimePicker
+                    value={happenedAt}
+                    mode="date"
+                    display="spinner"
+                    locale="zh-CN"
+                    themeVariant={isDark ? 'dark' : 'light'}
+                    textColor={text}
+                    onChange={(_, date) => {
+                      if (!date) return;
+                      setHappenedAt((prev) => {
+                        const n = new Date(prev);
+                        n.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+                        return n;
+                      });
+                    }}
+                    style={styles.nativePicker}
+                  />
+                  <View style={styles.pickerModalFooter}>
+                    <Pressable
+                      onPress={() => setHappenedAt(new Date())}
+                      style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#faf8ff' }]}>
+                      <Text style={[styles.pickerModalActionText, { color: text }]}>今天</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => setDatePickerOpen(false)}
+                      style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
+                      <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            </View>
+          </Modal>
+
+          <Modal visible={timePickerOpen} transparent animationType="fade" onRequestClose={() => setTimePickerOpen(false)}>
+            <View style={styles.pickerModalOverlay}>
+              <Pressable style={styles.modalBackdrop} onPress={() => setTimePickerOpen(false)} />
+              <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant }]}>
+                <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+                  <Text style={[styles.pickerModalTitle, { color: text }]}>选择时间</Text>
+                  <Pressable onPress={() => setTimePickerOpen(false)} style={styles.pickerModalCloseBtn}>
+                    <MaterialIcons name="close" size={22} color={subtle} />
+                  </Pressable>
+                </View>
+                <View style={styles.pickerModalBody}>
+                  <DateTimePicker
+                    value={happenedAt}
+                    mode="time"
+                    display="spinner"
+                    locale="zh-CN"
+                    themeVariant={isDark ? 'dark' : 'light'}
+                    textColor={text}
+                    onChange={(_, date) => {
+                      if (!date) return;
+                      setHappenedAt((prev) => {
+                        const n = new Date(prev);
+                        n.setHours(date.getHours(), date.getMinutes(), 0, 0);
+                        return n;
+                      });
+                    }}
+                    style={styles.nativePicker}
+                  />
+                  <View style={styles.pickerModalFooter}>
+                    <Pressable
+                      onPress={() => setHappenedAt(new Date())}
+                      style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#faf8ff' }]}>
+                      <Text style={[styles.pickerModalActionText, { color: text }]}>现在</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => setTimePickerOpen(false)}
+                      style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
+                      <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        </>
+      ) : (
+        <>
+          {datePickerOpen ? (
+            <DateTimePicker
+              value={happenedAt}
+              mode="date"
+              display="default"
+              onChange={(_, date) => {
+                setDatePickerOpen(false);
+                if (!date) return;
+                setHappenedAt((prev) => {
+                  const n = new Date(prev);
+                  n.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+                  return n;
+                });
+              }}
+            />
+          ) : null}
+          {timePickerOpen ? (
+            <DateTimePicker
+              value={happenedAt}
+              mode="time"
+              display="default"
+              onChange={(_, date) => {
+                setTimePickerOpen(false);
+                if (!date) return;
+                setHappenedAt((prev) => {
+                  const n = new Date(prev);
+                  n.setHours(date.getHours(), date.getMinutes(), 0, 0);
+                  return n;
+                });
+              }}
+            />
+          ) : null}
+        </>
+      )}
     </SafeAreaView>
   );
 }
@@ -831,5 +925,68 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  pickerModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 18,
+  },
+  pickerModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 22,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  pickerModalHeader: {
+    minHeight: 52,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+  },
+  pickerModalTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  pickerModalCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerModalBody: {
+    padding: 12,
+    gap: 12,
+  },
+  pickerModalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  pickerModalAction: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerModalActionText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  pickerModalPrimaryText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#ffffff',
+  },
+  nativePicker: {
+    width: '100%',
+    alignSelf: 'center',
   },
 });

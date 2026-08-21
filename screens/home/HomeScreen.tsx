@@ -43,8 +43,8 @@ import {
   type IntakeAssistantSuggestKind,
   type IntakeAssistantUiTab,
 } from '@/lib/intake-assistant-selection';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
-import { refreshAnchorAfterLogicalDayChange } from '@/lib/tasks-logical-day';
+import { useCalendarToday } from '@/hooks/use-calendar-today';
+import { DEFAULT_TASKS_DAY_BOUNDARY, refreshAnchorAfterLogicalDayChange } from '@/lib/tasks-logical-day';
 import { ensureDailyAiIntakeTargetsForToday, type DailyAiIntakeTargetsRow } from '@/lib/daily-intake-ai-targets';
 import {
   adjustNutritionMetricsForDaySchedule,
@@ -610,7 +610,7 @@ const CircularProgress = ({
 export default function HealthScreen() {
   const router = useRouter();
   const { colors, isDark } = useAppTheme();
-  const { boundary: dayBoundary, logicalTodayYmd, logicalTodayDate } = useDayBoundary();
+  const { calendarTodayYmd, calendarTodayDate } = useCalendarToday();
   const insets = useSafeAreaInsets();
   const pageInset = Spacing.md * 2;
   const weekPagerWidth = width - pageInset;
@@ -635,9 +635,9 @@ export default function HealthScreen() {
   /** 每日至多一次 AI 估算的四项目标（本地缓存），用于「今日最佳」行 */
   const [dailyAiTargets, setDailyAiTargets] = React.useState<DailyAiIntakeTargetsRow | null>(null);
   const [dailyAiLoading, setDailyAiLoading] = React.useState(false);
-  const today = React.useMemo(() => normalizeDate(logicalTodayDate), [logicalTodayDate]);
-  const [selectedDate, setSelectedDate] = React.useState(() => normalizeDate(logicalTodayDate));
-  const [weekAnchorDate, setWeekAnchorDate] = React.useState(() => normalizeDate(logicalTodayDate));
+  const today = React.useMemo(() => normalizeDate(calendarTodayDate), [calendarTodayDate]);
+  const [selectedDate, setSelectedDate] = React.useState(() => normalizeDate(calendarTodayDate));
+  const [weekAnchorDate, setWeekAnchorDate] = React.useState(() => normalizeDate(calendarTodayDate));
   const [quickAddItems, setQuickAddItems] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems());
   const [quickAddCatalog, setQuickAddCatalog] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems());
 
@@ -819,7 +819,7 @@ export default function HealthScreen() {
       try {
         const r = await ensureDailyAiIntakeTargetsForToday({
           user: currentUser,
-          todayYmd: logicalTodayYmd,
+          todayYmd: calendarTodayYmd,
           healthRecordsLocalOnly: healthLoaded,
         });
         if (r.status === 'cached' || r.status === 'fresh') {
@@ -841,7 +841,7 @@ export default function HealthScreen() {
     }
 
     return { sliceEmpty };
-  }, [logicalTodayYmd, selectedDate, weekAnchorDate]);
+  }, [calendarTodayYmd, selectedDate, weekAnchorDate]);
 
   const reloadPage = React.useCallback(async (forceApi = false) => {
     if (forceApi) setPageLoadRetrying(true);
@@ -882,8 +882,8 @@ export default function HealthScreen() {
     void reloadPageRef.current?.(forceApi).catch((e) => console.warn('刷新健康页数据失败', e));
   });
 
-  /** 后台过夜跨逻辑日后：锚定「今天」并重载当日健康数据 */
-  const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
+  /** 后台过夜跨自然日后：锚定「今天」并重载当日健康数据 */
+  const prevCalendarTodayYmdRef = React.useRef(calendarTodayYmd);
   const needReloadAfterDayChangeRef = React.useRef(false);
   const selectedDateRef = React.useRef(selectedDate);
   const weekAnchorDateRef = React.useRef(weekAnchorDate);
@@ -891,32 +891,42 @@ export default function HealthScreen() {
   weekAnchorDateRef.current = weekAnchorDate;
 
   React.useEffect(() => {
-    const prev = prevLogicalTodayYmdRef.current;
-    if (prev === logicalTodayYmd) return;
-    prevLogicalTodayYmdRef.current = logicalTodayYmd;
+    const prev = prevCalendarTodayYmdRef.current;
+    if (prev === calendarTodayYmd) return;
+    prevCalendarTodayYmdRef.current = calendarTodayYmd;
     needReloadAfterDayChangeRef.current = true;
     setSelectedDate(
       normalizeDate(
-        refreshAnchorAfterLogicalDayChange(selectedDateRef.current, dayBoundary, logicalTodayYmd, prev),
+        refreshAnchorAfterLogicalDayChange(
+          selectedDateRef.current,
+          DEFAULT_TASKS_DAY_BOUNDARY,
+          calendarTodayYmd,
+          prev,
+        ),
       ),
     );
     setWeekAnchorDate(
       normalizeDate(
-        refreshAnchorAfterLogicalDayChange(weekAnchorDateRef.current, dayBoundary, logicalTodayYmd, prev),
+        refreshAnchorAfterLogicalDayChange(
+          weekAnchorDateRef.current,
+          DEFAULT_TASKS_DAY_BOUNDARY,
+          calendarTodayYmd,
+          prev,
+        ),
       ),
     );
     const timer = setTimeout(() => {
       if (!needReloadAfterDayChangeRef.current) return;
       needReloadAfterDayChangeRef.current = false;
-      void reloadPageRef.current?.().catch((e) => console.warn('逻辑日切换后刷新健康页失败', e));
+      void reloadPageRef.current?.().catch((e) => console.warn('自然日切换后刷新健康页失败', e));
     }, 0);
     return () => clearTimeout(timer);
-  }, [dayBoundary, logicalTodayYmd]);
+  }, [calendarTodayYmd]);
 
   React.useEffect(() => {
     if (!needReloadAfterDayChangeRef.current) return;
     needReloadAfterDayChangeRef.current = false;
-    void reloadPageRef.current?.().catch((e) => console.warn('逻辑日切换后刷新健康页失败', e));
+    void reloadPageRef.current?.().catch((e) => console.warn('自然日切换后刷新健康页失败', e));
   }, [selectedDate, weekAnchorDate]);
 
   /** 切换周视图时重新拉取该周数据（不依赖 focus，避免切 Tab 误触发） */
@@ -1565,14 +1575,14 @@ export default function HealthScreen() {
     );
     const metrics = adjustNutritionMetricsForDaySchedule(
       base,
-      getUserDayScheduleKind(user, logicalTodayYmd),
+      getUserDayScheduleKind(user, calendarTodayYmd),
     );
 
     if (assistantTab === '水分') return metrics.Water_ml;
     if (assistantTab === '蛋白质') return metrics.Protein_g;
     if (assistantTab === '碳水') return metrics.Carbohydrate_g;
     return metrics.Calories_kcal;
-  }, [assistantTab, user, selectedDayIntakeTotals?.calories, logicalTodayYmd]);
+  }, [assistantTab, user, selectedDayIntakeTotals?.calories, calendarTodayYmd]);
 
 
   const bestValue = React.useMemo(() => {
@@ -1623,10 +1633,10 @@ export default function HealthScreen() {
 
   const todayScheduleLabel = React.useMemo(() => {
     if (!user) return null;
-    const kind = getUserDayScheduleKind(user, logicalTodayYmd);
+    const kind = getUserDayScheduleKind(user, calendarTodayYmd);
     if (kind === 'sedentary') return null;
     return getUserDayScheduleLabelZh(kind);
-  }, [user, logicalTodayYmd]);
+  }, [user, calendarTodayYmd]);
 
   const assistantSuggestRows = React.useMemo(
     () =>

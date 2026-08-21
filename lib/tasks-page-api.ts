@@ -47,7 +47,11 @@ import {
 
 import {
 
+  getStandaloneTodoOverdueSortMs,
+
   isMatrixTaskInCurrentWeek,
+
+  isStandaloneTodoOverdue,
 
   isStandaloneTodoRepeatWaiting,
 
@@ -264,8 +268,8 @@ export function resolveMatrixProjectIds(projects: ProjectRow[]): string | undefi
 }
 
 /**
- * 未完成在前 → 未到执行日的重复待办置底 → 搁置置底 → 已完成/取消置底；
- * 组内按优先级降序，其次按截止/创建时间升序。
+ * 未完成在前 → 过期置顶 → 未到执行日的重复待办置底 → 搁置置底 → 已完成/取消置底；
+ * 过期组内按截止/计划日升序；其余组内按优先级降序，其次按截止/创建时间升序。
  */
 export function sortStandaloneTodosLocally(rows: TaskRow[], logicalTodayYmd?: string): TaskRow[] {
 
@@ -292,6 +296,9 @@ export function sortStandaloneTodosLocally(rows: TaskRow[], logicalTodayYmd?: st
   const isWaiting = (t: TaskRow) =>
     !!logicalTodayYmd && isStandaloneTodoRepeatWaiting(t, logicalTodayYmd);
 
+  const isOverdue = (t: TaskRow) =>
+    !!logicalTodayYmd && isStandaloneTodoOverdue(t, logicalTodayYmd);
+
   return rows.slice().sort((a, b) => {
 
     const da = isDoneRow(a);
@@ -311,6 +318,20 @@ export function sortStandaloneTodosLocally(rows: TaskRow[], logicalTodayYmd?: st
     const wb = isWaiting(b);
 
     if (wa !== wb) return wa ? 1 : -1;
+
+    const oa = isOverdue(a);
+
+    const ob = isOverdue(b);
+
+    if (oa !== ob) return oa ? -1 : 1;
+
+    if (oa && ob) {
+
+      const byOverdueDue = getStandaloneTodoOverdueSortMs(a) - getStandaloneTodoOverdueSortMs(b);
+
+      if (byOverdueDue !== 0) return byOverdueDue;
+
+    }
 
     if (a.priority !== b.priority) return b.priority - a.priority;
 
@@ -550,7 +571,7 @@ type ReadTasksViewFromLocalOpts = {
 
 
 
-/** 待办栏列表：信任 API 的他端完成口径，但按本地日程窗再滤一层（时刻只当天，时间段才展示） */
+/** 待办栏列表：信任 API 的他端完成口径，再按本地日程窗过滤（含过期未完成滞留） */
 async function resolveStandaloneTodosList(
 
   apiTasks: TaskRow[],
@@ -591,7 +612,7 @@ async function resolveStandaloneTodosList(
 
       // 服务端筛选列表已权威：缺席的「已同步未完成」待办视为他端已完成/移出，禁止再拼回未完成。
       // 仅保留尚未上传的本地新建、本地已完成且仍落在今日日界内的行，
-      // 以及可能仍被旧版服务端按「非重复日」隐藏的开放重复待办。
+      // 以及可能仍被旧版服务端隐藏的开放重复/过期待办。
       if (t.status === 'done' || t.status === 'cancelled') {
 
         if (standaloneTodoPassesDayBoundaryFilter(t, boundary, logicalToday)) extras.push(t);
@@ -605,7 +626,7 @@ async function resolveStandaloneTodosList(
         }
 
       } else if (
-        taskHasRepeatingSchedule(t.extra_data) &&
+        (taskHasRepeatingSchedule(t.extra_data) || isStandaloneTodoOverdue(t, logicalToday)) &&
         standaloneTodoPassesStandaloneListFilter(t, boundary, logicalToday)
       ) {
 
