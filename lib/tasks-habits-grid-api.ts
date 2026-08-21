@@ -4,7 +4,11 @@ import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
-import { parseHabitIncrementCap } from '@/lib/repositories/habits/habit-goal';
+import {
+  isHabitDayDisplayCompleted,
+  parseHabitDailyGoal,
+  parseHabitIncrementCap,
+} from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { parseHabitRewardPoints } from '@/lib/repositories/habits/habit-reward-points';
 import {
@@ -76,6 +80,34 @@ function readGridItemExtraData(item: HabitsGridSection['items'][number]): string
   return extraDataToString(item.extraData ?? item.extra_data);
 }
 
+const HABIT_EXTRA_NESTED_MERGE_KEYS = ['quantify', 'schedule', 'reminder', 'subHabits'] as const;
+
+/** 浅合并对象，并对 quantify 等嵌套对象再合并一层，避免服务端缺字段时抹掉本地 dailyGoal */
+function mergeHabitExtraObjects(
+  local: Record<string, unknown>,
+  grid: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...local, ...grid };
+  for (const key of HABIT_EXTRA_NESTED_MERGE_KEYS) {
+    const localNested = local[key];
+    const gridNested = grid[key];
+    if (
+      localNested &&
+      typeof localNested === 'object' &&
+      !Array.isArray(localNested) &&
+      gridNested &&
+      typeof gridNested === 'object' &&
+      !Array.isArray(gridNested)
+    ) {
+      out[key] = {
+        ...(localNested as Record<string, unknown>),
+        ...(gridNested as Record<string, unknown>),
+      };
+    }
+  }
+  return out;
+}
+
 /** habits-grid upsert 时合并 extra_data，避免服务端字段不全时覆盖本地 richer JSON */
 function mergeHabitExtraDataForGridSync(
   localRaw: string | null | undefined,
@@ -94,7 +126,9 @@ function mergeHabitExtraDataForGridSync(
       grid !== null &&
       !Array.isArray(grid)
     ) {
-      return JSON.stringify({ ...local, ...grid });
+      return JSON.stringify(
+        mergeHabitExtraObjects(local as Record<string, unknown>, grid as Record<string, unknown>),
+      );
     }
   } catch {
     /* 解析失败则采用服务端原始串 */
@@ -148,7 +182,13 @@ async function mergeHabitGridExtraFields(
     title: section.title,
     items: (Array.isArray(section.items) ? section.items : []).map((item) => {
       const local = localById.get(item.id);
-      const extraData = readGridItemExtraData(item) ?? local?.extra_data ?? null;
+      const gridExtra = readGridItemExtraData(item);
+      // 与 upsert 相同规则合并，避免只用服务端残缺 quantify 导致日目标丢失（一次打卡即「完成」）
+      const extraData =
+        mergeHabitExtraDataForGridSync(local?.extra_data, gridExtra) ??
+        gridExtra ??
+        local?.extra_data ??
+        null;
       const kind = (item.kind ?? (local ? parseHabitKind(local.extra_data) : 'build')) as HabitKind;
       const resolvedKind: HabitKind = ['build', 'break', 'task'].includes(String(kind))
         ? (kind as HabitKind)
@@ -158,9 +198,14 @@ async function mergeHabitGridExtraFields(
       const subCompleted = subActive ? countSubHabitsCompletedForYmd(extraData, logicalToday) : 0;
       const subTotal = subActive ? subMeta.items.length : 0;
       const serverTodayCount = typeof item.todayCount === 'number' ? item.todayCount : 0;
-      const serverDailyGoal = item.dailyGoal ?? null;
+      const parsedDailyGoal = parseHabitDailyGoal(extraData, resolvedKind);
+      const serverDailyGoal =
+        typeof item.dailyGoal === 'number' && Number.isFinite(item.dailyGoal)
+          ? item.dailyGoal
+          : null;
       const todayCount = subActive ? subCompleted : serverTodayCount;
-      const dailyGoal = subActive ? subTotal : serverDailyGoal;
+      // 以合并后的 extra_data 为准；服务端 dailyGoal 仅作回退
+      const dailyGoal = subActive ? subTotal : (parsedDailyGoal ?? serverDailyGoal);
       const periodProgress = item.periodProgress ?? null;
       const periodGoal = item.periodGoal ?? null;
       const taskShowPeriodCheck =
@@ -170,11 +215,22 @@ async function mergeHabitGridExtraFields(
         periodGoal > 0 &&
         periodProgress >= periodGoal &&
         !Boolean(item.hiddenOnViewDay);
+      const incrementCap = subActive
+        ? subTotal
+        : parseHabitIncrementCap(extraData, resolvedKind) ??
+          (dailyGoal != null && dailyGoal > 0 && resolvedKind !== 'break' ? dailyGoal : null);
       const displayCompleted = subActive
         ? subTotal > 0 && subCompleted >= subTotal
         : resolvedKind === 'task'
           ? taskShowPeriodCheck
-          : Boolean(item.displayCompleted);
+          : resolvedKind === 'break'
+            ? // 戒除完成态依赖 hasTodayRecord，网格阶段仍信服务端；TasksScreen load 后会重算
+              Boolean(item.displayCompleted)
+            : isHabitDayDisplayCompleted({
+                kind: resolvedKind,
+                todayCount,
+                dailyGoal,
+              });
       const noteFromApi = typeof item.note === 'string' && item.note.trim() ? item.note.trim() : null;
       return {
         id: item.id,
@@ -187,7 +243,7 @@ async function mergeHabitGridExtraFields(
             : parseHabitRewardPoints(extraData),
         todayCount,
         dailyGoal,
-        incrementCap: subActive ? subTotal : parseHabitIncrementCap(extraData, resolvedKind),
+        incrementCap,
         kind: resolvedKind,
         extraData,
         periodProgress,

@@ -639,6 +639,15 @@ function isHabitGridItemCompletedToday(item: HabitGridItem, logicalTodayYmd: str
   if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
     return Boolean(item.displayCompleted);
   }
+  // 养成：未达日目标前不当作完成，避免误走「再点撤销」
+  if (
+    item.kind === 'build' &&
+    item.dailyGoal != null &&
+    item.dailyGoal > 0 &&
+    item.todayCount < item.dailyGoal
+  ) {
+    return false;
+  }
   return isHabitDayDisplayCompleted({
     kind: item.kind,
     todayCount: item.todayCount,
@@ -4075,6 +4084,14 @@ export default function TasksScreen() {
           });
         }
         if (increased) void playHabitCheckInDing();
+        else if (!optimistic) {
+          Alert.alert(
+            '已达上限',
+            item.incrementCap != null
+              ? `该习惯每日最多 ${item.incrementCap} 次，今日已记满。`
+              : '当日次数未增加（可能已达上限）。',
+          );
+        }
       } catch (err) {
         console.warn('习惯打卡失败', err);
         restoreHabitGridItem(item);
@@ -5391,19 +5408,17 @@ export default function TasksScreen() {
                               : true;
                             const isBreak = item.kind === 'break';
                             const isTask = item.kind === 'task';
-                            const displayCompleted = isTask
-                              ? item.taskShowPeriodCheck
-                              : isHabitDayDisplayCompleted({
+                            const goalMet = isBreak
+                              ? scheduleAllowsToday &&
+                                isHabitDayDisplayCompleted({
                                   kind: item.kind,
                                   todayCount: item.todayCount,
                                   dailyGoal: item.dailyGoal,
-                                  hasDayRecord: isBreak ? item.hasTodayRecord : undefined,
+                                  hasDayRecord: item.hasTodayRecord,
                                   ymd: logicalTodayYmd,
                                   logicalTodayYmd,
-                                });
-                            const goalMet = isBreak
-                              ? scheduleAllowsToday && displayCompleted
-                              : displayCompleted;
+                                })
+                              : isHabitGridItemCompletedToday(item, logicalTodayYmd);
                             return { item, scheduleAllowsToday, isBreak, isTask, goalMet };
                           })
                           .sort((a, b) => {

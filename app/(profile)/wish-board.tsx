@@ -336,8 +336,27 @@ export default function WishBoardScreen() {
                     )}
                   </View>
                   <View style={styles.costBottom}>
-                    <Text style={[styles.costValue, { color: accent }]}>{item.cost_points}</Text>
-                    <Text style={[styles.costUnit, { color: muted }]}>积分</Text>
+                    {item.wish_type === 'repeat' ? (
+                      <View
+                        style={[
+                          styles.repeatBadge,
+                          {
+                            backgroundColor: isDark
+                              ? 'rgba(255,255,255,0.12)'
+                              : `${accent}18`,
+                          },
+                        ]}
+                        accessibilityLabel="重复性心愿">
+                        <MaterialIcons name="repeat" size={12} color={accent} />
+                        <Text style={[styles.repeatBadgeText, { color: accent }]}>重复</Text>
+                      </View>
+                    ) : (
+                      <View />
+                    )}
+                    <View style={styles.costWrapInline}>
+                      <Text style={[styles.costValue, { color: accent }]}>{item.cost_points}</Text>
+                      <Text style={[styles.costUnit, { color: muted }]}>积分</Text>
+                    </View>
                   </View>
                 </AppCard>
               </Pressable>
@@ -500,6 +519,19 @@ const styles = StyleSheet.create({
   itemTitle: {
     ...Typography.bodyStrong,
   },
+  repeatBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  repeatBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 14,
+  },
   itemNote: {
     ...Typography.caption,
     lineHeight: 18,
@@ -512,11 +544,15 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     minWidth: 56,
   },
-  costBottom: {
+  costWrapInline: {
     flexDirection: 'row',
     alignItems: 'baseline',
-    justifyContent: 'flex-end',
     gap: 4,
+  },
+  costBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginTop: Spacing.sm,
     paddingTop: Spacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,

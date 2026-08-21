@@ -116,6 +116,16 @@ export function computeBuildExpectedGoalProgress(params: {
   return computeTotalCheckInCount(checkIns);
 }
 
+/** 将 quantify.dailyGoal 等字段规范为有限数字（兼容 JSON/MySQL 偶发字符串） */
+function coerceFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
 /** 解析每日目标：戒除习惯允许 0；养成习惯 null 表示不限 */
 export function parseHabitDailyGoal(extraData: string | null, kind?: HabitKind): number | null {
   const resolvedKind = kind ?? parseHabitKind(extraData);
@@ -124,10 +134,11 @@ export function parseHabitDailyGoal(extraData: string | null, kind?: HabitKind):
   if (g === null || g === undefined) {
     return resolvedKind === 'break' ? 0 : null;
   }
-  if (typeof g !== 'number' || !Number.isFinite(g)) {
+  const numeric = coerceFiniteNumber(g);
+  if (numeric == null) {
     return resolvedKind === 'break' ? 0 : null;
   }
-  const rounded = Math.min(99, Math.max(0, Math.round(g)));
+  const rounded = Math.min(99, Math.max(0, Math.round(numeric)));
   if ((resolvedKind === 'build' || resolvedKind === 'task') && rounded <= 0) return null;
   return rounded;
 }

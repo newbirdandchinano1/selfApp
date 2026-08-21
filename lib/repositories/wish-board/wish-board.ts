@@ -150,6 +150,8 @@ export async function listWishBoardItems(opts?: PageApiReadOpts): Promise<WishBo
     .map(mapWishBoardRow)
     .sort((a, b) => {
       if (a.status !== b.status) return a.status === 'active' ? -1 : 1;
+      // 重复性心愿置顶，同类型内保持原 sort_order / updated_at
+      if (a.wish_type !== b.wish_type) return a.wish_type === 'repeat' ? -1 : 1;
       return a.sort_order - b.sort_order || b.updated_at.localeCompare(a.updated_at);
     });
 }
