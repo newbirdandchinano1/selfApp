@@ -1801,6 +1801,15 @@ export default function FinanceScreen() {
     [formatCurrencyBalance, showNetAmounts]
   );
 
+  /** 账户资产卡片：按展示余额从高到低（与 formatCurrencyBalanceForAccount 一致） */
+  const financeAccountsSortedByBalance = React.useMemo(() => {
+    const displayBalance = (acc: FinanceAccountBalanceRow) => {
+      const rule = normalizeFinanceSignRule(acc.sign_rule, acc.account_type);
+      return rule < 0 ? Math.min(0, acc.balance ?? 0) : Math.max(0, acc.balance ?? 0);
+    };
+    return [...financeAccounts].sort((a, b) => displayBalance(b) - displayBalance(a));
+  }, [financeAccounts]);
+
   const accountIcon = React.useCallback(
     (account: FinanceAccountBalanceRow): keyof typeof MaterialIcons.glyphMap => {
       const extra = accountExtraMap.get(account.id);
@@ -3672,7 +3681,7 @@ export default function FinanceScreen() {
                 <Text style={[styles.accountValue, { color: text }]}>去添加</Text>
               </Pressable>
             ) : (
-              financeAccounts.slice(0, 8).map((acc) => {
+              financeAccountsSortedByBalance.slice(0, 8).map((acc) => {
                 return (
                   <Pressable
                     key={acc.id}
