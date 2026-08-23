@@ -924,6 +924,13 @@ function mondayOfWeekContaining(d: Date): Date {
   return addLocalDays(sod, deltaMon);
 }
 
+/** 勾选/打卡后延迟静默对齐本地库，避免乐观更新后立刻整表替换导致列表跳动 */
+const POST_MUTATION_SYNC_DELAY_MS = 1500;
+/** 完成热力图防抖：连续勾选时合并为一次重载 */
+const HEATMAP_RELOAD_DEBOUNCE_MS = 800;
+/** 习惯区防抖重载：避免打卡后立刻被接口旧数据覆盖 */
+const HABITS_RELOAD_DEBOUNCE_MS = 1200;
+
 /** 完成热力图：列=周（周一至周日自上而下），色阶按当月日均完成量相对映射 */
 const COMPLETION_HEATMAP_WEEKS = 15;
 const COMPLETION_HEAT_CELL = 22;
@@ -1753,6 +1760,15 @@ export default function TasksScreen() {
   const [operationToast, setOperationToast] = React.useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const mutationInFlightRef = React.useRef(false);
   const operationToastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const postMutationSyncTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heatmapReloadTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const habitsReloadTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPostMutationSyncRef = React.useRef({
+    frogs: false,
+    tasks: false,
+    projectTasks: false,
+    projects: false,
+  });
   /** 键盘占用高度：用于主列表底部留白，避免快捷待办被键盘挡住后无法滚到位 */
   const [mainScrollKeyboardPad, setMainScrollKeyboardPad] = React.useState(0);
   const mainScrollRef = React.useRef<ScrollView>(null);
@@ -1808,6 +1824,9 @@ export default function TasksScreen() {
   React.useEffect(() => {
     return () => {
       if (operationToastTimerRef.current) clearTimeout(operationToastTimerRef.current);
+      if (postMutationSyncTimerRef.current) clearTimeout(postMutationSyncTimerRef.current);
+      if (heatmapReloadTimerRef.current) clearTimeout(heatmapReloadTimerRef.current);
+      if (habitsReloadTimerRef.current) clearTimeout(habitsReloadTimerRef.current);
     };
   }, []);
 
@@ -1999,14 +2018,21 @@ export default function TasksScreen() {
     }
   }, []);
 
-  const loadTasks = React.useCallback(async (opts?: { forceRefresh?: boolean; forceLocal?: boolean }): Promise<number> => {
+  const loadTasks = React.useCallback(async (opts?: {
+    forceRefresh?: boolean;
+    forceLocal?: boolean;
+    /** 后台对齐：不触发列表 LayoutAnimation */
+    silent?: boolean;
+  }): Promise<number> => {
     try {
       let rows = await getTasks(opts);
       const logicalToday = getLogicalLocalYmd(new Date(), dayBoundary);
       const rolled = await applyRepeatingTaskRollovers(rows, logicalToday, dayBoundary);
       const overdueBumped = await applyOverdueTaskPriorityBump(rows, logicalToday);
       if (rolled > 0 || overdueBumped > 0) {
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        if (!opts?.silent) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        }
         rows = await getTasks(opts);
       }
 
@@ -2143,6 +2169,71 @@ export default function TasksScreen() {
     const cachedTasks = await getTasks({ forceLocal: true });
     await loadProjectTasks(projectsRef.current, { preloadedTasks: cachedTasks });
   }, [loadProjectTasks]);
+
+  const scheduleHeatmapReload = React.useCallback(() => {
+    if (heatmapReloadTimerRef.current) clearTimeout(heatmapReloadTimerRef.current);
+    heatmapReloadTimerRef.current = setTimeout(() => {
+      heatmapReloadTimerRef.current = null;
+      setCompletionHeatmapReloadToken((n) => n + 1);
+    }, HEATMAP_RELOAD_DEBOUNCE_MS);
+  }, []);
+
+  const scheduleHabitsReload = React.useCallback(() => {
+    if (habitsReloadTimerRef.current) clearTimeout(habitsReloadTimerRef.current);
+    habitsReloadTimerRef.current = setTimeout(() => {
+      habitsReloadTimerRef.current = null;
+      void loadHabits();
+    }, HABITS_RELOAD_DEBOUNCE_MS);
+  }, [loadHabits]);
+
+  const runSilentPostMutationSync = React.useCallback(
+    async (pending: {
+      frogs: boolean;
+      tasks: boolean;
+      projectTasks: boolean;
+      projects: boolean;
+    }) => {
+      const silentTaskOpts = { forceLocal: true as const, silent: true as const };
+      if (pending.projects) {
+        const rows = await loadProjects();
+        if (pending.projectTasks) {
+          await loadProjectTasks(rows, { preloadedTasks: await getTasks({ forceLocal: true }) });
+        }
+      } else if (pending.projectTasks) {
+        await reloadProjectTasksFromLocal();
+      }
+      if (pending.tasks) {
+        await loadTasks(silentTaskOpts);
+      }
+      if (pending.frogs) {
+        await loadTodayFrogs({ forceLocal: true });
+      }
+    },
+    [loadProjectTasks, loadProjects, loadTasks, loadTodayFrogs, reloadProjectTasksFromLocal],
+  );
+
+  const schedulePostMutationSync = React.useCallback(
+    (opts: { frogs?: boolean; tasks?: boolean; projectTasks?: boolean; projects?: boolean }) => {
+      const pending = pendingPostMutationSyncRef.current;
+      pending.frogs = pending.frogs || Boolean(opts.frogs);
+      pending.tasks = pending.tasks || Boolean(opts.tasks);
+      pending.projectTasks = pending.projectTasks || Boolean(opts.projectTasks);
+      pending.projects = pending.projects || Boolean(opts.projects);
+      if (postMutationSyncTimerRef.current) clearTimeout(postMutationSyncTimerRef.current);
+      postMutationSyncTimerRef.current = setTimeout(() => {
+        postMutationSyncTimerRef.current = null;
+        const snapshot = { ...pendingPostMutationSyncRef.current };
+        pendingPostMutationSyncRef.current = {
+          frogs: false,
+          tasks: false,
+          projectTasks: false,
+          projects: false,
+        };
+        void runSilentPostMutationSync(snapshot);
+      }, POST_MUTATION_SYNC_DELAY_MS);
+    },
+    [runSilentPostMutationSync],
+  );
 
   /** 按当前项目 Tab 从 `GET /api/pages/projects` 拉取任务树；失败时回退本地组树 */
   const loadProjectsListFromApi = React.useCallback(
@@ -2303,18 +2394,6 @@ export default function TasksScreen() {
       }).start();
     });
   }, [mainListView, matrixAnim, projectAnim]);
-
-  React.useEffect(() => {
-    frogCardAnim.stopAnimation(() => {
-      frogCardAnim.setValue(0.92);
-      Animated.spring(frogCardAnim, {
-        toValue: 1,
-        speed: 20,
-        bounciness: 8,
-        useNativeDriver: true,
-      }).start();
-    });
-  }, [frogCardAnim, standaloneTodos, matrixWeekTasks]);
 
   React.useEffect(() => {
     if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -2904,7 +2983,7 @@ export default function TasksScreen() {
                     logicalTodayYmd,
                   );
                 }
-                await loadTodayFrogs({ forceLocal: true });
+                schedulePostMutationSync({ frogs: true });
               } catch (err) {
                 console.warn('取消青蛙指派失败', err);
                 Alert.alert('操作失败', '未能取消指派，请稍后重试。');
@@ -2929,6 +3008,7 @@ export default function TasksScreen() {
       projectFrogIds,
       projects,
       projectTaskTreeMap,
+      schedulePostMutationSync,
       todayFrogs,
       updateTaskInProjectTree,
     ],
@@ -3021,7 +3101,7 @@ export default function TasksScreen() {
                 return { ...t, status: 'done', completed_at: completedAt, extra_data: nextExtraData };
               }),
             );
-            setCompletionHeatmapReloadToken((n) => n + 1);
+            scheduleHeatmapReload();
           }
 
           const proj = projects.find((p) => p.id === project.id) ?? (await getProjectById(project.id)) ?? project;
@@ -3038,7 +3118,7 @@ export default function TasksScreen() {
             } catch (frogLogErr) {
               console.warn('记录项目青蛙完成事件失败', frogLogErr);
             }
-            setCompletionHeatmapReloadToken((n) => n + 1);
+            scheduleHeatmapReload();
           }
           await updateProject(project.id, {
             category_id: INBOX_PROJECT_CATEGORY_ID,
@@ -3069,6 +3149,7 @@ export default function TasksScreen() {
       projectTaskTreeMap,
       projects,
       runExclusiveMutation,
+      scheduleHeatmapReload,
       updateTaskInProjectTree,
     ],
   );
@@ -3402,7 +3483,7 @@ export default function TasksScreen() {
             return sortProjectTaskTreeMap(next);
           });
         }
-        setCompletionHeatmapReloadToken((n) => n + 1);
+        scheduleHeatmapReload();
         if (nextStatus === 'done' && current.project_id) {
           const pid = current.project_id;
           const proj = projects.find((p) => p.id === pid);
@@ -3450,12 +3531,11 @@ export default function TasksScreen() {
             }
           })();
         }
-        await loadTodayFrogs({ forceLocal: true });
-        if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
-          await reloadProjectTasksFromLocal();
-        } else {
-          await loadTasks({ forceLocal: true });
-        }
+        schedulePostMutationSync({
+          frogs: true,
+          projectTasks: isTaskInProjectListScope(current, projectTaskTreeMap, taskId),
+          tasks: !isTaskInProjectListScope(current, projectTaskTreeMap, taskId),
+        });
       } catch (err) {
         console.warn('更新任务状态失败', err);
         // fallback: reload to ensure consistency
@@ -3486,6 +3566,8 @@ export default function TasksScreen() {
       projects,
       reloadProjectTasksFromLocal,
       reopenProjectFromList,
+      scheduleHeatmapReload,
+      schedulePostMutationSync,
       updateTaskInProjectTree,
     ]
   );
@@ -3546,15 +3628,15 @@ export default function TasksScreen() {
         } catch (frogLogErr) {
           console.warn('记录青蛙完成事件失败', frogLogErr);
         }
-        setCompletionHeatmapReloadToken((n) => n + 1);
-        await loadTodayFrogs({ forceLocal: true });
-        if (isProjectFrog) {
-          await loadProjects();
-        } else if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
-          await reloadProjectTasksFromLocal();
-        } else {
-          await loadTasks({ forceLocal: true });
-        }
+        scheduleHeatmapReload();
+        schedulePostMutationSync({
+          frogs: true,
+          projects: isProjectFrog,
+          projectTasks:
+            !isProjectFrog && isTaskInProjectListScope(current, projectTaskTreeMap, taskId),
+          tasks:
+            !isProjectFrog && !isTaskInProjectListScope(current, projectTaskTreeMap, taskId),
+        });
       } catch (err) {
         console.warn('完成青蛙会话失败', err);
         Alert.alert('操作失败', '未能完成今日青蛙，请稍后重试。');
@@ -3578,6 +3660,8 @@ export default function TasksScreen() {
       projectTaskTreeMap,
       projects,
       reloadProjectTasksFromLocal,
+      scheduleHeatmapReload,
+      schedulePostMutationSync,
       todayFrogs,
       updateTaskInProjectTree,
     ],
@@ -3630,15 +3714,15 @@ export default function TasksScreen() {
         } catch (frogLogErr) {
           console.warn('记录青蛙重开事件失败', frogLogErr);
         }
-        setCompletionHeatmapReloadToken((n) => n + 1);
-        await loadTodayFrogs({ forceLocal: true });
-        if (isProjectFrog) {
-          await loadProjects();
-        } else if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
-          await reloadProjectTasksFromLocal();
-        } else {
-          await loadTasks({ forceLocal: true });
-        }
+        scheduleHeatmapReload();
+        schedulePostMutationSync({
+          frogs: true,
+          projects: isProjectFrog,
+          projectTasks:
+            !isProjectFrog && isTaskInProjectListScope(current, projectTaskTreeMap, taskId),
+          tasks:
+            !isProjectFrog && !isTaskInProjectListScope(current, projectTaskTreeMap, taskId),
+        });
       } catch (err) {
         console.warn('恢复青蛙会话失败', err);
         Alert.alert('操作失败', '未能恢复今日青蛙，请稍后重试。');
@@ -3660,6 +3744,8 @@ export default function TasksScreen() {
       projectTaskTreeMap,
       projects,
       reloadProjectTasksFromLocal,
+      scheduleHeatmapReload,
+      schedulePostMutationSync,
       todayFrogs,
       updateTaskInProjectTree,
     ],
@@ -3801,7 +3887,7 @@ export default function TasksScreen() {
           due_date: null,
           extra_data: null,
         });
-        await loadTasks({ forceLocal: true });
+        schedulePostMutationSync({ tasks: true });
       }, '待办已保存');
     } catch (err) {
       console.warn('创建无项目待办失败', err);
@@ -3810,7 +3896,7 @@ export default function TasksScreen() {
     } finally {
       setQuickTodoSaving(false);
     }
-  }, [loadTasks, logicalTodayYmd, markPageDirty, quickTodoDraft, quickTodoSaving, runExclusiveMutation]);
+  }, [logicalTodayYmd, markPageDirty, quickTodoDraft, quickTodoSaving, runExclusiveMutation, schedulePostMutationSync]);
 
   /** 左滑删除：软删除整棵子树，并刷新列表（与 DB deleteTask 行为一致） */
   const handleUpgradeStandaloneTodo = React.useCallback(
@@ -3997,14 +4083,14 @@ export default function TasksScreen() {
         const todayYmd = getLogicalLocalYmd(new Date(), dayBoundary);
         const marked = await tryMarkBreakHabitCompleted(habit, todayYmd);
         if (marked) {
-          await loadHabits();
+          scheduleHabitsReload();
           await syncHabitBoundTasksForHabit(habitId);
         }
       } catch (err) {
         console.warn('检测戒除习惯完成状态失败', err);
       }
     },
-    [dayBoundary, loadHabits, syncHabitBoundTasksForHabit]
+    [dayBoundary, scheduleHabitsReload, syncHabitBoundTasksForHabit]
   );
 
   const maybeCompleteBuildHabit = React.useCallback(
@@ -4016,14 +4102,14 @@ export default function TasksScreen() {
         const todayYmd = getLogicalLocalYmd(new Date(), dayBoundary);
         const marked = await tryMarkBuildHabitCompleted(habit, todayYmd);
         if (marked) {
-          await loadHabits();
+          scheduleHabitsReload();
           await syncHabitBoundTasksForHabit(habitId);
         }
       } catch (err) {
         console.warn('检测养成习惯完成状态失败', err);
       }
     },
-    [dayBoundary, loadHabits, syncHabitBoundTasksForHabit]
+    [dayBoundary, scheduleHabitsReload, syncHabitBoundTasksForHabit]
   );
 
   const maybeRefreshTaskHabitVisibility = React.useCallback(
@@ -4031,12 +4117,12 @@ export default function TasksScreen() {
       try {
         const habit = await getHabitById(habitId);
         if (!habit || parseHabitKind(habit.extra_data) !== 'task') return;
-        await loadHabits();
+        scheduleHabitsReload();
       } catch (err) {
         console.warn('检测完成任务周期状态失败', err);
       }
     },
-    [loadHabits]
+    [scheduleHabitsReload]
   );
 
   const runHabitSideEffectsAfterCountChange = React.useCallback(
@@ -4045,14 +4131,14 @@ export default function TasksScreen() {
       void maybeCompleteBuildHabit(habitId);
       void maybeRefreshTaskHabitVisibility(habitId);
       void syncHabitBoundTasksForHabit(habitId, nextCount);
-      if (!opts?.skipHabitReload) void loadHabits();
+      if (!opts?.skipHabitReload) scheduleHabitsReload();
       void resyncHabitReminderForHabitId(habitId);
     },
     [
-      loadHabits,
       maybeCompleteBreakHabit,
       maybeCompleteBuildHabit,
       maybeRefreshTaskHabitVisibility,
+      scheduleHabitsReload,
       syncHabitBoundTasksForHabit,
     ]
   );
