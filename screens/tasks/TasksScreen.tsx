@@ -1529,17 +1529,24 @@ function alertProjectTaskLocked(lockInfo: ProjectLockInfo | undefined) {
   Alert.alert('无法操作', '该项目仍被前置项目锁定，请先完成前置项目。');
 }
 
-function showMoveProjectToInboxPrompt(project: ProjectRow, onConfirm: () => void) {
-  const dueYmd = getProjectInboxAutoArchiveDueYmd(project);
-  const dueHint = dueYmd
-    ? `若选「否」，将在截止日期 ${formatYmdCN(dueYmd)} 到达后自动归纳到收集箱。`
-    : `若选「否」，请之后在项目卡片上左滑「收纳」手动归纳到收集箱。`;
+function showProjectCompletionDispositionPrompt(
+  project: ProjectRow,
+  options: {
+    incompleteCount?: number;
+    onArchive: () => void;
+    onDiscard: () => void;
+  },
+) {
+  const incompleteHint =
+    options.incompleteCount && options.incompleteCount > 0
+      ? `项目下还有 ${options.incompleteCount} 个未完成任务，将一并标记为完成。\n\n`
+      : '';
   Alert.alert(
-    `「${project.name}」进度已达 100%`,
-    `项目当前完成量已达 100%。是否现在将项目归纳到收集箱？\n\n${dueHint}`,
+    `「${project.name}」已完成`,
+    `${incompleteHint}是否将项目归纳到收集箱？\n\n选择「不保留」将直接删除项目及其全部任务记录。`,
     [
-      { text: '否', style: 'cancel' },
-      { text: '是', onPress: onConfirm },
+      { text: '不保留', style: 'destructive', onPress: options.onDiscard },
+      { text: '归纳', onPress: options.onArchive },
     ],
   );
 }
@@ -1552,39 +1559,6 @@ function getProjectInboxAutoArchiveDueYmd(project: ProjectRow): string | null {
   }
   if (project.due_date?.trim()) return formatScheduleDateToYMD(project.due_date);
   return null;
-}
-
-function isLocalYmdOnOrAfter(todayYmd: string, dueYmd: string): boolean {
-  const t = ymdToLocalDate(todayYmd);
-  const d = ymdToLocalDate(dueYmd);
-  if (!t || !d) return false;
-  return t.getTime() >= d.getTime();
-}
-
-/** 进入任务页或刷新后：已到期且任务树全部完成的项目自动归入收集箱 */
-async function autoArchiveProjectsPastDueIfNeeded(
-  rows: ProjectRow[],
-  treeMap: Record<string, TaskTreeNode[]>,
-  todayYmd: string,
-) {
-  let changed = 0;
-  for (const p of rows) {
-    if (p.status === 'completed' || p.status === 'archived') continue;
-    if (isProjectInInboxCategory(p.category_id)) continue;
-    const tree = treeMap[p.id] ?? [];
-    if (tree.length === 0) continue;
-    if (!isProjectInboxProgressComplete(p, tree)) continue;
-    const dueYmd = getProjectInboxAutoArchiveDueYmd(p);
-    if (!dueYmd) continue;
-    if (!isLocalYmdOnOrAfter(todayYmd, dueYmd)) continue;
-    try {
-      await updateProject(p.id, { category_id: INBOX_PROJECT_CATEGORY_ID, status: 'completed' });
-      changed += 1;
-    } catch (e) {
-      console.warn('到期自动收纳项目失败', p.id, e);
-    }
-  }
-  return changed;
 }
 
 function pickFirstNonInboxProjectCategoryId(categories: ProjectCategoryRow[]): string | null {
@@ -2549,17 +2523,8 @@ export default function TasksScreen() {
     projectTabApiReadyRef.current = true;
     if (isStale()) return;
 
-    const archived = await autoArchiveProjectsPastDueIfNeeded(mergedProjects, treeMap, logicalToday);
     let workingRows = mergedProjects;
     let cachedTasks = await getTasks(localTaskOpts);
-    if (archived > 0) {
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      workingRows = await loadProjects();
-      if (isStale()) return;
-      cachedTasks = await getTasks(localTaskOpts);
-      treeMap = await loadProjectTasks(workingRows, projectTaskOpts({ preloadedTasks: cachedTasks }));
-      if (isStale()) return;
-    }
     const catRows = pageData.projectCategories;
     if (isStale()) return;
 
@@ -3036,90 +3001,162 @@ export default function TasksScreen() {
     }
   }, [grantProjectPointsWithToast, loadProjects, markPageDirty, projects, runExclusiveMutation]);
 
-  /** 项目列表左侧按钮：完成项目（可强制完成未完成任务）并收纳到收集箱 */
-  const completeProjectFromList = React.useCallback(
+  /** 强制完成项目内未完成任务（归纳/删除前共用） */
+  const completeIncompleteProjectTasksForProject = React.useCallback(
     async (project: ProjectRow) => {
-      try {
-        await runExclusiveMutation('正在完成项目...', async () => {
-          markPageDirty();
-          const tree = projectTaskTreeMap[project.id] ?? [];
-          const incomplete = collectIncompleteTasksFromProjectTree(tree);
-          const completedAt = formatTaskAuditDatetimeLocal();
+      const tree = projectTaskTreeMap[project.id] ?? [];
+      const incomplete = collectIncompleteTasksFromProjectTree(tree);
+      const completedAt = formatTaskAuditDatetimeLocal();
 
+      for (const task of incomplete) {
+        let nextExtraData = task.extra_data;
+        if (taskHasRepeatingSchedule(nextExtraData)) {
+          nextExtraData = patchExtraDataOnRepeatTaskComplete(nextExtraData, logicalTodayYmd);
+        }
+        nextExtraData = clearFrogSessionCompletedOn(nextExtraData);
+        await persistTaskPatchToApi(
+          task.id,
+          {
+            status: 'done',
+            completed_at: completedAt,
+            extra_data: nextExtraData,
+          },
+          task as Record<string, unknown>,
+        );
+        await grantTaskPointsWithToast(task.id, 'earn', nextExtraData);
+        const frogAssignedToday = isFrogAssignedOn(task.extra_data, logicalTodayYmd);
+        if (frogAssignedToday) {
+          try {
+            await insertFrogCompletionEvent(task.id, logicalTodayYmd, 'completed', task.title ?? null);
+          } catch (frogLogErr) {
+            console.warn('记录青蛙完成事件失败', frogLogErr);
+          }
+        }
+      }
+
+      if (incomplete.length > 0) {
+        setProjectTaskTreeMap((prev) => {
+          let next = prev;
           for (const task of incomplete) {
             let nextExtraData = task.extra_data;
             if (taskHasRepeatingSchedule(nextExtraData)) {
               nextExtraData = patchExtraDataOnRepeatTaskComplete(nextExtraData, logicalTodayYmd);
             }
             nextExtraData = clearFrogSessionCompletedOn(nextExtraData);
-            await persistTaskPatchToApi(
-              task.id,
-              {
-                status: 'done',
-                completed_at: completedAt,
-                extra_data: nextExtraData,
-              },
-              task as Record<string, unknown>,
-            );
-            await grantTaskPointsWithToast(task.id, 'earn', nextExtraData);
-            const frogAssignedToday = isFrogAssignedOn(task.extra_data, logicalTodayYmd);
-            if (frogAssignedToday) {
-              try {
-                await insertFrogCompletionEvent(task.id, logicalTodayYmd, 'completed', task.title ?? null);
-              } catch (frogLogErr) {
-                console.warn('记录青蛙完成事件失败', frogLogErr);
-              }
+            next = updateTaskInProjectTree(next, task.id, (node) => ({
+              ...node,
+              status: 'done',
+              completed_at: completedAt,
+              extra_data: nextExtraData,
+            }));
+          }
+          return sortProjectTaskTreeMap(next);
+        });
+        setTodayFrogs((prev) =>
+          prev.map((t) => {
+            if (!incomplete.some((u) => u.id === t.id)) return t;
+            let nextExtraData = t.extra_data;
+            if (taskHasRepeatingSchedule(nextExtraData)) {
+              nextExtraData = patchExtraDataOnRepeatTaskComplete(nextExtraData, logicalTodayYmd);
             }
-          }
+            nextExtraData = clearFrogSessionCompletedOn(nextExtraData);
+            return { ...t, status: 'done', completed_at: completedAt, extra_data: nextExtraData };
+          }),
+        );
+        scheduleHeatmapReload();
+      }
 
-          if (incomplete.length > 0) {
-            setProjectTaskTreeMap((prev) => {
-              let next = prev;
-              for (const task of incomplete) {
-                let nextExtraData = task.extra_data;
-                if (taskHasRepeatingSchedule(nextExtraData)) {
-                  nextExtraData = patchExtraDataOnRepeatTaskComplete(nextExtraData, logicalTodayYmd);
-                }
-                nextExtraData = clearFrogSessionCompletedOn(nextExtraData);
-                next = updateTaskInProjectTree(next, task.id, (node) => ({
-                  ...node,
-                  status: 'done',
-                  completed_at: completedAt,
-                  extra_data: nextExtraData,
-                }));
-              }
-              return sortProjectTaskTreeMap(next);
-            });
-            setTodayFrogs((prev) =>
-              prev.map((t) => {
-                if (!incomplete.some((u) => u.id === t.id)) return t;
-                let nextExtraData = t.extra_data;
-                if (taskHasRepeatingSchedule(nextExtraData)) {
-                  nextExtraData = patchExtraDataOnRepeatTaskComplete(nextExtraData, logicalTodayYmd);
-                }
-                nextExtraData = clearFrogSessionCompletedOn(nextExtraData);
-                return { ...t, status: 'done', completed_at: completedAt, extra_data: nextExtraData };
-              }),
-            );
-            scheduleHeatmapReload();
-          }
+      const proj = projects.find((p) => p.id === project.id) ?? (await getProjectById(project.id)) ?? project;
+      const projectFrogAssignedToday = isFrogAssignedOn(proj.extra_data, logicalTodayYmd);
+      let nextProjectExtra = clearFrogSessionCompletedOn(proj.extra_data);
+      if (projectFrogAssignedToday) {
+        try {
+          await insertFrogCompletionEvent(project.id, logicalTodayYmd, 'completed', proj.name ?? null);
+        } catch (frogLogErr) {
+          console.warn('记录项目青蛙完成事件失败', frogLogErr);
+        }
+        scheduleHeatmapReload();
+      }
+      return { proj, nextProjectExtra };
+    },
+    [
+      grantTaskPointsWithToast,
+      logicalTodayYmd,
+      projectTaskTreeMap,
+      projects,
+      scheduleHeatmapReload,
+      updateTaskInProjectTree,
+    ],
+  );
 
-          const proj = projects.find((p) => p.id === project.id) ?? (await getProjectById(project.id)) ?? project;
-          const projectFrogAssignedToday = isFrogAssignedOn(proj.extra_data, logicalTodayYmd);
-          let nextProjectExtra = clearFrogSessionCompletedOn(proj.extra_data);
-          if (projectFrogAssignedToday) {
-            try {
-              await insertFrogCompletionEvent(
-                project.id,
-                logicalTodayYmd,
-                'completed',
-                proj.name ?? null,
-              );
-            } catch (frogLogErr) {
-              console.warn('记录项目青蛙完成事件失败', frogLogErr);
-            }
-            scheduleHeatmapReload();
+  const discardCompletedProjectById = React.useCallback(
+    async (projectId: string) => {
+      try {
+        await runExclusiveMutation('正在删除项目...', async () => {
+          markPageDirty();
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          projectSwipeableRefs.current[projectId]?.close();
+          await deleteProject(projectId);
+          await markPendingTablesDirty(['projects', 'tasks']);
+          await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+          const rows = await loadProjects();
+          await loadProjectTasks(rows);
+          await loadProjectsListFromApi(projectTab, { replaceMap: true });
+        }, '项目已删除');
+      } catch (err) {
+        console.warn('删除已完成项目失败', err);
+        Alert.alert('删除失败', formatWriteError(err, '项目删除失败，请稍后重试。'));
+        await loadProjects();
+      }
+    },
+    [loadProjectTasks, loadProjects, loadProjectsListFromApi, markPageDirty, projectTab, runExclusiveMutation],
+  );
+
+  /** 完成项目后不归纳：强制完成未完成任务后彻底删除 */
+  const discardProjectFromList = React.useCallback(
+    async (project: ProjectRow) => {
+      try {
+        await runExclusiveMutation('正在删除项目...', async () => {
+          markPageDirty();
+          const { proj, nextProjectExtra } = await completeIncompleteProjectTasksForProject(project);
+          if (nextProjectExtra !== proj.extra_data) {
+            await updateProject(project.id, { extra_data: nextProjectExtra });
           }
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          projectSwipeableRefs.current[project.id]?.close();
+          await deleteProject(project.id);
+          await markPendingTablesDirty(['projects', 'tasks']);
+          await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+          const rows = await loadProjects();
+          await loadProjectTasks(rows);
+          await loadTodayFrogs();
+          await loadProjectsListFromApi(projectTab, { replaceMap: true });
+        }, '项目已删除');
+      } catch (err) {
+        console.warn('删除项目失败', err);
+        Alert.alert('删除失败', formatWriteError(err, '项目删除失败，请稍后重试。'));
+        await loadProjects();
+      }
+    },
+    [
+      completeIncompleteProjectTasksForProject,
+      loadProjectTasks,
+      loadProjects,
+      loadProjectsListFromApi,
+      loadTodayFrogs,
+      markPageDirty,
+      projectTab,
+      runExclusiveMutation,
+    ],
+  );
+
+  /** 项目列表左侧按钮：完成项目（可强制完成未完成任务）并收纳到收集箱 */
+  const completeProjectFromList = React.useCallback(
+    async (project: ProjectRow) => {
+      try {
+        await runExclusiveMutation('正在完成项目...', async () => {
+          markPageDirty();
+          const { proj, nextProjectExtra } = await completeIncompleteProjectTasksForProject(project);
           await updateProject(project.id, {
             category_id: INBOX_PROJECT_CATEGORY_ID,
             status: 'completed',
@@ -3139,19 +3176,25 @@ export default function TasksScreen() {
       }
     },
     [
+      completeIncompleteProjectTasksForProject,
       loadProjectTasks,
       loadProjects,
       loadTodayFrogs,
-      logicalTodayYmd,
       markPageDirty,
       grantProjectPointsWithToast,
-      grantTaskPointsWithToast,
-      projectTaskTreeMap,
-      projects,
       runExclusiveMutation,
-      scheduleHeatmapReload,
-      updateTaskInProjectTree,
     ],
+  );
+
+  const promptProjectCompletionDisposition = React.useCallback(
+    (project: ProjectRow, incompleteCount?: number) => {
+      showProjectCompletionDispositionPrompt(project, {
+        incompleteCount,
+        onArchive: () => void completeProjectFromList(project),
+        onDiscard: () => void discardProjectFromList(project),
+      });
+    },
+    [completeProjectFromList, discardProjectFromList],
   );
 
   /** 收集箱已完成项目：左侧按钮恢复为进行中并移出收集箱 */
@@ -3208,25 +3251,13 @@ export default function TasksScreen() {
 
       const tree = projectTaskTreeMap[project.id] ?? [];
       const incomplete = collectIncompleteTasksFromProjectTree(tree);
-      if (incomplete.length > 0) {
-        Alert.alert(
-          '完成项目',
-          `「${project.name}」下还有 ${incomplete.length} 个未完成任务。\n\n确定将这些任务一并标记为完成，并将项目归纳到收集箱吗？`,
-          [
-            { text: '取消', style: 'cancel' },
-            { text: '完成项目', onPress: () => void completeProjectFromList(project) },
-          ],
-        );
-        return;
-      }
-
-      void completeProjectFromList(project);
+      promptProjectCompletionDisposition(project, incomplete.length);
     },
     [
-      completeProjectFromList,
       logicalTodayYmd,
       projectLockMap,
       projectTaskTreeMap,
+      promptProjectCompletionDisposition,
       reopenProjectFromList,
     ],
   );
@@ -3348,7 +3379,7 @@ export default function TasksScreen() {
         if (wasDone) {
           void reopenProjectFromList(leafProject);
         } else {
-          void completeProjectFromList(leafProject);
+          promptProjectCompletionDisposition(leafProject);
         }
         return;
       }
@@ -3508,7 +3539,10 @@ export default function TasksScreen() {
             }
             const tree = nextTreeMap[pid] ?? [];
             if (isProjectInboxProgressComplete(proj, tree)) {
-              showMoveProjectToInboxPrompt(proj, () => void moveProjectToInboxById(pid));
+              showProjectCompletionDispositionPrompt(proj, {
+                onArchive: () => void moveProjectToInboxById(pid),
+                onDiscard: () => void discardCompletedProjectById(pid),
+              });
             }
           }
         }
@@ -3549,7 +3583,7 @@ export default function TasksScreen() {
       }
     },
     [
-      completeProjectFromList,
+      discardCompletedProjectById,
       findVisibleTask,
       grantTaskPointsWithToast,
       loadProjectTasks,
@@ -3564,6 +3598,7 @@ export default function TasksScreen() {
       projectLockMap,
       projectTaskTreeMap,
       projects,
+      promptProjectCompletionDisposition,
       reloadProjectTasksFromLocal,
       reopenProjectFromList,
       scheduleHeatmapReload,
@@ -3805,7 +3840,7 @@ export default function TasksScreen() {
               onPress: () => {
                 playFrogDoneBounce(taskId);
                 if (isProjectFrog && project) {
-                  void completeProjectFromList(project);
+                  promptProjectCompletionDisposition(project);
                 } else {
                   void toggleTaskDone(taskId);
                 }
@@ -3818,19 +3853,19 @@ export default function TasksScreen() {
 
       playFrogDoneBounce(taskId);
       if (isProjectFrog && project) {
-        void completeProjectFromList(project);
+        promptProjectCompletionDisposition(project);
       } else {
         void toggleTaskDone(taskId);
       }
     },
     [
       completeFrogSessionOnly,
-      completeProjectFromList,
       findVisibleTask,
       logicalTodayYmd,
       playFrogDoneBounce,
       projectFrogIds,
       projects,
+      promptProjectCompletionDisposition,
       reopenFrogSessionOnly,
       reopenProjectFromList,
       todayFrogs,
