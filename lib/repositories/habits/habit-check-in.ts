@@ -338,8 +338,9 @@ export async function getTodayHabitCountsMap(logicalTodayYmd?: string): Promise<
     [today],
   );
   for (const r of rows ?? []) {
+    // 本地刚撤销、尚未推完删除时，按 0 次处理，避免任务页重拉仍信服务端旧完成态
     if (r.sync_status === 'pending_delete') {
-      map.delete(r.habit_id);
+      map.set(r.habit_id, 0);
       continue;
     }
     map.set(r.habit_id, r.count ?? 0);

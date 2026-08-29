@@ -78,6 +78,8 @@ const TABLE_CHILD_PAGE_DIRTY_MAP: Record<string, string[]> = {
   points_wallet: ['wish-board', 'edit-wish-board-item'],
   wish_board_items: ['wish-board', 'edit-wish-board-item'],
   points_ledger: ['wish-board'],
+  memos: ['memo-list', 'memo-view'],
+  memo_dimensions: ['memo-list'],
 };
 
 function markChildPagesDirtyForTable(table: string): void {

@@ -58,8 +58,11 @@ import {
   confirmBreakHabitDayClean,
   decrementTodayHabitCheckIn,
   getHabitDayRecordFlagsForYmd,
+  getTodayHabitCountsMap,
   incrementTodayHabitCheckIn,
+  loadHabitCheckInPageData,
 } from '@/lib/repositories/habits/habit-check-in';
+import { getTaskHabitTasksViewState } from '@/lib/repositories/habits/habit-task-period';
 import {
   breakSlipBadgeColor,
   breakSlipBorderColor,
@@ -1715,6 +1718,16 @@ export default function TasksScreen() {
   const habitPressAtByIdRef = React.useRef(new Map<string, number>());
   /** 丢弃过期的 loadHabits 结果，避免乐观更新后被陈旧请求覆盖。 */
   const habitLoadGenerationRef = React.useRef(0);
+  /** 获取打卡锁；若占用中则等待（撤销时不丢弃点击，避免同步期间点撤销无响应） */
+  const acquireHabitCheckInLock = React.useCallback(async (habitId: string) => {
+    const started = Date.now();
+    while (habitCheckInLockRef.current.has(habitId)) {
+      if (Date.now() - started > 8000) return false;
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    }
+    habitCheckInLockRef.current.add(habitId);
+    return true;
+  }, []);
   const [habitLookupById, setHabitLookupById] = React.useState<
     Map<string, { name: string; icon: string }>
   >(() => new Map());
@@ -2057,19 +2070,51 @@ export default function TasksScreen() {
         console.warn('后台同步习惯完成态失败', e);
       });
       if (generation !== habitLoadGenerationRef.current) return;
-      const recordFlags = await getHabitDayRecordFlagsForYmd(logicalTodayYmd);
+      // 本地打卡表覆盖服务端 todayCount，避免刚撤销后重拉把完成态盖回来
+      const [recordFlags, todayCounts, checkInPage] = await Promise.all([
+        getHabitDayRecordFlagsForYmd(logicalTodayYmd),
+        getTodayHabitCountsMap(logicalTodayYmd),
+        loadHabitCheckInPageData(),
+      ]);
       if (generation !== habitLoadGenerationRef.current) return;
       const sections = (data.sections as HabitSection[]).map((section) => ({
         ...section,
         items: section.items.map((it) => {
-          const hasTodayRecord = it.kind === 'break' ? recordFlags.get(it.id) ?? false : undefined;
+          const hasSub = Boolean(it.hasSubHabits || hasActiveSubHabits(it.extraData));
+          const localToday = todayCounts.get(it.id);
+          const todayCount = hasSub
+            ? it.todayCount
+            : localToday !== undefined
+              ? localToday
+              : it.todayCount;
+          const hasTodayRecord =
+            it.kind === 'break' ? (recordFlags.get(it.id) ?? false) : undefined;
+          let periodProgress = it.periodProgress;
+          let periodGoal = it.periodGoal;
+          let taskShowPeriodCheck = it.taskShowPeriodCheck;
+          if (it.kind === 'task' && !hasSub) {
+            const localMap = checkInPage.checkInsMaps.get(it.id) ?? {};
+            const view = getTaskHabitTasksViewState({
+              extraData: it.extraData,
+              checkIns: localMap,
+              logicalYmd: logicalTodayYmd,
+            });
+            if (view) {
+              periodProgress = view.periodProgress;
+              periodGoal = view.periodGoal;
+              taskShowPeriodCheck = view.showPeriodCheckOnViewDay;
+            }
+          }
           return applyHabitCountPatch(
             {
               ...it,
               note: it.note ?? null,
               rewardPoints: Math.max(0, Math.floor(Number(it.rewardPoints) || 0)),
+              periodProgress,
+              periodGoal,
+              taskShowPeriodCheck,
             },
-            it.todayCount,
+            todayCount,
             0,
             {
               hasTodayRecord,
@@ -2152,13 +2197,20 @@ export default function TasksScreen() {
     }, HEATMAP_RELOAD_DEBOUNCE_MS);
   }, []);
 
+  const cancelScheduledHabitsReload = React.useCallback(() => {
+    if (habitsReloadTimerRef.current) {
+      clearTimeout(habitsReloadTimerRef.current);
+      habitsReloadTimerRef.current = null;
+    }
+  }, []);
+
   const scheduleHabitsReload = React.useCallback(() => {
-    if (habitsReloadTimerRef.current) clearTimeout(habitsReloadTimerRef.current);
+    cancelScheduledHabitsReload();
     habitsReloadTimerRef.current = setTimeout(() => {
       habitsReloadTimerRef.current = null;
       void loadHabits();
     }, HABITS_RELOAD_DEBOUNCE_MS);
-  }, [loadHabits]);
+  }, [cancelScheduledHabitsReload, loadHabits]);
 
   const runSilentPostMutationSync = React.useCallback(
     async (pending: {
@@ -4164,9 +4216,12 @@ export default function TasksScreen() {
     (habitId: string, nextCount: number, opts?: { skipHabitReload?: boolean }) => {
       void maybeCompleteBreakHabit(habitId);
       void maybeCompleteBuildHabit(habitId);
-      void maybeRefreshTaskHabitVisibility(habitId);
       void syncHabitBoundTasksForHabit(habitId, nextCount);
-      if (!opts?.skipHabitReload) scheduleHabitsReload();
+      // 撤销时跳过重拉：否则服务端短暂旧数据会把「已撤销」盖回完成态
+      if (!opts?.skipHabitReload) {
+        void maybeRefreshTaskHabitVisibility(habitId);
+        scheduleHabitsReload();
+      }
       void resyncHabitReminderForHabitId(habitId);
     },
     [
@@ -4184,6 +4239,7 @@ export default function TasksScreen() {
       if (!consumeHabitCardPressDebounce(item.id)) return;
       if (habitCheckInLockRef.current.has(item.id)) return;
       habitCheckInLockRef.current.add(item.id);
+      cancelScheduledHabitsReload();
       habitLoadGenerationRef.current += 1;
       markPageDirty();
       const wasTaskPeriodMet = item.kind === 'task' ? Boolean(item.taskShowPeriodCheck) : false;
@@ -4230,6 +4286,7 @@ export default function TasksScreen() {
       runHabitSideEffectsAfterCountChange(item.id, nextCount);
     },
     [
+      cancelScheduledHabitsReload,
       consumeHabitCardPressDebounce,
       grantHabitCheckInPointsWithToast,
       logicalTodayYmd,
@@ -4246,6 +4303,7 @@ export default function TasksScreen() {
       if (!consumeHabitCardPressDebounce(item.id)) return;
       if (habitCheckInLockRef.current.has(item.id)) return;
       habitCheckInLockRef.current.add(item.id);
+      cancelScheduledHabitsReload();
       habitLoadGenerationRef.current += 1;
       markPageDirty();
       patchHabitTodayCount(item.id, 0, 0, { hasTodayRecord: true });
@@ -4266,6 +4324,7 @@ export default function TasksScreen() {
       runHabitSideEffectsAfterCountChange(item.id, 0, { skipHabitReload: true });
     },
     [
+      cancelScheduledHabitsReload,
       consumeHabitCardPressDebounce,
       logicalTodayYmd,
       markPageDirty,
@@ -4277,9 +4336,10 @@ export default function TasksScreen() {
 
   const handleHabitUndoOnce = React.useCallback(
     async (item: HabitGridItem) => {
-      // 撤销不用时间防抖（否则刚打卡完成后会被 500ms 挡住）；仅用进行中锁防并发
-      if (habitCheckInLockRef.current.has(item.id)) return;
-      habitCheckInLockRef.current.add(item.id);
+      // 撤销不用时间防抖；若打卡同步仍在进行则等待锁，不丢弃点击
+      if (!(await acquireHabitCheckInLock(item.id))) return;
+      // 取消打卡后尚未触发的网格重拉，防止把撤销盖回完成态
+      cancelScheduledHabitsReload();
       habitLoadGenerationRef.current += 1;
       markPageDirty();
       const wasTaskPeriodMet = item.kind === 'task' ? Boolean(item.taskShowPeriodCheck) : false;
@@ -4294,12 +4354,16 @@ export default function TasksScreen() {
         nextCount = await decrementTodayHabitCheckIn(item.id, {
           breakHabit: item.kind === 'break',
         });
-        if (!optimistic || nextCount !== optimistic.nextCount) {
-          const periodDelta = item.kind === 'task' && nextCount < item.todayCount ? -1 : 0;
-          patchHabitTodayCount(item.id, nextCount, periodDelta, {
-            hasTodayRecord: item.kind === 'break' ? nextCount > 0 : undefined,
-          });
-        }
+        const periodDelta = item.kind === 'task' && nextCount < item.todayCount ? -1 : 0;
+        // 戒除「保持戒除」撤销时次数仍为 0，但必须清掉 hasTodayRecord
+        patchHabitTodayCount(item.id, nextCount, periodDelta, {
+          hasTodayRecord:
+            item.kind === 'break'
+              ? nextCount > 0
+                ? true
+                : false
+              : undefined,
+        });
       } catch (err) {
         console.warn('撤销打卡失败', err);
         restoreHabitGridItem(item);
@@ -4317,6 +4381,8 @@ export default function TasksScreen() {
       runHabitSideEffectsAfterCountChange(item.id, nextCount, { skipHabitReload: true });
     },
     [
+      acquireHabitCheckInLock,
+      cancelScheduledHabitsReload,
       grantHabitCheckInPointsWithToast,
       logicalTodayYmd,
       markPageDirty,

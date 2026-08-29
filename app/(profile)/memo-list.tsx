@@ -26,8 +26,9 @@ import {
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { fetchProfileMemoList } from '@/lib/profile-page-api';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -95,6 +96,8 @@ export default function MemoListScreen() {
   const [pendingAnalysisIds, setPendingAnalysisIds] = useState<ReadonlySet<string>>(() => new Set());
 
   const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
+  const selectedDimensionIdRef = useRef(selectedDimensionId);
+  selectedDimensionIdRef.current = selectedDimensionId;
   const { wrapLoad, resetSync } = usePageApiSync(MEMO_LIST_PAGE_KEY);
 
   useEffect(() => {
@@ -121,21 +124,17 @@ export default function MemoListScreen() {
           await fetchProfileMemoList({ offlineFallback: true });
           const dims = sortByOrderThenTime(await listMemoDimensions());
           setDimensions(dims);
-          const activeId = isMemoDimensionAll(selectedDimensionId)
+          const currentSelected = selectedDimensionIdRef.current;
+          const activeId = isMemoDimensionAll(currentSelected)
             ? MEMO_DIMENSION_ALL_ID
-            : selectedDimensionId && dims.some(d => d.id === selectedDimensionId)
-              ? selectedDimensionId
+            : currentSelected && dims.some(d => d.id === currentSelected)
+              ? currentSelected
               : dims.length > 0
                 ? MEMO_DIMENSION_ALL_ID
                 : null;
-          if (activeId !== selectedDimensionId) setSelectedDimensionId(activeId);
-          setItems(
-            isMemoDimensionAll(activeId)
-              ? await listMemos()
-              : activeId
-                ? await listMemos(activeId)
-                : [],
-          );
+          if (activeId !== currentSelected) setSelectedDimensionId(activeId);
+          // 全量读本地，分类切换只做客户端过滤，避免反复触发同步
+          setItems(dims.length > 0 ? await listMemos() : []);
         }, forceApi);
       } catch {
         setError('加载失败，请重试');
@@ -146,14 +145,12 @@ export default function MemoListScreen() {
         setLoading(false);
       }
     },
-    [wrapLoad, selectedDimensionId],
+    [wrapLoad],
   );
 
   const { refreshControl } = usePagePullRefresh(MEMO_LIST_PAGE_KEY, reload);
 
-  useFocusEffect(useCallback(() => {
-    void reload();
-  }, [reload]));
+  usePageFocusReload(MEMO_LIST_PAGE_KEY, reload);
 
   const selectedDimension = useMemo(() => dimensions.find(d => d.id === selectedDimensionId) ?? null, [dimensions, selectedDimensionId]);
   const aiModalItem = useMemo(() => (aiModalId ? items.find(i => i.id === aiModalId) ?? null : null), [aiModalId, items]);
@@ -196,7 +193,6 @@ export default function MemoListScreen() {
         const created = await createMemoDimension({ name });
         setDimensions(prev => sortByOrderThenTime([...prev, created]));
         setSelectedDimensionId(created.id);
-        setItems([]);
       }
       closeDimensionModal();
     } catch (e) {
