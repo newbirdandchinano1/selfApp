@@ -703,3 +703,63 @@ export async function resetPointsBalance(): Promise<{ balance: number; delta: nu
     });
   });
 }
+
+/**
+ * 删除积分流水并回退积分：走 `DELETE /api/app/wish-board/points/ledger/:id`，
+ * 成功后对齐本地钱包与流水；失败则抛错（不提供本地盲删，避免余额漂移）。
+ */
+export async function deletePointsLedgerRecord(
+  ledgerId: string,
+): Promise<{ balance: number; delta: number; rollback_delta: number }> {
+  const id = String(ledgerId ?? '').trim();
+  if (!id) throw new Error('缺少流水 id');
+
+  const { appWishBoardDeletePointsLedger } = await import('@/lib/api-app-domain');
+  const result = await appWishBoardDeletePointsLedger(id);
+  const balance = Math.max(0, Math.floor(Number(result.balance) || 0));
+  const delta = Math.floor(Number(result.delta) || 0);
+  const rollbackDelta = Math.floor(Number(result.rollback_delta) || 0);
+  const nowIso = pointsAuditNowIso();
+  const wishId =
+    result.reason === 'wish_redeem' &&
+    result.ref_type === 'wish_board_item' &&
+    result.ref_id &&
+    String(result.ref_id).trim()
+      ? String(result.ref_id).trim()
+      : null;
+
+  const db = await getDatabase();
+  const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+    '@/lib/cloud-sql-dirty-track'
+  );
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.runAsync(`DELETE FROM points_ledger WHERE id = ?`, [id]);
+    await db.runAsync(
+      `UPDATE points_wallet SET
+        balance = ?,
+        updated_at = ?,
+        sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_create' ELSE 'pending_update' END
+       WHERE id = ?`,
+      [balance, nowIso, POINTS_WALLET_ID],
+    );
+    if (wishId) {
+      await db.runAsync(
+        `UPDATE wish_board_items SET
+          status = 'active',
+          redeemed_at = NULL,
+          updated_at = ?,
+          sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_create' ELSE 'pending_update' END
+         WHERE id = ?
+           AND wish_type = 'once'
+           AND status = 'redeemed'`,
+        [nowIso, wishId],
+      );
+    }
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+
+  notifyPointsBalanceChanged(balance);
+  return { balance, delta, rollback_delta: rollbackDelta };
+}

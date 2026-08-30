@@ -1,5 +1,5 @@
 import { AddWishBoardModal } from '@/components/wish-board/add-wish-board-modal';
-import { AppButton, AppCard, AppScreen, ScreenHeader } from '@/components/ui';
+import { AppButton, AppCard, AppScreen, ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
 import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -204,7 +204,19 @@ export default function WishBoardScreen() {
       <AppScreen
         loading={loading}
         onRefreshData={onRefreshData}
-        header={<ScreenHeader title="心愿板" onBack={() => router.back()} />}
+        header={
+          <ScreenHeader
+            title="心愿板"
+            onBack={() => router.back()}
+            right={
+              <ScreenHeaderIconAction
+                icon="receipt-long"
+                onPress={() => router.push('/points-ledger')}
+                accessibilityLabel="积分记录"
+              />
+            }
+          />
+        }
         contentContainerStyle={styles.content}>
         <AppCard variant="accent" style={styles.balanceCard}>
           <Text style={[styles.balanceLabel, { color: 'rgba(255,255,255,0.72)' }]}>积分余额</Text>
@@ -212,27 +224,43 @@ export default function WishBoardScreen() {
           <Text style={[styles.balanceHint, { color: 'rgba(255,255,255,0.65)' }]}>
             完成任务等行为可获得积分，用于兑换心愿
           </Text>
-          <Pressable
-            onPress={onResetPoints}
-            disabled={balance <= 0 || resetting}
-            style={({ pressed }) => [
-              styles.resetBtn,
-              {
-                borderColor: 'rgba(255,255,255,0.35)',
-                opacity: balance <= 0 || resetting ? 0.45 : pressed ? 0.85 : 1,
-              },
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel="重置积分">
-            {resetting ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <>
-                <MaterialIcons name="restart-alt" size={16} color="#fff" />
-                <Text style={styles.resetBtnText}>重置积分</Text>
-              </>
-            )}
-          </Pressable>
+          <View style={styles.balanceActions}>
+            <Pressable
+              onPress={() => router.push('/points-ledger')}
+              style={({ pressed }) => [
+                styles.resetBtn,
+                {
+                  borderColor: 'rgba(255,255,255,0.35)',
+                  opacity: pressed ? 0.85 : 1,
+                },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="积分记录">
+              <MaterialIcons name="receipt-long" size={16} color="#fff" />
+              <Text style={styles.resetBtnText}>积分记录</Text>
+            </Pressable>
+            <Pressable
+              onPress={onResetPoints}
+              disabled={balance <= 0 || resetting}
+              style={({ pressed }) => [
+                styles.resetBtn,
+                {
+                  borderColor: 'rgba(255,255,255,0.35)',
+                  opacity: balance <= 0 || resetting ? 0.45 : pressed ? 0.85 : 1,
+                },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="重置积分">
+              {resetting ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <MaterialIcons name="restart-alt" size={16} color="#fff" />
+                  <Text style={styles.resetBtnText}>重置积分</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
         </AppCard>
 
         <AppButton
@@ -457,8 +485,13 @@ const styles = StyleSheet.create({
     ...Typography.caption,
     lineHeight: 18,
   },
-  resetBtn: {
+  balanceActions: {
     marginTop: Spacing.sm,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  resetBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,

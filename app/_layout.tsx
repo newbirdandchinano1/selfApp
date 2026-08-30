@@ -251,6 +251,7 @@ function RootLayoutInner() {
             <Stack.Screen name="add-item" />
             <Stack.Screen name="wish-list" />
             <Stack.Screen name="wish-board" />
+            <Stack.Screen name="points-ledger" />
             <Stack.Screen name="add-wish-board-item" />
             <Stack.Screen name="edit-wish-board-item/[id]" />
             <Stack.Screen name="memo-list" />

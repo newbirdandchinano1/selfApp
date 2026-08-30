@@ -75,9 +75,9 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
 const TABLE_CHILD_PAGE_DIRTY_MAP: Record<string, string[]> = {
   habit_check_ins: ['habit-detail', 'habit-manage', 'tasks-calendar'],
   habits: ['habit-detail', 'habit-manage'],
-  points_wallet: ['wish-board', 'edit-wish-board-item'],
+  points_wallet: ['wish-board', 'edit-wish-board-item', 'points-ledger'],
   wish_board_items: ['wish-board', 'edit-wish-board-item'],
-  points_ledger: ['wish-board'],
+  points_ledger: ['wish-board', 'points-ledger'],
   memos: ['memo-list', 'memo-view'],
   memo_dimensions: ['memo-list'],
 };

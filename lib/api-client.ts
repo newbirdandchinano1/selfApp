@@ -892,6 +892,8 @@ export type CompletionHeatmapMeta = {
 export type CompletionHeatmapDayDetailFrog = {
   task_id: string | null;
   task_title: string | null;
+  /** 后端可选：项目青蛙 / 任务青蛙；缺省时由客户端根据 id 前缀与本地项目表推断 */
+  subject?: 'task' | 'project';
 };
 
 export type CompletionHeatmapDayDetailTodo = {
@@ -1414,6 +1416,112 @@ export async function apiGetFinanceInsights(params?: {
   return apiRequest<FinanceInsightsPayload>(`/api/pages/finance/insights${qs}`, {
     method: 'GET',
     signal: params?.signal,
+  });
+}
+
+/**
+ * GET /api/pages/finance/stats
+ * 财务统计页聚合（不回传全量流水；含 summary / categories / trend / billTable / ranking / sampleTransactions）
+ */
+export type FinanceStatsCategoryItem = {
+  categoryId: string | null;
+  name: string;
+  amount: number;
+  count: number;
+  percent: number;
+  iconKey?: string | null;
+};
+
+export type FinanceStatsTrendPoint = {
+  key: string;
+  label: string;
+  income: number;
+  expense: number;
+  balance: number;
+};
+
+export type FinanceStatsRankItem = {
+  id: string;
+  name: string;
+  categoryName: string | null;
+  note: string | null;
+  amount: number;
+  happenedAt: string;
+};
+
+export type FinanceStatsSampleTxn = {
+  id: string;
+  name: string;
+  happened_at: string;
+  transaction_type: 'income' | 'expense';
+  flow_category_id: string | null;
+  amount: number;
+  note: string | null;
+  ai_comment: string | null;
+  extra_data: string | null;
+};
+
+export type FinanceStatsPayload = {
+  summary: {
+    income: number;
+    expense: number;
+    balance: number;
+    days: number;
+    txnCount: number;
+  };
+  categories: {
+    expense: FinanceStatsCategoryItem[];
+    income: FinanceStatsCategoryItem[];
+  };
+  trend: {
+    granularity: 'day' | 'month';
+    points: FinanceStatsTrendPoint[];
+  };
+  billTable: {
+    total: { expense: number; income: number; balance: number };
+    dailyAvg: { expense: number; income: number; balance: number };
+    recentDays: Array<{ day: string; expense: number; income: number; balance: number }>;
+  };
+  ranking: {
+    expense: FinanceStatsRankItem[];
+    income: FinanceStatsRankItem[];
+  };
+  sampleTransactions?: FinanceStatsSampleTxn[];
+  meta?: FinancePageMeta & {
+    start?: string;
+    end?: string;
+    granularity?: 'day' | 'month';
+  };
+};
+
+export async function apiGetFinanceStats(params: {
+  start: string;
+  end: string;
+  granularity?: 'day' | 'month' | 'auto';
+  categoryMode?: 'expense' | 'income' | 'both';
+  rankMode?: 'expense' | 'income' | 'both';
+  rankLimit?: number;
+  recentDaysLimit?: number;
+  excludeCorrections?: boolean;
+  dayBoundaryHour?: number;
+  dayBoundaryMinute?: number;
+  signal?: AbortSignal;
+}): Promise<FinanceStatsPayload> {
+  const qs = buildQuery({
+    start: params.start,
+    end: params.end,
+    granularity: params.granularity,
+    categoryMode: params.categoryMode,
+    rankMode: params.rankMode,
+    rankLimit: params.rankLimit,
+    recentDaysLimit: params.recentDaysLimit,
+    excludeCorrections: params.excludeCorrections === false ? false : true,
+    dayBoundaryHour: params.dayBoundaryHour,
+    dayBoundaryMinute: params.dayBoundaryMinute,
+  });
+  return apiRequest<FinanceStatsPayload>(`/api/pages/finance/stats${qs}`, {
+    method: 'GET',
+    signal: params.signal,
   });
 }
 

@@ -7,6 +7,11 @@ import { isFrogDoneForToday } from '@/lib/long-term-task';
 import { projectToFrogTaskRow } from '@/lib/project-frog';
 import { getProjects } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import {
+  frogCompletionItemToSnapshotTaskRow,
+  getFrogCompletionsForAssignedDay,
+  isFrogSubjectDeleted,
+} from '@/lib/repositories/tasks/frog-completion-events';
 import { getTasks } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
@@ -73,6 +78,45 @@ function mergeTaskAndProjectFrogs(
   };
 }
 
+/**
+ * 把「今日已完成但主体已删」的青蛙事件补进列表，避免完成并删除后今日栏变空。
+ * 已在活体列表中的主体不重复添加。
+ */
+async function appendDeletedCompletedFrogSnapshots(
+  living: { tasks: TaskRow[]; projectFrogIds: string[] },
+  logicalToday: string,
+): Promise<{ tasks: TaskRow[]; projectFrogIds: string[] }> {
+  let completions: Awaited<ReturnType<typeof getFrogCompletionsForAssignedDay>> = [];
+  try {
+    completions = await getFrogCompletionsForAssignedDay(logicalToday);
+  } catch (e) {
+    console.warn('[today-frogs] 读取青蛙完成快照失败', e);
+    return living;
+  }
+  if (completions.length === 0) return living;
+
+  const presentIds = new Set(living.tasks.map((t) => t.id));
+  const projectFrogIds = new Set(living.projectFrogIds);
+  const extras: TaskRow[] = [];
+
+  for (const item of completions) {
+    const sid = (item.task_id ?? '').trim();
+    if (!sid || presentIds.has(sid)) continue;
+    const snap = frogCompletionItemToSnapshotTaskRow(item, logicalToday);
+    extras.push(snap);
+    presentIds.add(snap.id);
+    if (item.subject === 'project' || sid.startsWith('p_')) {
+      projectFrogIds.add(snap.id);
+    }
+  }
+
+  if (extras.length === 0) return living;
+  return {
+    tasks: sortTodayFrogRows([...living.tasks, ...extras], logicalToday),
+    projectFrogIds: [...projectFrogIds],
+  };
+}
+
 function isServerFilteredTodayFrogs(meta: { serverFiltered?: boolean; filtersVersion?: string } | undefined): boolean {
   return meta?.serverFiltered === true && meta?.filtersVersion === TODAY_FROGS_FILTERS_VERSION;
 }
@@ -94,6 +138,8 @@ async function hydrateRowsById<T extends { id: string; extra_data?: string | nul
   const localById = new Map((local ?? []).map((r) => [String(r.id), r]));
   return apiRows.map((row) => {
     const localRow = localById.get(String(row.id));
+    // API 带回的「已删快照」不要被本地空行覆盖
+    if (isFrogSubjectDeleted(row.extra_data ?? null)) return row;
     if (!localRow) return row;
     return {
       ...localRow,
@@ -112,9 +158,21 @@ async function overlayPendingTodayFrogs(
     overlayLocalPendingOnApiTableRows('tasks', apiTaskFrogs as Record<string, unknown>[]),
     overlayLocalPendingOnApiTableRows('projects', apiProjectFrogs as Record<string, unknown>[]),
   ]);
-  const taskFrogs = filterTodayFrogsLocally(pendingTasks as TaskRow[], logicalToday);
-  const projectFrogs = filterTodayProjectFrogsLocally(pendingProjects as ProjectRow[], logicalToday);
-  return mergeTaskAndProjectFrogs(taskFrogs, projectFrogs, logicalToday);
+  // 去掉本地已 pending_delete 的活体，保留 API/合成的已删快照
+  const taskFrogs = filterTodayFrogsLocally(
+    (pendingTasks as TaskRow[]).filter(
+      (t) => t.sync_status !== 'pending_delete' || isFrogSubjectDeleted(t.extra_data),
+    ),
+    logicalToday,
+  );
+  const projectFrogs = filterTodayProjectFrogsLocally(
+    (pendingProjects as ProjectRow[]).filter(
+      (p) => p.sync_status !== 'pending_delete' || isFrogSubjectDeleted(p.extra_data),
+    ),
+    logicalToday,
+  );
+  const merged = mergeTaskAndProjectFrogs(taskFrogs, projectFrogs, logicalToday);
+  return appendDeletedCompletedFrogSnapshots(merged, logicalToday);
 }
 
 async function resolveLogicalToday(boundary?: TasksDayBoundary): Promise<{ boundary: TasksDayBoundary; logicalToday: string }> {
@@ -129,7 +187,10 @@ async function readTodayFrogsFromLocal(logicalToday: string): Promise<TodayFrogs
   const [allTasks, allProjects] = await Promise.all([getTasks(), getProjects()]);
   const taskFrogs = filterTodayFrogsLocally(allTasks, logicalToday);
   const projectFrogs = filterTodayProjectFrogsLocally(allProjects, logicalToday);
-  const merged = mergeTaskAndProjectFrogs(taskFrogs, projectFrogs, logicalToday);
+  const merged = await appendDeletedCompletedFrogSnapshots(
+    mergeTaskAndProjectFrogs(taskFrogs, projectFrogs, logicalToday),
+    logicalToday,
+  );
   return {
     logicalToday,
     tasks: merged.tasks,
@@ -163,27 +224,35 @@ export async function fetchTodayFrogs(opts?: {
         : [];
       const serverFiltered = isServerFilteredTodayFrogs(data.meta);
 
-      if (apiTasks.length > 0) {
-        await syncApiReadResultToLocal('tasks', apiTasks as Record<string, unknown>[]);
+      const livingApiTasks = apiTasks.filter((t) => !isFrogSubjectDeleted(t.extra_data));
+      const livingApiProjects = apiProjectFrogs.filter((p) => !isFrogSubjectDeleted(p.extra_data));
+      const snapshotApiTasks = apiTasks.filter((t) => isFrogSubjectDeleted(t.extra_data));
+      const snapshotApiProjects = apiProjectFrogs.filter((p) => isFrogSubjectDeleted(p.extra_data));
+
+      if (livingApiTasks.length > 0) {
+        await syncApiReadResultToLocal('tasks', livingApiTasks as Record<string, unknown>[]);
       }
-      if (apiProjectFrogs.length > 0) {
-        await syncApiReadResultToLocal('projects', apiProjectFrogs as Record<string, unknown>[]);
+      if (livingApiProjects.length > 0) {
+        await syncApiReadResultToLocal('projects', livingApiProjects as Record<string, unknown>[]);
       }
 
       const [hydratedTasks, hydratedProjects] = await Promise.all([
-        hydrateRowsById('tasks', apiTasks),
-        hydrateRowsById('projects', apiProjectFrogs),
+        hydrateRowsById('tasks', livingApiTasks),
+        hydrateRowsById('projects', livingApiProjects),
       ]);
 
-      let projectFrogs = hydratedProjects;
-      if (projectFrogs.length === 0 && apiProjectFrogIds.length > 0) {
+      let projectFrogs = [...hydratedProjects, ...(snapshotApiProjects as ProjectRow[])];
+      if (hydratedProjects.length === 0 && apiProjectFrogIds.length > 0) {
         const localProjects = await getProjects();
         const idSet = new Set(apiProjectFrogIds);
-        projectFrogs = localProjects.filter((p) => idSet.has(p.id));
+        const fromLocal = localProjects.filter((p) => idSet.has(p.id));
+        projectFrogs = [...fromLocal, ...(snapshotApiProjects as ProjectRow[])];
       }
 
+      const tasksForMerge = [...hydratedTasks, ...(snapshotApiTasks as TaskRow[])];
+
       if (serverFiltered) {
-        const merged = await overlayPendingTodayFrogs(hydratedTasks, projectFrogs, resolvedToday);
+        const merged = await overlayPendingTodayFrogs(tasksForMerge, projectFrogs, resolvedToday);
         return {
           logicalToday: resolvedToday,
           tasks: merged.tasks,
@@ -192,10 +261,13 @@ export async function fetchTodayFrogs(opts?: {
         };
       }
 
-      if (projectFrogs.length === 0) {
-        projectFrogs = filterTodayProjectFrogsLocally(await getProjects(), resolvedToday);
+      if (hydratedProjects.length === 0 && snapshotApiProjects.length === 0) {
+        projectFrogs = [
+          ...filterTodayProjectFrogsLocally(await getProjects(), resolvedToday),
+          ...(snapshotApiProjects as ProjectRow[]),
+        ];
       }
-      const merged = await overlayPendingTodayFrogs(hydratedTasks, projectFrogs, resolvedToday);
+      const merged = await overlayPendingTodayFrogs(tasksForMerge, projectFrogs, resolvedToday);
       return {
         logicalToday: resolvedToday,
         tasks: merged.tasks,

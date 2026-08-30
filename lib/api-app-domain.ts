@@ -459,6 +459,122 @@ export async function appWishBoardResetPoints(opts?: {
   });
 }
 
+export type AppPointsLedgerItem = {
+  id: string;
+  delta: number;
+  balance_after: number;
+  reason: string;
+  reason_label: string;
+  ref_type?: string | null;
+  ref_id?: string | null;
+  ref_title?: string | null;
+  note?: string | null;
+  created_at: string;
+};
+
+export type AppPointsLedgerResult = {
+  items: AppPointsLedgerItem[];
+  balance: number;
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+};
+
+/** GET /api/app/wish-board/points/ledger — 积分流水（全部来源） */
+export async function appWishBoardListPointsLedger(
+  params?: { page?: number; limit?: number },
+  opts?: { signal?: AbortSignal },
+): Promise<AppPointsLedgerResult> {
+  const page = Math.max(1, Math.floor(Number(params?.page) || 1));
+  const limit = Math.min(200, Math.max(1, Math.floor(Number(params?.limit) || 50)));
+  const qs = `?page=${page}&limit=${limit}`;
+  const data = await apiRequest<{
+    items?: AppPointsLedgerItem[];
+    balance?: number;
+    pagination?: Partial<AppPointsLedgerResult['pagination']>;
+    total?: number;
+  }>(`${APP_API_PREFIX}/wish-board/points/ledger${qs}`, {
+    method: 'GET',
+    signal: opts?.signal,
+  });
+
+  const items = Array.isArray(data?.items)
+    ? data.items.map(row => ({
+        id: String(row.id),
+        delta: Math.floor(Number(row.delta) || 0),
+        balance_after: Math.max(0, Math.floor(Number(row.balance_after) || 0)),
+        reason: String(row.reason ?? ''),
+        reason_label: String(row.reason_label ?? row.reason ?? '积分变动'),
+        ref_type: row.ref_type ?? null,
+        ref_id: row.ref_id ?? null,
+        ref_title: row.ref_title ?? null,
+        note: row.note ?? null,
+        created_at: String(row.created_at ?? ''),
+      }))
+    : [];
+
+  const total = Math.max(
+    0,
+    Math.floor(Number(data?.pagination?.total ?? data?.total) || items.length),
+  );
+  const pageOut = Math.max(1, Math.floor(Number(data?.pagination?.page) || page));
+  const limitOut = Math.max(1, Math.floor(Number(data?.pagination?.limit) || limit));
+  const totalPages = Math.max(
+    0,
+    Math.floor(Number(data?.pagination?.totalPages) || (total > 0 ? Math.ceil(total / limitOut) : 0)),
+  );
+
+  return {
+    items,
+    balance: Math.max(0, Math.floor(Number(data?.balance) || 0)),
+    pagination: { page: pageOut, limit: limitOut, total, totalPages },
+  };
+}
+
+/** DELETE /api/app/wish-board/points/ledger/:id — 删除流水并回退积分 */
+export async function appWishBoardDeletePointsLedger(
+  id: string,
+  opts?: { signal?: AbortSignal },
+): Promise<{
+  deleted: boolean;
+  id: string;
+  delta: number;
+  rollback_delta: number;
+  balance: number;
+  reason: string;
+  ref_type: string | null;
+  ref_id: string | null;
+}> {
+  const ledgerId = String(id ?? '').trim();
+  if (!ledgerId) throw new Error('缺少流水 id');
+  const data = await apiRequest<{
+    deleted?: boolean;
+    id?: string;
+    delta?: number;
+    rollback_delta?: number;
+    balance?: number;
+    reason?: string;
+    ref_type?: string | null;
+    ref_id?: string | null;
+  }>(`${APP_API_PREFIX}/wish-board/points/ledger/${encodeURIComponent(ledgerId)}`, {
+    method: 'DELETE',
+    signal: opts?.signal,
+  });
+  return {
+    deleted: Boolean(data?.deleted ?? true),
+    id: String(data?.id ?? ledgerId),
+    delta: Math.floor(Number(data?.delta) || 0),
+    rollback_delta: Math.floor(Number(data?.rollback_delta) || 0),
+    balance: Math.max(0, Math.floor(Number(data?.balance) || 0)),
+    reason: String(data?.reason ?? ''),
+    ref_type: data?.ref_type == null ? null : String(data.ref_type),
+    ref_id: data?.ref_id == null ? null : String(data.ref_id),
+  };
+}
+
 export type AppWishRedeemedItem = {
   ledger_id: string;
   wish_id: string;

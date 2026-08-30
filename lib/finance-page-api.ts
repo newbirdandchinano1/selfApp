@@ -10,6 +10,7 @@ import {
   apiGetFinanceHome,
   apiGetFinanceInsights,
   apiGetFinanceRecentDays,
+  apiGetFinanceStats,
   apiGetFinanceTransactionsPage,
   type FinanceAccountDetailPayload,
   type FinanceCashFlowPayload,
@@ -18,6 +19,11 @@ import {
   type FinanceHomePayload,
   type FinanceInsightsPayload,
   type FinanceRecentDaysPayload,
+  type FinanceStatsCategoryItem,
+  type FinanceStatsPayload,
+  type FinanceStatsRankItem,
+  type FinanceStatsSampleTxn,
+  type FinanceStatsTrendPoint,
   type FinanceTransactionsPagePayload,
 } from '@/lib/api-client';
 import { withApiTableSyncLock } from '@/lib/api-read';
@@ -513,5 +519,413 @@ export async function fetchFinanceInsights(opts?: {
     if (opts?.offlineFallback === false) throw e;
     console.warn('[finance-page-api] insights 失败', e);
     return null;
+  }
+}
+
+export type FinanceStatsData = FinanceStatsPayload & { fromApi: boolean };
+
+function roundStatsMoney(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+function ymdParts(ymd: string): { y: number; m: number; d: number } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) return null;
+  return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
+}
+
+function listYmdInclusive(start: string, end: string): string[] {
+  const a = ymdParts(start);
+  const b = ymdParts(end);
+  if (!a || !b || start > end) return [];
+  const out: string[] = [];
+  const cursor = new Date(a.y, a.m - 1, a.d);
+  const last = new Date(b.y, b.m - 1, b.d);
+  while (cursor <= last) {
+    const y = cursor.getFullYear();
+    const mo = String(cursor.getMonth() + 1).padStart(2, '0');
+    const d = String(cursor.getDate()).padStart(2, '0');
+    out.push(`${y}-${mo}-${d}`);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return out;
+}
+
+function listMonthKeysInclusive(start: string, end: string): string[] {
+  const a = ymdParts(start);
+  const b = ymdParts(end);
+  if (!a || !b || start > end) return [];
+  const out: string[] = [];
+  let y = a.y;
+  let m = a.m;
+  while (y < b.y || (y === b.y && m <= b.m)) {
+    out.push(`${y}-${String(m).padStart(2, '0')}`);
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return out;
+}
+
+function resolveStatsGranularity(
+  requested: 'day' | 'month' | 'auto' | undefined,
+  start: string,
+  end: string,
+): 'day' | 'month' {
+  if (requested === 'day' || requested === 'month') return requested;
+  const days = listYmdInclusive(start, end).length;
+  if (days > 90 || start.slice(0, 4) !== end.slice(0, 4)) return 'month';
+  return 'day';
+}
+
+async function buildFinanceStatsLocally(opts: {
+  start: string;
+  end: string;
+  granularity?: 'day' | 'month' | 'auto';
+  rankLimit?: number;
+  recentDaysLimit?: number;
+}): Promise<FinanceStatsPayload> {
+  const {
+    isBalanceCorrectionFinanceTransaction,
+    isInitialBalanceFinanceTransaction,
+    parseFinanceTransactionExtra,
+    BUILTIN_SHEET_CATEGORY_LABELS,
+    getFinanceTransactionCategoryLabel,
+  } = await import('@/lib/repositories/finance/finance-transaction-extra');
+  const { getFinanceTransactions, getFinanceFlowCategories } = await import(
+    '@/lib/repositories/finance/finance'
+  );
+
+  const granularity = resolveStatsGranularity(opts.granularity, opts.start, opts.end);
+  const rankLimit = Math.min(20, Math.max(1, opts.rankLimit ?? 5));
+  const recentDaysLimit = Math.min(31, Math.max(1, opts.recentDaysLimit ?? 6));
+  const dayList = listYmdInclusive(opts.start, opts.end);
+  const days = Math.max(1, dayList.length);
+
+  const [allTxns, categories] = await Promise.all([
+    getFinanceTransactions({ localOnly: true }),
+    getFinanceFlowCategories({ localOnly: true }),
+  ]);
+  const categoryById = new Map(categories.map((c) => [c.id, c]));
+  const categoryByName = new Map(categories.map((c) => [c.name, c]));
+  const categoryNameById = new Map(categories.map((c) => [c.id, c.name]));
+
+  type LocalTxn = {
+    id: string;
+    name: string;
+    happenedAt: string;
+    type: 'income' | 'expense';
+    amount: number;
+    note: string | null;
+    aiComment: string | null;
+    extraData: string | null;
+    flowCategoryId: string | null;
+    logicalDay: string;
+    isInitialBalance: boolean;
+    categoryName: string;
+    iconKey: string | null;
+  };
+
+  const txns: LocalTxn[] = [];
+  for (const row of allTxns) {
+    const day = String(row.happened_at ?? '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}/.test(day)) continue;
+    const ymd = day.slice(0, 10);
+    if (ymd < opts.start || ymd > opts.end) continue;
+    if (row.transaction_type === 'transfer') continue;
+    if (row.transaction_type !== 'income' && row.transaction_type !== 'expense') continue;
+    if (isBalanceCorrectionFinanceTransaction(row)) continue;
+
+    let iconKey: string | null = null;
+    let categoryName =
+      getFinanceTransactionCategoryLabel(row, categoryNameById) ?? '未分类';
+    if (row.flow_category_id) {
+      const cat = categoryById.get(row.flow_category_id);
+      if (cat) {
+        categoryName = cat.name;
+        try {
+          const extra = cat.extra_data ? (JSON.parse(cat.extra_data) as { icon?: string; icon_key?: string }) : null;
+          iconKey = extra?.icon ?? extra?.icon_key ?? null;
+        } catch {
+          iconKey = null;
+        }
+      }
+    } else {
+      const extra = parseFinanceTransactionExtra(row.extra_data);
+      const label =
+        extra.category_label?.trim() ||
+        (extra.category_key ? BUILTIN_SHEET_CATEGORY_LABELS[extra.category_key] : undefined);
+      if (label) {
+        const byName = categoryByName.get(label);
+        if (byName) {
+          categoryName = byName.name;
+          try {
+            const e = byName.extra_data
+              ? (JSON.parse(byName.extra_data) as { icon?: string; icon_key?: string })
+              : null;
+            iconKey = e?.icon ?? e?.icon_key ?? null;
+          } catch {
+            iconKey = null;
+          }
+        } else {
+          categoryName = label;
+        }
+      }
+    }
+
+    txns.push({
+      id: row.id,
+      name: row.name,
+      happenedAt: row.happened_at,
+      type: row.transaction_type,
+      amount: Math.abs(Number(row.amount) || 0),
+      note: row.note,
+      aiComment: row.ai_comment,
+      extraData: row.extra_data,
+      flowCategoryId: row.flow_category_id,
+      logicalDay: ymd,
+      isInitialBalance: isInitialBalanceFinanceTransaction(row),
+      categoryName,
+      iconKey,
+    });
+  }
+
+  let income = 0;
+  let expense = 0;
+  const expenseCats = new Map<string, FinanceStatsCategoryItem & { key: string }>();
+  const incomeCats = new Map<string, FinanceStatsCategoryItem & { key: string }>();
+  const dayBuckets = new Map<string, { income: number; expense: number }>();
+  const monthBuckets = new Map<string, { income: number; expense: number }>();
+
+  for (const txn of txns) {
+    if (txn.type === 'income') income += txn.amount;
+    else expense += txn.amount;
+
+    const dayBucket = dayBuckets.get(txn.logicalDay) ?? { income: 0, expense: 0 };
+    if (txn.type === 'income') dayBucket.income += txn.amount;
+    else dayBucket.expense += txn.amount;
+    dayBuckets.set(txn.logicalDay, dayBucket);
+
+    const mk = txn.logicalDay.slice(0, 7);
+    const monthBucket = monthBuckets.get(mk) ?? { income: 0, expense: 0 };
+    if (txn.type === 'income') monthBucket.income += txn.amount;
+    else monthBucket.expense += txn.amount;
+    monthBuckets.set(mk, monthBucket);
+
+    const side = txn.type === 'income' ? incomeCats : expenseCats;
+    const key = txn.flowCategoryId ? `id:${txn.flowCategoryId}` : `name:${txn.categoryName}`;
+    const cur = side.get(key) ?? {
+      key,
+      categoryId: txn.flowCategoryId,
+      name: txn.categoryName,
+      amount: 0,
+      count: 0,
+      percent: 0,
+      iconKey: txn.iconKey,
+    };
+    cur.amount += txn.amount;
+    cur.count += 1;
+    if (!cur.iconKey && txn.iconKey) cur.iconKey = txn.iconKey;
+    side.set(key, cur);
+  }
+
+  income = roundStatsMoney(income);
+  expense = roundStatsMoney(expense);
+  const balance = roundStatsMoney(income - expense);
+
+  const toSide = (map: Map<string, FinanceStatsCategoryItem & { key: string }>, total: number) =>
+    Array.from(map.values())
+      .sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name, 'zh-CN'))
+      .map(({ key: _k, ...item }) => ({
+        ...item,
+        amount: roundStatsMoney(item.amount),
+        percent: total > 0 ? roundStatsMoney((item.amount / total) * 100) : 0,
+      }));
+
+  const trendSource = granularity === 'month' ? monthBuckets : dayBuckets;
+  const trendKeys =
+    granularity === 'month' ? listMonthKeysInclusive(opts.start, opts.end) : dayList;
+  const points: FinanceStatsTrendPoint[] = trendKeys.map((key) => {
+    const found = trendSource.get(key) ?? { income: 0, expense: 0 };
+    const pointIncome = roundStatsMoney(found.income);
+    const pointExpense = roundStatsMoney(found.expense);
+    const label =
+      granularity === 'month'
+        ? `${Number(key.slice(5, 7))}月`
+        : `${Number(key.slice(5, 7))}.${Number(key.slice(8, 10))}`;
+    return {
+      key,
+      label,
+      income: pointIncome,
+      expense: pointExpense,
+      balance: roundStatsMoney(pointIncome - pointExpense),
+    };
+  });
+
+  const recentDays = Array.from(dayBuckets.entries())
+    .sort(([a], [b]) => (a < b ? 1 : -1))
+    .slice(0, recentDaysLimit)
+    .map(([day, item]) => {
+      const dayIncome = roundStatsMoney(item.income);
+      const dayExpense = roundStatsMoney(item.expense);
+      return {
+        day,
+        expense: dayExpense,
+        income: dayIncome,
+        balance: roundStatsMoney(dayIncome - dayExpense),
+      };
+    });
+
+  const buildRank = (side: 'income' | 'expense'): FinanceStatsRankItem[] =>
+    txns
+      .filter((t) => !t.isInitialBalance && t.type === side)
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, rankLimit)
+      .map((t) => ({
+        id: t.id,
+        name: t.categoryName === '未分类' ? t.name : `${t.categoryName}-${t.name}`,
+        categoryName: t.categoryName === '未分类' ? null : t.categoryName,
+        note: t.note ?? t.aiComment,
+        amount: roundStatsMoney(t.amount),
+        happenedAt: t.happenedAt,
+      }));
+
+  const sampleTransactions: FinanceStatsSampleTxn[] = [...txns]
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 50)
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      happened_at: t.happenedAt,
+      transaction_type: t.type,
+      flow_category_id: t.flowCategoryId,
+      amount: roundStatsMoney(t.amount),
+      note: t.note,
+      ai_comment: t.aiComment,
+      extra_data: t.extraData,
+    }));
+
+  return {
+    summary: { income, expense, balance, days, txnCount: txns.length },
+    categories: {
+      expense: toSide(expenseCats, expense),
+      income: toSide(incomeCats, income),
+    },
+    trend: { granularity, points },
+    billTable: {
+      total: { expense, income, balance },
+      dailyAvg: {
+        expense: roundStatsMoney(expense / days),
+        income: roundStatsMoney(income / days),
+        balance: roundStatsMoney(balance / days),
+      },
+      recentDays,
+    },
+    ranking: {
+      expense: buildRank('expense'),
+      income: buildRank('income'),
+    },
+    sampleTransactions,
+    meta: { start: opts.start, end: opts.end, granularity },
+  };
+}
+
+export async function fetchFinanceStats(opts: {
+  start: string;
+  end: string;
+  granularity?: 'day' | 'month' | 'auto';
+  categoryMode?: 'expense' | 'income' | 'both';
+  rankMode?: 'expense' | 'income' | 'both';
+  rankLimit?: number;
+  recentDaysLimit?: number;
+  excludeCorrections?: boolean;
+  signal?: AbortSignal;
+  offlineFallback?: boolean;
+}): Promise<FinanceStatsData> {
+  const normalize = (payload: FinanceStatsPayload, fromApi: boolean): FinanceStatsData => ({
+    summary: payload.summary ?? { income: 0, expense: 0, balance: 0, days: 1, txnCount: 0 },
+    categories: {
+      expense: Array.isArray(payload.categories?.expense) ? payload.categories.expense : [],
+      income: Array.isArray(payload.categories?.income) ? payload.categories.income : [],
+    },
+    trend: {
+      granularity: payload.trend?.granularity === 'month' ? 'month' : 'day',
+      points: Array.isArray(payload.trend?.points) ? payload.trend.points : [],
+    },
+    billTable: {
+      total: payload.billTable?.total ?? { expense: 0, income: 0, balance: 0 },
+      dailyAvg: payload.billTable?.dailyAvg ?? { expense: 0, income: 0, balance: 0 },
+      recentDays: Array.isArray(payload.billTable?.recentDays) ? payload.billTable.recentDays : [],
+    },
+    ranking: {
+      expense: Array.isArray(payload.ranking?.expense) ? payload.ranking.expense : [],
+      income: Array.isArray(payload.ranking?.income) ? payload.ranking.income : [],
+    },
+    sampleTransactions: Array.isArray(payload.sampleTransactions) ? payload.sampleTransactions : [],
+    meta: payload.meta,
+    fromApi,
+  });
+
+  try {
+    const wantExclude = opts.excludeCorrections !== false;
+    const payload = await apiGetFinanceStats({
+      start: opts.start,
+      end: opts.end,
+      granularity: opts.granularity ?? 'auto',
+      categoryMode: opts.categoryMode ?? 'both',
+      rankMode: opts.rankMode ?? 'both',
+      rankLimit: opts.rankLimit ?? 5,
+      recentDaysLimit: opts.recentDaysLimit ?? 6,
+      excludeCorrections: wantExclude,
+      signal: opts.signal,
+    });
+    const normalized = normalize(payload, true);
+    const empty =
+      (normalized.summary.txnCount ?? 0) === 0 &&
+      (normalized.summary.income ?? 0) === 0 &&
+      (normalized.summary.expense ?? 0) === 0;
+
+    // 兼容后端 balanceCorrectionSql 的 MySQL NULL 三值逻辑 bug：
+    // excludeCorrections=true 时会把普通流水也滤光。若专口为空，改拉流水并本地聚合。
+    if (empty && wantExclude) {
+      try {
+        await fetchFinanceTransactionsRange({
+          start: opts.start,
+          end: opts.end,
+          excludeCorrections: false,
+          signal: opts.signal,
+          offlineFallback: true,
+        });
+        const local = await buildFinanceStatsLocally({
+          start: opts.start,
+          end: opts.end,
+          granularity: opts.granularity,
+          rankLimit: opts.rankLimit,
+          recentDaysLimit: opts.recentDaysLimit,
+        });
+        if ((local.summary.txnCount ?? 0) > 0) {
+          console.warn('[finance-page-api] stats 专口为空，已用流水本地聚合兜底');
+          return { ...local, fromApi: false };
+        }
+      } catch (fallbackErr) {
+        console.warn('[finance-page-api] stats 空结果兜底失败', fallbackErr);
+      }
+    }
+
+    return normalized;
+  } catch (e) {
+    if (opts.offlineFallback === false) throw e;
+    console.warn('[finance-page-api] stats 失败，回退本地聚合', e);
+    const local = await buildFinanceStatsLocally({
+      start: opts.start,
+      end: opts.end,
+      granularity: opts.granularity,
+      rankLimit: opts.rankLimit,
+      recentDaysLimit: opts.recentDaysLimit,
+    });
+    return { ...local, fromApi: false };
   }
 }

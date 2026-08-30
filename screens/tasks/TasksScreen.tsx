@@ -117,6 +117,7 @@ import {
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import {
   insertFrogCompletionEvent,
+  isFrogSubjectDeleted,
   type FrogCompletionDayItem,
 } from '@/lib/repositories/tasks/frog-completion-events';
 import {
@@ -2812,6 +2813,11 @@ export default function TasksScreen() {
   };
 
   const openTask = (id: string) => {
+    const frogRow = todayFrogs.find((t) => t.id === id);
+    if (frogRow && isFrogSubjectDeleted(frogRow.extra_data)) {
+      Alert.alert('已删除', '该青蛙对应的任务/项目已删除，仅保留今日完成记录。');
+      return;
+    }
     if (projectFrogIds.has(id) || projects.some((p) => p.id === id)) {
       openProject(id);
       return;
@@ -2958,6 +2964,10 @@ export default function TasksScreen() {
           : todayFrogs.find((t) => t.id === taskId)
         : findVisibleTask(taskId);
       if (!frog) return;
+      if (isFrogSubjectDeleted(frog.extra_data)) {
+        Alert.alert('无法取消', '该青蛙对应的任务/项目已删除，仅保留今日完成记录。');
+        return;
+      }
       const titleLabel = (frog.title ?? '').trim() || (isProjectFrog ? '该项目' : '该任务');
       Alert.alert('取消指派', `确定将「${titleLabel}」从今日青蛙中移除吗？`, [
         { text: '保留', style: 'cancel' },
@@ -3164,7 +3174,7 @@ export default function TasksScreen() {
     [loadProjectTasks, loadProjects, loadProjectsListFromApi, markPageDirty, projectTab, runExclusiveMutation],
   );
 
-  /** 完成项目后不归纳：强制完成未完成任务后彻底删除 */
+  /** 完成项目后不归纳：强制完成未完成任务后彻底删除（仍发积分并保留青蛙完成记录） */
   const discardProjectFromList = React.useCallback(
     async (project: ProjectRow) => {
       try {
@@ -3174,6 +3184,8 @@ export default function TasksScreen() {
           if (nextProjectExtra !== proj.extra_data) {
             await updateProject(project.id, { extra_data: nextProjectExtra });
           }
+          // 与「归纳」一致：完成即发奖，再删除实体；青蛙事件已在 completeIncomplete 中写入
+          await grantProjectPointsWithToast(project.id, 'earn', nextProjectExtra ?? proj.extra_data);
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           projectSwipeableRefs.current[project.id]?.close();
           await deleteProject(project.id);
@@ -3183,6 +3195,7 @@ export default function TasksScreen() {
           await loadProjectTasks(rows);
           await loadTodayFrogs();
           await loadProjectsListFromApi(projectTab, { replaceMap: true });
+          scheduleHeatmapReload();
         }, '项目已删除');
       } catch (err) {
         console.warn('删除项目失败', err);
@@ -3192,6 +3205,7 @@ export default function TasksScreen() {
     },
     [
       completeIncompleteProjectTasksForProject,
+      grantProjectPointsWithToast,
       loadProjectTasks,
       loadProjects,
       loadProjectsListFromApi,
@@ -3199,6 +3213,7 @@ export default function TasksScreen() {
       markPageDirty,
       projectTab,
       runExclusiveMutation,
+      scheduleHeatmapReload,
     ],
   );
 
@@ -3848,6 +3863,11 @@ export default function TasksScreen() {
           : todayFrogs.find((t) => t.id === taskId)
         : findVisibleTask(taskId);
       if (!current || isTaskShelvedStatus(current.status)) return;
+      if (isFrogSubjectDeleted(current.extra_data)) {
+        playFrogDoneBounce(taskId);
+        Alert.alert('无法操作', '该青蛙对应的任务/项目已删除，仅保留今日完成记录。');
+        return;
+      }
 
       const isAssignedToday = isFrogAssignedOn(current.extra_data, logicalTodayYmd);
       const frogDone = isFrogDoneForToday(current.extra_data, current.status, logicalTodayYmd);
@@ -4972,11 +4992,14 @@ export default function TasksScreen() {
                       const isDone = isFrogDoneForToday(frog.extra_data, frog.status, logicalTodayYmd);
                       const isProjectFrog = projectFrogIds.has(frog.id);
                       const isLongTerm = getIsLongTermFrog(frog.extra_data);
+                      const isDeletedSnapshot = isFrogSubjectDeleted(frog.extra_data);
                       return (
                         <ScalePressable
                           key={frog.id}
                           onPress={() => openTask(frog.id)}
-                          onLongPress={() => unassignFrog(frog.id)}
+                          onLongPress={() => {
+                            if (!isDeletedSnapshot) unassignFrog(frog.id);
+                          }}
                           scaleTo={0.985}
                           style={({ pressed }) => [
                             styles.frogCard,
@@ -4996,27 +5019,33 @@ export default function TasksScreen() {
                               </View>
                               <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
                                 <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>
-                                  {isLongTerm
+                                  {isDeletedSnapshot
                                     ? isProjectFrog
-                                      ? '长期项目 · 今日已指派'
-                                      : '长期 · 今日已指派'
-                                    : isProjectFrog
-                                      ? '项目 · 今日已指派'
-                                      : '今日已指派'}
+                                      ? '项目 · 今日已完成'
+                                      : '今日已完成'
+                                    : isLongTerm
+                                      ? isProjectFrog
+                                        ? '长期项目 · 今日已指派'
+                                        : '长期 · 今日已指派'
+                                      : isProjectFrog
+                                        ? '项目 · 今日已指派'
+                                        : '今日已指派'}
                                 </Text>
                               </View>
                             </View>
                             <View style={styles.frogCardActions}>
-                              <Pressable
-                                onPress={(e) => {
-                                  e.stopPropagation?.();
-                                  unassignFrog(frog.id);
-                                }}
-                                hitSlop={10}
-                                accessibilityLabel="取消指派"
-                                style={({ pressed }) => [styles.inlineDoneBtn, pressed && { opacity: 0.75 }]}>
-                                <MaterialIcons name="link-off" size={17} color={outline} />
-                              </Pressable>
+                              {!isDeletedSnapshot ? (
+                                <Pressable
+                                  onPress={(e) => {
+                                    e.stopPropagation?.();
+                                    unassignFrog(frog.id);
+                                  }}
+                                  hitSlop={10}
+                                  accessibilityLabel="取消指派"
+                                  style={({ pressed }) => [styles.inlineDoneBtn, pressed && { opacity: 0.75 }]}>
+                                  <MaterialIcons name="link-off" size={17} color={outline} />
+                                </Pressable>
+                              ) : null}
                               <Pressable
                                 onPress={(e) => {
                                   e.stopPropagation?.();
@@ -5034,7 +5063,16 @@ export default function TasksScreen() {
                               </Pressable>
                             </View>
                           </View>
-                          {isProjectFrog ? (
+                          {isDeletedSnapshot ? (
+                            <Text
+                              style={[
+                                styles.taskParentHint,
+                                { color: outline, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.65 : 1 },
+                              ]}
+                              numberOfLines={1}>
+                              {isProjectFrog ? '项目已删除' : '任务已删除'}
+                            </Text>
+                          ) : isProjectFrog ? (
                             <Text
                               style={[
                                 styles.taskParentHint,

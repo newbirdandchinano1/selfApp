@@ -4,6 +4,7 @@ import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, isYmdInRange } from '@/lib/api-read-helpers';
+import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
 import { getDatabase } from '../../database.native';
 
 export type FrogCompletionEventAction = 'completed' | 'reopened';
@@ -29,6 +30,56 @@ type FrogCompletionEventRow = {
   action: string;
   created_at: string;
 };
+
+/** extra_data 标记：主体已删，今日栏仅作完成快照展示 */
+export const FROG_SUBJECT_DELETED_KEY = 'frogSubjectDeleted';
+
+export function isFrogSubjectDeleted(extraData: string | null | undefined): boolean {
+  if (!extraData) return false;
+  try {
+    const parsed = JSON.parse(extraData) as Record<string, unknown>;
+    return parsed[FROG_SUBJECT_DELETED_KEY] === true;
+  } catch {
+    return false;
+  }
+}
+
+/** 从完成事件合成今日栏卡片（主体已删时仍展示「已完成」） */
+export function frogCompletionItemToSnapshotTaskRow(
+  item: FrogCompletionDayItem,
+  logicalToday: string,
+): TaskRow {
+  const subjectId = (item.task_id ?? '').trim() || item.id;
+  const title = (item.task_title ?? '').trim() || '已删除的青蛙';
+  const isProject =
+    item.subject === 'project' || subjectId.startsWith('p_');
+  const now = formatTaskAuditDatetimeLocal();
+  const extra = {
+    frogAssignedOn: logicalToday,
+    frogAssignedDates: [logicalToday],
+    frogSessionCompletedOn: logicalToday,
+    [FROG_SUBJECT_DELETED_KEY]: true,
+    ...(isProject ? { isLongTermProject: false } : {}),
+  };
+  return {
+    id: subjectId,
+    project_id: null,
+    category_id: null,
+    parent_task_id: null,
+    title,
+    description: null,
+    note: isProject ? '今日已完成（项目已删除）' : '今日已完成（任务已删除）',
+    status: 'done',
+    priority: 0 as TaskPriority,
+    due_date: null,
+    completed_at: now,
+    created_at: now,
+    updated_at: now,
+    sync_status: 'synced',
+    extra_data: JSON.stringify(extra),
+    sort_order: 0,
+  };
+}
 
 /** 同一青蛙主体 + 指派日只保留最新一次操作；仅当最新为 completed 时计入热力图 */
 function filterNetCompletedFrogEvents<T extends FrogCompletionEventRow>(events: T[]): T[] {

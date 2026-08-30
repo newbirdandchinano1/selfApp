@@ -131,6 +131,7 @@ GET /api/pages/tasks/today-frogs?dayBoundaryHour=0&dayBoundaryMinute=0
 
 - [ ] 只把任务标成今日青蛙 → `tasks` 有、`projectFrogs` 空
 - [ ] 无子任务的项目标成今日青蛙 → `projectFrogs` / `projectFrogIds` 有
+- [ ] 项目青蛙完成并「不保留」删除后：`today-frogs` 仍返回该条（`extra_data.frogSubjectDeleted=true`），APP 今日栏显示已完成而非空
 - [ ] 跨逻辑日（日界小时非 0）指派日切换正确
 - [ ] 抓包任务 Tab **没有** `/api/data/tasks`
 

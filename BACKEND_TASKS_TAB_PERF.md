@@ -110,7 +110,8 @@ GET /api/pages/tasks/completion-heatmap
 | 字段 | 要求 |
 |------|------|
 | `countsByDay[ymd].todos` | **净完成**待办数，不是事件表 raw count |
-| `countsByDay[ymd].frogs` | 该日青蛙完成数 |
+| `countsByDay[ymd].frogs` | 该日青蛙**净完成**数（`frog_completion_events` 按主体+指派日取最新；仅最新为 completed 计入）。**不要求** tasks/projects 行仍存在：完成并删除项目/任务后，事件行 + `task_title` 快照仍计入 |
+| `dayDetail.frogs[]` | `task_id` 为青蛙主体（任务 id **或** 项目 id）；可带 `subject: "task" \| "project"`；标题优先活体行，否则用事件快照 |
 | `countsByDay[ymd].total` | `frogs + todos`（已互斥去重后） |
 | `meta.todoNetCompleted` | 新加，恒为 `true`，表示待办已按净完成计算。没有此标记时 APP 仍会用接口数，但联调时用它验收 |
 | `dayDetail.todos` | 仅当日净完成待办；不含已在 `frogs` 里的 `task_id` |
@@ -123,6 +124,8 @@ GET /api/pages/tasks/completion-heatmap
 - [ ] 非重复待办：完成 → 撤销 → 再完成，热力图只出现在「再完成」当天
 - [ ] 晚上完成、`completed_at` 无时区：算在当天逻辑日，不漂到次日
 - [ ] 同一任务既是青蛙又完成：只出现在青蛙计数，待办计数不加 1
+- [ ] 项目青蛙完成并选择「不保留」删除后：当日 `frogs` 计数仍含该条；`dayDetail.frogs` 能靠 `task_title` 快照展示
+- [ ] 删除任务时**不得**级联删除 `frog_completion_events`（历史记录需保留）
 - [ ] 区间约 105 天，响应应是按日聚合，体积远小于事件表全量 JSON
 
 ---

@@ -119,12 +119,17 @@ async function enrichFrogSubjects(
   });
 }
 
-/** 同一主体只保留一条；同名时优先保留项目青蛙 */
+/** 同一主体只保留一条；同名时优先保留项目青蛙。主体已删时 task_id 可能为空，仍保留标题快照。 */
 function dedupeFrogDayItems(items: FrogCompletionDayItem[]): FrogCompletionDayItem[] {
   const byId = new Map<string, FrogCompletionDayItem>();
+  const orphans: FrogCompletionDayItem[] = [];
   for (const item of items) {
     const key = item.task_id?.trim();
-    if (!key) continue;
+    if (!key) {
+      // 任务物理删除后 FK 会把 task_id 置空；靠事件 id / 标题快照保留记录
+      orphans.push(item);
+      continue;
+    }
     const prev = byId.get(key);
     if (!prev) {
       byId.set(key, item);
@@ -144,7 +149,7 @@ function dedupeFrogDayItems(items: FrogCompletionDayItem[]): FrogCompletionDayIt
     });
   }
 
-  const list = [...byId.values()];
+  const list = [...byId.values(), ...orphans];
   const byTitle = new Map<string, FrogCompletionDayItem>();
   const noTitle: FrogCompletionDayItem[] = [];
   for (const item of list) {
@@ -240,15 +245,26 @@ async function readCompletionHeatmapFromLocal(
   return { frogCountByYmd, todoCountByYmd };
 }
 
+/** 按日取较大值合并，避免「完成并删除」后接口丢掉主体导致青蛙计数归零 */
+function mergeCountMapsByMax(primary: Map<string, number>, fallback: Map<string, number>): Map<string, number> {
+  const out = new Map(primary);
+  for (const [ymd, n] of fallback) {
+    out.set(ymd, Math.max(out.get(ymd) ?? 0, n));
+  }
+  return out;
+}
+
 /**
  * 完成热力图：优先专用接口计数（含待办净完成）。
- * 接口失败时才回退本地事件表。
+ * 青蛙计数与本地事件表取较大值，避免项目删除后接口不再统计已完成青蛙。
+ * 接口失败时回退本地事件表。
  */
 export async function fetchCompletionHeatmap(opts: HeatmapRequestOpts): Promise<CompletionHeatmapData> {
   const boundary = opts.boundary ?? (await loadTasksDayBoundary());
   const { heatmapStart, heatmapEnd, signal } = opts;
 
   throwIfAborted(signal);
+  const local = await readCompletionHeatmapFromLocal(heatmapStart, heatmapEnd);
   try {
     const payload = await apiGetTasksCompletionHeatmap({
       dayBoundaryHour: boundary.hour,
@@ -259,13 +275,12 @@ export async function fetchCompletionHeatmap(opts: HeatmapRequestOpts): Promise<
     });
     const apiCounts = countsRecordToMaps(payload.countsByDay ?? {});
     return {
-      frogCountByYmd: apiCounts.frogCountByYmd,
+      frogCountByYmd: mergeCountMapsByMax(apiCounts.frogCountByYmd, local.frogCountByYmd),
       todoCountByYmd: apiCounts.todoCountByYmd,
       meta: payload.meta ?? {},
     };
   } catch (e) {
     console.warn('[completion-heatmap] 接口失败，回退本地', e);
-    const local = await readCompletionHeatmapFromLocal(heatmapStart, heatmapEnd);
     return {
       frogCountByYmd: local.frogCountByYmd,
       todoCountByYmd: local.todoCountByYmd,

@@ -2,15 +2,9 @@ import { AppButton, AppCard, AppIconButton, ScreenHeader } from '@/components/ui
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { fetchFinanceCatalog, fetchFinanceTransactionsRange } from '@/lib/finance-page-api';
-import {
-  BUILTIN_SHEET_CATEGORY_LABELS,
-  getFinanceTransactionCategoryLabel,
-  isBalanceCorrectionFinanceTransaction,
-  isInitialBalanceFinanceTransaction,
-  parseFinanceTransactionExtra,
-} from '@/lib/repositories/finance/finance-transaction-extra';
-import type { FinanceFlowCategoryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import type { FinanceStatsSampleTxn } from '@/lib/api-client';
+import { fetchFinanceStats, type FinanceStatsData } from '@/lib/finance-page-api';
+import { parseFinanceTransactionExtra } from '@/lib/repositories/finance/finance-transaction-extra';
 import { analyzeFinanceBillSummaryFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -75,11 +69,6 @@ type TrendDetailItem = {
 const CATEGORY_COLORS = ['#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe', '#0ea5e9', '#38bdf8'];
 const DEFAULT_CATEGORY_ICON: keyof typeof MaterialIcons.glyphMap = 'category';
 
-function parseYmd(value: string) {
-  const datePart = value.includes('T') ? value.split('T')[0] : value.split(' ')[0];
-  return datePart || value;
-}
-
 function formatYmd(value: Date) {
   const year = value.getFullYear();
   const month = String(value.getMonth() + 1).padStart(2, '0');
@@ -122,7 +111,9 @@ function formatCustomDate(value: Date, shouldShowYear: boolean) {
 }
 
 function formatAxisDate(value: Date, shouldShowYear: boolean) {
-  return shouldShowYear ? `${String(value.getFullYear()).slice(2)}.${value.getMonth() + 1}` : `${value.getMonth() + 1}.${value.getDate()}`;
+  return shouldShowYear
+    ? `${String(value.getFullYear()).slice(2)}.${value.getMonth() + 1}`
+    : `${value.getMonth() + 1}.${value.getDate()}`;
 }
 
 function addDays(value: Date, days: number) {
@@ -154,69 +145,37 @@ function buildDateAxis(start: Date, end: Date, shouldShowYear: boolean) {
     .map((offset) => formatAxisDate(addDays(start, offset), shouldShowYear));
 }
 
-function getSignedAmount(txn: FinanceTransactionRow) {
-  if (txn.transaction_type === 'income') return Math.abs(txn.amount);
-  if (txn.transaction_type === 'transfer') return 0;
-  return -Math.abs(txn.amount);
+function asMaterialIcon(raw: string | null | undefined): keyof typeof MaterialIcons.glyphMap {
+  if (raw && raw in MaterialIcons.glyphMap) {
+    return raw as keyof typeof MaterialIcons.glyphMap;
+  }
+  return DEFAULT_CATEGORY_ICON;
 }
 
-function getCategoryIcon(category?: FinanceFlowCategoryRow) {
-  if (!category?.extra_data) return DEFAULT_CATEGORY_ICON;
-  try {
-    const extra = JSON.parse(category.extra_data) as { icon?: keyof typeof MaterialIcons.glyphMap; icon_key?: keyof typeof MaterialIcons.glyphMap };
-    return extra.icon ?? extra.icon_key ?? DEFAULT_CATEGORY_ICON;
-  } catch {
-    return DEFAULT_CATEGORY_ICON;
-  }
+function parseYmd(value: string) {
+  const datePart = value.includes('T') ? value.split('T')[0] : value.split(' ')[0];
+  return datePart || value;
 }
 
-function resolveTransactionCategory(
-  txn: FinanceTransactionRow,
-  categoryMap: Map<string, FinanceFlowCategoryRow>,
-  categoryByName: Map<string, FinanceFlowCategoryRow>,
-) {
-  if (txn.flow_category_id) {
-    const row = categoryMap.get(txn.flow_category_id);
-    if (row) {
-      return { key: row.id, name: row.name, icon: getCategoryIcon(row), row };
-    }
-  }
-
-  const extra = parseFinanceTransactionExtra(txn.extra_data);
-  const label = extra.category_label?.trim() || (extra.category_key ? BUILTIN_SHEET_CATEGORY_LABELS[extra.category_key] : undefined);
-  if (label) {
-    const row = categoryByName.get(label);
-    if (row) {
-      return { key: row.id, name: row.name, icon: getCategoryIcon(row), row };
-    }
-    return { key: `label:${label}`, name: label, icon: DEFAULT_CATEGORY_ICON, row: undefined };
-  }
-
-  return { key: 'uncategorized', name: '未分类', icon: DEFAULT_CATEGORY_ICON, row: undefined };
-}
-
-function transactionMatchesTrendPoint(
-  txn: FinanceTransactionRow,
+function sampleMatchesTrendPoint(
+  txn: FinanceStatsSampleTxn,
   point: TrendPoint,
-  isYearlyGranularity: boolean,
+  isMonthGranularity: boolean,
 ) {
   const ymd = parseYmd(txn.happened_at);
-  if (isYearlyGranularity) return ymd.slice(0, 7) === point.dateKey;
+  if (isMonthGranularity) return ymd.slice(0, 7) === point.dateKey;
   return ymd === point.dateKey;
 }
 
-function buildTrendDetailItem(
-  txn: FinanceTransactionRow,
-  categoryMap: Map<string, FinanceFlowCategoryRow>,
-  categoryByName: Map<string, FinanceFlowCategoryRow>,
-): TrendDetailItem {
-  const resolved = resolveTransactionCategory(txn, categoryMap, categoryByName);
+function buildTrendDetailFromSample(txn: FinanceStatsSampleTxn): TrendDetailItem {
+  const extra = parseFinanceTransactionExtra(txn.extra_data);
+  const label = extra.category_label?.trim();
   return {
     id: txn.id,
-    name: resolved.name === '未分类' ? txn.name : `${resolved.name}-${txn.name}`,
+    name: label ? `${label}-${txn.name}` : txn.name,
     desc: txn.note ?? txn.ai_comment ?? '',
     amount: Math.abs(txn.amount),
-    icon: resolved.icon,
+    icon: DEFAULT_CATEGORY_ICON,
     type: txn.transaction_type === 'income' ? 'income' : 'expense',
   };
 }
@@ -242,49 +201,10 @@ export default function FinanceStatsScreen() {
   const [trendMode, setTrendMode] = React.useState<TrendMode>('expense');
   const [rankMode, setRankMode] = React.useState<RankMode>('expense');
   const [selectedTrendIndex, setSelectedTrendIndex] = React.useState<number | null>(null);
-  const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
-  const [categories, setCategories] = React.useState<FinanceFlowCategoryRow[]>([]);
+  const [stats, setStats] = React.useState<FinanceStatsData | null>(null);
   const [aiBillAnalysis, setAiBillAnalysis] = React.useState<string | null>(null);
   const [aiBillAnalysisError, setAiBillAnalysisError] = React.useState<string | null>(null);
   const [aiBillAnalysisBusy, setAiBillAnalysisBusy] = React.useState(false);
-
-  const reload = React.useCallback(async (forceApi = false) => {
-    await wrapLoad(async () => {
-      try {
-        const end = new Date();
-        const start = new Date();
-        start.setDate(start.getDate() - 800);
-        const ymd = (d: Date) =>
-          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        const [txnResult, catalog] = await Promise.all([
-          fetchFinanceTransactionsRange({
-            start: ymd(start),
-            end: ymd(end),
-            offlineFallback: true,
-          }),
-          fetchFinanceCatalog({ offlineFallback: true }),
-        ]);
-        setTransactions(txnResult.transactions);
-        setCategories(catalog.categories);
-      } catch (error) {
-        console.warn('Failed to load finance stats:', error);
-        setTransactions([]);
-        setCategories([]);
-      }
-    }, forceApi);
-  }, [wrapLoad]);
-
-  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
-
-  React.useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  useFocusEffect(
-    React.useCallback(() => {
-      void reload();
-    }, [reload])
-  );
 
   const range = React.useMemo(() => {
     const start = new Date(currentDate);
@@ -309,125 +229,142 @@ export default function FinanceStatsScreen() {
     return { start, end, startYmd: formatYmd(start), endYmd: formatYmd(end) };
   }, [activeTab, currentDate, customEndDate, customStartDate]);
 
-  const filteredTransactions = React.useMemo(() => {
-    return transactions.filter((txn) => {
-      const ymd = parseYmd(txn.happened_at);
-      return ymd >= range.startYmd && ymd <= range.endYmd;
-    });
-  }, [range.endYmd, range.startYmd, transactions]);
+  const statsGranularity = activeTab === '年' ? 'month' : ('day' as const);
 
-  const statsTransactions = React.useMemo(
-    () => filteredTransactions.filter((txn) => !isBalanceCorrectionFinanceTransaction(txn)),
-    [filteredTransactions],
+  const reload = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
+        try {
+          const data = await fetchFinanceStats({
+            start: range.startYmd,
+            end: range.endYmd,
+            granularity: statsGranularity,
+            categoryMode: 'both',
+            rankMode: 'both',
+            rankLimit: 5,
+            recentDaysLimit: 6,
+            excludeCorrections: true,
+            offlineFallback: true,
+          });
+          setStats(data);
+        } catch (error) {
+          console.warn('Failed to load finance stats:', error);
+          setStats(null);
+        }
+      }, forceApi);
+    },
+    [range.endYmd, range.startYmd, statsGranularity, wrapLoad],
   );
 
-  const categoryMap = React.useMemo(() => new Map(categories.map((category) => [category.id, category])), [categories]);
-  const categoryByName = React.useMemo(() => new Map(categories.map((category) => [category.name, category])), [categories]);
-  const categoryNameById = React.useMemo(() => new Map(categories.map((category) => [category.id, category.name])), [categories]);
-  const totalIncome = React.useMemo(
-    () => statsTransactions.filter((txn) => txn.transaction_type === 'income').reduce((sum, txn) => sum + Math.abs(txn.amount), 0),
-    [statsTransactions]
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
+
+  React.useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      void reload();
+    }, [reload]),
   );
-  const totalExpense = React.useMemo(
-    () => statsTransactions.filter((txn) => txn.transaction_type !== 'income' && txn.transaction_type !== 'transfer').reduce((sum, txn) => sum + Math.abs(txn.amount), 0),
-    [statsTransactions]
-  );
-  const balance = totalIncome - totalExpense;
+
+  const totalIncome = stats?.summary.income ?? 0;
+  const totalExpense = stats?.summary.expense ?? 0;
+  const balance = stats?.summary.balance ?? totalIncome - totalExpense;
+  const txnCount = stats?.summary.txnCount ?? 0;
 
   const categoryTotal = categoryMode === 'income' ? totalIncome : totalExpense;
   const categoryAccent = categoryMode === 'income' ? incomeColor : expenseColor;
   const categoryData = React.useMemo<CategoryItem[]>(() => {
-    const bucket = new Map<string, { name: string; amount: number; count: number; icon: keyof typeof MaterialIcons.glyphMap }>();
-    statsTransactions.forEach((txn) => {
-      const isIncome = txn.transaction_type === 'income';
-      const isExpense = txn.transaction_type !== 'income' && txn.transaction_type !== 'transfer';
-      if ((categoryMode === 'income' && !isIncome) || (categoryMode === 'expense' && !isExpense)) return;
-      const resolved = resolveTransactionCategory(txn, categoryMap, categoryByName);
-      const current = bucket.get(resolved.key) ?? { name: resolved.name, amount: 0, count: 0, icon: resolved.icon };
-      current.amount += Math.abs(txn.amount);
-      current.count += 1;
-      bucket.set(resolved.key, current);
-    });
-    return Array.from(bucket.values())
-      .sort((a, b) => b.amount - a.amount)
-      .map((item, index) => ({
-        id: index + 1,
-        name: item.name,
-        percent: categoryTotal > 0 ? (item.amount / categoryTotal) * 100 : 0,
-        amount: item.amount,
-        count: item.count,
-        icon: item.icon,
-        color: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
-      }));
-  }, [categoryByName, categoryMap, categoryMode, categoryTotal, statsTransactions]);
+    const side = categoryMode === 'income' ? stats?.categories.income : stats?.categories.expense;
+    return (side ?? []).map((item, index) => ({
+      id: index + 1,
+      name: item.name,
+      percent: item.percent,
+      amount: item.amount,
+      count: item.count,
+      icon: asMaterialIcon(item.iconKey),
+      color: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
+    }));
+  }, [categoryMode, stats?.categories.expense, stats?.categories.income]);
 
   const dailyRows = React.useMemo<BillSummaryItem[]>(() => {
-    const bucket = new Map<string, { income: number; expense: number }>();
-    statsTransactions.forEach((txn) => {
-      const day = parseYmd(txn.happened_at);
-      const current = bucket.get(day) ?? { income: 0, expense: 0 };
-      const signed = getSignedAmount(txn);
-      if (signed > 0) current.income += signed;
-      if (signed < 0) current.expense += Math.abs(signed);
-      bucket.set(day, current);
-    });
-    const days = Math.max(1, Math.ceil((range.end.getTime() - range.start.getTime()) / 86400000) + 1);
-    const rows = Array.from(bucket.entries())
-      .sort(([a], [b]) => (a < b ? 1 : -1))
-      .slice(0, 6)
-      .map(([day, item]) => ({ date: `${Number(day.slice(5, 7))}.${Number(day.slice(8, 10))}`, expense: item.expense, income: item.income, balance: item.income - item.expense }));
+    if (!stats) {
+      return [
+        { date: '总计', expense: 0, income: 0, balance: 0 },
+        { date: '日均', expense: 0, income: 0, balance: 0 },
+      ];
+    }
+    const recent = stats.billTable.recentDays.map((row) => ({
+      date: `${Number(row.day.slice(5, 7))}.${Number(row.day.slice(8, 10))}`,
+      expense: row.expense,
+      income: row.income,
+      balance: row.balance,
+    }));
     return [
-      { date: '总计', expense: totalExpense, income: totalIncome, balance },
-      { date: '日均', expense: totalExpense / days, income: totalIncome / days, balance: balance / days },
-      ...rows,
+      {
+        date: '总计',
+        expense: stats.billTable.total.expense,
+        income: stats.billTable.total.income,
+        balance: stats.billTable.total.balance,
+      },
+      {
+        date: '日均',
+        expense: stats.billTable.dailyAvg.expense,
+        income: stats.billTable.dailyAvg.income,
+        balance: stats.billTable.dailyAvg.balance,
+      },
+      ...recent,
     ];
-  }, [balance, range.end, range.start, statsTransactions, totalExpense, totalIncome]);
+  }, [stats]);
 
   const topRankItems = React.useMemo<TopExpenseItem[]>(() => {
-    return statsTransactions
-      .filter((txn) => !isInitialBalanceFinanceTransaction(txn))
-      .filter((txn) => rankMode === 'income' ? txn.transaction_type === 'income' : txn.transaction_type !== 'income' && txn.transaction_type !== 'transfer')
-      .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
-      .slice(0, 5)
-      .map((txn, index) => {
-        const resolved = resolveTransactionCategory(txn, categoryMap, categoryByName);
-        return {
-          id: txn.id,
-          rank: index + 1,
-          name: resolved.name === '未分类' ? txn.name : `${resolved.name}-${txn.name}`,
-          desc: txn.note ?? txn.ai_comment ?? '',
-          amount: Math.abs(txn.amount),
-          icon: resolved.icon,
-        };
-      });
-  }, [categoryByName, categoryMap, rankMode, statsTransactions]);
+    const side = rankMode === 'income' ? stats?.ranking.income : stats?.ranking.expense;
+    return (side ?? []).map((item, index) => ({
+      id: item.id,
+      rank: index + 1,
+      name: item.name,
+      desc: item.note ?? '',
+      amount: item.amount,
+      icon: DEFAULT_CATEGORY_ICON,
+    }));
+  }, [rankMode, stats?.ranking.expense, stats?.ranking.income]);
 
-  const shiftRange = React.useCallback((direction: -1 | 1) => {
-    if (activeTab === '自定义') {
-      const days = Math.max(1, Math.ceil((customEndDate.getTime() - customStartDate.getTime()) / 86400000) + 1);
-      setCustomStartDate((prev) => addDays(prev, direction * days));
-      setCustomEndDate((prev) => addDays(prev, direction * days));
-      return;
-    }
-
-    setCurrentDate((prev) => {
-      const next = new Date(prev);
-      if (activeTab === '周') {
-        next.setDate(next.getDate() + direction * 7);
-      } else if (activeTab === '年') {
-        next.setFullYear(next.getFullYear() + direction);
-      } else {
-        next.setMonth(next.getMonth() + direction);
+  const shiftRange = React.useCallback(
+    (direction: -1 | 1) => {
+      if (activeTab === '自定义') {
+        const days = Math.max(
+          1,
+          Math.ceil((customEndDate.getTime() - customStartDate.getTime()) / 86400000) + 1,
+        );
+        setCustomStartDate((prev) => addDays(prev, direction * days));
+        setCustomEndDate((prev) => addDays(prev, direction * days));
+        return;
       }
-      return next;
-    });
-  }, [activeTab, customEndDate, customStartDate]);
 
-  const openDatePicker = React.useCallback((field: CustomDateField) => {
-    setCustomDateError(null);
-    setDraftPickerDate(new Date(field === 'start' ? customStartDate : customEndDate));
-    setActiveDatePicker(field);
-  }, [customEndDate, customStartDate]);
+      setCurrentDate((prev) => {
+        const next = new Date(prev);
+        if (activeTab === '周') {
+          next.setDate(next.getDate() + direction * 7);
+        } else if (activeTab === '年') {
+          next.setFullYear(next.getFullYear() + direction);
+        } else {
+          next.setMonth(next.getMonth() + direction);
+        }
+        return next;
+      });
+    },
+    [activeTab, customEndDate, customStartDate],
+  );
+
+  const openDatePicker = React.useCallback(
+    (field: CustomDateField) => {
+      setCustomDateError(null);
+      setDraftPickerDate(new Date(field === 'start' ? customStartDate : customEndDate));
+      setActiveDatePicker(field);
+    },
+    [customEndDate, customStartDate],
+  );
 
   const adjustDraftDate = React.useCallback((column: PickerColumn, direction: -1 | 1) => {
     setDraftPickerDate((prev) => {
@@ -469,72 +406,34 @@ export default function FinanceStatsScreen() {
       return expense;
     };
 
-    if (activeTab === '年') {
-      const monthly = Array.from({ length: 12 }, () => ({ income: 0, expense: 0 }));
-      statsTransactions.forEach((txn) => {
-        if (txn.transaction_type === 'transfer') return;
-        const month = Number(parseYmd(txn.happened_at).slice(5, 7));
-        if (month < 1 || month > 12) return;
-        if (txn.transaction_type === 'income') monthly[month - 1].income += Math.abs(txn.amount);
-        else monthly[month - 1].expense += Math.abs(txn.amount);
-      });
-      const rawValues = monthly.map((item) => pickTrendValue(item.income, item.expense));
-      const max = Math.max(...rawValues.map((value) => Math.abs(value)), 1);
-      const year = range.start.getFullYear();
-      const points: TrendPoint[] = monthly.map((item, index) => ({
-        dateKey: `${year}-${String(index + 1).padStart(2, '0')}`,
-        label: `${index + 1}月`,
-        rawValue: pickTrendValue(item.income, item.expense),
-        heightPct: Math.max(2, (Math.abs(pickTrendValue(item.income, item.expense)) / max) * 100),
-        income: item.income,
-        expense: item.expense,
-      }));
-      return {
-        points,
-        axis: ['1月', '3月', '6月', '9月', '12月'],
-      };
-    }
-
-    const daily = new Map<string, { income: number; expense: number }>();
-    statsTransactions.forEach((txn) => {
-      if (txn.transaction_type === 'transfer') return;
-      const day = parseYmd(txn.happened_at);
-      const current = daily.get(day) ?? { income: 0, expense: 0 };
-      if (txn.transaction_type === 'income') current.income += Math.abs(txn.amount);
-      else current.expense += Math.abs(txn.amount);
-      daily.set(day, current);
-    });
-    const points: TrendPoint[] = [];
-    const cursor = new Date(range.start);
-    while (cursor <= range.end) {
-      const dayKey = formatYmd(cursor);
-      const item = daily.get(dayKey) ?? { income: 0, expense: 0 };
-      points.push({
-        dateKey: dayKey,
-        label: formatChineseDate(cursor),
-        rawValue: pickTrendValue(item.income, item.expense),
-        heightPct: 0,
-        income: item.income,
-        expense: item.expense,
-      });
-      cursor.setDate(cursor.getDate() + 1);
-    }
+    const pointsRaw = stats?.trend.points ?? [];
+    const points: TrendPoint[] = pointsRaw.map((item) => ({
+      dateKey: item.key,
+      label: item.label,
+      rawValue: pickTrendValue(item.income, item.expense),
+      heightPct: 0,
+      income: item.income,
+      expense: item.expense,
+    }));
     const max = Math.max(...points.map((point) => Math.abs(point.rawValue)), 1);
     points.forEach((point) => {
       point.heightPct = Math.max(2, (Math.abs(point.rawValue) / max) * 100);
     });
+
+    const isMonth = stats?.trend.granularity === 'month' || activeTab === '年';
     const shouldShowAxisYear = range.start.getFullYear() !== range.end.getFullYear();
-    return {
-      points,
-      axis: activeTab === '周'
+    const axis = isMonth
+      ? ['1月', '3月', '6月', '9月', '12月']
+      : activeTab === '周'
         ? Array.from({ length: 7 }, (_, index) => formatMonthDay(addDays(range.start, index)))
-        : buildDateAxis(range.start, range.end, shouldShowAxisYear),
-    };
-  }, [activeTab, range.end, range.start, statsTransactions, trendMode]);
+        : buildDateAxis(range.start, range.end, shouldShowAxisYear);
+
+    return { points, axis, isMonthGranularity: isMonth };
+  }, [activeTab, range.end, range.start, stats?.trend.granularity, stats?.trend.points, trendMode]);
 
   React.useEffect(() => {
     setSelectedTrendIndex(null);
-  }, [activeTab, currentDate, customEndDate, customStartDate, trendMode]);
+  }, [activeTab, currentDate, customEndDate, customStartDate, trendMode, range.startYmd, range.endYmd]);
 
   const trendTotal = trendMode === 'income' ? totalIncome : trendMode === 'balance' ? balance : totalExpense;
   const trendModeLabel = trendMode === 'income' ? '收入' : trendMode === 'balance' ? '结余' : '支出';
@@ -548,22 +447,21 @@ export default function FinanceStatsScreen() {
       const value = trendMode === 'income' ? selectedTrendPoint.income : selectedTrendPoint.expense;
       return `${selectedTrendPoint.label} · ${trendModeLabel} ${formatMoney(value)}`;
     }
-    if (!statsTransactions.length) return '当前区间暂无账单数据';
-    return `区间内共 ${statsTransactions.length} 笔，${trendModeLabel} ${trendTotal < 0 ? '-' : ''}${formatMoney(Math.abs(trendTotal))} · 点击柱形查看明细`;
-  }, [selectedTrendPoint, statsTransactions.length, trendMode, trendModeLabel, trendTotal]);
+    if (!txnCount) return '当前区间暂无账单数据';
+    return `区间内共 ${txnCount} 笔，${trendModeLabel} ${trendTotal < 0 ? '-' : ''}${formatMoney(Math.abs(trendTotal))} · 点击柱形查看明细`;
+  }, [selectedTrendPoint, trendMode, trendModeLabel, trendTotal, txnCount]);
 
   const selectedTrendDetails = React.useMemo(() => {
     if (!selectedTrendPoint) return null;
-    const isYearly = activeTab === '年';
-    const matched = statsTransactions
-      .filter((txn) => transactionMatchesTrendPoint(txn, selectedTrendPoint, isYearly))
-      .filter((txn) => txn.transaction_type !== 'transfer')
+    const samples = stats?.sampleTransactions ?? [];
+    const matched = samples
+      .filter((txn) => sampleMatchesTrendPoint(txn, selectedTrendPoint, trendData.isMonthGranularity))
       .filter((txn) => {
         if (trendMode === 'income') return txn.transaction_type === 'income';
-        if (trendMode === 'expense') return txn.transaction_type !== 'income';
+        if (trendMode === 'expense') return txn.transaction_type === 'expense';
         return true;
       })
-      .map((txn) => buildTrendDetailItem(txn, categoryMap, categoryByName))
+      .map(buildTrendDetailFromSample)
       .sort((a, b) => b.amount - a.amount);
 
     if (trendMode === 'balance') {
@@ -573,67 +471,49 @@ export default function FinanceStatsScreen() {
       };
     }
     return { items: matched };
-  }, [activeTab, categoryByName, categoryMap, selectedTrendPoint, statsTransactions, trendMode]);
+  }, [selectedTrendPoint, stats?.sampleTransactions, trendData.isMonthGranularity, trendMode]);
 
-  const trendTitle = trendMode === 'income' ? '每日收入趋势' : trendMode === 'balance' ? '每日结余趋势' : '每日支出趋势';
+  const trendTitle =
+    trendMode === 'income' ? '每日收入趋势' : trendMode === 'balance' ? '每日结余趋势' : '每日支出趋势';
   const trendAccent = trendMode === 'income' ? incomeColor : trendMode === 'balance' ? balanceColor : expenseColor;
   const shouldShowCustomYear = range.start.getFullYear() !== range.end.getFullYear();
-  const rangeLabel = activeTab === '年'
-    ? `${range.start.getFullYear()}年`
-    : activeTab === '自定义'
-      ? `${formatCustomDate(range.start, shouldShowCustomYear)} - ${formatCustomDate(range.end, shouldShowCustomYear)}`
-      : activeTab === '周'
-        ? `${formatMonthDay(range.start)} - ${formatMonthDay(range.end)}`
-        : `${range.start.getFullYear()}年${range.start.getMonth() + 1}月`;
+  const rangeLabel =
+    activeTab === '年'
+      ? `${range.start.getFullYear()}年`
+      : activeTab === '自定义'
+        ? `${formatCustomDate(range.start, shouldShowCustomYear)} - ${formatCustomDate(range.end, shouldShowCustomYear)}`
+        : activeTab === '周'
+          ? `${formatMonthDay(range.start)} - ${formatMonthDay(range.end)}`
+          : `${range.start.getFullYear()}年${range.start.getMonth() + 1}月`;
 
   const billSummaryForAi = React.useMemo(() => {
     const parts: string[] = [];
     parts.push(`统计区间：${rangeLabel}（${range.startYmd} 至 ${range.endYmd}）`);
     parts.push(
-      `收入合计 ${totalIncome.toFixed(2)} 元，支出合计 ${totalExpense.toFixed(2)} 元，结余 ${balance.toFixed(2)} 元，流水 ${statsTransactions.length} 笔（转账与余额校正未计入收支统计）。`,
+      `收入合计 ${totalIncome.toFixed(2)} 元，支出合计 ${totalExpense.toFixed(2)} 元，结余 ${balance.toFixed(2)} 元，流水 ${txnCount} 笔（转账与余额校正未计入收支统计）。`,
     );
 
-    if (!statsTransactions.length) {
+    if (!txnCount || !stats) {
       return parts.join('\n');
     }
 
-    const expenseMap = new Map<string, { amount: number; count: number }>();
-    const incomeMap = new Map<string, { amount: number; count: number }>();
-    for (const txn of statsTransactions) {
-      const name = getFinanceTransactionCategoryLabel(txn, categoryNameById) ?? '未分类';
-      if (txn.transaction_type === 'income') {
-        const cur = incomeMap.get(name) ?? { amount: 0, count: 0 };
-        cur.amount += Math.abs(txn.amount);
-        cur.count += 1;
-        incomeMap.set(name, cur);
-      } else if (txn.transaction_type !== 'transfer') {
-        const cur = expenseMap.get(name) ?? { amount: 0, count: 0 };
-        cur.amount += Math.abs(txn.amount);
-        cur.count += 1;
-        expenseMap.set(name, cur);
-      }
-    }
-
-    const expLines = Array.from(expenseMap.entries())
-      .sort((a, b) => b[1].amount - a[1].amount)
+    const expLines = (stats.categories.expense ?? [])
       .slice(0, 8)
-      .map(([n, { amount, count }]) => `  - 支出「${n}」：${amount.toFixed(2)} 元（${count} 笔）`);
+      .map((item) => `  - 支出「${item.name}」：${item.amount.toFixed(2)} 元（${item.count} 笔）`);
     if (expLines.length) {
       parts.push('支出分类概览：');
       parts.push(...expLines);
     }
 
-    const incLines = Array.from(incomeMap.entries())
-      .sort((a, b) => b[1].amount - a[1].amount)
+    const incLines = (stats.categories.income ?? [])
       .slice(0, 6)
-      .map(([n, { amount, count }]) => `  - 收入「${n}」：${amount.toFixed(2)} 元（${count} 笔）`);
+      .map((item) => `  - 收入「${item.name}」：${item.amount.toFixed(2)} 元（${item.count} 笔）`);
     if (incLines.length) {
       parts.push('收入分类概览：');
       parts.push(...incLines);
     }
 
-    const top = [...statsTransactions]
-      .filter((t) => t.transaction_type !== 'transfer')
+    const top = [...(stats.sampleTransactions ?? [])]
       .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
       .slice(0, 6)
       .map((t) => {
@@ -649,7 +529,7 @@ export default function FinanceStatsScreen() {
 
     const s = parts.join('\n');
     return s.length > 8000 ? `${s.slice(0, 8000)}\n…（摘要已截断）` : s;
-  }, [balance, categoryNameById, range.endYmd, range.startYmd, rangeLabel, statsTransactions, totalExpense, totalIncome]);
+  }, [balance, range.endYmd, range.startYmd, rangeLabel, stats, totalExpense, totalIncome, txnCount]);
 
   React.useEffect(() => {
     setAiBillAnalysis(null);
@@ -691,7 +571,12 @@ export default function FinanceStatsScreen() {
     </Pressable>
   );
 
-  const renderTrendDetailGroup = (title: string, items: TrendDetailItem[], accent: string, emptyLabel: string) => (
+  const renderTrendDetailGroup = (
+    title: string,
+    items: TrendDetailItem[],
+    accent: string,
+    emptyLabel: string,
+  ) => (
     <View style={styles.trendDetailGroup}>
       <Text style={[Typography.label, { color: colors.textSecondary }]}>
         {title}
@@ -1011,8 +896,8 @@ export default function FinanceStatsScreen() {
               <Text style={[styles.tableHeadText, { color: colors.textSecondary }]}>收入</Text>
               <Text style={[styles.tableHeadText, { color: colors.textSecondary }]}>结余</Text>
             </View>
-            {dailyRows.map((row) => (
-              <View key={row.date} style={[styles.tableRow, { borderBottomColor: colors.outline }]}>
+            {dailyRows.map((row, rowIndex) => (
+              <View key={`${row.date}-${rowIndex}`} style={[styles.tableRow, { borderBottomColor: colors.outline }]}>
                 <Text style={[styles.tableCell, { color: colors.text }]}>{row.date}</Text>
                 <Text style={[styles.tableCell, { color: expenseColor }]}>{formatMoney(row.expense)}</Text>
                 <Text style={[styles.tableCell, { color: incomeColor }]}>{formatMoney(row.income)}</Text>
