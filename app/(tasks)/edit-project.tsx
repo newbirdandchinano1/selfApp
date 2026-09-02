@@ -1371,13 +1371,13 @@ export default function EditProjectScreen() {
                 onChangeText={setRewardPointsText}
                 placeholder="0"
                 placeholderTextColor={outline}
-                keyboardType="number-pad"
+                keyboardType="numbers-and-punctuation"
                 editable={!loading && !saving}
                 style={[styles.rewardPointsInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]}
               />
             </View>
             <Text style={[styles.longTermHint, { color: outline, marginTop: 8 }]}>
-              完成整个项目后计入心愿板积分；0 表示无奖励
+              完成整个项目后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动
             </Text>
           </View>
 

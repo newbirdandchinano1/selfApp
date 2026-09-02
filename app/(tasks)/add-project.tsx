@@ -527,7 +527,7 @@ export default function AddProjectScreen() {
               <ComposerSectionHead
                 accentColor={colors.tertiary}
                 title="奖励积分"
-                description="完成整个项目后计入心愿板积分；0 表示无奖励"
+                description="完成整个项目后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动"
                 rightIcon="stars"
               />
               <ComposerEditorialCard>
@@ -536,7 +536,7 @@ export default function AddProjectScreen() {
                   value={rewardPointsText}
                   onChangeText={setRewardPointsText}
                   placeholder="0"
-                  keyboardType="number-pad"
+                  keyboardType="numbers-and-punctuation"
                   inputWrapStyle={styles.rewardPointsWrap}
                 />
               </ComposerEditorialCard>

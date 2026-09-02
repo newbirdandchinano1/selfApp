@@ -895,13 +895,13 @@ export default function AddHabitScreen() {
             value={rewardPointsText}
             onChangeText={setRewardPointsText}
             placeholder="0"
-            keyboardType="number-pad"
+            keyboardType="numbers-and-punctuation"
             hint={
               habitKind === 'task'
-                ? '完成本周期任务目标后计入心愿板积分；0 表示无奖励'
+                ? '完成本周期任务目标后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
                 : habitKind === 'break'
-                  ? '达成戒除连续目标后计入心愿板积分；0 表示无奖励'
-                  : '每次完成打卡计入心愿板积分；0 表示无奖励'
+                  ? '达成戒除连续目标后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
+                  : '每次完成打卡计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
             }
             inputWrapStyle={styles.rewardPointsWrap}
           />

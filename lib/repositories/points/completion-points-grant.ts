@@ -1,4 +1,4 @@
-import { parseRewardPointsFromExtraData } from '@/lib/reward-points';
+import { normalizeRewardPoints, parseRewardPointsFromExtraData, roundPoints } from '@/lib/reward-points';
 import { enqueuePointsAdjust } from '@/lib/points-adjust-queue';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import { getTaskById } from '@/lib/repositories/tasks/task';
@@ -18,7 +18,7 @@ async function sumLedgerDeltaForRef(refType: string, refId: string): Promise<num
      WHERE ref_type = ? AND ref_id = ?`,
     [refType, refId],
   );
-  return Math.floor(Number(row?.net) || 0);
+  return roundPoints(Number(row?.net) || 0);
 }
 
 async function resolveExtraData(opts: {
@@ -41,9 +41,9 @@ async function resolveExtraData(opts: {
 }
 
 /**
- * 按实体配置发奖 / 按流水净额扣回。
- * undo 时最多扣回「该 ref 流水净获得」与「当前余额」的较小值。
- * `forceUndo`：已知刚从「已完成」撤销时，若流水净额异常为 0，仍按配置与余额扣回。
+ * 按实体配置发奖 / 按流水净额回退。
+ * 正数奖励：完成加分、撤销扣回；负数奖励：完成扣分、撤销返还。
+ * `forceUndo`：已知刚从「已完成」撤销时，若流水净额异常，仍按配置回退。
  */
 export async function applyEntityPointsReward(opts: {
   refType: PointsRewardRefType;
@@ -59,9 +59,9 @@ export async function applyEntityPointsReward(opts: {
   return enqueuePointsAdjust(async () => {
     const configured =
       opts.points != null
-        ? Math.max(0, Math.floor(Number(opts.points) || 0))
+        ? normalizeRewardPoints(opts.points)
         : parseRewardPointsFromExtraData(await resolveExtraData(opts));
-    if (configured <= 0) return 0;
+    if (configured === 0) return 0;
 
     if (opts.direction === 'earn') {
       try {
@@ -73,28 +73,51 @@ export async function applyEntityPointsReward(opts: {
         });
         return result.delta;
       } catch {
-        throw new Error('积分发放失败');
+        throw new Error(configured > 0 ? '积分发放失败' : '积分扣除失败');
       }
     }
 
     const net = await sumLedgerDeltaForRef(opts.refType, opts.refId);
-    const balance = await getLocalPointsBalance();
-    let deduct = Math.min(configured, Math.max(0, net), Math.max(0, balance));
-    if (deduct <= 0 && opts.forceUndo && balance > 0) {
-      deduct = Math.min(configured, balance);
-    }
-    if (deduct <= 0) return 0;
 
+    if (configured > 0) {
+      let deduct = Math.min(configured, Math.max(0, net));
+      if (deduct <= 0 && opts.forceUndo) {
+        const balance = await getLocalPointsBalance();
+        deduct = Math.min(configured, Math.max(0, balance));
+        if (deduct <= 0) deduct = configured;
+      }
+      if (deduct <= 0) return 0;
+      try {
+        const result = await adjustPointsBalance({
+          delta: -deduct,
+          reason: opts.undoReason,
+          ref_type: opts.refType,
+          ref_id: opts.refId,
+        });
+        return result.delta;
+      } catch (e) {
+        if (__DEV__) console.warn('[points-undo]', opts.refType, opts.refId, e);
+        return 0;
+      }
+    }
+
+    // 负数奖励：完成时已扣分，撤销时返还
+    const abs = Math.abs(configured);
+    let restore = Math.min(abs, Math.max(0, -net));
+    if (restore <= 0 && opts.forceUndo) {
+      restore = abs;
+    }
+    if (restore <= 0) return 0;
     try {
       const result = await adjustPointsBalance({
-        delta: -deduct,
+        delta: restore,
         reason: opts.undoReason,
         ref_type: opts.refType,
         ref_id: opts.refId,
       });
       return result.delta;
     } catch (e) {
-      if (__DEV__) console.warn('[points-undo]', opts.refType, opts.refId, e);
+      if (__DEV__) console.warn('[points-undo-restore]', opts.refType, opts.refId, e);
       return 0;
     }
   });

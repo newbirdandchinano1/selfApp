@@ -1393,13 +1393,13 @@ export default function EditTaskScreen() {
                 onChangeText={setRewardPointsText}
                 placeholder="0"
                 placeholderTextColor={outline}
-                keyboardType="number-pad"
+                keyboardType="numbers-and-punctuation"
                 editable={!loading}
                 style={[styles.rewardPointsInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
               />
             </View>
             <Text style={{ color: outline, fontSize: 12, fontWeight: '600', marginTop: 8 }}>
-              完成任务后计入心愿板积分；0 表示无奖励
+              完成任务后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动
             </Text>
           </View>
 

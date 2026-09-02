@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 40;
+export const DB_VERSION = 42;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -177,6 +177,181 @@ async function migrateHabitCheckInsAllowZeroCount(db: SQLite.SQLiteDatabase): Pr
 
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'habit_check_ins_allow_zero_count_v36',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/** 心愿板所需积分允许负数（去掉 cost_points >= 0） */
+async function migrateWishBoardCostPointsAllowNegative(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['wish_board_cost_points_allow_negative_v41'],
+  );
+  if (done) return;
+
+  const table = await db.getFirstAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='wish_board_items'",
+  );
+  if (!table) {
+    await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+      'wish_board_cost_points_allow_negative_v41',
+      '1',
+    ]);
+    return;
+  }
+
+  await db.execAsync('PRAGMA foreign_keys = OFF');
+  try {
+    await db.execAsync(`
+      CREATE TABLE wish_board_items_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        note TEXT,
+        icon_key TEXT,
+        wish_type TEXT NOT NULL DEFAULT 'once' CHECK (wish_type IN ('once', 'repeat')),
+        cost_points INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed')),
+        redeemed_at TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 1000,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending_create',
+        extra_data TEXT
+      );
+
+      INSERT INTO wish_board_items_new (
+        id, title, description, note, icon_key, wish_type, cost_points, status, redeemed_at,
+        sort_order, created_at, updated_at, sync_status, extra_data
+      )
+      SELECT
+        id, title, description, note, icon_key, wish_type, cost_points, status, redeemed_at,
+        sort_order, created_at, updated_at, sync_status, extra_data
+      FROM wish_board_items;
+
+      DROP TABLE wish_board_items;
+      ALTER TABLE wish_board_items_new RENAME TO wish_board_items;
+    `);
+  } finally {
+    await db.execAsync('PRAGMA foreign_keys = ON');
+  }
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'wish_board_cost_points_allow_negative_v41',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/**
+ * 积分支持小数；心愿所需积分恢复非负；钱包余额允许负数（负奖励扣除）。
+ */
+async function migratePointsAllowDecimalAndSignedBalance(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['points_decimal_signed_balance_v42'],
+  );
+  if (done) return;
+
+  await db.execAsync('PRAGMA foreign_keys = OFF');
+  try {
+    const hasWish = await db.getFirstAsync<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='wish_board_items'",
+    );
+    if (hasWish) {
+      await db.execAsync(`
+        CREATE TABLE wish_board_items_new (
+          id TEXT PRIMARY KEY NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          note TEXT,
+          icon_key TEXT,
+          wish_type TEXT NOT NULL DEFAULT 'once' CHECK (wish_type IN ('once', 'repeat')),
+          cost_points REAL NOT NULL DEFAULT 0 CHECK (cost_points >= 0),
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed')),
+          redeemed_at TEXT,
+          sort_order INTEGER NOT NULL DEFAULT 1000,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          sync_status TEXT NOT NULL DEFAULT 'pending_create',
+          extra_data TEXT
+        );
+
+        INSERT INTO wish_board_items_new (
+          id, title, description, note, icon_key, wish_type, cost_points, status, redeemed_at,
+          sort_order, created_at, updated_at, sync_status, extra_data
+        )
+        SELECT
+          id, title, description, note, icon_key, wish_type,
+          CASE WHEN cost_points < 0 THEN 0 ELSE cost_points END,
+          status, redeemed_at, sort_order, created_at, updated_at, sync_status, extra_data
+        FROM wish_board_items;
+
+        DROP TABLE wish_board_items;
+        ALTER TABLE wish_board_items_new RENAME TO wish_board_items;
+      `);
+    }
+
+    const hasWallet = await db.getFirstAsync<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='points_wallet'",
+    );
+    if (hasWallet) {
+      await db.execAsync(`
+        CREATE TABLE points_wallet_new (
+          id TEXT PRIMARY KEY NOT NULL,
+          balance REAL NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          sync_status TEXT NOT NULL DEFAULT 'synced',
+          extra_data TEXT
+        );
+
+        INSERT INTO points_wallet_new (id, balance, created_at, updated_at, sync_status, extra_data)
+        SELECT id, balance, created_at, updated_at, sync_status, extra_data FROM points_wallet;
+
+        DROP TABLE points_wallet;
+        ALTER TABLE points_wallet_new RENAME TO points_wallet;
+      `);
+    }
+
+    const hasLedger = await db.getFirstAsync<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='points_ledger'",
+    );
+    if (hasLedger) {
+      await db.execAsync(`
+        CREATE TABLE points_ledger_new (
+          id TEXT PRIMARY KEY NOT NULL,
+          delta REAL NOT NULL,
+          balance_after REAL NOT NULL,
+          reason TEXT NOT NULL,
+          ref_type TEXT,
+          ref_id TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          sync_status TEXT NOT NULL DEFAULT 'pending_create',
+          extra_data TEXT
+        );
+
+        INSERT INTO points_ledger_new (
+          id, delta, balance_after, reason, ref_type, ref_id,
+          created_at, updated_at, sync_status, extra_data
+        )
+        SELECT
+          id, delta, balance_after, reason, ref_type, ref_id,
+          created_at, updated_at, sync_status, extra_data
+        FROM points_ledger;
+
+        DROP TABLE points_ledger;
+        ALTER TABLE points_ledger_new RENAME TO points_ledger;
+      `);
+    }
+  } finally {
+    await db.execAsync('PRAGMA foreign_keys = ON');
+  }
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'points_decimal_signed_balance_v42',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
@@ -685,7 +860,7 @@ export async function initDatabase() {
 
     CREATE TABLE IF NOT EXISTS points_wallet (
       id TEXT PRIMARY KEY NOT NULL,
-      balance INTEGER NOT NULL DEFAULT 0,
+      balance REAL NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'synced',
@@ -699,7 +874,7 @@ export async function initDatabase() {
       note TEXT,
       icon_key TEXT,
       wish_type TEXT NOT NULL DEFAULT 'once' CHECK (wish_type IN ('once', 'repeat')),
-      cost_points INTEGER NOT NULL DEFAULT 0 CHECK (cost_points >= 0),
+      cost_points REAL NOT NULL DEFAULT 0 CHECK (cost_points >= 0),
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed')),
       redeemed_at TEXT,
       sort_order INTEGER NOT NULL DEFAULT 1000,
@@ -711,8 +886,8 @@ export async function initDatabase() {
 
     CREATE TABLE IF NOT EXISTS points_ledger (
       id TEXT PRIMARY KEY NOT NULL,
-      delta INTEGER NOT NULL,
-      balance_after INTEGER NOT NULL,
+      delta REAL NOT NULL,
+      balance_after REAL NOT NULL,
       reason TEXT NOT NULL,
       ref_type TEXT,
       ref_id TEXT,
@@ -1318,6 +1493,8 @@ export async function initDatabase() {
   await migrateDropPersonaPortraitCache(db);
   await migrateEarnedRewardsHabitSource(db);
   await migrateHabitCheckInsAllowZeroCount(db);
+  await migrateWishBoardCostPointsAllowNegative(db);
+  await migratePointsAllowDecimalAndSignedBalance(db);
   await migrateRemoveSeededHabitContexts(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');

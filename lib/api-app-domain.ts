@@ -4,8 +4,14 @@
  */
 
 import { apiRequest, type ApiListQueryOpts, type ApiListResponse } from '@/lib/api-client';
+import { roundPoints } from '@/lib/reward-points';
 
 export const APP_API_PREFIX = '/api/app';
+
+function asPoints(raw: unknown): number {
+  const n = roundPoints(Number(raw) || 0);
+  return Number.isFinite(n) ? n : 0;
+}
 
 /** 走专用业务接口的表（写入/读取由本模块适配） */
 export const APP_DOMAIN_CRUD_TABLES = new Set([
@@ -413,7 +419,7 @@ export async function appWishBoardGetBalance(opts?: { signal?: AbortSignal }): P
     method: 'GET',
     signal: opts?.signal,
   });
-  return Math.max(0, Math.floor(Number(data?.balance) || 0));
+  return asPoints(data?.balance);
 }
 
 export async function appWishBoardRedeem(
@@ -504,8 +510,8 @@ export async function appWishBoardListPointsLedger(
   const items = Array.isArray(data?.items)
     ? data.items.map(row => ({
         id: String(row.id),
-        delta: Math.floor(Number(row.delta) || 0),
-        balance_after: Math.max(0, Math.floor(Number(row.balance_after) || 0)),
+        delta: asPoints(row.delta),
+        balance_after: asPoints(row.balance_after),
         reason: String(row.reason ?? ''),
         reason_label: String(row.reason_label ?? row.reason ?? '积分变动'),
         ref_type: row.ref_type ?? null,
@@ -529,7 +535,7 @@ export async function appWishBoardListPointsLedger(
 
   return {
     items,
-    balance: Math.max(0, Math.floor(Number(data?.balance) || 0)),
+    balance: asPoints(data?.balance),
     pagination: { page: pageOut, limit: limitOut, total, totalPages },
   };
 }
@@ -566,9 +572,9 @@ export async function appWishBoardDeletePointsLedger(
   return {
     deleted: Boolean(data?.deleted ?? true),
     id: String(data?.id ?? ledgerId),
-    delta: Math.floor(Number(data?.delta) || 0),
-    rollback_delta: Math.floor(Number(data?.rollback_delta) || 0),
-    balance: Math.max(0, Math.floor(Number(data?.balance) || 0)),
+    delta: asPoints(data?.delta),
+    rollback_delta: asPoints(data?.rollback_delta),
+    balance: asPoints(data?.balance),
     reason: String(data?.reason ?? ''),
     ref_type: data?.ref_type == null ? null : String(data.ref_type),
     ref_id: data?.ref_id == null ? null : String(data.ref_id),

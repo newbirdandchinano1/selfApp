@@ -7,6 +7,7 @@ import { DEFAULT_WISH_BOARD_ICON_KEY } from '@/lib/constants/wish-board-icons';
 import { notifyPointsBalanceChanged } from '@/lib/points-balance-events';
 import { notifyPointsEarned } from '@/lib/points-earned-toast-events';
 import { enqueuePointsAdjust } from '@/lib/points-adjust-queue';
+import { assertNonNegativeCostPoints, roundPoints } from '@/lib/reward-points';
 import { getDatabase } from '../../database.native';
 import type {
   CreateWishBoardItemInput,
@@ -19,6 +20,11 @@ import type {
 } from './wish-board.types';
 
 export const POINTS_WALLET_ID = 'default';
+
+function asPoints(raw: unknown): number {
+  const n = roundPoints(Number(raw) || 0);
+  return Number.isFinite(n) ? n : 0;
+}
 
 export function createWishBoardItemId(): string {
   return makeTimestampEntityId('wbi_', 8);
@@ -55,7 +61,7 @@ function mapWishBoardRow(row: WishBoardItemRow): WishBoardItemRow {
     note: row.note ?? description,
     icon_key: row.icon_key?.trim() || DEFAULT_WISH_BOARD_ICON_KEY,
     wish_type: normalizeWishType(row.wish_type),
-    cost_points: Math.max(0, Math.floor(Number(row.cost_points) || 0)),
+    cost_points: asPoints(row.cost_points),
   };
 }
 
@@ -66,8 +72,7 @@ function assertWishBoardPayload(input: CreateWishBoardItemInput | UpdateWishBoar
     if (title.length > 80) throw new Error('心愿名称最多 80 字');
   }
   if ('cost_points' in input && input.cost_points != null) {
-    const cost = Math.floor(Number(input.cost_points));
-    if (!Number.isFinite(cost) || cost < 0) throw new Error('所需积分须为非负整数');
+    assertNonNegativeCostPoints(input.cost_points);
   }
   if ('description' in input && input.description != null && String(input.description).length > 500) {
     throw new Error('描述最多 500 字');
@@ -123,7 +128,7 @@ export async function getPointsBalance(opts?: PageApiReadOpts): Promise<number> 
     );
     return 0;
   }
-  return Math.max(0, Math.floor(Number(row.balance) || 0));
+  return asPoints(row.balance);
 }
 
 /** 只读本地 SQLite 余额，避免撤销时被 REST 快照干扰 */
@@ -138,7 +143,7 @@ export async function getLocalPointsBalance(): Promise<number> {
     'SELECT balance FROM points_wallet WHERE id = ?',
     [POINTS_WALLET_ID],
   );
-  return Math.max(0, Math.floor(Number(wallet?.balance) || 0));
+  return asPoints(wallet?.balance);
 }
 
 export async function listWishBoardItems(opts?: PageApiReadOpts): Promise<WishBoardItemRow[]> {
@@ -166,11 +171,8 @@ export async function listWishRedeemRecords(opts?: PageApiReadOpts): Promise<Wis
       const items = await appWishBoardListRedeemed();
       return items
         .map(row => {
-          const costFromLedger = Math.abs(Math.floor(Number(row.delta) || 0));
-          const costPoints = Math.max(
-            0,
-            Math.floor(Number(row.cost_points) || 0) || costFromLedger,
-          );
+          const costFromLedger = Math.abs(asPoints(row.delta));
+          const costPoints = asPoints(row.cost_points) || costFromLedger;
           return {
             ledger_id: String(row.ledger_id),
             wish_id: String(row.wish_id),
@@ -216,7 +218,7 @@ export async function listWishRedeemRecords(opts?: PageApiReadOpts): Promise<Wis
     .map(row => {
       const wishId = String(row.ref_id).trim();
       const item = itemMap.get(wishId);
-      const costFromLedger = Math.abs(Math.floor(Number(row.delta) || 0));
+      const costFromLedger = Math.abs(asPoints(row.delta));
       return {
         ledger_id: row.id,
         wish_id: wishId,
@@ -308,7 +310,7 @@ export async function createWishBoardItem(input: CreateWishBoardItemInput): Prom
   const db = await getDatabase();
   const id = input.id?.trim() || createWishBoardItemId();
   const title = input.title.trim();
-  const cost = Math.floor(Number(input.cost_points));
+  const cost = assertNonNegativeCostPoints(input.cost_points);
   const description = input.description?.trim() ? input.description.trim() : null;
   const iconKey = input.icon_key?.trim() || DEFAULT_WISH_BOARD_ICON_KEY;
   const wishType = normalizeWishType(input.wish_type);
@@ -334,7 +336,7 @@ export async function updateWishBoardItem(id: string, input: UpdateWishBoardItem
 
   const title = input.title != null ? input.title.trim() : mapped.title;
   const cost =
-    input.cost_points != null ? Math.floor(Number(input.cost_points)) : mapped.cost_points;
+    input.cost_points != null ? assertNonNegativeCostPoints(input.cost_points) : mapped.cost_points;
   const description =
     input.description !== undefined
       ? input.description?.trim()
@@ -388,7 +390,7 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
   try {
     const { appWishBoardRedeem } = await import('@/lib/api-app-domain');
     const result = await appWishBoardRedeem(id);
-    const balance = Math.max(0, Math.floor(Number(result.balance) || 0));
+    const balance = asPoints(result.balance);
     const nowIso = pointsAuditNowIso();
     const db = await getDatabase();
     const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
@@ -462,8 +464,7 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
     throw new Error('该心愿已兑换');
   }
 
-  const cost = Math.floor(Number(item.cost_points) || 0);
-  if (cost < 0) throw new Error('所需积分无效');
+  const cost = asPoints(item.cost_points);
 
   const nowIso = pointsAuditNowIso();
   const db = await getDatabase();
@@ -478,8 +479,8 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
       'SELECT balance FROM points_wallet WHERE id = ?',
       [POINTS_WALLET_ID],
     );
-    const balance = Math.max(0, Math.floor(Number(wallet?.balance) || 0));
-    if (balance < cost) {
+    const balance = asPoints(wallet?.balance);
+    if (cost > 0 && balance < cost) {
       throw new Error(`积分不足（需要 ${cost}，当前 ${balance}）`);
     }
     const next = balance - cost;
@@ -539,7 +540,7 @@ export async function adjustPointsBalance(input: {
   ref_type?: string | null;
   ref_id?: string | null;
 }): Promise<{ balance: number; delta: number; ledger_id: string | null }> {
-  const delta = Math.floor(Number(input.delta));
+  const delta = asPoints(input.delta);
   if (!Number.isFinite(delta) || delta === 0) {
     const balance = await getPointsBalance();
     return { balance, delta: 0, ledger_id: null };
@@ -556,8 +557,8 @@ export async function adjustPointsBalance(input: {
       ref_type: refType,
       ref_id: refId,
     });
-    const balance = Math.max(0, Math.floor(Number(result.balance) || 0));
-    const appliedDelta = Math.floor(Number(result.delta ?? delta) || 0);
+    const balance = asPoints(result.balance);
+    const appliedDelta = asPoints(result.delta ?? delta);
     const ledgerId =
       typeof result.ledger_id === 'string' && result.ledger_id.trim()
         ? result.ledger_id.trim()
@@ -611,11 +612,8 @@ export async function adjustPointsBalance(input: {
       'SELECT balance FROM points_wallet WHERE id = ?',
       [POINTS_WALLET_ID],
     );
-    const balance = Math.max(0, Math.floor(Number(wallet?.balance) || 0));
-    const next = balance + delta;
-    if (next < 0) {
-      throw new Error(`积分不足（需要 ${Math.abs(delta)}，当前 ${balance}）`);
-    }
+    const balance = asPoints(wallet?.balance);
+    const next = asPoints(balance + delta);
     await db.runAsync(
       `UPDATE points_wallet SET
         balance = ?,
@@ -650,8 +648,8 @@ export async function resetPointsBalance(): Promise<{ balance: number; delta: nu
     try {
       const { appWishBoardResetPoints } = await import('@/lib/api-app-domain');
       const result = await appWishBoardResetPoints();
-      const balance = Math.max(0, Math.floor(Number(result.balance) || 0));
-      const delta = Math.floor(Number(result.delta) || 0);
+      const balance = asPoints(result.balance);
+      const delta = asPoints(result.delta);
       const ledgerId =
         typeof result.ledger_id === 'string' && result.ledger_id.trim()
           ? result.ledger_id.trim()
@@ -691,7 +689,7 @@ export async function resetPointsBalance(): Promise<{ balance: number; delta: nu
     }
 
     const balance = await getLocalPointsBalance();
-    if (balance <= 0) {
+    if (balance === 0) {
       notifyPointsBalanceChanged(0);
       return { balance: 0, delta: 0, ledger_id: null };
     }
@@ -716,9 +714,9 @@ export async function deletePointsLedgerRecord(
 
   const { appWishBoardDeletePointsLedger } = await import('@/lib/api-app-domain');
   const result = await appWishBoardDeletePointsLedger(id);
-  const balance = Math.max(0, Math.floor(Number(result.balance) || 0));
-  const delta = Math.floor(Number(result.delta) || 0);
-  const rollbackDelta = Math.floor(Number(result.rollback_delta) || 0);
+  const balance = asPoints(result.balance);
+  const delta = asPoints(result.delta);
+  const rollbackDelta = asPoints(result.rollback_delta);
   const nowIso = pointsAuditNowIso();
   const wishId =
     result.reason === 'wish_redeem' &&

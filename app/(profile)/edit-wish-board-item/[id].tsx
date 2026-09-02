@@ -5,6 +5,7 @@ import {
   getWishBoardItemById,
   updateWishBoardItem,
 } from '@/lib/repositories/wish-board/wish-board';
+import { assertNonNegativeCostPoints, formatPoints } from '@/lib/reward-points';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
@@ -34,7 +35,7 @@ export default function EditWishBoardItemScreen() {
           return;
         }
         setTitle(row.title);
-        setCostText(String(row.cost_points));
+        setCostText(formatPoints(row.cost_points));
         setDescription(row.description ?? '');
         setRedeemed(row.wish_type === 'once' && row.status === 'redeemed');
       } finally {
@@ -51,13 +52,15 @@ export default function EditWishBoardItemScreen() {
       Alert.alert('已兑换的心愿不可编辑');
       return;
     }
-    const cost = Math.floor(Number(costText));
-    if (!title.trim()) {
-      Alert.alert('请填写心愿名称');
+    let cost: number;
+    try {
+      cost = assertNonNegativeCostPoints(costText);
+    } catch (e) {
+      Alert.alert(e instanceof Error ? e.message : '所需积分须为非负数字（可含小数）');
       return;
     }
-    if (!Number.isFinite(cost) || cost < 0) {
-      Alert.alert('所需积分须为非负整数');
+    if (!title.trim()) {
+      Alert.alert('请填写心愿名称');
       return;
     }
     setSaving(true);
@@ -103,7 +106,8 @@ export default function EditWishBoardItemScreen() {
           value={costText}
           onChangeText={setCostText}
           editable={!redeemed}
-          keyboardType="number-pad"
+          placeholder="0（可含小数）"
+          keyboardType="decimal-pad"
         />
         <AppInput
           label="描述（可选）"

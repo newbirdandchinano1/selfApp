@@ -15,7 +15,7 @@ async function applyHabitPointsReward(
   if (!row) return 0;
   const extraData = opts?.extraData !== undefined ? opts.extraData : row.extra_data;
   const points = parseHabitRewardPoints(extraData);
-  if (points <= 0) return 0;
+  if (points === 0) return 0;
   return applyEntityPointsReward({
     refType: 'habit',
     refId: habitId,

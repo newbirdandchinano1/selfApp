@@ -18,6 +18,7 @@ import {
     sortProjectCategoriesForApiUpload,
 } from '@/lib/cloud-sql-sync';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
+import { roundPoints } from '@/lib/reward-points';
 
 function isStaleRowVersionApiError(err: unknown): boolean {
   if (!(err instanceof ApiRequestError)) return false;
@@ -98,7 +99,10 @@ async function upsertPointsWalletRowToApi(
         await apiPatchRecord(
           'points_wallet',
           localPk,
-          { balance: Math.max(0, Math.floor(Number(payload.balance) || 0)) },
+          { balance: (() => {
+            const n = roundPoints(Number(payload.balance) || 0);
+            return Number.isFinite(n) ? n : 0;
+          })() },
           { signal },
         );
         await persistLocalPointsWalletUpdatedAt(localPk, formatWallClockDatetimeLocal(new Date()));

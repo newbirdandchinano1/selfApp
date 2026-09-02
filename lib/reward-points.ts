@@ -4,6 +4,10 @@
 export const REWARD_BADGE_COLOR_MIN = 1;
 export const REWARD_BADGE_COLOR_MAX = 100;
 
+/** 积分最多保留小数位；绝对值上限 */
+export const POINTS_DECIMAL_PLACES = 2;
+export const POINTS_ABS_MAX = 99999;
+
 /** 超过渐变上限后的统一红色 */
 const REWARD_BADGE_OVER_MAX_LIGHT = '#dc2626';
 const REWARD_BADGE_OVER_MAX_DARK = '#f87171';
@@ -64,13 +68,32 @@ const REWARD_BADGE_STOPS_DARK = [
   '#f87171',
 ].map(hexToRgb);
 
+/** 四舍五入到 POINTS_DECIMAL_PLACES，消除浮点噪声 */
+export function roundPoints(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : Number(typeof raw === 'string' ? raw.trim() : raw);
+  if (!Number.isFinite(n)) return NaN;
+  const f = 10 ** POINTS_DECIMAL_PLACES;
+  return Math.round(n * f) / f;
+}
+
+/** 展示用：去掉多余尾零（1.50 → 1.5，2.00 → 2） */
+export function formatPoints(raw: unknown): string {
+  const n = roundPoints(raw);
+  if (!Number.isFinite(n)) return '0';
+  return String(n);
+}
+
 /**
  * 按奖励积分大小返回角标背景色（1–100 细步进渐变；小于 1 按 1；大于 100 统一红色）
+ * 负数用偏冷灰红，与正数角标区分。
  */
 export function getRewardBadgeBackgroundColor(points: number, isDark = false): string {
-  const n = Math.floor(Number(points));
-  if (!Number.isFinite(n) || n <= 0) {
+  const n = roundPoints(points);
+  if (!Number.isFinite(n) || n === 0) {
     return isDark ? '#f472b6' : '#be185d';
+  }
+  if (n < 0) {
+    return isDark ? '#fb7185' : '#e11d48';
   }
   if (n > REWARD_BADGE_COLOR_MAX) {
     return isDark ? REWARD_BADGE_OVER_MAX_DARK : REWARD_BADGE_OVER_MAX_LIGHT;
@@ -86,22 +109,34 @@ export function getRewardBadgeBackgroundColor(points: number, isDark = false): s
   return rgbToHex(mixRgb(stops[i], stops[i + 1], localT));
 }
 
+/**
+ * 奖励积分：可为负数（完成时扣除），支持小数；范围 [-99999, 99999]
+ */
 export function parseRewardPointsFromExtraData(extraData: string | null | undefined): number {
   if (!extraData) return 0;
   try {
     const parsed = JSON.parse(extraData) as { reward_points?: unknown };
-    const n = Math.floor(Number(parsed?.reward_points));
-    if (!Number.isFinite(n) || n < 0) return 0;
-    return Math.min(99999, n);
+    return normalizeRewardPoints(parsed?.reward_points);
   } catch {
     return 0;
   }
 }
 
 export function normalizeRewardPoints(raw: unknown): number {
-  const n = Math.floor(Number(raw));
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.min(99999, n);
+  const n = roundPoints(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(POINTS_ABS_MAX, Math.max(-POINTS_ABS_MAX, n));
+}
+
+/**
+ * 心愿所需积分：非负小数；非法时抛错（供表单/仓库校验）
+ */
+export function assertNonNegativeCostPoints(raw: unknown): number {
+  const n = roundPoints(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error('所需积分须为非负数字（可含小数）');
+  }
+  return Math.min(POINTS_ABS_MAX, n);
 }
 
 /** 将 reward_points 合并进 extra_data JSON 字符串 */

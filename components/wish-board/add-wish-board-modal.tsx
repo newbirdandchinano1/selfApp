@@ -8,6 +8,7 @@ import {
 } from '@/lib/constants/wish-board-icons';
 import { createWishBoardItem } from '@/lib/repositories/wish-board/wish-board';
 import type { WishBoardWishType } from '@/lib/repositories/wish-board/wish-board.types';
+import { assertNonNegativeCostPoints } from '@/lib/reward-points';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import {
@@ -51,13 +52,15 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
   }, [visible]);
 
   const onSubmit = async () => {
-    const cost = Math.floor(Number(costText));
-    if (!title.trim()) {
-      Alert.alert('请填写心愿名称');
+    let cost: number;
+    try {
+      cost = assertNonNegativeCostPoints(costText);
+    } catch (e) {
+      Alert.alert(e instanceof Error ? e.message : '所需积分须为非负数字（可含小数）');
       return;
     }
-    if (!Number.isFinite(cost) || cost < 0) {
-      Alert.alert('所需积分须为非负整数');
+    if (!title.trim()) {
+      Alert.alert('请填写心愿名称');
       return;
     }
     setSaving(true);
@@ -157,8 +160,8 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
               label="所需积分"
               value={costText}
               onChangeText={setCostText}
-              placeholder="0"
-              keyboardType="number-pad"
+              placeholder="0（可含小数）"
+              keyboardType="decimal-pad"
             />
 
             <Text style={[styles.fieldLabel, { color: muted }]}>心愿类型</Text>

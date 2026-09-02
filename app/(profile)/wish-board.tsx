@@ -9,6 +9,7 @@ import {
   wishBoardIconTintSoft,
 } from '@/lib/constants/wish-board-icons';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
+import { formatPoints } from '@/lib/reward-points';
 import {
   deleteWishBoardItem,
   deleteWishRedeemRecord,
@@ -118,14 +119,16 @@ export default function WishBoardScreen() {
   const onRedeem = useCallback(
     (item: WishBoardItemRow) => {
       if (item.wish_type === 'once' && item.status === 'redeemed') return;
-      if (balance < item.cost_points) {
+      if (item.cost_points > 0 && balance < item.cost_points) {
         Alert.alert('积分不足', `兑换「${item.title}」需要 ${item.cost_points} 积分，当前余额 ${balance}。`);
         return;
       }
       const typeHint = item.wish_type === 'repeat' ? '（可重复兑换）' : '';
       Alert.alert(
         '兑换心愿',
-        `确认花费 ${item.cost_points} 积分兑换「${item.title}」${typeHint}？`,
+        item.cost_points > 0
+          ? `确认花费 ${item.cost_points} 积分兑换「${item.title}」${typeHint}？`
+          : `确认免费兑换「${item.title}」${typeHint}？`,
         [
           { text: '取消', style: 'cancel' },
           {
@@ -220,7 +223,7 @@ export default function WishBoardScreen() {
         contentContainerStyle={styles.content}>
         <AppCard variant="accent" style={styles.balanceCard}>
           <Text style={[styles.balanceLabel, { color: 'rgba(255,255,255,0.72)' }]}>积分余额</Text>
-          <Text style={[styles.balanceValue, { color: colors.onAccent }]}>{balance}</Text>
+          <Text style={[styles.balanceValue, { color: colors.onAccent }]}>{formatPoints(balance)}</Text>
           <Text style={[styles.balanceHint, { color: 'rgba(255,255,255,0.65)' }]}>
             完成任务等行为可获得积分，用于兑换心愿
           </Text>
@@ -241,7 +244,7 @@ export default function WishBoardScreen() {
             </Pressable>
             <Pressable
               onPress={onResetPoints}
-              disabled={balance <= 0 || resetting}
+              disabled={balance === 0 || resetting}
               style={({ pressed }) => [
                 styles.resetBtn,
                 {
@@ -382,7 +385,7 @@ export default function WishBoardScreen() {
                       <View />
                     )}
                     <View style={styles.costWrapInline}>
-                      <Text style={[styles.costValue, { color: accent }]}>{item.cost_points}</Text>
+                      <Text style={[styles.costValue, { color: accent }]}>{formatPoints(item.cost_points)}</Text>
                       <Text style={[styles.costUnit, { color: muted }]}>积分</Text>
                     </View>
                   </View>
@@ -441,7 +444,7 @@ export default function WishBoardScreen() {
                         </Text>
                       </View>
                       <View style={styles.costWrap}>
-                        <Text style={[styles.costValue, { color: accent }]}>{record.cost_points}</Text>
+                        <Text style={[styles.costValue, { color: accent }]}>{formatPoints(record.cost_points)}</Text>
                         <Text style={[styles.costUnit, { color: muted }]}>积分</Text>
                       </View>
                     </View>

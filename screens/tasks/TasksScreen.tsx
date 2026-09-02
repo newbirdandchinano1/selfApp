@@ -42,7 +42,7 @@ import {
 import { consumeForceFullApiRefreshAfterLocalClear } from '@/lib/page-api-session';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import { fetchProjectsListForProject, fetchProjectsListForTab, mergeProjectRowsById, mergeProjectTaskTreeMaps } from '@/lib/projects-list-api';
-import { getRewardBadgeBackgroundColor, parseRewardPointsFromExtraData } from '@/lib/reward-points';
+import { formatPoints, getRewardBadgeBackgroundColor, normalizeRewardPoints, parseRewardPointsFromExtraData } from '@/lib/reward-points';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import {
   isBreakHabitSucceeded,
@@ -2110,7 +2110,7 @@ export default function TasksScreen() {
             {
               ...it,
               note: it.note ?? null,
-              rewardPoints: Math.max(0, Math.floor(Number(it.rewardPoints) || 0)),
+              rewardPoints: normalizeRewardPoints(it.rewardPoints),
               periodProgress,
               periodGoal,
               taskShowPeriodCheck,
@@ -4891,7 +4891,7 @@ export default function TasksScreen() {
             <Pressable
               onPress={() => router.push('/wish-board')}
               accessibilityRole="button"
-              accessibilityLabel={`当前积分 ${pointsBalance}，打开心愿板`}
+              accessibilityLabel={`当前积分 ${formatPoints(pointsBalance)}，打开心愿板`}
               hitSlop={6}
               style={({ pressed }) => [
                 styles.pointsBalanceChip,
@@ -4903,7 +4903,7 @@ export default function TasksScreen() {
               ]}>
               <MaterialIcons name="stars" size={15} color="#f59e0b" />
               <Text style={[styles.pointsBalanceValue, { color: colors.text }]} numberOfLines={1}>
-                {pointsBalance}
+                {formatPoints(pointsBalance)}
               </Text>
             </Pressable>
           </View>
@@ -5459,11 +5459,18 @@ export default function TasksScreen() {
                                 numberOfLines={2}>
                                 {t.title}
                               </Text>
-                              {rewardPoints > 0 ? (
+                              {rewardPoints !== 0 ? (
                                 <View
                                   style={[styles.todoRewardBadge, { backgroundColor: rewardBadgeBg }]}
-                                  accessibilityLabel={`完成可获得 ${rewardPoints} 积分`}>
-                                  <Text style={styles.habitRewardBadgeText}>+{rewardPoints}</Text>
+                                  accessibilityLabel={
+                                    rewardPoints > 0
+                                      ? `完成可获得 ${formatPoints(rewardPoints)} 积分`
+                                      : `完成将扣除 ${formatPoints(Math.abs(rewardPoints))} 积分`
+                                  }>
+                                  <Text style={styles.habitRewardBadgeText}>
+                                    {rewardPoints > 0 ? '+' : ''}
+                                    {formatPoints(rewardPoints)}
+                                  </Text>
                                 </View>
                               ) : null}
                             </View>
@@ -5666,7 +5673,7 @@ export default function TasksScreen() {
                             : item.dailyGoal != null && item.dailyGoal > 0
                               ? item.dailyGoal
                               : null;
-                          const rewardPoints = Math.max(0, Math.floor(Number(item.rewardPoints) || 0));
+                          const rewardPoints = normalizeRewardPoints(item.rewardPoints);
                           const rewardBadgeBg = getRewardBadgeBackgroundColor(rewardPoints, isDark);
                           const kindTone =
                             item.kind === 'break'
@@ -5733,9 +5740,12 @@ export default function TasksScreen() {
                                     : 0.55,
                                 },
                               ]}>
-                              {rewardPoints > 0 ? (
+                              {rewardPoints !== 0 ? (
                                 <View style={[styles.habitRewardBadge, { backgroundColor: rewardBadgeBg }]}>
-                                  <Text style={styles.habitRewardBadgeText}>+{rewardPoints}</Text>
+                                  <Text style={styles.habitRewardBadgeText}>
+                                    {rewardPoints > 0 ? '+' : ''}
+                                    {formatPoints(rewardPoints)}
+                                  </Text>
                                 </View>
                               ) : null}
 
@@ -6241,7 +6251,7 @@ export default function TasksScreen() {
                                   </Text>
                                 </View>
                                 <View style={styles.projectTaskTitleTags}>
-                                  {taskRewardPoints > 0 ? (
+                                  {taskRewardPoints !== 0 ? (
                                     <View
                                       style={[
                                         styles.todoRewardBadge,
@@ -6252,8 +6262,15 @@ export default function TasksScreen() {
                                           ),
                                         },
                                       ]}
-                                      accessibilityLabel={`完成可获得 ${taskRewardPoints} 积分`}>
-                                      <Text style={styles.habitRewardBadgeText}>+{taskRewardPoints}</Text>
+                                      accessibilityLabel={
+                                        taskRewardPoints > 0
+                                          ? `完成可获得 ${formatPoints(taskRewardPoints)} 积分`
+                                          : `完成将扣除 ${formatPoints(Math.abs(taskRewardPoints))} 积分`
+                                      }>
+                                      <Text style={styles.habitRewardBadgeText}>
+                                        {taskRewardPoints > 0 ? '+' : ''}
+                                        {formatPoints(taskRewardPoints)}
+                                      </Text>
                                     </View>
                                   ) : null}
                                   {boundHabitIds.length > 0 ? (
@@ -6892,13 +6909,20 @@ export default function TasksScreen() {
                           </View>
                         </View>
                         <View style={styles.projectHeadRight}>
-                          {projectRewardPoints > 0 || hasAnyTasks ? (
+                          {projectRewardPoints !== 0 || hasAnyTasks ? (
                             <View style={styles.projectHeadRightTop}>
-                              {projectRewardPoints > 0 ? (
+                              {projectRewardPoints !== 0 ? (
                                 <View
                                   style={[styles.projectRewardBadge, { backgroundColor: projectRewardBadgeBg }]}
-                                  accessibilityLabel={`完成项目可获得 ${projectRewardPoints} 积分`}>
-                                  <Text style={styles.habitRewardBadgeText}>+{projectRewardPoints}</Text>
+                                  accessibilityLabel={
+                                    projectRewardPoints > 0
+                                      ? `完成项目可获得 ${formatPoints(projectRewardPoints)} 积分`
+                                      : `完成项目将扣除 ${formatPoints(Math.abs(projectRewardPoints))} 积分`
+                                  }>
+                                  <Text style={styles.habitRewardBadgeText}>
+                                    {projectRewardPoints > 0 ? '+' : ''}
+                                    {formatPoints(projectRewardPoints)}
+                                  </Text>
                                 </View>
                               ) : null}
                               {hasAnyTasks ? (

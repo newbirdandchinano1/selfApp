@@ -6,6 +6,7 @@ import {
   type AppPointsLedgerItem,
 } from '@/lib/api-app-domain';
 import { deletePointsLedgerRecord } from '@/lib/repositories/wish-board/wish-board';
+import { formatPoints } from '@/lib/reward-points';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
@@ -29,13 +30,14 @@ function formatLedgerAt(raw: string | null | undefined): string {
 }
 
 function formatDelta(delta: number): string {
-  if (delta > 0) return `+${delta}`;
-  return String(delta);
+  const n = formatPoints(delta);
+  if (delta > 0) return `+${n}`;
+  return n;
 }
 
 function rollbackHint(delta: number): string {
-  if (delta > 0) return `删除后将扣回 ${delta} 积分`;
-  if (delta < 0) return `删除后将返还 ${Math.abs(delta)} 积分`;
+  if (delta > 0) return `删除后将扣回 ${formatPoints(delta)} 积分`;
+  if (delta < 0) return `删除后将返还 ${formatPoints(Math.abs(delta))} 积分`;
   return '删除后积分余额不变';
 }
 
@@ -133,7 +135,7 @@ export default function PointsLedgerScreen() {
       contentContainerStyle={styles.content}>
       <AppCard variant="accent" style={styles.balanceCard}>
         <Text style={[styles.balanceLabel, { color: 'rgba(255,255,255,0.72)' }]}>当前积分</Text>
-        <Text style={[styles.balanceValue, { color: colors.onAccent }]}>{balance}</Text>
+        <Text style={[styles.balanceValue, { color: colors.onAccent }]}>{formatPoints(balance)}</Text>
         <Text style={[styles.balanceHint, { color: 'rgba(255,255,255,0.65)' }]}>
           {total > 0 ? `共 ${total} 条变动记录` : '暂无积分变动'}
         </Text>
@@ -225,7 +227,7 @@ export default function PointsLedgerScreen() {
                     {formatDelta(item.delta)}
                   </Text>
                   <Text style={[styles.afterText, { color: muted }]}>
-                    余额 {item.balance_after}
+                    余额 {formatPoints(item.balance_after)}
                   </Text>
                 </View>
               </View>
