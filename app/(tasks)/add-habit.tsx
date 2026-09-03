@@ -150,11 +150,13 @@ function NumberControl({
   showOptional = false,
   textColor,
   mutedColor,
+  onValuePress,
 }: {
   label: string;
   value: number | null;
   onMinus: () => void;
   onPlus: () => void;
+  onValuePress?: () => void;
   displayValue?: string;
   showOptional?: boolean;
   textColor: string;
@@ -177,7 +179,9 @@ function NumberControl({
           ]}>
           <MaterialIcons name="remove" size={16} color={mutedColor} />
         </Pressable>
-        <Text style={[styles.numberValue, { color: textColor }]}>{displayValue ?? String(value ?? 0)}</Text>
+        <Pressable onPress={onValuePress} disabled={!onValuePress} hitSlop={6}>
+          <Text style={[styles.numberValue, { color: textColor }]}>{displayValue ?? String(value ?? 0)}</Text>
+        </Pressable>
         <Pressable
           onPress={onPlus}
           style={({ pressed }) => [
@@ -188,6 +192,46 @@ function NumberControl({
           <MaterialIcons name="add" size={16} color={mutedColor} />
         </Pressable>
       </View>
+    </View>
+  );
+}
+
+/** 戒除奖励积分单行小输入框（破戒扣分 / 未破戒加分 / 达成加分） */
+function BreakRewardField({
+  label,
+  value,
+  onChangeText,
+  textColor,
+  mutedColor,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (t: string) => void;
+  textColor: string;
+  mutedColor: string;
+}) {
+  const { colors } = useAppTheme();
+  return (
+    <View style={styles.breakRewardField}>
+      <Text style={[styles.breakRewardFieldLabel, { color: mutedColor }]} numberOfLines={1}>
+        {label}
+      </Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder="0"
+        placeholderTextColor={mutedColor}
+        keyboardType="numbers-and-punctuation"
+        style={[
+          styles.breakRewardFieldInput,
+          Typography.body,
+          {
+            backgroundColor: colors.surfaceSubtle,
+            borderColor: colors.outline,
+            color: textColor,
+          },
+        ]}
+      />
     </View>
   );
 }
@@ -241,6 +285,9 @@ export default function AddHabitScreen() {
   const [expectedGoalValue, setExpectedGoalValue] = React.useState(7);
   const [habitNote, setHabitNote] = React.useState('');
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
+  const [breakPenaltyText, setBreakPenaltyText] = React.useState('0');
+  const [cleanRewardText, setCleanRewardText] = React.useState('0');
+  const [goalRewardText, setGoalRewardText] = React.useState('0');
   const [habitKind, setHabitKind] = React.useState<HabitKind>('build');
   const [iconPickerOpen, setIconPickerOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
@@ -257,6 +304,21 @@ export default function AddHabitScreen() {
     editingId: string | null;
     name: string;
   }>({ visible: false, editingId: null, name: '' });
+  const [numberEditor, setNumberEditor] = React.useState<{
+    visible: boolean;
+    label: string;
+    value: string;
+    min: number;
+    max: number;
+    onSave: (value: number) => void;
+  }>({ visible: false, label: '', value: '0', min: 0, max: 99, onSave: () => undefined });
+
+  const openNumberEditor = React.useCallback(
+    (label: string, value: number, min: number, max: number, onSave: (value: number) => void) => {
+      setNumberEditor({ visible: true, label, value: String(value), min, max, onSave });
+    },
+    [],
+  );
 
   const reload = React.useCallback(async (forceApi = false) => {
     await wrapLoad(async () => {
@@ -333,6 +395,23 @@ export default function AddHabitScreen() {
         setHabitNote(row.note?.trim() ? row.note.trim().slice(0, HABIT_NOTE_MAX_LEN) : '');
         setHabitKind(parseHabitKind(row.extra_data));
         setRewardPointsText(String(parseHabitRewardPoints(row.extra_data)));
+        try {
+          const extra = row.extra_data ? JSON.parse(row.extra_data) as Record<string, unknown> : {};
+          const breakRewards = extra.breakRewards;
+          if (breakRewards && typeof breakRewards === 'object' && !Array.isArray(breakRewards)) {
+            const values = breakRewards as Record<string, unknown>;
+            setBreakPenaltyText(String(values.penalty ?? 0));
+            setCleanRewardText(String(values.clean ?? 0));
+            setGoalRewardText(String(values.goal ?? 0));
+          } else if (parseHabitKind(row.extra_data) === 'break') {
+            // 旧版戒除习惯：单一 reward_points 即「达成连续目标」的奖励，迁移到新字段
+            setBreakPenaltyText('0');
+            setCleanRewardText('0');
+            setGoalRewardText(String(parseHabitRewardPoints(row.extra_data)));
+          }
+        } catch {
+          // ignore malformed optional reward metadata
+        }
         if (row.extra_data) {
           try {
             const parsed = JSON.parse(row.extra_data) as any;
@@ -509,6 +588,7 @@ export default function AddHabitScreen() {
   }, [activeTab, habitKind, taskRepeatPeriod]);
 
   const deriveTagByCycle = React.useCallback((): string => {
+    if (habitKind === 'break') return '每天';
     if (habitKind === 'task') {
       return (TASK_CYCLE_TABS as string[]).includes(activeTab) ? activeTab : DEFAULT_TASK_REPEAT_PERIOD;
     }
@@ -595,11 +675,22 @@ export default function AddHabitScreen() {
     const canUseSubHabits = habitKind !== 'break';
     const resolvedSubEnabled = canUseSubHabits && subHabitsEnabled;
 
+    const breakRewardsPayload =
+      habitKind === 'break'
+        ? {
+            penalty: normalizeHabitRewardPoints(breakPenaltyText),
+            clean: normalizeHabitRewardPoints(cleanRewardText),
+            goal: normalizeHabitRewardPoints(goalRewardText),
+          }
+        : null;
+
     const extraDataRaw = mergeSubHabitsIntoExtraData(
       JSON.stringify({
         ...existingExtra,
         habitKind,
-        reward_points: normalizeHabitRewardPoints(rewardPointsText),
+        ...(breakRewardsPayload
+          ? { breakRewards: breakRewardsPayload }
+          : { reward_points: normalizeHabitRewardPoints(rewardPointsText) }),
         quantifyEnabled,
         quantify: quantifyEnabled
           ? {
@@ -620,7 +711,9 @@ export default function AddHabitScreen() {
         schedule:
           habitKind === 'task'
             ? { activeTab: (TASK_CYCLE_TABS as string[]).includes(activeTab) ? activeTab : DEFAULT_TASK_REPEAT_PERIOD }
-            : {
+            : habitKind === 'break'
+              ? { activeTab: '每天' }
+              : {
                 activeTab,
                 selectedDays,
                 weeklyNDays,
@@ -645,6 +738,7 @@ export default function AddHabitScreen() {
       const extraObj = JSON.parse(extraData) as Record<string, unknown>;
       delete extraObj.buildHabitCycle;
       delete extraObj.completion_reward;
+      delete extraObj.reward_points;
       extraData = JSON.stringify(extraObj);
     } else if (habitKind === 'build') {
       const extraObj = JSON.parse(extraData) as Record<string, unknown>;
@@ -725,6 +819,7 @@ export default function AddHabitScreen() {
     activeTab,
     consecutiveTargetDays,
     dailyGoal,
+    dayBoundary,
     expectedGoalTab,
     expectedGoalValue,
     taskRepeatPeriod,
@@ -736,6 +831,9 @@ export default function AddHabitScreen() {
     habitName,
     habitNote,
     rewardPointsText,
+    breakPenaltyText,
+    cleanRewardText,
+    goalRewardText,
     eachPlus,
     isEditMode,
     monthlyNDays,
@@ -890,6 +988,38 @@ export default function AddHabitScreen() {
             inputStyle={[Typography.body, styles.noteInputText]}
           />
 
+          {habitKind === 'break' ? (
+            <View style={styles.breakRewardsBlock}>
+              <Text style={[Typography.caption, styles.kindBlockLabel, { color: colors.textSecondary }]}>戒除奖励积分</Text>
+              <View style={styles.breakRewardsRow}>
+                <BreakRewardField
+                  label="破戒扣分"
+                  value={breakPenaltyText}
+                  onChangeText={setBreakPenaltyText}
+                  textColor={colors.text}
+                  mutedColor={colors.textSecondary}
+                />
+                <BreakRewardField
+                  label="未破戒加分"
+                  value={cleanRewardText}
+                  onChangeText={setCleanRewardText}
+                  textColor={colors.text}
+                  mutedColor={colors.textSecondary}
+                />
+                <BreakRewardField
+                  label="达成加分"
+                  value={goalRewardText}
+                  onChangeText={setGoalRewardText}
+                  textColor={colors.text}
+                  mutedColor={colors.textSecondary}
+                />
+              </View>
+              <Text style={[Typography.caption, styles.breakRewardsHint, { color: colors.textSecondary }]}>
+                破戒扣分：记录破戒时扣除；未破戒加分：当日确认保持戒除后计入；达成加分：达成连续目标后计入
+              </Text>
+            </View>
+          ) : null}
+          {habitKind !== 'break' ? (
           <AppInput
             label="奖励积分"
             value={rewardPointsText}
@@ -899,12 +1029,11 @@ export default function AddHabitScreen() {
             hint={
               habitKind === 'task'
                 ? '完成本周期任务目标后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
-                : habitKind === 'break'
-                  ? '达成戒除连续目标后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
-                  : '每次完成打卡计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
+                : '每次完成打卡计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
             }
             inputWrapStyle={styles.rewardPointsWrap}
           />
+          ) : null}
 
           <View style={styles.kindBlock}>
             <Text style={[Typography.caption, styles.kindBlockLabel, { color: colors.textSecondary }]}>打卡类型</Text>
@@ -1067,6 +1196,7 @@ export default function AddHabitScreen() {
                       value={eachPlus}
                       onMinus={() => setEachPlus((v) => Math.max(1, v - 1))}
                       onPlus={() => setEachPlus((v) => Math.min(99, v + 1))}
+                      onValuePress={() => openNumberEditor('每次 +', eachPlus, 1, 99, setEachPlus)}
                       textColor={colors.text}
                       mutedColor={colors.textSecondary}
                     />
@@ -1097,6 +1227,15 @@ export default function AddHabitScreen() {
                             return v === null ? 1 : Math.min(99, v + 1);
                           })
                         }
+                        onValuePress={() =>
+                          openNumberEditor(
+                            '每日目标',
+                            habitKind === 'break' ? dailyGoal ?? 0 : dailyGoal ?? 1,
+                            habitKind === 'break' ? 0 : 1,
+                            99,
+                            (v) => setDailyGoal(v),
+                          )
+                        }
                         showOptional={habitKind !== 'break'}
                         textColor={colors.text}
                         mutedColor={colors.textSecondary}
@@ -1112,6 +1251,7 @@ export default function AddHabitScreen() {
                           value={consecutiveTargetDays}
                           onMinus={() => setConsecutiveTargetDays((v) => Math.max(1, v - 1))}
                           onPlus={() => setConsecutiveTargetDays((v) => Math.min(999, v + 1))}
+                          onValuePress={() => openNumberEditor('连续目标天数', consecutiveTargetDays, 1, 999, setConsecutiveTargetDays)}
                           textColor={colors.text}
                           mutedColor={colors.textSecondary}
                         />
@@ -1432,6 +1572,23 @@ export default function AddHabitScreen() {
             ) : null}
           </View>
 
+          {habitKind === 'break' ? (
+            <View
+              style={[
+                styles.breakCycleFixedCard,
+                { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline },
+              ]}>
+              <MaterialIcons name="calendar-month" size={18} color={colors.textSecondary} />
+              <View style={styles.breakCycleFixedTextWrap}>
+                <Text style={[Typography.bodyStrong, styles.breakCycleFixedTitle, { color: colors.text }]}>
+                  循环模式
+                </Text>
+                <Text style={[Typography.caption, styles.breakCycleFixedHint, { color: colors.textSecondary }]}>
+                  戒除坏习惯固定按每天记录，无需设置循环
+                </Text>
+              </View>
+            </View>
+          ) : (
           <View>
             {renderSectionHeader(
               'calendar-month',
@@ -1701,6 +1858,7 @@ export default function AddHabitScreen() {
               </AppCard>
             ) : null}
           </View>
+          )}
         </View>
       </ScrollView>
 
@@ -1734,6 +1892,35 @@ export default function AddHabitScreen() {
           />
         )}
       </View>
+
+      <Modal
+        visible={numberEditor.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setNumberEditor((prev) => ({ ...prev, visible: false }))}>
+        <View style={styles.iconModalRoot}>
+          <Pressable style={[styles.iconModalBackdrop, { backgroundColor: colors.overlay }]} onPress={() => setNumberEditor((prev) => ({ ...prev, visible: false }))} />
+          <View style={[styles.iconModalCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}> 
+            <Text style={[Typography.title, styles.iconModalTitle, { color: colors.text }]}>{numberEditor.label}</Text>
+            <TextInput
+              autoFocus
+              value={numberEditor.value}
+              onChangeText={(value) => setNumberEditor((prev) => ({ ...prev, value: value.replace(/[^0-9]/g, '') }))}
+              keyboardType="number-pad"
+              style={[styles.subHabitEditorInput, Typography.body, { color: colors.text, backgroundColor: colors.surfaceSubtle, borderColor: colors.outline }]}
+            />
+            <AppButton variant="primary" size="md" label="确定" onPress={() => {
+              const value = Number(numberEditor.value);
+              if (!Number.isInteger(value) || value < numberEditor.min || value > numberEditor.max) {
+                Alert.alert('输入无效', `请输入 ${numberEditor.min}～${numberEditor.max} 的整数`);
+                return;
+              }
+              numberEditor.onSave(value);
+              setNumberEditor((prev) => ({ ...prev, visible: false }));
+            }} />
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={iconPickerOpen} transparent animationType="fade" onRequestClose={() => setIconPickerOpen(false)}>
         <View style={styles.iconModalRoot}>
@@ -2019,6 +2206,24 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
   },
   kindBlock: { gap: Spacing.md },
+  breakRewardsBlock: { gap: Spacing.md },
+  breakRewardsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.md,
+  },
+  breakRewardField: { flex: 1, minWidth: 0, gap: Spacing.xs },
+  breakRewardFieldLabel: { fontSize: 11, fontWeight: '600', paddingLeft: 2 },
+  breakRewardFieldInput: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 1,
+    fontSize: 14,
+    textAlign: 'center',
+    minWidth: 0,
+  },
+  breakRewardsHint: { lineHeight: 16, paddingHorizontal: 2 },
   kindBlockLabel: { paddingLeft: Spacing.xs },
   kindRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
   kindCard: {
@@ -2050,6 +2255,18 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     gap: Spacing.md,
   },
+  breakCycleFixedCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.lg,
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
+  },
+  breakCycleFixedTextWrap: { flex: 1, minWidth: 0, gap: 2 },
+  breakCycleFixedTitle: { fontSize: 14 },
+  breakCycleFixedHint: { lineHeight: 17 },
   contextGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
   contextChip: {
     width: '31%',

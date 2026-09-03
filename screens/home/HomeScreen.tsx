@@ -7,6 +7,7 @@ import {
   HealthTrendCardSkeleton,
 } from '@/components/health/health-home-skeletons';
 import { HealthIntakeTrendSection } from '@/components/health/health-intake-trend-section';
+import { AppIconButton } from '@/components/ui/app-icon-button';
 import { HealthNutrientAccents, Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -29,6 +30,7 @@ import {
   fetchUserHomeHealthSlice,
 } from '@/lib/repositories/health/health';
 import type { HealthIntakeDayTotals, HealthRecordRow } from '@/lib/repositories/health/health.types';
+import { syncHealthMetricPointsForDay } from '@/lib/repositories/health/health-metric-points-grant';
 import {
   getResolvedGlobalIntakeTargets,
   loadPersistedIntakeTargets,
@@ -37,6 +39,14 @@ import {
   setGlobalProteinTargetG,
   setGlobalCaloriesTargetKcal,
 } from '@/lib/global-intake-targets';
+import {
+  DEFAULT_HEALTH_METRIC_POINTS_SETTINGS,
+  clampHealthThresholdPercent,
+  healthMetricThresholdAbsolute,
+  loadHealthMetricPointsSettings,
+  saveHealthMetricPointsSettings,
+  type HealthMetricPointsSettings,
+} from '@/lib/health-metric-points-settings';
 import {
   getIntakeAssistantSelection,
   setIntakeAssistantSelection,
@@ -73,6 +83,7 @@ import {
   loadSelectedQuickAddItems,
   type QuickAddCardItem,
 } from '@/lib/quick-add-cards';
+import { formatPoints, normalizeRewardPoints } from '@/lib/reward-points';
 
 import {
   ActivityIndicator,
@@ -80,13 +91,17 @@ import {
   Alert,
   Dimensions,
   Easing,
+  Keyboard,
+  KeyboardAvoidingView,
   Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
   PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -607,6 +622,49 @@ const CircularProgress = ({
   );
 };
 
+function StatusTrackWithThreshold({
+  percent,
+  color,
+  trackBg,
+  thresholdPercent,
+  thresholdValueLabel,
+  showThreshold,
+}: {
+  percent: number;
+  color: string;
+  trackBg: string;
+  thresholdPercent: number;
+  /** 阈值对应的具体数值文案（非百分比） */
+  thresholdValueLabel: string;
+  showThreshold: boolean;
+}) {
+  const clamped = Math.min(100, Math.max(0, Math.round(percent)));
+  const threshold = Math.min(100, Math.max(0, Math.round(thresholdPercent)));
+  return (
+    <View style={[styles.statusTrackWrap, showThreshold && styles.statusTrackWrapWithMarker]}>
+      {showThreshold ? (
+        <View
+          pointerEvents="none"
+          style={[styles.statusThresholdMarker, { left: `${threshold}%` }]}
+        >
+          <Text style={[styles.statusThresholdLabel, { color }]} numberOfLines={1}>
+            {thresholdValueLabel}
+          </Text>
+          <View style={[styles.statusThresholdLine, { backgroundColor: color }]} />
+        </View>
+      ) : null}
+      <View style={[styles.statusTrack, { backgroundColor: trackBg }]}>
+        <View
+          style={[
+            styles.statusTrackFill,
+            { width: `${clamped}%`, backgroundColor: color },
+          ]}
+        />
+      </View>
+    </View>
+  );
+}
+
 export default function HealthScreen() {
   const router = useRouter();
   const { colors, isDark } = useAppTheme();
@@ -618,6 +676,13 @@ export default function HealthScreen() {
   const cardWidth = (width - pageInset - sectionPanelPad - Spacing.md * 3) / 4;
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [assistantOpen, setAssistantOpen] = React.useState(false);
+  const [pointsSettingsOpen, setPointsSettingsOpen] = React.useState(false);
+  const [metricPointsSettings, setMetricPointsSettings] = React.useState<HealthMetricPointsSettings>(
+    DEFAULT_HEALTH_METRIC_POINTS_SETTINGS,
+  );
+  const [draftPointsEnabled, setDraftPointsEnabled] = React.useState(false);
+  const [draftThresholdText, setDraftThresholdText] = React.useState('100');
+  const [draftRewardPointsText, setDraftRewardPointsText] = React.useState('5');
   const [assistantTab, setAssistantTab] = React.useState<'水分' | '蛋白质' | '碳水' | '热量'>('水分');
   const [intakeTargetTick, setIntakeTargetTick] = React.useState(0);
   const intakeTargetsSnapshot = React.useMemo(
@@ -1051,6 +1116,101 @@ export default function HealthScreen() {
     }),
     [dayIntakeDisplay],
   );
+
+  /** 积分同步用：热量百分比不封顶，以便识别超过 100% */
+  const metricPercentsForPoints = React.useMemo(() => {
+    const calTarget = dayIntakeDisplay.calories.target;
+    const calCurrent = dayIntakeDisplay.calories.current;
+    const caloriesUncapped =
+      calTarget > 0 ? Math.round((calCurrent / calTarget) * 100) : 0;
+    return {
+      hydration: dayIntakeDisplay.hydration.percent,
+      protein: dayIntakeDisplay.protein.percent,
+      carbohydrate: dayIntakeDisplay.carbohydrate.percent,
+      calories: caloriesUncapped,
+    };
+  }, [dayIntakeDisplay]);
+
+  const thresholdValueLabels = React.useMemo(
+    () => ({
+      hydration: formatIntakeLocale(
+        healthMetricThresholdAbsolute(
+          intakeTargetsSnapshot.hydrationMl,
+          metricPointsSettings.thresholdPercent,
+        ),
+      ),
+      protein: formatIntakeLocale(
+        healthMetricThresholdAbsolute(
+          intakeTargetsSnapshot.proteinG,
+          metricPointsSettings.thresholdPercent,
+        ),
+      ),
+      carbohydrate: formatIntakeLocale(
+        healthMetricThresholdAbsolute(
+          intakeTargetsSnapshot.carbohydrateG,
+          metricPointsSettings.thresholdPercent,
+        ),
+      ),
+      calories: formatIntakeLocale(
+        healthMetricThresholdAbsolute(
+          intakeTargetsSnapshot.caloriesKcal,
+          metricPointsSettings.thresholdPercent,
+        ),
+      ),
+    }),
+    [intakeTargetsSnapshot, metricPointsSettings.thresholdPercent],
+  );
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void loadHealthMetricPointsSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setMetricPointsSettings(settings);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const ymd = formatLocalYmd(selectedDate);
+    void syncHealthMetricPointsForDay({
+      ymd,
+      percents: metricPercentsForPoints,
+      settings: metricPointsSettings,
+    }).catch((e) => {
+      if (__DEV__) console.warn('[health-metric-points]', e);
+    });
+  }, [selectedDate, metricPercentsForPoints, metricPointsSettings]);
+
+  const openPointsSettingsModal = React.useCallback(() => {
+    setDraftPointsEnabled(metricPointsSettings.enabled);
+    setDraftThresholdText(String(metricPointsSettings.thresholdPercent));
+    setDraftRewardPointsText(formatPoints(metricPointsSettings.rewardPoints));
+    setPointsSettingsOpen(true);
+  }, [metricPointsSettings]);
+
+  const closePointsSettingsModal = React.useCallback(() => {
+    setPointsSettingsOpen(false);
+  }, []);
+
+  const savePointsSettingsModal = React.useCallback(async () => {
+    const threshold = clampHealthThresholdPercent(draftThresholdText);
+    const rewardPoints = normalizeRewardPoints(draftRewardPointsText);
+    try {
+      const next = await saveHealthMetricPointsSettings({
+        enabled: draftPointsEnabled,
+        thresholdPercent: threshold,
+        rewardPoints,
+      });
+      setMetricPointsSettings(next);
+      setPointsSettingsOpen(false);
+    } catch {
+      Alert.alert('保存失败', '积分设置未能写入，请稍后重试。');
+    }
+  }, [draftPointsEnabled, draftThresholdText, draftRewardPointsText]);
 
   const playIntakeFeedbackAnimation = React.useCallback(() => {
     metricImpactAnims.forEach((anim) => anim.setValue(0));
@@ -1776,7 +1936,11 @@ export default function HealthScreen() {
         <View style={styles.headerTopRow}>
           <View style={styles.headerSideSpacer} />
           <Text style={[styles.headerTitle, { color: colors.text }]}>{formatHeaderDate(selectedDate)}</Text>
-          <View style={styles.headerSideSpacer} />
+          <AppIconButton
+            icon="settings"
+            onPress={openPointsSettingsModal}
+            accessibilityLabel="健康指标积分设置"
+          />
         </View>
 
         <ScrollView
@@ -2063,14 +2227,14 @@ export default function HealthScreen() {
                     ML / {formatIntakeLocale(intakeTargetsSnapshot.hydrationMl)}
                   </Text>
                 </View>
-                <View style={[styles.statusTrack, { backgroundColor: colors.outline }]}>
-                  <View
-                    style={[
-                      styles.statusTrackFill,
-                      { width: `${Math.round(metricPercents.hydration)}%`, backgroundColor: HealthNutrientAccents.hydration },
-                    ]}
-                  />
-                </View>
+                <StatusTrackWithThreshold
+                  percent={metricPercents.hydration}
+                  color={HealthNutrientAccents.hydration}
+                  trackBg={colors.outline}
+                  thresholdPercent={metricPointsSettings.thresholdPercent}
+                  thresholdValueLabel={thresholdValueLabels.hydration}
+                  showThreshold={metricPointsSettings.enabled}
+                />
               </View>
             </View>
 
@@ -2094,14 +2258,14 @@ export default function HealthScreen() {
                     G / {formatIntakeLocale(intakeTargetsSnapshot.proteinG)}
                   </Text>
                 </View>
-                <View style={[styles.statusTrack, { backgroundColor: colors.outline }]}>
-                  <View
-                    style={[
-                      styles.statusTrackFill,
-                      { width: `${Math.round(metricPercents.protein)}%`, backgroundColor: HealthNutrientAccents.protein },
-                    ]}
-                  />
-                </View>
+                <StatusTrackWithThreshold
+                  percent={metricPercents.protein}
+                  color={HealthNutrientAccents.protein}
+                  trackBg={colors.outline}
+                  thresholdPercent={metricPointsSettings.thresholdPercent}
+                  thresholdValueLabel={thresholdValueLabels.protein}
+                  showThreshold={metricPointsSettings.enabled}
+                />
               </View>
             </View>
 
@@ -2125,14 +2289,14 @@ export default function HealthScreen() {
                     G / {formatIntakeLocale(intakeTargetsSnapshot.carbohydrateG)}
                   </Text>
                 </View>
-                <View style={[styles.statusTrack, { backgroundColor: colors.outline }]}>
-                  <View
-                    style={[
-                      styles.statusTrackFill,
-                      { width: `${Math.round(metricPercents.carbohydrate)}%`, backgroundColor: HealthNutrientAccents.carbohydrate },
-                    ]}
-                  />
-                </View>
+                <StatusTrackWithThreshold
+                  percent={metricPercents.carbohydrate}
+                  color={HealthNutrientAccents.carbohydrate}
+                  trackBg={colors.outline}
+                  thresholdPercent={metricPointsSettings.thresholdPercent}
+                  thresholdValueLabel={thresholdValueLabels.carbohydrate}
+                  showThreshold={metricPointsSettings.enabled}
+                />
               </View>
             </View>
 
@@ -2161,14 +2325,14 @@ export default function HealthScreen() {
                     按当前缺口，今日约可减 {dayWeightLossJin} 斤
                   </Text>
                 ) : null}
-                <View style={[styles.statusTrack, { backgroundColor: colors.outline }]}>
-                  <View
-                    style={[
-                      styles.statusTrackFill,
-                      { width: `${Math.round(metricPercents.calories)}%`, backgroundColor: HealthNutrientAccents.calories },
-                    ]}
-                  />
-                </View>
+                <StatusTrackWithThreshold
+                  percent={metricPercents.calories}
+                  color={HealthNutrientAccents.calories}
+                  trackBg={colors.outline}
+                  thresholdPercent={metricPointsSettings.thresholdPercent}
+                  thresholdValueLabel={thresholdValueLabels.calories}
+                  showThreshold={metricPointsSettings.enabled}
+                />
               </View>
             </View>
           </View>
@@ -2865,6 +3029,134 @@ export default function HealthScreen() {
         </Pressable>
       </Modal>
 
+      <Modal
+        visible={pointsSettingsOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={closePointsSettingsModal}
+      >
+        <KeyboardAvoidingView
+          style={[styles.assistantOverlay, { backgroundColor: colors.overlay }]}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <Pressable
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => {
+              Keyboard.dismiss();
+              closePointsSettingsModal();
+            }}
+          />
+          <Pressable
+            style={[
+              styles.assistantCard,
+              styles.pointsSettingsCard,
+              { backgroundColor: colors.surface, borderColor: colors.outline },
+            ]}
+            onPress={Keyboard.dismiss}
+          >
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              bounces={false}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.assistantHeader}>
+                <View>
+                  <Text style={[styles.assistantTitle, { color: colors.text }]}>指标积分</Text>
+                  <Text style={[styles.assistantSubTitle, { color: colors.textSecondary }]}>
+                    GOAL REWARD POINTS
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[styles.assistantCloseBtn, { backgroundColor: isDark ? colors.input : colors.capsule }]}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    closePointsSettingsModal();
+                  }}
+                >
+                  <MaterialIcons name="close" size={18} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={[styles.pointsSettingsHint, { color: colors.textSecondary }]}>
+                水分 / 蛋白质 / 碳水达到设定进度加分；热量超过设定进度扣同等积分。进度回落后会自动冲正。
+              </Text>
+
+              <View style={[styles.pointsSettingsSwitchRow, { borderColor: colors.outline }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.pointsSettingsLabel, { color: colors.text }]}>启用指标积分</Text>
+                  <Text style={[styles.pointsSettingsHint, { color: colors.textSecondary, marginBottom: 0 }]}>
+                    关闭后不再增减，已有积分保留
+                  </Text>
+                </View>
+                <Switch
+                  value={draftPointsEnabled}
+                  onValueChange={(v) => {
+                    Keyboard.dismiss();
+                    setDraftPointsEnabled(v);
+                  }}
+                  trackColor={{ false: colors.capsule, true: colors.successSwitch }}
+                />
+              </View>
+
+              <Text style={[styles.pointsSettingsFieldLabel, { color: colors.textSecondary }]}>
+                阈值进度（%）
+              </Text>
+              <View
+                style={[
+                  styles.pointsSettingsInputWrap,
+                  { backgroundColor: colors.input, borderColor: colors.outline },
+                ]}
+              >
+                <TextInput
+                  value={draftThresholdText}
+                  onChangeText={setDraftThresholdText}
+                  returnKeyType="done"
+                  blurOnSubmit
+                  onSubmitEditing={Keyboard.dismiss}
+                  placeholder="100"
+                  placeholderTextColor={colors.textMuted}
+                  style={[styles.pointsSettingsInput, { color: colors.text }]}
+                />
+                <Text style={[styles.pointsSettingsSuffix, { color: colors.textSecondary }]}>%</Text>
+              </View>
+
+              <Text style={[styles.pointsSettingsFieldLabel, { color: colors.textSecondary }]}>
+                单项积分
+              </Text>
+              <View
+                style={[
+                  styles.pointsSettingsInputWrap,
+                  { backgroundColor: colors.input, borderColor: colors.outline },
+                ]}
+              >
+                <TextInput
+                  value={draftRewardPointsText}
+                  onChangeText={setDraftRewardPointsText}
+                  returnKeyType="done"
+                  blurOnSubmit
+                  onSubmitEditing={Keyboard.dismiss}
+                  placeholder="5"
+                  placeholderTextColor={colors.textMuted}
+                  style={[styles.pointsSettingsInput, { color: colors.text }]}
+                />
+                <Text style={[styles.pointsSettingsSuffix, { color: colors.textSecondary }]}>分</Text>
+              </View>
+
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  void savePointsSettingsModal();
+                }}
+                style={[styles.pointsSettingsSaveBtn, { backgroundColor: colors.primary }]}
+              >
+                <Text style={[styles.pointsSettingsSaveText, { color: colors.onPrimary }]}>保存</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </Pressable>
+        </KeyboardAvoidingView>
+      </Modal>
+
       <RecordIntakeSheet
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
@@ -3119,11 +3411,99 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: Radius.pill,
     overflow: 'hidden',
+  },
+  statusTrackWrap: {
     marginTop: Spacing.lg,
+    position: 'relative',
+  },
+  statusTrackWrapWithMarker: {
+    paddingTop: 14,
+  },
+  statusThresholdMarker: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 48,
+    marginLeft: -24,
+    alignItems: 'center',
+    zIndex: 2,
+  },
+  statusThresholdLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    lineHeight: 11,
+    marginBottom: 1,
+    maxWidth: 48,
+    textAlign: 'center',
+  },
+  statusThresholdLine: {
+    width: 2,
+    flex: 1,
+    borderRadius: 1,
+    opacity: 0.9,
   },
   statusTrackFill: {
     height: '100%',
     borderRadius: 999,
+  },
+  pointsSettingsHint: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 16,
+  },
+  pointsSettingsCard: {
+    maxHeight: '88%',
+    zIndex: 1,
+  },
+  pointsSettingsSwitchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingBottom: 16,
+    marginBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  pointsSettingsLabel: {
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  pointsSettingsFieldLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 8,
+    marginTop: 8,
+  },
+  pointsSettingsInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.lg,
+    paddingHorizontal: 14,
+    minHeight: 46,
+    marginBottom: 4,
+  },
+  pointsSettingsInput: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '700',
+    paddingVertical: 10,
+  },
+  pointsSettingsSuffix: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginLeft: 8,
+  },
+  pointsSettingsSaveBtn: {
+    marginTop: 20,
+    borderRadius: Radius.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+  },
+  pointsSettingsSaveText: {
+    fontSize: 15,
+    fontWeight: '800',
   },
   sectionHeader: {
     flexDirection: 'row',

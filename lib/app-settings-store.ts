@@ -24,6 +24,7 @@ export const AppSettingKey = {
   savingsOverview: '@selfapp/savings_overview_settings_v2',
   savingsOverviewLegacy: '@selfapp/savings_overview_settings_v1',
   globalIntakeTargets: '@global_intake_targets_v1',
+  healthMetricPoints: '@health_metric_points_v1',
   dailyIntakeAiTargets: '@daily_intake_ai_targets_v1',
   intakeAssistantSelection: '@intake_assistant_selection_v1',
   tasksCompletionDayStart: '@tasks_completion_day_start_v1',

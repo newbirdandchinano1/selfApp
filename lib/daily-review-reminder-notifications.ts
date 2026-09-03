@@ -11,6 +11,7 @@ import { getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories
 import { getWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { Platform } from 'react-native';
+import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
 
 const NOTIFICATION_ID = 'selfapp-daily-review-reminder';
 const ANDROID_CHANNEL_ID = 'daily-review-reminders';
@@ -131,7 +132,7 @@ async function findNextDailyReviewReminderFireAt(
 export async function syncDailyReviewReminderNotification(
   settings?: DailyReviewReminderSettings,
 ): Promise<SyncDailyReviewReminderResult> {
-  if (Platform.OS === 'web') {
+  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) {
     return { scheduled: false, permissionDenied: false };
   }
 

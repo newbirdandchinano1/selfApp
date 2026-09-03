@@ -9,6 +9,7 @@ import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-
 import { parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { Platform } from 'react-native';
+import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
 
 const NOTIFICATION_PREFIX = 'selfapp-habit-reminder:';
 const ANDROID_CHANNEL_ID = 'habit-reminders';
@@ -130,7 +131,7 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
   scheduled: boolean;
   permissionDenied: boolean;
 }> {
-  if (Platform.OS === 'web') {
+  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) {
     return { scheduled: false, permissionDenied: false };
   }
 
@@ -218,7 +219,7 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
 
 /** 按当前习惯与打卡状态，重新登记所有已开启提醒的习惯。 */
 export async function resyncAllHabitReminders(): Promise<void> {
-  if (Platform.OS === 'web') return;
+  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) return;
 
   const [habits, checkInsMaps] = await Promise.all([getHabits(), getAllHabitCheckInsMaps()]);
   await Promise.all(
@@ -243,7 +244,7 @@ export async function resyncAllHabitReminders(): Promise<void> {
 
 /** 单个习惯打卡/撤销后刷新其下一次提醒。 */
 export async function resyncHabitReminderForHabitId(habitId: string): Promise<void> {
-  if (Platform.OS === 'web') return;
+  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) return;
   const habit = await getHabitById(habitId);
   if (!habit) {
     await cancelScheduledHabitReminder(habitId);

@@ -321,7 +321,9 @@ export async function appDomainListRecords<T extends Record<string, unknown>>(
         method: 'GET',
         signal,
       });
-      return wrapList(extractHealthIntakeItems(data).map(normalizeHealthRecordRow) as T[]);
+      const items = extractHealthIntakeItems(data).map(normalizeHealthRecordRow);
+      await enrichHealthRecordsWithDailyTargets(items, signal);
+      return wrapList(items as T[]);
     }
     case 'wish_board_items': {
       const data = await apiRequest<{ items?: unknown[] }>(`${APP_API_PREFIX}/wish-board/items`, {
@@ -372,31 +374,92 @@ function normalizeMemoRow(row: Record<string, unknown>): Record<string, unknown>
   return out;
 }
 
+function healthRecordDateYmd(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (trimmed.length < 10) return trimmed;
+  const ymd = trimmed.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd : trimmed;
+}
+
 function normalizeHealthRecordRow(row: Record<string, unknown>): Record<string, unknown> {
   const out = { ...row };
   // record_date 本地多为 YYYY-MM-DD；接口可能返回 ISO（日期在前 10 位）
-  if (typeof out.record_date === 'string' && out.record_date.length >= 10) {
-    const ymd = out.record_date.slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
-      out.record_date = ymd;
-    }
-  }
+  const ymd = healthRecordDateYmd(out.record_date);
+  if (ymd) out.record_date = ymd;
   // 专用接口 / 通用 List 都不下发 user_id，缺省会触发 SQLite NOT NULL + FK，整表灌库失败
   const userId = typeof out.user_id === 'string' ? out.user_id.trim() : '';
   if (!userId) out.user_id = DEFAULT_HEALTH_USER_ID;
+  // 摄入量缺省为 0；目标已拆到 health_daily_targets，接口常省略 target_* —— 不要写成 0，
+  // 以便本地同步时保留用户创建时写入的目标（见 applyApiRowsToLocalTable 缺列回填）。
+  for (const col of ['hydration', 'protein', 'carbohydrate', 'calories'] as const) {
+    if (out[col] == null || out[col] === '') out[col] = 0;
+  }
   for (const col of [
-    'hydration',
-    'protein',
-    'carbohydrate',
-    'calories',
     'target_hydration',
     'target_protein',
     'target_carbohydrate',
     'target_calories',
   ] as const) {
-    if (out[col] == null || out[col] === '') out[col] = 0;
+    if (out[col] == null || out[col] === '') {
+      delete out[col];
+      continue;
+    }
+    const n = Number(out[col]);
+    if (!Number.isFinite(n) || n < 0) delete out[col];
+    else out[col] = n;
   }
   return out;
+}
+
+type HealthDailyTargetRow = {
+  day_ymd?: string;
+  target_hydration?: number;
+  target_protein?: number;
+  target_carbohydrate?: number;
+  target_calories?: number;
+};
+
+/** 将 health_daily_targets 按日合并回摄入行（专用 list 已不下发 target_*） */
+async function enrichHealthRecordsWithDailyTargets(
+  items: Record<string, unknown>[],
+  signal?: AbortSignal,
+): Promise<void> {
+  if (items.length === 0) return;
+  let list: HealthDailyTargetRow[] = [];
+  try {
+    const data = await apiRequest<{ list?: HealthDailyTargetRow[] } | HealthDailyTargetRow[]>(
+      '/api/data/health_daily_targets?limit=500',
+      { method: 'GET', signal, skipGlobalLoading: true },
+    );
+    list = Array.isArray(data) ? data : Array.isArray(data?.list) ? data.list : [];
+  } catch {
+    return;
+  }
+  if (list.length === 0) return;
+
+  const byYmd = new Map<string, HealthDailyTargetRow>();
+  for (const row of list) {
+    const ymd = healthRecordDateYmd(row.day_ymd);
+    if (!ymd) continue;
+    byYmd.set(ymd, row);
+  }
+
+  for (const item of items) {
+    const ymd = healthRecordDateYmd(item.record_date);
+    const targets = ymd ? byYmd.get(ymd) : undefined;
+    if (!targets) continue;
+    const apply = (col: keyof HealthDailyTargetRow, outKey: string) => {
+      const current = Number(item[outKey]);
+      if (Number.isFinite(current) && current > 0) return;
+      const next = Number(targets[col]);
+      if (Number.isFinite(next) && next > 0) item[outKey] = next;
+    };
+    apply('target_hydration', 'target_hydration');
+    apply('target_protein', 'target_protein');
+    apply('target_carbohydrate', 'target_carbohydrate');
+    apply('target_calories', 'target_calories');
+  }
 }
 
 /** 专用接口未覆盖的操作，回退到 /api/data */
@@ -655,9 +718,11 @@ export async function appHealthListIntakesByDate(params: {
     method: 'GET',
     signal: params.signal,
   });
+  const items = extractHealthIntakeItems(data).map(normalizeHealthRecordRow);
+  await enrichHealthRecordsWithDailyTargets(items, params.signal);
   return {
     ...asRecord(data),
-    items: extractHealthIntakeItems(data).map(normalizeHealthRecordRow),
+    items,
   };
 }
 
@@ -675,5 +740,7 @@ export async function appHealthListIntakesLastDays(params: {
     method: 'GET',
     signal: params.signal,
   });
-  return extractHealthIntakeItems(data).map(normalizeHealthRecordRow);
+  const items = extractHealthIntakeItems(data).map(normalizeHealthRecordRow);
+  await enrichHealthRecordsWithDailyTargets(items, params.signal);
+  return items;
 }

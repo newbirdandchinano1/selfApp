@@ -190,6 +190,51 @@ export function formatTaskPeriodGoalLabel(period: TaskRepeatPeriod, goal: BuildH
   return `本${period.replace('每', '')} ${goal.value} ${unit}`;
 }
 
+/** 下一重复周期的起始日（当前周期 endYmd 的次日） */
+function nextTaskPeriodStartYmd(periodStartYmd: string, period: TaskRepeatPeriod): string {
+  const { endYmd } = getTaskPeriodRange(periodStartYmd, period);
+  return addDaysToLogicalYmd(endYmd, 1);
+}
+
+/**
+ * 任务类小习惯：历史各重复周期内「进度达标」的次数（每周期最多计 1）。
+ * 本周期进度未满不计入；本周期刚达标则计入。
+ */
+export function countTaskHabitPeriodCompletions(params: {
+  extraData: string | null;
+  checkIns: Record<string, number>;
+  logicalYmd: string;
+}): number {
+  if (parseHabitKind(params.extraData) !== 'task') return 0;
+  const expectedGoal = parseTaskHabitExpectedGoal(params.extraData);
+  if (expectedGoal == null) return 0;
+  const period = parseTaskRepeatPeriod(params.extraData);
+  const dailyGoal = parseHabitDailyGoal(params.extraData, 'task');
+  const dates = Object.keys(params.checkIns)
+    .filter((ymd) => ymd <= params.logicalYmd)
+    .sort();
+  if (dates.length === 0) return 0;
+
+  let cursor = getTaskPeriodRange(dates[0]!, period).startYmd;
+  const lastPeriodStart = getTaskPeriodRange(params.logicalYmd, period).startYmd;
+  let count = 0;
+  let guard = 0;
+  while (cursor <= lastPeriodStart && guard < 10000) {
+    guard += 1;
+    const progress = computeTaskPeriodGoalProgress({
+      expectedGoal,
+      checkIns: params.checkIns,
+      dailyGoal,
+      logicalYmd: cursor,
+      period,
+      asOfYmd: params.logicalYmd,
+    });
+    if (progress >= expectedGoal.value) count += 1;
+    cursor = nextTaskPeriodStartYmd(cursor, period);
+  }
+  return count;
+}
+
 /** 完成任务：当前重复周期允许的预期目标类型 */
 export function getTaskExpectedGoalTypeOptions(period: TaskRepeatPeriod): BuildHabitExpectedGoalType[] {
   if (period === '每日') return ['times'];

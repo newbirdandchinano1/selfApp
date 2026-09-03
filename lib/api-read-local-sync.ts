@@ -170,6 +170,22 @@ async function upsertRowsToLocalTable(
               typeof existing.extra_data === 'string' ? existing.extra_data : null,
             );
           }
+          if (table === 'health_records') {
+            // 专用摄入接口常省略/清零 target_*（目标在 health_daily_targets）；保留本地创建时写入的目标
+            for (const col of [
+              'target_hydration',
+              'target_protein',
+              'target_carbohydrate',
+              'target_calories',
+            ] as const) {
+              if (!colNames.includes(col)) continue;
+              const apiVal = Number(obj[col]);
+              const localVal = Number(existing[col]);
+              if ((!Number.isFinite(apiVal) || apiVal <= 0) && Number.isFinite(localVal) && localVal > 0) {
+                obj[col] = localVal;
+              }
+            }
+          }
           preserveLocalForeignKeysOnEmptyApi(table, obj, existing, colNames);
           if (table === 'tasks') {
             const apiStatus = obj.status;

@@ -1,9 +1,10 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
 
 /** 截图记账提示（非失败类，如非账单截图） */
 export async function notifyAutoLedgerHint(message: string): Promise<void> {
-  if (Platform.OS === 'web') {
+  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) {
     return;
   }
   try {

@@ -33,6 +33,7 @@ import {
 } from '@/lib/repositories/habits/habit-build-success';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
+  applyBreakHabitReward,
   applyHabitCheckInPointsReward,
   syncTaskHabitPeriodPointsReward,
 } from '@/lib/repositories/habits/habit-points-grant';
@@ -641,6 +642,13 @@ export default function HabitDetailScreen() {
         await tryMarkBuildHabitCompleted(habit, logicalTodayYmd);
       } else if (kind === 'break') {
         await tryMarkBreakHabitCompleted(habit, logicalTodayYmd);
+        try {
+          await applyBreakHabitReward(habit.id, 'penalty', 'earn', {
+            extraData: habit.extra_data,
+          });
+        } catch (ptsErr) {
+          if (__DEV__) console.warn('[habit-detail] 补卡破戒扣分失败', ptsErr);
+        }
       } else if (kind === 'task') {
         try {
           await syncTaskHabitPeriodPointsReward({
@@ -719,7 +727,7 @@ export default function HabitDetailScreen() {
         else next[ymd] = nextCount;
         return next;
       });
-      // 养成：仅今日打卡发奖，撤销今日扣回；任务：周期目标回退时扣回；戒除日常撤销不扣目标积分
+      // 养成：仅今日打卡发奖，撤销今日扣回；任务：周期目标回退时扣回；戒除：撤销破戒记录返还扣分
       if (kind === 'build' && ymd === logicalTodayYmd && nextCount < prevCount) {
         try {
           await applyHabitCheckInPointsReward(habit.id, 'undo', {
@@ -739,6 +747,15 @@ export default function HabitDetailScreen() {
           });
         } catch (ptsErr) {
           if (__DEV__) console.warn('[habit-detail] 撤销任务周期积分失败', ptsErr);
+        }
+      } else if (kind === 'break' && nextCount < prevCount) {
+        try {
+          await applyBreakHabitReward(habit.id, 'penalty', 'undo', {
+            forceUndo: true,
+            extraData: habit.extra_data,
+          });
+        } catch (ptsErr) {
+          if (__DEV__) console.warn('[habit-detail] 撤销破戒扣分返还失败', ptsErr);
         }
       }
       if (kind === 'build') {

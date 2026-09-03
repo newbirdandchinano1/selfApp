@@ -9,6 +9,11 @@ import { notifyPointsEarned } from '@/lib/points-earned-toast-events';
 import { enqueuePointsAdjust } from '@/lib/points-adjust-queue';
 import { assertNonNegativeCostPoints, roundPoints } from '@/lib/reward-points';
 import { getDatabase } from '../../database.native';
+import {
+  assertWishBoardRedeemEligible,
+  emptyWishBoardRedeemConditions,
+  mergeWishBoardRedeemConditions,
+} from './wish-board-redeem-conditions';
 import type {
   CreateWishBoardItemInput,
   PointsLedgerRow,
@@ -305,6 +310,21 @@ export async function getWishBoardItemById(id: string): Promise<WishBoardItemRow
   return row ? mapWishBoardRow(row) : null;
 }
 
+function resolveWishBoardExtraData(
+  currentExtra: string | null | undefined,
+  input: Pick<CreateWishBoardItemInput, 'extra_data' | 'redeem_conditions'>,
+): string | null {
+  let extra =
+    input.extra_data !== undefined ? input.extra_data : (currentExtra ?? null);
+  if (input.redeem_conditions !== undefined) {
+    extra = mergeWishBoardRedeemConditions(
+      extra,
+      input.redeem_conditions ?? emptyWishBoardRedeemConditions(),
+    );
+  }
+  return extra?.trim() ? extra : null;
+}
+
 export async function createWishBoardItem(input: CreateWishBoardItemInput): Promise<string> {
   assertWishBoardPayload(input);
   const db = await getDatabase();
@@ -315,13 +335,14 @@ export async function createWishBoardItem(input: CreateWishBoardItemInput): Prom
   const iconKey = input.icon_key?.trim() || DEFAULT_WISH_BOARD_ICON_KEY;
   const wishType = normalizeWishType(input.wish_type);
   const sortOrder = input.sort_order ?? 1000;
+  const extraData = resolveWishBoardExtraData(null, input);
 
   await db.runAsync(
     `INSERT INTO wish_board_items (
       id, title, description, note, icon_key, wish_type, cost_points, status, redeemed_at, sort_order,
-      created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, datetime('now'), datetime('now'), 'pending_create')`,
-    [id, title, description, description, iconKey, wishType, cost, sortOrder],
+      created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
+    [id, title, description, description, iconKey, wishType, cost, sortOrder, extraData],
   );
   return id;
 }
@@ -330,8 +351,11 @@ export async function updateWishBoardItem(id: string, input: UpdateWishBoardItem
   assertWishBoardPayload(input);
   const current = await requireLocalRowForWrite<WishBoardItemRow>('wish_board_items', id, '心愿');
   const mapped = mapWishBoardRow(current);
-  if (mapped.status === 'redeemed' && (input.title != null || input.cost_points != null)) {
-    throw new Error('已兑换的心愿不可再改名称或积分');
+  if (
+    mapped.status === 'redeemed' &&
+    (input.title != null || input.cost_points != null || input.redeem_conditions !== undefined)
+  ) {
+    throw new Error('已兑换的心愿不可再改名称、积分或兑换条件');
   }
 
   const title = input.title != null ? input.title.trim() : mapped.title;
@@ -357,16 +381,29 @@ export async function updateWishBoardItem(id: string, input: UpdateWishBoardItem
   const status = input.status ?? mapped.status;
   const redeemedAt =
     input.redeemed_at !== undefined ? input.redeemed_at : mapped.redeemed_at;
+  const extraData = resolveWishBoardExtraData(mapped.extra_data, input);
 
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE wish_board_items SET
       title = ?, description = ?, note = ?, icon_key = ?, wish_type = ?, cost_points = ?,
-      status = ?, redeemed_at = ?, sort_order = ?,
+      status = ?, redeemed_at = ?, sort_order = ?, extra_data = ?,
       updated_at = datetime('now'),
       sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_create' ELSE 'pending_update' END
      WHERE id = ?`,
-    [title, description, description, iconKey, wishType, cost, status, redeemedAt, sortOrder, id],
+    [
+      title,
+      description,
+      description,
+      iconKey,
+      wishType,
+      cost,
+      status,
+      redeemedAt,
+      sortOrder,
+      extraData,
+      id,
+    ],
   );
 }
 
@@ -387,6 +424,18 @@ export async function deleteWishBoardItem(id: string): Promise<void> {
  * 离线/失败时回退本地事务（再经表同步推送）。
  */
 export async function redeemWishBoardItem(id: string): Promise<{ balance: number }> {
+  // 本地先校验绑定条件，避免服务端未支持多重条件时误兑
+  {
+    const preItem = mapWishBoardRow(
+      await requireLocalRowForWrite<WishBoardItemRow>('wish_board_items', id, '心愿'),
+    );
+    if (preItem.wish_type === 'once' && preItem.status === 'redeemed') {
+      throw new Error('该心愿已兑换');
+    }
+    const preBalance = await getLocalPointsBalance();
+    await assertWishBoardRedeemEligible(preItem, preBalance);
+  }
+
   try {
     const { appWishBoardRedeem } = await import('@/lib/api-app-domain');
     const result = await appWishBoardRedeem(id);
@@ -450,8 +499,11 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
     notifyPointsBalanceChanged(balance);
     return { balance };
   } catch (e) {
-    // 业务错误（积分不足等）直接抛出；网络类错误走本地回退
-    if (e instanceof Error && /积分不足|已兑换|不存在|无效/.test(e.message)) {
+    // 业务错误（积分不足、绑定未完成等）直接抛出；网络类错误走本地回退
+    if (
+      e instanceof Error &&
+      /积分不足|已兑换|不存在|无效|未完成|兑换条件|绑定/.test(e.message)
+    ) {
       throw e;
     }
     if (__DEV__) console.warn('[wish-board] redeem API failed, local fallback', e);
@@ -465,6 +517,11 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
   }
 
   const cost = asPoints(item.cost_points);
+  // 事务外先校验绑定条件，避免 IMMEDIATE 事务中嵌套读项目/任务表
+  {
+    const previewBalance = await getLocalPointsBalance();
+    await assertWishBoardRedeemEligible(item, previewBalance);
+  }
 
   const nowIso = pointsAuditNowIso();
   const db = await getDatabase();

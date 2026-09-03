@@ -197,10 +197,10 @@ export async function tryMarkBreakHabitCompleted(
   });
   await updateHabit(habit.id, { extra_data: extra });
   try {
-    const { applyHabitGoalPointsReward } = await import(
+    const { applyBreakHabitReward } = await import(
       '@/lib/repositories/habits/habit-points-grant'
     );
-    await applyHabitGoalPointsReward(habit.id, 'earn', { extraData: extra });
+    await applyBreakHabitReward(habit.id, 'goal', 'earn', { extraData: extra });
   } catch (ptsErr) {
     console.warn('戒除习惯达成目标发奖失败', habit.id, ptsErr);
   }
@@ -257,10 +257,10 @@ export async function restartBreakHabit(habitId: string): Promise<void> {
   await updateHabit(habitId, { extra_data: extra });
   if (wasSucceeded) {
     try {
-      const { applyHabitGoalPointsReward } = await import(
+      const { applyBreakHabitReward } = await import(
         '@/lib/repositories/habits/habit-points-grant'
       );
-      await applyHabitGoalPointsReward(habitId, 'undo', {
+      await applyBreakHabitReward(habitId, 'goal', 'undo', {
         forceUndo: true,
         extraData: habit.extra_data,
       });

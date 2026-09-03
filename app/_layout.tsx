@@ -43,6 +43,10 @@ import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-s
 import { loadThemePreference } from '@/lib/theme-preference';
 import { runInitialRestSyncIfNeeded, type InitialSyncProgress } from '@/lib/api-initial-sync';
 import { hydratePageApiSession } from '@/lib/page-api-session';
+import {
+  clearExpoSandboxNotifications,
+  isExpoSandboxNotificationDisabled,
+} from '@/lib/notification-policy';
 
 /** 本地初始化超过此时长则强制进入主界面，避免启动页无限等待 */
 const BOOTSTRAP_MAX_MS = 15_000;
@@ -50,6 +54,15 @@ const BOOTSTRAP_MAX_MS = 15_000;
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
+      if (isExpoSandboxNotificationDisabled()) {
+        return {
+          shouldShowBanner: false,
+          shouldShowList: false,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        };
+      }
+
       const data = notification.request.content.data;
       let suppress = false;
       if (data && typeof data === 'object' && !Array.isArray(data)) {
@@ -101,8 +114,12 @@ function RootLayoutInner() {
           await loadCloudBackupTokenCache();
           if (Platform.OS !== 'web') {
             startCloudPeriodicAlignScheduler();
-            void syncDailyReviewReminderNotification();
-            void resyncAllHabitReminders();
+            if (isExpoSandboxNotificationDisabled()) {
+              await clearExpoSandboxNotifications();
+            } else {
+              void syncDailyReviewReminderNotification();
+              void resyncAllHabitReminders();
+            }
           }
         } catch (e) {
           console.warn('后台初始化失败', e);

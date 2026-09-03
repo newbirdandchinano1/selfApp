@@ -1,6 +1,9 @@
 import { HealthNutrientAccents, Radius, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getResolvedGlobalIntakeTargets } from '@/lib/global-intake-targets';
+import { TAB_PAGE_KEYS } from '@/lib/page-api-scope';
+import { hasPageSyncedWithApi } from '@/lib/page-api-session';
 import { buildUserHealthCalendarSnapshot } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import { getDefaultUser } from '@/lib/repositories/users/user';
@@ -138,6 +141,27 @@ function sumDayTotals(dayRows: HealthRecordRow[]) {
   return { hydration, protein, carbohydrate, calories };
 }
 
+/** 与每周趋势一致：记录缺目标（后端已拆到 health_daily_targets）时回退全局目标 */
+function resolveDayTargets(latest: HealthRecordRow) {
+  const fallback = getResolvedGlobalIntakeTargets();
+  const pick = (raw: number | null | undefined, fallbackValue: number) => {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+    return Math.max(0, fallbackValue);
+  };
+  return {
+    hydrationTarget: pick(latest.target_hydration, fallback.hydrationMl),
+    proteinTarget: pick(latest.target_protein, fallback.proteinG),
+    carbohydrateTarget: pick(latest.target_carbohydrate, fallback.carbohydrateG),
+    caloriesTarget: pick(latest.target_calories, fallback.caloriesKcal),
+  };
+}
+
+function healthRowYmd(row: HealthRecordRow): string {
+  const raw = typeof row.record_date === 'string' ? row.record_date.trim() : '';
+  return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : raw;
+}
+
 function compareUpdatedDesc(a: HealthRecordRow, b: HealthRecordRow) {
   return b.updated_at.localeCompare(a.updated_at);
 }
@@ -148,9 +172,11 @@ function buildDayMetricsMap(
 ): Map<string, DayMetrics> {
   const datesByDay = new Map<string, HealthRecordRow[]>();
   for (const row of records) {
-    const bucket = datesByDay.get(row.record_date);
+    const ymd = healthRowYmd(row);
+    if (!ymd) continue;
+    const bucket = datesByDay.get(ymd);
     if (bucket) bucket.push(row);
-    else datesByDay.set(row.record_date, [row]);
+    else datesByDay.set(ymd, [row]);
   }
 
   const map = new Map<string, DayMetrics>();
@@ -159,10 +185,7 @@ function buildDayMetricsMap(
     const latest = [...dayRows].sort(compareUpdatedDesc)[0];
     if (!latest) continue;
 
-    const hydrationTarget = Math.max(0, latest.target_hydration ?? 0);
-    const proteinTarget = Math.max(0, latest.target_protein ?? 0);
-    const carbohydrateTarget = Math.max(0, latest.target_carbohydrate ?? 0);
-    const caloriesTarget = Math.max(0, latest.target_calories ?? 0);
+    const { hydrationTarget, proteinTarget, carbohydrateTarget, caloriesTarget } = resolveDayTargets(latest);
 
     const metricPercents = {
       hydration: calcPercent(totals.hydration, hydrationTarget),
@@ -496,7 +519,8 @@ export function HealthIntakeTrendSection({
       }
 
       const { records, completionMap, startDate } = await buildUserHealthCalendarSnapshot(user.id, today, {
-        localOnly: true,
+        // 首页已同步后只读本地；否则允许 REST 拉取（避免切 Tab 早于同步完成时图表空白）
+        localOnly: hasPageSyncedWithApi(TAB_PAGE_KEYS.health),
       });
       setDayMetricsMap(buildDayMetricsMap(records, completionMap));
       setHistoryStartDate(startDate);

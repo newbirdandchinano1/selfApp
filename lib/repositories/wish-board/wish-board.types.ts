@@ -60,6 +60,13 @@ export type WishRedeemRecord = {
   is_fallback: boolean;
 };
 
+/** 兑换附加条件：积分之外须完成的绑定项 */
+export type WishBoardRedeemConditionsInput = {
+  project_ids?: string[];
+  task_ids?: string[];
+  todo_ids?: string[];
+};
+
 export type CreateWishBoardItemInput = {
   id?: string;
   title: string;
@@ -68,6 +75,9 @@ export type CreateWishBoardItemInput = {
   wish_type?: WishBoardWishType;
   cost_points: number;
   sort_order?: number;
+  /** 写入 extra_data.redeem_conditions */
+  redeem_conditions?: WishBoardRedeemConditionsInput | null;
+  extra_data?: string | null;
 };
 
 export type UpdateWishBoardItemInput = Partial<
@@ -82,5 +92,8 @@ export type UpdateWishBoardItemInput = Partial<
     | 'sort_order'
     | 'status'
     | 'redeemed_at'
+    | 'extra_data'
   >
->;
+> & {
+  redeem_conditions?: WishBoardRedeemConditionsInput | null;
+};

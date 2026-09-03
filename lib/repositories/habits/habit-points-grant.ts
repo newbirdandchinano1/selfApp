@@ -5,16 +5,31 @@ import {
 } from '@/lib/repositories/points/completion-points-grant';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 
+function parseBreakReward(extraData: string | null | undefined, field: 'penalty' | 'clean' | 'goal'): number {
+  try {
+    const extra = extraData ? JSON.parse(extraData) as Record<string, unknown> : {};
+    const rewards = extra.breakRewards;
+    if (rewards && typeof rewards === 'object' && !Array.isArray(rewards)) {
+      return parseHabitRewardPoints(JSON.stringify((rewards as Record<string, unknown>)[field]));
+    }
+  } catch {
+    // ignore malformed optional reward metadata
+  }
+  // 旧版戒除习惯：单一 reward_points 即「达成连续目标」的奖励
+  if (field === 'goal') return parseHabitRewardPoints(extraData);
+  return 0;
+}
+
 async function applyHabitPointsReward(
   habitId: string,
   direction: 'earn' | 'undo',
   reasons: { earnReason: string; undoReason: string },
-  opts?: { forceUndo?: boolean; extraData?: string | null },
+  opts?: { forceUndo?: boolean; extraData?: string | null; points?: number },
 ): Promise<number> {
   const row = await getHabitById(habitId);
   if (!row) return 0;
   const extraData = opts?.extraData !== undefined ? opts.extraData : row.extra_data;
-  const points = parseHabitRewardPoints(extraData);
+  const points = opts?.points ?? parseHabitRewardPoints(extraData);
   if (points === 0) return 0;
   return applyEntityPointsReward({
     refType: 'habit',
@@ -51,7 +66,7 @@ export async function applyHabitCheckInPointsReward(
 export async function applyHabitGoalPointsReward(
   habitId: string,
   direction: 'earn' | 'undo',
-  opts?: { forceUndo?: boolean; extraData?: string | null },
+  opts?: { forceUndo?: boolean; extraData?: string | null; points?: number },
 ): Promise<number> {
   return applyHabitPointsReward(
     habitId,
@@ -59,6 +74,28 @@ export async function applyHabitGoalPointsReward(
     { earnReason: 'habit_goal_complete', undoReason: 'habit_goal_complete_undo' },
     opts,
   );
+}
+
+export async function applyBreakHabitReward(
+  habitId: string,
+  field: 'penalty' | 'clean' | 'goal',
+  direction: 'earn' | 'undo' = 'earn',
+  opts?: { forceUndo?: boolean; extraData?: string | null },
+): Promise<number> {
+  const extraData = opts?.extraData !== undefined ? opts.extraData : (await getHabitById(habitId))?.extra_data;
+  const raw = applyBreakReward(extraData, field);
+  // 破戒扣分：无论用户填正数还是负数，均按扣除处理
+  const points = field === 'penalty' ? -Math.abs(raw) : raw;
+  return applyHabitPointsReward(
+    habitId,
+    direction,
+    { earnReason: `break_habit_${field}`, undoReason: `break_habit_${field}_undo` },
+    { ...opts, extraData, points },
+  );
+}
+
+function applyBreakReward(extraData: string | null | undefined, field: 'penalty' | 'clean' | 'goal'): number {
+  return parseBreakReward(extraData, field);
 }
 
 /**

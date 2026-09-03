@@ -1,6 +1,16 @@
 import { AppButton, AppInput, AppScreen, ScreenHeader } from '@/components/ui';
+import { WishBoardRedeemConditionsField } from '@/components/wish-board/wish-board-redeem-conditions-field';
 import { Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { getProjects } from '@/lib/repositories/projects/project';
+import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import { getTasks } from '@/lib/repositories/tasks/task';
+import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import {
+  emptyWishBoardRedeemConditions,
+  parseWishBoardRedeemConditions,
+  type WishBoardRedeemConditions,
+} from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
 import {
   getWishBoardItemById,
   updateWishBoardItem,
@@ -12,13 +22,19 @@ import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
 
 export default function EditWishBoardItemScreen() {
   const router = useRouter();
-  const { colors } = useAppTheme();
+  const { colors, isDark } = useAppTheme();
   const params = useLocalSearchParams<{ id: string }>();
   const id = typeof params.id === 'string' ? params.id : '';
 
   const [title, setTitle] = useState('');
   const [costText, setCostText] = useState('');
   const [description, setDescription] = useState('');
+  const [redeemConditions, setRedeemConditions] = useState<WishBoardRedeemConditions>(
+    emptyWishBoardRedeemConditions(),
+  );
+  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [bindLoading, setBindLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [redeemed, setRedeemed] = useState(false);
@@ -27,19 +43,28 @@ export default function EditWishBoardItemScreen() {
     let cancelled = false;
     void (async () => {
       try {
-        const row = await getWishBoardItemById(id);
-        if (!row || cancelled) {
-          if (!cancelled && !row) {
-            Alert.alert('未找到心愿', undefined, [{ text: '好', onPress: () => router.back() }]);
-          }
+        const [row, nextProjects, nextTasks] = await Promise.all([
+          getWishBoardItemById(id),
+          getProjects(),
+          getTasks(),
+        ]);
+        if (cancelled) return;
+        setProjects(nextProjects);
+        setTasks(nextTasks);
+        if (!row) {
+          Alert.alert('未找到心愿', undefined, [{ text: '好', onPress: () => router.back() }]);
           return;
         }
         setTitle(row.title);
         setCostText(formatPoints(row.cost_points));
         setDescription(row.description ?? '');
+        setRedeemConditions(parseWishBoardRedeemConditions(row.extra_data));
         setRedeemed(row.wish_type === 'once' && row.status === 'redeemed');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setBindLoading(false);
+          setLoading(false);
+        }
       }
     })();
     return () => {
@@ -69,6 +94,7 @@ export default function EditWishBoardItemScreen() {
         title: title.trim(),
         cost_points: cost,
         description: description.trim() || null,
+        redeem_conditions: redeemConditions,
       });
       router.back();
     } catch (e) {
@@ -117,6 +143,21 @@ export default function EditWishBoardItemScreen() {
           multiline
           maxLength={500}
           inputStyle={{ minHeight: 96, textAlignVertical: 'top' }}
+        />
+        <WishBoardRedeemConditionsField
+          value={redeemConditions}
+          onChange={setRedeemConditions}
+          projects={projects}
+          tasks={tasks}
+          loading={bindLoading}
+          disabled={redeemed}
+          textColor={colors.text}
+          outline={colors.textSecondary}
+          placeholderColor={colors.outline}
+          primary={colors.primary}
+          surfaceLow={colors.surfaceSubtle}
+          surfaceLowest={colors.surface}
+          isDark={isDark}
         />
       </View>
       {!redeemed ? (

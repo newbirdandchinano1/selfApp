@@ -9,7 +9,17 @@ import {
   wishBoardIconTintSoft,
 } from '@/lib/constants/wish-board-icons';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
-import { formatPoints } from '@/lib/reward-points';
+import { getProjects } from '@/lib/repositories/projects/project';
+import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import { getTasks } from '@/lib/repositories/tasks/task';
+import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import {
+  evaluateWishBoardRedeemEligibilitySync,
+  formatWishBoardRedeemConditionsSummary,
+  hasWishBoardRedeemConditions,
+  parseWishBoardRedeemConditions,
+  type WishBoardRedeemEligibility,
+} from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
 import {
   deleteWishBoardItem,
   deleteWishRedeemRecord,
@@ -20,11 +30,13 @@ import {
   resetPointsBalance,
 } from '@/lib/repositories/wish-board/wish-board';
 import type { WishBoardItemRow, WishRedeemRecord } from '@/lib/repositories/wish-board/wish-board.types';
+import { formatPoints } from '@/lib/reward-points';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
+
 
 const WISH_BOARD_PAGE_KEY = 'wish-board';
 
@@ -43,6 +55,8 @@ export default function WishBoardScreen() {
   const [balance, setBalance] = useState(0);
   const [items, setItems] = useState<WishBoardItemRow[]>([]);
   const [redeemRecords, setRedeemRecords] = useState<WishRedeemRecord[]>([]);
+  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [addVisible, setAddVisible] = useState(false);
@@ -50,20 +64,38 @@ export default function WishBoardScreen() {
 
   const activeItems = useMemo(() => items.filter(i => i.status === 'active'), [items]);
 
+  const entityLookups = useMemo(() => {
+    const projectsById = new Map(projects.map(p => [p.id, p]));
+    const tasksById = new Map(tasks.map(t => [t.id, t]));
+    return { projectsById, tasksById };
+  }, [projects, tasks]);
+
+  const eligibilityById = useMemo(() => {
+    const map = new Map<string, WishBoardRedeemEligibility>();
+    for (const item of activeItems) {
+      map.set(item.id, evaluateWishBoardRedeemEligibilitySync(item, balance, entityLookups));
+    }
+    return map;
+  }, [activeItems, balance, entityLookups]);
+
   const reload = useCallback(
     async (forceApi = false) => {
       setLoadError(null);
       try {
         await wrapLoad(async () => {
           await fetchProfileWishBoard({ offlineFallback: true });
-          const [nextBalance, nextItems, nextRedeems] = await Promise.all([
+          const [nextBalance, nextItems, nextRedeems, nextProjects, nextTasks] = await Promise.all([
             getPointsBalance(),
             listWishBoardItems(),
             listWishRedeemRecords(),
+            getProjects(),
+            getTasks(),
           ]);
           setBalance(nextBalance);
           setItems(nextItems);
           setRedeemRecords(nextRedeems);
+          setProjects(nextProjects);
+          setTasks(nextTasks);
         }, forceApi);
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : '加载失败');
@@ -119,16 +151,26 @@ export default function WishBoardScreen() {
   const onRedeem = useCallback(
     (item: WishBoardItemRow) => {
       if (item.wish_type === 'once' && item.status === 'redeemed') return;
-      if (item.cost_points > 0 && balance < item.cost_points) {
-        Alert.alert('积分不足', `兑换「${item.title}」需要 ${item.cost_points} 积分，当前余额 ${balance}。`);
+      const eligibility =
+        eligibilityById.get(item.id) ??
+        evaluateWishBoardRedeemEligibilitySync(item, balance, entityLookups);
+      if (!eligibility.ok) {
+        Alert.alert(
+          !eligibility.pointsOk ? '积分不足' : '兑换条件未满足',
+          eligibility.message ?? `暂时无法兑换「${item.title}」。`,
+        );
         return;
       }
       const typeHint = item.wish_type === 'repeat' ? '（可重复兑换）' : '';
+      const condHint =
+        eligibility.checks.length > 0
+          ? `\n同时确认已绑定的 ${eligibility.checks.length} 项条件均已完成。`
+          : '';
       Alert.alert(
         '兑换心愿',
         item.cost_points > 0
-          ? `确认花费 ${item.cost_points} 积分兑换「${item.title}」${typeHint}？`
-          : `确认免费兑换「${item.title}」${typeHint}？`,
+          ? `确认花费 ${item.cost_points} 积分兑换「${item.title}」${typeHint}？${condHint}`
+          : `确认免费兑换「${item.title}」${typeHint}？${condHint}`,
         [
           { text: '取消', style: 'cancel' },
           {
@@ -150,7 +192,7 @@ export default function WishBoardScreen() {
         ],
       );
     },
-    [balance, notifyAncestorsDataChanged, reload],
+    [balance, eligibilityById, entityLookups, notifyAncestorsDataChanged, reload],
   );
 
   const onDelete = useCallback(
@@ -225,7 +267,7 @@ export default function WishBoardScreen() {
           <Text style={[styles.balanceLabel, { color: 'rgba(255,255,255,0.72)' }]}>积分余额</Text>
           <Text style={[styles.balanceValue, { color: colors.onAccent }]}>{formatPoints(balance)}</Text>
           <Text style={[styles.balanceHint, { color: 'rgba(255,255,255,0.65)' }]}>
-            完成任务等行为可获得积分，用于兑换心愿
+            完成任务等行为可获得积分；兑换可叠加项目 / 任务 / 待办完成条件
           </Text>
           <View style={styles.balanceActions}>
             <Pressable
@@ -298,7 +340,17 @@ export default function WishBoardScreen() {
         {activeItems.map(item => {
           const icon = resolveWishBoardIconOption(item.icon_key);
           const lastRedeemed = item.wish_type === 'repeat' ? formatRedeemedAt(item.redeemed_at) : null;
-          const canRedeem = balance >= item.cost_points;
+          const eligibility = eligibilityById.get(item.id);
+          const canRedeem = eligibility?.ok ?? balance >= item.cost_points;
+          const conditions = parseWishBoardRedeemConditions(item.extra_data);
+          const condSummary = hasWishBoardRedeemConditions(conditions)
+            ? formatWishBoardRedeemConditionsSummary(conditions, entityLookups)
+            : null;
+          const blockedLabel = !eligibility?.pointsOk
+            ? '积分不足'
+            : eligibility && !eligibility.conditionsOk
+              ? '条件未满'
+              : '不可兑换';
           return (
             <Swipeable
               key={item.id}
@@ -334,6 +386,23 @@ export default function WishBoardScreen() {
                           {item.description}
                         </Text>
                       ) : null}
+                      {condSummary ? (
+                        <Text
+                          style={[
+                            styles.condTag,
+                            {
+                              color: eligibility?.conditionsOk ? muted : accent,
+                            },
+                          ]}
+                          numberOfLines={2}>
+                          {condSummary}
+                          {eligibility && !eligibility.conditionsOk
+                            ? ` · 未完成 ${eligibility.pending.length}`
+                            : eligibility?.conditionsOk
+                              ? ' · 已达成'
+                              : ''}
+                        </Text>
+                      ) : null}
                       <Text style={[styles.typeTag, { color: muted }]}>
                         {item.wish_type === 'repeat' ? '重复性心愿' : '一次性心愿'}
                         {lastRedeemed ? ` · 上次兑换 ${lastRedeemed}` : ''}
@@ -351,7 +420,8 @@ export default function WishBoardScreen() {
                         <Text style={styles.redeemBtnText}>兑换</Text>
                       </Pressable>
                     ) : (
-                      <View
+                      <Pressable
+                        onPress={() => onRedeem(item)}
                         style={[
                           styles.redeemBtn,
                           styles.insufficientBtn,
@@ -360,10 +430,9 @@ export default function WishBoardScreen() {
                           },
                         ]}
                         accessibilityRole="button"
-                        accessibilityLabel="积分不足"
-                        accessibilityState={{ disabled: true }}>
-                        <Text style={[styles.insufficientBtnText, { color: muted }]}>积分不足</Text>
-                      </View>
+                        accessibilityLabel={blockedLabel}>
+                        <Text style={[styles.insufficientBtnText, { color: muted }]}>{blockedLabel}</Text>
+                      </Pressable>
                     )}
                   </View>
                   <View style={styles.costBottom}>
@@ -574,6 +643,11 @@ const styles = StyleSheet.create({
   },
   typeTag: {
     ...Typography.label,
+    marginTop: 2,
+  },
+  condTag: {
+    ...Typography.caption,
+    lineHeight: 16,
     marginTop: 2,
   },
   costWrap: {

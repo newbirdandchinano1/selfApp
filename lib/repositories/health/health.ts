@@ -222,7 +222,7 @@ export async function buildUserHealthCalendarSnapshot(
           return ymd < min ? ymd : min;
         }, healthRecordYmd(records[0]!))
       : addDaysToYmd(formatHealthCalendarYmd(today), -29);
-  const earliestDate = normalizeHealthCalendarDate(new Date(earliestYmd));
+  const earliestDate = parseLocalYmdSafe(earliestYmd) ?? normalizeHealthCalendarDate(today);
   const startDate = earliestDate > today ? today : earliestDate;
   return { records, completionMap, startDate };
 }
@@ -238,14 +238,27 @@ function normalizeHealthCalendarDate(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
+/** 避免 `new Date('YYYY-MM-DD')` 按 UTC 解析导致本地日界偏移 */
+function parseLocalYmdSafe(ymd: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function getDayCompletionLevelFromTotals(
   totals: HealthIntakeDayTotals,
   latest: HealthRecordRow,
 ): 'full' | 'partial' | 'empty' {
-  const hMet = latest.target_hydration > 0 ? totals.hydration >= latest.target_hydration : false;
-  const pMet = latest.target_protein > 0 ? totals.protein >= latest.target_protein : false;
-  const cMet = latest.target_carbohydrate > 0 ? totals.carbohydrate >= latest.target_carbohydrate : false;
-  const calMet = latest.target_calories > 0 ? totals.calories <= latest.target_calories : false;
+  // 记录上的 target_* 可能被专用接口省略（目标在 health_daily_targets）；缺省时不当作「未达标」
+  const hTarget = Number(latest.target_hydration) || 0;
+  const pTarget = Number(latest.target_protein) || 0;
+  const cTarget = Number(latest.target_carbohydrate) || 0;
+  const calTarget = Number(latest.target_calories) || 0;
+  const hMet = hTarget > 0 ? totals.hydration >= hTarget : false;
+  const pMet = pTarget > 0 ? totals.protein >= pTarget : false;
+  const cMet = cTarget > 0 ? totals.carbohydrate >= cTarget : false;
+  const calMet = calTarget > 0 ? totals.calories <= calTarget : false;
   const metCount = [hMet, pMet, cMet, calMet].filter(Boolean).length;
   if (metCount >= 4) return 'full';
   if (metCount > 0 || totals.hydration > 0 || totals.protein > 0 || totals.carbohydrate > 0 || totals.calories > 0) {

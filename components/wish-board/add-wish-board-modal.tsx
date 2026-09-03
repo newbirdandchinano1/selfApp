@@ -1,4 +1,5 @@
 import { AppButton, AppInput } from '@/components/ui';
+import { WishBoardRedeemConditionsField } from '@/components/wish-board/wish-board-redeem-conditions-field';
 import { Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import {
@@ -6,6 +7,14 @@ import {
   WISH_BOARD_ICON_OPTIONS,
   wishBoardIconTintSoft,
 } from '@/lib/constants/wish-board-icons';
+import { getProjects } from '@/lib/repositories/projects/project';
+import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import { getTasks } from '@/lib/repositories/tasks/task';
+import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import {
+  emptyWishBoardRedeemConditions,
+  type WishBoardRedeemConditions,
+} from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
 import { createWishBoardItem } from '@/lib/repositories/wish-board/wish-board';
 import type { WishBoardWishType } from '@/lib/repositories/wish-board/wish-board.types';
 import { assertNonNegativeCostPoints } from '@/lib/reward-points';
@@ -39,6 +48,12 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
   const [costText, setCostText] = useState('');
   const [iconKey, setIconKey] = useState(DEFAULT_WISH_BOARD_ICON_KEY);
   const [wishType, setWishType] = useState<WishBoardWishType>('once');
+  const [redeemConditions, setRedeemConditions] = useState<WishBoardRedeemConditions>(
+    emptyWishBoardRedeemConditions(),
+  );
+  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [bindLoading, setBindLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -48,7 +63,29 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
     setCostText('');
     setIconKey(DEFAULT_WISH_BOARD_ICON_KEY);
     setWishType('once');
+    setRedeemConditions(emptyWishBoardRedeemConditions());
     setSaving(false);
+
+    let cancelled = false;
+    setBindLoading(true);
+    void (async () => {
+      try {
+        const [nextProjects, nextTasks] = await Promise.all([getProjects(), getTasks()]);
+        if (cancelled) return;
+        setProjects(nextProjects);
+        setTasks(nextTasks);
+      } catch {
+        if (!cancelled) {
+          setProjects([]);
+          setTasks([]);
+        }
+      } finally {
+        if (!cancelled) setBindLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [visible]);
 
   const onSubmit = async () => {
@@ -71,6 +108,7 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
         icon_key: iconKey,
         wish_type: wishType,
         cost_points: cost,
+        redeem_conditions: redeemConditions,
       });
       onClose();
       onCreated?.();
@@ -162,6 +200,21 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
               onChangeText={setCostText}
               placeholder="0（可含小数）"
               keyboardType="decimal-pad"
+            />
+
+            <WishBoardRedeemConditionsField
+              value={redeemConditions}
+              onChange={setRedeemConditions}
+              projects={projects}
+              tasks={tasks}
+              loading={bindLoading}
+              textColor={colors.text}
+              outline={muted}
+              placeholderColor={outline}
+              primary={colors.primary}
+              surfaceLow={colors.surfaceSubtle}
+              surfaceLowest={colors.surface}
+              isDark={isDark}
             />
 
             <Text style={[styles.fieldLabel, { color: muted }]}>心愿类型</Text>

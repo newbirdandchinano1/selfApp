@@ -5,6 +5,7 @@ import {
   parseTaskReminderAdvanceDays,
 } from '@/lib/task-reminder-schedule';
 import { Platform } from 'react-native';
+import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
 
 const NOTIFICATION_PREFIX = 'selfapp-task-reminder:';
 const ANDROID_CHANNEL_ID = 'task-reminders';
@@ -88,7 +89,7 @@ async function cancelAllTaskReminderNotifications() {
  * 根据当前任务列表重新登记本地通知：未完成、有截止日且用户配置了提醒（当天或提前）的任务各最多一条。
  */
 export async function syncScheduledTaskReminders(tasks: TaskRow[]): Promise<void> {
-  if (Platform.OS === 'web') return;
+  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) return;
 
   let Notifications: typeof import('expo-notifications');
   try {
