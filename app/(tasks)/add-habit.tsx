@@ -40,7 +40,7 @@ import {
 } from '@/lib/repositories/habits/habit-sub';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "expo-router/react-navigation";
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';

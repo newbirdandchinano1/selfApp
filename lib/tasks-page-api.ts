@@ -31,6 +31,8 @@ import { overlayLocalPendingOnApiTableRows } from '@/lib/api-read-pending-overla
 
 import { fetchTasksCatalog } from '@/lib/tasks-catalog-api';
 
+import { syncTasksTableFromApi } from '@/lib/tasks-table-sync';
+
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
 
 import {
@@ -60,8 +62,6 @@ import {
   standaloneTodoPassesStandaloneListFilter,
 
 } from '@/lib/standalone-todo-visibility';
-
-import { taskHasRepeatingSchedule } from '@/lib/task-repeat-rollover';
 
 
 
@@ -611,8 +611,8 @@ async function resolveStandaloneTodosList(
       const syncStatus = String(t.sync_status ?? 'synced');
 
       // 服务端筛选列表已权威：缺席的「已同步未完成」待办视为他端已完成/移出，禁止再拼回未完成。
-      // 仅保留尚未上传的本地新建、本地已完成且仍落在今日日界内的行，
-      // 以及可能仍被旧版服务端隐藏的开放重复/过期待办。
+      // 仅保留尚未上传的本地新建、以及本地已完成且仍落在今日日界内的行。
+      // 过期/重复未完成不可凭本地旧库拼回，否则云端已完成后仍会残留在待办栏。
       if (t.status === 'done' || t.status === 'cancelled') {
 
         if (standaloneTodoPassesDayBoundaryFilter(t, boundary, logicalToday)) extras.push(t);
@@ -624,13 +624,6 @@ async function resolveStandaloneTodosList(
           extras.push(t);
 
         }
-
-      } else if (
-        (taskHasRepeatingSchedule(t.extra_data) || isStandaloneTodoOverdue(t, logicalToday)) &&
-        standaloneTodoPassesStandaloneListFilter(t, boundary, logicalToday)
-      ) {
-
-        extras.push(t);
 
       }
 
@@ -950,6 +943,15 @@ async function pullTasksPageFromApi(opts: {
   const { boundary, logicalToday, weekStart, weekEnd, matrixProjectIds, forceRefresh, signal } =
 
     opts;
+
+
+
+  // 先把 tasks 表增量落到本地，避免筛选视图漏掉「他端已完成」导致旧 todo 残留
+  try {
+    await syncTasksTableFromApi({ forceRefresh, signal });
+  } catch (e) {
+    console.warn('[tasks-page-api] tasks 表增量同步失败，继续拉筛选视图', e);
+  }
 
 
 

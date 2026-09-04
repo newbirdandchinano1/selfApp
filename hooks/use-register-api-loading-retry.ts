@@ -1,4 +1,4 @@
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "expo-router/react-navigation";
 import { useCallback } from 'react';
 
 import { registerApiLoadingRetryTarget } from '@/lib/api-loading-tracker';

@@ -54,7 +54,7 @@ import {
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "expo-router/react-navigation";
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';

@@ -19,7 +19,7 @@ import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useIsFocused, useNavigation, usePreventRemove } from '@react-navigation/native';
+import { useIsFocused, useNavigation, usePreventRemove } from "expo-router/react-navigation";
 import React from 'react';
 import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';

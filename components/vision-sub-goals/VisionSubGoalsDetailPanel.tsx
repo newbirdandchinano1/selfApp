@@ -13,7 +13,7 @@ import {
   standaloneSubGoalTaskStats,
 } from '@/lib/repositories/visions/vision.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "expo-router/react-navigation";
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';

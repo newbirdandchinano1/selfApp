@@ -6,7 +6,7 @@ import { runPageApiLoad } from '@/lib/page-api-session';
 import { fetchFinanceDailySummaries, fetchFinanceTransactionsRange } from '@/lib/finance-page-api';
 import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "expo-router/react-navigation";
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Animated, FlatList, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';

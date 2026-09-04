@@ -4,8 +4,9 @@ import {
   isTaskReminderConfigured,
   parseTaskReminderAdvanceDays,
 } from '@/lib/task-reminder-schedule';
-import { Platform } from 'react-native';
+import { canScheduleAppNotification } from '@/lib/notification-center-settings';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
+import { Platform } from 'react-native';
 
 const NOTIFICATION_PREFIX = 'selfapp-task-reminder:';
 const ANDROID_CHANNEL_ID = 'task-reminders';
@@ -134,6 +135,10 @@ export async function syncScheduledTaskReminders(tasks: TaskRow[]): Promise<void
     if (fireAt.getTime() <= now + 2000) continue;
 
     const id = `${NOTIFICATION_PREFIX}${task.id}`;
+    if (!(await canScheduleAppNotification({ category: 'task-reminder', identifier: id }))) {
+      continue;
+    }
+
     const title = '待办提醒';
     const body = task.title?.trim() || '待办';
 

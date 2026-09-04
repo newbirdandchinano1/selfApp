@@ -53,7 +53,7 @@ import {
   type VisionWallAiAssessmentPayload,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "expo-router/react-navigation";
 import { Image } from 'expo-image';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { fetchProfileVisionWall } from '@/lib/profile-page-api';

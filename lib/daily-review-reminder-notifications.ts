@@ -10,8 +10,9 @@ import { listReviewTemplate } from '@/lib/repositories/insights/review-template'
 import { getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import { getWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
-import { Platform } from 'react-native';
+import { canScheduleAppNotification } from '@/lib/notification-center-settings';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
+import { Platform } from 'react-native';
 
 const NOTIFICATION_ID = 'selfapp-daily-review-reminder';
 const ANDROID_CHANNEL_ID = 'daily-review-reminders';
@@ -153,6 +154,15 @@ export async function syncDailyReviewReminderNotification(
   }
 
   if (!resolved.enabled) {
+    return { scheduled: false, permissionDenied: false };
+  }
+
+  if (
+    !(await canScheduleAppNotification({
+      category: 'daily-review-reminder',
+      identifier: NOTIFICATION_ID,
+    }))
+  ) {
     return { scheduled: false, permissionDenied: false };
   }
 

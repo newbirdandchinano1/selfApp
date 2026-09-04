@@ -10,7 +10,7 @@ import {
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "expo-router/react-navigation";
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';

@@ -23,7 +23,9 @@ import {
   type TaskTreeNode,
 } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import { isTaskTerminalStatus } from '@/lib/repositories/tasks/task.types';
 import { ensureTaskCategoryMirrorLocally } from '@/lib/repositories/tasks/task-category-mirror';
+import { syncTasksTableFromApi } from '@/lib/tasks-table-sync';
 
 const PROJECTS_LIST_PAGE_LIMIT = 200;
 const PROJECTS_LIST_MAX_PAGES = 500;
@@ -374,10 +376,34 @@ function filterProjectsForTab(projectTab: string, projects: ProjectRow[]): Proje
 async function hydrateTreesFromLocal(
   projects: ProjectRow[],
   apiTreeMap: Record<string, TaskTreeNode[]>,
+  opts?: { omitTerminalFromApi?: boolean },
 ): Promise<Record<string, TaskTreeNode[]>> {
   try {
     const localMap = await getProjectTaskTreeMap(projects.map((p) => p.id));
-    return mergeProjectTaskTreeMaps(apiTreeMap, localMap);
+    if (!opts?.omitTerminalFromApi) {
+      return mergeProjectTaskTreeMaps(apiTreeMap, localMap);
+    }
+
+    // 接口已省略终态任务：缺席的「已同步未完成」视为他端已完成，禁止从本地旧库拼回。
+    const next: Record<string, TaskTreeNode[]> = { ...apiTreeMap };
+    for (const project of projects) {
+      const projectId = String(project.id);
+      const apiTree = apiTreeMap[projectId] ?? [];
+      const localTree = localMap[projectId] ?? [];
+      if (localTree.length === 0) continue;
+      const apiIds = new Set(flattenTaskTree(apiTree).map((t) => String(t.id)));
+      const allowedLocal = flattenTaskTree(localTree).filter((t) => {
+        if (apiIds.has(String(t.id))) return true;
+        const syncStatus = String(t.sync_status ?? 'synced');
+        if (syncStatus === 'pending_create' || syncStatus === 'pending_update') return true;
+        // 本地已是终态：隐藏开关下不必拼回
+        if (isTaskTerminalStatus(t.status)) return false;
+        return false;
+      });
+      if (allowedLocal.length === 0) continue;
+      next[projectId] = unionProjectTaskTrees(apiTree, buildTaskTreeFromRows(allowedLocal));
+    }
+    return next;
   } catch (err) {
     console.warn('[projects-list-api] 本地任务树补全失败，沿用接口树', err);
     return apiTreeMap;
@@ -386,9 +412,18 @@ async function hydrateTreesFromLocal(
 
 async function pullProjectsListFromApi(
   queries: ProjectsListQueryParams[],
+  opts?: { forceRefresh?: boolean },
 ): Promise<ProjectsListData> {
   const mergedById = new Map<string, ApiProjectListItem>();
   let meta: PageListMeta | undefined;
+
+  // 隐藏已完成时接口不带回 done 行；先增量同步 tasks 表，避免本地旧 todo 被 hydrate 拼回
+  const signal = queries.find((q) => q.signal)?.signal;
+  try {
+    await syncTasksTableFromApi({ forceRefresh: opts?.forceRefresh, signal });
+  } catch (e) {
+    console.warn('[projects-list-api] tasks 表增量同步失败，继续拉项目列表', e);
+  }
 
   for (const query of queries) {
     throwIfAborted(query.signal);
@@ -408,7 +443,10 @@ async function pullProjectsListFromApi(
   const taskRows = Object.values(apiTreeMap).flatMap((nodes) => flattenTaskTree(nodes));
 
   await syncProjectsListRows(projects, taskRows);
-  const projectTaskTreeMap = await hydrateTreesFromLocal(projects, apiTreeMap);
+  const omitTerminalFromApi = queries.some((q) => q.includeCompleted === false);
+  const projectTaskTreeMap = await hydrateTreesFromLocal(projects, apiTreeMap, {
+    omitTerminalFromApi,
+  });
 
   return { projects, projectTaskTreeMap, meta };
 }
@@ -442,7 +480,7 @@ export async function fetchProjectsListForTab(
     signal: opts?.signal,
   };
   const queries = resolveProjectsListQueries(projectTab).map((q) => ({ ...baseQuery, ...q }));
-  const data = await pullProjectsListFromApi(queries);
+  const data = await pullProjectsListFromApi(queries, { forceRefresh: opts?.forceRefresh });
   return {
     ...data,
     projects: filterProjectsForTab(projectTab, data.projects),
@@ -460,20 +498,34 @@ export async function fetchProjectsListForProject(
   const id = projectId.trim();
   if (!id) return { projects: [], projectTaskTreeMap: {} };
   const terminalFilters = resolveTerminalFilters(opts);
-  const data = await pullProjectsListFromApi([
-    {
-      ...terminalFilters,
-      includeShelved: opts?.includeShelved,
-      projectId: id,
-      limit: 1,
-      signal: opts?.signal,
-    },
-  ]);
+  const data = await pullProjectsListFromApi(
+    [
+      {
+        ...terminalFilters,
+        includeShelved: opts?.includeShelved,
+        projectId: id,
+        limit: 1,
+        signal: opts?.signal,
+      },
+    ],
+    { forceRefresh: opts?.forceRefresh },
+  );
   const project = data.projects.find((p) => String(p.id) === id);
   let tree = data.projectTaskTreeMap[id] ?? [];
   try {
     const localTree = await getTasksByProjectId(id);
-    tree = unionProjectTaskTrees(tree, localTree);
+    if (terminalFilters.includeCompleted === false) {
+      const apiIds = new Set(flattenTaskTree(tree).map((t) => String(t.id)));
+      const allowedLocal = flattenTaskTree(localTree).filter((t) => {
+        if (apiIds.has(String(t.id))) return true;
+        const syncStatus = String(t.sync_status ?? 'synced');
+        if (syncStatus === 'pending_create' || syncStatus === 'pending_update') return true;
+        return false;
+      });
+      tree = unionProjectTaskTrees(tree, buildTaskTreeFromRows(allowedLocal));
+    } else {
+      tree = unionProjectTaskTrees(tree, localTree);
+    }
   } catch (err) {
     console.warn('[projects-list-api] 单项目本地补全失败', err);
   }

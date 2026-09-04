@@ -47,6 +47,7 @@ import {
 import { Gesture, GestureDetector, ScrollView, type PanGesture } from 'react-native-gesture-handler';
 import type { SettingsSection } from './settings-drawer-context';
 import { useSettingsDrawer } from './settings-drawer-context';
+import { NotificationSettingsSection } from './notification-settings-section';
 
 function formatZhFullBackupTime(iso: string): string {
   const d = new Date(iso);
@@ -597,6 +598,21 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               <MaterialIcons name="chevron-right" size={22} color={outline} />
             </Pressable>
           </View>
+        </View>
+
+        <View
+          onLayout={ev => onSectionLayout('notifications', ev.nativeEvent.layout.y)}
+          style={styles.section}>
+          {renderSectionHead('NOTIFICATIONS', '通知管理')}
+          <NotificationSettingsSection
+            cardBg={cardBg}
+            cardBorder={cardBorder}
+            text={text}
+            outline={outline}
+            outlineVariant={outlineVariant}
+            primary={primary}
+            isDark={isDark}
+          />
         </View>
 
         <View

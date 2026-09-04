@@ -33,6 +33,8 @@ export const AppSettingKey = {
   dailyReviewReminderEnabled: 'daily_review_reminder_enabled_v1',
   dailyReviewReminderHour: 'daily_review_reminder_hour_v1',
   dailyReviewReminderMinute: 'daily_review_reminder_minute_v1',
+  /** 全局通知中心：总开关、频道开关、单条静音 */
+  notificationsCenter: '@selfapp/notifications_center_v1',
 } as const;
 
 const MIGRATION_ASYNC_KEYS: string[] = Object.values(AppSettingKey);

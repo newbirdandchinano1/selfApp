@@ -8,8 +8,9 @@ import { isHabitDayGoalMet, parseHabitDailyGoal } from '@/lib/repositories/habit
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
-import { Platform } from 'react-native';
+import { canScheduleAppNotification } from '@/lib/notification-center-settings';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
+import { Platform } from 'react-native';
 
 const NOTIFICATION_PREFIX = 'selfapp-habit-reminder:';
 const ANDROID_CHANNEL_ID = 'habit-reminders';
@@ -153,6 +154,10 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
   }
 
   if (!enabled) {
+    return { scheduled: false, permissionDenied: false };
+  }
+
+  if (!(await canScheduleAppNotification({ category: 'habit-reminder', identifier: id }))) {
     return { scheduled: false, permissionDenied: false };
   }
 

@@ -7,7 +7,7 @@ import { fetchFinanceStats, type FinanceStatsData } from '@/lib/finance-page-api
 import { parseFinanceTransactionExtra } from '@/lib/repositories/finance/finance-transaction-extra';
 import { analyzeFinanceBillSummaryFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "expo-router/react-navigation";
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';

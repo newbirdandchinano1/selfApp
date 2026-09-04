@@ -1,10 +1,14 @@
 import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native';
+import { canScheduleAppNotification } from '@/lib/notification-center-settings';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
+import { Platform } from 'react-native';
 
 /** 截图记账提示（非失败类，如非账单截图） */
 export async function notifyAutoLedgerHint(message: string): Promise<void> {
   if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) {
+    return;
+  }
+  if (!(await canScheduleAppNotification({ category: 'auto-ledger' }))) {
     return;
   }
   try {
@@ -21,6 +25,7 @@ export async function notifyAutoLedgerHint(message: string): Promise<void> {
       content: {
         title: '截图记账',
         body: message.length > 180 ? `${message.slice(0, 177)}…` : message,
+        data: { type: 'auto-ledger' },
       },
       trigger: null,
     });
@@ -31,7 +36,10 @@ export async function notifyAutoLedgerHint(message: string): Promise<void> {
 
 /** 快捷指令记账失败时发本地通知（应用已在后台时用户仍能看到） */
 export async function notifyAutoLedgerFailure(message: string): Promise<void> {
-  if (Platform.OS === 'web') {
+  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) {
+    return;
+  }
+  if (!(await canScheduleAppNotification({ category: 'auto-ledger' }))) {
     return;
   }
   try {
@@ -48,6 +56,7 @@ export async function notifyAutoLedgerFailure(message: string): Promise<void> {
       content: {
         title: '截图记账失败',
         body: message.length > 180 ? `${message.slice(0, 177)}…` : message,
+        data: { type: 'auto-ledger' },
       },
       trigger: null,
     });

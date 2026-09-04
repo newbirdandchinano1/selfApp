@@ -30,7 +30,7 @@ import {
 } from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect, useIsFocused, useNavigation, usePreventRemove } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused, useNavigation, usePreventRemove } from "expo-router/react-navigation";
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {

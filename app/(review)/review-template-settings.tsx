@@ -16,7 +16,7 @@ import type { ReviewDimensionTemplate, ReviewTemplateScope } from '@/lib/reposit
 import { fetchReviewCatalog, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "expo-router/react-navigation";
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {

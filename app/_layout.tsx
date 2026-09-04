@@ -1,4 +1,4 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { DarkTheme, DefaultTheme, ThemeProvider } from "expo-router/react-navigation";
 import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -47,6 +47,10 @@ import {
   clearExpoSandboxNotifications,
   isExpoSandboxNotificationDisabled,
 } from '@/lib/notification-policy';
+import { isNotificationCategoryAllowed } from '@/lib/notification-center-settings';
+import {
+  resolveNotificationCategoryFromData,
+} from '@/lib/notification-catalog';
 
 /** 本地初始化超过此时长则强制进入主界面，避免启动页无限等待 */
 const BOOTSTRAP_MAX_MS = 15_000;
@@ -64,6 +68,16 @@ if (Platform.OS !== 'web') {
       }
 
       const data = notification.request.content.data;
+      const category = resolveNotificationCategoryFromData(data);
+      if (category && !(await isNotificationCategoryAllowed(category))) {
+        return {
+          shouldShowBanner: false,
+          shouldShowList: false,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        };
+      }
+
       let suppress = false;
       if (data && typeof data === 'object' && !Array.isArray(data)) {
         const record = data as Record<string, unknown>;
