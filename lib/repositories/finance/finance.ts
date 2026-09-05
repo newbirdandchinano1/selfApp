@@ -19,6 +19,7 @@ import { rememberFinanceLastUsedAccount } from '@/lib/finance-last-used-account'
 import { dedupeRowsByPrimaryKey } from '@/lib/sqlite-primary-key-dedupe';
 import { getDatabase } from '../../database.native';
 import {
+  buildFinanceTransferFeeTxnExtra,
   buildFinanceTransferTxnExtra,
   FINANCE_TXN_EXTRA_BALANCE_CORRECTION_REASON,
   FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET,
@@ -760,13 +761,26 @@ export async function createFinanceTransaction(
 }
 
 /**
- * 原子创建转账双流水（转出 leg=out + 转入 leg=in），避免仅写入一侧导致余额不一致。
+ * 原子创建转账双流水（转出 leg=out + 转入 leg=in）。
+ * 可选手续费从转账金额中扣除：双腿记净额，手续费另记扣款账户支出。
+ * 例：转 2、手续费 1 → 扣款 -2（转出 1 + 支出 1），入账 +1。
  */
 export async function createFinanceTransferTransactions(input: CreateFinanceTransferInput): Promise<void> {
   const absAmount = Math.abs(input.amount);
   if (!Number.isFinite(absAmount) || absAmount <= 0) {
     throw new Error('finance transfer amount must be greater than 0');
   }
+
+  const feeRaw = input.feeAmount ?? 0;
+  const absFee = Number.isFinite(feeRaw) ? Math.abs(feeRaw) : 0;
+  const hasFee = absFee > 0;
+  if (hasFee && !input.idFee) {
+    throw new Error('finance transfer fee id is required when feeAmount > 0');
+  }
+  if (hasFee && absFee >= absAmount) {
+    throw new Error('finance transfer fee must be less than transfer amount');
+  }
+  const netAmount = absAmount - absFee;
 
   const extraOut = buildFinanceTransferTxnExtra({
     groupId: input.groupId,
@@ -780,9 +794,19 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
     counterpartyAccountId: input.fromAccountId,
     counterpartyAccountName: input.fromAccountName,
   });
+  const extraFee = hasFee
+    ? buildFinanceTransferFeeTxnExtra({
+        groupId: input.groupId,
+        counterpartyAccountId: input.toAccountId,
+        counterpartyAccountName: input.toAccountName,
+      })
+    : null;
 
-  await assertTransactionAmountSign(input.fromAccountId, absAmount);
-  await assertTransactionAmountSign(input.toAccountId, absAmount);
+  await assertTransactionAmountSign(input.fromAccountId, netAmount);
+  await assertTransactionAmountSign(input.toAccountId, netAmount);
+  if (hasFee) {
+    await assertTransactionAmountSign(input.fromAccountId, absFee);
+  }
 
   const db = await getDatabase();
   const note = input.note ?? null;
@@ -801,7 +825,7 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
       null,
       'transfer',
       null,
-      absAmount,
+      netAmount,
       note,
       extraOut,
     ]);
@@ -813,10 +837,24 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
       null,
       'transfer',
       null,
-      absAmount,
+      netAmount,
       note,
       extraIn,
     ]);
+    if (hasFee && input.idFee && extraFee) {
+      await db.runAsync(insertSql, [
+        input.idFee,
+        '转账手续费',
+        input.happenedAt,
+        input.fromAccountId,
+        null,
+        'expense',
+        null,
+        absFee,
+        note,
+        extraFee,
+      ]);
+    }
     await db.execAsync('COMMIT');
   } catch (e) {
     await db.execAsync('ROLLBACK');
@@ -824,6 +862,9 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
   }
 
   invalidateInflightApiTableFetch('finance_transactions');
+  // 扣款合计减少 absAmount（净转出 + 手续费）；入账仅增加净额
+  applyFinanceAccountBalanceDelta(input.fromAccountId, -absAmount);
+  applyFinanceAccountBalanceDelta(input.toAccountId, netAmount);
   void pushFinanceChangesToApi();
 }
 

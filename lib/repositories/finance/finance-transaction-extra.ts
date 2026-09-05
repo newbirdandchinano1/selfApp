@@ -24,6 +24,9 @@ export const FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_AUTO = 'scheduled_expense_auto'
 /** 余额校正流水在 `extra_data.reason` 中的标记值。 */
 export const FINANCE_TXN_EXTRA_BALANCE_CORRECTION_REASON = 'balance_correction' as const;
 
+/** 转账手续费支出流水标记（与同组 `transfer_group_id` 关联）。 */
+export const FINANCE_TXN_EXTRA_TRANSFER_FEE = 'transfer_fee' as const;
+
 export function getBudgetFixedExpenseIdFromTxnExtra(extraData: string | null): string | null {
   if (!extraData) return null;
   try {
@@ -155,6 +158,35 @@ export function buildFinanceTransferTxnExtra(input: {
   });
 }
 
+/** 是否为转账手续费支出流水。 */
+export function isTransferFeeFinanceTransaction(
+  txn: Pick<{ transaction_type: string; extra_data: string | null }, 'transaction_type' | 'extra_data'>,
+): boolean {
+  if (txn.transaction_type !== 'expense') return false;
+  const extra = parseFinanceTxnExtraObject(txn.extra_data);
+  return extra[FINANCE_TXN_EXTRA_TRANSFER_FEE] === true;
+}
+
+/**
+ * 构建转账手续费支出 `extra_data`（从转账金额中拆出，挂在扣款账户，计入消费/预算）。
+ */
+export function buildFinanceTransferFeeTxnExtra(input: {
+  groupId: string;
+  counterpartyAccountId: string;
+  counterpartyAccountName: string;
+}): string {
+  return JSON.stringify({
+    manual: true,
+    transfer_group_id: input.groupId,
+    [FINANCE_TXN_EXTRA_TRANSFER_FEE]: true,
+    counterparty_account_id: input.counterpartyAccountId,
+    counterparty_account_name: input.counterpartyAccountName,
+    category_key: 'other',
+    category_label: '手续费',
+    ...budgetExtraPatchForTransaction('expense', true),
+  });
+}
+
 /**
  * REST 回写本地时合并 extra_data：预算标记以本地为准（服务端可能未持久化或回传默认值）。
  */
@@ -183,6 +215,25 @@ export function mergeFinanceTxnExtraOnApiSync(
       if (key in local) {
         merged[key] = local[key];
       }
+    }
+  }
+
+  if (local[FINANCE_TXN_EXTRA_TRANSFER_FEE] === true) {
+    merged[FINANCE_TXN_EXTRA_TRANSFER_FEE] = true;
+    if (typeof local.transfer_group_id === 'string') {
+      merged.transfer_group_id = local.transfer_group_id;
+    }
+    if (typeof local.counterparty_account_id === 'string') {
+      merged.counterparty_account_id = local.counterparty_account_id;
+    }
+    if (typeof local.counterparty_account_name === 'string') {
+      merged.counterparty_account_name = local.counterparty_account_name;
+    }
+    if (typeof local.category_key === 'string' || local.category_key === null) {
+      merged.category_key = local.category_key;
+    }
+    if (typeof local.category_label === 'string' || local.category_label === null) {
+      merged.category_label = local.category_label;
     }
   }
 

@@ -42,6 +42,9 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
     transferToAccountId,
     setTransferFromAccountId,
     setTransferToAccountId,
+    transferAmountTarget,
+    setTransferAmountTarget,
+    transferFeeDisplay,
     setIsDatePickerVisible,
     setIsTimePickerVisible,
     setIsAccountPickerVisible,
@@ -226,10 +229,43 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                     ) : null
                   ) : null}
 
-                  <View style={styles.transferAmountWrap}>
+                  <Pressable
+                    onPress={() => setTransferAmountTarget('amount')}
+                    style={({ pressed }) => [
+                      styles.transferAmountWrap,
+                      transferAmountTarget === 'amount' ? { opacity: 1 } : { opacity: 0.55 },
+                      pressed && { opacity: 0.8 },
+                    ]}>
                     <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
                     <Text style={[styles.transferAmountValue, { color: tertiary }]}>{amountDisplay}</Text>
-                  </View>
+                  </Pressable>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="编辑转账手续费"
+                    onPress={() => setTransferAmountTarget('fee')}
+                    style={({ pressed }) => [
+                      styles.transferFeeRow,
+                      {
+                        backgroundColor: isDark ? '#161d2b' : '#f2f3ff',
+                        borderColor: transferAmountTarget === 'fee' ? tertiary : outlineVariant,
+                      },
+                      pressed && { opacity: 0.88 },
+                    ]}>
+                    <Text style={[styles.transferFeeLabel, { color: subtle }]}>手续费（可选）</Text>
+                    <Text
+                      style={[
+                        styles.transferFeeValue,
+                        { color: transferAmountTarget === 'fee' ? tertiary : text },
+                      ]}>
+                      ¥{transferFeeDisplay}
+                    </Text>
+                  </Pressable>
+                  {transferAmountTarget === 'fee' ? (
+                    <Text style={[styles.transferFeeHint, { color: subtle }]}>
+                      从转账金额中扣除，对方实收 = 转账额 − 手续费
+                    </Text>
+                  ) : null}
 
                   <View style={styles.transferDateWrap}>
                     <Pressable

@@ -86,6 +86,9 @@ export function useFinanceTransactionSheetController({
   const [accountPickerTarget, setAccountPickerTarget] = React.useState<AccountPickerTarget>('sheet');
   const [transferFromAccountId, setTransferFromAccountId] = React.useState<string | null>(null);
   const [transferToAccountId, setTransferToAccountId] = React.useState<string | null>(null);
+  /** 转账数字键盘当前编辑：本金或可选手续费。 */
+  const [transferAmountTarget, setTransferAmountTarget] = React.useState<'amount' | 'fee'>('amount');
+  const [transferFeeAmount, setTransferFeeAmount] = React.useState('');
   const [isSavingTransaction, setIsSavingTransaction] = React.useState(false);
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [sheetImageUris, setSheetImageUris] = React.useState<string[]>([]);
@@ -259,6 +262,8 @@ export function useFinanceTransactionSheetController({
     (nextTab: SheetTab = 'sentence', opts?: { preserveBudget?: boolean }) => {
       setActiveSheetTab(nextTab);
       setSheetAmount('');
+      setTransferFeeAmount('');
+      setTransferAmountTarget('amount');
       setSheetSentence('');
       setSheetNote('');
       setSheetImageUris([]);
@@ -397,9 +402,16 @@ export function useFinanceTransactionSheetController({
   const sheetDateLabel = `${selectedHappenedAt.getMonth() + 1}月${selectedHappenedAt.getDate()}日`;
   const sheetTimeLabel = `${String(selectedHappenedAt.getHours()).padStart(2, '0')}:${String(selectedHappenedAt.getMinutes()).padStart(2, '0')}`;
   const amountNumber = Number(sheetAmount);
+  const transferFeeNumber = transferFeeAmount === '' ? 0 : Number(transferFeeAmount);
+  const transferFeeValid =
+    transferFeeAmount === '' ||
+    (Number.isFinite(transferFeeNumber) &&
+      transferFeeNumber >= 0 &&
+      (!Number.isFinite(amountNumber) || transferFeeNumber < amountNumber));
   const canSaveTransaction =
     Number.isFinite(amountNumber) &&
     amountNumber > 0 &&
+    transferFeeValid &&
     !isSavingTransaction &&
     (activeSheetTab === 'transfer' ? transferSaveReady : Boolean(selectedAccount));
   const canSaveSentence =
@@ -410,6 +422,9 @@ export function useFinanceTransactionSheetController({
     !isSentencePreviewBusy;
   const amountDisplay = sheetAmount
     ? Number(sheetAmount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : '0.00';
+  const transferFeeDisplay = transferFeeAmount
+    ? Number(transferFeeAmount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     : '0.00';
 
   const keypadRows = React.useMemo(
@@ -502,23 +517,29 @@ export function useFinanceTransactionSheetController({
     });
   }, []);
 
-  const handleAmountKeyPress = React.useCallback((key: string) => {
-    if (key === 'backspace') {
-      setSheetAmount((prev) => prev.slice(0, -1));
-      return;
-    }
-    if (key === 'done' || key === 'check') return;
-    setSheetAmount((prev) => {
-      if (key === '+' || key === '-') return prev;
-      if (key === '.') return prev.includes('.') ? prev : `${prev || '0'}.`;
-      const next = `${prev}${key}`;
-      const normalized = next.replace(/^0+(?=\d)/, '');
-      const [, decimals = ''] = normalized.split('.');
-      if (decimals.length > 2) return prev;
-      if (Number(normalized) > 99999999.99) return prev;
-      return normalized;
-    });
+  const applyAmountKeyToValue = React.useCallback((prev: string, key: string): string => {
+    if (key === 'backspace') return prev.slice(0, -1);
+    if (key === 'done' || key === 'check') return prev;
+    if (key === '+' || key === '-') return prev;
+    if (key === '.') return prev.includes('.') ? prev : `${prev || '0'}.`;
+    const next = `${prev}${key}`;
+    const normalized = next.replace(/^0+(?=\d)/, '');
+    const [, decimals = ''] = normalized.split('.');
+    if (decimals.length > 2) return prev;
+    if (Number(normalized) > 99999999.99) return prev;
+    return normalized;
   }, []);
+
+  const handleAmountKeyPress = React.useCallback(
+    (key: string) => {
+      if (activeSheetTab === 'transfer' && transferAmountTarget === 'fee') {
+        setTransferFeeAmount((prev) => applyAmountKeyToValue(prev, key));
+        return;
+      }
+      setSheetAmount((prev) => applyAmountKeyToValue(prev, key));
+    },
+    [activeSheetTab, applyAmountKeyToValue, transferAmountTarget],
+  );
 
   const finishSaved = React.useCallback(() => {
     resetSheetForm('sentence');
@@ -579,12 +600,27 @@ export function useFinanceTransactionSheetController({
         Alert.alert('请输入金额', '转账金额需要大于 0。');
         return;
       }
+      const feeAbs =
+        transferFeeAmount.trim() === ''
+          ? 0
+          : Number.isFinite(transferFeeNumber) && transferFeeNumber > 0
+            ? transferFeeNumber
+            : 0;
+      if (transferFeeAmount.trim() !== '' && (!Number.isFinite(transferFeeNumber) || transferFeeNumber < 0)) {
+        Alert.alert('手续费无效', '手续费需为大于等于 0 的数字，留空表示无手续费。');
+        return;
+      }
+      if (feeAbs >= amountNumber) {
+        Alert.alert('手续费过高', '手续费必须小于转账金额（从转账金额中扣除）。');
+        return;
+      }
       const ts = Date.now();
       const rnd = Math.random().toString(16).slice(2);
       const groupId = `tg_${ts}_${rnd}`;
       const happenedAt = formatFinanceHappenedAt(selectedHappenedAt);
       const noteTrim = sheetNote.trim() || null;
       const absAmount = amountNumber;
+      const netAmount = absAmount - feeAbs;
       const extraOut = buildFinanceTransferTxnExtra({
         groupId,
         leg: 'out',
@@ -600,7 +636,7 @@ export function useFinanceTransactionSheetController({
       const errFrom = await validateFinanceTransactionBeforeSave({
         accountId: transferFromAccount.id,
         transactionType: 'transfer',
-        amount: absAmount,
+        amount: netAmount,
         extraData: extraOut,
         accountName: transferFromAccount.name,
         uiLedgerBalance: transferFromAccount.balance,
@@ -608,13 +644,23 @@ export function useFinanceTransactionSheetController({
       const errTo = await validateFinanceTransactionBeforeSave({
         accountId: transferToAccount.id,
         transactionType: 'transfer',
-        amount: absAmount,
+        amount: netAmount,
         extraData: extraIn,
         accountName: transferToAccount.name,
         uiLedgerBalance: transferToAccount.balance,
       });
-      if (errFrom || errTo) {
-        Alert.alert('无法转账', errFrom ?? errTo ?? '转出或转入后账户余额不符合类型约束。');
+      let errFee: string | null = null;
+      if (feeAbs > 0) {
+        errFee = await validateFinanceTransactionBeforeSave({
+          accountId: transferFromAccount.id,
+          transactionType: 'expense',
+          amount: feeAbs,
+          accountName: transferFromAccount.name,
+          uiLedgerBalance: transferFromAccount.balance - netAmount,
+        });
+      }
+      if (errFrom || errTo || errFee) {
+        Alert.alert('无法转账', errFrom ?? errTo ?? errFee ?? '转出或转入后账户余额不符合类型约束。');
         return;
       }
       try {
@@ -622,6 +668,7 @@ export function useFinanceTransactionSheetController({
         await createFinanceTransferTransactions({
           idOut: `ft_${ts}_out_${rnd}`,
           idIn: `ft_${ts}_in_${rnd}`,
+          ...(feeAbs > 0 ? { idFee: `ft_${ts}_fee_${rnd}`, feeAmount: feeAbs } : {}),
           groupId,
           fromAccountId: transferFromAccount.id,
           toAccountId: transferToAccount.id,
@@ -793,6 +840,8 @@ export function useFinanceTransactionSheetController({
     sheetImageUris,
     sheetNote,
     sheetSentence,
+    transferFeeAmount,
+    transferFeeNumber,
     transferFromAccount,
     transferToAccount,
   ]);
@@ -825,6 +874,9 @@ export function useFinanceTransactionSheetController({
     transferToAccountId,
     setTransferFromAccountId,
     setTransferToAccountId,
+    transferAmountTarget,
+    setTransferAmountTarget,
+    transferFeeDisplay,
     setIsDatePickerVisible,
     setIsTimePickerVisible,
     setIsAccountPickerVisible,

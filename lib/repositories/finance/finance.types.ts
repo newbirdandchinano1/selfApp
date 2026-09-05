@@ -114,7 +114,7 @@ export type CreateFinanceTransactionInput = {
   extra_data?: string | null;
 };
 
-/** 转账双流水（同一 `groupId` 下转出/转入各一条）。 */
+/** 转账双流水（同一 `groupId` 下转出/转入各一条）；可选手续费从转账金额中扣除。 */
 export type CreateFinanceTransferInput = {
   idOut: string;
   idIn: string;
@@ -123,9 +123,16 @@ export type CreateFinanceTransferInput = {
   toAccountId: string;
   fromAccountName: string;
   toAccountName: string;
+  /** 转账总额（扣款账户合计减少额）；有手续费时对方实收 = amount - feeAmount。 */
   amount: number;
   happenedAt: string;
   note?: string | null;
+  /**
+   * 可选手续费：从 `amount` 中扣减。
+   * >0 时转账双腿金额为 `amount - feeAmount`，另写一笔扣款账户 `expense`（计入消费）。
+   */
+  feeAmount?: number;
+  idFee?: string;
 };
 
 export type UpdateFinanceTransactionInput = Partial<

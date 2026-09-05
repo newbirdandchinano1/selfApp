@@ -588,6 +588,8 @@ export default function FinanceScreen() {
   const [accountPickerTarget, setAccountPickerTarget] = React.useState<AccountPickerTarget>('sheet');
   const [transferFromAccountId, setTransferFromAccountId] = React.useState<string | null>(null);
   const [transferToAccountId, setTransferToAccountId] = React.useState<string | null>(null);
+  const [transferAmountTarget, setTransferAmountTarget] = React.useState<'amount' | 'fee'>('amount');
+  const [transferFeeAmount, setTransferFeeAmount] = React.useState('');
   const [isSavingTransaction, setIsSavingTransaction] = React.useState(false);
   const [financeTransactions, setFinanceTransactions] = React.useState<FinanceTransactionRow[]>([]);
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
@@ -2219,9 +2221,16 @@ export default function FinanceScreen() {
   const sheetTimeLabel = `${String(selectedHappenedAt.getHours()).padStart(2, '0')}:${String(selectedHappenedAt.getMinutes()).padStart(2, '0')}`;
   const hasAccounts = financeAccounts.length > 0;
   const amountNumber = Number(sheetAmount);
+  const transferFeeNumber = transferFeeAmount === '' ? 0 : Number(transferFeeAmount);
+  const transferFeeValid =
+    transferFeeAmount === '' ||
+    (Number.isFinite(transferFeeNumber) &&
+      transferFeeNumber >= 0 &&
+      (!Number.isFinite(amountNumber) || transferFeeNumber < amountNumber));
   const canSaveTransaction =
     Number.isFinite(amountNumber) &&
     amountNumber > 0 &&
+    transferFeeValid &&
     !isSavingTransaction &&
     (activeSheetTab === 'transfer' ? transferSaveReady : Boolean(selectedAccount));
   const canSaveSentence =
@@ -2231,6 +2240,9 @@ export default function FinanceScreen() {
     !isParsingSentence &&
     !isSentencePreviewBusy;
   const amountDisplay = sheetAmount ? Number(sheetAmount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00';
+  const transferFeeDisplay = transferFeeAmount
+    ? Number(transferFeeAmount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : '0.00';
 
   React.useEffect(() => {
     if (!selectedAccountId && financeAccounts.length > 0) {
@@ -2265,6 +2277,8 @@ export default function FinanceScreen() {
   const resetSheetForm = React.useCallback((nextTab: SheetTab = 'sentence', opts?: { preserveBudget?: boolean }) => {
     setActiveSheetTab(nextTab);
     setSheetAmount('');
+    setTransferFeeAmount('');
+    setTransferAmountTarget('amount');
     setSheetSentence('');
     setSheetNote('');
     setSheetImageUris([]);
@@ -2843,27 +2857,29 @@ export default function FinanceScreen() {
     });
   }, []);
 
-  const handleAmountKeyPress = React.useCallback((key: string) => {
-    if (key === 'backspace') {
-      setSheetAmount((prev) => prev.slice(0, -1));
-      return;
-    }
-    if (key === 'done' || key === 'check') {
-      return;
-    }
-    setSheetAmount((prev) => {
-      if (key === '+' || key === '-') return prev;
-      if (key === '.') {
-        return prev.includes('.') ? prev : `${prev || '0'}.`;
-      }
-      const next = `${prev}${key}`;
-      const normalized = next.replace(/^0+(?=\d)/, '');
-      const [, decimals = ''] = normalized.split('.');
-      if (decimals.length > 2) return prev;
-      if (Number(normalized) > 99999999.99) return prev;
-      return normalized;
-    });
+  const applyAmountKeyToValue = React.useCallback((prev: string, key: string): string => {
+    if (key === 'backspace') return prev.slice(0, -1);
+    if (key === 'done' || key === 'check') return prev;
+    if (key === '+' || key === '-') return prev;
+    if (key === '.') return prev.includes('.') ? prev : `${prev || '0'}.`;
+    const next = `${prev}${key}`;
+    const normalized = next.replace(/^0+(?=\d)/, '');
+    const [, decimals = ''] = normalized.split('.');
+    if (decimals.length > 2) return prev;
+    if (Number(normalized) > 99999999.99) return prev;
+    return normalized;
   }, []);
+
+  const handleAmountKeyPress = React.useCallback(
+    (key: string) => {
+      if (activeSheetTab === 'transfer' && transferAmountTarget === 'fee') {
+        setTransferFeeAmount((prev) => applyAmountKeyToValue(prev, key));
+        return;
+      }
+      setSheetAmount((prev) => applyAmountKeyToValue(prev, key));
+    },
+    [activeSheetTab, applyAmountKeyToValue, transferAmountTarget],
+  );
 
   const handleSentenceLedgerPreview = React.useCallback(async () => {
     if (!selectedAccount) {
@@ -2925,6 +2941,20 @@ export default function FinanceScreen() {
         Alert.alert('请输入金额', '转账金额需要大于 0。');
         return;
       }
+      const feeAbs =
+        transferFeeAmount.trim() === ''
+          ? 0
+          : Number.isFinite(transferFeeNumber) && transferFeeNumber > 0
+            ? transferFeeNumber
+            : 0;
+      if (transferFeeAmount.trim() !== '' && (!Number.isFinite(transferFeeNumber) || transferFeeNumber < 0)) {
+        Alert.alert('手续费无效', '手续费需为大于等于 0 的数字，留空表示无手续费。');
+        return;
+      }
+      if (feeAbs >= amountNumber) {
+        Alert.alert('手续费过高', '手续费必须小于转账金额（从转账金额中扣除）。');
+        return;
+      }
       const ts = Date.now();
       const rnd = Math.random().toString(16).slice(2);
       const groupId = `tg_${ts}_${rnd}`;
@@ -2932,6 +2962,7 @@ export default function FinanceScreen() {
       const idIn = `ft_${ts}_in_${rnd}`;
       const happenedAt = formatFinanceHappenedAt(selectedHappenedAt);
       const absAmount = amountNumber;
+      const netAmount = absAmount - feeAbs;
       const noteTrim = sheetNote.trim() || null;
       const fromName = transferFromAccount.name;
       const toName = transferToAccount.name;
@@ -2951,7 +2982,7 @@ export default function FinanceScreen() {
       const errFrom = await validateFinanceTransactionBeforeSave({
         accountId: transferFromAccount.id,
         transactionType: 'transfer',
-        amount: absAmount,
+        amount: netAmount,
         extraData: extraOut,
         accountName: transferFromAccount.name,
         uiLedgerBalance: transferFromAccount.balance,
@@ -2959,13 +2990,23 @@ export default function FinanceScreen() {
       const errTo = await validateFinanceTransactionBeforeSave({
         accountId: transferToAccount.id,
         transactionType: 'transfer',
-        amount: absAmount,
+        amount: netAmount,
         extraData: extraIn,
         accountName: transferToAccount.name,
         uiLedgerBalance: transferToAccount.balance,
       });
-      if (errFrom || errTo) {
-        Alert.alert('无法转账', errFrom ?? errTo ?? '转出或转入后账户余额不符合类型约束。');
+      let errFee: string | null = null;
+      if (feeAbs > 0) {
+        errFee = await validateFinanceTransactionBeforeSave({
+          accountId: transferFromAccount.id,
+          transactionType: 'expense',
+          amount: feeAbs,
+          accountName: transferFromAccount.name,
+          uiLedgerBalance: transferFromAccount.balance - netAmount,
+        });
+      }
+      if (errFrom || errTo || errFee) {
+        Alert.alert('无法转账', errFrom ?? errTo ?? errFee ?? '转出或转入后账户余额不符合类型约束。');
         return;
       }
 
@@ -2974,6 +3015,7 @@ export default function FinanceScreen() {
         await createFinanceTransferTransactions({
           idOut,
           idIn,
+          ...(feeAbs > 0 ? { idFee: `ft_${ts}_fee_${rnd}`, feeAmount: feeAbs } : {}),
           groupId,
           fromAccountId: transferFromAccount.id,
           toAccountId: transferToAccount.id,
@@ -3176,6 +3218,8 @@ export default function FinanceScreen() {
     sheetImageUris,
     sheetNote,
     sheetSentence,
+    transferFeeAmount,
+    transferFeeNumber,
     transferFromAccount,
     transferToAccount,
   ]);
@@ -4223,10 +4267,43 @@ export default function FinanceScreen() {
                     ) : null
                   ) : null}
 
-                  <View style={styles.transferAmountWrap}>
+                  <Pressable
+                    onPress={() => setTransferAmountTarget('amount')}
+                    style={({ pressed }) => [
+                      styles.transferAmountWrap,
+                      transferAmountTarget === 'amount' ? { opacity: 1 } : { opacity: 0.55 },
+                      pressed && { opacity: 0.8 },
+                    ]}>
                     <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
                     <Text style={[styles.transferAmountValue, { color: tertiary }]}>{amountDisplay}</Text>
-                  </View>
+                  </Pressable>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="编辑转账手续费"
+                    onPress={() => setTransferAmountTarget('fee')}
+                    style={({ pressed }) => [
+                      styles.transferFeeRow,
+                      {
+                        backgroundColor: isDark ? '#161d2b' : '#f2f3ff',
+                        borderColor: transferAmountTarget === 'fee' ? tertiary : outlineVariant,
+                      },
+                      pressed && { opacity: 0.88 },
+                    ]}>
+                    <Text style={[styles.transferFeeLabel, { color: subtle }]}>手续费（可选）</Text>
+                    <Text
+                      style={[
+                        styles.transferFeeValue,
+                        { color: transferAmountTarget === 'fee' ? tertiary : text },
+                      ]}>
+                      ¥{transferFeeDisplay}
+                    </Text>
+                  </Pressable>
+                  {transferAmountTarget === 'fee' ? (
+                    <Text style={[styles.transferFeeHint, { color: subtle }]}>
+                      从转账金额中扣除，对方实收 = 转账额 − 手续费
+                    </Text>
+                  ) : null}
 
                   <View style={styles.transferDateWrap}>
                     <Pressable
@@ -6435,6 +6512,34 @@ const styles = StyleSheet.create({
     fontSize: 56,
     fontWeight: '900',
     letterSpacing: -1,
+  },
+  transferFeeRow: {
+    marginTop: -8,
+    alignSelf: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 200,
+  },
+  transferFeeLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  transferFeeValue: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '800',
+    textAlign: 'right',
+  },
+  transferFeeHint: {
+    fontSize: 11,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: -4,
   },
   transferDateWrap: {
     alignItems: 'center',
