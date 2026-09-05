@@ -28,6 +28,8 @@ export const AppSettingKey = {
   dailyIntakeAiTargets: '@daily_intake_ai_targets_v1',
   intakeAssistantSelection: '@intake_assistant_selection_v1',
   tasksCompletionDayStart: '@tasks_completion_day_start_v1',
+  /** 哪些页面采用自定义日界；未选中的页面按本地 0:00 自然日 */
+  dayBoundaryPages: '@selfapp/day_boundary_pages_v1',
   aiLlmProvider: '@selfapp/ai_llm_provider_id',
   weeklyReviewWeekday: 'weekly_review_weekday_dow',
   dailyReviewReminderEnabled: 'daily_review_reminder_enabled_v1',

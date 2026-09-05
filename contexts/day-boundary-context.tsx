@@ -1,10 +1,14 @@
 import {
+  DEFAULT_DAY_BOUNDARY_PAGES,
   DEFAULT_TASKS_DAY_BOUNDARY,
   getLogicalLocalYmd,
-  loadTasksDayBoundary,
+  loadConfiguredDayBoundary,
+  loadDayBoundaryPages,
   logicalYmdToLocalDate,
-  saveTasksDayBoundary,
+  saveConfiguredDayBoundary,
+  saveDayBoundaryPages,
   subscribeDayBoundary,
+  type DayBoundaryPageId,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import { clearPageLoadedInSession } from '@/lib/page-api-session';
@@ -12,12 +16,19 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { AppState, Platform } from 'react-native';
 
 type DayBoundaryContextValue = {
+  /** 设置里配置的日界时刻（未必对所有页面生效） */
   boundary: TasksDayBoundary;
+  /** 勾选后采用自定义日界的页面；未勾选则该页为 0:00 */
+  pages: DayBoundaryPageId[];
+  /** 任务域有效「今天」（兼容旧调用；等价于 usePageDayBoundary('tasks')） */
   logicalTodayYmd: string;
   /** 逻辑「今天」对应的本地日历日（正午），用于 UI 月日/星期 */
   logicalTodayDate: Date;
   isReady: boolean;
   setBoundary: (boundary: TasksDayBoundary) => Promise<void>;
+  setPages: (pages: readonly DayBoundaryPageId[]) => Promise<void>;
+  /** 内部时钟：跨日界 / 回前台时递增，供 usePageDayBoundary 重算 */
+  dayClock: number;
 };
 
 const DayBoundaryContext = createContext<DayBoundaryContextValue | null>(null);
@@ -31,17 +42,29 @@ function msUntilNextBoundaryCrossing(boundary: TasksDayBoundary): number {
   return Math.max(1000, next.getTime() - now.getTime() + 50);
 }
 
+/** 同时照顾自定义日界与自然日 0:00，取更近的一次跨界 */
+function msUntilNextRelevantCrossing(configured: TasksDayBoundary): number {
+  const toConfigured = msUntilNextBoundaryCrossing(configured);
+  const toMidnight = msUntilNextBoundaryCrossing(DEFAULT_TASKS_DAY_BOUNDARY);
+  const isMidnight =
+    configured.hour === DEFAULT_TASKS_DAY_BOUNDARY.hour &&
+    configured.minute === DEFAULT_TASKS_DAY_BOUNDARY.minute;
+  return isMidnight ? toMidnight : Math.min(toConfigured, toMidnight);
+}
+
 export function DayBoundaryProvider({ children }: { children: React.ReactNode }) {
   const [boundary, setBoundaryState] = useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
+  const [pages, setPagesState] = useState<DayBoundaryPageId[]>(() => [...DEFAULT_DAY_BOUNDARY_PAGES]);
   const [isReady, setIsReady] = useState(false);
-  const [logicalTodayClock, setLogicalTodayClock] = useState(0);
-  const lastEmittedYmdRef = useRef<string | null>(null);
+  const [dayClock, setDayClock] = useState(0);
+  const lastEmittedKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    void loadTasksDayBoundary().then((b) => {
+    void Promise.all([loadConfiguredDayBoundary(), loadDayBoundaryPages()]).then(([b, p]) => {
       if (mounted) {
         setBoundaryState(b);
+        setPagesState(p);
         setIsReady(true);
       }
     });
@@ -52,7 +75,10 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
 
   useEffect(() => {
     return subscribeDayBoundary(() => {
-      void loadTasksDayBoundary().then(setBoundaryState);
+      void Promise.all([loadConfiguredDayBoundary(), loadDayBoundaryPages()]).then(([b, p]) => {
+        setBoundaryState(b);
+        setPagesState(p);
+      });
     });
   }, []);
 
@@ -62,14 +88,14 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
    */
   useEffect(() => {
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    const bump = () => setLogicalTodayClock((c) => c + 1);
+    const bump = () => setDayClock((c) => c + 1);
 
     const schedule = () => {
       if (timeout) clearTimeout(timeout);
       timeout = setTimeout(() => {
         bump();
         schedule();
-      }, msUntilNextBoundaryCrossing(boundary));
+      }, msUntilNextRelevantCrossing(boundary));
     };
 
     const onForeground = () => {
@@ -80,14 +106,15 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     schedule();
 
     const appStateSub = AppState.addEventListener('change', (next) => {
-      // 每次进入前台都重算并重新 schedule（后台过夜后 timer 不可靠）
       if (next === 'active') onForeground();
     });
 
-    // 兜底：部分机型恢复前台时可能漏发 AppState；冻结解除后 interval 会补上跨日
     const pollId = setInterval(() => {
-      const ymd = getLogicalLocalYmd(new Date(), boundary);
-      if (lastEmittedYmdRef.current != null && lastEmittedYmdRef.current !== ymd) {
+      const now = new Date();
+      const configuredYmd = getLogicalLocalYmd(now, boundary);
+      const midnightYmd = getLogicalLocalYmd(now, DEFAULT_TASKS_DAY_BOUNDARY);
+      const key = `${configuredYmd}|${midnightYmd}`;
+      if (lastEmittedKeyRef.current != null && lastEmittedKeyRef.current !== key) {
         onForeground();
       }
     }, 30_000);
@@ -113,56 +140,112 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     };
   }, [boundary.hour, boundary.minute]);
 
+  const tasksBoundary = useMemo(
+    () => (pages.includes('tasks') ? boundary : { ...DEFAULT_TASKS_DAY_BOUNDARY }),
+    [boundary, pages],
+  );
+
   const logicalTodayYmd = useMemo(
-    () => getLogicalLocalYmd(new Date(), boundary),
-    [boundary, logicalTodayClock],
+    () => getLogicalLocalYmd(new Date(), tasksBoundary),
+    [tasksBoundary, dayClock],
   );
 
   const logicalTodayDate = useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
 
-  /** 进程内跨逻辑日：清会话加载标记，使各 Tab 下次聚焦会重读数据 */
+  /** 进程内任一有效「今天」变化：清会话加载标记，使各 Tab 下次聚焦会重读数据 */
   useEffect(() => {
-    if (lastEmittedYmdRef.current === null) {
-      lastEmittedYmdRef.current = logicalTodayYmd;
+    const now = new Date();
+    const configuredYmd = getLogicalLocalYmd(now, boundary);
+    const midnightYmd = getLogicalLocalYmd(now, DEFAULT_TASKS_DAY_BOUNDARY);
+    const key = `${configuredYmd}|${midnightYmd}`;
+    if (lastEmittedKeyRef.current === null) {
+      lastEmittedKeyRef.current = key;
       return;
     }
-    if (lastEmittedYmdRef.current === logicalTodayYmd) return;
-    lastEmittedYmdRef.current = logicalTodayYmd;
+    if (lastEmittedKeyRef.current === key) return;
+    lastEmittedKeyRef.current = key;
     clearPageLoadedInSession();
-  }, [logicalTodayYmd]);
+    // 跨日界：戒除习惯未操作日自动记为保持戒除并发放未破戒加分
+    void import('@/lib/repositories/habits/habit-break-success')
+      .then(({ syncBreakHabitCompletions }) => syncBreakHabitCompletions())
+      .catch((err) => {
+        if (__DEV__) console.warn('[day-boundary] syncBreakHabitCompletions', err);
+      });
+  }, [boundary, dayClock]);
 
   const setBoundary = useCallback(async (next: TasksDayBoundary) => {
-    await saveTasksDayBoundary(next);
+    await saveConfiguredDayBoundary(next);
     setBoundaryState(next);
-    setLogicalTodayClock((c) => c + 1);
+    setDayClock((c) => c + 1);
+  }, []);
+
+  const setPages = useCallback(async (next: readonly DayBoundaryPageId[]) => {
+    await saveDayBoundaryPages(next);
+    setPagesState([...next]);
+    setDayClock((c) => c + 1);
   }, []);
 
   const value = useMemo(
     () => ({
       boundary,
+      pages,
       logicalTodayYmd,
       logicalTodayDate,
       isReady,
       setBoundary,
+      setPages,
+      dayClock,
     }),
-    [boundary, logicalTodayYmd, logicalTodayDate, isReady, setBoundary],
+    [boundary, pages, logicalTodayYmd, logicalTodayDate, isReady, setBoundary, setPages, dayClock],
   );
 
   return <DayBoundaryContext.Provider value={value}>{children}</DayBoundaryContext.Provider>;
 }
 
+function fallbackContext(): DayBoundaryContextValue {
+  const boundary = { ...DEFAULT_TASKS_DAY_BOUNDARY };
+  const logicalTodayYmd = getLogicalLocalYmd(new Date(), boundary);
+  return {
+    boundary,
+    pages: [...DEFAULT_DAY_BOUNDARY_PAGES],
+    logicalTodayYmd,
+    logicalTodayDate: logicalYmdToLocalDate(logicalTodayYmd),
+    isReady: true,
+    setBoundary: async () => {},
+    setPages: async () => {},
+    dayClock: 0,
+  };
+}
+
 export function useDayBoundary(): DayBoundaryContextValue {
   const ctx = useContext(DayBoundaryContext);
-  if (!ctx) {
-    const boundary = { ...DEFAULT_TASKS_DAY_BOUNDARY };
-    const logicalTodayYmd = getLogicalLocalYmd(new Date(), boundary);
-    return {
-      boundary,
-      logicalTodayYmd,
-      logicalTodayDate: logicalYmdToLocalDate(logicalTodayYmd),
-      isReady: true,
-      setBoundary: async () => {},
-    };
-  }
-  return ctx;
+  return ctx ?? fallbackContext();
+}
+
+/** 按页面解析有效日界与逻辑「今天」：未勾选该页则始终 0:00 */
+export function usePageDayBoundary(page: DayBoundaryPageId): {
+  boundary: TasksDayBoundary;
+  logicalTodayYmd: string;
+  logicalTodayDate: Date;
+  usesCustomBoundary: boolean;
+  isReady: boolean;
+} {
+  const ctx = useDayBoundary();
+  const usesCustomBoundary = ctx.pages.includes(page);
+  const boundary = useMemo(
+    () => (usesCustomBoundary ? ctx.boundary : { ...DEFAULT_TASKS_DAY_BOUNDARY }),
+    [usesCustomBoundary, ctx.boundary],
+  );
+  const logicalTodayYmd = useMemo(
+    () => getLogicalLocalYmd(new Date(), boundary),
+    [boundary, ctx.dayClock],
+  );
+  const logicalTodayDate = useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
+  return {
+    boundary,
+    logicalTodayYmd,
+    logicalTodayDate,
+    usesCustomBoundary,
+    isReady: ctx.isReady,
+  };
 }

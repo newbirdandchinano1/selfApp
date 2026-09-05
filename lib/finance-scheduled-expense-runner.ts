@@ -27,7 +27,7 @@ import {
   validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
-import { formatLocalYmdFromDate } from '@/lib/tasks-logical-day';
+import { getLogicalLocalYmd, resolveDayBoundaryForPage } from '@/lib/tasks-logical-day';
 
 const BACKFILL_DAYS = 14;
 
@@ -144,12 +144,13 @@ export type RunScheduledFinanceExpensesResult = {
 };
 
 export async function runScheduledFinanceExpenses(opts?: {
-  /** @deprecated 参数名保留兼容；实际按自然日历日计算 */
+  /** 覆盖「今天」YMD；默认按财务页有效日界计算 */
   logicalTodayYmd?: string;
   now?: Date;
 }): Promise<RunScheduledFinanceExpensesResult> {
   const now = opts?.now ?? new Date();
-  const todayYmd = opts?.logicalTodayYmd ?? formatLocalYmdFromDate(now);
+  const boundary = await resolveDayBoundaryForPage('finance');
+  const todayYmd = opts?.logicalTodayYmd ?? getLogicalLocalYmd(now, boundary);
 
   const [items, accounts] = await Promise.all([loadScheduledFinanceExpenses(), getFinanceAccountsWithBalance()]);
   if (!items.length) return { createdCount: 0, skippedCount: 0 };

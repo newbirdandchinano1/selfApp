@@ -22,8 +22,10 @@ import {
     type CloudSyncProgress,
 } from '@/lib/cloud-sql-sync';
 import {
+    DAY_BOUNDARY_PAGE_OPTIONS,
     DEFAULT_TASKS_DAY_BOUNDARY,
     formatTasksDayBoundaryLabel,
+    type DayBoundaryPageId,
     type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import type { ThemePreference } from '@/lib/theme-preference';
@@ -119,7 +121,12 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const sectionOffsets = useRef<Partial<Record<SettingsSection, number>>>({});
   const pendingScroll = useRef(initialSection);
 
-  const { boundary: dayBoundary, setBoundary: persistDayBoundary } = useDayBoundary();
+  const {
+    boundary: dayBoundary,
+    pages: dayBoundaryPages,
+    setBoundary: persistDayBoundary,
+    setPages: persistDayBoundaryPages,
+  } = useDayBoundary();
   const [draftBoundary, setDraftBoundary] = useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
   const [dayBoundaryPickerVisible, setDayBoundaryPickerVisible] = useState(false);
 
@@ -434,6 +441,18 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     }
   }, [draftBoundary, persistDayBoundary]);
 
+  const toggleDayBoundaryPage = useCallback(
+    (page: DayBoundaryPageId, enabled: boolean) => {
+      const next = enabled
+        ? [...new Set([...dayBoundaryPages, page])]
+        : dayBoundaryPages.filter((p) => p !== page);
+      void persistDayBoundaryPages(next).catch(() => {
+        Alert.alert('保存失败', '未能更新日界作用页面，请稍后重试。');
+      });
+    },
+    [dayBoundaryPages, persistDayBoundaryPages],
+  );
+
   const onNightModeSwitch = useCallback(
     (enabled: boolean) => {
       void setPreference(enabled ? 'dark' : 'light');
@@ -576,11 +595,11 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         <View
           onLayout={ev => onSectionLayout('dayBoundary', ev.nativeEvent.layout.y)}
           style={styles.section}>
-          {renderSectionHead('DAY BOUNDARY', '任务与习惯日界')}
+          {renderSectionHead('DAY BOUNDARY', '日界线')}
           <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 10 }]}>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 19 }]}>
-              仅用于任务完成、习惯打卡与相关热力图：未到该时刻仍算「昨天」的打卡日（默认
-              00:00）。财务记账、首页日期与摄入统计按自然日历日（0 点）划分，不受此设置影响。每月预算周期仍可在记账页单独设置「预算刷新日」。
+              自定义日界仅作用于下方勾选的页面：未到该时刻仍算「昨天」。未勾选的页面始终按凌晨
+              00:00 自然日划分。每月预算周期仍可在记账页单独设置「预算刷新日」。
             </Text>
             <Pressable
               onPress={() => {
@@ -593,10 +612,31 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               ]}>
               <MaterialIcons name="schedule" size={22} color={primary} />
               <Text style={[styles.rowTitle, { color: text, flex: 1 }]}>
-                当前日界 {formatTasksDayBoundaryLabel(dayBoundary)}
+                日界时刻 {formatTasksDayBoundaryLabel(dayBoundary)}
               </Text>
               <MaterialIcons name="chevron-right" size={22} color={outline} />
             </Pressable>
+            <Text style={[styles.rowTitle, { color: text, marginTop: 4 }]}>作用页面</Text>
+            <Text style={[styles.rowHint, { color: outline, lineHeight: 17 }]}>
+              关闭某页后，该页改回凌晨 00:00，不受上方时刻影响。
+            </Text>
+            {DAY_BOUNDARY_PAGE_OPTIONS.map((opt) => {
+              const enabled = dayBoundaryPages.includes(opt.id);
+              return (
+                <View key={opt.id} style={styles.pageScopeRow}>
+                  <View style={{ flex: 1, gap: 2, paddingRight: 12 }}>
+                    <Text style={[styles.rowTitle, { color: text, fontSize: 14 }]}>{opt.label}</Text>
+                    <Text style={[styles.rowHint, { color: outline }]}>{opt.hint}</Text>
+                  </View>
+                  <Switch
+                    value={enabled}
+                    onValueChange={(v) => toggleDayBoundaryPage(opt.id, v)}
+                    trackColor={{ false: outlineVariant, true: primary }}
+                    thumbColor="#ffffff"
+                  />
+                </View>
+              );
+            })}
           </View>
         </View>
 
@@ -868,7 +908,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         <View style={styles.modalRoot}>
           <Pressable style={styles.modalBackdrop} onPress={() => setDayBoundaryPickerVisible(false)} />
           <View style={[styles.modalCard, { backgroundColor: cardBg }]}>
-            <Text style={[styles.sectionTitle, { color: text }]}>任务与习惯日界</Text>
+            <Text style={[styles.sectionTitle, { color: text }]}>日界时刻</Text>
             <DateTimePicker
               value={new Date(2000, 0, 1, draftBoundary.hour, draftBoundary.minute)}
               mode="time"
@@ -946,6 +986,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 10,
     borderWidth: 1,
+  },
+  pageScopeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
   },
   probeBtn: {
     flexDirection: 'row',

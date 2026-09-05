@@ -1,5 +1,5 @@
 import { Colors } from '@/constants/theme';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import type { TaskExecutionEventWithTitle } from '@/lib/repositories/tasks/task-execution-events';
@@ -249,7 +249,7 @@ export default function TasksOverviewScreen() {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme === 'dark' ? 'dark' : 'light'];
   const isDark = colorScheme === 'dark';
-  const { logicalTodayYmd, boundary } = useDayBoundary();
+  const { logicalTodayYmd, boundary } = usePageDayBoundary('tasks');
 
   const [counts, setCounts] = React.useState<TasksOverviewInsightCounts | null>(null);
   const [events, setEvents] = React.useState<TaskExecutionEventWithTitle[]>([]);

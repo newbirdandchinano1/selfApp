@@ -3,7 +3,7 @@ import { ReviewDimensionSkeleton } from '@/components/review/review-home-skeleto
 import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
@@ -80,7 +80,7 @@ export function DailyReviewDimensionDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors } = useAppTheme();
-  const { logicalTodayYmd: todayYmd } = useDayBoundary();
+  const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const params = useLocalSearchParams<{ ymd?: string | string[]; dimensionId?: string | string[] }>();
   const ymd = (Array.isArray(params.ymd) ? params.ymd[0] : params.ymd)?.trim() ?? '';
   const dimensionId = (Array.isArray(params.dimensionId) ? params.dimensionId[0] : params.dimensionId)?.trim() ?? '';

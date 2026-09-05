@@ -24,7 +24,7 @@ import {
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { Layout, Spacing } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
@@ -68,7 +68,7 @@ export function DailyReviewGridView({
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors } = useAppTheme();
-  const { logicalTodayYmd: todayYmd } = useDayBoundary();
+  const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(pageApiKey);
 
   const [loading, setLoading] = useState(true);

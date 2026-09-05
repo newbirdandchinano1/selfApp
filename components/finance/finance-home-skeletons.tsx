@@ -50,7 +50,7 @@ export function FinanceBudgetCardSkeleton({ colors }: FinanceSkeletonProps) {
         </View>
         <Skeleton width={132} height={24} borderRadius={8} />
         <Skeleton width={96} height={12} borderRadius={5} />
-        <Skeleton width="100%" height={120} borderRadius={14} style={styles.trendChart} />
+        <Skeleton width="100%" height={96} borderRadius={14} style={styles.trendChart} />
         <Skeleton width={140} height={10} borderRadius={5} style={styles.trendHint} />
       </View>
 

@@ -1,6 +1,6 @@
 import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useTasksCalendarSummaries } from '@/hooks/use-tasks-calendar-summaries';
@@ -786,7 +786,7 @@ export default function TasksCalendarScreen() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const { colors, isDark, shadows } = useAppTheme();
-  const { logicalTodayYmd, boundary } = useDayBoundary();
+  const { logicalTodayYmd, boundary } = usePageDayBoundary('tasks');
   const today = React.useMemo(() => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(logicalTodayYmd);
     if (!m) return new Date();

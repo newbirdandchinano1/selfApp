@@ -9,8 +9,8 @@ function msUntilNextLocalMidnight(): number {
 }
 
 /**
- * 自然日历「今天」（本地 0:00 翻日），不受任务/习惯日界影响。
- * 用于财务、首页日期展示等应按墙上日历日归属的场景。
+ * 自然日历「今天」（本地 0:00 翻日）。
+ * 若页面需跟随侧边栏「日界作用页面」开关，请改用 `usePageDayBoundary(page)`。
  */
 export function useCalendarToday(): { calendarTodayYmd: string; calendarTodayDate: Date } {
   const [clock, setClock] = useState(0);

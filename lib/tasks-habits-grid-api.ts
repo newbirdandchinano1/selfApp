@@ -10,6 +10,7 @@ import {
   parseHabitIncrementCap,
 } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import { parseBreakHabitReward } from '@/lib/repositories/habits/habit-points-grant';
 import { parseHabitRewardPoints } from '@/lib/repositories/habits/habit-reward-points';
 import {
   countSubHabitsCompletedForYmd,
@@ -17,6 +18,7 @@ import {
   parseHabitSubHabitsMeta,
   type HabitSubItem,
 } from '@/lib/repositories/habits/habit-sub';
+import { normalizeRewardPoints } from '@/lib/reward-points';
 import { getLogicalLocalYmd, loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 
 export const TASKS_HABITS_GRID_FILTERS_VERSION = 'tasks-page-v1';
@@ -238,9 +240,14 @@ async function mergeHabitGridExtraFields(
         name: item.name ?? local?.name ?? '',
         note: noteFromApi ?? (local?.note?.trim() ? local.note.trim() : null),
         rewardPoints:
-          typeof item.rewardPoints === 'number'
-            ? Math.max(0, Math.floor(item.rewardPoints))
-            : parseHabitRewardPoints(extraData),
+          resolvedKind === 'break'
+            ? (() => {
+                const penalty = parseBreakHabitReward(extraData, 'penalty');
+                return penalty === 0 ? 0 : -Math.abs(penalty);
+              })()
+            : typeof item.rewardPoints === 'number'
+              ? normalizeRewardPoints(item.rewardPoints)
+              : parseHabitRewardPoints(extraData),
         todayCount,
         dailyGoal,
         incrementCap,

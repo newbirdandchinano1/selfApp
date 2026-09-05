@@ -425,16 +425,15 @@ export async function deleteWishBoardItem(id: string): Promise<void> {
  */
 export async function redeemWishBoardItem(id: string): Promise<{ balance: number }> {
   // 本地先校验绑定条件，避免服务端未支持多重条件时误兑
-  {
-    const preItem = mapWishBoardRow(
-      await requireLocalRowForWrite<WishBoardItemRow>('wish_board_items', id, '心愿'),
-    );
-    if (preItem.wish_type === 'once' && preItem.status === 'redeemed') {
-      throw new Error('该心愿已兑换');
-    }
-    const preBalance = await getLocalPointsBalance();
-    await assertWishBoardRedeemEligible(preItem, preBalance);
+  const preItem = mapWishBoardRow(
+    await requireLocalRowForWrite<WishBoardItemRow>('wish_board_items', id, '心愿'),
+  );
+  if (preItem.wish_type === 'once' && preItem.status === 'redeemed') {
+    throw new Error('该心愿已兑换');
   }
+  const preBalance = await getLocalPointsBalance();
+  await assertWishBoardRedeemEligible(preItem, preBalance);
+  const costPoints = asPoints(preItem.cost_points);
 
   try {
     const { appWishBoardRedeem } = await import('@/lib/api-app-domain');
@@ -497,6 +496,12 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
       endCloudSqliteDirtyIgnoreBatch();
     }
     notifyPointsBalanceChanged(balance);
+    const appliedDelta = asPoints(balance - preBalance);
+    if (appliedDelta !== 0) {
+      notifyPointsEarned(appliedDelta);
+    } else if (costPoints !== 0) {
+      notifyPointsEarned(-costPoints);
+    }
     return { balance };
   } catch (e) {
     // 业务错误（积分不足、绑定未完成等）直接抛出；网络类错误走本地回退
@@ -581,6 +586,7 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
     }
     await db.execAsync('COMMIT');
     notifyPointsBalanceChanged(next);
+    if (cost !== 0) notifyPointsEarned(-cost);
     return { balance: next };
   } catch (e) {
     await db.execAsync('ROLLBACK');
@@ -649,7 +655,7 @@ export async function adjustPointsBalance(input: {
       endCloudSqliteDirtyIgnoreBatch();
     }
     notifyPointsBalanceChanged(balance);
-    if (appliedDelta > 0) notifyPointsEarned(appliedDelta);
+    if (appliedDelta !== 0) notifyPointsEarned(appliedDelta);
     return { balance, delta: appliedDelta, ledger_id: ledgerId };
   } catch (e) {
     if (e instanceof Error && /积分不足/.test(e.message)) throw e;
@@ -689,7 +695,7 @@ export async function adjustPointsBalance(input: {
     );
     await db.execAsync('COMMIT');
     notifyPointsBalanceChanged(next);
-    if (delta > 0) notifyPointsEarned(delta);
+    if (delta !== 0) notifyPointsEarned(delta);
     return { balance: next, delta, ledger_id: ledgerId };
   } catch (e) {
     await db.execAsync('ROLLBACK');

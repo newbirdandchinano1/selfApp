@@ -1,16 +1,21 @@
-import { parseHabitRewardPoints } from '@/lib/repositories/habits/habit-reward-points';
+import {
+  normalizeHabitRewardPoints,
+  parseHabitRewardPoints,
+} from '@/lib/repositories/habits/habit-reward-points';
 import {
   applyCompletionPointsReward,
   applyEntityPointsReward,
 } from '@/lib/repositories/points/completion-points-grant';
 import { getHabitById } from '@/lib/repositories/habits/habit';
+import { isHabitDayGoalMet } from '@/lib/repositories/habits/habit-goal';
 
 function parseBreakReward(extraData: string | null | undefined, field: 'penalty' | 'clean' | 'goal'): number {
   try {
     const extra = extraData ? JSON.parse(extraData) as Record<string, unknown> : {};
     const rewards = extra.breakRewards;
     if (rewards && typeof rewards === 'object' && !Array.isArray(rewards)) {
-      return parseHabitRewardPoints(JSON.stringify((rewards as Record<string, unknown>)[field]));
+      // breakRewards.penalty/clean/goal 存的是裸数字，不能走 parseHabitRewardPoints（它只认 { reward_points }）
+      return normalizeHabitRewardPoints((rewards as Record<string, unknown>)[field]);
     }
   } catch {
     // ignore malformed optional reward metadata
@@ -18,6 +23,14 @@ function parseBreakReward(extraData: string | null | undefined, field: 'penalty'
   // 旧版戒除习惯：单一 reward_points 即「达成连续目标」的奖励
   if (field === 'goal') return parseHabitRewardPoints(extraData);
   return 0;
+}
+
+/** 读取戒除习惯三项积分配置（破戒扣分 / 未破戒加分 / 达成加分） */
+export function parseBreakHabitReward(
+  extraData: string | null | undefined,
+  field: 'penalty' | 'clean' | 'goal',
+): number {
+  return parseBreakReward(extraData, field);
 }
 
 async function applyHabitPointsReward(
@@ -44,7 +57,7 @@ async function applyHabitPointsReward(
 }
 
 /**
- * 养成类：每次完成打卡发奖 / 撤销扣回。
+ * 养成类：当日目标达成发奖 / 从达成回退扣回（底层读写，通常经 syncBuildHabitDayPointsReward）。
  * @returns 实际变动的积分数（正=获得，负=扣回）；0 表示无配置或未变动
  */
 export async function applyHabitCheckInPointsReward(
@@ -58,6 +71,42 @@ export async function applyHabitCheckInPointsReward(
     { earnReason: 'habit_check_in', undoReason: 'habit_check_in_undo' },
     opts,
   );
+}
+
+/**
+ * 养成类：根据当日目标是否刚达成 / 刚回退，发奖或扣回。
+ * 有每日目标时须次数达标才发；不限次数时首次打卡即算达成。中间进度打卡不发积分。
+ * @returns 实际变动积分；0 表示无配置或未跨过达成边界
+ */
+export async function syncBuildHabitDayPointsReward(params: {
+  habitId: string;
+  prevCount: number;
+  nextCount: number;
+  dailyGoal: number | null;
+  extraData?: string | null;
+}): Promise<number> {
+  const wasMet = isHabitDayGoalMet({
+    kind: 'build',
+    todayCount: params.prevCount,
+    dailyGoal: params.dailyGoal,
+  });
+  const nowMet = isHabitDayGoalMet({
+    kind: 'build',
+    todayCount: params.nextCount,
+    dailyGoal: params.dailyGoal,
+  });
+  if (!wasMet && nowMet) {
+    return applyHabitCheckInPointsReward(params.habitId, 'earn', {
+      extraData: params.extraData,
+    });
+  }
+  if (wasMet && !nowMet) {
+    return applyHabitCheckInPointsReward(params.habitId, 'undo', {
+      forceUndo: true,
+      extraData: params.extraData,
+    });
+  }
+  return 0;
 }
 
 /**

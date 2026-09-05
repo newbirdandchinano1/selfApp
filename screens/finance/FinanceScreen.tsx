@@ -7,7 +7,7 @@ import {
 import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
-import { useCalendarToday } from '@/hooks/use-calendar-today';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
@@ -91,7 +91,7 @@ import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/financ
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { formatFinanceHappenedAt, parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
-import { addDaysToLogicalYmd, formatLocalYmdFromDate, logicalYmdToLocalDate } from '@/lib/tasks-logical-day';
+import { addDaysToLogicalYmd, getLogicalLocalYmd, logicalYmdToLocalDate } from '@/lib/tasks-logical-day';
 import {
     getActiveAiLlmApiKey,
     isActiveAiLlmConfigured,
@@ -114,10 +114,8 @@ import {
     Keyboard,
     KeyboardAvoidingView,
     Modal,
-    PanResponder,
     Platform,
     Pressable,
-    ScrollView,
     StyleProp,
     StyleSheet,
     Switch,
@@ -125,10 +123,10 @@ import {
     TextInput,
     View,
     ViewStyle,
-    type GestureResponderEvent,
     type KeyboardEvent,
 } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, ScrollView, Swipeable } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, LinearGradient, Path, Stop } from 'react-native-svg';
 import { moveAppToBackground } from 'zheng-background';
@@ -263,9 +261,9 @@ function getTxnNetWorthTotalDelta(txn: FinanceTransactionRow): number {
 }
 
 const NET_WORTH_TREND_CHART_W = 272;
-const NET_WORTH_TREND_CHART_H = 52;
-const NET_WORTH_TREND_CHART_INSET = 12;
-const NET_WORTH_TREND_VISIBLE_NODE_COUNT = 5;
+const NET_WORTH_TREND_CHART_H = 96;
+/** 仅给折线描边与选中圆点半径留位；背景圆角单独绘制，不再靠加大 inset 躲裁切。 */
+const NET_WORTH_TREND_CHART_INSET = 8;
 
 type NetWorthTrendPoint = {
   value: number;
@@ -288,18 +286,6 @@ function netWorthTrendIndexFromLocationX(locationX: number, plotWidth: number, p
   const t = (viewBoxX - inset) / innerW;
   const clamped = Math.max(0, Math.min(1, t));
   return Math.round(clamped * (pointCount - 1));
-}
-
-/** 在折线上均匀取约 5 个可见节点（含首尾）。 */
-function getSparseTrendNodeIndices(length: number, count = NET_WORTH_TREND_VISIBLE_NODE_COUNT): number[] {
-  if (length <= 0) return [];
-  if (length === 1) return [0];
-  const n = Math.min(count, length);
-  const indices = new Set<number>();
-  for (let k = 0; k < n; k++) {
-    indices.add(Math.round((k * (length - 1)) / (n - 1)));
-  }
-  return [...indices].sort((a, b) => a - b);
 }
 
 function parseFinanceDayKey(dayKey: string): { y: number; m: number; d: number } | null {
@@ -554,7 +540,8 @@ export default function FinanceScreen() {
   const tertiary = isDark ? '#fbbf24' : '#825100';
   const accountTagColor = isDark ? '#2dd4bf' : '#0f766e';
   const weekdayCn = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
-  const { calendarTodayYmd, calendarTodayDate: today } = useCalendarToday();
+  const { logicalTodayYmd: calendarTodayYmd, logicalTodayDate: today, boundary: financeDayBoundary } =
+    usePageDayBoundary('finance');
   const calendarYesterdayYmd = React.useMemo(
     () => addDaysToLogicalYmd(calendarTodayYmd, -1),
     [calendarTodayYmd],
@@ -581,14 +568,14 @@ export default function FinanceScreen() {
     const prev = prevCalendarTodayYmdRef.current;
     if (prev === calendarTodayYmd) return;
     prevCalendarTodayYmdRef.current = calendarTodayYmd;
-    // 自然日翻页后：若仍停在「今天/昨天」锚点，则跳到当前时刻
+    // 有效日界翻页后：若仍停在「今天/昨天」锚点，则跳到当前时刻
     setSelectedHappenedAt((value) => {
-      const valueYmd = formatLocalYmdFromDate(value);
+      const valueYmd = getLogicalLocalYmd(value, financeDayBoundary);
       const staleFromYmd = addDaysToLogicalYmd(prev, -1);
       if (valueYmd >= staleFromYmd) return new Date();
       return value;
     });
-  }, [calendarTodayYmd]);
+  }, [calendarTodayYmd, financeDayBoundary]);
   const [isDatePickerVisible, setIsDatePickerVisible] = React.useState(false);
   const [isTimePickerVisible, setIsTimePickerVisible] = React.useState(false);
   const [isAccountPickerVisible, setIsAccountPickerVisible] = React.useState(false);
@@ -629,6 +616,7 @@ export default function FinanceScreen() {
   }, [activeSheetTab]);
   const [budgetCardNetExpanded, setBudgetCardNetExpanded] = React.useState(false);
   const [selectedNetTrendIndex, setSelectedNetTrendIndex] = React.useState(0);
+  const [netTrendScrubbing, setNetTrendScrubbing] = React.useState(false);
   /** 预算卡与月度汇总是否显示真实金额（false 时显示 ****） */
   const [showNetAmounts, setShowNetAmounts] = React.useState(true);
   const [monthBudgetSettings, setMonthBudgetSettings] = React.useState<Record<string, MonthBudgetSetting>>({});
@@ -911,7 +899,10 @@ export default function FinanceScreen() {
     outputRange: [0, 1],
   });
 
-  const getDayKey = React.useCallback((value: Date) => formatLocalYmdFromDate(value), []);
+  const getDayKey = React.useCallback(
+    (value: Date) => getLogicalLocalYmd(value, financeDayBoundary),
+    [financeDayBoundary],
+  );
 
   const accountNameMap = React.useMemo(() => {
     return new Map(financeAccounts.map((account) => [account.id, account.name]));
@@ -1009,9 +1000,9 @@ export default function FinanceScreen() {
       financeTransactions.filter((txn) => {
         const happenedAt = parseStoredDatetime(txn.happened_at);
         if (Number.isNaN(happenedAt.getTime())) return false;
-        return formatLocalYmdFromDate(happenedAt) === calendarTodayYmd;
+        return getDayKey(happenedAt) === calendarTodayYmd;
       }),
-    [calendarTodayYmd, financeTransactions],
+    [calendarTodayYmd, financeTransactions, getDayKey],
   );
 
   const todayExpenseTotal = React.useMemo(
@@ -1095,9 +1086,9 @@ export default function FinanceScreen() {
         const more = await fetchFinanceRecentDays({
           before: oldest,
           days: LOAD_MORE_HISTORY_DAY_STEP,
-          // 财务按自然日历日分桶，不传自定义日界
-          dayBoundaryHour: 0,
-          dayBoundaryMinute: 0,
+          // 未勾选财务日界时为 0:00；勾选后与侧边栏日界一致
+          dayBoundaryHour: financeDayBoundary.hour,
+          dayBoundaryMinute: financeDayBoundary.minute,
           offlineFallback: true,
         });
         if (more.transactions.length > 0) {
@@ -1116,7 +1107,7 @@ export default function FinanceScreen() {
         setIsLoadingMoreDays(false);
       }
     })();
-  }, [hasMoreHistoryDays, historyDayKeys, isLoadingMoreDays, todayDayKey, visibleDayCount]);
+  }, [hasMoreHistoryDays, historyDayKeys, isLoadingMoreDays, todayDayKey, visibleDayCount, financeDayBoundary]);
 
   const handleMainScroll = React.useCallback(
     (event: { nativeEvent: { contentOffset: { y: number }; layoutMeasurement: { height: number }; contentSize: { height: number } } }) => {
@@ -1704,18 +1695,15 @@ export default function FinanceScreen() {
     }
   }, [netTrendPoints.length, netWorthTrendDayKey]);
 
-  const netTrendSparseNodeIndices = React.useMemo(
-    () => getSparseTrendNodeIndices(netTrendPoints.length),
-    [netTrendPoints.length],
-  );
-
+  /** 仅展示「今天」与当前选中日，避免底部一排无意义稀疏点。 */
   const netTrendVisibleNodeIndices = React.useMemo(() => {
-    const indices = new Set(netTrendSparseNodeIndices);
+    const indices = new Set<number>();
+    if (netTrendLastIndex >= 0) indices.add(netTrendLastIndex);
     if (selectedNetTrendIndex >= 0 && selectedNetTrendIndex < netTrendPoints.length) {
       indices.add(selectedNetTrendIndex);
     }
     return [...indices].sort((a, b) => a - b);
-  }, [netTrendSparseNodeIndices, netTrendPoints.length, selectedNetTrendIndex]);
+  }, [netTrendLastIndex, netTrendPoints.length, selectedNetTrendIndex]);
 
   const selectedNetTrend =
     netTrendPoints[selectedNetTrendIndex] ?? netTrendPoints[netTrendLastIndex] ?? { value: netTotalForTrend, label: '今天', dayKey: netWorthTrendDayKey };
@@ -1723,7 +1711,7 @@ export default function FinanceScreen() {
   /** 今日净资产必须与账户余额汇总一致；历史日期仍用趋势回溯值。 */
   const displayedNetWorthAmount = isSelectedNetTrendToday ? netTotalForTrend : selectedNetTrend.value;
 
-  /** 与 Svg viewBox 一致；inset 需 ≥ 终点圆点半径 + 描边，避免裁切。 */
+  /** 与 Svg viewBox 一致；圆点层不裁切，故 inset 只需覆盖圆点半径。 */
   const trendChartGeometry = React.useMemo(() => {
     const w = NET_WORTH_TREND_CHART_W;
     const h = NET_WORTH_TREND_CHART_H;
@@ -1733,14 +1721,20 @@ export default function FinanceScreen() {
     const vals = netTrendPoints.map((p) => p.value);
     const min = Math.min(...vals);
     const max = Math.max(...vals);
-    const span = max - min || 1;
+    const rawSpan = max - min;
     const innerW = w - inset * 2;
     const innerH = h - inset * 2;
     const baselineY = h - inset;
 
+    // 无波动居中；有波动时几乎铺满绘图区，避免中间大块空档。
+    const flat = rawSpan <= 0;
+    const yMin = flat ? min - 1 : min;
+    const yMax = flat ? max + 1 : max;
+    const span = yMax - yMin || 1;
+
     const points = vals.map((value, i) => ({
       x: inset + (i / (vals.length - 1)) * innerW,
-      y: inset + (1 - (value - min) / span) * innerH,
+      y: inset + (1 - (value - yMin) / span) * innerH,
     }));
 
     const pathD = points
@@ -1762,24 +1756,56 @@ export default function FinanceScreen() {
   const netTrendPointCountRef = React.useRef(netTrendPoints.length);
   netTrendPointCountRef.current = netTrendPoints.length;
 
-  const updateNetTrendIndexFromTouch = React.useCallback((evt: GestureResponderEvent) => {
+  const updateNetTrendIndexFromLocationX = React.useCallback((locationX: number) => {
     const n = netTrendPointCountRef.current;
     if (n < 2) return;
-    const idx = netWorthTrendIndexFromLocationX(evt.nativeEvent.locationX, trendChartPlotWidthRef.current, n);
+    const width = trendChartPlotWidthRef.current;
+    if (width <= 0) return;
+    const idx = netWorthTrendIndexFromLocationX(locationX, width, n);
     setSelectedNetTrendIndex(idx);
   }, []);
 
-  const netWorthTrendChartPanResponder = React.useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => netTrendPointCountRef.current >= 2,
-        onMoveShouldSetPanResponder: () => netTrendPointCountRef.current >= 2,
-        onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: updateNetTrendIndexFromTouch,
-        onPanResponderMove: updateNetTrendIndexFromTouch,
-      }),
-    [updateNetTrendIndexFromTouch],
+  const beginNetTrendScrub = React.useCallback(
+    (locationX: number) => {
+      setNetTrendScrubbing(true);
+      updateNetTrendIndexFromLocationX(locationX);
+    },
+    [updateNetTrendIndexFromLocationX],
   );
+
+  const endNetTrendScrub = React.useCallback(() => {
+    setNetTrendScrubbing(false);
+  }, []);
+
+  const netWorthTrendScrubGesture = React.useMemo(() => {
+    // 图表区域按下即激活，避免被外层 ScrollView 抢走（RN responder 在此场景不可靠）
+    const pan = Gesture.Pan()
+      .manualActivation(true)
+      .shouldCancelWhenOutside(false)
+      .onTouchesDown((_e, state) => {
+        'worklet';
+        state.activate();
+      })
+      .onStart((e) => {
+        'worklet';
+        runOnJS(beginNetTrendScrub)(e.x);
+      })
+      .onUpdate((e) => {
+        'worklet';
+        runOnJS(updateNetTrendIndexFromLocationX)(e.x);
+      })
+      .onFinalize(() => {
+        'worklet';
+        runOnJS(endNetTrendScrub)();
+      });
+
+    const tap = Gesture.Tap().onEnd((e) => {
+      'worklet';
+      runOnJS(updateNetTrendIndexFromLocationX)(e.x);
+    });
+
+    return Gesture.Simultaneous(pan, tap);
+  }, [beginNetTrendScrub, endNetTrendScrub, updateNetTrendIndexFromLocationX]);
 
   const formatCurrencyBalance = React.useCallback(
     (value: number) => {
@@ -2314,8 +2340,8 @@ export default function FinanceScreen() {
         if (forceApi || !financeTransactionsRef.current.length) {
           const home = await fetchFinanceHome({
             logicalToday: calendarTodayYmd,
-            dayBoundaryHour: 0,
-            dayBoundaryMinute: 0,
+            dayBoundaryHour: financeDayBoundary.hour,
+            dayBoundaryMinute: financeDayBoundary.minute,
             historyDays: INITIAL_HISTORY_DAY_SLICES,
             daysBack: 90,
             budgetRefreshDay: rd,
@@ -2344,6 +2370,8 @@ export default function FinanceScreen() {
     }, forceApi);
   }, [
     calendarTodayYmd,
+    financeDayBoundary.hour,
+    financeDayBoundary.minute,
     loadFinanceAccounts,
     loadFinanceTransactions,
     wrapLoad,
@@ -2368,11 +2396,11 @@ export default function FinanceScreen() {
     React.useCallback(() => {
       if (isSheetVisible) return;
       setSelectedHappenedAt((prev) => {
-        const ymd = formatLocalYmdFromDate(prev);
+        const ymd = getLogicalLocalYmd(prev, financeDayBoundary);
         if (ymd < calendarTodayYmd) return new Date();
         return prev;
       });
-    }, [isSheetVisible, calendarTodayYmd]),
+    }, [isSheetVisible, calendarTodayYmd, financeDayBoundary]),
   );
 
   useFocusEffect(
@@ -3228,6 +3256,7 @@ export default function FinanceScreen() {
         ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        scrollEnabled={!netTrendScrubbing}
         scrollEventThrottle={16}
         onScroll={handleMainScroll}>
         <View
@@ -3500,66 +3529,80 @@ export default function FinanceScreen() {
                   </View>
 
                   <View style={styles.trendChartWrap}>
-                    <View
-                      style={[
-                        styles.trendChartPlot,
-                        { backgroundColor: isDark ? 'rgba(148,163,184,0.06)' : '#f8fafc', borderColor: outlineVariant },
-                      ]}
-                      onLayout={(e) => {
-                        trendChartPlotWidthRef.current = e.nativeEvent.layout.width;
-                      }}>
-                      <Svg
-                        width="100%"
-                        height={NET_WORTH_TREND_CHART_H}
-                        viewBox={`0 0 ${NET_WORTH_TREND_CHART_W} ${NET_WORTH_TREND_CHART_H}`}
-                        preserveAspectRatio="none"
-                        style={StyleSheet.absoluteFillObject}>
-                        {trendChartGeometry ? (
-                          <>
-                            <Defs>
-                              <LinearGradient id="netWorthTrendFill" x1="0" y1="0" x2="0" y2="1">
-                                <Stop offset="0" stopColor={primary} stopOpacity={isDark ? 0.22 : 0.16} />
-                                <Stop offset="1" stopColor={primary} stopOpacity={0} />
-                              </LinearGradient>
-                            </Defs>
-                            <Path d={trendChartGeometry.areaD} fill="url(#netWorthTrendFill)" />
-                            <Path
-                              d={trendChartGeometry.pathD}
-                              fill="none"
-                              stroke={primary}
-                              strokeWidth={2}
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                            {selectedNetTrendChartPoint && !isSelectedNetTrendToday ? (
+                    <GestureDetector gesture={netWorthTrendScrubGesture}>
+                      <View
+                        collapsable={false}
+                        style={styles.trendChartPlot}
+                        onLayout={(e) => {
+                          trendChartPlotWidthRef.current = e.nativeEvent.layout.width;
+                        }}
+                        accessibilityRole="adjustable"
+                        accessibilityLabel="净资产趋势图，点按或滑动查看不同日期"
+                        accessibilityHint="在图表上点按或左右滑动以查看各日净资产">
+                        {/* 圆角背景单独一层，避免 overflow:hidden 裁掉底部圆点 */}
+                        <View
+                          pointerEvents="none"
+                          style={[
+                            styles.trendChartPlotBg,
+                            {
+                              backgroundColor: isDark ? 'rgba(148,163,184,0.06)' : '#f8fafc',
+                              borderColor: outlineVariant,
+                            },
+                          ]}
+                        />
+                        <Svg
+                          width="100%"
+                          height={NET_WORTH_TREND_CHART_H}
+                          viewBox={`0 0 ${NET_WORTH_TREND_CHART_W} ${NET_WORTH_TREND_CHART_H}`}
+                          preserveAspectRatio="none"
+                          pointerEvents="none"
+                          style={StyleSheet.absoluteFillObject}>
+                          {trendChartGeometry ? (
+                            <>
+                              <Defs>
+                                <LinearGradient id="netWorthTrendFill" x1="0" y1="0" x2="0" y2="1">
+                                  <Stop offset="0" stopColor={primary} stopOpacity={isDark ? 0.22 : 0.16} />
+                                  <Stop offset="1" stopColor={primary} stopOpacity={0} />
+                                </LinearGradient>
+                              </Defs>
+                              <Path d={trendChartGeometry.areaD} fill="url(#netWorthTrendFill)" />
                               <Path
-                                d={`M${selectedNetTrendChartPoint.x.toFixed(1)},${NET_WORTH_TREND_CHART_INSET} L${selectedNetTrendChartPoint.x.toFixed(1)},${NET_WORTH_TREND_CHART_H - NET_WORTH_TREND_CHART_INSET}`}
-                                stroke={isDark ? 'rgba(96,165,250,0.35)' : 'rgba(0,88,190,0.28)'}
-                                strokeWidth={1}
-                                strokeDasharray="3 3"
+                                d={trendChartGeometry.pathD}
+                                fill="none"
+                                stroke={primary}
+                                strokeWidth={2}
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
                               />
-                            ) : null}
-                          </>
-                        ) : null}
-                      </Svg>
-                      {trendChartGeometry ? (
-                        <View style={styles.trendChartNodes} pointerEvents="none">
-                          {trendChartGeometry.points.map((p, i) => {
-                            const isVisible = netTrendVisibleNodeIndices.includes(i);
-                            const isSelected = i === selectedNetTrendIndex;
-                            const isLast = i === netTrendLastIndex;
-                            const dotSize = isSelected ? 10 : isLast ? 8 : 6;
-                            return (
-                              <View
-                                key={`net-trend-node-${i}`}
-                                style={[
-                                  styles.trendChartNodeHit,
-                                  {
-                                    left: `${(p.x / NET_WORTH_TREND_CHART_W) * 100}%`,
-                                    top: `${(p.y / NET_WORTH_TREND_CHART_H) * 100}%`,
-                                  },
-                                ]}>
-                                {isVisible ? (
+                              {selectedNetTrendChartPoint && !isSelectedNetTrendToday ? (
+                                <Path
+                                  d={`M${selectedNetTrendChartPoint.x.toFixed(1)},${NET_WORTH_TREND_CHART_INSET} L${selectedNetTrendChartPoint.x.toFixed(1)},${NET_WORTH_TREND_CHART_H - NET_WORTH_TREND_CHART_INSET}`}
+                                  stroke={isDark ? 'rgba(96,165,250,0.35)' : 'rgba(0,88,190,0.28)'}
+                                  strokeWidth={1}
+                                  strokeDasharray="3 3"
+                                />
+                              ) : null}
+                            </>
+                          ) : null}
+                        </Svg>
+                        {trendChartGeometry ? (
+                          <View style={styles.trendChartNodes} pointerEvents="none" collapsable={false}>
+                            {netTrendVisibleNodeIndices.map((i) => {
+                              const p = trendChartGeometry.points[i];
+                              if (!p) return null;
+                              const isSelected = i === selectedNetTrendIndex;
+                              const isLast = i === netTrendLastIndex;
+                              const dotSize = isSelected ? 10 : 8;
+                              return (
+                                <View
+                                  key={`net-trend-node-${i}`}
+                                  style={[
+                                    styles.trendChartNodeHit,
+                                    {
+                                      left: `${(p.x / NET_WORTH_TREND_CHART_W) * 100}%`,
+                                      top: `${(p.y / NET_WORTH_TREND_CHART_H) * 100}%`,
+                                    },
+                                  ]}>
                                   <View
                                     style={[
                                       styles.trendChartNodeDot,
@@ -3570,26 +3613,18 @@ export default function FinanceScreen() {
                                         backgroundColor: isSelected ? primary : surface,
                                         borderColor: primary,
                                         borderWidth: isSelected ? 2 : 1.5,
+                                        opacity: isLast && !isSelected ? 0.85 : 1,
                                       },
                                     ]}
                                   />
-                                ) : null}
-                              </View>
-                            );
-                          })}
-                        </View>
-                      ) : null}
-                      {trendChartGeometry ? (
-                        <View
-                          {...netWorthTrendChartPanResponder.panHandlers}
-                          style={styles.trendChartScrubOverlay}
-                          accessibilityRole="adjustable"
-                          accessibilityLabel="净资产趋势图，滑动查看不同日期"
-                          accessibilityHint="在图表上左右滑动或按住拖动以查看各日净资产"
-                        />
-                      ) : null}
-                    </View>
-                    <Text style={[styles.trendChartHint, { color: subtle }]}>左右滑动查看各日净资产</Text>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        ) : null}
+                      </View>
+                    </GestureDetector>
+                    <Text style={[styles.trendChartHint, { color: subtle }]}>点按或左右滑动查看各日净资产</Text>
                   </View>
 
                   {budgetCardNetExpanded ? (
@@ -5480,17 +5515,17 @@ const styles = StyleSheet.create({
     position: 'relative',
     height: NET_WORTH_TREND_CHART_H,
     width: '100%',
-    overflow: 'hidden',
+    // 不裁切：圆点需完整显示；圆角只画在背景层
+    overflow: 'visible',
+  },
+  trendChartPlotBg: {
+    ...StyleSheet.absoluteFillObject,
     borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
   },
   trendChartNodes: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 1,
-  },
-  trendChartScrubOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 2,
   },
   trendChartNodeHit: {
     position: 'absolute',

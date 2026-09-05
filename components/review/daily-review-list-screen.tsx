@@ -9,7 +9,7 @@ import {
 import { ReviewListSkeleton } from '@/components/review/review-home-skeletons';
 import { ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { previewTextFromFields } from '@/lib/repositories/insights/review-journal-body';
@@ -27,7 +27,7 @@ export function DailyReviewListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors } = useAppTheme();
-  const { logicalTodayYmd: todayYmd } = useDayBoundary();
+  const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const params = useLocalSearchParams<{ focusYmd?: string | string[] }>();
   const focusYmdParam = Array.isArray(params.focusYmd) ? params.focusYmd[0] : params.focusYmd;
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);

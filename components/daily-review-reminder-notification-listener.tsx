@@ -1,4 +1,4 @@
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
@@ -21,7 +21,7 @@ function navigateToDailyReviewFromNotification(
 
 export function DailyReviewReminderNotificationListener() {
   const router = useRouter();
-  const { logicalTodayYmd } = useDayBoundary();
+  const { logicalTodayYmd } = usePageDayBoundary('review');
   const handledResponseIdRef = useRef<string | null>(null);
 
   useEffect(() => {

@@ -17,7 +17,7 @@ import {
 } from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { generateWeeklyReviewCoaching, weeklyReviewHasEnoughText } from '@/lib/weekly-review-coaching';
@@ -77,7 +77,7 @@ export function WeeklyReviewFormScreen({
   const insets = useSafeAreaInsets();
   const apiKey = pageApiKey ?? PAGE_API_KEY;
   const { colors, isDark } = useAppTheme();
-  const { logicalTodayYmd: todayYmd } = useDayBoundary();
+  const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(apiKey);
 
   const bg = colors.background;

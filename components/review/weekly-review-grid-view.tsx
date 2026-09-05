@@ -15,7 +15,7 @@ import {
   WEEKLY_REVIEW_WEEKDAY_LABELS,
 } from '@/components/review/review-utils';
 import { Spacing } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
 import {
@@ -57,7 +57,7 @@ export function WeeklyReviewGridView({
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { logicalTodayYmd: todayYmd } = useDayBoundary();
+  const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(pageApiKey);
 
   const [loading, setLoading] = useState(true);

@@ -5,14 +5,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Radius, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { subscribePointsEarnedToast } from '@/lib/points-earned-toast-events';
+import { subscribePointsEarnedToast, formatPointsToastAmount } from '@/lib/points-earned-toast-events';
 
 const SLIDE_DISTANCE = 48;
 const HOLD_MS = 900;
 const SLIDE_MS = 700;
 const FADE_MS = 650;
 
-/** 根级挂载：获得积分时底部提示，上滑一段距离后渐隐。 */
+/** 根级挂载：积分变动时底部提示（加分 / 扣分），上滑一段距离后渐隐。 */
 export function PointsEarnedToastHost() {
   const { isDark } = useAppTheme();
   const insets = useSafeAreaInsets();
@@ -23,7 +23,7 @@ export function PointsEarnedToastHost() {
 
   React.useEffect(() => {
     return subscribePointsEarnedToast((next) => {
-      if (next == null || next <= 0) return;
+      if (next == null || next === 0) return;
 
       animRef.current?.stop();
       setPoints(next);
@@ -54,7 +54,9 @@ export function PointsEarnedToastHost() {
     });
   }, [opacity, translateY]);
 
-  if (points == null || points <= 0) return null;
+  if (points == null || points === 0) return null;
+
+  const gained = points > 0;
 
   return (
     <Animated.View
@@ -72,8 +74,14 @@ export function PointsEarnedToastHost() {
           styles.toast,
           { backgroundColor: isDark ? 'rgba(15,23,42,0.94)' : 'rgba(17,24,39,0.94)' },
         ]}>
-        <MaterialIcons name="stars" size={16} color="#fbbf24" />
-        <Text style={styles.text}>获得 +{points} 积分</Text>
+        <MaterialIcons
+          name={gained ? 'stars' : 'remove-circle'}
+          size={16}
+          color={gained ? '#fbbf24' : '#fb7185'}
+        />
+        <Text style={styles.text}>
+          {gained ? `获得 +${formatPointsToastAmount(points)} 积分` : `扣除 ${formatPointsToastAmount(points)} 积分`}
+        </Text>
       </View>
     </Animated.View>
   );

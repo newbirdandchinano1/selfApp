@@ -34,7 +34,7 @@ import {
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
   applyBreakHabitReward,
-  applyHabitCheckInPointsReward,
+  syncBuildHabitDayPointsReward,
   syncTaskHabitPeriodPointsReward,
 } from '@/lib/repositories/habits/habit-points-grant';
 import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
@@ -51,7 +51,7 @@ import {
   logicalYmdToLocalDate,
   refreshYmdFocusAfterLogicalDayChange,
 } from '@/lib/tasks-logical-day';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from "expo-router/react-navigation";
@@ -266,7 +266,9 @@ function completionBreakDay(
 ): string {
   if (!hasDayRecord) {
     if (ymd === logicalTodayYmd) return emptyBackground;
-    return BREAK_GOAL_FAIL;
+    // 跨日界未操作：自动保持戒除
+    if (ymd < logicalTodayYmd) return BREAK_GOAL_MET;
+    return emptyBackground;
   }
   if (isHabitDayGoalMet({ kind: 'break', todayCount: count, dailyGoal, hasDayRecord: true })) {
     return count <= 0 ? BREAK_GOAL_MET : '#4ade80';
@@ -291,7 +293,7 @@ export default function HabitDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
-  const { boundary, logicalTodayYmd, logicalTodayDate } = useDayBoundary();
+  const { boundary, logicalTodayYmd, logicalTodayDate } = usePageDayBoundary('tasks');
   const scrollTopPad = insets.top + TOP_BAR_BODY_H;
   const params = useLocalSearchParams<{ habitId?: string }>();
   const habitId = pickParam(params.habitId);
@@ -519,7 +521,7 @@ export default function HabitDetailScreen() {
   }, [checkIns, trendWeekStart]);
 
   const trendMax = Math.max(
-    habitKind === 'break' ? (dailyGoal ?? 0) + 1 : (dailyGoal ?? 1),
+    habitKind === 'break' ? (dailyGoal ?? 1) + 1 : (dailyGoal ?? 1),
     ...trendCounts,
     1
   );
@@ -727,11 +729,14 @@ export default function HabitDetailScreen() {
         else next[ymd] = nextCount;
         return next;
       });
-      // 养成：仅今日打卡发奖，撤销今日扣回；任务：周期目标回退时扣回；戒除：撤销破戒记录返还扣分
+      // 养成：当日目标刚回退才扣回；任务：周期目标回退时扣回；戒除：撤销破戒记录返还扣分
       if (kind === 'build' && ymd === logicalTodayYmd && nextCount < prevCount) {
         try {
-          await applyHabitCheckInPointsReward(habit.id, 'undo', {
-            forceUndo: true,
+          await syncBuildHabitDayPointsReward({
+            habitId: habit.id,
+            prevCount,
+            nextCount,
+            dailyGoal,
             extraData: habit.extra_data,
           });
         } catch (ptsErr) {
@@ -776,6 +781,7 @@ export default function HabitDetailScreen() {
     cancelMakeUpSaving,
     checkIns,
     consumeHabitDetailPressDebounce,
+    dailyGoal,
     focusYmd,
     habit,
     logicalTodayYmd,

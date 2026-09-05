@@ -3,7 +3,7 @@ import { ReviewDimensionSkeleton } from '@/components/review/review-home-skeleto
 import { loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
@@ -99,7 +99,7 @@ export function WeeklyReviewDimensionDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors } = useAppTheme();
-  const { logicalTodayYmd: todayYmd } = useDayBoundary();
+  const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const params = useLocalSearchParams<{ weekStartYmd?: string | string[]; dimensionId?: string | string[] }>();
   const weekStartYmd = (Array.isArray(params.weekStartYmd) ? params.weekStartYmd[0] : params.weekStartYmd)?.trim() ?? '';
   const dimensionId = (Array.isArray(params.dimensionId) ? params.dimensionId[0] : params.dimensionId)?.trim() ?? '';

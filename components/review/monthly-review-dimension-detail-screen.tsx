@@ -4,7 +4,7 @@ import { ReviewDimensionSkeleton } from '@/components/review/review-home-skeleto
 import { formatReviewMonthLabel, isMonthlyReviewEditable } from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
@@ -91,7 +91,7 @@ export function MonthlyReviewDimensionDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors } = useAppTheme();
-  const { logicalTodayYmd: todayYmd } = useDayBoundary();
+  const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const params = useLocalSearchParams<{ monthStartYmd?: string | string[]; dimensionId?: string | string[] }>();
   const monthStartYmd =
     (Array.isArray(params.monthStartYmd) ? params.monthStartYmd[0] : params.monthStartYmd)?.trim() ?? '';

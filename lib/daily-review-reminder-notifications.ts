@@ -9,7 +9,7 @@ import {
 import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import { getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import { getWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
-import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
+import { getLogicalLocalYmd, resolveDayBoundaryForPage } from '@/lib/tasks-logical-day';
 import { canScheduleAppNotification } from '@/lib/notification-center-settings';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
 import { Platform } from 'react-native';
@@ -84,7 +84,7 @@ async function findNextDailyReviewReminderFireAt(
   now: Date = new Date(),
 ): Promise<Date | null> {
   const [boundary, configuredDow, tpl] = await Promise.all([
-    loadTasksDayBoundary(),
+    resolveDayBoundaryForPage('review'),
     getWeeklyReviewConfiguredWeekday(),
     listReviewTemplate('daily'),
   ]);
@@ -217,7 +217,7 @@ export async function shouldSuppressDailyReviewReminderNotification(): Promise<b
     if (!settings.enabled) return true;
 
     const [boundary, configuredDow] = await Promise.all([
-      loadTasksDayBoundary(),
+      resolveDayBoundaryForPage('review'),
       getWeeklyReviewConfiguredWeekday(),
     ]);
     const logicalYmd = getLogicalLocalYmd(new Date(), boundary);

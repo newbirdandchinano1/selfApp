@@ -53,8 +53,8 @@ import {
   type IntakeAssistantSuggestKind,
   type IntakeAssistantUiTab,
 } from '@/lib/intake-assistant-selection';
-import { useCalendarToday } from '@/hooks/use-calendar-today';
-import { DEFAULT_TASKS_DAY_BOUNDARY, refreshAnchorAfterLogicalDayChange } from '@/lib/tasks-logical-day';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
+import { refreshAnchorAfterLogicalDayChange } from '@/lib/tasks-logical-day';
 import { ensureDailyAiIntakeTargetsForToday, type DailyAiIntakeTargetsRow } from '@/lib/daily-intake-ai-targets';
 import {
   adjustNutritionMetricsForDaySchedule,
@@ -668,7 +668,11 @@ function StatusTrackWithThreshold({
 export default function HealthScreen() {
   const router = useRouter();
   const { colors, isDark } = useAppTheme();
-  const { calendarTodayYmd, calendarTodayDate } = useCalendarToday();
+  const {
+    logicalTodayYmd: calendarTodayYmd,
+    logicalTodayDate: calendarTodayDate,
+    boundary: healthDayBoundary,
+  } = usePageDayBoundary('health');
   const insets = useSafeAreaInsets();
   const pageInset = Spacing.md * 2;
   const weekPagerWidth = width - pageInset;
@@ -947,7 +951,7 @@ export default function HealthScreen() {
     void reloadPageRef.current?.(forceApi).catch((e) => console.warn('刷新健康页数据失败', e));
   });
 
-  /** 后台过夜跨自然日后：锚定「今天」并重载当日健康数据 */
+  /** 跨有效日界后：锚定「今天」并重载当日健康数据 */
   const prevCalendarTodayYmdRef = React.useRef(calendarTodayYmd);
   const needReloadAfterDayChangeRef = React.useRef(false);
   const selectedDateRef = React.useRef(selectedDate);
@@ -964,7 +968,7 @@ export default function HealthScreen() {
       normalizeDate(
         refreshAnchorAfterLogicalDayChange(
           selectedDateRef.current,
-          DEFAULT_TASKS_DAY_BOUNDARY,
+          healthDayBoundary,
           calendarTodayYmd,
           prev,
         ),
@@ -974,7 +978,7 @@ export default function HealthScreen() {
       normalizeDate(
         refreshAnchorAfterLogicalDayChange(
           weekAnchorDateRef.current,
-          DEFAULT_TASKS_DAY_BOUNDARY,
+          healthDayBoundary,
           calendarTodayYmd,
           prev,
         ),
@@ -983,15 +987,15 @@ export default function HealthScreen() {
     const timer = setTimeout(() => {
       if (!needReloadAfterDayChangeRef.current) return;
       needReloadAfterDayChangeRef.current = false;
-      void reloadPageRef.current?.().catch((e) => console.warn('自然日切换后刷新健康页失败', e));
+      void reloadPageRef.current?.().catch((e) => console.warn('日界切换后刷新健康页失败', e));
     }, 0);
     return () => clearTimeout(timer);
-  }, [calendarTodayYmd]);
+  }, [calendarTodayYmd, healthDayBoundary]);
 
   React.useEffect(() => {
     if (!needReloadAfterDayChangeRef.current) return;
     needReloadAfterDayChangeRef.current = false;
-    void reloadPageRef.current?.().catch((e) => console.warn('自然日切换后刷新健康页失败', e));
+    void reloadPageRef.current?.().catch((e) => console.warn('日界切换后刷新健康页失败', e));
   }, [selectedDate, weekAnchorDate]);
 
   /** 切换周视图时重新拉取该周数据（不依赖 focus，避免切 Tab 误触发） */

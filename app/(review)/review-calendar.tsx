@@ -9,7 +9,7 @@ import {
 } from '@/components/review/review-utils';
 import { AppIconButton, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
@@ -81,7 +81,7 @@ function buildGridCells(monthDate: Date) {
 export default function ReviewCalendarScreen() {
   const router = useRouter();
   const { colors, isDark } = useAppTheme();
-  const { logicalTodayYmd } = useDayBoundary();
+  const { logicalTodayYmd } = usePageDayBoundary('review');
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);

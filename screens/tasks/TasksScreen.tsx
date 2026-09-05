@@ -7,7 +7,7 @@ import {
 } from '@/components/tasks/tasks-home-skeletons';
 import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
@@ -80,6 +80,8 @@ import {
   applyBreakHabitReward,
   applyProjectCompletionPointsReward,
   applyTaskCompletionPointsReward,
+  parseBreakHabitReward,
+  syncBuildHabitDayPointsReward,
   syncTaskHabitPeriodPointsReward,
 } from '@/lib/repositories/habits/habit-points-grant';
 import {
@@ -562,7 +564,7 @@ type HabitSection = {
     note: string | null;
     rewardPoints: number;
     todayCount: number;
-    /** `extra_data.quantify.dailyGoal`；戒除可为 0，养成为 null 表示不限 */
+    /** `extra_data.quantify.dailyGoal`；戒除为 1–99，养成为 null 表示不限 */
     dailyGoal: number | null;
     /** 打卡递增上限（戒除习惯不设上限） */
     incrementCap: number | null;
@@ -1666,6 +1668,23 @@ export default function TasksScreen() {
     [],
   );
 
+  const syncBuildHabitDayPointsWithToast = React.useCallback(
+    async (params: {
+      habitId: string;
+      prevCount: number;
+      nextCount: number;
+      dailyGoal: number | null;
+      extraData?: string | null;
+    }) => {
+      try {
+        await syncBuildHabitDayPointsReward(params);
+      } catch (e) {
+        if (__DEV__) console.warn('[habit-day-points]', e);
+      }
+    },
+    [],
+  );
+
   const syncTaskHabitPeriodPointsWithToast = React.useCallback(
     async (item: HabitGridItem, wasPeriodMet: boolean, logicalYmd: string) => {
       try {
@@ -1866,7 +1885,7 @@ export default function TasksScreen() {
       subHide.remove();
     };
   }, [scrollQuickTodoAboveKeyboard]);
-  const { boundary: dayBoundary, logicalTodayYmd } = useDayBoundary();
+  const { boundary: dayBoundary, logicalTodayYmd } = usePageDayBoundary('tasks');
 
   const habitScheduleAnchorDate = React.useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
 
@@ -2134,7 +2153,13 @@ export default function TasksScreen() {
             {
               ...it,
               note: it.note ?? null,
-              rewardPoints: normalizeRewardPoints(it.rewardPoints),
+              rewardPoints:
+                it.kind === 'break'
+                  ? (() => {
+                      const penalty = parseBreakHabitReward(it.extraData, 'penalty');
+                      return penalty === 0 ? 0 : -Math.abs(penalty);
+                    })()
+                  : normalizeRewardPoints(it.rewardPoints),
               periodProgress,
               periodGoal,
               taskShowPeriodCheck,
@@ -4322,25 +4347,35 @@ export default function TasksScreen() {
         // 先解锁，避免积分/刷新期间挡住「再点撤销」
         habitCheckInLockRef.current.delete(item.id);
       }
-      // 养成：每次打卡发奖；任务：周期目标刚达成时发整包；戒除：记录破戒扣分，达成连续目标由 tryMark 发奖
+      // 养成：当日目标刚达成才发奖；任务：周期目标刚达成时发整包；戒除：记录破戒扣分，达成连续目标由 tryMark 发奖
       if (increased && item.kind === 'build') {
-        await grantHabitCheckInPointsWithToast(item.id, 'earn');
+        await syncBuildHabitDayPointsWithToast({
+          habitId: item.id,
+          prevCount: item.todayCount,
+          nextCount,
+          dailyGoal: item.dailyGoal,
+          extraData: item.extraData,
+        });
       } else if (increased && item.kind === 'task') {
         await syncTaskHabitPeriodPointsWithToast(item, wasTaskPeriodMet, logicalTodayYmd);
       } else if (increased && item.kind === 'break') {
-        await applyBreakHabitReward(item.id, 'penalty', 'earn');
+        try {
+          await applyBreakHabitReward(item.id, 'penalty', 'earn');
+        } catch (e) {
+          if (__DEV__) console.warn('[habit-break-penalty]', e);
+        }
       }
       runHabitSideEffectsAfterCountChange(item.id, nextCount);
     },
     [
       cancelScheduledHabitsReload,
       consumeHabitCardPressDebounce,
-      grantHabitCheckInPointsWithToast,
       logicalTodayYmd,
       markPageDirty,
       patchHabitTodayCount,
       restoreHabitGridItem,
       runHabitSideEffectsAfterCountChange,
+      syncBuildHabitDayPointsWithToast,
       syncTaskHabitPeriodPointsWithToast,
     ]
   );
@@ -4367,7 +4402,11 @@ export default function TasksScreen() {
       } finally {
         habitCheckInLockRef.current.delete(item.id);
       }
-      await applyBreakHabitReward(item.id, 'clean', 'earn');
+      try {
+        await applyBreakHabitReward(item.id, 'clean', 'earn');
+      } catch (e) {
+        if (__DEV__) console.warn('[habit-break-clean]', e);
+      }
       runHabitSideEffectsAfterCountChange(item.id, 0, { skipHabitReload: true });
     },
     [
@@ -4418,16 +4457,26 @@ export default function TasksScreen() {
       } finally {
         habitCheckInLockRef.current.delete(item.id);
       }
-      // 养成：撤销打卡扣回；任务：周期目标刚回退时扣回；戒除：撤销破戒记录返还扣分、撤销保持戒除扣回加分
+      // 养成：当日目标刚回退才扣回；任务：周期目标刚回退时扣回；戒除：撤销破戒记录返还扣分、撤销保持戒除扣回加分
       if (item.kind === 'build' && nextCount < item.todayCount) {
-        await grantHabitCheckInPointsWithToast(item.id, 'undo', { forceUndo: true });
+        await syncBuildHabitDayPointsWithToast({
+          habitId: item.id,
+          prevCount: item.todayCount,
+          nextCount,
+          dailyGoal: item.dailyGoal,
+          extraData: item.extraData,
+        });
       } else if (item.kind === 'task') {
         await syncTaskHabitPeriodPointsWithToast(item, wasTaskPeriodMet, logicalTodayYmd);
       } else if (item.kind === 'break') {
-        if (nextCount < item.todayCount) {
-          await applyBreakHabitReward(item.id, 'penalty', 'undo', { forceUndo: true });
-        } else if (item.hasTodayRecord && nextCount <= 0) {
-          await applyBreakHabitReward(item.id, 'clean', 'undo', { forceUndo: true });
+        try {
+          if (nextCount < item.todayCount) {
+            await applyBreakHabitReward(item.id, 'penalty', 'undo', { forceUndo: true });
+          } else if (item.hasTodayRecord && nextCount <= 0) {
+            await applyBreakHabitReward(item.id, 'clean', 'undo', { forceUndo: true });
+          }
+        } catch (e) {
+          if (__DEV__) console.warn('[habit-break-points-undo]', e);
         }
       }
       // 跳过 habits-grid 立即重拉，避免服务端短暂旧数据把「已撤销」盖回完成态
@@ -4436,12 +4485,12 @@ export default function TasksScreen() {
     [
       acquireHabitCheckInLock,
       cancelScheduledHabitsReload,
-      grantHabitCheckInPointsWithToast,
       logicalTodayYmd,
       markPageDirty,
       patchHabitTodayCount,
       restoreHabitGridItem,
       runHabitSideEffectsAfterCountChange,
+      syncBuildHabitDayPointsWithToast,
       syncTaskHabitPeriodPointsWithToast,
     ]
   );
@@ -5702,6 +5751,13 @@ export default function TasksScreen() {
                                 logicalTodayYmd,
                               })
                             : null;
+                          /** 今日已记录破戒（含未超限 / 已超限） */
+                          const brokeToday =
+                            isBreak &&
+                            scheduleAllowsToday &&
+                            !breakChallengeDone &&
+                            item.todayCount > 0 &&
+                            (breakUi === 'slipping' || breakUi === 'failed');
                           const goalFailed = isBreak && scheduleAllowsToday && breakUi === 'failed';
                           const progressCurrent = isTask ? taskPeriodProgress : item.todayCount;
                           const progressTotal = isTask
@@ -5770,6 +5826,12 @@ export default function TasksScreen() {
                                     ? HABIT_KIND_BREAK_SUCCESS
                                     : goalMet
                                       ? secondary
+                                      : brokeToday
+                                        ? breakSlipBorderColor(
+                                            item.todayCount,
+                                            item.dailyGoal,
+                                            isDark,
+                                          )
                                       : goalFailed
                                         ? isDark
                                         ? 'rgba(248,113,113,0.7)'
@@ -5806,7 +5868,19 @@ export default function TasksScreen() {
                                     },
                                   ]}>
                                   <Text style={styles.habitCardIcon}>{item.icon}</Text>
-                                  {goalMet || breakChallengeDone ? (
+                                  {brokeToday ? (
+                                    <View style={styles.habitCardDoneMark} pointerEvents="none">
+                                      <MaterialIcons
+                                        name="cancel"
+                                        size={15}
+                                        color={breakSlipBadgeColor(
+                                          item.todayCount,
+                                          item.dailyGoal,
+                                          isDark,
+                                        )}
+                                      />
+                                    </View>
+                                  ) : goalMet || breakChallengeDone ? (
                                     <View style={styles.habitCardDoneMark} pointerEvents="none">
                                       <MaterialIcons
                                         name="check-circle"
@@ -5863,6 +5937,25 @@ export default function TasksScreen() {
                                       {habitKindLabel(item.kind)}
                                     </Text>
                                   </View>
+                                  {brokeToday ? (
+                                    <View
+                                      style={[
+                                        styles.habitTaskCompletionBadge,
+                                        {
+                                          backgroundColor: isDark ? 'rgba(248,113,113,0.22)' : 'rgba(220,38,38,0.12)',
+                                          borderColor: isDark ? 'rgba(248,113,113,0.5)' : 'rgba(220,38,38,0.4)',
+                                        },
+                                      ]}
+                                      accessibilityLabel={`今日破戒 ${Math.floor(item.todayCount)} 次`}>
+                                      <Text
+                                        style={[
+                                          styles.habitTaskCompletionBadgeText,
+                                          { color: isDark ? '#f87171' : '#dc2626' },
+                                        ]}>
+                                        破戒 {Math.floor(item.todayCount)}
+                                      </Text>
+                                    </View>
+                                  ) : null}
                                   {isTask && taskCompletionCount > 0 ? (
                                     <View
                                       style={[
@@ -5886,7 +5979,7 @@ export default function TasksScreen() {
                                       <HabitProgressDots
                                         current={progressCurrent}
                                         total={progressTotal!}
-                                        activeColor={kindTone}
+                                        activeColor={brokeToday ? breakSlipBadgeColor(item.todayCount, item.dailyGoal, isDark) : kindTone}
                                         idleColor={
                                           isDark
                                             ? 'rgba(148,163,184,0.35)'
@@ -5910,7 +6003,13 @@ export default function TasksScreen() {
                                             styles.habitProgressFill,
                                             {
                                               width: `${Math.round(progressRatio * 100)}%`,
-                                              backgroundColor: kindTone,
+                                              backgroundColor: brokeToday
+                                                ? breakSlipBadgeColor(
+                                                    item.todayCount,
+                                                    item.dailyGoal,
+                                                    isDark,
+                                                  )
+                                                : kindTone,
                                             },
                                           ]}
                                         />
@@ -5927,6 +6026,12 @@ export default function TasksScreen() {
                                           {
                                             color: breakChallengeDone
                                               ? HABIT_KIND_BREAK_SUCCESS
+                                              : brokeToday
+                                                ? breakSlipBadgeColor(
+                                                    item.todayCount,
+                                                    item.dailyGoal,
+                                                    isDark,
+                                                  )
                                               : outline,
                                           },
                                         ]}>
@@ -5934,6 +6039,8 @@ export default function TasksScreen() {
                                           ? '已完成'
                                           : goalMet
                                             ? '已完成'
+                                            : brokeToday
+                                              ? `${Math.floor(progressCurrent)} 次`
                                             : Math.max(0, Math.floor(progressCurrent)) > 0
                                               ? `${Math.floor(progressCurrent)} 次`
                                               : '未开始'}

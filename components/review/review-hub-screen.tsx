@@ -4,7 +4,7 @@ import { WeeklyReviewGridView } from '@/components/review/weekly-review-grid-vie
 import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
@@ -76,7 +76,7 @@ function ReviewScopeToggle({
 export function ReviewHubScreen() {
   const router = useRouter();
   const { colors } = useAppTheme();
-  const { logicalTodayYmd: todayYmd } = useDayBoundary();
+  const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const [selectedYmd, setSelectedYmd] = useState(todayYmd);
   const [scope, setScope] = useState<ReviewScope>('daily');

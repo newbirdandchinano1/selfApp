@@ -4,7 +4,9 @@ import {
   loadTasksDayBoundary,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
-import { getCheckInsMapByHabitId } from './habit-check-in';
+import { addDaysToYmd } from '@/lib/api-read-helpers';
+import { isHabitScheduledOnLogicalYmd } from '@/lib/habit-schedule';
+import { confirmBreakHabitDayClean, getCheckInsMapByHabitId } from './habit-check-in';
 import { getHabitById, getHabits, updateHabit } from './habit';
 import type { HabitRow } from './habit.types';
 import {
@@ -13,6 +15,9 @@ import {
   parseHabitDailyGoal,
 } from './habit-goal';
 import { parseHabitKind } from './habit-kind';
+
+/** 跨日界自动保持戒除：最多回补最近若干天（避免久未打开时一次发过多积分） */
+const AUTO_CLEAN_LOOKBACK_DAYS = 14;
 
 export type BreakHabitCycleMeta = {
   /** 当前挑战周期起始日（重启后更新） */
@@ -207,7 +212,50 @@ export async function tryMarkBreakHabitCompleted(
   return true;
 }
 
-/** 批量同步所有进行中的戒除习惯完成状态 */
+/**
+ * 跨日界仍未操作的历史日：写入「保持戒除」(count=0) 并发放未破戒加分。
+ * 以打卡记录作幂等键，重复同步不会重复发奖。
+ */
+async function autoConfirmPastBreakDaysClean(
+  habit: HabitRow,
+  todayYmd: string,
+  boundary: TasksDayBoundary,
+): Promise<void> {
+  if (parseHabitKind(habit.extra_data) !== 'break') return;
+  if (isBreakHabitSucceeded(habit.extra_data)) return;
+
+  const cycle = parseBreakHabitCycle(habit.extra_data);
+  const minYmd = resolveBreakCycleStartYmd(cycle, habit.created_at, boundary);
+  if (!minYmd) return;
+
+  const lookbackStart = addDaysToYmd(todayYmd, -AUTO_CLEAN_LOOKBACK_DAYS);
+  const startYmd = minYmd > lookbackStart ? minYmd : lookbackStart;
+  const map = await getCheckInsMapByHabitId(habit.id);
+  const { applyBreakHabitReward } = await import(
+    '@/lib/repositories/habits/habit-points-grant'
+  );
+
+  let cursor = addDaysToYmd(todayYmd, -1);
+  while (cursor >= startYmd) {
+    if (
+      isHabitScheduledOnLogicalYmd(habit.extra_data, cursor) &&
+      !Object.prototype.hasOwnProperty.call(map, cursor)
+    ) {
+      await confirmBreakHabitDayClean(habit.id, cursor);
+      map[cursor] = 0;
+      try {
+        await applyBreakHabitReward(habit.id, 'clean', 'earn', {
+          extraData: habit.extra_data,
+        });
+      } catch (ptsErr) {
+        console.warn('戒除习惯跨日界自动保持戒除发奖失败', habit.id, cursor, ptsErr);
+      }
+    }
+    cursor = addDaysToYmd(cursor, -1);
+  }
+}
+
+/** 批量同步所有进行中的戒除习惯：跨日界自动保持戒除 + 连续目标完成态 */
 export async function syncBreakHabitCompletions(): Promise<void> {
   const boundary = await loadTasksDayBoundary();
   const todayYmd = getLogicalLocalYmd(new Date(), boundary);
@@ -222,6 +270,16 @@ export async function syncBreakHabitCompletions(): Promise<void> {
       } catch (err) {
         console.warn('修复戒除习惯周期失败', habit.id, err);
         return habit;
+      }
+    })
+  );
+
+  await Promise.all(
+    repaired.map(async (habit) => {
+      try {
+        await autoConfirmPastBreakDaysClean(habit, todayYmd, boundary);
+      } catch (err) {
+        console.warn('戒除习惯跨日界自动保持戒除失败', habit.id, err);
       }
     })
   );

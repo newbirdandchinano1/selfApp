@@ -16,7 +16,7 @@ import {
   parseBuildHabitExpectedGoal,
 } from '@/lib/repositories/habits/habit-goal';
 import { getLogicalLocalYmd } from '@/lib/tasks-logical-day';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import {
   DEFAULT_TASK_REPEAT_PERIOD,
@@ -251,7 +251,7 @@ export default function AddHabitScreen() {
   }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark, scheme, shadows } = useAppTheme();
-  const { boundary: dayBoundary, logicalTodayYmd } = useDayBoundary();
+  const { boundary: dayBoundary, logicalTodayYmd } = usePageDayBoundary('tasks');
 
   const isEditMode = pickParam(params.mode) === 'edit';
   const openedFromDetail = pickParam(params.from) === 'detail';
@@ -280,7 +280,7 @@ export default function AddHabitScreen() {
   const [unitInput, setUnitInput] = React.useState('');
   const [eachPlus, setEachPlus] = React.useState(1);
   const [dailyGoal, setDailyGoal] = React.useState<number | null>(null);
-  const [consecutiveTargetDays, setConsecutiveTargetDays] = React.useState(7);
+  const [consecutiveTargetDays, setConsecutiveTargetDays] = React.useState<number | null>(7);
   const [expectedGoalTab, setExpectedGoalTab] = React.useState<ExpectedGoalTab>('none');
   const [expectedGoalValue, setExpectedGoalValue] = React.useState(7);
   const [habitNote, setHabitNote] = React.useState('');
@@ -454,19 +454,24 @@ export default function AddHabitScreen() {
               if (kindFromExtra === 'task') {
                 setDailyGoal(null);
               } else if (quantify.dailyGoal === null) {
-                setDailyGoal(kindFromExtra === 'break' ? 0 : null);
+                setDailyGoal(kindFromExtra === 'break' ? 1 : null);
               } else if (typeof quantify.dailyGoal === 'number') {
                 const g = Math.round(quantify.dailyGoal);
                 if (kindFromExtra === 'break') {
-                  setDailyGoal(Math.min(99, Math.max(0, g)));
+                  setDailyGoal(Math.min(99, Math.max(1, g)));
                 } else if (g <= 0) {
                   setDailyGoal(null);
                 } else {
                   setDailyGoal(Math.min(99, Math.max(1, g)));
                 }
               }
-              if (typeof quantify.consecutiveTargetDays === 'number') {
-                setConsecutiveTargetDays(Math.min(999, Math.max(1, Math.round(quantify.consecutiveTargetDays))));
+              if (kindFromExtra === 'break') {
+                if (typeof quantify.consecutiveTargetDays === 'number') {
+                  const d = Math.round(quantify.consecutiveTargetDays);
+                  setConsecutiveTargetDays(d < 1 ? null : Math.min(999, d));
+                } else {
+                  setConsecutiveTargetDays(null);
+                }
               }
               const expected = parseBuildHabitExpectedGoal(row.extra_data);
               if (expected) {
@@ -561,7 +566,7 @@ export default function AddHabitScreen() {
   React.useEffect(() => {
     if (habitKind === 'break') {
       setQuantifyEnabled(true);
-      setDailyGoal((v) => (v === null ? 0 : v));
+      setDailyGoal((v) => (v === null || v < 1 ? 1 : v));
       setExpectedGoalTab('none');
       setSubHabitsEnabled(false);
     } else if (habitKind === 'task') {
@@ -637,7 +642,7 @@ export default function AddHabitScreen() {
       habitKind === 'task'
         ? null
         : habitKind === 'break'
-          ? Math.min(99, Math.max(0, dailyGoal ?? 0))
+          ? Math.min(99, Math.max(1, dailyGoal ?? 1))
           : dailyGoal !== null && dailyGoal < 1
             ? null
             : dailyGoal;
@@ -698,7 +703,12 @@ export default function AddHabitScreen() {
               eachPlus,
               dailyGoal: resolvedDailyGoal,
               ...(habitKind === 'break'
-                ? { consecutiveTargetDays: Math.min(999, Math.max(1, consecutiveTargetDays)) }
+                ? {
+                    consecutiveTargetDays:
+                      consecutiveTargetDays == null
+                        ? null
+                        : Math.min(999, Math.max(1, consecutiveTargetDays)),
+                  }
                 : {}),
               ...taskQuantifyExtra,
               ...buildQuantifyExtra,
@@ -1015,7 +1025,7 @@ export default function AddHabitScreen() {
                 />
               </View>
               <Text style={[Typography.caption, styles.breakRewardsHint, { color: colors.textSecondary }]}>
-                破戒扣分：记录破戒时扣除；未破戒加分：当日确认保持戒除后计入；达成加分：达成连续目标后计入
+                破戒扣分：每次记录破戒时扣除；未破戒加分：确认保持戒除或跨日界未操作自动保持后计入；达成加分：达成连续目标后计入
               </Text>
             </View>
           ) : null}
@@ -1029,7 +1039,7 @@ export default function AddHabitScreen() {
             hint={
               habitKind === 'task'
                 ? '完成本周期任务目标后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
-                : '每次完成打卡计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
+                : '达成当日目标后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
             }
             inputWrapStyle={styles.rewardPointsWrap}
           />
@@ -1203,10 +1213,10 @@ export default function AddHabitScreen() {
                     {habitKind !== 'task' ? (
                       <NumberControl
                         label="每日目标"
-                        value={habitKind === 'break' ? (dailyGoal ?? 0) : dailyGoal}
+                        value={habitKind === 'break' ? (dailyGoal ?? 1) : dailyGoal}
                         displayValue={
                           habitKind === 'break'
-                            ? String(dailyGoal ?? 0)
+                            ? String(dailyGoal ?? 1)
                             : dailyGoal === null
                               ? '不限'
                               : String(dailyGoal)
@@ -1214,7 +1224,7 @@ export default function AddHabitScreen() {
                         onMinus={() =>
                           setDailyGoal((v) => {
                             if (habitKind === 'break') {
-                              return Math.max(0, (v ?? 0) - 1);
+                              return Math.max(1, (v ?? 1) - 1);
                             }
                             if (v === null) return null;
                             if (v <= 1) return null;
@@ -1223,15 +1233,15 @@ export default function AddHabitScreen() {
                         }
                         onPlus={() =>
                           setDailyGoal((v) => {
-                            if (habitKind === 'break') return Math.min(99, (v ?? 0) + 1);
+                            if (habitKind === 'break') return Math.min(99, (v ?? 1) + 1);
                             return v === null ? 1 : Math.min(99, v + 1);
                           })
                         }
                         onValuePress={() =>
                           openNumberEditor(
                             '每日目标',
-                            habitKind === 'break' ? dailyGoal ?? 0 : dailyGoal ?? 1,
-                            habitKind === 'break' ? 0 : 1,
+                            habitKind === 'break' ? dailyGoal ?? 1 : dailyGoal ?? 1,
+                            1,
                             99,
                             (v) => setDailyGoal(v),
                           )
@@ -1244,14 +1254,32 @@ export default function AddHabitScreen() {
                     {habitKind === 'break' ? (
                       <>
                         <Text style={[Typography.caption, styles.quantifyBreakHint, { color: colors.textSecondary }]}>
-                          当日记录次数低于此值视为达成目标（0 表示零次破戒）
+                          当日记录次数低于此值视为达成目标（1 表示零次破戒）
                         </Text>
                         <NumberControl
                           label="连续目标天数"
                           value={consecutiveTargetDays}
-                          onMinus={() => setConsecutiveTargetDays((v) => Math.max(1, v - 1))}
-                          onPlus={() => setConsecutiveTargetDays((v) => Math.min(999, v + 1))}
-                          onValuePress={() => openNumberEditor('连续目标天数', consecutiveTargetDays, 1, 999, setConsecutiveTargetDays)}
+                          displayValue={consecutiveTargetDays === null ? '无限' : String(consecutiveTargetDays)}
+                          onMinus={() =>
+                            setConsecutiveTargetDays((v) => {
+                              if (v === null) return null;
+                              if (v <= 1) return null;
+                              return v - 1;
+                            })
+                          }
+                          onPlus={() =>
+                            setConsecutiveTargetDays((v) => (v === null ? 1 : Math.min(999, v + 1)))
+                          }
+                          onValuePress={() =>
+                            openNumberEditor(
+                              '连续目标天数',
+                              consecutiveTargetDays ?? 7,
+                              1,
+                              999,
+                              setConsecutiveTargetDays,
+                            )
+                          }
+                          showOptional
                           textColor={colors.text}
                           mutedColor={colors.textSecondary}
                         />

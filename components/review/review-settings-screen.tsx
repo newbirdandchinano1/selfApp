@@ -2,7 +2,7 @@ import { ReviewNavRow } from '@/components/review/review-ui-parts';
 import { loadReviewPeriodSnapshot, WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/components/review/review-utils';
 import { AppCard, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
-import { useDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
@@ -39,7 +39,7 @@ export function ReviewSettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, isDark, shadows } = useAppTheme();
-  const { logicalTodayYmd: todayYmd } = useDayBoundary();
+  const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
 
   const [loading, setLoading] = useState(true);

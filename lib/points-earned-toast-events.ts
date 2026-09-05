@@ -1,3 +1,5 @@
+import { formatPoints, roundPoints } from '@/lib/reward-points';
+
 type Listener = (points: number | null) => void;
 
 const listeners = new Set<Listener>();
@@ -22,7 +24,7 @@ function flushPending(): void {
   coalesceTimer = null;
   const points = pendingPoints;
   pendingPoints = 0;
-  if (points <= 0) return;
+  if (points === 0) return;
 
   if (hideTimer) {
     clearTimeout(hideTimer);
@@ -35,15 +37,20 @@ function flushPending(): void {
   }, TOAST_VISIBLE_MS);
 }
 
-/** 获得积分时调用；短时间内多次发放会合并为一次 toast。 */
+/**
+ * 积分变动 toast：正数加分、负数扣分；短时间内多次变动会合并为一次。
+ */
 export function notifyPointsEarned(delta: number): void {
-  const n = Math.floor(Number(delta));
-  if (!Number.isFinite(n) || n <= 0) return;
+  const n = roundPoints(delta);
+  if (!Number.isFinite(n) || n === 0) return;
 
-  pendingPoints += n;
+  pendingPoints = roundPoints(pendingPoints + n);
   if (coalesceTimer) clearTimeout(coalesceTimer);
   coalesceTimer = setTimeout(flushPending, COALESCE_MS);
 }
+
+/** @deprecated 使用 notifyPointsEarned（已支持正负） */
+export const notifyPointsDelta = notifyPointsEarned;
 
 export function subscribePointsEarnedToast(listener: Listener): () => void {
   listeners.add(listener);
@@ -51,4 +58,9 @@ export function subscribePointsEarnedToast(listener: Listener): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** toast 展示用绝对值文案 */
+export function formatPointsToastAmount(points: number): string {
+  return formatPoints(Math.abs(points));
 }
