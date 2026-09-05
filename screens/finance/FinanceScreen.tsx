@@ -80,7 +80,13 @@ import {
     validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
 import { fetchFinanceHome, fetchFinanceRecentDays } from '@/lib/finance-page-api';
-import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
+import {
+  computeNetWorthTotal,
+  computeTotalAssets,
+  computeTotalLiabilitiesAbs,
+  financeLiabilityDebtMagnitude,
+  isFinanceLiabilityAccount,
+} from '@/lib/finance-net-worth';
 import {
     budgetExtraPatchForTransaction,
     buildFinanceTransferTxnExtra,
@@ -1634,13 +1640,11 @@ export default function FinanceScreen() {
     ? `剩余预算 ÷ 含今天在内的 ${daysLeftIncludingToday} 天`
     : `${budgetUiScopeShort}预算 ÷ 含今天在内的 ${daysLeftIncludingToday} 天`;
 
-  /** 净资产汇总：排除标记为「不计入总资产/总负债」的账户，与资产页 hero、账户详情开关一致 */
-  const netTotalForTrend = React.useMemo(
-    () =>
-      financeAccounts.reduce((sum, account) => {
-        if (isFinanceAccountExcludedFromAggregates(account.extra_data)) return sum;
-        return sum + account.balance;
-      }, 0),
+  /** 净资产汇总：排除「不计入」账户，与资产页 hero 一致 */
+  const netTotalForTrend = React.useMemo(() => computeNetWorthTotal(financeAccounts), [financeAccounts]);
+  const totalAssetsAmount = React.useMemo(() => computeTotalAssets(financeAccounts), [financeAccounts]);
+  const totalLiabilitiesAbsAmount = React.useMemo(
+    () => computeTotalLiabilitiesAbs(financeAccounts),
     [financeAccounts],
   );
   const netWorthTrendDayKey = getDayKey(today);
@@ -1816,24 +1820,36 @@ export default function FinanceScreen() {
     [showNetAmounts]
   );
 
-  /** 列表展示：资产类余额不低于 0，负债类不高于 0（与记账约束一致） */
+  /** 列表展示：资产类余额不低于 0，负债类展示债务额度（兼容正负账本余额） */
   const formatCurrencyBalanceForAccount = React.useCallback(
     (acc: FinanceAccountBalanceRow) => {
       if (!showNetAmounts) return hiddenAmountText;
-      const rule = normalizeFinanceSignRule(acc.sign_rule, acc.account_type);
-      const v = rule < 0 ? Math.min(0, acc.balance ?? 0) : Math.max(0, acc.balance ?? 0);
+      if (isFinanceLiabilityAccount(acc)) {
+        return formatCurrencyBalance(-financeLiabilityDebtMagnitude(acc.balance));
+      }
+      const v = Math.max(0, acc.balance ?? 0);
       return formatCurrencyBalance(v);
     },
     [formatCurrencyBalance, showNetAmounts]
   );
 
-  /** 账户资产卡片：按展示余额从高到低（与 formatCurrencyBalanceForAccount 一致） */
+  /** 账户资产卡片：资产按余额高→低，负债按债务绝对值高→低，并保证负债账户也能出现在轮播中 */
   const financeAccountsSortedByBalance = React.useMemo(() => {
     const displayBalance = (acc: FinanceAccountBalanceRow) => {
-      const rule = normalizeFinanceSignRule(acc.sign_rule, acc.account_type);
-      return rule < 0 ? Math.min(0, acc.balance ?? 0) : Math.max(0, acc.balance ?? 0);
+      if (isFinanceLiabilityAccount(acc)) return -financeLiabilityDebtMagnitude(acc.balance);
+      return Math.max(0, acc.balance ?? 0);
     };
-    return [...financeAccounts].sort((a, b) => displayBalance(b) - displayBalance(a));
+    const assets = financeAccounts
+      .filter((acc) => !isFinanceLiabilityAccount(acc))
+      .sort((a, b) => displayBalance(b) - displayBalance(a));
+    const liabilities = financeAccounts
+      .filter((acc) => isFinanceLiabilityAccount(acc))
+      .sort((a, b) => Math.abs(displayBalance(b)) - Math.abs(displayBalance(a)));
+    const MAX_CARDS = 8;
+    if (liabilities.length === 0) return assets.slice(0, MAX_CARDS);
+    const liabilitySlots = Math.min(liabilities.length, Math.max(2, Math.ceil(MAX_CARDS / 3)));
+    const assetSlots = Math.max(0, MAX_CARDS - liabilitySlots);
+    return [...assets.slice(0, assetSlots), ...liabilities.slice(0, liabilitySlots)];
   }, [financeAccounts]);
 
   const accountIcon = React.useCallback(
@@ -2352,8 +2368,10 @@ export default function FinanceScreen() {
           );
           financeTransactionsRef.current = home.transactions;
           setFinanceTransactions(home.transactions);
-          financeAccountsRef.current = home.accounts;
-          setFinanceAccounts(home.accounts);
+          // 首页账户一律再走本地规范化（负债类型/余额），避免直接使用 API 原始行漏计总负债
+          const normalizedAccounts = await getFinanceAccountsWithBalance({ localOnly: true });
+          financeAccountsRef.current = normalizedAccounts;
+          setFinanceAccounts(normalizedAccounts);
           setHistoryHasMoreRemote(home.historyHasMore);
           setVisibleDayCount(INITIAL_HISTORY_DAY_SLICES);
           setTxnAiFailEpoch((e) => e + 1);
@@ -3527,6 +3545,21 @@ export default function FinanceScreen() {
                       {!isSelectedNetTrendToday ? ' · 净资产' : ''}
                     </Text>
                   </View>
+                  {isSelectedNetTrendToday ? (
+                    <View style={styles.netBreakdownRow}>
+                      <Text style={[styles.netBreakdownText, { color: subtle }]}>
+                        总资产{' '}
+                        {showNetAmounts ? formatCurrencyWithDecimals(totalAssetsAmount) : hiddenAmountText}
+                      </Text>
+                      <Text style={[styles.netBreakdownSep, { color: outlineVariant }]}>·</Text>
+                      <Text style={[styles.netBreakdownText, { color: subtle }]}>
+                        总负债{' '}
+                        {showNetAmounts
+                          ? formatCurrencyWithDecimals(totalLiabilitiesAbsAmount)
+                          : hiddenAmountText}
+                      </Text>
+                    </View>
+                  ) : null}
 
                   <View style={styles.trendChartWrap}>
                     <GestureDetector gesture={netWorthTrendScrubGesture}>
@@ -3716,7 +3749,7 @@ export default function FinanceScreen() {
                 <Text style={[styles.accountValue, { color: text }]}>去添加</Text>
               </Pressable>
             ) : (
-              financeAccountsSortedByBalance.slice(0, 8).map((acc) => {
+              financeAccountsSortedByBalance.map((acc) => {
                 return (
                   <Pressable
                     key={acc.id}
@@ -3739,9 +3772,23 @@ export default function FinanceScreen() {
                       <MaterialIcons name={accountIcon(acc)} size={18} color={primary} />
                     </View>
                     <Text style={[styles.accountKicker, { color: subtle }]} numberOfLines={1}>
-                      {acc.account_no ? `${acc.name} (${acc.account_no})` : acc.name}
+                      {isFinanceLiabilityAccount(acc)
+                        ? acc.account_no
+                          ? `负债 · ${acc.name} (${acc.account_no})`
+                          : `负债 · ${acc.name}`
+                        : acc.account_no
+                          ? `${acc.name} (${acc.account_no})`
+                          : acc.name}
                     </Text>
-                    <Text style={[styles.accountValue, { color: text }]}>{formatCurrencyBalanceForAccount(acc)}</Text>
+                    <Text
+                      style={[
+                        styles.accountValue,
+                        {
+                          color: isFinanceLiabilityAccount(acc) ? '#dc2626' : text,
+                        },
+                      ]}>
+                      {formatCurrencyBalanceForAccount(acc)}
+                    </Text>
                   </Pressable>
                 );
               })
@@ -5478,6 +5525,22 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     letterSpacing: -0.2,
+  },
+  netBreakdownRow: {
+    marginTop: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  netBreakdownText: {
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.1,
+  },
+  netBreakdownSep: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   trendPill: {
     paddingHorizontal: 10,

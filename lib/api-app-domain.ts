@@ -4,6 +4,7 @@
  */
 
 import { apiRequest, type ApiListQueryOpts, type ApiListResponse } from '@/lib/api-client';
+import { formatPointsLedgerReasonLabel } from '@/lib/points-ledger-reason-label';
 import { roundPoints } from '@/lib/reward-points';
 
 export const APP_API_PREFIX = '/api/app';
@@ -571,18 +572,21 @@ export async function appWishBoardListPointsLedger(
   });
 
   const items = Array.isArray(data?.items)
-    ? data.items.map(row => ({
-        id: String(row.id),
-        delta: asPoints(row.delta),
-        balance_after: asPoints(row.balance_after),
-        reason: String(row.reason ?? ''),
-        reason_label: String(row.reason_label ?? row.reason ?? '积分变动'),
-        ref_type: row.ref_type ?? null,
-        ref_id: row.ref_id ?? null,
-        ref_title: row.ref_title ?? null,
-        note: row.note ?? null,
-        created_at: String(row.created_at ?? ''),
-      }))
+    ? data.items.map(row => {
+        const reason = String(row.reason ?? '');
+        return {
+          id: String(row.id),
+          delta: asPoints(row.delta),
+          balance_after: asPoints(row.balance_after),
+          reason,
+          reason_label: formatPointsLedgerReasonLabel(reason, row.reason_label),
+          ref_type: row.ref_type ?? null,
+          ref_id: row.ref_id ?? null,
+          ref_title: row.ref_title ?? null,
+          note: row.note ?? null,
+          created_at: String(row.created_at ?? ''),
+        };
+      })
     : [];
 
   const total = Math.max(

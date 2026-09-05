@@ -184,19 +184,39 @@ export default function AccountDetailScreen() {
     async (nextExcluded: boolean) => {
       const targetId = account?.id ?? routeAccountId;
       if (!targetId || savingExcludeFromTotal) return;
+      const prevExtra = account?.extra_data ?? null;
+      const merged = mergeFinanceAccountExcludeFromTotalAssets(prevExtra, nextExcluded);
       try {
         setSavingExcludeFromTotal(true);
-        const merged = mergeFinanceAccountExcludeFromTotalAssets(account?.extra_data ?? null, nextExcluded);
+        // 先乐观更新，避免受控 Switch 等 API 回读才翻转（点一次像没反应）
+        setAccount((prev) => (prev ? { ...prev, extra_data: merged } : prev));
         await updateFinanceAccount(targetId, { extra_data: merged });
-        await reloadAccountDetail();
+        // 本地读回即可：API 详情可能仍是旧 extra_data，灌库后返回会把开关打回
+        const { loadFinanceAccountDetail } = await import('@/lib/repositories/finance/finance');
+        const local = await loadFinanceAccountDetail({
+          accountId: routeAccountId || targetId,
+          accountName: routeAccountName,
+          localOnly: true,
+        });
+        if (local.account) {
+          setAccount(local.account);
+          setTransactions(local.transactions);
+        }
       } catch (error) {
         console.warn('Failed to update exclude_from_total_assets:', error);
+        setAccount((prev) => (prev ? { ...prev, extra_data: prevExtra } : prev));
         Alert.alert('保存失败', '请稍后重试。');
       } finally {
         setSavingExcludeFromTotal(false);
       }
     },
-    [account?.extra_data, account?.id, reloadAccountDetail, routeAccountId, savingExcludeFromTotal],
+    [
+      account?.extra_data,
+      account?.id,
+      routeAccountId,
+      routeAccountName,
+      savingExcludeFromTotal,
+    ],
   );
 
   const resolvedAccountId = account?.id ?? routeAccountId;
@@ -516,17 +536,13 @@ export default function AccountDetailScreen() {
             </View>
           </View>
 
-          {/* 资产：不计入「总资产」汇总；负债：同样是不计入「总资产」汇总；首页净资产均与资产页一致 */}
-          {account ? (
+          {/* 仅资产账户提供「不计入总资产」；负债本身就不计入总资产，排除开关无语义 */}
+          {account && !isLiabilityAccount ? (
             <View style={[styles.optionRow, { borderTopColor: colors.outline }]}>
               <View style={styles.optionTextCol}>
-                <Text style={[Typography.bodyStrong, { color: colors.text }]}> 
-                  不计入总资产
-                </Text>
-                <Text style={[Typography.caption, styles.optionHint, { color: colors.textSecondary }]}> 
-                  {isLiabilityAccount
-                    ? '开启后，该负债不参与首页净资产与资产页「总资产」汇总'
-                    : '开启后，该账户不参与首页净资产与资产页「总资产」汇总'}
+                <Text style={[Typography.bodyStrong, { color: colors.text }]}>不计入总资产</Text>
+                <Text style={[Typography.caption, styles.optionHint, { color: colors.textSecondary }]}>
+                  开启后，该账户不参与首页净资产与资产页「总资产」汇总
                 </Text>
               </View>
               <Switch

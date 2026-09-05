@@ -96,19 +96,79 @@ function normalizeApiRowForLocal(
     out.sync_status = 'synced';
   }
   if (table === 'finance_accounts') {
-    out.sign_rule = normalizeFinanceSignRuleForApiRow(out.sign_rule, out.account_type);
-    if (out.account_type == null || out.account_type === '') {
-      out.account_type = out.sign_rule < 0 ? 'liability' : 'asset';
+    const accountType = out.account_type;
+    const extra = typeof out.extra_data === 'string' ? out.extra_data : null;
+    let uiSaysLiability = false;
+    if (extra) {
+      try {
+        const parsed = JSON.parse(extra) as Record<string, unknown>;
+        uiSaysLiability =
+          parsed?.ui_account_type === 'liability' || parsed?.ui_is_liability === true;
+      } catch {
+        uiSaysLiability = false;
+      }
+    }
+    const isLiability = accountType === 'liability' || uiSaysLiability;
+    if (isLiability) {
+      out.account_type = 'liability';
+      out.sign_rule = -1;
+    } else {
+      out.sign_rule = normalizeFinanceSignRuleForApiRow(out.sign_rule, out.account_type);
+      if (out.account_type == null || out.account_type === '') {
+        out.account_type = out.sign_rule < 0 ? 'liability' : 'asset';
+      }
     }
   }
   return out;
 }
 
 function normalizeFinanceSignRuleForApiRow(signRule: unknown, accountType: unknown): -1 | 1 {
+  if (accountType === 'liability') return -1;
   const n = typeof signRule === 'number' ? signRule : Number(signRule);
   if (n < 0) return -1;
   if (n > 0) return 1;
-  return accountType === 'liability' ? -1 : 1;
+  return 1;
+}
+
+function parseExtraObject(extraData: unknown): Record<string, unknown> {
+  if (typeof extraData !== 'string' || !extraData.trim()) return {};
+  try {
+    const raw = JSON.parse(extraData) as unknown;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+function isFinanceAccountRowLiability(row: Record<string, unknown>): boolean {
+  if (row.account_type === 'liability') return true;
+  const sign = typeof row.sign_rule === 'number' ? row.sign_rule : Number(row.sign_rule);
+  if (Number.isFinite(sign) && sign < 0) return true;
+  const extra = parseExtraObject(row.extra_data);
+  return extra.ui_account_type === 'liability' || extra.ui_is_liability === true;
+}
+
+/** 同步时保留本地负债 UI 标记，避免服务端丢掉 ui_account_type / ui_is_liability */
+function mergeFinanceAccountExtraKeepLiabilityUi(
+  apiExtra: string | null,
+  localExtra: string | null,
+): string | null {
+  const api = parseExtraObject(apiExtra);
+  const local = parseExtraObject(localExtra);
+  const merged = { ...local, ...api };
+  if (local.ui_account_type === 'liability' || api.ui_account_type === 'liability') {
+    merged.ui_account_type = 'liability';
+  }
+  if (local.ui_is_liability === true || api.ui_is_liability === true) {
+    merged.ui_is_liability = true;
+  }
+  if (Object.keys(merged).length === 0) return apiExtra ?? localExtra;
+  try {
+    return JSON.stringify(merged);
+  } catch {
+    return apiExtra ?? localExtra;
+  }
 }
 
 async function readLocalColumnNames(table: string): Promise<string[]> {
@@ -157,6 +217,18 @@ async function upsertRowsToLocalTable(
           }
         }
         if (existing) {
+          if (table === 'finance_accounts' && existing) {
+            const localLiability = isFinanceAccountRowLiability(existing);
+            if (localLiability) {
+              // 禁止 API 把本地负债账户降级为资产，否则首页总负债会漏计
+              obj.account_type = 'liability';
+              obj.sign_rule = -1;
+              obj.extra_data = mergeFinanceAccountExtraKeepLiabilityUi(
+                typeof obj.extra_data === 'string' ? obj.extra_data : null,
+                typeof existing.extra_data === 'string' ? existing.extra_data : null,
+              );
+            }
+          }
           if (table === 'memo_dimensions' && colNames.includes('name')) {
             const apiName = typeof obj.name === 'string' ? obj.name.trim() : '';
             const localName = typeof existing.name === 'string' ? existing.name.trim() : '';

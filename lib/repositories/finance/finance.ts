@@ -7,6 +7,14 @@ import {
   applyFinanceAccountBalanceDelta,
   getRememberedFinanceAccountBalance,
 } from '@/lib/finance-account-balance-cache';
+import {
+  isFinanceLiabilityAccount,
+  normalizeFinanceAccountLedgerBalance,
+} from '@/lib/finance-net-worth';
+import {
+  isFinanceAccountExcludedFromAggregates,
+  mergeFinanceAccountExcludeFromTotalAssets,
+} from '@/lib/repositories/finance/finance-account-extra';
 import { rememberFinanceLastUsedAccount } from '@/lib/finance-last-used-account';
 import { dedupeRowsByPrimaryKey } from '@/lib/sqlite-primary-key-dedupe';
 import { getDatabase } from '../../database.native';
@@ -112,6 +120,7 @@ let financeApiSyncChain: Promise<void> = Promise.resolve();
 async function pushFinanceChangesToApi(opts?: { awaitSync?: boolean }): Promise<void> {
   const run = async () => {
     const { flushApiDirtyTablesNow, markApiTableDirty } = await import('@/lib/api-incremental-sync');
+    markApiTableDirty('finance_accounts');
     markApiTableDirty('finance_transactions');
     await flushApiDirtyTablesNow({ rethrow: true });
   };
@@ -183,15 +192,16 @@ export function computeTransactionLedgerEffect(
 
 const FINANCE_BALANCE_EPS = 1e-4;
 
-/** 与 SQLite / API 读入的 sign_rule 对齐为 -1 | 1 */
+/** 与 SQLite / API 读入的 sign_rule 对齐为 -1 | 1；account_type=liability 优先于错误的正 sign_rule */
 export function normalizeFinanceSignRule(
   signRule: unknown,
   accountType?: string | null,
 ): -1 | 1 {
+  if (accountType === 'liability') return -1;
   const n = typeof signRule === 'number' ? signRule : Number(signRule);
   if (n < 0) return -1;
   if (n > 0) return 1;
-  return accountType === 'liability' ? -1 : 1;
+  return 1;
 }
 
 function formatFinanceBalanceConstraintError(
@@ -387,6 +397,12 @@ export async function createFinanceAccount(input: CreateFinanceAccountInput) {
       input.extra_data ?? null,
     ]
   );
+  try {
+    const { markApiTableDirty } = await import('@/lib/api-incremental-sync');
+    markApiTableDirty('finance_accounts');
+  } catch {
+    // ignore
+  }
 }
 
 async function loadFinanceAccounts(): Promise<FinanceAccountRow[]> {
@@ -422,14 +438,79 @@ export async function getFinanceAccountsWithBalance(_opts?: { localOnly?: boolea
     readFinanceTransactionsLocalVisible(),
   ]);
 
+  const db = await getDatabase();
   const result: FinanceAccountBalanceRow[] = [];
   for (const a of accounts) {
+    const normalizedSign = normalizeFinanceSignRule(a.sign_rule, a.account_type);
+    let liability = isFinanceLiabilityAccount({
+      sign_rule: normalizedSign,
+      account_type: a.account_type,
+      extra_data: a.extra_data,
+    });
+
     const remembered = getRememberedFinanceAccountBalance(a.id);
-    const balance =
-      remembered != null ? remembered : computeLedgerBalanceFromTransactions(a.id, transactions);
+    const ledger = computeLedgerBalanceFromTransactions(a.id, transactions);
+    let meta = {
+      sign_rule: (liability ? -1 : normalizedSign) as -1 | 1,
+      account_type: liability ? 'liability' : a.account_type,
+      extra_data: a.extra_data,
+    };
+
+    let rawBalance = ledger;
+    if (remembered != null && Number.isFinite(remembered)) {
+      const rem = normalizeFinanceAccountLedgerBalance(meta, remembered);
+      const led = normalizeFinanceAccountLedgerBalance(meta, ledger);
+      if (Math.abs(rem) < FINANCE_BALANCE_EPS && Math.abs(led) > FINANCE_BALANCE_EPS) {
+        rawBalance = led;
+      } else if (liability) {
+        rawBalance = Math.abs(rem) >= Math.abs(led) ? rem : led;
+      } else {
+        rawBalance = rem;
+      }
+    }
+
+    let balance = normalizeFinanceAccountLedgerBalance(meta, rawBalance);
+    // 负余额但未标负债：按负债处理，避免被夹成 0 后从净资产消失
+    if (!liability && balance < -FINANCE_BALANCE_EPS) {
+      liability = true;
+      meta = { sign_rule: -1, account_type: 'liability', extra_data: a.extra_data };
+      balance = -Math.abs(balance);
+    }
+
+    let extraData = a.extra_data;
+    // 负债上的「不计入总资产」会导致总负债漏计；清除该标记
+    if (liability && isFinanceAccountExcludedFromAggregates(extraData)) {
+      extraData = mergeFinanceAccountExcludeFromTotalAssets(extraData, false);
+    }
+
+    const needsHeal =
+      liability &&
+      (a.account_type !== 'liability' ||
+        normalizeFinanceSignRule(a.sign_rule, a.account_type) !== -1 ||
+        extraData !== a.extra_data);
+
+    if (needsHeal && db) {
+      try {
+        await db.runAsync(
+          `UPDATE finance_accounts
+           SET account_type = 'liability',
+               sign_rule = -1,
+               extra_data = ?,
+               updated_at = datetime('now'),
+               sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+           WHERE id = ?`,
+          [extraData, a.id],
+        );
+      } catch (e) {
+        if (__DEV__) console.warn('[finance] heal liability account columns failed', a.id, e);
+      }
+    }
+
     result.push({
       ...a,
-      sign_rule: normalizeFinanceSignRule(a.sign_rule, a.account_type),
+      account_type: liability ? 'liability' : a.account_type,
+      sign_rule: liability ? -1 : normalizedSign,
+      extra_data: extraData,
       balance,
     });
   }
@@ -518,6 +599,12 @@ export async function updateFinanceAccount(id: string, input: UpdateFinanceAccou
       id,
     ]
   );
+  try {
+    const { markApiTableDirty } = await import('@/lib/api-incremental-sync');
+    markApiTableDirty('finance_accounts');
+  } catch {
+    // ignore
+  }
 }
 
 export async function deleteFinanceAccount(id: string) {
@@ -871,12 +958,24 @@ export async function loadFinanceAccountDetail(input: {
   }
 
   const remembered = getRememberedFinanceAccountBalance(target.id);
-  const balance =
+  const rawBalance =
     remembered != null ? remembered : computeLedgerBalanceFromTransactions(target.id, allTransactions);
+  const normalizedSign = normalizeFinanceSignRule(target.sign_rule, target.account_type);
+  const liability = isFinanceLiabilityAccount({
+    sign_rule: normalizedSign,
+    account_type: target.account_type,
+    extra_data: target.extra_data,
+  });
+  const sign_rule: -1 | 1 = liability ? -1 : normalizedSign;
+  const account_type = liability ? 'liability' : target.account_type;
   const account: FinanceAccountBalanceRow = {
     ...target,
-    sign_rule: normalizeFinanceSignRule(target.sign_rule, target.account_type),
-    balance,
+    account_type,
+    sign_rule,
+    balance: normalizeFinanceAccountLedgerBalance(
+      { sign_rule, account_type, extra_data: target.extra_data },
+      rawBalance,
+    ),
   };
 
   const transactions = sortFinanceTransactionsDesc(

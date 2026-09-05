@@ -4,6 +4,13 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { fetchFinanceCatalog } from '@/lib/finance-page-api';
+import {
+  computeNetWorthTotal,
+  computeTotalAssets,
+  computeTotalLiabilitiesAbs,
+  financeLiabilityDebtMagnitude,
+  isFinanceLiabilityAccount,
+} from '@/lib/finance-net-worth';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
 import type { FinanceAccountBalanceRow, FinanceAccountTypeRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -190,23 +197,23 @@ export default function AssetsScreen() {
 
   const isLiabilityAccount = React.useCallback(
     (acc: FinanceAccountBalanceRow) => {
-      if (acc.sign_rule < 0 || acc.account_type === 'liability') return true;
-
+      if (isFinanceLiabilityAccount(acc)) return true;
       const meta = parseUiMeta(acc);
       if (meta.uiType === 'liability' || meta.uiIsLiability) return true;
       if (meta.uiType !== 'custom' || !meta.customTypeName) return false;
-
       return accountTypes.some((type) => type.name === meta.customTypeName && type.is_liability === 1);
     },
     [accountTypes, parseUiMeta],
   );
 
-  /** 分组标题合计：自定义/混合组内可能含负债账户，按「资产 ≥0、负债 ≤0」折算后汇总 */
+  /** 分组标题合计：自定义/混合组内可能含负债账户，按「资产 ≥0、负债额度绝对值」折算后汇总 */
   const groupMixedLedgerSum = React.useCallback(
     (rows: FinanceAccountBalanceRow[]) =>
       rows.reduce((sum, a) => {
+        if (isLiabilityAccount(a) || isFinanceLiabilityAccount(a)) {
+          return sum + financeLiabilityDebtMagnitude(a.balance);
+        }
         if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
-        if (isLiabilityAccount(a)) return sum + Math.abs(Math.min(0, a.balance ?? 0));
         return sum + Math.max(0, a.balance ?? 0);
       }, 0),
     [isLiabilityAccount],
@@ -214,40 +221,21 @@ export default function AssetsScreen() {
 
   const sumLiabilityDebtMagnitudes = React.useCallback(
     (rows: FinanceAccountBalanceRow[]) =>
-      rows.reduce((sum, a) => {
-        if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
-        return sum + Math.abs(Math.min(0, a.balance ?? 0));
-      }, 0),
+      rows.reduce((sum, a) => sum + financeLiabilityDebtMagnitude(a.balance), 0),
     [],
   );
 
   const formatAccountRowBalance = React.useCallback(
     (acc: FinanceAccountBalanceRow) =>
       isLiabilityAccount(acc)
-        ? formatDebtMoney2(Math.min(0, acc.balance ?? 0))
+        ? formatDebtMoney2(-financeLiabilityDebtMagnitude(acc.balance))
         : formatMoney2(Math.max(0, acc.balance ?? 0)),
     [isLiabilityAccount, formatDebtMoney2, formatMoney2],
   );
 
-  const totalAssets = React.useMemo(
-    () =>
-      accounts.reduce((sum, a) => {
-        if (isLiabilityAccount(a)) return sum;
-        if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
-        return sum + Math.max(0, a.balance ?? 0);
-      }, 0),
-    [accounts, isLiabilityAccount],
-  );
-  const totalLiabilitiesAbs = React.useMemo(
-    () =>
-      accounts.reduce((sum, a) => {
-        if (!isLiabilityAccount(a)) return sum;
-        if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
-        return sum + Math.abs(Math.min(0, a.balance ?? 0));
-      }, 0),
-    [accounts, isLiabilityAccount],
-  );
-  const netWorth = React.useMemo(() => totalAssets - totalLiabilitiesAbs, [totalAssets, totalLiabilitiesAbs]);
+  const totalAssets = React.useMemo(() => computeTotalAssets(accounts), [accounts]);
+  const totalLiabilitiesAbs = React.useMemo(() => computeTotalLiabilitiesAbs(accounts), [accounts]);
+  const netWorth = React.useMemo(() => computeNetWorthTotal(accounts), [accounts]);
 
   const sumAssetBalanceForDisplay = React.useCallback((rows: FinanceAccountBalanceRow[]) => {
     return rows.reduce((sum, a) => {

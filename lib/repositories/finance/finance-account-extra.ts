@@ -21,8 +21,8 @@ export function parseFinanceAccountExtraObject(extraData: string | null): Record
 }
 
 /**
- * 是否勾选「不计入」汇总：为 true 时从聚合数字中剔除该账户。
- * 资产账户：不计入总资产；负债账户：同样不计入总资产；首页净资产与资产页 hero 区均一致。
+ * 是否勾选「不计入总资产」：仅对**资产**账户从总资产/净资产中剔除。
+ * 负债账户忽略此标记（负债应计入总负债并从净资产扣除）。
  */
 export function isFinanceAccountExcludedFromAggregates(extraData: string | null): boolean {
   const obj = parseFinanceAccountExtraObject(extraData);

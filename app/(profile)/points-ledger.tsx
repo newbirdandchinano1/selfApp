@@ -5,6 +5,10 @@ import {
   appWishBoardListPointsLedger,
   type AppPointsLedgerItem,
 } from '@/lib/api-app-domain';
+import {
+  formatHealthMetricLedgerRefTitle,
+  formatPointsLedgerReasonLabel,
+} from '@/lib/points-ledger-reason-label';
 import { deletePointsLedgerRecord } from '@/lib/repositories/wish-board/wish-board';
 import { formatPoints } from '@/lib/reward-points';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -39,6 +43,16 @@ function rollbackHint(delta: number): string {
   if (delta > 0) return `删除后将扣回 ${formatPoints(delta)} 积分`;
   if (delta < 0) return `删除后将返还 ${formatPoints(Math.abs(delta))} 积分`;
   return '删除后积分余额不变';
+}
+
+function ledgerItemTitle(item: AppPointsLedgerItem): string {
+  return formatPointsLedgerReasonLabel(item.reason, item.reason_label);
+}
+
+function ledgerItemRefTitle(item: AppPointsLedgerItem): string | null {
+  const fromApi = item.ref_title?.trim() || null;
+  if (fromApi) return fromApi;
+  return formatHealthMetricLedgerRefTitle(item.ref_type, item.ref_id);
 }
 
 export default function PointsLedgerScreen() {
@@ -90,8 +104,11 @@ export default function PointsLedgerScreen() {
 
   const onDelete = useCallback((item: AppPointsLedgerItem) => {
     if (deletingId) return;
-    const label = item.reason_label || item.reason || '这条记录';
-    const titleHint = item.ref_title ? `「${item.ref_title}」` : '';
+    const label = ledgerItemTitle(item);
+    const titleHint = (() => {
+      const ref = ledgerItemRefTitle(item);
+      return ref ? `「${ref}」` : '';
+    })();
     Alert.alert(
       '删除积分记录',
       `确定删除「${label}」${titleHint}？\n${rollbackHint(item.delta)}。`,
@@ -161,8 +178,9 @@ export default function PointsLedgerScreen() {
         const isGain = item.delta > 0;
         const deltaColor = item.delta === 0 ? muted : isGain ? gainColor : lossColor;
         const timeLabel = formatLedgerAt(item.created_at);
+        const refTitle = ledgerItemRefTitle(item);
         const subtitleParts = [
-          item.ref_title ? `「${item.ref_title}」` : null,
+          refTitle ? `「${refTitle}」` : null,
           item.note ? item.note : null,
         ].filter(Boolean);
         const isDeleting = deletingId === item.id;
@@ -211,7 +229,7 @@ export default function PointsLedgerScreen() {
                 </View>
                 <View style={{ flex: 1, gap: 4 }}>
                   <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={2}>
-                    {item.reason_label || item.reason || '积分变动'}
+                    {ledgerItemTitle(item)}
                   </Text>
                   {subtitleParts.length > 0 ? (
                     <Text style={[styles.itemSub, { color: muted }]} numberOfLines={2}>

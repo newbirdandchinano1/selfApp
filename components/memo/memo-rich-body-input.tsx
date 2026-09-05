@@ -33,65 +33,49 @@ function segmentFontSize(style: CharStyle, baseSize: number): number {
   return baseSize;
 }
 
-function MemoEditOverlay({
-  model,
-  textColor,
-  placeholderColor,
-  placeholder,
-}: {
-  model: MemoEditModel;
-  textColor: string;
-  placeholderColor: string;
-  placeholder?: string;
-}) {
-  const nodes = useMemo(() => {
-    const { plain, styles } = model;
-    if (!plain) return null;
+/** 在 TextInput 内嵌套 Text，让光标与可见字形共用同一套原生排版，避免透明层叠方案错位 */
+function buildStyledChildren(model: MemoEditModel, textColor: string): React.ReactNode {
+  const { plain, styles: charStyles } = model;
+  if (!plain) return null;
 
-    const out: React.ReactNode[] = [];
-    let runStart = 0;
-    const sigAt = (i: number) => {
-      const s = styles[i] ?? {};
-      return `${s.bold ? 'b' : ''}|${s.size ?? ''}`;
-    };
+  const out: React.ReactNode[] = [];
+  let runStart = 0;
+  const sigAt = (i: number) => {
+    const s = charStyles[i] ?? {};
+    return `${s.bold ? 'b' : ''}|${s.size ?? ''}`;
+  };
 
-    const flush = (end: number) => {
-      if (end <= runStart) return;
-      const style = styles[runStart] ?? {};
-      const size = segmentFontSize(style, BASE_SIZE);
-      out.push(
-        <Text
-          key={`${runStart}-${end}`}
-          style={{
-            fontSize: size,
-            lineHeight: BASE_LINE,
-            fontWeight: style.bold ? '800' : '600',
-            color: textColor,
-          }}
-        >
-          {plain.slice(runStart, end)}
-        </Text>,
-      );
-      runStart = end;
-    };
-
-    for (let i = 1; i <= plain.length; i++) {
-      if (i === plain.length || sigAt(i - 1) !== sigAt(i)) {
-        flush(i);
-      }
-    }
-    return out;
-  }, [model, textColor]);
-
-  if (!model.plain) {
-    return (
-      <Text style={overlayStyles.base}>
-        <Text style={{ color: placeholderColor, fontWeight: '600' }}>{placeholder}</Text>
-      </Text>
+  const flush = (end: number) => {
+    if (end <= runStart) return;
+    const style = charStyles[runStart] ?? {};
+    const size = segmentFontSize(style, BASE_SIZE);
+    out.push(
+      <Text
+        key={`${runStart}-${end}`}
+        style={{
+          fontSize: size,
+          lineHeight: BASE_LINE,
+          fontWeight: style.bold ? '800' : '600',
+          color: textColor,
+        }}
+      >
+        {plain.slice(runStart, end)}
+      </Text>,
     );
+    runStart = end;
+  };
+
+  for (let i = 1; i <= plain.length; i++) {
+    if (i === plain.length || sigAt(i - 1) !== sigAt(i)) {
+      flush(i);
+    }
   }
 
-  return <Text style={overlayStyles.base}>{nodes}</Text>;
+  return (
+    <Text style={[styles.textBase, { color: textColor }]}>
+      {out}
+    </Text>
+  );
 }
 
 export function MemoRichBodyInput({
@@ -106,63 +90,59 @@ export function MemoRichBodyInput({
   containerStyle,
   inputStyle,
 }: Props) {
+  const children = useMemo(
+    () => buildStyledChildren(model, textColor),
+    [model, textColor],
+  );
+
   return (
     <View style={[styles.wrap, containerStyle]}>
-      <View style={styles.overlay} pointerEvents="none">
-        <MemoEditOverlay
-          model={model}
-          textColor={textColor}
-          placeholderColor={placeholderColor}
-          placeholder={placeholder}
-        />
-      </View>
       <TextInput
-        value={model.plain}
-        onChangeText={onChangePlain}
-        onSelectionChange={e => onSelectionChange(e.nativeEvent.selection)}
-        selection={controlledSelection}
-        placeholder=""
         multiline
         textAlignVertical="top"
+        onChangeText={onChangePlain}
+        onSelectionChange={e => onSelectionChange(e.nativeEvent.selection)}
+        {...(controlledSelection != null ? { selection: controlledSelection } : {})}
+        placeholder={placeholder}
+        placeholderTextColor={placeholderColor}
         cursorColor={caretColor}
         selectionColor={caretColor}
+        underlineColorAndroid="transparent"
+        scrollEnabled={false}
         style={[
           styles.input,
           inputStyle,
           {
-            color: Platform.OS === 'ios' ? 'transparent' : 'rgba(0,0,0,0.01)',
+            color: textColor,
+            // @ts-expect-error RN web caretColor
             caretColor,
+            ...(Platform.OS === 'android' ? { includeFontPadding: false } : null),
           },
         ]}
-      />
+      >
+        {children}
+      </TextInput>
     </View>
   );
 }
-
-const overlayStyles = StyleSheet.create({
-  base: {
-    fontSize: BASE_SIZE,
-    lineHeight: BASE_LINE,
-    fontWeight: '600',
-  },
-});
 
 const styles = StyleSheet.create({
   wrap: {
     position: 'relative',
     overflow: 'hidden',
   },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+  textBase: {
+    fontSize: BASE_SIZE,
+    lineHeight: BASE_LINE,
+    fontWeight: '600',
   },
   input: {
     fontSize: BASE_SIZE,
     lineHeight: BASE_LINE,
     fontWeight: '600',
     paddingHorizontal: 14,
-    paddingVertical: 14,
+    paddingTop: 14,
+    paddingBottom: 14,
     margin: 0,
     textAlignVertical: 'top',
   },

@@ -32,6 +32,11 @@ import {
   rememberFinanceAccountBalances,
   rememberFinanceNetWorth,
 } from '@/lib/finance-account-balance-cache';
+import {
+  isFinanceLiabilityAccount,
+  normalizeFinanceAccountLedgerBalance,
+} from '@/lib/finance-net-worth';
+import { normalizeFinanceSignRule } from '@/lib/repositories/finance/finance';
 import type {
   FinanceAccountBalanceRow,
   FinanceAccountTypeRow,
@@ -53,8 +58,20 @@ function asRecordArray(raw: unknown): Record<string, unknown>[] {
 
 function asBalanceRows(raw: unknown): FinanceAccountBalanceRow[] {
   return asRecordArray(raw).map((row) => {
-    const balance = typeof row.balance === 'number' && Number.isFinite(row.balance) ? row.balance : 0;
-    return { ...(row as FinanceAccountBalanceRow), balance };
+    const rawBalance = typeof row.balance === 'number' && Number.isFinite(row.balance) ? row.balance : 0;
+    const base = row as FinanceAccountBalanceRow;
+    const liability = isFinanceLiabilityAccount(base);
+    const sign_rule: -1 | 1 = liability ? -1 : normalizeFinanceSignRule(base.sign_rule, base.account_type);
+    const account_type = liability ? 'liability' : base.account_type;
+    return {
+      ...base,
+      account_type,
+      sign_rule,
+      balance: normalizeFinanceAccountLedgerBalance(
+        { sign_rule, account_type, extra_data: base.extra_data },
+        rawBalance,
+      ),
+    };
   });
 }
 
@@ -70,13 +87,21 @@ async function upsertFinanceRows(table: string, rows: Record<string, unknown>[])
 }
 
 async function syncAccountsWithBalance(raw: unknown): Promise<FinanceAccountBalanceRow[]> {
-  const accounts = asBalanceRows(raw);
-  rememberFinanceAccountBalances(accounts);
+  const apiAccounts = asBalanceRows(raw);
+  // 先写入服务端余额缓存，再灌库；最终以本地全量账户+规范化负债余额为准返回
+  rememberFinanceAccountBalances(apiAccounts);
   await upsertFinanceRows(
     'finance_accounts',
-    accounts.map(({ balance: _b, ...rest }) => rest as Record<string, unknown>),
+    asRecordArray(raw).map((row) => {
+      const copy = { ...row };
+      delete copy.balance;
+      return copy;
+    }),
   );
-  return accounts;
+  const { getFinanceAccountsWithBalance } = await import('@/lib/repositories/finance/finance');
+  const localAccounts = await getFinanceAccountsWithBalance({ localOnly: true });
+  rememberFinanceAccountBalances(localAccounts);
+  return localAccounts;
 }
 
 async function syncCategories(raw: unknown): Promise<FinanceFlowCategoryRow[]> {
@@ -441,11 +466,22 @@ export async function fetchFinanceAccountDetail(opts: {
     });
     let account: FinanceAccountBalanceRow | null = null;
     if (payload.account && typeof payload.account === 'object') {
-      const rows = await syncAccountsWithBalance([payload.account]);
-      account = rows[0] ?? null;
+      await syncAccountsWithBalance([payload.account]);
     }
     const transactions = await syncTransactions(payload.transactions);
-    return { account, transactions, fromApi: true };
+    // 以本地行展示：pending_update 时 upsert 会保留本地 extra_data，但 API 返回体仍是旧值
+    const { loadFinanceAccountDetail } = await import('@/lib/repositories/finance/finance');
+    const local = await loadFinanceAccountDetail({
+      accountId: opts.accountId,
+      accountName: opts.accountName,
+      localOnly: true,
+    });
+    account = local.account;
+    return {
+      account,
+      transactions: local.account ? local.transactions : transactions,
+      fromApi: true,
+    };
   } catch (e) {
     if (opts.offlineFallback === false) throw e;
     console.warn('[finance-page-api] account-detail 失败，回退本地', e);
