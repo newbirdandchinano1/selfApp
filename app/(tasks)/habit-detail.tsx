@@ -720,6 +720,7 @@ export default function HabitDetailScreen() {
               logicalYmd: logicalTodayYmd,
             })
           : false;
+      const wasCleanConfirm = isBreak && prevCount <= 0;
       const nextCount = await decrementHabitCheckInForDay(habit.id, ymd, {
         breakHabit: isBreak,
       });
@@ -729,7 +730,7 @@ export default function HabitDetailScreen() {
         else next[ymd] = nextCount;
         return next;
       });
-      // 养成：当日目标刚回退才扣回；任务：周期目标回退时扣回；戒除：撤销破戒记录返还扣分
+      // 养成：当日目标刚回退才扣回；任务：周期目标回退时扣回；戒除：撤销破戒返还扣分 / 撤销保持戒除扣回加分
       if (kind === 'build' && ymd === logicalTodayYmd && nextCount < prevCount) {
         try {
           await syncBuildHabitDayPointsReward({
@@ -753,14 +754,21 @@ export default function HabitDetailScreen() {
         } catch (ptsErr) {
           if (__DEV__) console.warn('[habit-detail] 撤销任务周期积分失败', ptsErr);
         }
-      } else if (kind === 'break' && nextCount < prevCount) {
+      } else if (isBreak) {
         try {
-          await applyBreakHabitReward(habit.id, 'penalty', 'undo', {
-            forceUndo: true,
-            extraData: habit.extra_data,
-          });
+          if (nextCount < prevCount) {
+            await applyBreakHabitReward(habit.id, 'penalty', 'undo', {
+              forceUndo: true,
+              extraData: habit.extra_data,
+            });
+          } else if (wasCleanConfirm) {
+            await applyBreakHabitReward(habit.id, 'clean', 'undo', {
+              forceUndo: true,
+              extraData: habit.extra_data,
+            });
+          }
         } catch (ptsErr) {
-          if (__DEV__) console.warn('[habit-detail] 撤销破戒扣分返还失败', ptsErr);
+          if (__DEV__) console.warn('[habit-detail] 撤销破戒/保持戒除积分失败', ptsErr);
         }
       }
       if (kind === 'build') {

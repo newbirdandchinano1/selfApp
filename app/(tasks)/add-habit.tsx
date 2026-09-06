@@ -1025,7 +1025,7 @@ export default function AddHabitScreen() {
                 />
               </View>
               <Text style={[Typography.caption, styles.breakRewardsHint, { color: colors.textSecondary }]}>
-                破戒扣分：每次记录破戒时扣除；未破戒加分：确认保持戒除或跨日界未操作自动保持后计入；达成加分：达成连续目标后计入
+                破戒扣分：每次记录破戒时扣除；未破戒加分：确认保持戒除或跨日后仅对「昨天」未操作自动保持后计入；达成加分：达成连续目标后计入
               </Text>
             </View>
           ) : null}

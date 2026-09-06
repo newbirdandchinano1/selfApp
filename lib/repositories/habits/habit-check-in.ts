@@ -138,19 +138,25 @@ export async function upsertHabitDayCount(
     return;
   }
 
-  const existing = await db.getFirstAsync<{ id: string }>(
-    `SELECT id FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
+  const existing = await db.getFirstAsync<{ id: string; sync_status: string }>(
+    `SELECT id, sync_status FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
     [habitId, recordDateYmd],
   );
 
   if (existing) {
+    // pending_delete 必须复活为 pending_update，否则读侧仍当「无记录」，
+    // 跨日界自动保持戒除会反复发「未破戒加分」。
+    const nextStatus =
+      existing.sync_status === 'pending_delete' || existing.sync_status === 'synced'
+        ? 'pending_update'
+        : existing.sync_status;
     await db.runAsync(
       `UPDATE habit_check_ins
         SET count = ?,
             updated_at = datetime('now'),
-            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+            sync_status = ?
         WHERE id = ?`,
-      [count, existing.id]
+      [count, nextStatus, existing.id]
     );
     invalidateInflightApiTableFetch('habit_check_ins');
     await pushHabitCheckInChangesToApi({ awaitSync: true });
@@ -169,9 +175,17 @@ export async function upsertHabitDayCount(
   await pushHabitCheckInChangesToApi({ awaitSync: true });
 }
 
-/** 戒除习惯：确认当日保持戒除（写入 count=0 记录） */
-export async function confirmBreakHabitDayClean(habitId: string, recordDateYmd: string): Promise<void> {
+/**
+ * 戒除习惯：确认当日保持戒除（写入 count=0 记录）。
+ * @returns 是否新建立有效记录（原先无有效打卡时为 true，供发奖幂等）
+ */
+export async function confirmBreakHabitDayClean(
+  habitId: string,
+  recordDateYmd: string,
+): Promise<boolean> {
+  const hadActive = await hasHabitCheckInRecordForDay(habitId, recordDateYmd);
   await upsertHabitDayCount(habitId, recordDateYmd, 0, { keepZeroRecord: true });
+  return !hadActive;
 }
 
 /** 指定日是否有打卡记录（含 count=0 的戒除确认） */
