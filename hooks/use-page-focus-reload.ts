@@ -1,6 +1,6 @@
 import { useFocusEffect } from "expo-router/react-navigation";
 import { useCallback, useEffect, useRef } from 'react';
-import { AppState, type AppStateStatus } from 'react-native';
+import { AppState, InteractionManager, type AppStateStatus } from 'react-native';
 
 import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 
@@ -41,13 +41,24 @@ export function usePageFocusReload(
   );
 
   useEffect(() => {
+    let cancelAfterInteractions: { cancel: () => void } | null = null;
     const onChange = (next: AppStateStatus) => {
       if (next !== 'active') return;
       if (!isFocusedRef.current) return;
       if (shouldSkipPageFocusApiRefresh(pageKey)) return;
-      void reloadRef.current?.();
+      // 回前台先让首帧画完，再拉数，减轻「切回来卡死」
+      cancelAfterInteractions?.cancel();
+      cancelAfterInteractions = InteractionManager.runAfterInteractions(() => {
+        cancelAfterInteractions = null;
+        if (!isFocusedRef.current) return;
+        if (shouldSkipPageFocusApiRefresh(pageKey)) return;
+        void reloadRef.current?.();
+      });
     };
     const sub = AppState.addEventListener('change', onChange);
-    return () => sub.remove();
+    return () => {
+      cancelAfterInteractions?.cancel();
+      sub.remove();
+    };
   }, [pageKey]);
 }

@@ -28,8 +28,14 @@ export function useCalendarToday(): { calendarTodayYmd: string; calendarTodayDat
       }, msUntilNextLocalMidnight());
     };
 
+    /** 回前台只重排跨日定时器；仅自然日变化时 bump，避免无意义重渲染 */
     const onForeground = () => {
-      bump();
+      const ymd = formatLocalYmdFromDate(new Date());
+      if (lastYmdRef.current == null) {
+        lastYmdRef.current = ymd;
+      } else if (lastYmdRef.current !== ymd) {
+        bump();
+      }
       schedule();
     };
 

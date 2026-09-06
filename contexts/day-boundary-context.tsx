@@ -98,8 +98,21 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
       }, msUntilNextRelevantCrossing(boundary));
     };
 
+    const currentDayKey = () => {
+      const now = new Date();
+      const configuredYmd = getLogicalLocalYmd(now, boundary);
+      const midnightYmd = getLogicalLocalYmd(now, DEFAULT_TASKS_DAY_BOUNDARY);
+      return `${configuredYmd}|${midnightYmd}`;
+    };
+
+    /** 回前台只重排定时器；仅真正跨日界时 bump，避免每次切前台触发全局重渲染 */
     const onForeground = () => {
-      bump();
+      const key = currentDayKey();
+      if (lastEmittedKeyRef.current == null) {
+        lastEmittedKeyRef.current = key;
+      } else if (lastEmittedKeyRef.current !== key) {
+        bump();
+      }
       schedule();
     };
 
@@ -110,10 +123,7 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     });
 
     const pollId = setInterval(() => {
-      const now = new Date();
-      const configuredYmd = getLogicalLocalYmd(now, boundary);
-      const midnightYmd = getLogicalLocalYmd(now, DEFAULT_TASKS_DAY_BOUNDARY);
-      const key = `${configuredYmd}|${midnightYmd}`;
+      const key = currentDayKey();
       if (lastEmittedKeyRef.current != null && lastEmittedKeyRef.current !== key) {
         onForeground();
       }
@@ -165,9 +175,11 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     if (lastEmittedKeyRef.current === key) return;
     lastEmittedKeyRef.current = key;
     clearPageLoadedInSession();
-    // 跨日界：仅对「昨天」未操作的戒除习惯自动保持戒除并发放未破戒加分
+    // 跨日界：仅对「昨天」未操作的戒除习惯自动保持戒除并发放未破戒加分（延后执行，避免回前台卡死）
     void import('@/lib/repositories/habits/habit-break-success')
-      .then(({ syncBreakHabitCompletions }) => syncBreakHabitCompletions())
+      .then(({ scheduleSyncBreakHabitCompletions }) => {
+        scheduleSyncBreakHabitCompletions({ force: true });
+      })
       .catch((err) => {
         if (__DEV__) console.warn('[day-boundary] syncBreakHabitCompletions', err);
       });

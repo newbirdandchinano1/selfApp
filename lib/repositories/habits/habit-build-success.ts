@@ -1,4 +1,5 @@
 import { getLogicalLocalYmd, loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
+import { InteractionManager } from 'react-native';
 import { getCheckInsMapByHabitId } from './habit-check-in';
 import { getHabitById, getHabits, updateHabit } from './habit';
 import type { HabitRow } from './habit.types';
@@ -130,6 +131,25 @@ export async function syncBuildHabitCompletions(): Promise<void> {
       }
     })
   );
+}
+
+let lastBuildHabitSyncAtMs = 0;
+const BUILD_HABIT_SYNC_MIN_INTERVAL_MS = 45_000;
+
+/** 延后/节流：避免任务页每次 reload 与回前台叠打完成态同步 */
+export function scheduleSyncBuildHabitCompletions(opts?: { force?: boolean }): void {
+  const force = opts?.force === true;
+  const now = Date.now();
+  if (!force && now - lastBuildHabitSyncAtMs < BUILD_HABIT_SYNC_MIN_INTERVAL_MS) {
+    return;
+  }
+  lastBuildHabitSyncAtMs = now;
+
+  InteractionManager.runAfterInteractions(() => {
+    void syncBuildHabitCompletions().catch((err) => {
+      if (__DEV__) console.warn('[build-habit] scheduleSyncBuildHabitCompletions', err);
+    });
+  });
 }
 
 /** 清除养成完成标记（编辑时若下调目标或取消预期目标） */

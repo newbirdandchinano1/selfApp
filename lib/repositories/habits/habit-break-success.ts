@@ -6,6 +6,7 @@ import {
 } from '@/lib/tasks-logical-day';
 import { addDaysToYmd } from '@/lib/api-read-helpers';
 import { isHabitScheduledOnLogicalYmd } from '@/lib/habit-schedule';
+import { InteractionManager } from 'react-native';
 import { confirmBreakHabitDayClean, getCheckInsMapByHabitId } from './habit-check-in';
 import { getHabitById, getHabits, updateHabit } from './habit';
 import type { HabitRow } from './habit.types';
@@ -18,6 +19,9 @@ import { parseHabitKind } from './habit-kind';
 
 /** 防止任务页加载 / 日界切换 / 详情页并发调用时重复发「未破戒加分」 */
 let syncBreakHabitCompletionsInflight: Promise<void> | null = null;
+/** 任务页频繁 reload 时节流；日界跨天仍可 force */
+let lastBreakHabitSyncAtMs = 0;
+const BREAK_HABIT_SYNC_MIN_INTERVAL_MS = 45_000;
 
 export type BreakHabitCycleMeta = {
   /** 当前挑战周期起始日（重启后更新） */
@@ -304,6 +308,25 @@ export async function syncBreakHabitCompletions(): Promise<void> {
   });
   syncBreakHabitCompletionsInflight = run;
   await run;
+}
+
+/**
+ * 延后到交互结束后再同步戒除完成态/未破戒加分，避免回前台与页面 reload 叠在一起卡死。
+ * @param force 日界切换等场景跳过节流
+ */
+export function scheduleSyncBreakHabitCompletions(opts?: { force?: boolean }): void {
+  const force = opts?.force === true;
+  const now = Date.now();
+  if (!force && now - lastBreakHabitSyncAtMs < BREAK_HABIT_SYNC_MIN_INTERVAL_MS) {
+    return;
+  }
+  lastBreakHabitSyncAtMs = now;
+
+  InteractionManager.runAfterInteractions(() => {
+    void syncBreakHabitCompletions().catch((err) => {
+      if (__DEV__) console.warn('[break-habit] scheduleSyncBreakHabitCompletions', err);
+    });
+  });
 }
 
 /** 重启戒除习惯挑战：清除完成标记，从今日起重新计连续天数；已拿过的目标积分扣回 */

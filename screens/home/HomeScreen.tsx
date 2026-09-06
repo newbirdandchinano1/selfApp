@@ -1180,13 +1180,15 @@ export default function HealthScreen() {
 
   React.useEffect(() => {
     const ymd = formatLocalYmd(selectedDate);
-    void syncHealthMetricPointsForDay({
-      ymd,
-      percents: metricPercentsForPoints,
-      settings: metricPointsSettings,
-    }).catch((e) => {
-      if (__DEV__) console.warn('[health-metric-points]', e);
-    });
+    const percents = metricPercentsForPoints;
+    const settings = metricPointsSettings;
+    // 防抖：回前台/重载时 intake 会连跳多次，避免连续打积分接口卡死
+    const timer = setTimeout(() => {
+      void syncHealthMetricPointsForDay({ ymd, percents, settings }).catch((e) => {
+        if (__DEV__) console.warn('[health-metric-points]', e);
+      });
+    }, 400);
+    return () => clearTimeout(timer);
   }, [selectedDate, metricPercentsForPoints, metricPointsSettings]);
 
   const openPointsSettingsModal = React.useCallback(() => {

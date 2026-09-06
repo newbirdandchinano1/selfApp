@@ -46,12 +46,12 @@ import { formatPoints, getRewardBadgeBackgroundColor, normalizeRewardPoints, par
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import {
   isBreakHabitSucceeded,
-  syncBreakHabitCompletions,
+  scheduleSyncBreakHabitCompletions,
   tryMarkBreakHabitCompleted,
 } from '@/lib/repositories/habits/habit-break-success';
 import {
   isBuildHabitSucceeded,
-  syncBuildHabitCompletions,
+  scheduleSyncBuildHabitCompletions,
   tryMarkBuildHabitCompleted,
 } from '@/lib/repositories/habits/habit-build-success';
 import {
@@ -2102,9 +2102,9 @@ export default function TasksScreen() {
     const generation = ++habitLoadGenerationRef.current;
     try {
       const data = await fetchTasksHabitsGrid({ boundary: dayBoundary, offlineFallback: true });
-      void Promise.all([syncBreakHabitCompletions(), syncBuildHabitCompletions()]).catch((e) => {
-        console.warn('后台同步习惯完成态失败', e);
-      });
+      // 节流 + 延后：避免回前台 reload 时与积分发奖抢主线程/SQLite
+      scheduleSyncBreakHabitCompletions();
+      scheduleSyncBuildHabitCompletions();
       if (generation !== habitLoadGenerationRef.current) return;
       // 本地打卡表覆盖服务端 todayCount，避免刚撤销后重拉把完成态盖回来
       const [recordFlags, todayCounts, checkInPage] = await Promise.all([
