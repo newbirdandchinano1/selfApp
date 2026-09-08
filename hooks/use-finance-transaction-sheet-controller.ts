@@ -11,8 +11,10 @@ import {
 import { notifyFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import type { FinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import {
+    describeFinanceTransferPair,
     parseFinanceSentenceLocal,
     pickSheetCategoryForParsed,
+    resolveTransferLaunchAccounts,
     type AccountPickerTarget,
     type ParsedOneLiner,
     type SentenceLedgerPreviewState,
@@ -312,19 +314,17 @@ export function useFinanceTransactionSheetController({
         setSelectedAccountId(accId);
         return;
       }
-      const assetOnly = list.filter((a) => a.sign_rule === 1);
-      if (assetOnly.length < 2) {
-        Alert.alert('无法转账', '至少需要两个资产账户才能进行转账。');
+      const resolved = resolveTransferLaunchAccounts(list, {
+        fromAccountId: intent.fromAccountId,
+        toAccountId: intent.toAccountId,
+      });
+      if (!resolved) {
+        Alert.alert('无法转账', '至少需要两个账户才能进行转账或还款。');
         return;
       }
       resetSheetForm('transfer');
-      const fromId =
-        intent.fromAccountId && assetOnly.some((a) => a.id === intent.fromAccountId)
-          ? intent.fromAccountId
-          : assetOnly[0].id;
-      const toId = assetOnly.find((a) => a.id !== fromId)?.id ?? assetOnly[1]?.id ?? fromId;
-      setTransferFromAccountId(fromId);
-      setTransferToAccountId(toId);
+      setTransferFromAccountId(resolved.fromId);
+      setTransferToAccountId(resolved.toId);
     },
     [getDefaultSheetAccountIdForTab, resetSheetForm],
   );
@@ -395,9 +395,11 @@ export function useFinanceTransactionSheetController({
   const transferSaveReady =
     transferFromAccount != null &&
     transferToAccount != null &&
-    transferFromAccount.id !== transferToAccount.id &&
-    transferFromAccount.sign_rule === 1 &&
-    transferToAccount.sign_rule === 1;
+    transferFromAccount.id !== transferToAccount.id;
+  const transferPairMeta = React.useMemo(
+    () => describeFinanceTransferPair(transferFromAccount, transferToAccount),
+    [transferFromAccount, transferToAccount],
+  );
 
   const sheetDateLabel = `${selectedHappenedAt.getMonth() + 1}月${selectedHappenedAt.getDate()}日`;
   const sheetTimeLabel = `${String(selectedHappenedAt.getHours()).padStart(2, '0')}:${String(selectedHappenedAt.getMinutes()).padStart(2, '0')}`;
@@ -872,6 +874,7 @@ export function useFinanceTransactionSheetController({
     transferToAccount,
     transferFromAccountId,
     transferToAccountId,
+    transferPairMeta,
     setTransferFromAccountId,
     setTransferToAccountId,
     transferAmountTarget,

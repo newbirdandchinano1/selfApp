@@ -67,6 +67,10 @@ import {
     peekFinanceSheetLaunchIntent,
     type FinanceSheetLaunchIntent,
 } from '@/lib/finance-sheet-launch-intent';
+import {
+    describeFinanceTransferPair,
+    resolveTransferLaunchAccounts,
+} from '@/lib/finance-transaction-sheet/helpers';
 import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
 import {
     createFinanceTransaction,
@@ -2214,9 +2218,11 @@ export default function FinanceScreen() {
   const transferSaveReady =
     transferFromAccount != null &&
     transferToAccount != null &&
-    transferFromAccount.id !== transferToAccount.id &&
-    transferFromAccount.sign_rule === 1 &&
-    transferToAccount.sign_rule === 1;
+    transferFromAccount.id !== transferToAccount.id;
+  const transferPairMeta = React.useMemo(
+    () => describeFinanceTransferPair(transferFromAccount, transferToAccount),
+    [transferFromAccount, transferToAccount],
+  );
   const sheetDateLabel = `${selectedHappenedAt.getMonth() + 1}月${selectedHappenedAt.getDate()}日`;
   const sheetTimeLabel = `${String(selectedHappenedAt.getHours()).padStart(2, '0')}:${String(selectedHappenedAt.getMinutes()).padStart(2, '0')}`;
   const hasAccounts = financeAccounts.length > 0;
@@ -2327,19 +2333,17 @@ export default function FinanceScreen() {
         setIsSheetVisible(true);
         return;
       }
-      const assetOnly = list.filter((a) => a.sign_rule === 1);
-      if (assetOnly.length < 2) {
-        Alert.alert('无法转账', '至少需要两个资产账户才能进行转账。');
+      const resolved = resolveTransferLaunchAccounts(list, {
+        fromAccountId: intent.fromAccountId,
+        toAccountId: intent.toAccountId,
+      });
+      if (!resolved) {
+        Alert.alert('无法转账', '至少需要两个账户才能进行转账或还款。');
         return;
       }
       resetSheetForm('transfer');
-      const fromId =
-        intent.fromAccountId && assetOnly.some((a) => a.id === intent.fromAccountId)
-          ? intent.fromAccountId
-          : assetOnly[0].id;
-      const toId = assetOnly.find((a) => a.id !== fromId)?.id ?? assetOnly[1]?.id ?? fromId;
-      setTransferFromAccountId(fromId);
-      setTransferToAccountId(toId);
+      setTransferFromAccountId(resolved.fromId);
+      setTransferToAccountId(resolved.toId);
       setIsSheetVisible(true);
     },
     [getDefaultSheetAccountIdForTab, resetSheetForm],
@@ -2928,13 +2932,6 @@ export default function FinanceScreen() {
       }
       if (transferFromAccount.id === transferToAccount.id) {
         Alert.alert('账户相同', '扣款与入账账户不能是同一个。');
-        return;
-      }
-      if (transferFromAccount.sign_rule !== 1 || transferToAccount.sign_rule !== 1) {
-        Alert.alert(
-          '暂不支持',
-          '转账目前仅在资产类账户之间可用。若涉及信用卡/负债账户，请用「支出」或「收入」分别记账。',
-        );
         return;
       }
       if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
@@ -4158,7 +4155,15 @@ export default function FinanceScreen() {
                 <MaterialIcons name="close" size={24} color={subtle} />
               </Pressable>
               <Text style={[styles.sheetTitle, { color: text }]}>
-                {activeSheetTab === 'transfer' ? '财务转账' : activeSheetTab === 'sentence' ? '一句话记账' : '手动记账'}
+                {activeSheetTab === 'transfer'
+                  ? transferPairMeta.mode === 'repay'
+                    ? '负债还款'
+                    : transferPairMeta.mode === 'draw'
+                      ? '负债取款'
+                      : '财务转账'
+                  : activeSheetTab === 'sentence'
+                    ? '一句话记账'
+                    : '手动记账'}
               </Text>
               <View style={styles.sheetCloseBtn} />
             </View>
@@ -4209,7 +4214,9 @@ export default function FinanceScreen() {
                         { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
                         pressed && { opacity: 0.88 },
                       ]}>
-                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>扣款账户</Text>
+                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>
+                        {transferPairMeta.fromLabel}
+                      </Text>
                       <View style={styles.transferAccountValueRow}>
                         <MaterialIcons
                           name={transferFromAccount ? accountIcon(transferFromAccount) : 'account-balance-wallet'}
@@ -4243,7 +4250,9 @@ export default function FinanceScreen() {
                         { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
                         pressed && { opacity: 0.88 },
                       ]}>
-                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>入账账户</Text>
+                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>
+                        {transferPairMeta.toLabel}
+                      </Text>
                       <View style={styles.transferAccountValueRow}>
                         <MaterialIcons
                           name={transferToAccount ? accountIcon(transferToAccount) : 'savings'}
@@ -4260,10 +4269,8 @@ export default function FinanceScreen() {
                   {transferFromAccount && transferToAccount ? (
                     transferFromAccount.id === transferToAccount.id ? (
                       <Text style={[styles.transferHintText, { color: subtle }]}>请选择两个不同的账户。</Text>
-                    ) : transferFromAccount.sign_rule !== 1 || transferToAccount.sign_rule !== 1 ? (
-                      <Text style={[styles.transferHintText, { color: subtle }]}>
-                        转账目前仅在资产类账户之间可用。
-                      </Text>
+                    ) : transferPairMeta.hint ? (
+                      <Text style={[styles.transferHintText, { color: subtle }]}>{transferPairMeta.hint}</Text>
                     ) : null
                   ) : null}
 
@@ -4835,9 +4842,9 @@ export default function FinanceScreen() {
                   <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
                     <Text style={[styles.pickerModalTitle, { color: text }]}>
                       {accountPickerTarget === 'transferFrom'
-                        ? '选择扣款账户'
+                        ? `选择${transferPairMeta.fromLabel}`
                         : accountPickerTarget === 'transferTo'
-                          ? '选择入账账户'
+                          ? `选择${transferPairMeta.toLabel}`
                           : '选择账户'}
                     </Text>
                     <Pressable

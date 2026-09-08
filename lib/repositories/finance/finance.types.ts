@@ -114,7 +114,10 @@ export type CreateFinanceTransactionInput = {
   extra_data?: string | null;
 };
 
-/** 转账双流水（同一 `groupId` 下转出/转入各一条）；可选手续费从转账金额中扣除。 */
+/**
+ * 转账双流水（同一 `groupId` 下转出/转入各一条）；可选手续费从转账金额中扣除。
+ * 支持资产间转账，以及资产→负债还款、负债→资产取款。
+ */
 export type CreateFinanceTransferInput = {
   idOut: string;
   idIn: string;
@@ -123,7 +126,7 @@ export type CreateFinanceTransferInput = {
   toAccountId: string;
   fromAccountName: string;
   toAccountName: string;
-  /** 转账总额（扣款账户合计减少额）；有手续费时对方实收 = amount - feeAmount。 */
+  /** 转账总额（扣款账户账本合计减少额）；有手续费时对方实收 = amount - feeAmount。 */
   amount: number;
   happenedAt: string;
   note?: string | null;

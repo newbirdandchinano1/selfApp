@@ -760,10 +760,38 @@ export async function createFinanceTransaction(
   }
 }
 
+function buildFinanceTransferLegNames(input: {
+  fromAccountName: string;
+  toAccountName: string;
+  fromIsLiability: boolean;
+  toIsLiability: boolean;
+}): { outName: string; inName: string } {
+  // 资产 → 负债：还款（扣款账户减少资产，负债欠款减少）
+  if (!input.fromIsLiability && input.toIsLiability) {
+    return {
+      outName: `还款至「${input.toAccountName}」`,
+      inName: `还款自「${input.fromAccountName}」`,
+    };
+  }
+  // 负债 → 资产：从负债取用/透支转入资产
+  if (input.fromIsLiability && !input.toIsLiability) {
+    return {
+      outName: `取款至「${input.toAccountName}」`,
+      inName: `取自「${input.fromAccountName}」`,
+    };
+  }
+  return {
+    outName: `转至「${input.toAccountName}」`,
+    inName: `转自「${input.fromAccountName}」`,
+  };
+}
+
 /**
  * 原子创建转账双流水（转出 leg=out + 转入 leg=in）。
+ * 支持资产↔资产、资产→负债（还款）、负债→资产（取款/透支）。
  * 可选手续费从转账金额中扣除：双腿记净额，手续费另记扣款账户支出。
  * 例：转 2、手续费 1 → 扣款 -2（转出 1 + 支出 1），入账 +1。
+ * 入库 amount 按账户符号规则：资产为正、负债为负；账本效应仍由 transfer_leg 决定。
  */
 export async function createFinanceTransferTransactions(input: CreateFinanceTransferInput): Promise<void> {
   const absAmount = Math.abs(input.amount);
@@ -781,6 +809,30 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
     throw new Error('finance transfer fee must be less than transfer amount');
   }
   const netAmount = absAmount - absFee;
+
+  const fromAccount = await getFinanceAccountById(input.fromAccountId);
+  const toAccount = await getFinanceAccountById(input.toAccountId);
+  if (!fromAccount || !toAccount) {
+    throw new Error('finance account not found');
+  }
+
+  const fromIsLiability = isFinanceLiabilityAccount(fromAccount);
+  const toIsLiability = isFinanceLiabilityAccount(toAccount);
+  const signedNetFrom = financeSignedAmountForSave(
+    fromAccount.sign_rule,
+    fromAccount.account_type,
+    netAmount,
+  );
+  const signedNetTo = financeSignedAmountForSave(toAccount.sign_rule, toAccount.account_type, netAmount);
+  const signedFee = hasFee
+    ? financeSignedAmountForSave(fromAccount.sign_rule, fromAccount.account_type, absFee)
+    : 0;
+  const { outName, inName } = buildFinanceTransferLegNames({
+    fromAccountName: input.fromAccountName,
+    toAccountName: input.toAccountName,
+    fromIsLiability,
+    toIsLiability,
+  });
 
   const extraOut = buildFinanceTransferTxnExtra({
     groupId: input.groupId,
@@ -802,10 +854,10 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
       })
     : null;
 
-  await assertTransactionAmountSign(input.fromAccountId, netAmount);
-  await assertTransactionAmountSign(input.toAccountId, netAmount);
+  await assertTransactionAmountSign(input.fromAccountId, signedNetFrom);
+  await assertTransactionAmountSign(input.toAccountId, signedNetTo);
   if (hasFee) {
-    await assertTransactionAmountSign(input.fromAccountId, absFee);
+    await assertTransactionAmountSign(input.fromAccountId, signedFee);
   }
 
   const db = await getDatabase();
@@ -819,25 +871,25 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
   try {
     await db.runAsync(insertSql, [
       input.idOut,
-      `转至「${input.toAccountName}」`,
+      outName,
       input.happenedAt,
       input.fromAccountId,
       null,
       'transfer',
       null,
-      netAmount,
+      signedNetFrom,
       note,
       extraOut,
     ]);
     await db.runAsync(insertSql, [
       input.idIn,
-      `转自「${input.fromAccountName}」`,
+      inName,
       input.happenedAt,
       input.toAccountId,
       null,
       'transfer',
       null,
-      netAmount,
+      signedNetTo,
       note,
       extraIn,
     ]);
@@ -850,7 +902,7 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
         null,
         'expense',
         null,
-        absFee,
+        signedFee,
         note,
         extraFee,
       ]);
@@ -862,7 +914,7 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
   }
 
   invalidateInflightApiTableFetch('finance_transactions');
-  // 扣款合计减少 absAmount（净转出 + 手续费）；入账仅增加净额
+  // 扣款合计减少 absAmount（净转出 + 手续费）；入账仅增加净额（负债入账即减少欠款）
   applyFinanceAccountBalanceDelta(input.fromAccountId, -absAmount);
   applyFinanceAccountBalanceDelta(input.toAccountId, netAmount);
   void pushFinanceChangesToApi();

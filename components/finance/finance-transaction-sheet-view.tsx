@@ -40,6 +40,7 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
     transferToAccount,
     transferFromAccountId,
     transferToAccountId,
+    transferPairMeta,
     setTransferFromAccountId,
     setTransferToAccountId,
     transferAmountTarget,
@@ -120,7 +121,15 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                 <MaterialIcons name="close" size={24} color={subtle} />
               </Pressable>
               <Text style={[styles.sheetTitle, { color: text }]}>
-                {activeSheetTab === 'transfer' ? '财务转账' : activeSheetTab === 'sentence' ? '一句话记账' : '手动记账'}
+                {activeSheetTab === 'transfer'
+                  ? transferPairMeta.mode === 'repay'
+                    ? '负债还款'
+                    : transferPairMeta.mode === 'draw'
+                      ? '负债取款'
+                      : '财务转账'
+                  : activeSheetTab === 'sentence'
+                    ? '一句话记账'
+                    : '手动记账'}
               </Text>
               <View style={styles.sheetCloseBtn} />
             </View>
@@ -171,7 +180,9 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                         { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
                         pressed && { opacity: 0.88 },
                       ]}>
-                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>扣款账户</Text>
+                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>
+                        {transferPairMeta.fromLabel}
+                      </Text>
                       <View style={styles.transferAccountValueRow}>
                         <MaterialIcons
                           name={transferFromAccount ? accountIcon(transferFromAccount) : 'account-balance-wallet'}
@@ -205,7 +216,9 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                         { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
                         pressed && { opacity: 0.88 },
                       ]}>
-                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>入账账户</Text>
+                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>
+                        {transferPairMeta.toLabel}
+                      </Text>
                       <View style={styles.transferAccountValueRow}>
                         <MaterialIcons
                           name={transferToAccount ? accountIcon(transferToAccount) : 'savings'}
@@ -222,10 +235,8 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                   {transferFromAccount && transferToAccount ? (
                     transferFromAccount.id === transferToAccount.id ? (
                       <Text style={[styles.transferHintText, { color: subtle }]}>请选择两个不同的账户。</Text>
-                    ) : transferFromAccount.sign_rule !== 1 || transferToAccount.sign_rule !== 1 ? (
-                      <Text style={[styles.transferHintText, { color: subtle }]}>
-                        转账目前仅在资产类账户之间可用。
-                      </Text>
+                    ) : transferPairMeta.hint ? (
+                      <Text style={[styles.transferHintText, { color: subtle }]}>{transferPairMeta.hint}</Text>
                     ) : null
                   ) : null}
 
@@ -794,9 +805,9 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                   <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
                     <Text style={[styles.pickerModalTitle, { color: text }]}>
                       {accountPickerTarget === 'transferFrom'
-                        ? '选择扣款账户'
+                        ? `选择${transferPairMeta.fromLabel}`
                         : accountPickerTarget === 'transferTo'
-                          ? '选择入账账户'
+                          ? `选择${transferPairMeta.toLabel}`
                           : '选择账户'}
                     </Text>
                     <Pressable

@@ -290,14 +290,12 @@ export default function AccountDetailScreen() {
 
   const onPressTransfer = React.useCallback(() => {
     if (!resolvedAccountId) {
-      Alert.alert('无法转账', '未找到账户信息。');
+      Alert.alert(isLiabilityAccount ? '无法还款' : '无法转账', '未找到账户信息。');
       return;
     }
     if (isLiabilityAccount || accountSignRule !== 1) {
-      Alert.alert(
-        '不支持转账',
-        '仅在两个资产账户（钱包/银行卡等）之间可转账。负债请使用「记账」登记还款或新增负债。',
-      );
+      // 负债详情：打开转账并预填「还款账户」= 当前负债，扣款账户默认选资产
+      openFinanceSheet({ kind: 'transfer', fromAccountId: null, toAccountId: resolvedAccountId });
       return;
     }
     openFinanceSheet({ kind: 'transfer', fromAccountId: resolvedAccountId });
@@ -557,7 +555,13 @@ export default function AccountDetailScreen() {
 
           <View style={styles.actionRow}>
             <AppButton label="记账" variant="secondary" size="md" onPress={onPressBookkeeping} style={styles.actionBtn} />
-            <AppButton label="转账" variant="secondary" size="md" onPress={onPressTransfer} style={styles.actionBtn} />
+            <AppButton
+              label={isLiabilityAccount ? '还款' : '转账'}
+              variant="secondary"
+              size="md"
+              onPress={onPressTransfer}
+              style={styles.actionBtn}
+            />
           </View>
         </AppCard>
 

@@ -1,8 +1,111 @@
+import { isFinanceLiabilityAccount } from '@/lib/finance-net-worth';
+import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
 import type { MaterialIcons } from '@expo/vector-icons';
 
 export type SheetTab = 'sentence' | 'expense' | 'income' | 'transfer';
 
 export type AccountPickerTarget = 'sheet' | 'transferFrom' | 'transferTo';
+
+/** 解析转账弹窗默认扣款/入账账户（支持负债还款：资产扣款 → 负债入账）。 */
+export function resolveTransferLaunchAccounts(
+  list: FinanceAccountBalanceRow[],
+  intent: { fromAccountId?: string | null; toAccountId?: string | null },
+): { fromId: string; toId: string } | null {
+  if (list.length < 2) return null;
+
+  const pick = (id: string | null | undefined) =>
+    id && list.some((a) => a.id === id) ? id : null;
+
+  let fromId = pick(intent.fromAccountId);
+  let toId = pick(intent.toAccountId);
+
+  if (fromId && toId && fromId === toId) {
+    toId = null;
+  }
+
+  const otherOf = (id: string, preferOppositeLiability: boolean) => {
+    const base = list.find((a) => a.id === id);
+    if (!base) return list.find((a) => a.id !== id) ?? null;
+    const baseLiability = isFinanceLiabilityAccount(base);
+    if (preferOppositeLiability) {
+      const opposite = list.find(
+        (a) => a.id !== id && isFinanceLiabilityAccount(a) !== baseLiability,
+      );
+      if (opposite) return opposite;
+    }
+    return list.find((a) => a.id !== id) ?? null;
+  };
+
+  if (fromId && toId) return { fromId, toId };
+
+  if (toId && !fromId) {
+    const toAcc = list.find((a) => a.id === toId);
+    // 负债还款：优先选资产作为扣款账户
+    if (toAcc && isFinanceLiabilityAccount(toAcc)) {
+      const asset = list.find((a) => a.id !== toId && !isFinanceLiabilityAccount(a));
+      if (asset) return { fromId: asset.id, toId };
+    }
+    const other = otherOf(toId, true);
+    if (!other) return null;
+    return { fromId: other.id, toId };
+  }
+
+  if (fromId && !toId) {
+    const other = otherOf(fromId, true);
+    if (!other) return null;
+    return { fromId, toId: other.id };
+  }
+
+  const assets = list.filter((a) => !isFinanceLiabilityAccount(a));
+  if (assets.length >= 2) {
+    return { fromId: assets[0].id, toId: assets[1].id };
+  }
+  return { fromId: list[0].id, toId: list[1].id };
+}
+
+/** 转账双方文案：普通转账 / 负债还款 / 负债取款 */
+export function describeFinanceTransferPair(
+  from: Pick<FinanceAccountBalanceRow, 'sign_rule' | 'account_type' | 'extra_data'> | null,
+  to: Pick<FinanceAccountBalanceRow, 'sign_rule' | 'account_type' | 'extra_data'> | null,
+): {
+  fromLabel: string;
+  toLabel: string;
+  hint: string | null;
+  mode: 'transfer' | 'repay' | 'draw' | 'liability_move';
+} {
+  const fromLiability = from ? isFinanceLiabilityAccount(from) : false;
+  const toLiability = to ? isFinanceLiabilityAccount(to) : false;
+  if (!fromLiability && toLiability) {
+    return {
+      fromLabel: '扣款账户',
+      toLabel: '还款账户',
+      hint: '从资产扣款并减少负债欠款（还款）。',
+      mode: 'repay',
+    };
+  }
+  if (fromLiability && !toLiability) {
+    return {
+      fromLabel: '负债账户',
+      toLabel: '入账账户',
+      hint: '从负债取用资金并增加欠款（取款/透支）。',
+      mode: 'draw',
+    };
+  }
+  if (fromLiability && toLiability) {
+    return {
+      fromLabel: '转出负债',
+      toLabel: '转入负债',
+      hint: '在负债账户之间调整欠款。',
+      mode: 'liability_move',
+    };
+  }
+  return {
+    fromLabel: '扣款账户',
+    toLabel: '入账账户',
+    hint: null,
+    mode: 'transfer',
+  };
+}
 
 export type SheetCategory = {
   key: string;
