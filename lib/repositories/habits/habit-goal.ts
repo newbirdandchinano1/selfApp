@@ -175,7 +175,7 @@ export type BreakHabitDayContext = {
   dailyGoal?: number | null;
   /** 当日是否有打卡记录（含 count=0 的「保持戒除」确认） */
   hasDayRecord?: boolean;
-  /** 逻辑日 YMD；配合 logicalTodayYmd 区分今日待确认与历史未确认（跨日界自动保持戒除） */
+  /** 逻辑日 YMD；配合 logicalTodayYmd 区分今日待确认与历史未确认（未确认视为未达标） */
   ymd?: string;
   logicalTodayYmd?: string;
 };
@@ -193,19 +193,10 @@ function isBreakHabitDayPending(ctx: BreakHabitDayContext): boolean {
   return ymd === logicalTodayYmd;
 }
 
-/** 跨日界仍未操作：视为自动保持戒除（仅历史日） */
-function isBreakHabitDayAutoClean(ctx: BreakHabitDayContext): boolean {
-  if (ctx.hasDayRecord) return false;
-  const ymd = ctx.ymd?.trim();
-  const logicalTodayYmd = ctx.logicalTodayYmd?.trim();
-  if (!ymd || !logicalTodayYmd) return false;
-  return ymd < logicalTodayYmd;
-}
-
 /**
  * 当日是否达成目标。
  * 养成：次数 ≥ 每日目标（不限时 > 0 即达成）。
- * 戒除：今日须确认；历史日无记录视为自动保持戒除；有记录时次数低于阈值即达成。
+ * 戒除：须有当日确认记录且次数低于阈值；无记录（含跨日未确认）视为未达标。
  */
 export function isHabitDayGoalMet(params: {
   kind: HabitKind;
@@ -220,15 +211,7 @@ export function isHabitDayGoalMet(params: {
   const dailyGoal = params.dailyGoal ?? (kind === 'break' ? 1 : null);
 
   if (kind === 'break') {
-    if (!params.hasDayRecord) {
-      return isBreakHabitDayAutoClean({
-        todayCount: count,
-        dailyGoal,
-        hasDayRecord: false,
-        ymd: params.ymd,
-        logicalTodayYmd: params.logicalTodayYmd,
-      });
-    }
+    if (!params.hasDayRecord) return false;
     return isBreakHabitCountGoalMet(count, dailyGoal);
   }
 
@@ -239,25 +222,23 @@ export function isHabitDayGoalMet(params: {
 /** 戒除习惯任务页四态：待确认 / 未破戒 / 破戒未超限 / 已破戒未达标 */
 export type BreakHabitDayUiState = 'pending' | 'clean' | 'slipping' | 'failed';
 
-/** 戒除习惯当日 UI / 完成态（今日待确认；跨日界未操作视为保持戒除） */
+/** 戒除习惯当日 UI / 完成态（今日待确认；跨日未确认视为未达标） */
 export function resolveBreakHabitDayUiState(ctx: BreakHabitDayContext): BreakHabitDayUiState {
   const count = Math.max(0, Math.floor(ctx.todayCount));
   const dailyGoal = ctx.dailyGoal ?? 1;
   if (isBreakHabitDayPending(ctx)) return 'pending';
-  if (!ctx.hasDayRecord) {
-    return isBreakHabitDayAutoClean(ctx) ? 'clean' : 'failed';
-  }
+  if (!ctx.hasDayRecord) return 'failed';
   if (!isBreakHabitCountGoalMet(count, dailyGoal)) return 'failed';
   if (count > 0) return 'slipping';
   return 'clean';
 }
 
-/** 戒除习惯当日是否视为完成：保持戒除（含跨日界自动确认）；破戒则未完成 */
+/** 戒除习惯当日是否视为完成：已确认保持戒除；破戒或未确认则未完成 */
 export function isBreakHabitDayCompleted(ctx: BreakHabitDayContext): boolean {
   return resolveBreakHabitDayUiState(ctx) === 'clean';
 }
 
-/** 任务页展示 / 习惯绑定：养成/完成任务看达标，戒除看保持戒除（含自动） */
+/** 任务页展示 / 习惯绑定：养成/完成任务看达标，戒除看是否已确认保持戒除 */
 export function isHabitDayDisplayCompleted(params: {
   kind: HabitKind;
   todayCount: number;
@@ -368,7 +349,7 @@ export function computeConsecutiveGoalMetDays(params: {
   dailyGoal?: number | null;
   maxLookback?: number;
   minYmd?: string | null;
-  /** 戒除：用于区分今日待确认与历史日（跨日界自动保持戒除） */
+  /** 戒除：用于区分今日待确认与历史未确认（未确认不计入连续） */
   logicalTodayYmd?: string;
 }): number {
   const { checkIns, endYmd, kind, dailyGoal, maxLookback = 999, minYmd, logicalTodayYmd } = params;

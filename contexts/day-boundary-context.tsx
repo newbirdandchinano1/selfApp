@@ -175,7 +175,7 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     if (lastEmittedKeyRef.current === key) return;
     lastEmittedKeyRef.current = key;
     clearPageLoadedInSession();
-    // 跨日界：仅对「昨天」未操作的戒除习惯自动保持戒除并发放未破戒加分（延后执行，避免回前台卡死）
+    // 跨日界：延后同步戒除连续目标完成态，避免回前台卡死
     void import('@/lib/repositories/habits/habit-break-success')
       .then(({ scheduleSyncBreakHabitCompletions }) => {
         scheduleSyncBreakHabitCompletions({ force: true });

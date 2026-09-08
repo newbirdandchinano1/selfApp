@@ -4,10 +4,8 @@ import {
   loadTasksDayBoundary,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
-import { addDaysToYmd } from '@/lib/api-read-helpers';
-import { isHabitScheduledOnLogicalYmd } from '@/lib/habit-schedule';
 import { InteractionManager } from 'react-native';
-import { confirmBreakHabitDayClean, getCheckInsMapByHabitId } from './habit-check-in';
+import { getCheckInsMapByHabitId } from './habit-check-in';
 import { getHabitById, getHabits, updateHabit } from './habit';
 import type { HabitRow } from './habit.types';
 import {
@@ -17,7 +15,7 @@ import {
 } from './habit-goal';
 import { parseHabitKind } from './habit-kind';
 
-/** 防止任务页加载 / 日界切换 / 详情页并发调用时重复发「未破戒加分」 */
+/** 防止任务页加载 / 日界切换 / 详情页并发调用时重复写完成态 */
 let syncBreakHabitCompletionsInflight: Promise<void> | null = null;
 /** 任务页频繁 reload 时节流；日界跨天仍可 force */
 let lastBreakHabitSyncAtMs = 0;
@@ -216,46 +214,6 @@ export async function tryMarkBreakHabitCompleted(
   return true;
 }
 
-/**
- * 跨日界后仅处理「昨天」：未操作则写入「保持戒除」(count=0) 并发放未破戒加分。
- * 更早的天不回补（UI 仍按虚拟保持戒除计连续；不写库、不加分）。
- * 以打卡记录作幂等键，重复同步不会重复发奖。
- */
-async function autoConfirmPastBreakDaysClean(
-  habit: HabitRow,
-  todayYmd: string,
-  boundary: TasksDayBoundary,
-): Promise<void> {
-  if (parseHabitKind(habit.extra_data) !== 'break') return;
-  if (isBreakHabitSucceeded(habit.extra_data)) return;
-
-  const cycle = parseBreakHabitCycle(habit.extra_data);
-  const minYmd = resolveBreakCycleStartYmd(cycle, habit.created_at, boundary);
-  if (!minYmd) return;
-
-  const yesterdayYmd = addDaysToYmd(todayYmd, -1);
-  if (yesterdayYmd < minYmd) return;
-  if (!isHabitScheduledOnLogicalYmd(habit.extra_data, yesterdayYmd)) return;
-
-  const map = await getCheckInsMapByHabitId(habit.id);
-  if (Object.prototype.hasOwnProperty.call(map, yesterdayYmd)) return;
-
-  // 仅在新建立有效「保持戒除」记录时发奖，避免并发/复活脏行时重复加分
-  const created = await confirmBreakHabitDayClean(habit.id, yesterdayYmd);
-  if (!created) return;
-
-  try {
-    const { applyBreakHabitReward } = await import(
-      '@/lib/repositories/habits/habit-points-grant'
-    );
-    await applyBreakHabitReward(habit.id, 'clean', 'earn', {
-      extraData: habit.extra_data,
-    });
-  } catch (ptsErr) {
-    console.warn('戒除习惯跨日界自动保持戒除发奖失败', habit.id, yesterdayYmd, ptsErr);
-  }
-}
-
 async function syncBreakHabitCompletionsOnce(): Promise<void> {
   const boundary = await loadTasksDayBoundary();
   const todayYmd = getLogicalLocalYmd(new Date(), boundary);
@@ -274,15 +232,6 @@ async function syncBreakHabitCompletionsOnce(): Promise<void> {
     })
   );
 
-  // 串行处理各习惯，避免多习惯并行时与积分队列交叉放大竞态窗口
-  for (const habit of repaired) {
-    try {
-      await autoConfirmPastBreakDaysClean(habit, todayYmd, boundary);
-    } catch (err) {
-      console.warn('戒除习惯跨日界自动保持戒除失败', habit.id, err);
-    }
-  }
-
   const candidates = repaired.filter(shouldEvaluateBreakSuccess);
   if (candidates.length === 0) return;
 
@@ -295,7 +244,7 @@ async function syncBreakHabitCompletionsOnce(): Promise<void> {
   }
 }
 
-/** 批量同步所有进行中的戒除习惯：跨日界自动保持戒除 + 连续目标完成态 */
+/** 批量同步所有进行中的戒除习惯：连续目标完成态 */
 export async function syncBreakHabitCompletions(): Promise<void> {
   if (syncBreakHabitCompletionsInflight) {
     await syncBreakHabitCompletionsInflight;
@@ -311,7 +260,7 @@ export async function syncBreakHabitCompletions(): Promise<void> {
 }
 
 /**
- * 延后到交互结束后再同步戒除完成态/未破戒加分，避免回前台与页面 reload 叠在一起卡死。
+ * 延后到交互结束后再同步戒除连续目标完成态，避免回前台与页面 reload 叠在一起卡死。
  * @param force 日界切换等场景跳过节流
  */
 export function scheduleSyncBreakHabitCompletions(opts?: { force?: boolean }): void {

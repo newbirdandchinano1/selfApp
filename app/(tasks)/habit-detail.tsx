@@ -266,8 +266,8 @@ function completionBreakDay(
 ): string {
   if (!hasDayRecord) {
     if (ymd === logicalTodayYmd) return emptyBackground;
-    // 跨日界未操作：自动保持戒除
-    if (ymd < logicalTodayYmd) return BREAK_GOAL_MET;
+    // 跨日未确认：视为未达标
+    if (ymd < logicalTodayYmd) return BREAK_GOAL_FAIL;
     return emptyBackground;
   }
   if (isHabitDayGoalMet({ kind: 'break', todayCount: count, dailyGoal, hasDayRecord: true })) {

@@ -144,8 +144,7 @@ export async function upsertHabitDayCount(
   );
 
   if (existing) {
-    // pending_delete 必须复活为 pending_update，否则读侧仍当「无记录」，
-    // 跨日界自动保持戒除会反复发「未破戒加分」。
+    // pending_delete 必须复活为 pending_update，否则读侧仍当「无记录」。
     const nextStatus =
       existing.sync_status === 'pending_delete' || existing.sync_status === 'synced'
         ? 'pending_update'
