@@ -8,6 +8,7 @@ import { getTasks } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
   emptyWishBoardRedeemConditions,
+  loadWishBoardCurrentNetWorth,
   parseWishBoardRedeemConditions,
   type WishBoardRedeemConditions,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
@@ -34,6 +35,7 @@ export default function EditWishBoardItemScreen() {
   );
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [currentNetWorth, setCurrentNetWorth] = useState<number | null>(null);
   const [bindLoading, setBindLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -43,14 +45,16 @@ export default function EditWishBoardItemScreen() {
     let cancelled = false;
     void (async () => {
       try {
-        const [row, nextProjects, nextTasks] = await Promise.all([
+        const [row, nextProjects, nextTasks, nextNetWorth] = await Promise.all([
           getWishBoardItemById(id),
           getProjects(),
           getTasks(),
+          loadWishBoardCurrentNetWorth(),
         ]);
         if (cancelled) return;
         setProjects(nextProjects);
         setTasks(nextTasks);
+        setCurrentNetWorth(nextNetWorth);
         if (!row) {
           Alert.alert('未找到心愿', undefined, [{ text: '好', onPress: () => router.back() }]);
           return;
@@ -149,6 +153,7 @@ export default function EditWishBoardItemScreen() {
           onChange={setRedeemConditions}
           projects={projects}
           tasks={tasks}
+          currentNetWorth={currentNetWorth}
           loading={bindLoading}
           disabled={redeemed}
           textColor={colors.text}

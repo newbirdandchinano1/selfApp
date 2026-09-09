@@ -1,10 +1,17 @@
+import {
+  computeNetWorthTotal,
+  formatSignedMoneyTrunc2,
+  isNetWorthAtLeast,
+} from '@/lib/finance-net-worth';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getTaskById } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import type { WishBoardRedeemConditionsInput } from '@/lib/repositories/wish-board/wish-board.types';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
 
 const REDEEM_CONDITIONS_KEY = 'redeem_conditions';
+const NET_WORTH_CHECK_ID = 'min_net_worth';
 
 export type WishBoardRedeemConditions = {
   /** 须全部完成（completed / archived）的项目 */
@@ -13,9 +20,11 @@ export type WishBoardRedeemConditions = {
   task_ids: string[];
   /** 须全部 done 的独立待办 */
   todo_ids: string[];
+  /** 当前净资产须 ≥ 该值（与资产页「当前净资产」同一公式）；null 表示不限制 */
+  min_net_worth: number | null;
 };
 
-export type WishBoardRedeemConditionKind = 'project' | 'task' | 'todo';
+export type WishBoardRedeemConditionKind = 'project' | 'task' | 'todo' | 'net_worth';
 
 export type WishBoardRedeemConditionCheck = {
   kind: WishBoardRedeemConditionKind;
@@ -63,8 +72,15 @@ function normalizeIdList(raw: unknown): string[] {
   return out;
 }
 
+export function normalizeMinNetWorth(raw: unknown): number | null {
+  if (raw == null || raw === '') return null;
+  const n = typeof raw === 'number' ? raw : Number(String(raw).trim().replace(/,/g, ''));
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
 export function emptyWishBoardRedeemConditions(): WishBoardRedeemConditions {
-  return { project_ids: [], task_ids: [], todo_ids: [] };
+  return { project_ids: [], task_ids: [], todo_ids: [], min_net_worth: null };
 }
 
 export function parseWishBoardRedeemConditions(
@@ -80,12 +96,13 @@ export function parseWishBoardRedeemConditions(
     project_ids: normalizeIdList(obj.project_ids),
     task_ids: normalizeIdList(obj.task_ids),
     todo_ids: normalizeIdList(obj.todo_ids),
+    min_net_worth: normalizeMinNetWorth(obj.min_net_worth),
   };
 }
 
 export function mergeWishBoardRedeemConditions(
   extraData: string | null | undefined,
-  conditions: WishBoardRedeemConditions | null | undefined,
+  conditions: WishBoardRedeemConditions | WishBoardRedeemConditionsInput | null | undefined,
 ): string | null {
   const base = parseExtraObject(extraData);
   const next = conditions
@@ -93,17 +110,25 @@ export function mergeWishBoardRedeemConditions(
         project_ids: normalizeIdList(conditions.project_ids),
         task_ids: normalizeIdList(conditions.task_ids),
         todo_ids: normalizeIdList(conditions.todo_ids),
+        min_net_worth: normalizeMinNetWorth(conditions.min_net_worth),
       }
     : emptyWishBoardRedeemConditions();
 
   if (
     next.project_ids.length === 0 &&
     next.task_ids.length === 0 &&
-    next.todo_ids.length === 0
+    next.todo_ids.length === 0 &&
+    next.min_net_worth == null
   ) {
     delete base[REDEEM_CONDITIONS_KEY];
   } else {
-    base[REDEEM_CONDITIONS_KEY] = next;
+    const payload: Record<string, unknown> = {
+      project_ids: next.project_ids,
+      task_ids: next.task_ids,
+      todo_ids: next.todo_ids,
+    };
+    if (next.min_net_worth != null) payload.min_net_worth = next.min_net_worth;
+    base[REDEEM_CONDITIONS_KEY] = payload;
   }
 
   if (Object.keys(base).length === 0) return null;
@@ -111,7 +136,12 @@ export function mergeWishBoardRedeemConditions(
 }
 
 export function countWishBoardRedeemConditions(conditions: WishBoardRedeemConditions): number {
-  return conditions.project_ids.length + conditions.task_ids.length + conditions.todo_ids.length;
+  return (
+    conditions.project_ids.length +
+    conditions.task_ids.length +
+    conditions.todo_ids.length +
+    (conditions.min_net_worth != null ? 1 : 0)
+  );
 }
 
 export function hasWishBoardRedeemConditions(conditions: WishBoardRedeemConditions): boolean {
@@ -132,7 +162,17 @@ export function isTaskRedeemConditionMet(task: Pick<TaskRow, 'status'> | null | 
 function kindLabel(kind: WishBoardRedeemConditionKind): string {
   if (kind === 'project') return '项目';
   if (kind === 'todo') return '待办';
+  if (kind === 'net_worth') return '净资产';
   return '任务';
+}
+
+function netWorthPendingMessage(pending: WishBoardRedeemConditionCheck[]): string | null {
+  const net = pending.find(p => p.kind === 'net_worth');
+  if (!net) return null;
+  if (pending.length === 1) {
+    return `净资产不足（${net.title}）`;
+  }
+  return null;
 }
 
 function buildEligibilityMessage(input: {
@@ -141,13 +181,18 @@ function buildEligibilityMessage(input: {
   balance: number;
   pending: WishBoardRedeemConditionCheck[];
 }): string | null {
+  const netOnly = netWorthPendingMessage(input.pending);
   if (!input.pointsOk && input.pending.length > 0) {
+    if (netOnly) {
+      return `积分不足（需要 ${input.costPoints}，当前 ${input.balance}），且${netOnly}`;
+    }
     return `积分不足（需要 ${input.costPoints}，当前 ${input.balance}），且仍有未完成的绑定项`;
   }
   if (!input.pointsOk) {
     return `积分不足（需要 ${input.costPoints}，当前 ${input.balance}）`;
   }
   if (input.pending.length === 0) return null;
+  if (netOnly) return netOnly;
   const names = input.pending.slice(0, 3).map(p => {
     const title = p.missing ? `已删除的${kindLabel(p.kind)}` : p.title;
     return `「${title}」`;
@@ -162,6 +207,8 @@ export function evaluateWishBoardRedeemEligibilitySync(
   lookups: {
     projectsById: Map<string, ProjectRow>;
     tasksById: Map<string, TaskRow>;
+    /** 与资产页「当前净资产」同一口径；未传入且设置了门槛时视为未达标 */
+    currentNetWorth?: number;
   },
 ): WishBoardRedeemEligibility {
   const costPoints = Number.isFinite(item.cost_points) ? Math.max(0, item.cost_points) : 0;
@@ -199,6 +246,22 @@ export function evaluateWishBoardRedeemEligibilitySync(
       missing: !task,
     });
   }
+  if (conditions.min_net_worth != null) {
+    const current =
+      typeof lookups.currentNetWorth === 'number' && Number.isFinite(lookups.currentNetWorth)
+        ? lookups.currentNetWorth
+        : null;
+    const done = current != null && isNetWorthAtLeast(current, conditions.min_net_worth);
+    const needLabel = formatSignedMoneyTrunc2(conditions.min_net_worth);
+    const currentLabel = current != null ? formatSignedMoneyTrunc2(current) : '未知';
+    checks.push({
+      kind: 'net_worth',
+      id: NET_WORTH_CHECK_ID,
+      title: `净资产达到 ${needLabel}（当前 ${currentLabel}）`,
+      done,
+      missing: current == null,
+    });
+  }
 
   const pending = checks.filter(c => !c.done);
   const conditionsOk = pending.length === 0;
@@ -218,7 +281,14 @@ export function evaluateWishBoardRedeemEligibilitySync(
   };
 }
 
-/** 按 id 拉取本地项目/任务后评估兑换资格 */
+/** 与资产页「当前净资产」同一公式：总资产 − 总负债 */
+export async function loadWishBoardCurrentNetWorth(): Promise<number> {
+  const { getFinanceAccountsWithBalance } = await import('@/lib/repositories/finance/finance');
+  const accounts = await getFinanceAccountsWithBalance({ localOnly: true });
+  return computeNetWorthTotal(accounts);
+}
+
+/** 按 id 拉取本地项目/任务及当前净资产后评估兑换资格 */
 export async function evaluateWishBoardRedeemEligibility(
   item: { cost_points: number; extra_data?: string | null },
   balance: number,
@@ -227,18 +297,25 @@ export async function evaluateWishBoardRedeemEligibility(
   const projectsById = new Map<string, ProjectRow>();
   const tasksById = new Map<string, TaskRow>();
 
-  await Promise.all([
-    ...conditions.project_ids.map(async id => {
-      const row = await getProjectById(id);
-      if (row) projectsById.set(id, row);
-    }),
-    ...[...conditions.task_ids, ...conditions.todo_ids].map(async id => {
-      const row = await getTaskById(id);
-      if (row) tasksById.set(id, row);
-    }),
+  const [, currentNetWorth] = await Promise.all([
+    Promise.all([
+      ...conditions.project_ids.map(async id => {
+        const row = await getProjectById(id);
+        if (row) projectsById.set(id, row);
+      }),
+      ...[...conditions.task_ids, ...conditions.todo_ids].map(async id => {
+        const row = await getTaskById(id);
+        if (row) tasksById.set(id, row);
+      }),
+    ]),
+    loadWishBoardCurrentNetWorth(),
   ]);
 
-  return evaluateWishBoardRedeemEligibilitySync(item, balance, { projectsById, tasksById });
+  return evaluateWishBoardRedeemEligibilitySync(item, balance, {
+    projectsById,
+    tasksById,
+    currentNetWorth,
+  });
 }
 
 /** 兑换前硬校验：不满足则抛错 */
@@ -270,6 +347,9 @@ export function formatWishBoardRedeemConditionsSummary(
 ): string | null {
   if (!hasWishBoardRedeemConditions(conditions)) return null;
   const parts: string[] = [];
+  if (conditions.min_net_worth != null) {
+    parts.push(`净资产 ≥ ${formatSignedMoneyTrunc2(conditions.min_net_worth)}`);
+  }
   if (conditions.project_ids.length > 0) {
     parts.push(`${conditions.project_ids.length} 个项目`);
   }
@@ -280,9 +360,12 @@ export function formatWishBoardRedeemConditionsSummary(
     parts.push(`${conditions.todo_ids.length} 个待办`);
   }
   const countLabel = parts.join(' · ');
-  if (!lookups) return `另需完成：${countLabel}`;
+  if (!lookups) return `另需：${countLabel}`;
 
   const names: string[] = [];
+  if (conditions.min_net_worth != null) {
+    names.push(`净资产 ≥ ${formatSignedMoneyTrunc2(conditions.min_net_worth)}`);
+  }
   for (const id of conditions.project_ids) {
     const name = lookups.projectsById?.get(id)?.name?.trim();
     if (name) names.push(name);
@@ -291,7 +374,7 @@ export function formatWishBoardRedeemConditionsSummary(
     const title = lookups.tasksById?.get(id)?.title?.trim();
     if (title) names.push(title);
   }
-  if (names.length === 0) return `另需完成：${countLabel}`;
-  if (names.length <= 2) return `另需完成：${names.join('、')}`;
-  return `另需完成：${names.slice(0, 2).join('、')} 等 ${names.length} 项`;
+  if (names.length === 0) return `另需：${countLabel}`;
+  if (names.length <= 2) return `另需：${names.join('、')}`;
+  return `另需：${names.slice(0, 2).join('、')} 等 ${names.length} 项`;
 }

@@ -4,6 +4,7 @@ import {
   FinanceBudgetCardSkeleton,
   FinanceTxnListSkeleton,
 } from '@/components/finance/finance-home-skeletons';
+import { FinanceSavingsGoalBlock } from '@/components/finance/finance-savings-goal-block';
 import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
@@ -3547,6 +3548,21 @@ export default function FinanceScreen() {
                       })()}
                     </Pressable>
                   </View>
+
+                  <FinanceSavingsGoalBlock
+                    currentNetWorth={netTotalForTrend}
+                    today={today}
+                    showAmounts={showNetAmounts}
+                    hiddenAmountText={hiddenAmountText}
+                    formatCurrency={formatCurrencyWithDecimals}
+                    isDark={isDark}
+                    text={text}
+                    subtle={subtle}
+                    primary={primary}
+                    surface={surface}
+                    outlineVariant={outlineVariant}
+                    tertiary={tertiary}
+                  />
 
                   <View style={[styles.budgetNetDivider, { backgroundColor: outlineVariant }]} />
 

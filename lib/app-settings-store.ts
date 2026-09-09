@@ -21,6 +21,8 @@ export const AppSettingKey = {
   financeBudgetRefreshDay: '@finance_budget_refresh_day_v1',
   financeMonthlyBudgetLegacy: '@finance_monthly_budget_override_v1',
   financeScheduledExpenses: '@finance_scheduled_expenses_v1',
+  /** 财务页预期存款目标（金额 + 截止日期） */
+  financeSavingsGoal: '@finance_savings_goal_v1',
   savingsOverview: '@selfapp/savings_overview_settings_v2',
   savingsOverviewLegacy: '@selfapp/savings_overview_settings_v1',
   globalIntakeTargets: '@global_intake_targets_v1',

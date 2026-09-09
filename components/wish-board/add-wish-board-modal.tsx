@@ -13,6 +13,7 @@ import { getTasks } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
   emptyWishBoardRedeemConditions,
+  loadWishBoardCurrentNetWorth,
   type WishBoardRedeemConditions,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
 import { createWishBoardItem } from '@/lib/repositories/wish-board/wish-board';
@@ -53,6 +54,7 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
   );
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [currentNetWorth, setCurrentNetWorth] = useState<number | null>(null);
   const [bindLoading, setBindLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -70,14 +72,20 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
     setBindLoading(true);
     void (async () => {
       try {
-        const [nextProjects, nextTasks] = await Promise.all([getProjects(), getTasks()]);
+        const [nextProjects, nextTasks, nextNetWorth] = await Promise.all([
+          getProjects(),
+          getTasks(),
+          loadWishBoardCurrentNetWorth(),
+        ]);
         if (cancelled) return;
         setProjects(nextProjects);
         setTasks(nextTasks);
+        setCurrentNetWorth(nextNetWorth);
       } catch {
         if (!cancelled) {
           setProjects([]);
           setTasks([]);
+          setCurrentNetWorth(null);
         }
       } finally {
         if (!cancelled) setBindLoading(false);
@@ -207,6 +215,7 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
               onChange={setRedeemConditions}
               projects={projects}
               tasks={tasks}
+              currentNetWorth={currentNetWorth}
               loading={bindLoading}
               textColor={colors.text}
               outline={muted}

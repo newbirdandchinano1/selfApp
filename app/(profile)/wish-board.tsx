@@ -17,6 +17,7 @@ import {
   evaluateWishBoardRedeemEligibilitySync,
   formatWishBoardRedeemConditionsSummary,
   hasWishBoardRedeemConditions,
+  loadWishBoardCurrentNetWorth,
   parseWishBoardRedeemConditions,
   type WishBoardRedeemEligibility,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
@@ -57,6 +58,7 @@ export default function WishBoardScreen() {
   const [redeemRecords, setRedeemRecords] = useState<WishRedeemRecord[]>([]);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [currentNetWorth, setCurrentNetWorth] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [addVisible, setAddVisible] = useState(false);
@@ -73,10 +75,16 @@ export default function WishBoardScreen() {
   const eligibilityById = useMemo(() => {
     const map = new Map<string, WishBoardRedeemEligibility>();
     for (const item of activeItems) {
-      map.set(item.id, evaluateWishBoardRedeemEligibilitySync(item, balance, entityLookups));
+      map.set(
+        item.id,
+        evaluateWishBoardRedeemEligibilitySync(item, balance, {
+          ...entityLookups,
+          currentNetWorth,
+        }),
+      );
     }
     return map;
-  }, [activeItems, balance, entityLookups]);
+  }, [activeItems, balance, currentNetWorth, entityLookups]);
 
   const reload = useCallback(
     async (forceApi = false) => {
@@ -84,18 +92,21 @@ export default function WishBoardScreen() {
       try {
         await wrapLoad(async () => {
           await fetchProfileWishBoard({ offlineFallback: true });
-          const [nextBalance, nextItems, nextRedeems, nextProjects, nextTasks] = await Promise.all([
-            getPointsBalance(),
-            listWishBoardItems(),
-            listWishRedeemRecords(),
-            getProjects(),
-            getTasks(),
-          ]);
+          const [nextBalance, nextItems, nextRedeems, nextProjects, nextTasks, nextNetWorth] =
+            await Promise.all([
+              getPointsBalance(),
+              listWishBoardItems(),
+              listWishRedeemRecords(),
+              getProjects(),
+              getTasks(),
+              loadWishBoardCurrentNetWorth(),
+            ]);
           setBalance(nextBalance);
           setItems(nextItems);
           setRedeemRecords(nextRedeems);
           setProjects(nextProjects);
           setTasks(nextTasks);
+          setCurrentNetWorth(nextNetWorth);
         }, forceApi);
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : '加载失败');
@@ -153,7 +164,10 @@ export default function WishBoardScreen() {
       if (item.wish_type === 'once' && item.status === 'redeemed') return;
       const eligibility =
         eligibilityById.get(item.id) ??
-        evaluateWishBoardRedeemEligibilitySync(item, balance, entityLookups);
+        evaluateWishBoardRedeemEligibilitySync(item, balance, {
+          ...entityLookups,
+          currentNetWorth,
+        });
       if (!eligibility.ok) {
         Alert.alert(
           !eligibility.pointsOk ? '积分不足' : '兑换条件未满足',
@@ -164,7 +178,7 @@ export default function WishBoardScreen() {
       const typeHint = item.wish_type === 'repeat' ? '（可重复兑换）' : '';
       const condHint =
         eligibility.checks.length > 0
-          ? `\n同时确认已绑定的 ${eligibility.checks.length} 项条件均已完成。`
+          ? `\n同时确认附加条件均已满足（含绑定项与净资产门槛）。`
           : '';
       Alert.alert(
         '兑换心愿',
@@ -192,7 +206,7 @@ export default function WishBoardScreen() {
         ],
       );
     },
-    [balance, eligibilityById, entityLookups, notifyAncestorsDataChanged, reload],
+    [balance, currentNetWorth, eligibilityById, entityLookups, notifyAncestorsDataChanged, reload],
   );
 
   const onDelete = useCallback(
@@ -346,11 +360,17 @@ export default function WishBoardScreen() {
           const condSummary = hasWishBoardRedeemConditions(conditions)
             ? formatWishBoardRedeemConditionsSummary(conditions, entityLookups)
             : null;
+          const netWorthPendingOnly =
+            Boolean(eligibility && !eligibility.conditionsOk) &&
+            eligibility!.pending.length > 0 &&
+            eligibility!.pending.every(p => p.kind === 'net_worth');
           const blockedLabel = !eligibility?.pointsOk
             ? '积分不足'
-            : eligibility && !eligibility.conditionsOk
-              ? '条件未满'
-              : '不可兑换';
+            : netWorthPendingOnly
+              ? '净资产不足'
+              : eligibility && !eligibility.conditionsOk
+                ? '条件未满'
+                : '不可兑换';
           return (
             <Swipeable
               key={item.id}
@@ -397,7 +417,9 @@ export default function WishBoardScreen() {
                           numberOfLines={2}>
                           {condSummary}
                           {eligibility && !eligibility.conditionsOk
-                            ? ` · 未完成 ${eligibility.pending.length}`
+                            ? netWorthPendingOnly
+                              ? ' · 净资产未达标'
+                              : ` · 未完成 ${eligibility.pending.length}`
                             : eligibility?.conditionsOk
                               ? ' · 已达成'
                               : ''}

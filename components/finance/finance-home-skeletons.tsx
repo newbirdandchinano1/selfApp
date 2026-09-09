@@ -43,6 +43,17 @@ export function FinanceBudgetCardSkeleton({ colors }: FinanceSkeletonProps) {
 
       <View style={[styles.trendDivider, { backgroundColor: colors.outline }]} />
 
+      <View style={styles.savingsGoalBlock}>
+        <View style={styles.savingsGoalHeader}>
+          <Skeleton width={88} height={13} borderRadius={6} />
+          <Skeleton width={64} height={20} borderRadius={10} />
+        </View>
+        <Skeleton width={120} height={22} borderRadius={8} />
+        <Skeleton width="100%" height={52} borderRadius={12} style={styles.savingsGoalDaily} />
+      </View>
+
+      <View style={[styles.trendDivider, { backgroundColor: colors.outline }]} />
+
       <View style={styles.trendBlock}>
         <View style={styles.trendHeader}>
           <Skeleton width={64} height={15} borderRadius={6} />
@@ -171,6 +182,17 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     marginTop: 18,
     marginBottom: 14,
+  },
+  savingsGoalBlock: {
+    gap: 10,
+  },
+  savingsGoalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  savingsGoalDaily: {
+    marginTop: 2,
   },
   trendBlock: {
     gap: 8,

@@ -123,6 +123,26 @@ export function computeNetWorthTotal(accounts: FinanceAccountBalanceRow[]): numb
   return computeTotalAssets(accounts) - computeTotalLiabilitiesAbs(accounts);
 }
 
+/** 与资产页「当前净资产」一致：向 0 截断到分。 */
+export function truncMoneyToFen(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  const factor = 100;
+  return value >= 0
+    ? Math.floor(value * factor + 1e-9) / factor
+    : Math.ceil(value * factor - 1e-9) / factor;
+}
+
+export function formatSignedMoneyTrunc2(value: number): string {
+  const truncated = truncMoneyToFen(value);
+  const abs = Math.abs(truncated);
+  const prefix = truncated < 0 ? '-¥' : '¥';
+  return `${prefix}${abs.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+export function isNetWorthAtLeast(current: number, min: number): boolean {
+  return truncMoneyToFen(current) >= truncMoneyToFen(min);
+}
+
 function netWorthBeforeInstant(
   currentNetWorth: number,
   sortedTxnsDesc: Array<{ ms: number; d: number }>,

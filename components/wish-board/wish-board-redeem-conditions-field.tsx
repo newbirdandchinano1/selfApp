@@ -1,3 +1,5 @@
+import { AppInput } from '@/components/ui';
+import { formatSignedMoneyTrunc2 } from '@/lib/finance-net-worth';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
@@ -7,10 +9,11 @@ import {
   isProjectRedeemConditionMet,
   isTaskRedeemConditionMet,
   isTodoBoundTask,
+  normalizeMinNetWorth,
   type WishBoardRedeemConditions,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
 import { MaterialIcons } from '@expo/vector-icons';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -28,6 +31,8 @@ type WishBoardRedeemConditionsFieldProps = {
   onChange: (next: WishBoardRedeemConditions) => void;
   projects: ProjectRow[];
   tasks: TaskRow[];
+  /** 资产页口径的当前净资产，用于对照提示 */
+  currentNetWorth?: number | null;
   loading?: boolean;
   disabled?: boolean;
   textColor: string;
@@ -137,6 +142,7 @@ export function WishBoardRedeemConditionsField({
   onChange,
   projects,
   tasks,
+  currentNetWorth = null,
   loading = false,
   disabled = false,
   textColor,
@@ -149,6 +155,13 @@ export function WishBoardRedeemConditionsField({
 }: WishBoardRedeemConditionsFieldProps) {
   const [modalKind, setModalKind] = useState<BindKind | null>(null);
   const [draftIds, setDraftIds] = useState<string[]>([]);
+  const [netWorthText, setNetWorthText] = useState(
+    value.min_net_worth == null ? '' : String(value.min_net_worth),
+  );
+
+  useEffect(() => {
+    setNetWorthText(value.min_net_worth == null ? '' : String(value.min_net_worth));
+  }, [value.min_net_worth]);
 
   const projectTasks = useMemo(
     () => tasks.filter(t => isProjectBoundTask(t)),
@@ -199,8 +212,33 @@ export function WishBoardRedeemConditionsField({
   }, [closeModal, draftIds, modalKind, onChange, value]);
 
   const clearAll = useCallback(() => {
+    setNetWorthText('');
     onChange(emptyWishBoardRedeemConditions());
   }, [onChange]);
+
+  const onNetWorthChange = useCallback(
+    (text: string) => {
+      setNetWorthText(text);
+      const trimmed = text.trim();
+      if (!trimmed) {
+        if (value.min_net_worth != null) onChange({ ...value, min_net_worth: null });
+        return;
+      }
+      const parsed = normalizeMinNetWorth(trimmed);
+      if (parsed != null && parsed !== value.min_net_worth) {
+        onChange({ ...value, min_net_worth: parsed });
+      }
+    },
+    [onChange, value],
+  );
+
+  const onNetWorthBlur = useCallback(() => {
+    const parsed = normalizeMinNetWorth(netWorthText);
+    setNetWorthText(parsed == null ? '' : String(parsed));
+    if (parsed !== value.min_net_worth) {
+      onChange({ ...value, min_net_worth: parsed });
+    }
+  }, [netWorthText, onChange, value]);
 
   const modalOptions = useMemo(() => {
     if (modalKind === 'project') {
@@ -246,8 +284,30 @@ export function WishBoardRedeemConditionsField({
         ) : null}
       </View>
       <Text style={[styles.sectionHint, { color: outline }]}>
-        除积分外，还可要求若干项目、任务或待办完成后才能兑换
+        除积分外，还可要求当前净资产达标，或若干项目、任务、待办完成后才能兑换
       </Text>
+
+      <View style={[styles.netWorthBox, { backgroundColor: surfaceLow, borderColor: placeholderColor }]}>
+        <View style={styles.selectLeft}>
+          <MaterialIcons name="account-balance-wallet" size={18} color={primary} />
+          <View style={{ flex: 1, gap: 6 }}>
+            <AppInput
+              label="当前净资产目标值"
+              value={netWorthText}
+              onChangeText={onNetWorthChange}
+              onBlur={onNetWorthBlur}
+              placeholder="留空则不限制"
+              keyboardType="decimal-pad"
+              editable={!disabled}
+              hint={
+                currentNetWorth != null && Number.isFinite(currentNetWorth)
+                  ? `与资产页一致，当前净资产 ${formatSignedMoneyTrunc2(currentNetWorth)}`
+                  : '与资产页「当前净资产」同一口径（总资产 − 总负债）'
+              }
+            />
+          </View>
+        </View>
+      </View>
 
       <BindRow
         kind="project"
@@ -384,6 +444,12 @@ const styles = StyleSheet.create({
   selectLabel: { fontSize: 11, fontWeight: '700' },
   selectValue: { fontSize: 14, fontWeight: '700' },
   selectHint: { fontSize: 11, fontWeight: '600' },
+  netWorthBox: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(15,23,42,0.38)',
