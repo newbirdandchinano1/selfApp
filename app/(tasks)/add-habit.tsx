@@ -1025,7 +1025,7 @@ export default function AddHabitScreen() {
                 />
               </View>
               <Text style={[Typography.caption, styles.breakRewardsHint, { color: colors.textSecondary }]}>
-                破戒扣分：每次记录破戒时扣除；未破戒加分：确认保持戒除后计入；达成加分：达成连续目标后计入
+                破戒扣分：当日记录达到/超过每日目标后，每多记一次才扣除；未破戒加分：确认保持戒除后计入；达成加分：达成连续目标后计入
               </Text>
             </View>
           ) : null}
@@ -1254,7 +1254,7 @@ export default function AddHabitScreen() {
                     {habitKind === 'break' ? (
                       <>
                         <Text style={[Typography.caption, styles.quantifyBreakHint, { color: colors.textSecondary }]}>
-                          当日记录次数低于此值视为达成目标（1 表示零次破戒）
+                          当日记录次数低于此值视为达成目标（1 表示零次破戒）；达到此值起每次破戒才扣分
                         </Text>
                         <NumberControl
                           label="连续目标天数"

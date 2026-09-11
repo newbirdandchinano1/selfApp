@@ -185,6 +185,17 @@ function isBreakHabitCountGoalMet(count: number, dailyGoal: number | null | unde
   return count < threshold;
 }
 
+/**
+ * 戒除次数是否已达/超过每日目标阈值（计入破戒扣分区间）。
+ * 与 UI「failed」一致：count >= dailyGoal（默认 1，即第一次破戒即扣分）。
+ */
+export function isBreakHabitOverDailyGoal(
+  count: number,
+  dailyGoal?: number | null,
+): boolean {
+  return !isBreakHabitCountGoalMet(count, dailyGoal);
+}
+
 function isBreakHabitDayPending(ctx: BreakHabitDayContext): boolean {
   if (ctx.hasDayRecord) return false;
   const ymd = ctx.ymd?.trim();

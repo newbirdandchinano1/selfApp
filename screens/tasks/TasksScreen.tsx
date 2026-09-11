@@ -81,6 +81,7 @@ import {
   applyProjectCompletionPointsReward,
   applyTaskCompletionPointsReward,
   parseBreakHabitReward,
+  syncBreakHabitPenaltyPointsReward,
   syncBuildHabitDayPointsReward,
   syncTaskHabitPeriodPointsReward,
 } from '@/lib/repositories/habits/habit-points-grant';
@@ -4347,7 +4348,7 @@ export default function TasksScreen() {
         // 先解锁，避免积分/刷新期间挡住「再点撤销」
         habitCheckInLockRef.current.delete(item.id);
       }
-      // 养成：当日目标刚达成才发奖；任务：周期目标刚达成时发整包；戒除：记录破戒扣分，达成连续目标由 tryMark 发奖
+      // 养成：当日目标刚达成才发奖；任务：周期目标刚达成时发整包；戒除：超每日目标后每次破戒才扣分，达成连续目标由 tryMark 发奖
       if (increased && item.kind === 'build') {
         await syncBuildHabitDayPointsWithToast({
           habitId: item.id,
@@ -4360,7 +4361,13 @@ export default function TasksScreen() {
         await syncTaskHabitPeriodPointsWithToast(item, wasTaskPeriodMet, logicalTodayYmd);
       } else if (increased && item.kind === 'break') {
         try {
-          await applyBreakHabitReward(item.id, 'penalty', 'earn');
+          await syncBreakHabitPenaltyPointsReward({
+            habitId: item.id,
+            prevCount: item.todayCount,
+            nextCount,
+            dailyGoal: item.dailyGoal,
+            extraData: item.extraData,
+          });
         } catch (e) {
           if (__DEV__) console.warn('[habit-break-penalty]', e);
         }
@@ -4457,7 +4464,7 @@ export default function TasksScreen() {
       } finally {
         habitCheckInLockRef.current.delete(item.id);
       }
-      // 养成：当日目标刚回退才扣回；任务：周期目标刚回退时扣回；戒除：撤销破戒记录返还扣分、撤销保持戒除扣回加分
+      // 养成：当日目标刚回退才扣回；任务：周期目标刚回退时扣回；戒除：撤销超限破戒返还扣分、撤销保持戒除扣回加分
       if (item.kind === 'build' && nextCount < item.todayCount) {
         await syncBuildHabitDayPointsWithToast({
           habitId: item.id,
@@ -4471,7 +4478,13 @@ export default function TasksScreen() {
       } else if (item.kind === 'break') {
         try {
           if (nextCount < item.todayCount) {
-            await applyBreakHabitReward(item.id, 'penalty', 'undo', { forceUndo: true });
+            await syncBreakHabitPenaltyPointsReward({
+              habitId: item.id,
+              prevCount: item.todayCount,
+              nextCount,
+              dailyGoal: item.dailyGoal,
+              extraData: item.extraData,
+            });
           } else if (item.hasTodayRecord && nextCount <= 0) {
             await applyBreakHabitReward(item.id, 'clean', 'undo', { forceUndo: true });
           }

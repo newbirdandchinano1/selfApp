@@ -7,7 +7,10 @@ import {
   applyEntityPointsReward,
 } from '@/lib/repositories/points/completion-points-grant';
 import { getHabitById } from '@/lib/repositories/habits/habit';
-import { isHabitDayGoalMet } from '@/lib/repositories/habits/habit-goal';
+import {
+  isBreakHabitOverDailyGoal,
+  isHabitDayGoalMet,
+} from '@/lib/repositories/habits/habit-goal';
 
 function parseBreakReward(extraData: string | null | undefined, field: 'penalty' | 'clean' | 'goal'): number {
   try {
@@ -141,6 +144,44 @@ export async function applyBreakHabitReward(
     { earnReason: `break_habit_${field}`, undoReason: `break_habit_${field}_undo` },
     { ...opts, extraData, points },
   );
+}
+
+/**
+ * 戒除类破戒扣分：与每日目标联动。
+ * 当日次数未达阈值（slipping）不扣分；达到/超过阈值后，每多记 1 次破戒扣 1 次；
+ * 撤销时对称返还（仅撤销超限区间内的次数才返还）。
+ * @returns 实际变动积分合计；0 表示无配置或未跨入超限区间
+ */
+export async function syncBreakHabitPenaltyPointsReward(params: {
+  habitId: string;
+  prevCount: number;
+  nextCount: number;
+  dailyGoal?: number | null;
+  extraData?: string | null;
+}): Promise<number> {
+  const prev = Math.max(0, Math.floor(params.prevCount));
+  const next = Math.max(0, Math.floor(params.nextCount));
+  if (next === prev) return 0;
+
+  let total = 0;
+  if (next > prev) {
+    for (let count = prev + 1; count <= next; count += 1) {
+      if (!isBreakHabitOverDailyGoal(count, params.dailyGoal)) continue;
+      total += await applyBreakHabitReward(params.habitId, 'penalty', 'earn', {
+        extraData: params.extraData,
+      });
+    }
+    return total;
+  }
+
+  for (let count = prev; count > next; count -= 1) {
+    if (!isBreakHabitOverDailyGoal(count, params.dailyGoal)) continue;
+    total += await applyBreakHabitReward(params.habitId, 'penalty', 'undo', {
+      forceUndo: true,
+      extraData: params.extraData,
+    });
+  }
+  return total;
 }
 
 function applyBreakReward(extraData: string | null | undefined, field: 'penalty' | 'clean' | 'goal'): number {

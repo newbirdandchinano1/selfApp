@@ -34,6 +34,7 @@ import {
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
   applyBreakHabitReward,
+  syncBreakHabitPenaltyPointsReward,
   syncBuildHabitDayPointsReward,
   syncTaskHabitPeriodPointsReward,
 } from '@/lib/repositories/habits/habit-points-grant';
@@ -620,6 +621,7 @@ export default function HabitDetailScreen() {
     setMakeUpSaving(true);
     try {
       const kind = parseHabitKind(habit.extra_data);
+      const prevCount = checkIns[ymd] ?? 0;
       const wasTaskPeriodMet =
         kind === 'task'
           ? isTaskHabitPeriodGoalMet({
@@ -645,7 +647,11 @@ export default function HabitDetailScreen() {
       } else if (kind === 'break') {
         await tryMarkBreakHabitCompleted(habit, logicalTodayYmd);
         try {
-          await applyBreakHabitReward(habit.id, 'penalty', 'earn', {
+          await syncBreakHabitPenaltyPointsReward({
+            habitId: habit.id,
+            prevCount,
+            nextCount,
+            dailyGoal,
             extraData: habit.extra_data,
           });
         } catch (ptsErr) {
@@ -675,6 +681,7 @@ export default function HabitDetailScreen() {
     cancelMakeUpSaving,
     checkIns,
     consumeHabitDetailPressDebounce,
+    dailyGoal,
     focusYmd,
     habit,
     incrementCap,
@@ -730,7 +737,7 @@ export default function HabitDetailScreen() {
         else next[ymd] = nextCount;
         return next;
       });
-      // 养成：当日目标刚回退才扣回；任务：周期目标回退时扣回；戒除：撤销破戒返还扣分 / 撤销保持戒除扣回加分
+      // 养成：当日目标刚回退才扣回；任务：周期目标回退时扣回；戒除：撤销超限破戒返还扣分 / 撤销保持戒除扣回加分
       if (kind === 'build' && ymd === logicalTodayYmd && nextCount < prevCount) {
         try {
           await syncBuildHabitDayPointsReward({
@@ -757,8 +764,11 @@ export default function HabitDetailScreen() {
       } else if (isBreak) {
         try {
           if (nextCount < prevCount) {
-            await applyBreakHabitReward(habit.id, 'penalty', 'undo', {
-              forceUndo: true,
+            await syncBreakHabitPenaltyPointsReward({
+              habitId: habit.id,
+              prevCount,
+              nextCount,
+              dailyGoal,
               extraData: habit.extra_data,
             });
           } else if (wasCleanConfirm) {
