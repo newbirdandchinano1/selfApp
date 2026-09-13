@@ -2118,14 +2118,19 @@ export default function TasksScreen() {
         ...section,
         items: section.items.map((it) => {
           const hasSub = Boolean(it.hasSubHabits || hasActiveSubHabits(it.extraData));
+          const hasLocalToday = todayCounts.has(it.id);
           const localToday = todayCounts.get(it.id);
+          // 非小习惯：优先本地打卡表；无本地行才回退服务端，避免刚打卡后重拉被旧 todayCount 盖掉
           const todayCount = hasSub
             ? it.todayCount
-            : localToday !== undefined
-              ? localToday
+            : hasLocalToday
+              ? (localToday as number)
               : it.todayCount;
+          // 戒除：hasTodayRecord 必须与采用的 todayCount 对齐，否则会出现 count=1 却 pending（破戒徽章消失）
           const hasTodayRecord =
-            it.kind === 'break' ? (recordFlags.get(it.id) ?? false) : undefined;
+            it.kind === 'break'
+              ? recordFlags.get(it.id) ?? (hasLocalToday ? false : todayCount > 0)
+              : undefined;
           let periodProgress = it.periodProgress;
           let periodGoal = it.periodGoal;
           let taskShowPeriodCheck = it.taskShowPeriodCheck;
@@ -4288,7 +4293,7 @@ export default function TasksScreen() {
       void maybeCompleteBreakHabit(habitId);
       void maybeCompleteBuildHabit(habitId);
       void syncHabitBoundTasksForHabit(habitId, nextCount);
-      // 撤销时跳过重拉：否则服务端短暂旧数据会把「已撤销」盖回完成态
+      // 撤销 / 戒除破戒递增时跳过重拉：否则服务端短暂旧数据会把次数与 hasTodayRecord 盖乱
       if (!opts?.skipHabitReload) {
         void maybeRefreshTaskHabitVisibility(habitId);
         scheduleHabitsReload();
@@ -4372,7 +4377,10 @@ export default function TasksScreen() {
           if (__DEV__) console.warn('[habit-break-penalty]', e);
         }
       }
-      runHabitSideEffectsAfterCountChange(item.id, nextCount);
+      runHabitSideEffectsAfterCountChange(item.id, nextCount, {
+        // 戒除与撤销同理：重拉时服务端 todayCount 常滞后，会盖掉本地次数并拆掉 hasTodayRecord
+        skipHabitReload: item.kind === 'break',
+      });
     },
     [
       cancelScheduledHabitsReload,

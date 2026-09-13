@@ -86,13 +86,22 @@ async function readLocalCheckInsForHabit(habitId: string): Promise<Record<string
     [habitId],
   );
   const out: Record<string, number> = {};
+  const deletedDates = new Set<string>();
   for (const r of rows) {
     if (r.sync_status === 'pending_delete') {
-      delete out[r.record_date];
+      if (!Object.prototype.hasOwnProperty.call(out, r.record_date)) {
+        deletedDates.add(r.record_date);
+      }
       continue;
     }
-    const count = r.count ?? 0;
-    if (count >= 0) out[r.record_date] = count;
+    deletedDates.delete(r.record_date);
+    const count = Math.max(0, Math.floor(Number(r.count) || 0));
+    const prev = out[r.record_date];
+    // 同日重复行取较大 count，避免 sync 对齐期间读到旧行把次数打回 1
+    out[r.record_date] = prev == null ? count : Math.max(prev, count);
+  }
+  for (const ymd of deletedDates) {
+    delete out[ymd];
   }
   return out;
 }
@@ -117,46 +126,75 @@ export async function upsertHabitDayCount(
     throw new Error('本地数据库不可用，无法保存打卡');
   }
   if (count <= 0 && !opts?.keepZeroRecord) {
-    const existing = await db.getFirstAsync<{ id: string; sync_status: string }>(
+    const existingRows = await db.getAllAsync<{ id: string; sync_status: string }>(
       `SELECT id, sync_status FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
       [habitId, recordDateYmd],
     );
-    if (!existing) return;
-    if (existing.sync_status === 'pending_create') {
-      await db.runAsync(`DELETE FROM habit_check_ins WHERE id = ?`, [existing.id]);
-    } else {
-      await db.runAsync(
-        `UPDATE habit_check_ins
-          SET updated_at = datetime('now'),
-              sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_delete' ELSE sync_status END
-          WHERE id = ?`,
-        [existing.id],
-      );
+    if (!existingRows?.length) return;
+    for (const existing of existingRows) {
+      if (existing.sync_status === 'pending_create' || existing.sync_status === 'pending_delete') {
+        await db.runAsync(`DELETE FROM habit_check_ins WHERE id = ?`, [existing.id]);
+      } else {
+        await db.runAsync(
+          `UPDATE habit_check_ins
+            SET updated_at = datetime('now'),
+                sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_delete' ELSE sync_status END
+            WHERE id = ?`,
+          [existing.id],
+        );
+      }
     }
     invalidateInflightApiTableFetch('habit_check_ins');
     await pushHabitCheckInChangesToApi({ awaitSync: true });
     return;
   }
 
-  const existing = await db.getFirstAsync<{ id: string; sync_status: string }>(
-    `SELECT id, sync_status FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
+  const existingRows = await db.getAllAsync<{ id: string; sync_status: string; count: number }>(
+    `SELECT id, sync_status, count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
     [habitId, recordDateYmd],
   );
+  const activeRows = (existingRows ?? []).filter((r) => r.sync_status !== 'pending_delete');
+  const deletedRows = (existingRows ?? []).filter((r) => r.sync_status === 'pending_delete');
 
-  if (existing) {
-    // pending_delete 必须复活为 pending_update，否则读侧仍当「无记录」。
+  if (activeRows.length > 0 || deletedRows.length > 0) {
+    // 优先复用有效行中次数最高的，减少对齐期间误删高 count 行
+    const keep =
+      activeRows.slice().sort(
+        (a, b) =>
+          Math.max(0, Math.floor(Number(b.count) || 0)) -
+          Math.max(0, Math.floor(Number(a.count) || 0)),
+      )[0] ?? deletedRows[0];
+    if (!keep) return;
     const nextStatus =
-      existing.sync_status === 'pending_delete' || existing.sync_status === 'synced'
+      keep.sync_status === 'pending_delete' || keep.sync_status === 'synced'
         ? 'pending_update'
-        : existing.sync_status;
+        : keep.sync_status;
     await db.runAsync(
       `UPDATE habit_check_ins
         SET count = ?,
             updated_at = datetime('now'),
             sync_status = ?
         WHERE id = ?`,
-      [count, nextStatus, existing.id]
+      [count, nextStatus, keep.id]
     );
+    // 同日重复行清掉，避免后续读到旧 count
+    for (const extra of [...activeRows, ...deletedRows].filter((r) => r.id !== keep.id)) {
+      if (extra.sync_status === 'pending_create') {
+        await db.runAsync(`DELETE FROM habit_check_ins WHERE id = ?`, [extra.id]);
+      } else {
+        await db.runAsync(
+          `UPDATE habit_check_ins
+            SET updated_at = datetime('now'),
+                sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_delete' ELSE sync_status END
+            WHERE id = ? AND sync_status != 'pending_delete'`,
+          [extra.id],
+        );
+        // 已是 pending_delete 的多余行直接删掉，减少干扰
+        if (extra.sync_status === 'pending_delete') {
+          await db.runAsync(`DELETE FROM habit_check_ins WHERE id = ?`, [extra.id]);
+        }
+      }
+    }
     invalidateInflightApiTableFetch('habit_check_ins');
     await pushHabitCheckInChangesToApi({ awaitSync: true });
     return;
@@ -204,10 +242,14 @@ export async function getHabitDayRecordFlagsForYmd(recordDateYmd: string): Promi
   );
   for (const r of rows ?? []) {
     if (r.sync_status === 'pending_delete') {
-      map.delete(r.habit_id);
+      // 若同日另有有效行，不因 pending_delete 清掉 flag
+      if (!map.has(r.habit_id)) map.set(r.habit_id, false);
     } else {
       map.set(r.habit_id, true);
     }
+  }
+  for (const [habitId, flag] of [...map.entries()]) {
+    if (!flag) map.delete(habitId);
   }
   return map;
 }
@@ -225,12 +267,7 @@ export async function incrementTodayHabitCheckIn(
 ): Promise<IncrementTodayHabitCheckInResult> {
   const boundary = await loadTasksDayBoundary();
   const today = getLogicalLocalYmd(new Date(), boundary);
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
-    [habitId, today]
-  );
-  const cur = row?.count ?? 0;
+  const cur = await getHabitCheckInDbCountForDay(habitId, today);
   if (maxDaily !== null && cur >= maxDaily) return { nextCount: cur, increased: false };
   const next = cur + 1;
   await upsertHabitDayCount(habitId, today, next);
@@ -243,26 +280,28 @@ export async function incrementHabitCheckInForDay(
   recordDateYmd: string,
   maxDaily: number | null
 ): Promise<IncrementTodayHabitCheckInResult> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
-    [habitId, recordDateYmd]
-  );
-  const cur = row?.count ?? 0;
+  const cur = await getHabitCheckInDbCountForDay(habitId, recordDateYmd);
   if (maxDaily !== null && cur >= maxDaily) return { nextCount: cur, increased: false };
   const next = cur + 1;
   await upsertHabitDayCount(habitId, recordDateYmd, next);
   return { nextCount: next, increased: true };
 }
 
-/** 仅数据库中该日有效打卡次数（不含 extra_data 旧字段合并） */
+/** 仅数据库中该日有效打卡次数（不含 extra_data 旧字段合并）；重复行取最大有效 count */
 export async function getHabitCheckInDbCountForDay(habitId: string, recordDateYmd: string): Promise<number> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
+  const rows = await db.getAllAsync<{ count: number; sync_status: string }>(
+    `SELECT count, sync_status FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
     [habitId, recordDateYmd]
   );
-  return row?.count ?? 0;
+  let max = 0;
+  let hasActive = false;
+  for (const r of rows ?? []) {
+    if (r.sync_status === 'pending_delete') continue;
+    hasActive = true;
+    max = Math.max(max, Math.max(0, Math.floor(Number(r.count) || 0)));
+  }
+  return hasActive ? max : 0;
 }
 
 /** 指定日次数 -1；戒除习惯减至 0 时清除记录（回到待确认）。返回新的当日合计次数 */
@@ -271,13 +310,9 @@ export async function decrementHabitCheckInForDay(
   recordDateYmd: string,
   opts?: { breakHabit?: boolean },
 ): Promise<number> {
-  const db = await getDatabase();
-  const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT count FROM habit_check_ins WHERE habit_id = ? AND record_date = ?`,
-    [habitId, recordDateYmd]
-  );
-  const cur = row?.count ?? 0;
-  if (!row) return 0;
+  const hasRecord = await hasHabitCheckInRecordForDay(habitId, recordDateYmd);
+  if (!hasRecord) return 0;
+  const cur = await getHabitCheckInDbCountForDay(habitId, recordDateYmd);
   if (cur <= 0) {
     await upsertHabitDayCount(habitId, recordDateYmd, 0);
     return 0;
@@ -321,18 +356,22 @@ export async function loadHabitCheckInPageData(): Promise<{
   const checkStats = new Map<string, HabitCheckInListStat>();
 
   for (const r of checkIns) {
+    const count = Math.max(0, Math.floor(Number(r.count) || 0));
     const prevMap = checkInsMaps.get(r.habit_id) ?? {};
-    prevMap[r.record_date] = r.count;
+    const prevDay = prevMap[r.record_date];
+    const isNewDay = prevDay == null;
+    prevMap[r.record_date] = prevDay == null ? count : Math.max(prevDay, count);
     checkInsMaps.set(r.habit_id, prevMap);
 
     const prevStat = checkStats.get(r.habit_id);
     if (prevStat) {
-      prevStat.achievedDays += 1;
+      if (isNewDay) prevStat.achievedDays += 1;
     } else {
       checkStats.set(r.habit_id, { habitId: r.habit_id, achievedDays: 1, todayCount: 0 });
     }
     if (r.record_date === today) {
-      checkStats.get(r.habit_id)!.todayCount = r.count;
+      const stat = checkStats.get(r.habit_id)!;
+      stat.todayCount = Math.max(stat.todayCount, count);
     }
   }
 
@@ -344,6 +383,7 @@ export async function getTodayHabitCountsMap(logicalTodayYmd?: string): Promise<
   const boundary = await loadTasksDayBoundary();
   const today = logicalTodayYmd ?? getLogicalLocalYmd(new Date(), boundary);
   const map = new Map<string, number>();
+  const deletedOnly = new Set<string>();
   const db = await getDatabase();
   if (!db) return map;
   const rows = await db.getAllAsync<{ habit_id: string; count: number; sync_status: string }>(
@@ -353,10 +393,17 @@ export async function getTodayHabitCountsMap(logicalTodayYmd?: string): Promise<
   for (const r of rows ?? []) {
     // 本地刚撤销、尚未推完删除时，按 0 次处理，避免任务页重拉仍信服务端旧完成态
     if (r.sync_status === 'pending_delete') {
-      map.set(r.habit_id, 0);
+      if (!map.has(r.habit_id)) deletedOnly.add(r.habit_id);
       continue;
     }
-    map.set(r.habit_id, r.count ?? 0);
+    deletedOnly.delete(r.habit_id);
+    const count = Math.max(0, Math.floor(Number(r.count) || 0));
+    const prev = map.get(r.habit_id);
+    // 同日重复行取较大 count，避免 sync 对齐期间读到旧行
+    map.set(r.habit_id, prev == null ? count : Math.max(prev, count));
+  }
+  for (const habitId of deletedOnly) {
+    if (!map.has(habitId)) map.set(habitId, 0);
   }
   return map;
 }
@@ -395,14 +442,16 @@ export async function getHabitCheckInCountsByDateRange(
   );
   for (const r of checkIns ?? []) {
     if (r.sync_status === 'pending_delete') continue;
-    if (!habitIds.has(r.habit_id) || (r.count ?? 0) < 0) continue;
+    const count = Math.max(0, Math.floor(Number(r.count) || 0));
+    if (!habitIds.has(r.habit_id) || count < 0) continue;
     if (!isYmdInRange(r.record_date, startYmd, endYmd)) continue;
     let day = out.get(r.record_date);
     if (!day) {
       day = new Map();
       out.set(r.record_date, day);
     }
-    day.set(r.habit_id, r.count);
+    const prev = day.get(r.habit_id);
+    day.set(r.habit_id, prev == null ? count : Math.max(prev, count));
   }
   return out;
 }

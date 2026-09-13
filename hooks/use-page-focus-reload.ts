@@ -2,6 +2,7 @@ import { useFocusEffect } from "expo-router/react-navigation";
 import { useCallback, useEffect, useRef } from 'react';
 import { AppState, InteractionManager, type AppStateStatus } from 'react-native';
 
+import { isDayBoundaryClearInProgress } from '@/lib/api-local-clear';
 import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 
 /**
@@ -42,22 +43,48 @@ export function usePageFocusReload(
 
   useEffect(() => {
     let cancelAfterInteractions: { cancel: () => void } | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
+    const clearRetry = () => {
+      if (retryTimer != null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    };
+
+    const tryReload = (attempt = 0) => {
+      if (cancelled) return;
+      if (!isFocusedRef.current) return;
+      // 跨日界清库进行中：稍后重试，避免读空库/锁竞争卡死
+      if (isDayBoundaryClearInProgress()) {
+        if (attempt >= 40) return;
+        clearRetry();
+        retryTimer = setTimeout(() => tryReload(attempt + 1), 250);
+        return;
+      }
+      if (shouldSkipPageFocusApiRefresh(pageKey)) return;
+      void reloadRef.current?.();
+    };
+
     const onChange = (next: AppStateStatus) => {
       if (next !== 'active') return;
       if (!isFocusedRef.current) return;
-      if (shouldSkipPageFocusApiRefresh(pageKey)) return;
       // 回前台先让首帧画完，再拉数，减轻「切回来卡死」
       cancelAfterInteractions?.cancel();
+      clearRetry();
       cancelAfterInteractions = InteractionManager.runAfterInteractions(() => {
         cancelAfterInteractions = null;
-        if (!isFocusedRef.current) return;
-        if (shouldSkipPageFocusApiRefresh(pageKey)) return;
-        void reloadRef.current?.();
+        // 略晚于日界 gate/清库调度，降低同拍竞态
+        clearRetry();
+        retryTimer = setTimeout(() => tryReload(0), 120);
       });
     };
     const sub = AppState.addEventListener('change', onChange);
     return () => {
+      cancelled = true;
       cancelAfterInteractions?.cancel();
+      clearRetry();
       sub.remove();
     };
   }, [pageKey]);

@@ -42,6 +42,7 @@ import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-selection';
 import { loadThemePreference } from '@/lib/theme-preference';
 import { runInitialRestSyncIfNeeded, type InitialSyncProgress } from '@/lib/api-initial-sync';
+import { clearLocalDatabaseOnDayBoundaryIfNeeded } from '@/lib/api-local-clear';
 import { hydratePageApiSession } from '@/lib/page-api-session';
 import {
   clearExpoSandboxNotifications,
@@ -168,6 +169,13 @@ function RootLayoutInner() {
       await initDatabase();
 
       if (Platform.OS !== 'web') {
+        // 尽早执行：过夜冷启动若已跨日界则清库（须在 initDatabase 之后）
+        try {
+          await clearLocalDatabaseOnDayBoundaryIfNeeded();
+        } catch (e) {
+          console.warn('[bootstrap] 跨日界清库失败', e);
+        }
+
         const syncResult = await runInitialRestSyncIfNeeded({
           onProgress: (progress) => {
             if (mounted) setSyncProgress(progress);

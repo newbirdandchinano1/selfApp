@@ -14,7 +14,15 @@ import {
     type MemoFormatAction,
     type TextSelection,
 } from '@/lib/memo-format';
-import { createMemo, getMemo, MEMO_BODY_MAX, MEMO_TITLE_MAX, updateMemo } from '@/lib/memos';
+import {
+    createMemo,
+    getMemo,
+    listMemoDimensions,
+    MEMO_BODY_MAX,
+    MEMO_TITLE_MAX,
+    updateMemo,
+    type MemoDimension,
+} from '@/lib/memos';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -22,6 +30,7 @@ import {
     ActivityIndicator,
     Alert,
     KeyboardAvoidingView,
+    Modal,
     Platform,
     Pressable,
     ScrollView,
@@ -75,13 +84,33 @@ export default function MemoEditScreen() {
   const [bodyModel, setBodyModel] = useState<MemoEditModel>(emptyMemoEditModel);
   const [bodySelection, setBodySelection] = useState<TextSelection>({ start: 0, end: 0 });
   const [controlledSelection, setControlledSelection] = useState<TextSelection | undefined>(undefined);
-  const [loading, setLoading] = useState(!isNew);
+  const [dimensions, setDimensions] = useState<MemoDimension[]>([]);
+  const [selectedDimensionId, setSelectedDimensionId] = useState(dimensionId);
+  const [categoryModalVisible, setCategoryModalVisible] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  const selectedDimensionName = useMemo(() => {
+    const hit = dimensions.find(d => d.id === selectedDimensionId);
+    return hit?.name.trim() || '';
+  }, [dimensions, selectedDimensionId]);
+
   const reload = useCallback(async () => {
-    if (isNew || !id) return;
     setLoading(true);
     try {
+      const dims = await listMemoDimensions();
+      setDimensions(dims);
+
+      if (isNew) {
+        const initialId =
+          dimensionId && dims.some(d => d.id === dimensionId)
+            ? dimensionId
+            : dims[0]?.id ?? '';
+        setSelectedDimensionId(initialId);
+        return;
+      }
+
+      if (!id) return;
       const row = await getMemo(id);
       if (!row) {
         Alert.alert('未找到', '该备忘可能已删除', [{ text: '确定', onPress: () => router.back() }]);
@@ -89,22 +118,22 @@ export default function MemoEditScreen() {
       }
       setTitle(row.title);
       setBodyModel(parseMemoBodyToEditModel(row.body));
+      const rowDimId = row.dimension_id?.trim() || '';
+      setSelectedDimensionId(
+        rowDimId && dims.some(d => d.id === rowDimId) ? rowDimId : dims[0]?.id ?? '',
+      );
     } catch {
       Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
     } finally {
       setLoading(false);
     }
-  }, [id, isNew, router]);
+  }, [dimensionId, id, isNew, router]);
 
   const { refreshControl } = usePullToRefresh(reload);
 
   useEffect(() => {
-    if (isNew || !id) {
-      setLoading(false);
-      return;
-    }
     void reload();
-  }, [id, isNew, reload]);
+  }, [reload]);
 
   const onFormatAction = useCallback(
     (action: MemoFormatAction) => {
@@ -132,18 +161,17 @@ export default function MemoEditScreen() {
       Alert.alert('无法保存', '请填写标题或正文');
       return;
     }
+    if (!selectedDimensionId) {
+      Alert.alert('无法保存', '请先选择备忘分类');
+      return;
+    }
     setSaving(true);
     try {
       if (isNew) {
-        if (!dimensionId) {
-          Alert.alert('无法保存', '缺少维度信息，请从备忘录列表选择维度后再新建。');
-          setSaving(false);
-          return;
-        }
-        const created = await createMemo({ title, body, dimensionId });
+        const created = await createMemo({ title, body, dimensionId: selectedDimensionId });
         startMemoAiReviewInBackground(created);
       } else {
-        const ok = await updateMemo(id, { title, body });
+        const ok = await updateMemo(id, { title, body, dimensionId: selectedDimensionId });
         if (!ok) {
           Alert.alert('保存失败', '该备忘可能已删除');
           setSaving(false);
@@ -151,12 +179,12 @@ export default function MemoEditScreen() {
         }
       }
       router.back();
-    } catch {
-      Alert.alert('保存失败', '请稍后重试');
+    } catch (e) {
+      Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后重试');
     } finally {
       setSaving(false);
     }
-  }, [bodyModel, dimensionId, id, isNew, router, title]);
+  }, [bodyModel, id, isNew, router, selectedDimensionId, title]);
 
   if (!id || (!isNew && id === '')) {
     return (
@@ -212,7 +240,37 @@ export default function MemoEditScreen() {
             ]}
             showsVerticalScrollIndicator={false}
           >
-            <Text style={[styles.label, { color: outline }]}>标题（可选，最多 {MEMO_TITLE_MAX} 字）</Text>
+            <Text style={[styles.label, { color: outline }]}>分类</Text>
+            <Pressable
+              onPress={() => {
+                if (dimensions.length === 0) {
+                  Alert.alert('暂无分类', '请先在备忘录列表中新建分类（维度），再编辑备忘。');
+                  return;
+                }
+                setCategoryModalVisible(true);
+              }}
+              disabled={saving || dimensions.length === 0}
+              style={({ pressed }) => [
+                styles.categoryPicker,
+                {
+                  borderColor: borderSoft,
+                  backgroundColor: inputBg,
+                  opacity: pressed || saving || dimensions.length === 0 ? 0.75 : 1,
+                },
+              ]}
+            >
+              <View style={styles.categoryPickerLeft}>
+                <MaterialIcons name="folder" size={18} color={primary} />
+                <Text style={[styles.categoryPickerText, { color: selectedDimensionName ? text : outline }]}>
+                  {selectedDimensionName || '请选择分类'}
+                </Text>
+              </View>
+              <MaterialIcons name="expand-more" size={22} color={outline} />
+            </Pressable>
+
+            <Text style={[styles.label, { color: outline, marginTop: 18 }]}>
+              标题（可选，最多 {MEMO_TITLE_MAX} 字）
+            </Text>
             <TextInput
               value={title}
               onChangeText={x => setTitle(x.length > MEMO_TITLE_MAX ? x.slice(0, MEMO_TITLE_MAX) : x)}
@@ -257,6 +315,48 @@ export default function MemoEditScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       )}
+
+      <Modal
+        transparent
+        visible={categoryModalVisible}
+        animationType="fade"
+        onRequestClose={() => setCategoryModalVisible(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setCategoryModalVisible(false)}>
+          <Pressable
+            onPress={() => {}}
+            style={[styles.modalCard, { backgroundColor: isDark ? '#111827' : '#ffffff', borderColor: borderSoft }]}
+          >
+            <Text style={[styles.modalTitle, { color: text }]}>选择备忘分类</Text>
+            <ScrollView style={styles.modalList} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              {dimensions.map(dim => (
+                <Pressable
+                  key={dim.id}
+                  onPress={() => {
+                    setSelectedDimensionId(dim.id);
+                    setCategoryModalVisible(false);
+                  }}
+                  style={({ pressed }) => [
+                    styles.modalItem,
+                    { borderBottomColor: borderSoft },
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <View style={styles.modalItemLeft}>
+                    <MaterialIcons name="folder" size={18} color={primary} />
+                    <Text style={[styles.modalItemText, { color: text }]}>
+                      {dim.name.trim() || '未命名分类'}
+                    </Text>
+                  </View>
+                  {selectedDimensionId === dim.id ? (
+                    <MaterialIcons name="check" size={20} color={primary} />
+                  ) : null}
+                </Pressable>
+              ))}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -297,6 +397,18 @@ const styles = StyleSheet.create({
   scrollInner: { paddingHorizontal: 18, paddingTop: 20 },
   label: { fontSize: 12, fontWeight: '800', letterSpacing: 0.6, marginBottom: 8 },
   formatHint: { fontSize: 11, fontWeight: '600', lineHeight: 16, marginBottom: 10 },
+  categoryPicker: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  categoryPickerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  categoryPickerText: { fontSize: 15, fontWeight: '700', flexShrink: 1 },
   inputTitle: {
     borderWidth: 1,
     borderRadius: 14,
@@ -310,4 +422,33 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     overflow: 'hidden',
   },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingTop: 18,
+    paddingHorizontal: 8,
+    paddingBottom: 8,
+    maxHeight: '70%',
+  },
+  modalTitle: { fontSize: 17, fontWeight: '900', paddingHorizontal: 10, marginBottom: 8 },
+  modalList: { maxHeight: 360 },
+  modalItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  modalItemLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  modalItemText: { fontSize: 15, fontWeight: '700', flexShrink: 1 },
 });

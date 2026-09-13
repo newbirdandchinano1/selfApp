@@ -1,3 +1,4 @@
+import { parseRewardPointsFromExtraData } from '@/lib/reward-points';
 import type { TaskTreeNode } from '../tasks/task';
 import type { ProjectRow } from './project.types';
 import { parseProjectExtraData, type ProjectExtraDataBag } from './project-extra-data';
@@ -153,14 +154,23 @@ export function validatePrerequisiteSelection(
   return { ok: true };
 }
 
-/** 项目列表排序：上锁置底；其余与原先一致（已完成在后、按截止日期） */
+/**
+ * 项目列表排序（结构性置底优先，再按业务键级联）：
+ * 1. 上锁 → 置底
+ * 2. 已完成 / 归档 → 靠后
+ * 3. 紧急程度 priority 降序（0/未设、1 不紧急不重要最低 → 靠后）
+ * 4. 有截止日期的在前；同有截止则越早越前；无截止 → 靠后
+ * 5. 积分奖励降序（无积分 / 0 → 靠后）
+ * 6. updated_at 降序作最后平局
+ */
 export function sortProjectsForList(rows: ProjectRow[], lockedProjectIds?: Set<string>): ProjectRow[] {
   const safeTime = (value: string | null | undefined) => {
     if (!value) return 0;
     const ms = Date.parse(value);
     return Number.isNaN(ms) ? 0 : ms;
   };
-  const getDueMs = (project: ProjectRow): number => {
+  /** 有效截止毫秒；无截止返回 null（排序时沉底） */
+  const getDueMs = (project: ProjectRow): number | null => {
     const scheduleRaw = project.extra_data;
     if (scheduleRaw) {
       try {
@@ -177,9 +187,9 @@ export function sortProjectsForList(rows: ProjectRow[], lockedProjectIds?: Set<s
     }
     if (project.due_date?.trim()) {
       const ms = Date.parse(project.due_date);
-      return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+      if (!Number.isNaN(ms)) return ms;
     }
-    return Number.POSITIVE_INFINITY;
+    return null;
   };
 
   const clone = [...rows];
@@ -192,13 +202,24 @@ export function sortProjectsForList(rows: ProjectRow[], lockedProjectIds?: Set<s
     const doneB = b.status === 'completed' || b.status === 'archived';
     if (doneA !== doneB) return doneA ? 1 : -1;
 
+    // 紧急程度最低（含 0 未设）自然靠后
     const priorityA = a.priority ?? 0;
     const priorityB = b.priority ?? 0;
     if (priorityA !== priorityB) return priorityB - priorityA;
 
+    // 无截止日期靠后；都有则越早越前
     const dueA = getDueMs(a);
     const dueB = getDueMs(b);
-    if (dueA !== dueB) return dueA - dueB;
+    const hasDueA = dueA != null;
+    const hasDueB = dueB != null;
+    if (hasDueA !== hasDueB) return hasDueA ? -1 : 1;
+    if (hasDueA && hasDueB && dueA !== dueB) return dueA - dueB;
+
+    // 无积分 / 0 分靠后
+    const rewardA = parseRewardPointsFromExtraData(a.extra_data);
+    const rewardB = parseRewardPointsFromExtraData(b.extra_data);
+    if (rewardA !== rewardB) return rewardB - rewardA;
+
     return safeTime(b.updated_at) - safeTime(a.updated_at);
   });
   return clone;

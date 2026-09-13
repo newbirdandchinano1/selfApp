@@ -216,6 +216,14 @@ async function upsertRowsToLocalTable(
             continue;
           }
         }
+        // habit_check_ins：次数只增不减地合并，避免快速连点后旧列表/旧快照把 10 盖回 1
+        if (table === 'habit_check_ins' && existing && existing.sync_status !== 'pending_delete') {
+          const localCount = Math.max(0, Math.floor(Number(existing.count) || 0));
+          const apiCount = Math.max(0, Math.floor(Number(obj.count) || 0));
+          if (localCount > apiCount) {
+            continue;
+          }
+        }
         if (existing) {
           if (table === 'finance_accounts' && existing) {
             const localLiability = isFinanceAccountRowLiability(existing);

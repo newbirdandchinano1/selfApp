@@ -1,4 +1,9 @@
 import {
+  armDayBoundaryClearGate,
+  disarmDayBoundaryClearGateIfIdle,
+  scheduleClearLocalDatabaseOnDayBoundaryIfNeeded,
+} from '@/lib/api-local-clear';
+import {
   DEFAULT_DAY_BOUNDARY_PAGES,
   DEFAULT_TASKS_DAY_BOUNDARY,
   getLogicalLocalYmd,
@@ -11,7 +16,6 @@ import {
   type DayBoundaryPageId,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
-import { clearPageLoadedInSession } from '@/lib/page-api-session';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
 
@@ -90,14 +94,6 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const bump = () => setDayClock((c) => c + 1);
 
-    const schedule = () => {
-      if (timeout) clearTimeout(timeout);
-      timeout = setTimeout(() => {
-        bump();
-        schedule();
-      }, msUntilNextRelevantCrossing(boundary));
-    };
-
     const currentDayKey = () => {
       const now = new Date();
       const configuredYmd = getLogicalLocalYmd(now, boundary);
@@ -106,12 +102,34 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     };
 
     /** 回前台只重排定时器；仅真正跨日界时 bump，避免每次切前台触发全局重渲染 */
+    const onDayKeyAdvanced = () => {
+      // 先于 bump/reload 加闸，避免清库与页面读库互抢导致卡死/闪退
+      armDayBoundaryClearGate();
+      bump();
+    };
+
+    const schedule = () => {
+      if (timeout) clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        const key = currentDayKey();
+        if (lastEmittedKeyRef.current == null) {
+          lastEmittedKeyRef.current = key;
+        } else if (lastEmittedKeyRef.current !== key) {
+          onDayKeyAdvanced();
+        } else {
+          // 同 key 仍 bump 一次以刷新「今天」派生值；不清库、不加闸
+          bump();
+        }
+        schedule();
+      }, msUntilNextRelevantCrossing(boundary));
+    };
+
     const onForeground = () => {
       const key = currentDayKey();
       if (lastEmittedKeyRef.current == null) {
         lastEmittedKeyRef.current = key;
       } else if (lastEmittedKeyRef.current !== key) {
-        bump();
+        onDayKeyAdvanced();
       }
       schedule();
     };
@@ -162,7 +180,10 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
 
   const logicalTodayDate = useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
 
-  /** 进程内任一有效「今天」变化：清会话加载标记，使各 Tab 下次聚焦会重读数据 */
+  /**
+   * 进程内任一有效「今天」变化：延后清库 + 清会话标记。
+   * 不可在回前台同拍同步清库，否则会与 Tab reload 抢 SQLite 导致卡死/闪退。
+   */
   useEffect(() => {
     const now = new Date();
     const configuredYmd = getLogicalLocalYmd(now, boundary);
@@ -170,19 +191,15 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     const key = `${configuredYmd}|${midnightYmd}`;
     if (lastEmittedKeyRef.current === null) {
       lastEmittedKeyRef.current = key;
+      disarmDayBoundaryClearGateIfIdle();
       return;
     }
-    if (lastEmittedKeyRef.current === key) return;
+    if (lastEmittedKeyRef.current === key) {
+      disarmDayBoundaryClearGateIfIdle();
+      return;
+    }
     lastEmittedKeyRef.current = key;
-    clearPageLoadedInSession();
-    // 跨日界：延后同步戒除连续目标完成态，避免回前台卡死
-    void import('@/lib/repositories/habits/habit-break-success')
-      .then(({ scheduleSyncBreakHabitCompletions }) => {
-        scheduleSyncBreakHabitCompletions({ force: true });
-      })
-      .catch((err) => {
-        if (__DEV__) console.warn('[day-boundary] syncBreakHabitCompletions', err);
-      });
+    scheduleClearLocalDatabaseOnDayBoundaryIfNeeded();
   }, [boundary, dayClock]);
 
   const setBoundary = useCallback(async (next: TasksDayBoundary) => {

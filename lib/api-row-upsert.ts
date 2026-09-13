@@ -191,11 +191,39 @@ async function realignLocalHabitCheckInId(localId: string, serverId: string): Pr
 
   beginCloudSqliteDirtyIgnoreBatch();
   try {
-    const existingServerRow = await db.getFirstAsync<{ id: string }>(
-      `SELECT id FROM habit_check_ins WHERE id = ? LIMIT 1`,
+    const existingServerRow = await db.getFirstAsync<{ id: string; count: number; sync_status: string }>(
+      `SELECT id, count, sync_status FROM habit_check_ins WHERE id = ? LIMIT 1`,
       [serverId],
     );
     if (existingServerRow) {
+      const localRow = await db.getFirstAsync<{ count: number; sync_status: string }>(
+        `SELECT count, sync_status FROM habit_check_ins WHERE id = ? LIMIT 1`,
+        [localId],
+      );
+      // 合并到保留行：取较大 count，避免删掉本地更高次数后只剩服务端旧值
+      if (localRow && localRow.sync_status !== 'pending_delete') {
+        const mergedCount = Math.max(
+          Math.max(0, Math.floor(Number(existingServerRow.count) || 0)),
+          Math.max(0, Math.floor(Number(localRow.count) || 0)),
+        );
+        const needsUpdate =
+          mergedCount !== Math.max(0, Math.floor(Number(existingServerRow.count) || 0)) ||
+          existingServerRow.sync_status === 'pending_delete';
+        if (needsUpdate) {
+          await db.runAsync(
+            `UPDATE habit_check_ins
+              SET count = ?,
+                  updated_at = datetime('now'),
+                  sync_status = CASE
+                    WHEN sync_status = 'pending_delete' THEN 'pending_update'
+                    WHEN sync_status = 'synced' THEN 'pending_update'
+                    ELSE sync_status
+                  END
+              WHERE id = ?`,
+            [mergedCount, serverId],
+          );
+        }
+      }
       await db.runAsync(`DELETE FROM habit_check_ins WHERE id = ?`, [localId]);
       return;
     }

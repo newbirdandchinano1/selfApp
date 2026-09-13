@@ -206,12 +206,25 @@ async function markLocalRowsSynced(
       if (!pk) continue;
       if (row.sync_status === 'pending_delete') {
         await db.runAsync(`DELETE FROM ${quoteIdent(table)} WHERE ${quoteIdent(pkCol)} = ?`, [pk]);
-      } else {
-        await db.runAsync(
-          `UPDATE ${quoteIdent(table)} SET sync_status = 'synced' WHERE ${quoteIdent(pkCol)} = ?`,
-          [pk],
-        );
+        continue;
       }
+      // habit_check_ins：若本地 count 已比上传快照更新，保留 pending，避免旧快照把更高次数标成 synced 后被下行覆盖
+      if (table === 'habit_check_ins' && row.count != null) {
+        const uploadedCount = Math.max(0, Math.floor(Number(row.count) || 0));
+        await db.runAsync(
+          `UPDATE habit_check_ins
+            SET sync_status = 'synced'
+            WHERE id = ?
+              AND sync_status IN ('pending_create', 'pending_update')
+              AND count = ?`,
+          [pk, uploadedCount],
+        );
+        continue;
+      }
+      await db.runAsync(
+        `UPDATE ${quoteIdent(table)} SET sync_status = 'synced' WHERE ${quoteIdent(pkCol)} = ?`,
+        [pk],
+      );
     }
   } finally {
     endCloudSqliteDirtyIgnoreBatch();
@@ -542,15 +555,33 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
 
       for (const row of rows) {
         try {
-          const action = await upsertRowToApi(table, row, pkCols, {
+          // habit_check_ins：上传前重读本地，避免 flush 开始时快照仍是 count=1，而连点后已到更高次数
+          let uploadRow = row;
+          if (table === 'habit_check_ins') {
+            const pkNow = rowPrimaryKeyValue(row, pkCols);
+            if (pkNow) {
+              const fresh = await fetchRowByPk(table, pkCols[0] ?? 'id', pkNow);
+              if (!fresh || fresh.sync_status === 'synced') {
+                continue;
+              }
+              if (fresh.sync_status === 'pending_delete') {
+                uploadRow = fresh;
+              } else {
+                const snapCount = Math.max(0, Math.floor(Number(row.count) || 0));
+                const freshCount = Math.max(0, Math.floor(Number(fresh.count) || 0));
+                uploadRow = freshCount >= snapCount ? fresh : { ...fresh, count: snapCount };
+              }
+            }
+          }
+          const action = await upsertRowToApi(table, uploadRow, pkCols, {
             uploadedPkByTable,
             fkRefs: fkRefsByTable.get(table) ?? [],
             rowsByTable,
             pkColsByTable,
             fkRefsByTable,
           });
-          uploadedRows.push(row);
-          const pk = rowPrimaryKeyValue(row, pkCols);
+          uploadedRows.push(uploadRow);
+          const pk = rowPrimaryKeyValue(uploadRow, pkCols);
           if (pk) uploadedPks.add(pk);
           if (__DEV__) console.log(`[api incremental] ${table} ${action}`, pk);
         } catch (e) {
