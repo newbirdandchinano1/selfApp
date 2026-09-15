@@ -12,6 +12,7 @@ import { consumeAddTaskResult } from '@/lib/add-task-bridge';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
+import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import {
   ComposerPriorityMatrix,
   taskPriorityKeyToNumber,
@@ -45,7 +46,13 @@ import {
   endCloudSqliteDirtyIgnoreBatch,
 } from '@/lib/cloud-sql-dirty-track';
 import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
+import {
+  getProjectTags,
+  getTagIdsByProjectId,
+  setProjectTagIds,
+} from '@/lib/repositories/projects/project-tag';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
 import {
   countIncompleteTasksByProjectId,
   createTask,
@@ -441,6 +448,9 @@ export default function EditProjectScreen() {
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
+  const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
+  const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
+  const [tagsLoading, setTagsLoading] = React.useState(true);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
@@ -621,6 +631,12 @@ export default function EditProjectScreen() {
       setRepeatText(loadedSchedule?.repeatOption === '不重复' ? '' : loadedSchedule?.repeatSummary ?? '');
       setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
       setPrerequisiteProjectIds(parsePrerequisiteProjectIds(project.extra_data));
+      try {
+        setSelectedTagIds(await getTagIdsByProjectId(projectId));
+      } catch (tagErr) {
+        console.warn('加载项目标签关联失败', tagErr);
+        setSelectedTagIds([]);
+      }
       setIsLongTermProject(getIsLongTermProject(project.extra_data));
       setRewardPointsText(String(parseRewardPointsFromExtraData(project.extra_data)));
       const projectTasks = await getTasksByProjectId(projectId);
@@ -663,6 +679,15 @@ export default function EditProjectScreen() {
           setAllProjects([]);
         } finally {
           setProjectsLoading(false);
+        }
+        setTagsLoading(true);
+        try {
+          setAllTags(await getProjectTags());
+        } catch (error) {
+          console.warn('加载项目标签失败', error);
+          setAllTags([]);
+        } finally {
+          setTagsLoading(false);
         }
       }, forceApi);
     },
@@ -733,6 +758,15 @@ export default function EditProjectScreen() {
         if (!consumedSchedule && !consumedAddTask) {
           await reloadProjectSnapshotOnlyRef.current();
           await reloadSubtasksOnlyRef.current();
+        }
+        try {
+          const tags = await getProjectTags();
+          if (!cancelled) {
+            setAllTags(tags);
+            setSelectedTagIds((prev) => prev.filter((id) => tags.some((t) => t.id === id)));
+          }
+        } catch (error) {
+          console.warn('刷新项目标签失败', error);
         }
       })();
       return () => {
@@ -889,6 +923,7 @@ export default function EditProjectScreen() {
         due_date: projectDueDate,
         extra_data: nextExtraAfterTasks,
       });
+      await setProjectTagIds(projectId, selectedTagIds);
       const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleToSave), {
         end: projectDueDate ?? undefined,
       });
@@ -1000,6 +1035,7 @@ export default function EditProjectScreen() {
     router,
     saving,
     scheduleMeta,
+    selectedTagIds,
     subtasks,
     title,
   ]);
@@ -1236,6 +1272,24 @@ export default function EditProjectScreen() {
               </View>
               <MaterialIcons name="expand-more" size={20} color={outline} />
             </Pressable>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: outline }]}>项目标签</Text>
+            <ProjectTagPickerField
+              selectedIds={selectedTagIds}
+              allTags={allTags}
+              loading={tagsLoading || loading}
+              disabled={loading || saving}
+              onChange={setSelectedTagIds}
+              textColor={theme.text}
+              outline={outline}
+              placeholderColor={outlineVariant}
+              primary={primary}
+              surfaceLow={surfaceLow}
+              surfaceLowest={surfaceLowest}
+              isDark={isDark}
+            />
           </View>
 
           <View style={[styles.section, { opacity: loading ? 0.65 : 1 }]} pointerEvents={loading || saving ? 'none' : 'auto'}>

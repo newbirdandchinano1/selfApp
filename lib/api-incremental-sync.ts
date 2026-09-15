@@ -44,6 +44,9 @@ export const REST_SKIP_TABLES = new Set([
   'admin_users',
   /** 本地迁移/回填标记，仅设备内有效，见 API_LOCAL_READ_ONLY_TABLES */
   'app_meta',
+  /** 项目标签：后端表尚未上线前仅本地存储，避免推送失败 */
+  'project_tags',
+  'project_tag_links',
 ]);
 
 const API_DIRTY_STATE_KEY = 'selfapp:api-dirty-tables-v1';

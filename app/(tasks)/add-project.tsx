@@ -15,6 +15,7 @@ import {
   type TaskPriorityKey,
 } from '@/components/composer';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
+import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -30,7 +31,9 @@ import {
 } from '@/lib/repositories/projects/project-prerequisites';
 import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
 import { createProject, getProjectCategories, getProjects, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
+import { getProjectTags, setProjectTagIds } from '@/lib/repositories/projects/project-tag';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
 import { dueDateFromScheduleMeta } from '@/lib/schedule-inherit';
 import { mergeLongTermProjectIntoExtraData } from '@/lib/long-term-task';
 import {
@@ -182,6 +185,9 @@ export default function AddProjectScreen() {
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
+  const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
+  const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
+  const [tagsLoading, setTagsLoading] = React.useState(true);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
@@ -280,6 +286,15 @@ export default function AddProjectScreen() {
   useFocusEffect(
     React.useCallback(() => {
       readScheduleResult();
+      void (async () => {
+        try {
+          const tags = await getProjectTags();
+          setAllTags(tags);
+          setSelectedTagIds((prev) => prev.filter((id) => tags.some((t) => t.id === id)));
+        } catch (error) {
+          console.warn('刷新项目标签失败', error);
+        }
+      })();
     }, [readScheduleResult]),
   );
 
@@ -301,6 +316,15 @@ export default function AddProjectScreen() {
         setAllProjects([]);
       } finally {
         setProjectsLoading(false);
+      }
+      setTagsLoading(true);
+      try {
+        setAllTags(await getProjectTags());
+      } catch (error) {
+        console.warn('加载项目标签失败', error);
+        setAllTags([]);
+      } finally {
+        setTagsLoading(false);
       }
     }, forceApi);
   }, [wrapLoad]);
@@ -357,6 +381,7 @@ export default function AddProjectScreen() {
 
     setCreating(true);
     try {
+      const projectId = buildProjectId();
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
       const extra = mergePrerequisiteIdsIntoExtraData({ schedule: scheduleToSave }, prerequisiteProjectIds);
       const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(extra), isLongTermProject);
@@ -365,7 +390,7 @@ export default function AddProjectScreen() {
         normalizeRewardPoints(rewardPointsText),
       );
       await createProject({
-        id: buildProjectId(),
+        id: projectId,
         name: trimmedTitle,
         category_id: selectedCategoryId,
         priority: taskPriorityKeyToNumber(priority),
@@ -373,6 +398,7 @@ export default function AddProjectScreen() {
         due_date: dueDateFromScheduleMeta(scheduleToSave, extractDueDate(deadlineText)),
         extra_data: withReward,
       });
+      await setProjectTagIds(projectId, selectedTagIds);
       try {
         await markPendingTablesDirty(['projects']);
         await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
@@ -400,6 +426,7 @@ export default function AddProjectScreen() {
     router,
     scheduleMeta,
     selectedCategoryId,
+    selectedTagIds,
     title,
   ]);
 
@@ -451,6 +478,30 @@ export default function AddProjectScreen() {
                 onPress={() => setCategoryModalVisible(true)}
                 accessibilityLabel="选择项目分类"
               />
+            </ComposerSection>
+
+            <ComposerSection>
+              <ComposerSectionHead
+                accentColor={colors.primary}
+                title="项目标签"
+                description="可贴 0 到多个标签；可在标签管理中新建"
+                rightIcon="local-offer"
+              />
+              <ComposerEditorialCard>
+                <ProjectTagPickerField
+                  selectedIds={selectedTagIds}
+                  allTags={allTags}
+                  loading={tagsLoading}
+                  onChange={setSelectedTagIds}
+                  textColor={colors.text}
+                  outline={colors.textSecondary}
+                  placeholderColor={colors.textMuted}
+                  primary={colors.primary}
+                  surfaceLow={colors.input}
+                  surfaceLowest={colors.surfaceSubtle}
+                  isDark={isDark}
+                />
+              </ComposerEditorialCard>
             </ComposerSection>
 
             <ComposerPriorityMatrix value={priority} onChange={setPriority} />

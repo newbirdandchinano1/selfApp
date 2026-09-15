@@ -137,6 +137,8 @@ export async function deleteProject(id: string) {
      WHERE project_id = ?`,
     [id]
   );
+  const { softDeleteProjectTagLinksForProject } = await import('./project-tag');
+  await softDeleteProjectTagLinksForProject(id);
   const result = await db.runAsync(
     `UPDATE projects
      SET updated_at = datetime('now'), sync_status = 'pending_delete'

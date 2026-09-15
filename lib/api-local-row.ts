@@ -10,6 +10,8 @@ const LOCAL_WRITE_ENTITY_LABELS: Record<string, string> = {
   projects: '项目',
   task_categories: '任务分类',
   project_categories: '项目分类',
+  project_tags: '项目标签',
+  project_tag_links: '项目标签关联',
 };
 
 /**

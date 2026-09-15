@@ -313,6 +313,7 @@ function RootLayoutInner() {
             <Stack.Screen name="recipe-edit/[id]" />
             <Stack.Screen name="zhipu-api-test" />
             <Stack.Screen name="category-sort" />
+            <Stack.Screen name="project-tags" />
             <Stack.Screen name="screenshot" />
             <Stack.Screen name="auto-ledger" />
           </Stack>

@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 42;
+export const DB_VERSION = 43;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -532,6 +532,29 @@ export async function initDatabase() {
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
       extra_data TEXT,
       FOREIGN KEY (category_id) REFERENCES project_categories(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_tags (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#64748B',
+      description TEXT,
+      weight INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS project_tag_links (
+      id TEXT PRIMARY KEY NOT NULL,
+      project_id TEXT NOT NULL,
+      tag_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (tag_id) REFERENCES project_tags(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS tasks (
@@ -1246,6 +1269,11 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
     CREATE INDEX IF NOT EXISTS idx_projects_due_date ON projects(due_date);
     CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_project_tags_weight ON project_tags(weight);
+    CREATE INDEX IF NOT EXISTS idx_project_tags_updated_at ON project_tags(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_project_tag_links_project_id ON project_tag_links(project_id);
+    CREATE INDEX IF NOT EXISTS idx_project_tag_links_tag_id ON project_tag_links(tag_id);
+    CREATE INDEX IF NOT EXISTS idx_project_tag_links_updated_at ON project_tag_links(updated_at);
     CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_category_id ON tasks(category_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_parent_task_id ON tasks(parent_task_id);
@@ -1524,6 +1552,8 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS task_execution_events;
     DROP TABLE IF EXISTS task_items;
     DROP TABLE IF EXISTS tasks;
+    DROP TABLE IF EXISTS project_tag_links;
+    DROP TABLE IF EXISTS project_tags;
     DROP TABLE IF EXISTS projects;
     DROP TABLE IF EXISTS task_categories;
     DROP TABLE IF EXISTS project_categories;

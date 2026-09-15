@@ -110,6 +110,8 @@ import {
   updateProject,
   updateProjectCategory,
 } from '@/lib/repositories/projects/project';
+import { getTagsByProjectIds } from '@/lib/repositories/projects/project-tag';
+import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
 import {
   buildProjectLockMap,
   sortProjectsForList,
@@ -649,6 +651,75 @@ function patchHabitSectionsCount(
     items: sec.items.map((it) => {
       if (it.id !== habitId) return it;
       return applyHabitCountPatch(it, todayCount, periodDelta, opts);
+    }),
+  }));
+}
+
+/** 用本地打卡表覆盖网格次数 / 戒除记录态 / 任务周期进度（不打 habits-grid） */
+function overlayHabitSectionsWithLocalCheckIns(
+  sections: HabitSection[],
+  opts: {
+    logicalTodayYmd: string;
+    recordFlags: Map<string, boolean>;
+    todayCounts: Map<string, number>;
+    checkInsMaps: Map<string, Record<string, number>>;
+  },
+): HabitSection[] {
+  const { logicalTodayYmd, recordFlags, todayCounts, checkInsMaps } = opts;
+  return sections.map((section) => ({
+    ...section,
+    items: section.items.map((it) => {
+      const hasSub = Boolean(it.hasSubHabits || hasActiveSubHabits(it.extraData));
+      const hasLocalToday = todayCounts.has(it.id);
+      const localToday = todayCounts.get(it.id);
+      const todayCount = hasSub
+        ? it.todayCount
+        : hasLocalToday
+          ? (localToday as number)
+          : it.todayCount;
+      const hasTodayRecord =
+        it.kind === 'break'
+          ? recordFlags.get(it.id) ?? (hasLocalToday ? false : todayCount > 0)
+          : undefined;
+      let periodProgress = it.periodProgress;
+      let periodGoal = it.periodGoal;
+      let taskShowPeriodCheck = it.taskShowPeriodCheck;
+      let taskCompletionCount = it.taskCompletionCount ?? 0;
+      if (it.kind === 'task') {
+        const localMap = checkInsMaps.get(it.id) ?? {};
+        if (!hasSub) {
+          const view = getTaskHabitTasksViewState({
+            extraData: it.extraData,
+            checkIns: localMap,
+            logicalYmd: logicalTodayYmd,
+          });
+          if (view) {
+            periodProgress = view.periodProgress;
+            periodGoal = view.periodGoal;
+            taskShowPeriodCheck = view.showPeriodCheckOnViewDay;
+          }
+        }
+        taskCompletionCount = countTaskHabitPeriodCompletions({
+          extraData: it.extraData,
+          checkIns: localMap,
+          logicalYmd: logicalTodayYmd,
+        });
+      }
+      return applyHabitCountPatch(
+        {
+          ...it,
+          periodProgress,
+          periodGoal,
+          taskShowPeriodCheck,
+          taskCompletionCount,
+        },
+        todayCount,
+        0,
+        {
+          hasTodayRecord,
+          logicalTodayYmd,
+        },
+      );
     }),
   }));
 }
@@ -1733,6 +1804,9 @@ export default function TasksScreen() {
   const [mainListView, setMainListView] = React.useState<TasksMainListView>('projects');
   const [projects, setProjects] = React.useState<ProjectRow[]>([]);
   const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
+  const [projectTagsByProjectId, setProjectTagsByProjectId] = React.useState<
+    Map<string, ProjectTagRow[]>
+  >(() => new Map());
   const [standaloneTodos, setStandaloneTodos] = React.useState<TaskRow[]>([]);
   const [matrixWeekTasks, setMatrixWeekTasks] = React.useState<TaskRow[]>([]);
   const [todayFrogs, setTodayFrogs] = React.useState<TaskRow[]>([]);
@@ -1903,6 +1977,19 @@ export default function TasksScreen() {
     return ids;
   }, [projectLockMap]);
 
+  const projectTagWeightById = React.useMemo(() => {
+    const map = new Map<string, number>();
+    projectTagsByProjectId.forEach((tags, projectId) => {
+      let max = 0;
+      for (const tag of tags) {
+        const w = typeof tag.weight === 'number' && Number.isFinite(tag.weight) ? tag.weight : 0;
+        if (w > max) max = w;
+      }
+      map.set(projectId, max);
+    });
+    return map;
+  }, [projectTagsByProjectId]);
+
   const projectsShownInList = React.useMemo(() => {
     const base =
       projectTab === 'all'
@@ -1910,8 +1997,8 @@ export default function TasksScreen() {
         : projectTab === INBOX_PROJECT_CATEGORY_ID
           ? projects.filter((p) => isProjectInInboxCategory(p.category_id))
           : projects.filter((p) => p.category_id === projectTab);
-    return sortProjectsForList(base, lockedProjectIds);
-  }, [lockedProjectIds, projects, projectTab]);
+    return sortProjectsForList(base, lockedProjectIds, projectTagWeightById);
+  }, [lockedProjectIds, projectTagWeightById, projects, projectTab]);
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
@@ -1956,6 +2043,24 @@ export default function TasksScreen() {
       return [];
     }
   }, []);
+
+  const refreshProjectTags = React.useCallback(async (projectRows?: ProjectRow[]) => {
+    const ids = (projectRows ?? projectsRef.current).map((p) => p.id);
+    if (ids.length === 0) {
+      setProjectTagsByProjectId(new Map());
+      return;
+    }
+    try {
+      setProjectTagsByProjectId(await getTagsByProjectIds(ids));
+    } catch (err) {
+      console.warn('加载项目标签失败', err);
+      setProjectTagsByProjectId(new Map());
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void refreshProjectTags(projects);
+  }, [projects, refreshProjectTags]);
 
   const loadExpandedProjectState = React.useCallback(async () => {
     try {
@@ -2114,80 +2219,39 @@ export default function TasksScreen() {
         loadHabitCheckInPageData(),
       ]);
       if (generation !== habitLoadGenerationRef.current) return;
-      const sections = (data.sections as HabitSection[]).map((section) => ({
+      const baseSections = (data.sections as HabitSection[]).map((section) => ({
         ...section,
-        items: section.items.map((it) => {
-          const hasSub = Boolean(it.hasSubHabits || hasActiveSubHabits(it.extraData));
-          const hasLocalToday = todayCounts.has(it.id);
-          const localToday = todayCounts.get(it.id);
-          // 非小习惯：优先本地打卡表；无本地行才回退服务端，避免刚打卡后重拉被旧 todayCount 盖掉
-          const todayCount = hasSub
-            ? it.todayCount
-            : hasLocalToday
-              ? (localToday as number)
-              : it.todayCount;
-          // 戒除：hasTodayRecord 必须与采用的 todayCount 对齐，否则会出现 count=1 却 pending（破戒徽章消失）
-          const hasTodayRecord =
+        items: section.items.map((it) => ({
+          ...it,
+          note: it.note ?? null,
+          rewardPoints:
             it.kind === 'break'
-              ? recordFlags.get(it.id) ?? (hasLocalToday ? false : todayCount > 0)
-              : undefined;
-          let periodProgress = it.periodProgress;
-          let periodGoal = it.periodGoal;
-          let taskShowPeriodCheck = it.taskShowPeriodCheck;
-          let taskCompletionCount = it.taskCompletionCount ?? 0;
-          if (it.kind === 'task') {
-            const localMap = checkInPage.checkInsMaps.get(it.id) ?? {};
-            if (!hasSub) {
-              const view = getTaskHabitTasksViewState({
-                extraData: it.extraData,
-                checkIns: localMap,
-                logicalYmd: logicalTodayYmd,
-              });
-              if (view) {
-                periodProgress = view.periodProgress;
-                periodGoal = view.periodGoal;
-                taskShowPeriodCheck = view.showPeriodCheckOnViewDay;
-              }
-            }
-            taskCompletionCount = countTaskHabitPeriodCompletions({
-              extraData: it.extraData,
-              checkIns: localMap,
-              logicalYmd: logicalTodayYmd,
-            });
-          }
-          return applyHabitCountPatch(
-            {
-              ...it,
-              note: it.note ?? null,
-              rewardPoints:
-                it.kind === 'break'
-                  ? (() => {
-                      const penalty = parseBreakHabitReward(it.extraData, 'penalty');
-                      return penalty === 0 ? 0 : -Math.abs(penalty);
-                    })()
-                  : normalizeRewardPoints(it.rewardPoints),
-              periodProgress,
-              periodGoal,
-              taskShowPeriodCheck,
-              taskCompletionCount,
-            },
-            todayCount,
-            0,
-            {
-              hasTodayRecord,
-              logicalTodayYmd,
-            },
-          );
-        }),
+              ? (() => {
+                  const penalty = parseBreakHabitReward(it.extraData, 'penalty');
+                  return penalty === 0 ? 0 : -Math.abs(penalty);
+                })()
+              : normalizeRewardPoints(it.rewardPoints),
+        })),
       }));
+      const sections = overlayHabitSectionsWithLocalCheckIns(baseSections, {
+        logicalTodayYmd,
+        recordFlags,
+        todayCounts,
+        checkInsMaps: checkInPage.checkInsMaps,
+      });
       if (generation !== habitLoadGenerationRef.current) return;
       setHabitLookupById(
         new Map(
           sections.flatMap((s) => s.items).map((it) => [it.id, { name: it.name, icon: it.icon }]),
         ),
       );
-      setHabitSections(sections);
+      setHabitSections((prev) => {
+        // 再校验一次：避免 await 之后、setState 之前 generation 已递增，仍用陈旧网格盖掉打卡态
+        if (generation !== habitLoadGenerationRef.current) return prev;
+        return sections;
+      });
       setExpandedHabitSections((prev) => {
+        if (generation !== habitLoadGenerationRef.current) return prev;
         const next = { ...prev };
         for (const s of sections) {
           if (typeof next[s.id] !== 'boolean') next[s.id] = true;
@@ -2201,6 +2265,31 @@ export default function TasksScreen() {
       setHabitLookupById(new Map());
     }
   }, [dayBoundary, logicalTodayYmd]);
+
+  /** 打卡落库后：只读本地表刷新卡片态，避免 awaitSync 期间被陈旧 habits-grid 盖回 */
+  const refreshHabitSectionsFromLocalCheckIns = React.useCallback(async () => {
+    const generation = habitLoadGenerationRef.current;
+    try {
+      const [recordFlags, todayCounts, checkInPage] = await Promise.all([
+        getHabitDayRecordFlagsForYmd(logicalTodayYmd),
+        getTodayHabitCountsMap(logicalTodayYmd),
+        loadHabitCheckInPageData(),
+      ]);
+      if (generation !== habitLoadGenerationRef.current) return;
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setHabitSections((prev) => {
+        if (generation !== habitLoadGenerationRef.current) return prev;
+        return overlayHabitSectionsWithLocalCheckIns(prev, {
+          logicalTodayYmd,
+          recordFlags,
+          todayCounts,
+          checkInsMaps: checkInPage.checkInsMaps,
+        });
+      });
+    } catch (err) {
+      if (__DEV__) console.warn('[habits] 本地打卡态刷新失败', err);
+    }
+  }, [logicalTodayYmd]);
 
   const loadProjectTasks = React.useCallback(
     async (
@@ -4293,7 +4382,9 @@ export default function TasksScreen() {
       void maybeCompleteBreakHabit(habitId);
       void maybeCompleteBuildHabit(habitId);
       void syncHabitBoundTasksForHabit(habitId, nextCount);
-      // 撤销 / 戒除破戒递增时跳过重拉：否则服务端短暂旧数据会把次数与 hasTodayRecord 盖乱
+      // 先按本地打卡表回写卡片（戒除/任务都依赖，避免乐观更新被并发 loadHabits 盖掉后不再恢复）
+      void refreshHabitSectionsFromLocalCheckIns();
+      // 撤销 / 戒除破戒递增时跳过 habits-grid：服务端 todayCount 常滞后
       if (!opts?.skipHabitReload) {
         void maybeRefreshTaskHabitVisibility(habitId);
         scheduleHabitsReload();
@@ -4304,6 +4395,7 @@ export default function TasksScreen() {
       maybeCompleteBreakHabit,
       maybeCompleteBuildHabit,
       maybeRefreshTaskHabitVisibility,
+      refreshHabitSectionsFromLocalCheckIns,
       scheduleHabitsReload,
       syncHabitBoundTasksForHabit,
     ]
@@ -4331,11 +4423,13 @@ export default function TasksScreen() {
         const result = await incrementTodayHabitCheckIn(item.id, item.incrementCap);
         nextCount = result.nextCount;
         increased = result.increased;
-        if (!optimistic || nextCount !== optimistic.nextCount) {
-          patchHabitTodayCount(item.id, nextCount, increased && item.kind === 'task' ? 1 : 0, {
-            hasTodayRecord: item.kind === 'break' ? true : undefined,
-          });
-        }
+        // 落库后作废同步窗口内启动的 loadHabits，并强制回写（勿因与乐观值相同而跳过）
+        cancelScheduledHabitsReload();
+        habitLoadGenerationRef.current += 1;
+        // periodDelta=0：避免乐观已 +1 时再叠一次；任务周期进度由本地表刷新绝对对齐
+        patchHabitTodayCount(item.id, nextCount, 0, {
+          hasTodayRecord: item.kind === 'break' ? true : undefined,
+        });
         if (increased) void playHabitCheckInDing();
         else if (!optimistic) {
           Alert.alert(
@@ -4406,6 +4500,9 @@ export default function TasksScreen() {
       patchHabitTodayCount(item.id, 0, 0, { hasTodayRecord: true });
       try {
         await confirmBreakHabitDayClean(item.id, logicalTodayYmd);
+        cancelScheduledHabitsReload();
+        habitLoadGenerationRef.current += 1;
+        patchHabitTodayCount(item.id, 0, 0, { hasTodayRecord: true });
       } catch (err) {
         console.warn('确认保持戒除失败', err);
         restoreHabitGridItem(item);
@@ -4455,9 +4552,10 @@ export default function TasksScreen() {
         nextCount = await decrementTodayHabitCheckIn(item.id, {
           breakHabit: item.kind === 'break',
         });
-        const periodDelta = item.kind === 'task' && nextCount < item.todayCount ? -1 : 0;
-        // 戒除「保持戒除」撤销时次数仍为 0，但必须清掉 hasTodayRecord
-        patchHabitTodayCount(item.id, nextCount, periodDelta, {
+        cancelScheduledHabitsReload();
+        habitLoadGenerationRef.current += 1;
+        // 戒除「保持戒除」撤销时次数仍为 0，但必须清掉 hasTodayRecord；周期进度交给本地刷新
+        patchHabitTodayCount(item.id, nextCount, 0, {
           hasTodayRecord:
             item.kind === 'break'
               ? nextCount > 0
@@ -6277,6 +6375,7 @@ export default function TasksScreen() {
                   const isScheduleExpired = !isCompleted && isProjectScheduleExpired(project, todayYmd);
                   const noteText = project.note?.trim();
                   const categoryLabel = !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? '收集箱' : projectCategoryMap.get(project.category_id) ?? '未分类';
+                  const projectTags = projectTagsByProjectId.get(project.id) ?? [];
                   const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
                   const hasRepeat = !!schedule?.repeatOption && schedule.repeatOption !== '不重复';
                   const projectRewardPoints = parseRewardPointsFromExtraData(project.extra_data);
@@ -6897,6 +6996,62 @@ export default function TasksScreen() {
                                   {categoryLabel}
                                 </Text>
                               </View>
+                              {projectTags.slice(0, 3).map((tag) => (
+                                <View
+                                  key={tag.id}
+                                  style={[
+                                    styles.projectMetaChip,
+                                    {
+                                      backgroundColor: isCompleted
+                                        ? isDark
+                                          ? 'rgba(148,163,184,0.16)'
+                                          : 'rgba(114,119,133,0.1)'
+                                        : `${tag.color}18`,
+                                      borderColor: isCompleted
+                                        ? isDark
+                                          ? 'rgba(148,163,184,0.36)'
+                                          : 'rgba(114,119,133,0.24)'
+                                        : `${tag.color}44`,
+                                    },
+                                  ]}>
+                                  <View
+                                    style={{
+                                      width: 7,
+                                      height: 7,
+                                      borderRadius: 3.5,
+                                      backgroundColor: isCompleted ? doneMuted : tag.color,
+                                    }}
+                                  />
+                                  <Text
+                                    style={[
+                                      styles.projectMetaChipText,
+                                      { color: isCompleted ? doneMuted : tag.color },
+                                    ]}
+                                    numberOfLines={1}>
+                                    {tag.name}
+                                  </Text>
+                                </View>
+                              ))}
+                              {projectTags.length > 3 ? (
+                                <View
+                                  style={[
+                                    styles.projectMetaChip,
+                                    {
+                                      backgroundColor: isDark
+                                        ? 'rgba(148,163,184,0.16)'
+                                        : 'rgba(114,119,133,0.1)',
+                                      borderColor: isDark
+                                        ? 'rgba(148,163,184,0.36)'
+                                        : 'rgba(114,119,133,0.24)',
+                                    },
+                                  ]}>
+                                  <Text
+                                    style={[styles.projectMetaChipText, { color: outline }]}
+                                    numberOfLines={1}>
+                                    +{projectTags.length - 3}
+                                  </Text>
+                                </View>
+                              ) : null}
                             </View>
                             {isLocked && (lockInfo?.unmetPrerequisiteNames.length ?? 0) > 0 ? (
                               <Text style={[styles.projectLockHint, { color: outline }]} numberOfLines={2}>
@@ -7383,6 +7538,10 @@ export default function TasksScreen() {
                   { icon: 'sort', label: '排序分类', color: secondary, onPress: () => {
                     closeCategoryMenu();
                     router.push({ pathname: '/category-sort', params: { scope: 'project' } });
+                  } },
+                  { icon: 'local-offer', label: '管理标签', color: tertiary, onPress: () => {
+                    closeCategoryMenu();
+                    router.push('/project-tags');
                   } },
                   { icon: 'edit', label: '修改分类', color: tertiary, onPress: () => {
                     if (!activeCategoryId) {
