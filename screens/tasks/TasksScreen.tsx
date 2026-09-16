@@ -65,6 +65,7 @@ import {
 import {
   countTaskHabitPeriodCompletions,
   getTaskHabitTasksViewState,
+  hasLocalCheckInsInTaskPeriod,
 } from '@/lib/repositories/habits/habit-task-period';
 import {
   breakSlipBadgeColor,
@@ -687,7 +688,13 @@ function overlayHabitSectionsWithLocalCheckIns(
       let taskCompletionCount = it.taskCompletionCount ?? 0;
       if (it.kind === 'task') {
         const localMap = checkInsMaps.get(it.id) ?? {};
-        if (!hasSub) {
+        // 首页不拉全量打卡：仅当本周期本地有记录时才用本地重算，否则保留 habits-grid 进度
+        const canTrustLocalPeriod = hasLocalCheckInsInTaskPeriod({
+          extraData: it.extraData,
+          checkIns: localMap,
+          logicalYmd: logicalTodayYmd,
+        });
+        if (!hasSub && canTrustLocalPeriod) {
           const view = getTaskHabitTasksViewState({
             extraData: it.extraData,
             checkIns: localMap,
@@ -699,11 +706,13 @@ function overlayHabitSectionsWithLocalCheckIns(
             taskShowPeriodCheck = view.showPeriodCheckOnViewDay;
           }
         }
-        taskCompletionCount = countTaskHabitPeriodCompletions({
-          extraData: it.extraData,
-          checkIns: localMap,
-          logicalYmd: logicalTodayYmd,
-        });
+        if (canTrustLocalPeriod) {
+          taskCompletionCount = countTaskHabitPeriodCompletions({
+            extraData: it.extraData,
+            checkIns: localMap,
+            logicalYmd: logicalTodayYmd,
+          });
+        }
       }
       return applyHabitCountPatch(
         {

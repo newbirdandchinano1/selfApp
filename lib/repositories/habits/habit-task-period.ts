@@ -142,6 +142,31 @@ export type TaskHabitTasksViewState = {
   hiddenOnViewDay: boolean;
 };
 
+/**
+ * 本地打卡是否覆盖当前重复周期内至少一天。
+ * 任务首页不再全量同步 habit_check_ins：若本周期本地无记录，应保留 habits-grid 的 periodProgress，
+ * 避免用空 map 重算把服务端进度盖成 0。
+ */
+export function hasLocalCheckInsInTaskPeriod(params: {
+  extraData: string | null;
+  checkIns: Record<string, number>;
+  logicalYmd: string;
+}): boolean {
+  if (parseHabitKind(params.extraData) !== 'task') return false;
+  const period = parseTaskRepeatPeriod(params.extraData);
+  const { startYmd } = getTaskPeriodRange(params.logicalYmd, period);
+  for (const [ymd, count] of Object.entries(params.checkIns)) {
+    if (
+      ymd >= startYmd &&
+      ymd <= params.logicalYmd &&
+      Math.max(0, Math.floor(Number(count) || 0)) > 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** 任务页 / 日历：周期型完成任务在指定逻辑日的展示与隐藏状态 */
 export function getTaskHabitTasksViewState(params: {
   extraData: string | null;
