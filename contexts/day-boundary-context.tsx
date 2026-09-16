@@ -1,8 +1,4 @@
-import {
-  armDayBoundaryClearGate,
-  disarmDayBoundaryClearGateIfIdle,
-  scheduleClearLocalDatabaseOnDayBoundaryIfNeeded,
-} from '@/lib/api-local-clear';
+import { clearPageLoadedInSession } from '@/lib/page-api-session';
 import {
   DEFAULT_DAY_BOUNDARY_PAGES,
   DEFAULT_TASKS_DAY_BOUNDARY,
@@ -101,10 +97,9 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
       return `${configuredYmd}|${midnightYmd}`;
     };
 
-    /** 回前台只重排定时器；仅真正跨日界时 bump，避免每次切前台触发全局重渲染 */
     const onDayKeyAdvanced = () => {
-      // 先于 bump/reload 加闸，避免清库与页面读库互抢导致卡死/闪退
-      armDayBoundaryClearGate();
+      lastEmittedKeyRef.current = currentDayKey();
+      clearPageLoadedInSession();
       bump();
     };
 
@@ -117,7 +112,6 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
         } else if (lastEmittedKeyRef.current !== key) {
           onDayKeyAdvanced();
         } else {
-          // 同 key 仍 bump 一次以刷新「今天」派生值；不清库、不加闸
           bump();
         }
         schedule();
@@ -180,10 +174,6 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
 
   const logicalTodayDate = useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
 
-  /**
-   * 进程内任一有效「今天」变化：延后清库 + 清会话标记。
-   * 不可在回前台同拍同步清库，否则会与 Tab reload 抢 SQLite 导致卡死/闪退。
-   */
   useEffect(() => {
     const now = new Date();
     const configuredYmd = getLogicalLocalYmd(now, boundary);
@@ -191,15 +181,11 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     const key = `${configuredYmd}|${midnightYmd}`;
     if (lastEmittedKeyRef.current === null) {
       lastEmittedKeyRef.current = key;
-      disarmDayBoundaryClearGateIfIdle();
       return;
     }
-    if (lastEmittedKeyRef.current === key) {
-      disarmDayBoundaryClearGateIfIdle();
-      return;
-    }
+    if (lastEmittedKeyRef.current === key) return;
     lastEmittedKeyRef.current = key;
-    scheduleClearLocalDatabaseOnDayBoundaryIfNeeded();
+    clearPageLoadedInSession();
   }, [boundary, dayClock]);
 
   const setBoundary = useCallback(async (next: TasksDayBoundary) => {

@@ -36,7 +36,7 @@ async function runFlush(opts?: { rethrow?: boolean; awaitSync?: boolean; quiet?:
 export async function pushLocalChangesToApi(opts?: {
   /** 为 true 时等待推送完成；默认后台执行不阻塞 UI */
   awaitSync?: boolean;
-  /** 等待推送但不挂全局加载蒙层（回前台/跨日界清库等） */
+  /** 等待推送但不挂全局加载蒙层（后台静默同步等） */
   quiet?: boolean;
   rethrow?: boolean;
 }): Promise<void> {

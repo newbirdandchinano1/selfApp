@@ -2,8 +2,10 @@ import { useFocusEffect } from "expo-router/react-navigation";
 import { useCallback, useEffect, useRef } from 'react';
 import { AppState, InteractionManager, type AppStateStatus } from 'react-native';
 
-import { isDayBoundaryClearInProgress } from '@/lib/api-local-clear';
 import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
+
+/** 极短后台（切多任务预览等）不触发重载，避免无意义抢主线程 */
+const SHORT_BACKGROUND_SKIP_MS = 2_500;
 
 /**
  * 挂载时必定 reload 一次（冷启动首次进 Tab 触发同步/读库）。
@@ -18,6 +20,7 @@ export function usePageFocusReload(
 
   const skipNextFocusReloadRef = useRef(true);
   const isFocusedRef = useRef(false);
+  const backgroundedAtMsRef = useRef<number | null>(null);
 
   useEffect(() => {
     void reloadRef.current?.();
@@ -53,31 +56,39 @@ export function usePageFocusReload(
       }
     };
 
-    const tryReload = (attempt = 0) => {
+    const tryReload = () => {
       if (cancelled) return;
       if (!isFocusedRef.current) return;
-      // 跨日界清库进行中：稍后重试，避免读空库/锁竞争卡死
-      if (isDayBoundaryClearInProgress()) {
-        if (attempt >= 40) return;
-        clearRetry();
-        retryTimer = setTimeout(() => tryReload(attempt + 1), 250);
-        return;
-      }
       if (shouldSkipPageFocusApiRefresh(pageKey)) return;
       void reloadRef.current?.();
     };
 
     const onChange = (next: AppStateStatus) => {
-      if (next !== 'active') return;
+      if (next !== 'active') {
+        if (backgroundedAtMsRef.current == null) {
+          backgroundedAtMsRef.current = Date.now();
+        }
+        return;
+      }
+
+      const backgroundedAt = backgroundedAtMsRef.current;
+      backgroundedAtMsRef.current = null;
       if (!isFocusedRef.current) return;
-      // 回前台先让首帧画完，再拉数，减轻「切回来卡死」
+
+      if (
+        backgroundedAt != null &&
+        Date.now() - backgroundedAt < SHORT_BACKGROUND_SKIP_MS
+      ) {
+        return;
+      }
+
+      // 回前台先让首帧画完，再拉数
       cancelAfterInteractions?.cancel();
       clearRetry();
       cancelAfterInteractions = InteractionManager.runAfterInteractions(() => {
         cancelAfterInteractions = null;
-        // 略晚于日界 gate/清库调度，降低同拍竞态
         clearRetry();
-        retryTimer = setTimeout(() => tryReload(0), 120);
+        retryTimer = setTimeout(() => tryReload(), 120);
       });
     };
     const sub = AppState.addEventListener('change', onChange);
