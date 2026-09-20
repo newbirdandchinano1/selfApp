@@ -203,20 +203,34 @@ export function standaloneTodoPassesStandaloneListFilter(
   );
 }
 
+/** 未到执行日的重复待办：仅提前这么多天进入待办列表 */
+export const STANDALONE_TODO_REPEAT_ADVANCE_DAYS = 3;
+
 /**
- * 设置了重复的独立待办始终保留在待办列表中。
- * 非执行日由 UI 变灰置底（见 `isStandaloneTodoRepeatWaiting`）。
+ * 重复独立待办可见性：
+ * - 执行日 / 过期或漏做：始终显示
+ * - 未到执行日：仅提前 {@link STANDALONE_TODO_REPEAT_ADVANCE_DAYS} 天显示（变灰置底，见 `isStandaloneTodoRepeatWaiting`）
+ * - 更早则隐藏；搁置不受此限
  */
 export function standaloneTodoPassesRepeatDayFilter(
-  _task: TaskRow,
-  _logicalTodayYmd: string,
+  task: TaskRow,
+  logicalTodayYmd: string,
 ): boolean {
-  return true;
+  if (isTaskShelvedStatus(task.status)) return true;
+  const schedule = parseTaskRepeatSchedule(task.extra_data);
+  if (!schedule) return true;
+  if (isTaskRepeatDueOnLogicalDay(logicalTodayYmd, schedule)) return true;
+  if (isTaskOverdueForList(task, logicalTodayYmd)) return true;
+  for (let i = 1; i <= STANDALONE_TODO_REPEAT_ADVANCE_DAYS; i += 1) {
+    if (isTaskRepeatDueOnLogicalDay(addDaysToYmd(logicalTodayYmd, i), schedule)) return true;
+  }
+  return false;
 }
 
 /**
  * 重复性待办尚未到规定执行日（且未过期/未错过）：列表中变灰置底。
  * 已过期或错过既往执行日的仍视为需处理，不高亮为 waiting。
+ * 可见性由 `standaloneTodoPassesRepeatDayFilter` 控制（仅提前 N 天出现）。
  */
 export function isStandaloneTodoRepeatWaiting(task: TaskRow, logicalTodayYmd: string): boolean {
   if (!isStandaloneTodoOpen(task) || isTaskShelvedStatus(task.status)) return false;
