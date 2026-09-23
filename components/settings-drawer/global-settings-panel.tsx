@@ -47,6 +47,7 @@ import { Gesture, GestureDetector, ScrollView, type PanGesture } from 'react-nat
 import type { SettingsSection } from './settings-drawer-context';
 import { useSettingsDrawer } from './settings-drawer-context';
 import { NotificationSettingsSection } from './notification-settings-section';
+import { FrogScheduleSettingsCard } from './frog-schedule-settings-card';
 
 function formatZhFullBackupTime(iso: string): string {
   const d = new Date(iso);
@@ -608,6 +609,19 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               );
             })}
           </View>
+        </View>
+
+        <View
+          onLayout={ev => onSectionLayout('frogSchedule', ev.nativeEvent.layout.y)}
+          style={styles.section}>
+          {renderSectionHead('周课程表')}
+          <FrogScheduleSettingsCard
+            cardBg={cardBg}
+            cardBorder={cardBorder}
+            text={text}
+            outline={outline}
+            primary={primary}
+          />
         </View>
 
         <View

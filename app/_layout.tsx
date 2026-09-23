@@ -263,6 +263,7 @@ function RootLayoutInner() {
               options={{ gestureEnabled: false, headerBackButtonMenuEnabled: false }}
             />
             <Stack.Screen name="intake-history" />
+            <Stack.Screen name="health-analysis" />
             <Stack.Screen name="finance-calendar" />
             <Stack.Screen name="scheduled-expenses" />
             <Stack.Screen name="add-scheduled-expense" />

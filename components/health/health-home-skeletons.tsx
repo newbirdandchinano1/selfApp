@@ -21,10 +21,12 @@ export function HealthMetricsSkeleton({ cardWidth, colors }: HealthSkeletonProps
             { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline, width: cardWidth },
           ]}
         >
-          <Skeleton width={64} height={64} borderRadius={32} style={styles.metricCircle} />
-          <Skeleton width={36} height={12} borderRadius={6} style={styles.metricLabel} />
-          <Skeleton width={44} height={18} borderRadius={6} />
-          <Skeleton width={56} height={10} borderRadius={5} style={styles.metricSub} />
+          <Skeleton width={52} height={52} borderRadius={26} style={styles.metricCircle} />
+          <Skeleton width={32} height={11} borderRadius={5} style={styles.metricLabel} />
+          <Skeleton width={40} height={16} borderRadius={6} />
+          <Skeleton width={52} height={9} borderRadius={4} style={styles.metricSub} />
+          <Skeleton width="92%" height={22} borderRadius={6} style={styles.metricHint} />
+          <Skeleton width="100%" height={5} borderRadius={3} style={styles.metricTrack} />
         </View>
       ))}
     </View>
@@ -153,19 +155,26 @@ const styles = StyleSheet.create({
   },
   metricCard: {
     borderRadius: Radius.xl,
-    paddingVertical: Spacing['2xl'],
-    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.md,
+    paddingHorizontal: Spacing.sm,
     alignItems: 'center',
     borderWidth: StyleSheet.hairlineWidth,
   },
   metricCircle: {
-    marginBottom: 8,
+    marginBottom: Spacing.sm,
   },
   metricLabel: {
-    marginBottom: 4,
+    marginBottom: 2,
   },
   metricSub: {
-    marginTop: 4,
+    marginTop: 2,
+  },
+  metricHint: {
+    marginTop: Spacing.sm,
+  },
+  metricTrack: {
+    marginTop: Spacing.md,
   },
   statusList: {
     gap: 0,

@@ -92,12 +92,12 @@ function getManualMeta(type: ManualType) {
     return { label: '水分', icon: 'water-drop' as const, unitText: 'ML', convertHint: (n: number) => `约 ${(n / 1000).toFixed(2)} 升` };
   }
   if (type === 'protein') {
-    return { label: '蛋白质', icon: 'fitness-center' as const, unitText: 'G', convertHint: (n: number) => `约 ${(n / 1000).toFixed(3)} 千克` };
+    return { label: '蛋白质', icon: 'fitness-center' as const, unitText: 'G', convertHint: (n: number) => (n >= 1000 ? `约 ${(n / 1000).toFixed(2)} kg` : `${n} 克`) };
   }
   if (type === 'carbohydrate') {
-    return { label: '碳水', icon: 'rice-bowl' as const, unitText: 'G', convertHint: (n: number) => `约 ${(n / 1000).toFixed(3)} 千克` };
+    return { label: '碳水', icon: 'rice-bowl' as const, unitText: 'G', convertHint: (n: number) => (n >= 1000 ? `约 ${(n / 1000).toFixed(2)} kg` : `${n} 克`) };
   }
-  return { label: '热量', icon: 'local-fire-department' as const, unitText: 'KCAL', convertHint: (n: number) => `约 ${(n / 1000).toFixed(2)} 千卡` };
+  return { label: '热量', icon: 'local-fire-department' as const, unitText: 'KCAL', convertHint: (n: number) => `${n} 千卡` };
 }
 
 export function RecordIntakeSheet({
@@ -401,13 +401,11 @@ export function RecordIntakeSheet({
             </View>
 
             <View style={styles.header}>
-              <Pressable style={styles.iconBtn} onPress={onClose}>
+              <Pressable style={styles.iconBtn} onPress={onClose} accessibilityLabel="关闭">
                 <MaterialIcons name="close" size={22} color={mutedText} />
               </Pressable>
               <Text style={[styles.title, { color: theme.text }]}>记录新摄入</Text>
-              <Pressable style={styles.iconBtn}>
-                <MaterialIcons name="more-vert" size={20} color={mutedText} />
-              </Pressable>
+              <View style={styles.iconBtn} />
             </View>
 
             <ScrollView

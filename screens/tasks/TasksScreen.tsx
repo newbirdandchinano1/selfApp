@@ -4,6 +4,7 @@ import {
   buildSubjectFromTask,
   type AssignFrogSubject,
 } from '@/components/tasks/AssignFrogSheet';
+import { WeeklyFrogSchedule } from '@/components/tasks/WeeklyFrogSchedule';
 import {
   TasksFrogSectionSkeleton,
   TasksHabitSectionSkeleton,
@@ -12,6 +13,7 @@ import {
   TasksStandaloneSectionSkeleton,
 } from '@/components/tasks/tasks-home-skeletons';
 import { AppIconButton } from '@/components/ui';
+import { useSettingsDrawer } from '@/components/settings-drawer/settings-drawer-context';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -34,6 +36,7 @@ import {
 import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
 import {
   clearFrogSessionCompletedOn,
+  getFrogSessionCompletedOn,
   getIsLongTermFrog,
   getIsLongTermProject,
   getIsLongTermTask,
@@ -1996,6 +1999,7 @@ export default function TasksScreen() {
     };
   }, [scrollQuickTodoAboveKeyboard]);
   const { boundary: dayBoundary, logicalTodayYmd } = usePageDayBoundary('tasks');
+  const { open: openSettingsDrawer } = useSettingsDrawer();
 
   const habitScheduleAnchorDate = React.useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
 
@@ -3905,7 +3909,7 @@ export default function TasksScreen() {
   );
 
   const completeFrogSessionOnly = React.useCallback(
-    async (taskId: string) => {
+    async (taskId: string, assignYmd: string = logicalTodayYmd) => {
       const isProjectFrog = projectFrogIds.has(taskId);
       const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
       const current = isProjectFrog
@@ -3924,10 +3928,10 @@ export default function TasksScreen() {
         return;
       }
 
-      if (!isFrogAssignedOn(current.extra_data, logicalTodayYmd)) return;
+      if (!isFrogAssignedOn(current.extra_data, assignYmd)) return;
 
       markPageDirty();
-      const nextExtraData = setFrogSessionCompletedOn(current.extra_data, logicalTodayYmd);
+      const nextExtraData = setFrogSessionCompletedOn(current.extra_data, assignYmd);
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setTodayFrogs((prev) =>
@@ -3956,7 +3960,7 @@ export default function TasksScreen() {
           );
         }
         try {
-          await insertFrogCompletionEvent(taskId, logicalTodayYmd, 'completed', current.title ?? null);
+          await insertFrogCompletionEvent(taskId, assignYmd, 'completed', current.title ?? null);
         } catch (frogLogErr) {
           console.warn('记录青蛙完成事件失败', frogLogErr);
         }
@@ -4000,7 +4004,7 @@ export default function TasksScreen() {
   );
 
   const reopenFrogSessionOnly = React.useCallback(
-    async (taskId: string) => {
+    async (taskId: string, assignYmd: string = logicalTodayYmd) => {
       const isProjectFrog = projectFrogIds.has(taskId);
       const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
       const current = isProjectFrog
@@ -4010,10 +4014,14 @@ export default function TasksScreen() {
         : findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
-      if (!isFrogAssignedOn(current.extra_data, logicalTodayYmd)) return;
+      if (!isFrogAssignedOn(current.extra_data, assignYmd)) return;
 
       markPageDirty();
-      const nextExtraData = clearFrogSessionCompletedOn(current.extra_data);
+      // 仅当会话完成日就是该指派日时才清除
+      const nextExtraData =
+        getFrogSessionCompletedOn(current.extra_data) === assignYmd
+          ? clearFrogSessionCompletedOn(current.extra_data)
+          : current.extra_data;
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setTodayFrogs((prev) =>
@@ -4042,7 +4050,7 @@ export default function TasksScreen() {
           );
         }
         try {
-          await insertFrogCompletionEvent(taskId, logicalTodayYmd, 'reopened', current.title ?? null);
+          await insertFrogCompletionEvent(taskId, assignYmd, 'reopened', current.title ?? null);
         } catch (frogLogErr) {
           console.warn('记录青蛙重开事件失败', frogLogErr);
         }
@@ -4084,7 +4092,7 @@ export default function TasksScreen() {
   );
 
   const toggleFrogDone = React.useCallback(
-    (taskId: string) => {
+    (taskId: string, assignYmd: string = logicalTodayYmd) => {
       const isProjectFrog = projectFrogIds.has(taskId);
       const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
       const current = isProjectFrog
@@ -4099,12 +4107,12 @@ export default function TasksScreen() {
         return;
       }
 
-      const isAssignedToday = isFrogAssignedOn(current.extra_data, logicalTodayYmd);
-      const frogDone = isFrogDoneForToday(current.extra_data, current.status, logicalTodayYmd);
+      const isAssignedOnDay = isFrogAssignedOn(current.extra_data, assignYmd);
+      const frogDone = isFrogDoneForToday(current.extra_data, current.status, assignYmd);
 
       if (frogDone && !isTaskTerminalStatus(current.status)) {
         playFrogDoneBounce(taskId);
-        void reopenFrogSessionOnly(taskId);
+        void reopenFrogSessionOnly(taskId, assignYmd);
         return;
       }
 
@@ -4121,7 +4129,7 @@ export default function TasksScreen() {
       const isLongTerm = isProjectFrog
         ? getIsLongTermProject(current.extra_data)
         : getIsLongTermTask(current.extra_data);
-      if (isAssignedToday && isLongTerm) {
+      if (isAssignedOnDay && isLongTerm) {
         const titleLabel = (current.title ?? '').trim() || (isProjectFrog ? '该项目' : '该任务');
         Alert.alert(
           isProjectFrog ? '完成长期项目？' : '完成长期任务？',
@@ -4134,7 +4142,7 @@ export default function TasksScreen() {
               text: '还未完成',
               onPress: () => {
                 playFrogDoneBounce(taskId);
-                void completeFrogSessionOnly(taskId);
+                void completeFrogSessionOnly(taskId, assignYmd);
               },
             },
             {
@@ -4986,6 +4994,26 @@ export default function TasksScreen() {
     () => [styles.section, styles.stackedSection, { borderTopColor: colors.outline }],
     [colors.outline],
   );
+
+  const scheduleSubjects = React.useMemo(() => {
+    const map = new Map<string, TaskRow>();
+    for (const t of standaloneTodos) map.set(t.id, t);
+    for (const t of matrixWeekTasks) map.set(t.id, t);
+    for (const t of todayFrogs) map.set(t.id, t);
+    for (const t of flattenProjectTaskTreeMap(projectTaskTreeMap)) map.set(t.id, t);
+    return {
+      tasks: [...map.values()],
+      projects,
+      projectFrogIds,
+    };
+  }, [standaloneTodos, matrixWeekTasks, todayFrogs, projectTaskTreeMap, projects, projectFrogIds]);
+
+  const onScheduleChanged = React.useCallback(() => {
+    markPageDirty();
+    void loadTodayFrogs({ forceLocal: true });
+    schedulePostMutationSync({ frogs: true });
+  }, [loadTodayFrogs, markPageDirty, schedulePostMutationSync]);
+
   const emptyCardBg = isDark ? colors.surfaceMuted : colors.surfaceSubtle;
   /** 过期待办卡片底色（不透明，避免左滑时透出操作条） */
   const standaloneOverdueCardBg = isDark ? '#2c2326' : '#fff5f5';
@@ -5324,6 +5352,22 @@ export default function TasksScreen() {
             transform: [{ translateY: pageTranslateAnim }],
           }}
         >
+          <WeeklyFrogSchedule
+            logicalTodayYmd={logicalTodayYmd}
+            sectionCardStyle={sectionCardStyle}
+            lockedProjectIds={lockedProjectIds}
+            subjects={scheduleSubjects}
+            onChanged={onScheduleChanged}
+            onOpenSettings={() => openSettingsDrawer('frogSchedule')}
+            onOpenSubject={(kind, id) => {
+              if (kind === 'project') openProject(id);
+              else openTask(id);
+            }}
+            onToggleDone={({ id, assignYmd }) => {
+              toggleFrogDone(id, assignYmd);
+            }}
+          />
+
           <View style={styles.section}>
               <View style={sectionCardStyle}>
               <View style={styles.headerRow}>

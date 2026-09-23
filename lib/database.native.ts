@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 45;
+export const DB_VERSION = 46;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -925,6 +925,29 @@ export async function initDatabase() {
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending_create'
     );
+
+    CREATE TABLE IF NOT EXISTS schedule_week_axis_snapshot (
+      week_start_ymd TEXT PRIMARY KEY NOT NULL,
+      start_minutes INTEGER NOT NULL,
+      end_minutes INTEGER NOT NULL,
+      slot_hours INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create'
+    );
+
+    CREATE TABLE IF NOT EXISTS schedule_placements (
+      id TEXT PRIMARY KEY NOT NULL,
+      week_start_ymd TEXT NOT NULL,
+      weekday INTEGER NOT NULL,
+      start_slot_index INTEGER,
+      span_slots INTEGER NOT NULL DEFAULT 1,
+      subject_kind TEXT NOT NULL,
+      subject_id TEXT NOT NULL,
+      orphaned INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create'
+    );
   `);
 
   const { migrateAppSettingsFromAsyncStorageIfNeeded } = await import('@/lib/app-settings-store');
@@ -1352,6 +1375,39 @@ export async function initDatabase() {
     DROP TABLE IF EXISTS user_weaknesses;
   `);
 
+  // 周课程表（青蛙排程）：确保索引（CREATE TABLE 已在建库脚本）
+  try {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS schedule_week_axis_snapshot (
+        week_start_ymd TEXT PRIMARY KEY NOT NULL,
+        start_minutes INTEGER NOT NULL,
+        end_minutes INTEGER NOT NULL,
+        slot_hours INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending_create'
+      );
+      CREATE TABLE IF NOT EXISTS schedule_placements (
+        id TEXT PRIMARY KEY NOT NULL,
+        week_start_ymd TEXT NOT NULL,
+        weekday INTEGER NOT NULL,
+        start_slot_index INTEGER,
+        span_slots INTEGER NOT NULL DEFAULT 1,
+        subject_kind TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        orphaned INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending_create'
+      );
+      CREATE INDEX IF NOT EXISTS idx_schedule_placements_week
+        ON schedule_placements(week_start_ymd, weekday);
+      CREATE INDEX IF NOT EXISTS idx_schedule_placements_subject
+        ON schedule_placements(subject_kind, subject_id);
+    `);
+  } catch (e) {
+    console.warn('schedule tables ensure failed', e);
+  }
+
   const { ensureReviewTemplateDefaults } = await import('@/lib/repositories/insights/review-template');
   await migrateReviewDimensionsAllowMonthly(db);
   await ensureReviewTemplateDefaults();
@@ -1407,6 +1463,8 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS cash_flow_profile;
     DROP TABLE IF EXISTS weekly_task_schedule_cells;
     DROP TABLE IF EXISTS weekly_task_schedule_slots;
+    DROP TABLE IF EXISTS schedule_placements;
+    DROP TABLE IF EXISTS schedule_week_axis_snapshot;
     DROP TABLE IF EXISTS app_settings;
     DROP TABLE IF EXISTS user_desired_skills;
     DROP TABLE IF EXISTS user_skill_items;

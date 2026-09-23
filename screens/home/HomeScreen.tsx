@@ -3,15 +3,13 @@ import {
   HealthIntakeListSkeleton,
   HealthMetricsSkeleton,
   HealthQuickAddSkeleton,
-  HealthStatusCardSkeleton,
   HealthTrendCardSkeleton,
 } from '@/components/health/health-home-skeletons';
-import { HealthIntakeTrendSection } from '@/components/health/health-intake-trend-section';
 import { AppIconButton } from '@/components/ui/app-icon-button';
 import { HealthNutrientAccents, Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { Directory, File, Paths } from 'expo-file-system';
 import React from 'react';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -96,7 +94,6 @@ import {
   Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
-  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -111,7 +108,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Swipeable } from 'react-native-gesture-handler';
 import Svg, { Circle } from 'react-native-svg';
 
-const { width, height } = Dimensions.get('window');
+const { width } = Dimensions.get('window');
 const PAGE_API_KEY = 'tabs/index';
 
 const nutrientMetricMeta = [
@@ -119,25 +116,29 @@ const nutrientMetricMeta = [
     key: 'hydration' as const,
     label: '水分',
     icon: 'water-drop' as keyof typeof MaterialIcons.glyphMap,
-    opacity: 1,
+    accent: HealthNutrientAccents.hydration,
+    unit: 'ML',
   },
   {
     key: 'protein' as const,
     label: '蛋白质',
     icon: 'restaurant' as keyof typeof MaterialIcons.glyphMap,
-    opacity: 0.65,
+    accent: HealthNutrientAccents.protein,
+    unit: 'G',
   },
   {
     key: 'calories' as const,
     label: '热量',
     icon: 'local-fire-department' as keyof typeof MaterialIcons.glyphMap,
-    opacity: 0.35,
+    accent: HealthNutrientAccents.calories,
+    unit: 'KCAL',
   },
   {
     key: 'carbohydrate' as const,
     label: '碳水',
     icon: 'rice-bowl' as keyof typeof MaterialIcons.glyphMap,
-    opacity: 0.5,
+    accent: HealthNutrientAccents.carbohydrate,
+    unit: 'G',
   },
 ];
 
@@ -240,7 +241,7 @@ function clampIntakeAiComment(raw: string | undefined | null): string | null {
 
 function intakeListAiComment(row: HealthRecordRow): string {
   const c = row.intake_ai_comment?.trim();
-  return c ? `AI评价：${c}` : 'AI评价：待分析';
+  return c ? `AI评价：${c}` : '';
 }
 
 function singleIntakeLineTitle(row: HealthRecordRow, fallback: string): string {
@@ -318,7 +319,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         title: combinedIntakeListTitle(row, quickAddByKey),
         timeLine,
         amountRight: formatCombinedIntakeAmountsLine(row),
-        note: '备注：暂无备注',
+        note: '',
         aiComment: intakeListAiComment(row),
         icon: row.source_image_uri?.trim() ? 'photo-camera' : 'auto-awesome',
         iconBgLight: 'rgba(16,185,129,0.12)',
@@ -340,7 +341,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         title: singleIntakeLineTitle(row, qa ? qa.label : '水分'),
         timeLine,
         amountRight: formatIntakeAmount(h, 'ml'),
-        note: '备注：暂无备注',
+        note: '',
         aiComment: intakeListAiComment(row),
         icon: getMetricQuickAdd(qa, 'hydration')?.icon as keyof typeof MaterialIcons.glyphMap || 'water-drop',
         iconBgLight: 'rgba(16,185,129,0.12)',
@@ -358,7 +359,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         title: singleIntakeLineTitle(row, metricQa ? metricQa.label : '蛋白质'),
         timeLine,
         amountRight: formatIntakeAmount(p, 'g'),
-        note: '备注：暂无备注',
+        note: '',
         aiComment: intakeListAiComment(row),
         icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'restaurant',
         iconBgLight: 'rgba(245,158,11,0.14)',
@@ -376,11 +377,11 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         title: singleIntakeLineTitle(row, metricQa ? metricQa.label : '热量'),
         timeLine,
         amountRight: formatIntakeAmount(s, 'kcal'),
-        note: '备注：暂无备注',
+        note: '',
         aiComment: intakeListAiComment(row),
         icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'science',
-        iconBgLight: 'rgba(168,85,247,0.14)',
-        iconBgDark: 'rgba(88,28,135,0.32)',
+        iconBgLight: 'rgba(239,68,68,0.14)',
+        iconBgDark: 'rgba(127,29,29,0.32)',
         iconColor: HealthNutrientAccents.calories,
       });
     }
@@ -394,7 +395,7 @@ function buildIntakeListLines(rows: HealthRecordRow[], quickAddCatalog: QuickAdd
         title: singleIntakeLineTitle(row, metricQa ? metricQa.label : '碳水'),
         timeLine,
         amountRight: formatIntakeAmount(c, 'g'),
-        note: '备注：暂无备注',
+        note: '',
         aiComment: intakeListAiComment(row),
         icon: metricQa ? (metricQa.icon as keyof typeof MaterialIcons.glyphMap) : 'rice-bowl',
         iconBgLight: 'rgba(234,179,8,0.14)',
@@ -563,6 +564,17 @@ function calorieDeficitStatusDesc(deficitKcal: number): string {
   return `超出预算 ${Math.abs(deficitKcal)} kcal，今日暂无减脂空间`;
 }
 
+function metricStatusDesc(
+  key: 'hydration' | 'protein' | 'carbohydrate' | 'calories',
+  percent: number,
+  calorieDeficit: number,
+): string {
+  if (key === 'hydration') return hydrationStatusDesc(percent);
+  if (key === 'protein') return proteinStatusDesc(percent);
+  if (key === 'carbohydrate') return carbohydrateStatusDesc(percent);
+  return calorieDeficitStatusDesc(calorieDeficit);
+}
+
 const CircularProgress = ({
   percentage,
   icon,
@@ -570,7 +582,6 @@ const CircularProgress = ({
   trackColor = 'rgba(148, 163, 184, 0.26)',
   size = 64,
   strokeWidth = 6,
-  opacity = 1,
 }: {
   percentage: number;
   icon: keyof typeof MaterialIcons.glyphMap;
@@ -578,7 +589,6 @@ const CircularProgress = ({
   trackColor?: string;
   size?: number;
   strokeWidth?: number;
-  opacity?: number;
 }) => {
   const animatedPercentage = React.useRef(new Animated.Value(Math.max(0, Math.min(100, percentage)))).current;
 
@@ -612,11 +622,10 @@ const CircularProgress = ({
           strokeDasharray={circumference}
           strokeDashoffset={strokeDashoffset}
           strokeLinecap="round"
-          opacity={opacity}
         />
       </Svg>
       <View style={styles.iconContainer}>
-        <MaterialIcons name={icon} size={24} color={color} style={{ opacity }} />
+        <MaterialIcons name={icon} size={Math.round(size * 0.38)} color={color} />
       </View>
     </View>
   );
@@ -719,7 +728,6 @@ export default function HealthScreen() {
   const barGrowAnim = React.useRef(new Animated.Value(0)).current;
   const selectedDayPopAnim = React.useRef(new Animated.Value(1)).current;
   const bgFloatAnim = React.useRef(new Animated.Value(0)).current;
-  const statusShimmerAnim = React.useRef(new Animated.Value(-1)).current;
   const metricCardAnims = React.useRef(nutrientMetricMeta.map(() => new Animated.Value(0))).current;
   const metricImpactAnims = React.useRef(nutrientMetricMeta.map(() => new Animated.Value(0))).current;
   const wheelImpactAnim = React.useRef(new Animated.Value(0)).current;
@@ -735,49 +743,6 @@ export default function HealthScreen() {
     new Animated.Value(0),
     new Animated.Value(0),
   ]).current;
-  const floatingCtaPosition = React.useRef(
-    new Animated.ValueXY({
-      x: width - FLOATING_CTA_SIZE - FLOATING_CTA_MARGIN,
-      y: height - FLOATING_CTA_SIZE - 140,
-    })
-  ).current;
-
-  const clampFloatingY = React.useCallback((value: number) => {
-    const minY = 96;
-    const maxY = height - FLOATING_CTA_SIZE - 110;
-    return Math.min(maxY, Math.max(minY, value));
-  }, []);
-
-  const floatingCtaPanResponder = React.useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dx) > 4 || Math.abs(gestureState.dy) > 4,
-      onPanResponderGrant: () => {
-        floatingCtaPosition.stopAnimation((current) => {
-          floatingCtaPosition.setOffset(current);
-          floatingCtaPosition.setValue({ x: 0, y: 0 });
-        });
-      },
-      onPanResponderMove: Animated.event([null, { dx: floatingCtaPosition.x, dy: floatingCtaPosition.y }], {
-        useNativeDriver: false,
-      }),
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderRelease: () => {
-        floatingCtaPosition.flattenOffset();
-        floatingCtaPosition.stopAnimation((current) => {
-          const snapLeft = FLOATING_CTA_MARGIN;
-          const snapRight = width - FLOATING_CTA_SIZE - FLOATING_CTA_MARGIN;
-          const snapX = current.x + FLOATING_CTA_SIZE / 2 < width / 2 ? snapLeft : snapRight;
-          Animated.spring(floatingCtaPosition, {
-            toValue: { x: snapX, y: clampFloatingY(current.y) },
-            speed: 18,
-            bounciness: 8,
-            useNativeDriver: false,
-          }).start();
-        });
-      },
-    })
-  ).current;
 
   const weekDaysCurrent = React.useMemo(() => getWeekDaysFromAnchor(weekAnchorDate), [weekAnchorDate]);
   const weekDaysPrev = React.useMemo(() => getWeekDaysFromAnchor(addDays(weekAnchorDate, -7)), [weekAnchorDate]);
@@ -852,8 +817,6 @@ export default function HealthScreen() {
     null
   );
   const intakeParseLocked = pendingIntake != null;
-  const [intakeTrendRefreshNonce, setIntakeTrendRefreshNonce] = React.useState(0);
-  const [trendPanelTab, setTrendPanelTab] = React.useState<'weekly' | 'intake'>('weekly');
 
   const reload = React.useCallback(async (forceApi = false): Promise<false | HomeHealthReloadResult> => {
     const currentUser = await getDefaultUser();
@@ -930,7 +893,6 @@ export default function HealthScreen() {
         setPageLoadError(null);
       }
       setInitialHealthLoadPending(false);
-      setIntakeTrendRefreshNonce((n) => n + 1);
 
       // 本地空库或 REST 同步后仍无数据：自动强制全量拉取（与下拉刷新一致）
       if (!forceApi && !result.restFailed && fnResult?.sliceEmpty && !emptyLocalEscalatedRef.current) {
@@ -1106,11 +1068,6 @@ export default function HealthScreen() {
     [dayIntakeDisplay.calories.current, dayIntakeDisplay.calories.target],
   );
 
-  const dayWeightLossJin = React.useMemo(
-    () => estimateWeightLossJinFromDeficit(dayCalorieDeficit),
-    [dayCalorieDeficit],
-  );
-
   const metricPercents = React.useMemo(
     () => ({
       hydration: dayIntakeDisplay.hydration.percent,
@@ -1284,7 +1241,6 @@ export default function HealthScreen() {
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
-        setIntakeTrendRefreshNonce((n) => n + 1);
         playIntakeFeedbackAnimation();
       } catch {
         /* 忽略写入失败 */
@@ -1333,7 +1289,6 @@ export default function HealthScreen() {
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
-        setIntakeTrendRefreshNonce((n) => n + 1);
         playIntakeFeedbackAnimation();
         return true;
       } catch {
@@ -1383,7 +1338,6 @@ export default function HealthScreen() {
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
-        setIntakeTrendRefreshNonce((n) => n + 1);
         playIntakeFeedbackAnimation();
         return true;
       } catch {
@@ -1415,7 +1369,6 @@ export default function HealthScreen() {
         setPrevWeekHealthRecords(prevWeek);
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
-        setIntakeTrendRefreshNonce((n) => n + 1);
         playIntakeFeedbackAnimation();
       } catch {
         /* 忽略删除失败 */
@@ -1674,23 +1627,6 @@ export default function HealthScreen() {
     return () => bgFloat.stop();
   }, [bgFloatAnim]);
 
-  React.useEffect(() => {
-    const shimmer = Animated.loop(
-      Animated.timing(statusShimmerAnim, {
-        toValue: 1,
-        duration: 2300,
-        easing: Easing.inOut(Easing.quad),
-        useNativeDriver: true,
-      })
-    );
-
-    shimmer.start();
-    return () => {
-      shimmer.stop();
-      statusShimmerAnim.setValue(-1);
-    };
-  }, [statusShimmerAnim]);
-
   const assistantTheme = {
     水分: {
       accent: HealthNutrientAccents.hydration,
@@ -1881,7 +1817,11 @@ export default function HealthScreen() {
     [assistantTab],
   );
 
-  const closeAssistantModal = React.useCallback(() => {
+  const dismissAssistantModal = React.useCallback(() => {
+    setAssistantOpen(false);
+  }, []);
+
+  const saveAssistantModal = React.useCallback(() => {
     const n = parseGoalInput(manualGoal);
     if (n !== null) {
       const rounded = Math.round(n);
@@ -2120,31 +2060,30 @@ export default function HealthScreen() {
               <View style={styles.sectionStack}>
         <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
         <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>今日指标</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>今日概况</Text>
+          <TouchableOpacity
+            activeOpacity={0.75}
+            hitSlop={Layout.hitSlop}
+            onPress={() => setAssistantOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="调整今日目标"
+          >
+            <Text style={[styles.editBtn, { color: colors.primary }]}>目标</Text>
+          </TouchableOpacity>
         </View>
         <View style={styles.metricsRow}>
           {nutrientMetricMeta.map((item, index) => {
             const row = dayIntakeDisplay[item.key];
             const displayTarget = row.target;
             const animatedPercent = Math.round(metricPercents[item.key]);
+            const statusDesc = metricStatusDesc(item.key, row.percent, dayCalorieDeficit);
 
             const openAssistantByCard = () => {
-              if (item.key === 'hydration') {
-                setAssistantTab('水分');
-                setAssistantOpen(true);
-              }
-              if (item.key === 'protein') {
-                setAssistantTab('蛋白质');
-                setAssistantOpen(true);
-              }
-              if (item.key === 'calories') {
-                setAssistantTab('热量');
-                setAssistantOpen(true);
-              }
-              if (item.key === 'carbohydrate') {
-                setAssistantTab('碳水');
-                setAssistantOpen(true);
-              }
+              if (item.key === 'hydration') setAssistantTab('水分');
+              if (item.key === 'protein') setAssistantTab('蛋白质');
+              if (item.key === 'calories') setAssistantTab('热量');
+              if (item.key === 'carbohydrate') setAssistantTab('碳水');
+              setAssistantOpen(true);
             };
 
             const impactScale = metricImpactAnims[index].interpolate({
@@ -2164,184 +2103,80 @@ export default function HealthScreen() {
               outputRange: [1, 1.08],
             });
 
-            const card = (
-              <Animated.View
-                style={{
-                  transform: [{ translateY: impactLift }, { scale: impactScale }],
-                }}
-              >
-                <View
-                  style={[
-                    styles.metricCard,
-                    {
-                      backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
-                      borderColor: colors.outline,
-                      width: cardWidth,
-                    },
-                  ]}
-                >
-                  <View style={[styles.metricCardGlow, { backgroundColor: `${colors.primary}14` }]} />
-                  <Animated.View style={{ transform: [{ rotate: wheelRotate }, { scale: wheelScale }] }}>
-                    <CircularProgress
-                      percentage={animatedPercent}
-                      icon={item.icon}
-                      color={colors.primary}
-                      trackColor={colors.outline}
-                      opacity={item.opacity}
-                    />
-                  </Animated.View>
-                  <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>{item.label}</Text>
-                  <Text style={[styles.metricValue, { color: colors.text }]}>{animatedPercent}%</Text>
-                  <Text style={[styles.metricSubValue, { color: colors.textSecondary }]}> 
-                    {formatIntakeLocale(row.current)} / {formatIntakeLocale(displayTarget)}
-                  </Text>
-                </View>
-              </Animated.View>
-            );
-
             return (
-              <Pressable key={item.key} delayLongPress={280} onLongPress={openAssistantByCard}>
-                {card}
+              <Pressable
+                key={item.key}
+                onPress={openAssistantByCard}
+                accessibilityRole="button"
+                accessibilityLabel={`${item.label}今日概况，点按调整目标`}
+                style={({ pressed }) => [{ width: cardWidth, opacity: pressed ? 0.86 : 1 }]}
+              >
+                <Animated.View
+                  style={{
+                    transform: [{ translateY: impactLift }, { scale: impactScale }],
+                  }}
+                >
+                  <View
+                    style={[
+                      styles.metricCard,
+                      {
+                        backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
+                        borderColor: colors.outline,
+                        width: cardWidth,
+                      },
+                    ]}
+                  >
+                    <View style={[styles.metricCardGlow, { backgroundColor: `${item.accent}14` }]} />
+                    <Animated.View style={{ transform: [{ rotate: wheelRotate }, { scale: wheelScale }] }}>
+                      <CircularProgress
+                        percentage={animatedPercent}
+                        icon={item.icon}
+                        color={item.accent}
+                        trackColor={colors.outline}
+                        size={52}
+                        strokeWidth={5}
+                      />
+                    </Animated.View>
+                    <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>{item.label}</Text>
+                    <Text style={[styles.metricValue, { color: item.accent }]}>{animatedPercent}%</Text>
+                    <Text style={[styles.metricSubValue, { color: colors.textMuted }]} numberOfLines={1}>
+                      {formatIntakeLocale(row.current)}/{formatIntakeLocale(displayTarget)}
+                    </Text>
+                    <Text style={[styles.metricStatusHint, { color: colors.textSecondary }]} numberOfLines={2}>
+                      {statusDesc}
+                    </Text>
+                    <View
+                      style={[
+                        styles.metricTrackWrap,
+                        metricPointsSettings.enabled && styles.metricTrackWrapTall,
+                      ]}
+                    >
+                      {metricPointsSettings.enabled ? (
+                        <StatusTrackWithThreshold
+                          percent={metricPercents[item.key]}
+                          color={item.accent}
+                          trackBg={colors.outline}
+                          thresholdPercent={metricPointsSettings.thresholdPercent}
+                          thresholdValueLabel={thresholdValueLabels[item.key]}
+                          showThreshold
+                        />
+                      ) : (
+                        <View style={[styles.statusTrack, { backgroundColor: colors.outline }]}>
+                          <View
+                            style={[
+                              styles.statusTrackFill,
+                              { width: `${animatedPercent}%`, backgroundColor: item.accent },
+                            ]}
+                          />
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                </Animated.View>
               </Pressable>
             );
           })}
         </View>
-        </View>
-
-        <View>
-          <View style={[styles.sectionPanel, styles.statusPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
-            <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>今日状态</Text>
-            </View>
-            <View style={[styles.statusItem, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle }]}>
-              <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.hydration }]} />
-              <View style={styles.statusItemBody}>
-                <View style={styles.statusLineRow}>
-                  <Text style={[styles.statusItemTitle, { color: colors.text }]}>水分摄入</Text>
-                  <Text style={[styles.statusBadge, { color: HealthNutrientAccents.hydration, backgroundColor: `${HealthNutrientAccents.hydration}1A` }]}>
-                    {Math.round(metricPercents.hydration)}%
-                  </Text>
-                </View>
-                <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
-                  {hydrationStatusDesc(dayIntakeDisplay.hydration.percent)}
-                </Text>
-                <View style={styles.statusValueRow}>
-                  <Text style={[styles.statusValueMain, { color: HealthNutrientAccents.hydration }]}>
-                    {formatIntakeLocale(dayIntakeDisplay.hydration.current)}
-                  </Text>
-                  <Text style={[styles.statusValueSub, { color: colors.textSecondary }]}>
-                    ML / {formatIntakeLocale(intakeTargetsSnapshot.hydrationMl)}
-                  </Text>
-                </View>
-                <StatusTrackWithThreshold
-                  percent={metricPercents.hydration}
-                  color={HealthNutrientAccents.hydration}
-                  trackBg={colors.outline}
-                  thresholdPercent={metricPointsSettings.thresholdPercent}
-                  thresholdValueLabel={thresholdValueLabels.hydration}
-                  showThreshold={metricPointsSettings.enabled}
-                />
-              </View>
-            </View>
-
-            <View style={[styles.statusItem, styles.statusItemSpacing, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle }]}>
-              <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.protein }]} />
-              <View style={styles.statusItemBody}>
-                <View style={styles.statusLineRow}>
-                  <Text style={[styles.statusItemTitle, { color: colors.text }]}>蛋白质摄入</Text>
-                  <Text style={[styles.statusBadge, { color: HealthNutrientAccents.protein, backgroundColor: `${HealthNutrientAccents.protein}1A` }]}>
-                    {Math.round(metricPercents.protein)}%
-                  </Text>
-                </View>
-                <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
-                  {proteinStatusDesc(dayIntakeDisplay.protein.percent)}
-                </Text>
-                <View style={styles.statusValueRow}>
-                  <Text style={[styles.statusValueMain, { color: HealthNutrientAccents.protein }]}>
-                    {formatIntakeLocale(dayIntakeDisplay.protein.current)}
-                  </Text>
-                  <Text style={[styles.statusValueSub, { color: colors.textSecondary }]}>
-                    G / {formatIntakeLocale(intakeTargetsSnapshot.proteinG)}
-                  </Text>
-                </View>
-                <StatusTrackWithThreshold
-                  percent={metricPercents.protein}
-                  color={HealthNutrientAccents.protein}
-                  trackBg={colors.outline}
-                  thresholdPercent={metricPointsSettings.thresholdPercent}
-                  thresholdValueLabel={thresholdValueLabels.protein}
-                  showThreshold={metricPointsSettings.enabled}
-                />
-              </View>
-            </View>
-
-            <View style={[styles.statusItem, styles.statusItemSpacing, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle }]}>
-              <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.carbohydrate }]} />
-              <View style={styles.statusItemBody}>
-                <View style={styles.statusLineRow}>
-                  <Text style={[styles.statusItemTitle, { color: colors.text }]}>碳水摄入</Text>
-                  <Text style={[styles.statusBadge, { color: HealthNutrientAccents.carbohydrate, backgroundColor: `${HealthNutrientAccents.carbohydrate}1A` }]}>
-                    {Math.round(metricPercents.carbohydrate)}%
-                  </Text>
-                </View>
-                <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
-                  {carbohydrateStatusDesc(dayIntakeDisplay.carbohydrate.percent)}
-                </Text>
-                <View style={styles.statusValueRow}>
-                  <Text style={[styles.statusValueMain, { color: HealthNutrientAccents.carbohydrate }]}>
-                    {formatIntakeLocale(dayIntakeDisplay.carbohydrate.current)}
-                  </Text>
-                  <Text style={[styles.statusValueSub, { color: colors.textSecondary }]}>
-                    G / {formatIntakeLocale(intakeTargetsSnapshot.carbohydrateG)}
-                  </Text>
-                </View>
-                <StatusTrackWithThreshold
-                  percent={metricPercents.carbohydrate}
-                  color={HealthNutrientAccents.carbohydrate}
-                  trackBg={colors.outline}
-                  thresholdPercent={metricPointsSettings.thresholdPercent}
-                  thresholdValueLabel={thresholdValueLabels.carbohydrate}
-                  showThreshold={metricPointsSettings.enabled}
-                />
-              </View>
-            </View>
-
-            <View style={[styles.statusItem, styles.statusItemSpacing, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle }]}>
-              <View style={[styles.statusItemAccent, { backgroundColor: HealthNutrientAccents.calories }]} />
-              <View style={styles.statusItemBody}>
-                <View style={styles.statusLineRow}>
-                  <Text style={[styles.statusItemTitle, { color: colors.text }]}>热量缺口</Text>
-                  <Text style={[styles.statusBadge, { color: HealthNutrientAccents.calories, backgroundColor: `${HealthNutrientAccents.calories}1A` }]}>
-                    {dayCalorieDeficit > 0 ? `${dayCalorieDeficit} kcal` : dayCalorieDeficit < 0 ? `+${Math.abs(dayCalorieDeficit)}` : '0'}
-                  </Text>
-                </View>
-                <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
-                  {calorieDeficitStatusDesc(dayCalorieDeficit)}
-                </Text>
-                <View style={styles.statusValueRow}>
-                  <Text style={[styles.statusValueMain, { color: HealthNutrientAccents.calories }]}>
-                    {formatIntakeLocale(dayIntakeDisplay.calories.current)}
-                  </Text>
-                  <Text style={[styles.statusValueSub, { color: colors.textSecondary }]}>
-                    KCAL / {formatIntakeLocale(intakeTargetsSnapshot.caloriesKcal)}
-                  </Text>
-                </View>
-                {dayCalorieDeficit > 0 ? (
-                  <Text style={[styles.statusDesc, { color: colors.textSecondary, marginTop: 4 }]}>
-                    按当前缺口，今日约可减 {dayWeightLossJin} 斤
-                  </Text>
-                ) : null}
-                <StatusTrackWithThreshold
-                  percent={metricPercents.calories}
-                  color={HealthNutrientAccents.calories}
-                  trackBg={colors.outline}
-                  thresholdPercent={metricPointsSettings.thresholdPercent}
-                  thresholdValueLabel={thresholdValueLabels.calories}
-                  showThreshold={metricPointsSettings.enabled}
-                />
-              </View>
-            </View>
-          </View>
         </View>
 
         <View>
@@ -2352,6 +2187,9 @@ export default function HealthScreen() {
               <Text style={[styles.editBtn, { color: colors.primary }]}>编辑</Text>
             </TouchableOpacity>
           </View>
+          <Text style={[styles.quickAddHint, { color: colors.textMuted }]}>
+            点卡片一键加量；右下角 + 可手动 / AI / 拍照
+          </Text>
 
           <ScrollView
             horizontal
@@ -2435,7 +2273,9 @@ export default function HealthScreen() {
                 { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle, borderColor: colors.outline },
               ]}
             >
-              <Text style={[styles.intakeEmptyText, { color: colors.textSecondary }]}>暂无摄入记录，点击上方添加或记录新摄入</Text>
+              <Text style={[styles.intakeEmptyText, { color: colors.textSecondary }]}>
+                暂无摄入记录。可点上方快捷卡一键加量，或点右下角 + 手动 / AI / 拍照记录
+              </Text>
             </View>
           ) : (
             <View style={styles.intakeList}>
@@ -2471,12 +2311,16 @@ export default function HealthScreen() {
                             </Text>
                             <Text style={[styles.intakeRowTime, { color: colors.textSecondary }]}>{line.timeLine}</Text>
                           </View>
-                          <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={1}>
-                            {line.note}
-                          </Text>
-                          <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={2}>
-                            {line.aiComment}
-                          </Text>
+                          {line.note ? (
+                            <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={1}>
+                              {line.note}
+                            </Text>
+                          ) : null}
+                          {line.aiComment ? (
+                            <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={2}>
+                              {line.aiComment}
+                            </Text>
+                          ) : null}
                         </View>
                       </View>
                       <Text style={[styles.intakeRowAmountStacked, { color: colors.textSecondary }]}>{line.amountRight}</Text>
@@ -2491,9 +2335,11 @@ export default function HealthScreen() {
                   renderRightActions={() => (
                     <Pressable
                       onPress={() => {
-                        void deleteIntakeRecordNow(line.recordId);
+                        confirmDeleteIntakeRecord(line.recordId);
                       }}
                       style={[styles.swipeDeleteAction, { backgroundColor: colors.danger }]}
+                      accessibilityRole="button"
+                      accessibilityLabel="删除这条摄入记录"
                     >
                       <MaterialIcons name="delete" size={22} color={colors.onPrimary} />
                       <Text style={[styles.swipeDeleteText, { color: colors.onPrimary }]}>删除</Text>
@@ -2513,12 +2359,13 @@ export default function HealthScreen() {
                     }
                     onLongPress={() => confirmDeleteIntakeRecord(line.recordId)}
                     delayLongPress={280}
-                    style={[
+                    style={({ pressed }) => [
                       styles.intakeRow,
                       isCombinedIntake && styles.intakeRowStacked,
                       {
                         backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
                         borderColor: colors.outline,
+                        opacity: pressed ? 0.88 : 1,
                       },
                     ]}
                   >
@@ -2541,12 +2388,16 @@ export default function HealthScreen() {
                                 </Text>
                                 <Text style={[styles.intakeRowTime, { color: colors.textSecondary }]}>{line.timeLine}</Text>
                               </View>
-                              <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={1}>
-                                {line.note}
-                              </Text>
-                              <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={2}>
-                                {line.aiComment}
-                              </Text>
+                              {line.note ? (
+                                <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={1}>
+                                  {line.note}
+                                </Text>
+                              ) : null}
+                              {line.aiComment ? (
+                                <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={2}>
+                                  {line.aiComment}
+                                </Text>
+                              ) : null}
                             </View>
                           </View>
                         </View>
@@ -2568,12 +2419,16 @@ export default function HealthScreen() {
                               <Text style={[styles.intakeRowTitle, { color: colors.text }]}>{line.title}</Text>
                               <Text style={[styles.intakeRowTime, { color: colors.textSecondary }]}>{line.timeLine}</Text>
                             </View>
-                            <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={1}>
-                              {line.note}
-                            </Text>
-                            <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={2}>
-                              {line.aiComment}
-                            </Text>
+                            {line.note ? (
+                              <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={1}>
+                                {line.note}
+                              </Text>
+                            ) : null}
+                            {line.aiComment ? (
+                              <Text style={[styles.intakeRowMeta, { color: colors.textSecondary }]} numberOfLines={2}>
+                                {line.aiComment}
+                              </Text>
+                            ) : null}
                           </View>
                         </View>
                         <Text style={[styles.intakeRowAmount, { color: colors.text }]}>{line.amountRight}</Text>
@@ -2594,43 +2449,22 @@ export default function HealthScreen() {
         </View>
 
         <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
-          <View style={[styles.trendPanelTabs, { backgroundColor: isDark ? colors.input : colors.surfaceSubtle }]}>
-            {(
-              [
-                { key: 'weekly' as const, label: '每周趋势' },
-                { key: 'intake' as const, label: '健康摄入趋势' },
-              ] as const
-            ).map((tab) => {
-              const active = trendPanelTab === tab.key;
-              return (
-                <TouchableOpacity
-                  key={tab.key}
-                  activeOpacity={0.82}
-                  onPress={() => setTrendPanelTab(tab.key)}
-                  style={[
-                    styles.trendPanelTabBtn,
-                    active
-                      ? {
-                          backgroundColor: isDark ? colors.surfaceMuted : colors.surface,
-                          borderColor: colors.outline,
-                        }
-                      : undefined,
-                  ]}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: active }}
-                >
-                  <Text style={[styles.trendPanelTabText, { color: active ? colors.text : colors.textSecondary }]}>
-                    {tab.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
+          <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>每周趋势</Text>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              hitSlop={Layout.hitSlop}
+              onPress={() => router.push('/health-analysis' as unknown as Href)}
+              accessibilityRole="button"
+              accessibilityLabel="打开健康摄入分析"
+            >
+              <Text style={[styles.editBtn, { color: colors.primary }]}>分析</Text>
+            </TouchableOpacity>
           </View>
 
-          {trendPanelTab === 'weekly' ? (
-            <View style={[styles.trendCard, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle, borderColor: colors.outline }]}>
+            <View style={styles.trendBody}>
               <View style={styles.trendHeader}>
-                <Text style={[styles.trendTitle, { color: colors.text }]}>每周趋势</Text>
+                <Text style={[styles.trendTitle, { color: colors.text }]}>本周完成度</Text>
                 <Text style={[styles.trendSub, { color: colors.primary }]}>{weeklyTrendDeltaText}</Text>
               </View>
 
@@ -2638,22 +2472,22 @@ export default function HealthScreen() {
                 <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.hydration }]} />
                   <Text style={[styles.legendText, { color: colors.textSecondary }]}>水分</Text>
-                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.hydration}</Text>
+                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.hydration}%</Text>
                 </View>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.protein }]} />
                   <Text style={[styles.legendText, { color: colors.textSecondary }]}>蛋白质</Text>
-                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.protein}</Text>
+                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.protein}%</Text>
                 </View>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.calories }]} />
                   <Text style={[styles.legendText, { color: colors.textSecondary }]}>热量</Text>
-                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.calories}</Text>
+                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.calories}%</Text>
                 </View>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: HealthNutrientAccents.carbohydrate }]} />
                   <Text style={[styles.legendText, { color: colors.textSecondary }]}>碳水</Text>
-                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.carbohydrate}</Text>
+                  <Text style={[styles.legendValue, { color: colors.text }]}>{activeTrend.carbohydrate}%</Text>
                 </View>
               </View>
 
@@ -2661,7 +2495,9 @@ export default function HealthScreen() {
                 <View style={styles.chartInner}>
                   <View style={styles.yAxis}>
                     {[100, 75, 50, 25, 0].map((tick) => (
-                      <Text key={tick} style={[styles.yTickText, { color: colors.textSecondary }]}>{tick}</Text>
+                      <Text key={tick} style={[styles.yTickText, { color: colors.textMuted }]}>
+                        {tick}%
+                      </Text>
                     ))}
                   </View>
 
@@ -2731,8 +2567,8 @@ export default function HealthScreen() {
                                   styles.miniBar,
                                   {
                                     height: hydrationHeight,
-                                    backgroundColor: `rgba(16,185,129,${faded})`,
-                                    opacity: barOpacity,
+                                    backgroundColor: HealthNutrientAccents.hydration,
+                                    opacity: Animated.multiply(barOpacity, faded),
                                   },
                                 ]}
                               />
@@ -2741,8 +2577,8 @@ export default function HealthScreen() {
                                   styles.miniBar,
                                   {
                                     height: proteinHeight,
-                                    backgroundColor: `rgba(245,158,11,${faded})`,
-                                    opacity: barOpacity,
+                                    backgroundColor: HealthNutrientAccents.protein,
+                                    opacity: Animated.multiply(barOpacity, faded),
                                   },
                                 ]}
                               />
@@ -2751,8 +2587,8 @@ export default function HealthScreen() {
                                   styles.miniBar,
                                   {
                                     height: carbohydrateHeight,
-                                    backgroundColor: `rgba(234,179,8,${faded})`,
-                                    opacity: barOpacity,
+                                    backgroundColor: HealthNutrientAccents.carbohydrate,
+                                    opacity: Animated.multiply(barOpacity, faded),
                                   },
                                 ]}
                               />
@@ -2761,8 +2597,8 @@ export default function HealthScreen() {
                                   styles.miniBar,
                                   {
                                     height: caloriesHeight,
-                                    backgroundColor: `rgba(168,85,247,${faded})`,
-                                    opacity: barOpacity,
+                                    backgroundColor: HealthNutrientAccents.calories,
+                                    opacity: Animated.multiply(barOpacity, faded),
                                   },
                                 ]}
                               />
@@ -2778,13 +2614,6 @@ export default function HealthScreen() {
                 </View>
               </View>
             </View>
-          ) : (
-            <HealthIntakeTrendSection
-              logicalToday={today}
-              refreshNonce={intakeTrendRefreshNonce}
-              hideSectionHeader
-            />
-          )}
           </View>
 
         <View style={{ height: 40 }} />
@@ -2804,15 +2633,9 @@ export default function HealthScreen() {
             >
               <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
                 <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
-                  <Text style={[styles.sectionTitle, { color: colors.text }]}>今日指标</Text>
+                  <Text style={[styles.sectionTitle, { color: colors.text }]}>今日概况</Text>
                 </View>
                 <HealthMetricsSkeleton cardWidth={cardWidth} colors={colors} />
-              </View>
-              <View style={[styles.sectionPanel, styles.statusPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
-                <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
-                  <Text style={[styles.sectionTitle, { color: colors.text }]}>今日状态</Text>
-                </View>
-                <HealthStatusCardSkeleton colors={colors} />
               </View>
               <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
                 <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
@@ -2839,20 +2662,19 @@ export default function HealthScreen() {
         style={[
           styles.floatingCtaWrap,
           {
-            transform: [
-              { translateX: floatingCtaPosition.x },
-              { translateY: floatingCtaPosition.y },
-              { scale: Animated.multiply(ctaScaleAnim, ctaPressAnim) },
-            ],
+            right: FLOATING_CTA_MARGIN,
+            bottom: Math.max(insets.bottom, 12) + 72,
+            transform: [{ scale: Animated.multiply(ctaScaleAnim, ctaPressAnim) }],
           },
         ]}
-        {...floatingCtaPanResponder.panHandlers}
       >
         <TouchableOpacity
           style={[
             styles.floatingCtaBtn,
             { backgroundColor: colors.primary, shadowColor: colors.primary, opacity: intakeParseLocked ? 0.42 : 1 },
           ]}
+          accessibilityRole="button"
+          accessibilityLabel="记录新摄入"
           onPress={() => {
             if (intakeParseLocked) {
               Alert.alert('请稍候', '当前有一条摄入正在解析，解析完成后再添加。');
@@ -2886,9 +2708,9 @@ export default function HealthScreen() {
         visible={assistantOpen}
         transparent
         animationType="fade"
-        onRequestClose={closeAssistantModal}
+        onRequestClose={dismissAssistantModal}
       >
-        <Pressable style={[styles.assistantOverlay, { backgroundColor: colors.overlay }]} onPress={closeAssistantModal}>
+        <Pressable style={[styles.assistantOverlay, { backgroundColor: colors.overlay }]} onPress={dismissAssistantModal}>
           <Pressable
             style={[styles.assistantCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}
             onPress={() => {}}
@@ -2897,11 +2719,13 @@ export default function HealthScreen() {
             <View style={styles.assistantHeader}>
               <View>
                 <Text style={[styles.assistantTitle, { color: colors.text }]}>智能建议</Text>
-                <Text style={[styles.assistantSubTitle, { color: colors.textSecondary }]}>SMART GOAL SETTING</Text>
+                <Text style={[styles.assistantSubTitle, { color: colors.textSecondary }]}>设定今日目标</Text>
               </View>
               <TouchableOpacity
                 style={[styles.assistantCloseBtn, { backgroundColor: isDark ? colors.input : colors.capsule }]}
-                onPress={closeAssistantModal}
+                onPress={dismissAssistantModal}
+                accessibilityRole="button"
+                accessibilityLabel="关闭，不保存"
               >
                 <MaterialIcons name="close" size={18} color={colors.textSecondary} />
               </TouchableOpacity>
@@ -3031,6 +2855,27 @@ export default function HealthScreen() {
                 );
               })}
             </View>
+
+            <View style={styles.assistantFooter}>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={dismissAssistantModal}
+                style={[styles.assistantFooterBtn, { backgroundColor: isDark ? colors.input : colors.capsule }]}
+                accessibilityRole="button"
+                accessibilityLabel="取消，不保存目标"
+              >
+                <Text style={[styles.assistantFooterBtnText, { color: colors.textSecondary }]}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={saveAssistantModal}
+                style={[styles.assistantFooterBtn, { backgroundColor: currentAssistant.accent }]}
+                accessibilityRole="button"
+                accessibilityLabel="保存目标"
+              >
+                <Text style={[styles.assistantFooterBtnText, { color: colors.onPrimary }]}>保存</Text>
+              </TouchableOpacity>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -3046,7 +2891,7 @@ export default function HealthScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <Pressable
-            style={StyleSheet.absoluteFillObject}
+            style={StyleSheet.absoluteFill}
             onPress={() => {
               Keyboard.dismiss();
               closePointsSettingsModal();
@@ -3299,7 +3144,7 @@ const styles = StyleSheet.create({
     gap: Spacing.xl,
   },
   sectionStack: {
-    gap: Spacing.xl,
+    gap: Spacing['3xl'],
   },
   sectionPanel: {
     borderRadius: Radius['2xl'],
@@ -3308,34 +3153,32 @@ const styles = StyleSheet.create({
     ...Shadows.card,
     overflow: 'hidden',
   },
-  statusPanel: {
-    paddingBottom: Spacing['3xl'],
-  },
   metricsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: Spacing.md,
   },
   metricCard: {
     borderRadius: Radius.xl,
-    paddingVertical: Spacing['2xl'],
-    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.md,
+    paddingHorizontal: Spacing.sm,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
   },
   metricCardGlow: {
     position: 'absolute',
-    width: 86,
-    height: 86,
-    borderRadius: 43,
-    top: -24,
-    right: -18,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    top: -20,
+    right: -14,
   },
   progressContainer: {
     position: 'relative',
-    marginBottom: 8,
+    marginBottom: Spacing.sm,
   },
   iconContainer: {
     position: 'absolute',
@@ -3347,74 +3190,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   metricLabel: {
-    fontSize: 13,
-    marginBottom: 4,
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 2,
   },
   metricValue: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '900',
     letterSpacing: -0.2,
   },
   metricSubValue: {
-    fontSize: 10,
-    marginTop: 4,
-  },
-  statusItem: {
-    flexDirection: 'row',
-    gap: 12,
-    borderRadius: Radius.lg,
-    padding: Spacing.xl,
-  },
-  statusItemSpacing: {
-    marginTop: Spacing.md,
-  },
-  statusItemAccent: {
-    width: 4,
-    borderRadius: 999,
-  },
-  statusItemBody: {
-    flex: 1,
-  },
-  statusLineRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  statusItemTitle: {
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: -0.2,
-  },
-  statusBadge: {
-    fontSize: 11,
-    fontWeight: '700',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    overflow: 'hidden',
-  },
-  statusDesc: {
-    fontSize: 12,
-    lineHeight: 18,
-    marginBottom: 10,
-  },
-  statusValueRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-  },
-  statusValueMain: {
-    fontSize: 32,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-    marginRight: 8,
-  },
-  statusValueSub: {
-    fontSize: 12,
+    fontSize: 9,
     fontWeight: '600',
+    marginTop: 2,
   },
   statusTrack: {
-    height: 6,
+    height: 5,
     borderRadius: Radius.pill,
     overflow: 'hidden',
   },
@@ -3514,13 +3305,13 @@ const styles = StyleSheet.create({
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     marginBottom: Spacing.xl,
     paddingBottom: Spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   sectionTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '900',
     letterSpacing: -0.3,
   },
@@ -3559,8 +3350,6 @@ const styles = StyleSheet.create({
   },
   floatingCtaWrap: {
     position: 'absolute',
-    left: 0,
-    top: 0,
     zIndex: 60,
   },
   floatingCtaBtn: {
@@ -3569,10 +3358,44 @@ const styles = StyleSheet.create({
     borderRadius: Radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    elevation: 6,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.28,
-    shadowRadius: 10,
+    ...Shadows.composer,
+  },
+  metricStatusHint: {
+    marginTop: Spacing.sm,
+    fontSize: 10,
+    fontWeight: '500',
+    lineHeight: 13,
+    textAlign: 'center',
+    minHeight: 26,
+  },
+  metricTrackWrap: {
+    width: '100%',
+    marginTop: Spacing.md,
+  },
+  metricTrackWrapTall: {
+    marginTop: Spacing.lg,
+  },
+  quickAddHint: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginBottom: Spacing.md,
+    lineHeight: 17,
+  },
+  assistantFooter: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: Spacing['3xl'],
+  },
+  assistantFooterBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: Radius.lg,
+  },
+  assistantFooterBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
   },
   intakeEmptyBox: {
     borderRadius: Radius.lg,
@@ -3689,44 +3512,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-  trendCard: {
-    borderRadius: Radius.xl,
-    padding: Spacing['4xl'],
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  trendPanelTabs: {
-    borderRadius: 16,
-    padding: 6,
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: 12,
-  },
-  trendPanelTabBtn: {
-    flex: 1,
-    borderRadius: 12,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'transparent',
-  },
-  trendPanelTabText: {
-    fontSize: 13,
-    fontWeight: '800',
+  trendBody: {
+    gap: Spacing.sm,
   },
   trendHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: Spacing.sm,
   },
   trendTitle: {
-    fontSize: 16,
-    fontWeight: '900',
+    fontSize: 15,
+    fontWeight: '800',
     letterSpacing: -0.2,
   },
   trendSub: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
   legendRow: {
@@ -3763,14 +3564,14 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   yAxis: {
-    width: 24,
+    width: 34,
     height: 152,
     justifyContent: 'space-between',
     alignItems: 'flex-end',
     paddingBottom: 22,
   },
   yTickText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600',
   },
   plotArea: {
