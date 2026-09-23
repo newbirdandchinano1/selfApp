@@ -5269,9 +5269,9 @@ export default function TasksScreen() {
         <View style={styles.pageHeaderRow}>
           <View style={styles.pageHeaderSide}>
             <Pressable
-              onPress={() => router.push('/points-ledger')}
+              onPress={() => router.push('/wish-board')}
               accessibilityRole="button"
-              accessibilityLabel={`当前积分 ${formatPoints(pointsBalance)}，打开积分`}
+              accessibilityLabel={`当前积分 ${formatPoints(pointsBalance)}，打开心愿板`}
               hitSlop={6}
               style={({ pressed }) => [
                 styles.pointsBalanceChip,

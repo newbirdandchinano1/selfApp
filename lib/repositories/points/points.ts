@@ -277,6 +277,13 @@ export async function deletePointsLedgerRecord(
   const delta = asPoints(result.delta);
   const rollbackDelta = asPoints(result.rollback_delta);
   const nowIso = pointsAuditNowIso();
+  const wishId =
+    result.reason === 'wish_redeem' &&
+    result.ref_type === 'wish_board_item' &&
+    result.ref_id &&
+    String(result.ref_id).trim()
+      ? String(result.ref_id).trim()
+      : null;
 
   const db = await getDatabase();
   const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
@@ -293,10 +300,116 @@ export async function deletePointsLedgerRecord(
        WHERE id = ?`,
       [balance, nowIso, POINTS_WALLET_ID],
     );
+    if (wishId) {
+      await db.runAsync(
+        `UPDATE wish_board_items SET
+          status = 'active',
+          redeemed_at = NULL,
+          updated_at = ?,
+          sync_status = CASE WHEN sync_status = 'pending_create' THEN 'pending_create' ELSE 'pending_update' END
+         WHERE id = ?
+           AND wish_type = 'once'
+           AND status = 'redeemed'`,
+        [nowIso, wishId],
+      );
+    }
   } finally {
     endCloudSqliteDirtyIgnoreBatch();
   }
 
   notifyPointsBalanceChanged(balance);
   return { balance, delta, rollback_delta: rollbackDelta };
+}
+
+export type LocalPointsLedgerListResult = {
+  items: Array<{
+    id: string;
+    delta: number;
+    balance_after: number;
+    reason: string;
+    ref_type: string | null;
+    ref_id: string | null;
+    note: string | null;
+    created_at: string;
+  }>;
+  balance: number;
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+};
+
+/** 本地分页读取积分流水（API 不可用时的回退）。 */
+export async function listLocalPointsLedger(params?: {
+  page?: number;
+  limit?: number;
+}): Promise<LocalPointsLedgerListResult> {
+  const page = Math.max(1, Math.floor(Number(params?.page) || 1));
+  const limit = Math.min(200, Math.max(1, Math.floor(Number(params?.limit) || 50)));
+  const offset = (page - 1) * limit;
+  const db = await getDatabase();
+
+  await db.runAsync(
+    `INSERT OR IGNORE INTO points_wallet (id, balance, created_at, updated_at, sync_status)
+     VALUES (?, 0, datetime('now'), datetime('now'), 'synced')`,
+    [POINTS_WALLET_ID],
+  );
+
+  const countRow = await db.getFirstAsync<{ total: number }>(
+    `SELECT COUNT(*) AS total FROM points_ledger WHERE sync_status != 'pending_delete'`,
+  );
+  const total = Math.max(0, Math.floor(Number(countRow?.total) || 0));
+  const rows = await db.getAllAsync<{
+    id: string;
+    delta: number;
+    balance_after: number;
+    reason: string;
+    ref_type: string | null;
+    ref_id: string | null;
+    created_at: string;
+    extra_data: string | null;
+  }>(
+    `SELECT id, delta, balance_after, reason, ref_type, ref_id, created_at, extra_data
+     FROM points_ledger
+     WHERE sync_status != 'pending_delete'
+     ORDER BY datetime(created_at) DESC, id DESC
+     LIMIT ? OFFSET ?`,
+    [limit, offset],
+  );
+
+  const items = (rows ?? []).map((row) => {
+    let note: string | null = null;
+    if (row.extra_data) {
+      try {
+        const parsed = JSON.parse(row.extra_data) as Record<string, unknown>;
+        if (typeof parsed.note === 'string' && parsed.note.trim()) note = parsed.note.trim();
+      } catch {
+        // ignore
+      }
+    }
+    return {
+      id: String(row.id),
+      delta: asPoints(row.delta),
+      balance_after: asPoints(row.balance_after),
+      reason: String(row.reason ?? ''),
+      ref_type: row.ref_type == null ? null : String(row.ref_type),
+      ref_id: row.ref_id == null ? null : String(row.ref_id),
+      note,
+      created_at: String(row.created_at ?? ''),
+    };
+  });
+
+  const balance = await getLocalPointsBalance();
+  return {
+    items,
+    balance,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: total > 0 ? Math.ceil(total / limit) : 0,
+    },
+  };
 }

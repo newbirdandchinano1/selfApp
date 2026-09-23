@@ -3,11 +3,39 @@
  * 供 api-client 表级 CRUD 路由，以及积分动作直接调用。
  */
 
-import { apiRequest, type ApiListQueryOpts, type ApiListResponse } from '@/lib/api-client';
+import {
+  ApiRequestError,
+  apiRequest,
+  type ApiListQueryOpts,
+  type ApiListResponse,
+} from '@/lib/api-client';
 import { formatPointsLedgerReasonLabel } from '@/lib/points-ledger-reason-label';
 import { roundPoints } from '@/lib/reward-points';
 
 export const APP_API_PREFIX = '/api/app';
+
+/** 远端仍挂旧路径 /wish-board/points/*；新路径 /points/* 未部署时回退 */
+function isPointsRouteMissingError(err: unknown): boolean {
+  if (err instanceof ApiRequestError && err.httpStatus === 404) return true;
+  if (!(err instanceof Error)) return false;
+  return /Cannot (GET|POST|PUT|PATCH|DELETE)\s|404|Not Found/i.test(err.message);
+}
+
+async function apiRequestPointsCompat<T>(
+  modernPath: string,
+  legacyPath: string,
+  opts?: Parameters<typeof apiRequest<T>>[1],
+): Promise<T> {
+  try {
+    return await apiRequest<T>(modernPath, opts);
+  } catch (e) {
+    if (!isPointsRouteMissingError(e)) throw e;
+    if (__DEV__) {
+      console.warn('[points] modern route missing, fallback legacy', modernPath, '→', legacyPath);
+    }
+    return apiRequest<T>(legacyPath, opts);
+  }
+}
 
 function asPoints(raw: unknown): number {
   const n = roundPoints(Number(raw) || 0);
@@ -21,6 +49,7 @@ export const APP_DOMAIN_CRUD_TABLES = new Set([
   'memo_dimensions',
   'memos',
   'health_records',
+  'wish_board_items',
 ]);
 
 function asRecord(row: unknown): Record<string, unknown> {
@@ -106,6 +135,10 @@ function prepareHealthIntakeBody(row: Record<string, unknown>): Record<string, u
   return out;
 }
 
+function prepareWishBoardItemBody(row: Record<string, unknown>): Record<string, unknown> {
+  return stripSyncFields(row);
+}
+
 function buildQuery(params: Record<string, string | number | boolean | null | undefined>): string {
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -161,6 +194,12 @@ export async function appDomainCreateRecord<T = unknown>(
         body: prepareHealthIntakeBody(row),
         signal,
       });
+    case 'wish_board_items':
+      return apiRequest<T>(`${APP_API_PREFIX}/wish-board/items`, {
+        method: 'POST',
+        body: prepareWishBoardItemBody(row),
+        signal,
+      });
     default:
       throw new Error(`表「${table}」无 App 专用创建接口`);
   }
@@ -199,6 +238,9 @@ export async function appDomainUpdateRecord<T = unknown>(
         body: prepareMemoBody(row),
         signal,
       });
+    case 'wish_board_items':
+      // 专用文档暂无编辑接口；保留通用 CRUD 由调用方回退
+      throw new AppDomainFallbackError(table, 'update');
     case 'health_records':
       throw new AppDomainFallbackError(table, 'update');
     default:
@@ -225,6 +267,9 @@ export async function appDomainDeleteRecord(
       return;
     case 'memos':
       await apiRequest(`${APP_API_PREFIX}/memos/${enc}`, { method: 'DELETE', signal });
+      return;
+    case 'wish_board_items':
+      await apiRequest(`${APP_API_PREFIX}/wish-board/items/${enc}`, { method: 'DELETE', signal });
       return;
     case 'health_records':
       throw new AppDomainFallbackError(table, 'delete');
@@ -255,6 +300,7 @@ export async function appDomainGetRecord<T extends Record<string, unknown>>(
     case 'recipe_categories':
     case 'memo_dimensions':
     case 'health_records':
+    case 'wish_board_items':
       throw new AppDomainFallbackError(table, 'get');
     default:
       throw new Error(`表「${table}」无 App 专用详情接口`);
@@ -306,6 +352,14 @@ export async function appDomainListRecords<T extends Record<string, unknown>>(
       });
       const items = extractHealthIntakeItems(data).map(normalizeHealthRecordRow);
       await enrichHealthRecordsWithDailyTargets(items, signal);
+      return wrapList(items as T[]);
+    }
+    case 'wish_board_items': {
+      const data = await apiRequest<{ items?: unknown[] }>(`${APP_API_PREFIX}/wish-board/items`, {
+        method: 'GET',
+        signal,
+      });
+      const items = Array.isArray(data?.items) ? data.items.map(asRecord) : [];
       return wrapList(items as T[]);
     }
     default:
@@ -453,10 +507,14 @@ export class AppDomainFallbackError extends Error {
 // —— 积分专用动作 ——
 
 export async function appPointsGetBalance(opts?: { signal?: AbortSignal }): Promise<number> {
-  const data = await apiRequest<{ balance?: number }>(`${APP_API_PREFIX}/points/balance`, {
-    method: 'GET',
-    signal: opts?.signal,
-  });
+  const data = await apiRequestPointsCompat<{ balance?: number }>(
+    `${APP_API_PREFIX}/points/balance`,
+    `${APP_API_PREFIX}/wish-board/points/balance`,
+    {
+      method: 'GET',
+      signal: opts?.signal,
+    },
+  );
   return asPoints(data?.balance);
 }
 
@@ -470,7 +528,7 @@ export async function appPointsAdjust(
   },
   opts?: { signal?: AbortSignal },
 ): Promise<{ balance?: number; delta?: number; ledger_id?: string | null }> {
-  return apiRequest(`${APP_API_PREFIX}/points/adjust`, {
+  return apiRequestPointsCompat(`${APP_API_PREFIX}/points/adjust`, `${APP_API_PREFIX}/wish-board/points/adjust`, {
     method: 'POST',
     body: {
       delta: input.delta,
@@ -486,7 +544,7 @@ export async function appPointsAdjust(
 export async function appPointsReset(opts?: {
   signal?: AbortSignal;
 }): Promise<{ balance?: number; delta?: number; ledger_id?: string | null }> {
-  return apiRequest(`${APP_API_PREFIX}/points/reset`, {
+  return apiRequestPointsCompat(`${APP_API_PREFIX}/points/reset`, `${APP_API_PREFIX}/wish-board/points/reset`, {
     method: 'POST',
     signal: opts?.signal,
   });
@@ -516,7 +574,7 @@ export type AppPointsLedgerResult = {
   };
 };
 
-/** GET /api/app/points/ledger — 积分流水（全部来源） */
+/** GET /api/app/points/ledger（兼容 /wish-board/points/ledger）；失败时回退本地 SQLite */
 export async function appPointsListLedger(
   params?: { page?: number; limit?: number },
   opts?: { signal?: AbortSignal },
@@ -524,50 +582,81 @@ export async function appPointsListLedger(
   const page = Math.max(1, Math.floor(Number(params?.page) || 1));
   const limit = Math.min(200, Math.max(1, Math.floor(Number(params?.limit) || 50)));
   const qs = `?page=${page}&limit=${limit}`;
-  const data = await apiRequest<{
-    items?: AppPointsLedgerItem[];
-    balance?: number;
-    pagination?: Partial<AppPointsLedgerResult['pagination']>;
-    total?: number;
-  }>(`${APP_API_PREFIX}/points/ledger${qs}`, {
-    method: 'GET',
-    signal: opts?.signal,
-  });
 
-  const items = Array.isArray(data?.items)
-    ? data.items.map(row => {
-        const reason = String(row.reason ?? '');
-        return {
-          id: String(row.id),
-          delta: asPoints(row.delta),
-          balance_after: asPoints(row.balance_after),
-          reason,
-          reason_label: formatPointsLedgerReasonLabel(reason, row.reason_label),
-          ref_type: row.ref_type ?? null,
-          ref_id: row.ref_id ?? null,
-          ref_title: row.ref_title ?? null,
-          note: row.note ?? null,
-          created_at: String(row.created_at ?? ''),
-        };
-      })
-    : [];
+  try {
+    const data = await apiRequestPointsCompat<{
+      items?: AppPointsLedgerItem[];
+      balance?: number;
+      pagination?: Partial<AppPointsLedgerResult['pagination']>;
+      total?: number;
+    }>(`${APP_API_PREFIX}/points/ledger${qs}`, `${APP_API_PREFIX}/wish-board/points/ledger${qs}`, {
+      method: 'GET',
+      signal: opts?.signal,
+    });
 
-  const total = Math.max(
-    0,
-    Math.floor(Number(data?.pagination?.total ?? data?.total) || items.length),
-  );
-  const pageOut = Math.max(1, Math.floor(Number(data?.pagination?.page) || page));
-  const limitOut = Math.max(1, Math.floor(Number(data?.pagination?.limit) || limit));
-  const totalPages = Math.max(
-    0,
-    Math.floor(Number(data?.pagination?.totalPages) || (total > 0 ? Math.ceil(total / limitOut) : 0)),
-  );
+    const items = Array.isArray(data?.items)
+      ? data.items.map(row => {
+          const reason = String(row.reason ?? '');
+          return {
+            id: String(row.id),
+            delta: asPoints(row.delta),
+            balance_after: asPoints(row.balance_after),
+            reason,
+            reason_label: formatPointsLedgerReasonLabel(reason, row.reason_label),
+            ref_type: row.ref_type ?? null,
+            ref_id: row.ref_id ?? null,
+            ref_title: row.ref_title ?? null,
+            note: row.note ?? null,
+            created_at: String(row.created_at ?? ''),
+          };
+        })
+      : [];
 
-  return {
-    items,
-    balance: asPoints(data?.balance),
-    pagination: { page: pageOut, limit: limitOut, total, totalPages },
-  };
+    const total =
+      typeof data?.pagination?.total === 'number'
+        ? data.pagination.total
+        : typeof data?.total === 'number'
+          ? data.total
+          : items.length;
+    const pageOut =
+      typeof data?.pagination?.page === 'number' && Number.isFinite(data.pagination.page)
+        ? Math.max(1, Math.floor(data.pagination.page))
+        : page;
+    const limitOut =
+      typeof data?.pagination?.limit === 'number' && Number.isFinite(data.pagination.limit)
+        ? Math.max(1, Math.floor(data.pagination.limit))
+        : limit;
+    const totalPages =
+      typeof data?.pagination?.totalPages === 'number' && Number.isFinite(data.pagination.totalPages)
+        ? Math.max(0, Math.floor(data.pagination.totalPages))
+        : total > 0
+          ? Math.ceil(total / limitOut)
+          : 0;
+
+    return {
+      items,
+      balance: asPoints(data?.balance),
+      pagination: {
+        page: pageOut,
+        limit: limitOut,
+        total: Math.max(0, Math.floor(total)),
+        totalPages,
+      },
+    };
+  } catch (e) {
+    if (__DEV__) console.warn('[points] list ledger API failed, local fallback', e);
+    const { listLocalPointsLedger } = await import('@/lib/repositories/points/points');
+    const local = await listLocalPointsLedger({ page, limit });
+    return {
+      items: local.items.map(row => ({
+        ...row,
+        reason_label: formatPointsLedgerReasonLabel(row.reason),
+        ref_title: null,
+      })),
+      balance: local.balance,
+      pagination: local.pagination,
+    };
+  }
 }
 
 /** DELETE /api/app/points/ledger/:id — 删除流水并回退积分 */
@@ -586,7 +675,8 @@ export async function appPointsDeleteLedger(
 }> {
   const ledgerId = String(id ?? '').trim();
   if (!ledgerId) throw new Error('缺少流水 id');
-  const data = await apiRequest<{
+  const enc = encodeURIComponent(ledgerId);
+  const data = await apiRequestPointsCompat<{
     deleted?: boolean;
     id?: string;
     delta?: number;
@@ -595,7 +685,7 @@ export async function appPointsDeleteLedger(
     reason?: string;
     ref_type?: string | null;
     ref_id?: string | null;
-  }>(`${APP_API_PREFIX}/points/ledger/${encodeURIComponent(ledgerId)}`, {
+  }>(`${APP_API_PREFIX}/points/ledger/${enc}`, `${APP_API_PREFIX}/wish-board/points/ledger/${enc}`, {
     method: 'DELETE',
     signal: opts?.signal,
   });
@@ -609,6 +699,55 @@ export async function appPointsDeleteLedger(
     ref_type: data?.ref_type == null ? null : String(data.ref_type),
     ref_id: data?.ref_id == null ? null : String(data.ref_id),
   };
+}
+
+// —— 心愿板专用动作 ——
+
+export async function appWishBoardRedeem(
+  id: string,
+  opts?: { signal?: AbortSignal },
+): Promise<{ balance?: number; item?: Record<string, unknown> }> {
+  return apiRequest(`${APP_API_PREFIX}/wish-board/redeem`, {
+    method: 'POST',
+    body: { id },
+    signal: opts?.signal,
+  });
+}
+
+export type AppWishRedeemedItem = {
+  ledger_id: string;
+  wish_id: string;
+  delta: number;
+  balance_after?: number;
+  redeemed_at: string;
+  title?: string | null;
+  description?: string | null;
+  cost_points?: number | null;
+  note?: string | null;
+  icon_key?: string | null;
+  wish_type?: string | null;
+  status?: string | null;
+};
+
+export async function appWishBoardListRedeemed(opts?: {
+  signal?: AbortSignal;
+}): Promise<AppWishRedeemedItem[]> {
+  const data = await apiRequest<{ items?: AppWishRedeemedItem[] }>(
+    `${APP_API_PREFIX}/wish-board/redeemed`,
+    { method: 'GET', signal: opts?.signal },
+  );
+  return Array.isArray(data?.items) ? data.items : [];
+}
+
+export async function appWishBoardDeleteRedeemed(opts?: {
+  id?: string;
+  signal?: AbortSignal;
+}): Promise<{ deleted?: number; ids?: string[] }> {
+  const qs = opts?.id ? `?id=${encodeURIComponent(opts.id)}` : '';
+  return apiRequest(`${APP_API_PREFIX}/wish-board/redeemed${qs}`, {
+    method: 'DELETE',
+    signal: opts?.signal,
+  });
 }
 
 // —— 备忘录 AI ——

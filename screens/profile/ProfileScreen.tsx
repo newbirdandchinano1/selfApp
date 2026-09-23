@@ -3,8 +3,11 @@ import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { Spacing } from '@/constants/design-tokens';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
+import { getPointsBalance } from '@/lib/repositories/points/points';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
+import { formatPoints } from '@/lib/reward-points';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -12,6 +15,45 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/profile';
+
+type ProfileMenuItem = {
+  key: string;
+  title: string;
+  subtitle: string;
+  icon: keyof typeof MaterialIcons.glyphMap;
+  href: '/wish-board' | '/points-ledger' | '/memo-list' | '/my-recipes';
+};
+
+const PROFILE_MENU: ProfileMenuItem[] = [
+  {
+    key: 'wish-board',
+    title: '心愿板',
+    subtitle: '用积分兑换心愿',
+    icon: 'card-giftcard',
+    href: '/wish-board',
+  },
+  {
+    key: 'points-ledger',
+    title: '积分记录',
+    subtitle: '查看全部积分流水',
+    icon: 'receipt-long',
+    href: '/points-ledger',
+  },
+  {
+    key: 'memo-list',
+    title: '备忘录',
+    subtitle: '笔记与维度整理',
+    icon: 'sticky-note-2',
+    href: '/memo-list',
+  },
+  {
+    key: 'my-recipes',
+    title: '我的菜谱',
+    subtitle: '收藏与自建菜谱',
+    icon: 'restaurant-menu',
+    href: '/my-recipes',
+  },
+];
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -24,6 +66,7 @@ export default function ProfileScreen() {
   const theme = Colors[scheme];
   const isDark = colorScheme === 'dark';
   const [user, setUser] = useState<UserRow | null>(null);
+  const [pointsBalance, setPointsBalance] = useState(0);
 
   const bg = isDark ? theme.background : '#faf8ff';
   const surface = isDark ? theme.surface : '#ffffff';
@@ -50,17 +93,26 @@ export default function ProfileScreen() {
     }
   }, []);
 
+  const loadPoints = useCallback(async () => {
+    try {
+      const balance = await getPointsBalance();
+      setPointsBalance(balance);
+    } catch {
+      // keep last known balance
+    }
+  }, []);
+
   const reloadPage = useCallback(
     async (forceApi = false) => {
       try {
         await wrapLoad(async () => {
-          await loadUser();
+          await Promise.all([loadUser(), loadPoints()]);
         }, forceApi);
       } catch {
         // ignore
       }
     },
-    [wrapLoad, loadUser],
+    [wrapLoad, loadUser, loadPoints],
   );
   reloadPageRef.current = reloadPage;
 
@@ -83,20 +135,26 @@ export default function ProfileScreen() {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      const unsubscribe = subscribeDefaultUserUpdates(() => {
+      const unsubscribeUser = subscribeDefaultUserUpdates(() => {
         if (cancelled) return;
         void loadUser();
       });
+      const unsubscribePoints = subscribePointsBalanceChanged((balance) => {
+        if (cancelled) return;
+        setPointsBalance(balance);
+      });
       return () => {
         cancelled = true;
-        unsubscribe();
+        unsubscribeUser();
+        unsubscribePoints();
       };
     }, [loadUser]),
   );
 
   useEffect(() => {
     void loadUser();
-  }, [loadUser]);
+    void loadPoints();
+  }, [loadUser, loadPoints]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
@@ -126,6 +184,26 @@ export default function ProfileScreen() {
             </Pressable>
           </View>
 
+          <Pressable
+            onPress={() => onProfileAction(() => router.push('/wish-board'))}
+            accessibilityRole="button"
+            accessibilityLabel={`当前积分 ${formatPoints(pointsBalance)}，打开心愿板`}
+            style={({ pressed }) => [
+              styles.pointsChip,
+              {
+                backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : 'rgba(251,191,36,0.12)',
+                borderColor: isDark ? 'rgba(251,191,36,0.28)' : 'rgba(217,119,6,0.22)',
+                opacity: pressed ? 0.85 : 1,
+              },
+            ]}>
+            <MaterialIcons name="stars" size={18} color="#f59e0b" />
+            <Text style={[styles.pointsChipValue, { color: text }]}>
+              {formatPoints(pointsBalance)}
+            </Text>
+            <Text style={[styles.pointsChipHint, { color: outline }]}>心愿板</Text>
+            <MaterialIcons name="chevron-right" size={20} color={outline} />
+          </Pressable>
+
           <View style={[styles.statsRow, { borderTopColor: outlineVariant }]}>
             {[
               { label: '身高', value: heightText, unit: 'cm' },
@@ -149,6 +227,31 @@ export default function ProfileScreen() {
               </View>
             ))}
           </View>
+        </View>
+
+        <View style={styles.menuSection}>
+          {PROFILE_MENU.map((item) => (
+            <Pressable
+              key={item.key}
+              onPress={() => onProfileAction(() => router.push(item.href))}
+              style={({ pressed }) => [
+                styles.menuRow,
+                {
+                  backgroundColor: surface,
+                  borderColor: outlineVariant,
+                  opacity: pressed ? 0.88 : 1,
+                },
+              ]}>
+              <View style={[styles.menuIconWrap, { backgroundColor: `${primary}12` }]}>
+                <MaterialIcons name={item.icon} size={22} color={primary} />
+              </View>
+              <View style={styles.menuTextWrap}>
+                <Text style={[styles.menuTitle, { color: text }]}>{item.title}</Text>
+                <Text style={[styles.menuSubtitle, { color: outline }]}>{item.subtitle}</Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={22} color={outline} />
+            </Pressable>
+          ))}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -199,6 +302,25 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
+  pointsChip: {
+    marginTop: 16,
+    minHeight: 44,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pointsChipValue: {
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  pointsChipHint: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+  },
   statsRow: {
     marginTop: 20,
     paddingTop: 16,
@@ -224,5 +346,38 @@ const styles = StyleSheet.create({
   statUnit: {
     fontSize: 10,
     fontWeight: '700',
+  },
+  menuSection: {
+    marginTop: 16,
+    paddingHorizontal: Spacing.md,
+    gap: 10,
+  },
+  menuRow: {
+    minHeight: 72,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  menuIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  menuTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  menuSubtitle: {
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

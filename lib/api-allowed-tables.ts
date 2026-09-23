@@ -38,6 +38,7 @@ export const API_ALLOWED_TABLES = new Set([
   'weekly_review_journal',
   'points_wallet',
   'points_ledger',
+  'wish_board_items',
 ]);
 
 /** 非 id 主键表 */

@@ -1802,6 +1802,26 @@ export async function apiGetProfileRecipes(params?: {
   });
 }
 
+/** GET /api/pages/profile/wish-board */
+export type ProfileWishBoardPayload = {
+  pointsWallet?: Record<string, unknown>[];
+  wallet?: Record<string, unknown>[];
+  items?: Record<string, unknown>[];
+  wishBoardItems?: Record<string, unknown>[];
+  pointsLedger?: Record<string, unknown>[];
+  ledger?: Record<string, unknown>[];
+  meta?: ProfilePageMeta;
+};
+
+export async function apiGetProfileWishBoard(params?: {
+  signal?: AbortSignal;
+}): Promise<ProfileWishBoardPayload> {
+  return apiRequest<ProfileWishBoardPayload>('/api/pages/profile/wish-board', {
+    method: 'GET',
+    signal: params?.signal,
+  });
+}
+
 export async function apiHealthCheck(opts?: { signal?: AbortSignal }): Promise<boolean> {
   const baseUrl = await getApiBaseUrl();
   throwIfAborted(opts?.signal);

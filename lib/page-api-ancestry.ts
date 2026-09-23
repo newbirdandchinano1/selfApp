@@ -49,6 +49,8 @@ const PAGE_PARENTS: Record<string, string[]> = {
   'memo-view': ['memo-list', TAB.profile],
   'memo-edit': ['memo-view', 'memo-list', TAB.profile],
   'points-ledger': [TAB.profile],
+  'wish-board': [TAB.profile],
+  'edit-wish-board-item': ['wish-board', TAB.profile],
   'my-recipes': [TAB.profile],
   'recipe-view': ['my-recipes', TAB.profile],
   'recipe-edit': ['recipe-view', 'my-recipes', TAB.profile],

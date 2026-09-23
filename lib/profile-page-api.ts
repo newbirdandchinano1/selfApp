@@ -5,6 +5,7 @@
 import {
   apiGetProfileMemoList,
   apiGetProfileRecipes,
+  apiGetProfileWishBoard,
 } from '@/lib/api-client';
 import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
@@ -43,6 +44,27 @@ export async function fetchProfileMemoList(opts?: {
   } catch (e) {
     if (opts?.offlineFallback === false) throw e;
     console.warn('[profile-page-api] memo-list 失败，回退本地', e);
+    return { fromApi: false };
+  }
+}
+
+/** 心愿板子页 */
+export async function fetchProfileWishBoard(opts?: {
+  signal?: AbortSignal;
+  offlineFallback?: boolean;
+}): Promise<{ fromApi: boolean }> {
+  if (!shouldFetchProfileFromApi()) return { fromApi: false };
+  try {
+    const payload = await apiGetProfileWishBoard({ signal: opts?.signal });
+    await Promise.all([
+      upsertProfileRows('points_wallet', asRecordArray(payload.pointsWallet ?? payload.wallet)),
+      upsertProfileRows('wish_board_items', asRecordArray(payload.items ?? payload.wishBoardItems)),
+      upsertProfileRows('points_ledger', asRecordArray(payload.pointsLedger ?? payload.ledger)),
+    ]);
+    return { fromApi: true };
+  } catch (e) {
+    if (opts?.offlineFallback === false) throw e;
+    console.warn('[profile-page-api] wish-board 失败，回退本地', e);
     return { fromApi: false };
   }
 }

@@ -177,20 +177,39 @@ async function migrateHabitCheckInsAllowZeroCount(db: SQLite.SQLiteDatabase): Pr
 
 
 /**
- * 积分支持小数；钱包余额允许负数（负奖励扣除）。
+ * 恢复心愿板表：若曾被 drop_wish_board_items_v43 删除，则重建。
  */
-/** 下线心愿板：DROP wish_board_items（保留积分表） */
-async function migrateDropWishBoardItems(db: SQLite.SQLiteDatabase): Promise<void> {
+async function migrateRestoreWishBoardItems(db: SQLite.SQLiteDatabase): Promise<void> {
   const done = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM app_meta WHERE key = ?',
-    ['drop_wish_board_items_v43'],
+    ['restore_wish_board_items_v46'],
   );
   if (done) return;
 
-  await db.execAsync('DROP TABLE IF EXISTS wish_board_items');
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS wish_board_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      note TEXT,
+      icon_key TEXT,
+      wish_type TEXT NOT NULL DEFAULT 'once' CHECK (wish_type IN ('once', 'repeat')),
+      cost_points REAL NOT NULL DEFAULT 0 CHECK (cost_points >= 0),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed')),
+      redeemed_at TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_wish_board_items_status ON wish_board_items(status);
+    CREATE INDEX IF NOT EXISTS idx_wish_board_items_updated_at ON wish_board_items(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wish_board_items_sort_order ON wish_board_items(sort_order);
+  `);
 
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
-    'drop_wish_board_items_v43',
+    'restore_wish_board_items_v46',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
@@ -761,6 +780,22 @@ export async function initDatabase() {
       extra_data TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS wish_board_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      note TEXT,
+      icon_key TEXT,
+      wish_type TEXT NOT NULL DEFAULT 'once' CHECK (wish_type IN ('once', 'repeat')),
+      cost_points REAL NOT NULL DEFAULT 0 CHECK (cost_points >= 0),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed')),
+      redeemed_at TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT
+    );
 
     CREATE TABLE IF NOT EXISTS points_ledger (
       id TEXT PRIMARY KEY NOT NULL,
@@ -1029,6 +1064,9 @@ export async function initDatabase() {
   await ensureColumn(db, 'finance_transactions', 'extra_data', 'TEXT');
   await ensureColumn(db, 'memos', 'dimension_id', 'TEXT');
   await ensureColumn(db, 'memos', 'dimension', 'TEXT');
+  await ensureColumn(db, 'wish_board_items', 'description', 'TEXT');
+  await ensureColumn(db, 'wish_board_items', 'icon_key', 'TEXT');
+  await ensureColumn(db, 'wish_board_items', 'wish_type', "TEXT NOT NULL DEFAULT 'once'");
 
   await ensureColumn(db, 'task_execution_events', 'task_title', 'TEXT');
   // 增量同步依赖 sync_status；缺列时会把全表当作待推送并反复上传
@@ -1151,6 +1189,10 @@ export async function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_points_ledger_created_at ON points_ledger(created_at);
     CREATE INDEX IF NOT EXISTS idx_points_ledger_ref ON points_ledger(ref_type, ref_id);
+
+    CREATE INDEX IF NOT EXISTS idx_wish_board_items_status ON wish_board_items(status);
+    CREATE INDEX IF NOT EXISTS idx_wish_board_items_updated_at ON wish_board_items(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wish_board_items_sort_order ON wish_board_items(sort_order);
 
     CREATE INDEX IF NOT EXISTS idx_review_dimensions_scope ON review_dimensions(scope);
     CREATE INDEX IF NOT EXISTS idx_review_dimensions_sort_order ON review_dimensions(sort_order);
@@ -1319,7 +1361,7 @@ export async function initDatabase() {
   await migrateDropRemovedProfileFeatures(db);
   await migrateRestorePersonaPortraitColumn(db);
   await migrateHabitCheckInsAllowZeroCount(db);
-  await migrateDropWishBoardItems(db);
+  await migrateRestoreWishBoardItems(db);
   await migratePointsAllowDecimalAndSignedBalance(db);
   await migrateRemoveSeededHabitContexts(db);
 
