@@ -1,30 +1,48 @@
+import { AppIcon, type AppIconName } from '@/components/ui/app-icon';
+import { AppText } from '@/components/ui/app-text';
+import {
+  getMinTouchTarget,
+  getTaskUiColors,
+  Layout,
+  Radius,
+  Shadows,
+  Spacing,
+} from '@/constants/design-tokens';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
-import { Spacing } from '@/constants/design-tokens';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
 import { getPointsBalance } from '@/lib/repositories/points/points';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 import { formatPoints } from '@/lib/reward-points';
-import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/profile';
+const MIN_TOUCH = getMinTouchTarget(Platform.OS);
+const EMPTY = '—';
 
 type ProfileMenuItem = {
   key: string;
   title: string;
   subtitle: string;
-  icon: keyof typeof MaterialIcons.glyphMap;
+  icon: AppIconName;
   href: '/wish-board' | '/points-ledger' | '/memo-list' | '/my-recipes';
+  accent: string;
+  wash: string;
 };
 
-const PROFILE_MENU: ProfileMenuItem[] = [
+const PROFILE_MENU_BASE: Omit<ProfileMenuItem, 'accent' | 'wash'>[] = [
   {
     key: 'wish-board',
     title: '心愿板',
@@ -55,34 +73,67 @@ const PROFILE_MENU: ProfileMenuItem[] = [
   },
 ];
 
+function monogramFromName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return '我';
+  return trimmed.slice(0, 1);
+}
+
+function metricDisplay(value: number | null | undefined, empty = EMPTY): string {
+  if (value == null || value <= 0) return empty;
+  return String(value);
+}
+
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
-  const markPageDirty = resetSync;
+  const { width: windowWidth } = useWindowDimensions();
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const reloadPageRef = useRef<((forceApi?: boolean) => Promise<void>) | null>(null);
-  const colorScheme = useColorScheme();
-  const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
-  const theme = Colors[scheme];
-  const isDark = colorScheme === 'dark';
+  const { colors, isDark } = useAppTheme();
+  const taskUi = getTaskUiColors(isDark);
   const [user, setUser] = useState<UserRow | null>(null);
   const [pointsBalance, setPointsBalance] = useState(0);
 
-  const bg = isDark ? theme.background : '#faf8ff';
-  const surface = isDark ? theme.surface : '#ffffff';
-  const text = isDark ? theme.text : '#131b2e';
-  const outline = isDark ? 'rgba(148,163,184,0.8)' : '#727785';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.35)';
-  const primary = isDark ? '#60a5fa' : '#0058be';
+  const contentMaxWidth = windowWidth >= 768 ? Layout.contentMaxWidthWide : undefined;
+  const scrollBottomPad = Spacing['6xl'];
 
-  const displayName = user?.name?.trim() || '默认用户';
-  const heightText = user?.height ? String(user.height) : '0';
-  const weightText = user?.weight ? String(user.weight) : '0';
-  const ageText = user?.age ? String(user.age) : '0';
-  const bmiText =
-    user && user.height > 0 && user.weight > 0
-      ? (user.weight / ((user.height / 100) * (user.height / 100))).toFixed(1)
-      : '0.0';
+  const displayName = user?.name?.trim() || '给自己起个名字';
+  const hasRealName = Boolean(user?.name?.trim());
+  const heightText = metricDisplay(user?.height);
+  const weightText = metricDisplay(user?.weight);
+  const ageText = metricDisplay(user?.age);
+  const hasBmi = Boolean(user && user.height > 0 && user.weight > 0);
+  const bmiText = hasBmi
+    ? (user!.weight / ((user!.height / 100) * (user!.height / 100))).toFixed(1)
+    : EMPTY;
+  const bodyIncomplete = heightText === EMPTY || weightText === EMPTY || ageText === EMPTY;
+
+  const menuItems: ProfileMenuItem[] = useMemo(
+    () => [
+      {
+        ...PROFILE_MENU_BASE[0],
+        accent: taskUi.pointsAccent,
+        wash: taskUi.pointsChipBg,
+      },
+      {
+        ...PROFILE_MENU_BASE[1],
+        accent: colors.primary,
+        wash: taskUi.primaryWash,
+      },
+      {
+        ...PROFILE_MENU_BASE[2],
+        accent: isDark ? '#38bdf8' : '#0284c7',
+        wash: isDark ? 'rgba(56,189,248,0.16)' : 'rgba(2,132,199,0.1)',
+      },
+      {
+        ...PROFILE_MENU_BASE[3],
+        accent: isDark ? '#34d399' : colors.secondary,
+        wash: taskUi.successWash,
+      },
+    ],
+    [colors.primary, colors.secondary, isDark, taskUi],
+  );
 
   const loadUser = useCallback(async () => {
     try {
@@ -118,14 +169,6 @@ export default function ProfileScreen() {
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
-  const onProfileAction = useCallback(
-    (action: () => void) => {
-      markPageDirty();
-      action();
-    },
-    [markPageDirty],
-  );
-
   usePageFocusReload(PAGE_API_KEY, (forceApi) => {
     void reloadPageRef.current?.(forceApi).catch((e) => {
       if (__DEV__) console.warn('[profile] reload failed', e);
@@ -156,102 +199,225 @@ export default function ProfileScreen() {
     void loadPoints();
   }, [loadUser, loadPoints]);
 
+  const openEdit = () => router.push('/edit-profile');
+  const openWishBoard = () => router.push('/wish-board');
+
+  const stats = [
+    { key: 'height', label: '身高', value: heightText, unit: heightText === EMPTY ? '' : 'cm' },
+    { key: 'weight', label: '体重', value: weightText, unit: weightText === EMPTY ? '' : 'kg' },
+    { key: 'bmi', label: 'BMI', value: bmiText, unit: '' },
+    { key: 'age', label: '年龄', value: ageText, unit: ageText === EMPTY ? '' : '岁' },
+  ];
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
+    <SafeAreaView
+      style={[styles.container, { backgroundColor: colors.background }]}
+      edges={['left', 'right']}>
       <ScrollView
         refreshControl={refreshControl}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingBottom: 36 + Math.max(insets.bottom, 12) },
+          {
+            paddingTop: insets.top + Spacing['3xl'],
+            paddingBottom: scrollBottomPad,
+            maxWidth: contentMaxWidth,
+            width: '100%',
+            alignSelf: 'center',
+            paddingHorizontal: Layout.pagePaddingX,
+          },
         ]}>
-        <View
-          style={[styles.header, { backgroundColor: isDark ? surface : '#ffffff' }]}>
-          <View style={[styles.headerBlob, { backgroundColor: `${primary}12` }]} />
+        {/* Identity */}
+        <View style={styles.identityRow}>
+          <View
+            style={[
+              styles.monogram,
+              {
+                backgroundColor: isDark ? colors.primaryMuted : colors.primaryMuted,
+                borderColor: taskUi.primaryWashBorder,
+              },
+            ]}
+            accessibilityElementsHidden
+            importantForAccessibility="no">
+            <AppText variant="h1" chrome style={{ color: colors.primary, fontWeight: '700' }}>
+              {monogramFromName(hasRealName ? displayName : '我')}
+            </AppText>
+          </View>
 
-          <View style={styles.headerActions}>
-            <Text style={[styles.name, { color: text }]} numberOfLines={1}>
+          <View style={styles.identityText}>
+            <AppText variant="h1" style={{ color: colors.text }} numberOfLines={2}>
               {displayName}
-            </Text>
-            <Pressable
-              onPress={() => onProfileAction(() => router.push('/edit-profile'))}
-              style={[
-                styles.editProfileBtn,
-                { borderColor: `${primary}30`, backgroundColor: `${primary}10` },
-              ]}>
-              <MaterialIcons name="edit" size={18} color={primary} />
-              <Text style={[styles.editProfileBtnText, { color: primary }]}>编辑个人信息</Text>
-            </Pressable>
+            </AppText>
+            <AppText variant="caption" chrome style={{ color: colors.textSecondary }}>
+              {bodyIncomplete ? '完善身体数据，BMI 更准' : '身体数据已就绪'}
+            </AppText>
           </View>
 
           <Pressable
-            onPress={() => onProfileAction(() => router.push('/wish-board'))}
+            onPress={openEdit}
             accessibilityRole="button"
-            accessibilityLabel={`当前积分 ${formatPoints(pointsBalance)}，打开心愿板`}
+            accessibilityLabel="编辑个人信息"
+            hitSlop={Layout.hitSlop}
             style={({ pressed }) => [
-              styles.pointsChip,
+              styles.editIconBtn,
               {
-                backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : 'rgba(251,191,36,0.12)',
-                borderColor: isDark ? 'rgba(251,191,36,0.28)' : 'rgba(217,119,6,0.22)',
-                opacity: pressed ? 0.85 : 1,
+                minWidth: MIN_TOUCH,
+                minHeight: MIN_TOUCH,
+                backgroundColor: colors.surface,
+                borderColor: colors.outline,
+                opacity: pressed ? 0.82 : 1,
               },
             ]}>
-            <MaterialIcons name="stars" size={18} color="#f59e0b" />
-            <Text style={[styles.pointsChipValue, { color: text }]}>
-              {formatPoints(pointsBalance)}
-            </Text>
-            <Text style={[styles.pointsChipHint, { color: outline }]}>心愿板</Text>
-            <MaterialIcons name="chevron-right" size={20} color={outline} />
+            <AppIcon name="edit" size={20} color={colors.primary} />
           </Pressable>
-
-          <View style={[styles.statsRow, { borderTopColor: outlineVariant }]}>
-            {[
-              { label: '身高', value: heightText, unit: 'cm' },
-              { label: '体重', value: weightText, unit: 'kg' },
-              { label: 'BMI', value: bmiText, unit: '' },
-              { label: '年龄', value: ageText, unit: '' },
-            ].map((item, idx) => (
-              <View
-                key={item.label}
-                style={[
-                  styles.statCell,
-                  idx > 0 && { borderLeftWidth: 1, borderLeftColor: outlineVariant },
-                ]}>
-                <Text style={[styles.statLabel, { color: outline }]}>{item.label}</Text>
-                <Text style={[styles.statValue, { color: text }]}>
-                  {item.value}
-                  {!!item.unit && (
-                    <Text style={[styles.statUnit, { color: outline }]}> {item.unit}</Text>
-                  )}
-                </Text>
-              </View>
-            ))}
-          </View>
         </View>
 
-        <View style={styles.menuSection}>
-          {PROFILE_MENU.map((item) => (
-            <Pressable
-              key={item.key}
-              onPress={() => onProfileAction(() => router.push(item.href))}
-              style={({ pressed }) => [
-                styles.menuRow,
-                {
-                  backgroundColor: surface,
-                  borderColor: outlineVariant,
-                  opacity: pressed ? 0.88 : 1,
-                },
+        {/* Points wallet — visual peak */}
+        <Pressable
+          onPress={openWishBoard}
+          accessibilityRole="button"
+          accessibilityLabel={`当前积分 ${formatPoints(pointsBalance)}，打开心愿板`}
+          style={({ pressed }) => [
+            styles.pointsCard,
+            Shadows.card,
+            {
+              backgroundColor: isDark ? '#2a2110' : '#fff8eb',
+              borderColor: taskUi.pointsChipBorder,
+              opacity: pressed ? 0.92 : 1,
+              transform: [{ scale: pressed ? 0.985 : 1 }],
+            },
+          ]}>
+          <View style={styles.pointsTop}>
+            <View
+              style={[
+                styles.pointsIconWrap,
+                { backgroundColor: isDark ? 'rgba(245,158,11,0.22)' : 'rgba(245,158,11,0.18)' },
               ]}>
-              <View style={[styles.menuIconWrap, { backgroundColor: `${primary}12` }]}>
-                <MaterialIcons name={item.icon} size={22} color={primary} />
-              </View>
-              <View style={styles.menuTextWrap}>
-                <Text style={[styles.menuTitle, { color: text }]}>{item.title}</Text>
-                <Text style={[styles.menuSubtitle, { color: outline }]}>{item.subtitle}</Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </Pressable>
-          ))}
+              <AppIcon name="stars" size={22} color={taskUi.pointsAccent} />
+            </View>
+            <View style={styles.pointsCopy}>
+              <AppText variant="label" chrome style={{ color: taskUi.pointsAccent }}>
+                当前积分
+              </AppText>
+              <AppText
+                variant="display"
+                style={[styles.pointsValue, { color: colors.text }]}
+                numberOfLines={1}>
+                {formatPoints(pointsBalance)}
+              </AppText>
+            </View>
+          </View>
+          <View style={[styles.pointsCta, { borderTopColor: taskUi.pointsChipBorder }]}>
+            <AppText variant="bodyStrong" chrome style={{ color: taskUi.pointsAccent }}>
+              去心愿板兑换
+            </AppText>
+            <AppIcon name="chevron-right" size={20} color={taskUi.pointsAccent} />
+          </View>
+        </Pressable>
+
+        {/* Body metrics — tap to edit */}
+        <Pressable
+          onPress={openEdit}
+          accessibilityRole="button"
+          accessibilityLabel={
+            bodyIncomplete
+              ? '身体数据未完善，点击编辑'
+              : `身高 ${heightText} 厘米，体重 ${weightText} 千克，BMI ${bmiText}，年龄 ${ageText}，点击编辑`
+          }
+          style={({ pressed }) => [
+            styles.bodyCard,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.outline,
+              opacity: pressed ? 0.92 : 1,
+            },
+          ]}>
+          <View style={styles.bodyHeader}>
+            <AppText variant="title" style={{ color: colors.text, fontWeight: '700' }}>
+              身体数据
+            </AppText>
+            <AppText variant="caption" chrome style={{ color: colors.primary }}>
+              {bodyIncomplete ? '去完善' : '编辑'}
+            </AppText>
+          </View>
+          <View style={styles.statsGrid}>
+            {stats.map((item) => {
+              const empty = item.value === EMPTY;
+              return (
+                <View
+                  key={item.key}
+                  style={[
+                    styles.statTile,
+                    {
+                      backgroundColor: isDark ? taskUi.surfaceFrost : colors.background,
+                      borderColor: taskUi.hairlineSoft,
+                    },
+                  ]}>
+                  <AppText variant="label" chrome style={{ color: colors.textSecondary }}>
+                    {item.label}
+                  </AppText>
+                  <AppText
+                    variant="h3"
+                    chrome
+                    style={{
+                      color: empty ? colors.textSecondary : colors.text,
+                      fontWeight: empty ? '500' : '700',
+                    }}>
+                    {item.unit ? `${item.value} ${item.unit}` : item.value}
+                  </AppText>
+                </View>
+              );
+            })}
+          </View>
+        </Pressable>
+
+        {/* Menu */}
+        <AppText
+          variant="label"
+          chrome
+          style={[styles.sectionLabel, { color: colors.textSecondary }]}>
+          更多
+        </AppText>
+        <View
+          style={[
+            styles.menuGroup,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.outline,
+            },
+          ]}>
+          {menuItems.map((item, idx) => {
+            const isLast = idx === menuItems.length - 1;
+            return (
+              <Pressable
+                key={item.key}
+                onPress={() => router.push(item.href)}
+                accessibilityRole="button"
+                accessibilityLabel={`${item.title}，${item.subtitle}`}
+                style={({ pressed }) => [
+                  styles.menuRow,
+                  {
+                    minHeight: Math.max(MIN_TOUCH + 20, 64),
+                    borderBottomWidth: isLast ? 0 : StyleSheet.hairlineWidth,
+                    borderBottomColor: taskUi.hairline,
+                    opacity: pressed ? 0.88 : 1,
+                  },
+                ]}>
+                <View style={[styles.menuIconWrap, { backgroundColor: item.wash }]}>
+                  <AppIcon name={item.icon} size={22} color={item.accent} />
+                </View>
+                <View style={styles.menuTextWrap}>
+                  <AppText variant="title" style={{ color: colors.text, fontWeight: '700' }}>
+                    {item.title}
+                  </AppText>
+                  <AppText variant="caption" chrome style={{ color: colors.textSecondary }}>
+                    {item.subtitle}
+                  </AppText>
+                </View>
+                <AppIcon name="chevron-right" size={20} color={colors.textSecondary} />
+              </Pressable>
+            );
+          })}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -261,123 +427,124 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scrollContent: {
-    paddingTop: 0,
+    gap: Spacing['3xl'],
   },
-  header: {
-    paddingHorizontal: Spacing.md,
-    paddingTop: 58,
-    paddingBottom: 20,
+  identityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing['3xl'],
+  },
+  monogram: {
+    width: 64,
+    height: 64,
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  identityText: {
+    flex: 1,
+    gap: Spacing.xs,
+    minWidth: 0,
+  },
+  editIconBtn: {
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pointsCard: {
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
   },
-  headerBlob: {
-    position: 'absolute',
-    top: -40,
-    right: -40,
-    width: 160,
-    height: 160,
-    borderRadius: 999,
+  pointsTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing['3xl'],
+    paddingHorizontal: Spacing['4xl'],
+    paddingTop: Spacing['4xl'],
+    paddingBottom: Spacing['3xl'],
   },
-  headerActions: {
+  pointsIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: Radius.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pointsCopy: {
+    flex: 1,
+    gap: Spacing.xs,
+    minWidth: 0,
+  },
+  pointsValue: {
+    fontSize: 36,
+    lineHeight: 42,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  pointsCta: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
+    paddingHorizontal: Spacing['4xl'],
+    paddingVertical: Spacing['3xl'],
+    borderTopWidth: StyleSheet.hairlineWidth,
+    minHeight: MIN_TOUCH,
   },
-  name: {
-    flex: 1,
-    fontSize: 32,
-    fontWeight: '900',
-    letterSpacing: -0.8,
+  bodyCard: {
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['4xl'],
+    gap: Spacing['3xl'],
   },
-  editProfileBtn: {
+  bodyHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    minHeight: 36,
-    paddingHorizontal: 14,
-    borderRadius: 999,
-    borderWidth: 1,
+    justifyContent: 'space-between',
   },
-  editProfileBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  pointsChip: {
-    marginTop: 16,
-    minHeight: 44,
-    paddingHorizontal: 14,
-    borderRadius: 14,
-    borderWidth: 1,
+  statsGrid: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    flexWrap: 'wrap',
+    gap: Spacing.md,
   },
-  pointsChipValue: {
-    fontSize: 18,
-    fontWeight: '900',
+  statTile: {
+    width: '48%',
+    flexGrow: 1,
+    minWidth: '46%',
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: Spacing['3xl'],
+    paddingHorizontal: Spacing['2xl'],
+    gap: Spacing.xs,
   },
-  pointsChipHint: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '600',
+  sectionLabel: {
+    marginTop: Spacing.sm,
+    marginBottom: -Spacing.md,
+    marginLeft: Spacing.sm,
+    textTransform: 'none',
   },
-  statsRow: {
-    marginTop: 20,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    flexDirection: 'row',
-  },
-  statCell: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-  },
-  statLabel: {
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1.8,
-    textTransform: 'uppercase',
-  },
-  statValue: {
-    fontSize: 20,
-    fontWeight: '900',
-  },
-  statUnit: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  menuSection: {
-    marginTop: 16,
-    paddingHorizontal: Spacing.md,
-    gap: 10,
+  menuGroup: {
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
   },
   menuRow: {
-    minHeight: 72,
-    borderRadius: 16,
-    borderWidth: 1,
-    paddingHorizontal: 14,
+    paddingHorizontal: Spacing['3xl'],
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: Spacing.xl,
   },
   menuIconWrap: {
     width: 42,
     height: 42,
-    borderRadius: 12,
+    borderRadius: Radius.md,
     alignItems: 'center',
     justifyContent: 'center',
   },
   menuTextWrap: {
     flex: 1,
     gap: 2,
-  },
-  menuTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  menuSubtitle: {
-    fontSize: 12,
-    fontWeight: '600',
   },
 });

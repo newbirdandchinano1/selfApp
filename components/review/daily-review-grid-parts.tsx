@@ -1,12 +1,13 @@
 import { ReviewSectionCard } from '@/components/review/review-shared-ui';
-import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { getMinTouchTarget, Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import type { ReviewJournalMeta } from '@/lib/repositories/insights/review-journal-body';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { reviewContentToPlainDisplay } from '@/lib/review-journal-format';
 import { MaterialIcons } from '@expo/vector-icons';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -37,6 +38,10 @@ function weatherIcon(id: string | undefined) {
   return DAILY_REVIEW_WEATHER_OPTIONS.find(w => w.id === id)?.icon ?? 'wb-sunny';
 }
 
+function weatherLabel(id: string | undefined) {
+  return DAILY_REVIEW_WEATHER_OPTIONS.find(w => w.id === id)?.label ?? '未设置';
+}
+
 type PickerKind = 'weather' | 'mood' | null;
 
 export function DailyReviewMetaBar({
@@ -64,6 +69,7 @@ export function DailyReviewMetaBar({
 }) {
   const { colors } = useAppTheme();
   const [picker, setPicker] = useState<PickerKind>(null);
+  const touchMin = useMemo(() => getMinTouchTarget(Platform.OS), []);
 
   const togglePicker = (kind: PickerKind) => {
     if (!canEdit) return;
@@ -77,14 +83,24 @@ export function DailyReviewMetaBar({
           <Pressable
             onPress={() => togglePicker('weather')}
             disabled={!canEdit}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !canEdit, expanded: picker === 'weather' }}
+            accessibilityLabel={`天气：${weatherLabel(meta.weather)}`}
+            accessibilityHint={canEdit ? '点按选择天气' : undefined}
             style={({ pressed }) => [styles.iconBtn, { opacity: !canEdit ? 0.45 : pressed ? 0.7 : 1 }]}>
             <MaterialIcons name={weatherIcon(meta.weather)} size={24} color={colors.text} />
           </Pressable>
           <Pressable
             onPress={() => togglePicker('mood')}
             disabled={!canEdit}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !canEdit, expanded: picker === 'mood' }}
+            accessibilityLabel={`心情：${meta.mood || '未设置'}`}
+            accessibilityHint={canEdit ? '点按选择心情' : undefined}
             style={({ pressed }) => [styles.moodBtn, { opacity: !canEdit ? 0.45 : pressed ? 0.7 : 1 }]}>
-            <Text style={styles.moodEmoji}>{meta.mood || '🙂'}</Text>
+            <Text style={styles.moodEmoji} maxFontSizeMultiplier={1.35}>
+              {meta.mood || '🙂'}
+            </Text>
           </Pressable>
         </View>
 
@@ -92,16 +108,24 @@ export function DailyReviewMetaBar({
           <Pressable
             onPress={onPrevDay}
             hitSlop={Layout.hitSlop}
+            accessibilityRole="button"
+            accessibilityLabel="上一天"
             style={({ pressed }) => [styles.iconBtn, { opacity: pressed ? 0.7 : 1 }]}>
             <MaterialIcons name="chevron-left" size={28} color={colors.textMuted} />
           </Pressable>
-          <Text style={[Typography.caption, { color: colors.textMuted, maxWidth: 88, textAlign: 'center' }]} numberOfLines={1}>
+          <Text
+            style={[Typography.caption, { color: colors.textMuted, maxWidth: 100, textAlign: 'center' }]}
+            numberOfLines={1}
+            maxFontSizeMultiplier={1.35}>
             {dateLabel}
           </Text>
           <Pressable
             onPress={onNextDay}
             disabled={!canGoNext}
             hitSlop={Layout.hitSlop}
+            accessibilityRole="button"
+            accessibilityLabel="下一天"
+            accessibilityState={{ disabled: !canGoNext }}
             style={({ pressed }) => [
               styles.iconBtn,
               { opacity: !canGoNext ? 0.3 : pressed ? 0.7 : 1 },
@@ -122,6 +146,7 @@ export function DailyReviewMetaBar({
               backgroundColor: colors.primaryMuted,
               opacity: pressed ? 0.82 : 1,
               alignSelf: 'flex-start',
+              minHeight: touchMin,
             },
           ]}
           accessibilityRole="button"
@@ -131,14 +156,14 @@ export function DailyReviewMetaBar({
             size={18}
             color={colors.primary}
           />
-          <Text style={[Typography.caption, { color: colors.primary }]} numberOfLines={1}>
+          <Text style={[Typography.caption, { color: colors.primary }]} numberOfLines={1} maxFontSizeMultiplier={1.35}>
             {reminderEnabled && reminderTimeLabel ? `每日 ${reminderTimeLabel} 提醒` : '设置每日提醒'}
           </Text>
         </Pressable>
       ) : null}
 
       {picker === 'weather' && canEdit ? (
-        <View style={styles.pickerRow}>
+        <View style={styles.pickerRow} accessibilityRole="radiogroup" accessibilityLabel="选择天气">
           {DAILY_REVIEW_WEATHER_OPTIONS.map(opt => {
             const active = meta.weather === opt.id;
             return (
@@ -148,9 +173,14 @@ export function DailyReviewMetaBar({
                   onMetaChange({ weather: opt.id });
                   setPicker(null);
                 }}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={opt.label}
                 style={({ pressed }) => [
                   styles.pickerChip,
                   {
+                    width: touchMin,
+                    height: touchMin,
                     borderColor: active ? colors.primary : colors.outline,
                     backgroundColor: active ? colors.primaryMuted : colors.surfaceSubtle,
                     opacity: pressed ? 0.8 : 1,
@@ -164,7 +194,7 @@ export function DailyReviewMetaBar({
       ) : null}
 
       {picker === 'mood' && canEdit ? (
-        <View style={styles.pickerRow}>
+        <View style={styles.pickerRow} accessibilityRole="radiogroup" accessibilityLabel="选择心情">
           {DAILY_REVIEW_MOOD_OPTIONS.map(emoji => {
             const active = meta.mood === emoji;
             return (
@@ -174,15 +204,22 @@ export function DailyReviewMetaBar({
                   onMetaChange({ mood: emoji });
                   setPicker(null);
                 }}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={`心情 ${emoji}`}
                 style={({ pressed }) => [
                   styles.pickerChip,
                   {
+                    width: touchMin,
+                    height: touchMin,
                     borderColor: active ? colors.primary : colors.outline,
                     backgroundColor: active ? colors.primaryMuted : colors.surfaceSubtle,
                     opacity: pressed ? 0.8 : 1,
                   },
                 ]}>
-                <Text style={styles.pickerEmoji}>{emoji}</Text>
+                <Text style={styles.pickerEmoji} maxFontSizeMultiplier={1.35}>
+                  {emoji}
+                </Text>
               </Pressable>
             );
           })}
@@ -215,18 +252,22 @@ export function WeeklyReviewMetaBar({
               borderColor: colors.outline,
               backgroundColor: colors.primaryMuted,
               opacity: pressed ? 0.82 : 1,
+              minHeight: getMinTouchTarget(Platform.OS),
             },
           ]}
           accessibilityRole="button"
           accessibilityLabel="设置周复盘日">
           <MaterialIcons name="event" size={18} color={colors.primary} />
-          <Text style={[Typography.caption, { color: colors.primary }]} numberOfLines={1}>
+          <Text style={[Typography.caption, { color: colors.primary }]} numberOfLines={1} maxFontSizeMultiplier={1.35}>
             {configuredDowLabel ? `每周${configuredDowLabel}` : '设置周复盘日'}
           </Text>
         </Pressable>
 
         <View style={styles.toolbarRight}>
-          <Text style={[Typography.caption, { color: colors.textMuted, textAlign: 'right', flexShrink: 1 }]} numberOfLines={1}>
+          <Text
+            style={[Typography.caption, { color: colors.textMuted, textAlign: 'right', flexShrink: 1 }]}
+            numberOfLines={1}
+            maxFontSizeMultiplier={1.35}>
             {weekRangeLabel || '本周期'}
           </Text>
         </View>
@@ -266,7 +307,10 @@ function DailyReviewGridCell({
         },
       ]}>
       <View style={[styles.cellTitleWrap, { backgroundColor: colors.primaryMuted }]}>
-        <Text style={[Typography.bodyStrong, { color: colors.text, textAlign: 'center' }]} numberOfLines={2}>
+        <Text
+          style={[Typography.bodyStrong, { color: colors.text, textAlign: 'center' }]}
+          numberOfLines={2}
+          maxFontSizeMultiplier={1.35}>
           {dim.title}
         </Text>
       </View>
@@ -278,13 +322,16 @@ function DailyReviewGridCell({
               const empty = !preview;
               return (
                 <View key={col.id} style={[styles.stackedField, { borderLeftColor: colors.primary }]}>
-                  <Text style={[Typography.caption, { color: colors.primary }]}>{col.title}</Text>
+                  <Text style={[Typography.caption, { color: colors.primary }]} maxFontSizeMultiplier={1.35}>
+                    {col.title}
+                  </Text>
                   <Text
                     style={[
                       Typography.body,
                       { color: empty ? colors.textMuted : colors.text, lineHeight: 21 },
                       empty && styles.emptyPreview,
-                    ]}>
+                    ]}
+                    maxFontSizeMultiplier={1.35}>
                     {columnPreview(col.id, col.placeholder)}
                   </Text>
                 </View>
@@ -294,13 +341,16 @@ function DailyReviewGridCell({
 
         {singleField ? (
           <View style={[styles.stackedField, { borderLeftColor: colors.primary }]}>
-            <Text style={[Typography.caption, { color: colors.primary }]}>{dim.columns[0].title}</Text>
+            <Text style={[Typography.caption, { color: colors.primary }]} maxFontSizeMultiplier={1.35}>
+              {dim.columns[0].title}
+            </Text>
             <Text
               style={[
                 Typography.body,
                 { color: hasContent ? colors.text : colors.textMuted, lineHeight: 21 },
                 !hasContent && styles.emptyPreview,
-              ]}>
+              ]}
+              maxFontSizeMultiplier={1.35}>
               {columnPreview(dim.columns[0].id, dim.columns[0].placeholder)}
             </Text>
           </View>
@@ -320,7 +370,8 @@ export function DailyReviewGrid({
   onPressDimension: (dimensionId: string) => void;
 }) {
   const { width } = useWindowDimensions();
-  const gridWidth = Math.max(0, width - Layout.pagePaddingX * 2);
+  const contentCap = width >= 768 ? Layout.contentMaxWidthWide : Layout.contentMaxWidth;
+  const gridWidth = Math.max(0, Math.min(width, contentCap) - Layout.pagePaddingX * 2);
   const columns = getAdaptiveGridColumns(gridWidth);
   const gap = Spacing.md;
   const cellWidth = columns <= 1 ? gridWidth : (gridWidth - gap * (columns - 1)) / columns;
@@ -356,9 +407,15 @@ export function DailyReviewSaveStatus({
 }) {
   const { colors } = useAppTheme();
   if (!saving && !saved) return null;
+  const message = saving ? '保存中…' : '已自动保存';
   return (
-    <Text style={[Typography.caption, { color: saving ? colors.textMuted : colors.primary, textAlign: 'center' }]}>
-      {saving ? '保存中…' : '已自动保存'}
+    <Text
+      accessibilityRole="text"
+      accessibilityLiveRegion="polite"
+      accessibilityLabel={message}
+      style={[Typography.caption, { color: saving ? colors.textMuted : colors.primary, textAlign: 'center' }]}
+      maxFontSizeMultiplier={1.35}>
+      {message}
     </Text>
   );
 }
@@ -417,8 +474,6 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.xs,
   },
   pickerChip: {
-    width: 40,
-    height: 40,
     borderRadius: Radius.md,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',

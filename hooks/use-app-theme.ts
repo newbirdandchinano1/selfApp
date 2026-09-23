@@ -4,6 +4,7 @@ import {
   Radius,
   Shadows,
   Spacing,
+  TextScalePolicy,
   Typography,
   type AppPalette,
   type ColorScheme,
@@ -17,7 +18,9 @@ export type AppTheme = {
   spacing: typeof Spacing;
   radius: typeof Radius;
   layout: typeof Layout;
+  /** 基准角色尺寸；配合 Text allowFontScaling / AppText 跟随系统字号 */
   typography: typeof Typography;
+  textScale: typeof TextScalePolicy;
   shadows: typeof Shadows;
 };
 
@@ -35,6 +38,7 @@ export function useAppTheme(): AppTheme {
     radius: Radius,
     layout: Layout,
     typography: Typography,
+    textScale: TextScalePolicy,
     shadows: Shadows,
   };
 }

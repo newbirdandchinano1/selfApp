@@ -116,10 +116,14 @@ export function DailyReviewListScreen() {
               const isYesterday = entry.ymd === yesterdayYmd;
               const shortDow = (entry.label.split(' ')[1] ?? '').replace('星期', '周');
               const dayNum = String(Number(entry.ymd.slice(8, 10)));
+              const statusLabel = skipped ? '周复盘日' : filled ? '已填' : '待填';
+              const dayHint = isToday ? '今天' : isYesterday ? '昨天' : '';
               return (
                 <Pressable
                   key={`chip-${entry.ymd}`}
                   onPress={() => router.push({ pathname: '/daily-review/[ymd]', params: { ymd: entry.ymd } })}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${entry.label}${dayHint ? `，${dayHint}` : ''}，${statusLabel}`}
                   style={({ pressed }) => [
                     styles.dayChip,
                     {
@@ -128,8 +132,12 @@ export function DailyReviewListScreen() {
                       opacity: pressed ? 0.88 : 1,
                     },
                   ]}>
-                  <Text style={[styles.dayChipDow, { color: colors.textMuted }]}>{shortDow}</Text>
-                  <Text style={[styles.dayChipNum, { color: colors.text }]}>{dayNum}</Text>
+                  <Text style={[styles.dayChipDow, { color: colors.textMuted }]} maxFontSizeMultiplier={1.35}>
+                    {shortDow}
+                  </Text>
+                  <Text style={[styles.dayChipNum, { color: colors.text }]} maxFontSizeMultiplier={1.35}>
+                    {dayNum}
+                  </Text>
                   {skipped ? (
                     <MaterialIcons name="event-available" size={14} color={colors.primary} />
                   ) : (
@@ -143,9 +151,13 @@ export function DailyReviewListScreen() {
                     />
                   )}
                   {isToday ? (
-                    <Text style={[styles.dayChipTag, { color: colors.success }]}>今</Text>
+                    <Text style={[styles.dayChipTag, { color: colors.success }]} maxFontSizeMultiplier={1.35}>
+                      今
+                    </Text>
                   ) : isYesterday ? (
-                    <Text style={[styles.dayChipTag, { color: colors.primary }]}>昨</Text>
+                    <Text style={[styles.dayChipTag, { color: colors.primary }]} maxFontSizeMultiplier={1.35}>
+                      昨
+                    </Text>
                   ) : null}
                 </Pressable>
               );
@@ -164,6 +176,10 @@ export function DailyReviewListScreen() {
                 <Pressable
                   key={entry.ymd}
                   onPress={() => router.push({ pathname: '/daily-review/[ymd]', params: { ymd: entry.ymd } })}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${entry.label}，${
+                    skipped ? '周复盘日' : !canEdit ? '未来' : filled ? '已填' : '待填'
+                  }`}
                   style={({ pressed }) => [
                     styles.row,
                     Shadows.card,
@@ -175,27 +191,41 @@ export function DailyReviewListScreen() {
                   ]}>
                   <View style={{ flex: 1, minWidth: 0, gap: 6 }}>
                     <View style={styles.rowHead}>
-                      <Text style={[Typography.title, { color: colors.text }]}>{entry.label}</Text>
+                      <Text style={[Typography.title, { color: colors.text }]} maxFontSizeMultiplier={1.35}>
+                        {entry.label}
+                      </Text>
                       {entry.ymd === todayYmd ? (
                         <View style={[styles.tag, { backgroundColor: colors.primaryMuted }]}>
-                          <Text style={{ fontSize: 10, fontWeight: '900', color: colors.success }}>今天</Text>
+                          <Text style={[Typography.label, { color: colors.success }]} maxFontSizeMultiplier={1.35}>
+                            今天
+                          </Text>
                         </View>
                       ) : entry.ymd === yesterdayYmd ? (
                         <View style={[styles.tag, { backgroundColor: colors.primaryMuted }]}>
-                          <Text style={{ fontSize: 10, fontWeight: '900', color: colors.primary }}>昨天</Text>
+                          <Text style={[Typography.label, { color: colors.primary }]} maxFontSizeMultiplier={1.35}>
+                            昨天
+                          </Text>
                         </View>
                       ) : null}
                       {skipped ? (
-                        <Text style={[Typography.caption, { color: colors.primary }]}>周复盘日</Text>
+                        <Text style={[Typography.caption, { color: colors.primary }]} maxFontSizeMultiplier={1.35}>
+                          周复盘日
+                        </Text>
                       ) : !canEdit ? (
-                        <Text style={[Typography.caption, { color: colors.textMuted }]}>未来</Text>
+                        <Text style={[Typography.caption, { color: colors.textMuted }]} maxFontSizeMultiplier={1.35}>
+                          未来
+                        </Text>
                       ) : filled ? (
-                        <Text style={[Typography.caption, { color: colors.success }]}>已填</Text>
+                        <Text style={[Typography.caption, { color: colors.success }]} maxFontSizeMultiplier={1.35}>
+                          已填
+                        </Text>
                       ) : (
-                        <Text style={[Typography.caption, { color: colors.textMuted }]}>待填</Text>
+                        <Text style={[Typography.caption, { color: colors.textMuted }]} maxFontSizeMultiplier={1.35}>
+                          待填
+                        </Text>
                       )}
                     </View>
-                    <Text style={[Typography.body, { color: colors.textMuted }]} numberOfLines={2}>
+                    <Text style={[Typography.body, { color: colors.textMuted }]} numberOfLines={2} maxFontSizeMultiplier={1.35}>
                       {skipped ? '请填写每周复盘' : previewShort}
                     </Text>
                   </View>
@@ -231,10 +261,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.sm,
     gap: Spacing.xs,
   },
-  dayChipDow: { fontSize: 10, fontWeight: '800' },
-  dayChipNum: { fontSize: 18, fontWeight: '900' },
+  dayChipDow: { ...Typography.label, fontWeight: '800' },
+  dayChipNum: { ...Typography.h3, fontSize: 18, lineHeight: 22 },
   dayChipDot: { width: 8, height: 8, borderRadius: 4 },
-  dayChipTag: { fontSize: 9, fontWeight: '900', marginTop: -2 },
+  dayChipTag: { ...Typography.label, marginTop: -2 },
   list: { gap: Spacing.lg },
   row: {
     flexDirection: 'row',

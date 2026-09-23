@@ -245,7 +245,6 @@ function RootLayoutInner() {
             <ApiContentTransition>
             <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="add-frog" />
             <Stack.Screen name="add-task" />
             <Stack.Screen name="add-standalone-todo" />
             <Stack.Screen

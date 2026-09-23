@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { setLastApiIncrementalSyncAtIso } from '@/lib/api-backup-meta';
-import { ensureApiLoggedIn } from '@/lib/api-client';
+import { ApiRequestError, ensureApiLoggedIn } from '@/lib/api-client';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import {
   ApiRowUploadSkippedError,
@@ -597,6 +597,16 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
           ) {
             if (__DEV__) console.warn('[api incremental] points_wallet 冲突已隔离', e.message);
             continue;
+          }
+          // 远端白名单有表但物理表未建：隔离该表，避免整批失败并无限退避重试
+          if (
+            e instanceof ApiRequestError &&
+            (e.httpStatus === 404 || e.httpStatus === 500) &&
+            /表\s+\S+\s+不存在/.test(e.message)
+          ) {
+            if (__DEV__) console.warn('[api incremental] 远端缺表已隔离', table, e.message);
+            clearApiDirtyTables([table]);
+            break;
           }
           throw e;
         }

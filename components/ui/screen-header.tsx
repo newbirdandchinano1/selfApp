@@ -3,7 +3,7 @@ import React from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Layout, Radius, Spacing } from '@/constants/design-tokens';
+import { Layout, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
 import { AppIconButton } from './app-icon-button';
@@ -57,11 +57,14 @@ export function ScreenHeader({
       <View style={styles.inner}>
         <View style={styles.side}>{leftSlot}</View>
         <View style={styles.center}>
-          <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>
+          <Text style={[styles.title, { color: colors.text }]} numberOfLines={1} maxFontSizeMultiplier={1.35}>
             {title}
           </Text>
           {subtitle ? (
-            <Text style={[styles.subtitle, { color: colors.textSecondary }]} numberOfLines={1}>
+            <Text
+              style={[styles.subtitle, { color: colors.textSecondary }]}
+              numberOfLines={1}
+              maxFontSizeMultiplier={1.35}>
               {subtitle}
             </Text>
           ) : null}
@@ -116,15 +119,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
   },
   title: {
-    fontSize: 16,
-    fontWeight: '900',
-    letterSpacing: -0.2,
+    ...Typography.title,
     textAlign: 'center',
   },
   subtitle: {
     marginTop: 2,
-    fontSize: 11,
+    ...Typography.label,
     fontWeight: '600',
+    letterSpacing: 0,
     textAlign: 'center',
   },
 });

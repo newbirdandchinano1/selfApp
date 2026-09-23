@@ -1,17 +1,21 @@
 import { AppCard } from '@/components/ui/app-card';
-import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import { getMinTouchTarget, Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { MaterialIcons } from '@expo/vector-icons';
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
+
+const TABLET_MIN_WIDTH = 768;
 
 export function ReviewSectionCard({
   children,
@@ -55,7 +59,9 @@ export function ReviewNoticeBanner({
     <ReviewSectionCard variant="muted" style={styles.noticeCard}>
       <View style={styles.noticeRow}>
         <MaterialIcons name={icon} size={22} color={iconColor} />
-        <Text style={[Typography.body, { color: textColor, flex: 1, lineHeight: 21 }]}>{message}</Text>
+        <Text style={[Typography.body, { color: textColor, flex: 1, lineHeight: 21 }]} maxFontSizeMultiplier={1.35}>
+          {message}
+        </Text>
       </View>
     </ReviewSectionCard>
   );
@@ -81,9 +87,13 @@ export function ReviewEmptyState({
       <View style={[styles.emptyIconWrap, { backgroundColor: colors.primaryMuted }]}>
         <MaterialIcons name={icon} size={28} color={colors.primary} />
       </View>
-      <Text style={[Typography.title, { color: colors.text, textAlign: 'center' }]}>{title}</Text>
+      <Text style={[Typography.title, { color: colors.text, textAlign: 'center' }]} maxFontSizeMultiplier={1.35}>
+        {title}
+      </Text>
       {subtitle ? (
-        <Text style={[Typography.body, { color: colors.textMuted, textAlign: 'center', lineHeight: 21 }]}>
+        <Text
+          style={[Typography.body, { color: colors.textMuted, textAlign: 'center', lineHeight: 21 }]}
+          maxFontSizeMultiplier={1.35}>
           {subtitle}
         </Text>
       ) : null}
@@ -108,6 +118,7 @@ export function ReviewPrimaryButton({
   style?: StyleProp<ViewStyle>;
 }) {
   const { colors } = useAppTheme();
+  const touchMin = useMemo(() => getMinTouchTarget(Platform.OS), []);
 
   return (
     <Pressable
@@ -119,6 +130,7 @@ export function ReviewPrimaryButton({
         styles.primaryBtn,
         {
           backgroundColor: colors.primary,
+          minHeight: touchMin,
           opacity: disabled || loading ? 0.45 : pressed ? 0.88 : 1,
         },
         style,
@@ -126,7 +138,9 @@ export function ReviewPrimaryButton({
       {loading ? (
         <ActivityIndicator color={colors.onPrimary} size="small" />
       ) : (
-        <Text style={[styles.primaryBtnText, { color: colors.onPrimary }]}>{label}</Text>
+        <Text style={[Typography.bodyStrong, { color: colors.onPrimary }]} maxFontSizeMultiplier={1.35}>
+          {label}
+        </Text>
       )}
     </Pressable>
   );
@@ -139,7 +153,9 @@ export function ReviewPageContent({
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
 }) {
-  return <View style={[styles.pageContent, style]}>{children}</View>;
+  const { width } = useWindowDimensions();
+  const maxWidth = width >= TABLET_MIN_WIDTH ? Layout.contentMaxWidthWide : Layout.contentMaxWidth;
+  return <View style={[styles.pageContent, { maxWidth }, style]}>{children}</View>;
 }
 
 const styles = StyleSheet.create({
@@ -173,21 +189,14 @@ const styles = StyleSheet.create({
   },
   primaryBtn: {
     borderRadius: Radius.lg,
-    minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
     marginHorizontal: Layout.pagePaddingX,
     paddingHorizontal: Spacing['3xl'],
     ...Shadows.card,
   },
-  primaryBtnText: {
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: -0.2,
-  },
   pageContent: {
     width: '100%',
-    maxWidth: Layout.contentMaxWidth,
     alignSelf: 'center',
   },
 });

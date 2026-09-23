@@ -7,7 +7,6 @@ import { StyleSheet, View } from 'react-native';
 type TasksSkeletonProps = {
   colors: AppPalette;
   cardBg: string;
-  frogCardWidth?: number;
   habitItemWidth?: number;
 };
 
@@ -33,30 +32,6 @@ function SectionCardShell({
         {children}
       </View>
     </View>
-  );
-}
-
-export function TasksFrogSectionSkeleton({ colors, cardBg, frogCardWidth = 168 }: TasksSkeletonProps) {
-  return (
-    <SectionCardShell colors={colors} cardBg={cardBg}>
-      <View style={styles.headerRow}>
-        <Skeleton width={72} height={18} borderRadius={6} />
-        <Skeleton width={88} height={32} borderRadius={10} />
-      </View>
-      <View style={[styles.frogCard, { borderColor: colors.outline, width: frogCardWidth }]}>
-        <View style={styles.frogTopRow}>
-          <Skeleton width={32} height={32} borderRadius={10} />
-          <Skeleton width={72} height={18} borderRadius={9} />
-        </View>
-        <Skeleton width="88%" height={16} borderRadius={6} style={styles.frogTitle} />
-        <Skeleton width="100%" height={12} borderRadius={5} />
-        <Skeleton width="76%" height={12} borderRadius={5} style={styles.frogDesc} />
-        <View style={[styles.frogFooter, { borderTopColor: colors.outline }]}>
-          <Skeleton width={28} height={10} borderRadius={5} />
-          <Skeleton width={36} height={10} borderRadius={5} />
-        </View>
-      </View>
-    </SectionCardShell>
   );
 }
 
@@ -220,33 +195,6 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     marginTop: 4,
-  },
-  frogCard: {
-    borderRadius: Radius.xl,
-    paddingHorizontal: Spacing['2xl'],
-    paddingTop: Spacing.xl + 4,
-    paddingBottom: Spacing.xl,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignSelf: 'flex-start',
-  },
-  frogTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  frogTitle: {
-    marginBottom: 6,
-  },
-  frogDesc: {
-    marginTop: 4,
-  },
-  frogFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
   },
   heatmapHeader: {
     flexDirection: 'row',

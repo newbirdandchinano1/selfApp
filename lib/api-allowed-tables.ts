@@ -30,6 +30,8 @@ export const API_ALLOWED_TABLES = new Set([
   'review_dimensions',
   'savings_plan_deposits',
   'savings_plans',
+  'schedule_placements',
+  'schedule_week_axis_snapshot',
   'task_categories',
   'task_execution_events',
   'task_items',
@@ -39,12 +41,16 @@ export const API_ALLOWED_TABLES = new Set([
   'points_wallet',
   'points_ledger',
   'wish_board_items',
+  'project_tags',
+  'project_tag_links',
+  'health_daily_targets',
 ]);
 
 /** 非 id 主键表 */
 export const API_TABLE_PRIMARY_KEY: Record<string, string> = {
   app_meta: 'key',
   app_settings: 'key',
+  schedule_week_axis_snapshot: 'week_start_ymd',
 };
 
 /** 始终从本地 SQLite 读取（迁移标记等，不走 REST） */

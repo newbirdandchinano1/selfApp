@@ -3,19 +3,30 @@ import { MonthlyReviewGridView } from '@/components/review/monthly-review-grid-v
 import { WeeklyReviewGridView } from '@/components/review/weekly-review-grid-view';
 import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
-import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { getMinTouchTarget, Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/review';
+const TABLET_MIN_WIDTH = 768;
 
 type ReviewScope = 'daily' | 'weekly' | 'monthly';
+
+const SCOPE_ORDER: ReviewScope[] = ['daily', 'weekly', 'monthly'];
 
 const SCOPE_LABEL: Record<ReviewScope, string> = {
   daily: '日复盘',
@@ -31,21 +42,26 @@ function ReviewScopeToggle({
   onChange: (next: ReviewScope) => void;
 }) {
   const { colors } = useAppTheme();
+  const touchMin = getMinTouchTarget(Platform.OS);
 
   return (
     <View style={styles.scopeWrap}>
-      <View style={[styles.scopeTrack, { backgroundColor: colors.capsule }]}>
-        {(['daily', 'weekly', 'monthly'] as const).map(scope => {
+      <View
+        style={[styles.scopeTrack, { backgroundColor: colors.capsule }]}
+        accessibilityRole="tablist"
+        accessibilityLabel="复盘范围">
+        {SCOPE_ORDER.map((scope, index) => {
           const active = value === scope;
           return (
             <Pressable
               key={scope}
               onPress={() => onChange(scope)}
-              accessibilityRole="button"
+              accessibilityRole="tab"
               accessibilityState={{ selected: active }}
-              accessibilityLabel={SCOPE_LABEL[scope]}
+              accessibilityLabel={`${SCOPE_LABEL[scope]}，${index + 1}/${SCOPE_ORDER.length}`}
               style={({ pressed }) => [
                 styles.scopeItem,
+                { minHeight: touchMin },
                 active && [
                   styles.scopeItemActive,
                   {
@@ -57,12 +73,13 @@ function ReviewScopeToggle({
               ]}>
               <Text
                 style={[
-                  Typography.caption,
+                  Typography.bodyStrong,
                   {
                     color: active ? colors.primary : colors.textMuted,
                     fontWeight: active ? '800' : '600',
                   },
-                ]}>
+                ]}
+                maxFontSizeMultiplier={1.35}>
                 {SCOPE_LABEL[scope]}
               </Text>
             </Pressable>
@@ -76,6 +93,7 @@ function ReviewScopeToggle({
 export function ReviewHubScreen() {
   const router = useRouter();
   const { colors } = useAppTheme();
+  const { width } = useWindowDimensions();
   const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const [selectedYmd, setSelectedYmd] = useState(todayYmd);
@@ -87,6 +105,11 @@ export function ReviewHubScreen() {
   const monthlyReloadRef = useRef<(() => Promise<void>) | null>(null);
 
   scopeRef.current = scope;
+
+  const contentMaxWidth = useMemo(
+    () => (width >= TABLET_MIN_WIDTH ? Layout.contentMaxWidthWide : Layout.contentMaxWidth),
+    [width],
+  );
 
   useEffect(() => {
     setSelectedYmd(todayYmd);
@@ -125,6 +148,20 @@ export function ReviewHubScreen() {
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
   usePageFocusReload(PAGE_API_KEY, reload);
 
+  const openHeaderMore = useCallback(() => {
+    Alert.alert('更多', undefined, [
+      {
+        text: '复盘日历',
+        onPress: () => router.push('/review-calendar'),
+      },
+      {
+        text: '复盘设置',
+        onPress: () => router.push('/review-settings'),
+      },
+      { text: '取消', style: 'cancel' },
+    ]);
+  }, [router]);
+
   const headerSubtitle =
     scope === 'daily'
       ? formatReviewHeaderDate(selectedYmd)
@@ -145,20 +182,15 @@ export function ReviewHubScreen() {
               accessibilityLabel="编辑复盘标题与栏目"
             />
             <ScreenHeaderIconAction
-              icon="calendar-today"
-              onPress={() => router.push('/review-calendar')}
-              accessibilityLabel="复盘日历"
-            />
-            <ScreenHeaderIconAction
-              icon="settings"
-              onPress={() => router.push('/review-settings')}
-              accessibilityLabel="复盘设置"
+              icon="more-horiz"
+              onPress={openHeaderMore}
+              accessibilityLabel="更多：复盘日历与设置"
             />
           </View>
         }
       />
 
-      <View style={styles.body}>
+      <View style={[styles.body, { maxWidth: contentMaxWidth }]}>
         <ReviewScopeToggle value={scope} onChange={setScope} />
 
         <View style={styles.content}>
@@ -195,12 +227,11 @@ const styles = StyleSheet.create({
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
+    gap: Spacing.md,
   },
   body: {
     flex: 1,
     width: '100%',
-    maxWidth: Layout.contentMaxWidth,
     alignSelf: 'center',
   },
   scopeWrap: {
@@ -212,17 +243,17 @@ const styles = StyleSheet.create({
   scopeTrack: {
     flexDirection: 'row',
     borderRadius: Radius.lg,
-    padding: 4,
-    gap: 4,
+    padding: Spacing.xs,
+    gap: Spacing.xs,
   },
   scopeItem: {
     flex: 1,
-    minHeight: 36,
     borderRadius: Radius.md,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: 'transparent',
+    paddingHorizontal: Spacing.sm,
   },
   scopeItemActive: {
     borderWidth: StyleSheet.hairlineWidth,

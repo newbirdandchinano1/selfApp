@@ -1,12 +1,20 @@
-import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
-import { Pressable, StyleSheet, type PressableProps, type StyleProp, type ViewStyle } from 'react-native';
+import {
+  Platform,
+  Pressable,
+  StyleSheet,
+  type PressableProps,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 
-import { Layout, Radius } from '@/constants/design-tokens';
+import { getMinTouchTarget, Radius } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
+import { AppIcon, type AppIconName } from './app-icon';
+
 export type AppIconButtonProps = Omit<PressableProps, 'style' | 'children'> & {
-  icon: keyof typeof MaterialIcons.glyphMap;
+  icon: AppIconName;
   size?: number;
   color?: string;
   style?: StyleProp<ViewStyle>;
@@ -23,6 +31,7 @@ export function AppIconButton({
 }: AppIconButtonProps) {
   const { colors } = useAppTheme();
   const tint = color ?? colors.text;
+  const touchTarget = getMinTouchTarget(Platform.OS);
 
   return (
     <Pressable
@@ -30,19 +39,21 @@ export function AppIconButton({
       disabled={disabled}
       style={({ pressed }) => [
         styles.btn,
-        { opacity: disabled ? 0.4 : pressed ? 0.7 : 1 },
+        {
+          width: touchTarget,
+          height: touchTarget,
+          opacity: disabled ? 0.4 : pressed ? 0.7 : 1,
+        },
         style,
       ]}
       {...pressableProps}>
-      <MaterialIcons name={icon} size={size} color={tint} />
+      <AppIcon name={icon} size={size} color={tint} />
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   btn: {
-    width: Layout.iconButtonSize,
-    height: Layout.iconButtonSize,
     borderRadius: Radius.icon,
     alignItems: 'center',
     justifyContent: 'center',

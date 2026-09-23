@@ -46,7 +46,7 @@ export function mergeLongTermProjectIntoExtraData(extraData: string | null, isLo
   return JSON.stringify({ ...parsed, isLongTermProject: true });
 }
 
-/** 今日青蛙卡片：任务或项目是否显示为长期 */
+/** 青蛙主体：任务或项目是否显示为长期 */
 export function getIsLongTermFrog(extraData: string | null): boolean {
   return getIsLongTermTask(extraData) || getIsLongTermProject(extraData);
 }
@@ -69,7 +69,7 @@ export function clearFrogSessionCompletedOn(extraData: string | null): string | 
   return Object.keys(rest).length === 0 ? null : JSON.stringify(rest);
 }
 
-/** 今日青蛙卡片是否应显示为已完成 */
+/** 指定指派日是否应显示为已完成（含会话完成） */
 export function isFrogDoneForToday(
   extraData: string | null,
   status: TaskStatus | string,

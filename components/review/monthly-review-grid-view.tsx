@@ -228,16 +228,24 @@ export function MonthlyReviewGridView({
             <Pressable
               onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, -1))}
               hitSlop={Layout.hitSlop}
+              accessibilityRole="button"
+              accessibilityLabel="上个月"
               style={({ pressed }) => [styles.iconBtn, { opacity: pressed ? 0.7 : 1 }]}>
               <MaterialIcons name="chevron-left" size={28} color={colors.textMuted} />
             </Pressable>
-            <Text style={[Typography.bodyStrong, { color: colors.text, minWidth: 120, textAlign: 'center' }]} numberOfLines={1}>
+            <Text
+              style={[Typography.bodyStrong, { color: colors.text, minWidth: 120, textAlign: 'center' }]}
+              numberOfLines={1}
+              maxFontSizeMultiplier={1.35}>
               {monthLabel}
             </Text>
             <Pressable
               onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, 1))}
               disabled={!canGoNext}
               hitSlop={Layout.hitSlop}
+              accessibilityRole="button"
+              accessibilityLabel="下个月"
+              accessibilityState={{ disabled: !canGoNext }}
               style={({ pressed }) => [
                 styles.iconBtn,
                 { opacity: !canGoNext ? 0.3 : pressed ? 0.7 : 1 },
@@ -246,7 +254,11 @@ export function MonthlyReviewGridView({
             </Pressable>
           </View>
           {saving ? (
-            <Text style={[Typography.caption, { color: colors.textMuted, textAlign: 'center' }]}>
+            <Text
+              accessibilityLiveRegion="polite"
+              accessibilityLabel="保存中…"
+              style={[Typography.caption, { color: colors.textMuted, textAlign: 'center' }]}
+              maxFontSizeMultiplier={1.35}>
               保存中…
             </Text>
           ) : null}

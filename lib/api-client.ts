@@ -560,37 +560,6 @@ function buildListQuery(opts?: ApiListQueryOpts): string {
   });
 }
 
-export type TodayFrogsMeta = {
-  serverFiltered?: boolean;
-  filtersVersion?: string;
-  serverTime?: string;
-};
-
-export type TodayFrogsPayload = {
-  logicalToday: string;
-  count: number;
-  tasks: Record<string, unknown>[];
-  /** 今日指派的项目青蛙（与 projects 行一致） */
-  projectFrogs?: Record<string, unknown>[];
-  projectFrogIds?: string[];
-  meta?: TodayFrogsMeta;
-};
-
-export async function apiGetTodayFrogs(params?: {
-  dayBoundaryHour?: number;
-  dayBoundaryMinute?: number;
-  signal?: AbortSignal;
-}): Promise<TodayFrogsPayload> {
-  const qs = buildQuery({
-    dayBoundaryHour: params?.dayBoundaryHour ?? 0,
-    dayBoundaryMinute: params?.dayBoundaryMinute ?? 0,
-  });
-  return apiRequest<TodayFrogsPayload>(`/api/pages/tasks/today-frogs${qs}`, {
-    method: 'GET',
-    signal: params?.signal,
-  });
-}
-
 export type FrogCandidateApiItem = {
   kind: 'task' | 'project';
   id: string;

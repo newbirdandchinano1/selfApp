@@ -1,12 +1,6 @@
-import {
-  AssignFrogSheet,
-  buildSubjectFromProject,
-  buildSubjectFromTask,
-  type AssignFrogSubject,
-} from '@/components/tasks/AssignFrogSheet';
 import { WeeklyFrogSchedule } from '@/components/tasks/WeeklyFrogSchedule';
+import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
 import {
-  TasksFrogSectionSkeleton,
   TasksHabitSectionSkeleton,
   TasksHeatmapSkeleton,
   TasksProjectsSectionSkeleton,
@@ -14,11 +8,23 @@ import {
 } from '@/components/tasks/tasks-home-skeletons';
 import { AppIconButton } from '@/components/ui';
 import { useSettingsDrawer } from '@/components/settings-drawer/settings-drawer-context';
-import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import {
+  Layout,
+  Radius,
+  Shadows,
+  Spacing,
+  Typography,
+  TaskUiColors,
+  getMinTouchTarget,
+  getTaskPriorityCheckTone,
+  getTaskPriorityTone,
+  getTaskUiColors,
+} from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
@@ -29,15 +35,11 @@ import {
   isFrogAssignedOn,
   persistProjectFrogExtraToApi,
   persistTaskFrogExtraToApi,
-  removeFrogAssignedOn,
-  unassignFrogFromApi,
-  unassignProjectFrogFromApi,
 } from '@/lib/frog-assignment';
 import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
 import {
   clearFrogSessionCompletedOn,
   getFrogSessionCompletedOn,
-  getIsLongTermFrog,
   getIsLongTermProject,
   getIsLongTermTask,
   isFrogDoneForToday,
@@ -50,7 +52,6 @@ import {
 } from '@/lib/project-frog';
 import { consumeForceFullApiRefreshAfterLocalClear } from '@/lib/page-api-session';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
-import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
 import { fetchProjectsListForProject, fetchProjectsListForTab, mergeProjectRowsById, mergeProjectTaskTreeMaps } from '@/lib/projects-list-api';
 import { formatPoints, getRewardBadgeBackgroundColor, normalizeRewardPoints, parseRewardPointsFromExtraData } from '@/lib/reward-points';
 import { getHabitById } from '@/lib/repositories/habits/habit';
@@ -218,7 +219,6 @@ import {
   saveTasksProjectExpandedState,
   type TasksMainListView,
 } from '@/lib/tasks-ui-settings';
-import { fetchTodayFrogs } from '@/lib/today-frogs-api';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
 import { getPointsBalance } from '@/lib/repositories/points/points';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -235,6 +235,7 @@ import {
   LayoutAnimation,
   Modal,
   Platform,
+  FlatList,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -242,6 +243,7 @@ import {
   TextInput,
   UIManager,
   View,
+  useWindowDimensions,
   type KeyboardEvent,
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
@@ -254,9 +256,13 @@ const MAIN_LIST_VIEW_TABS: Array<{ key: TasksMainListView; label: string }> = [
   { key: 'tasks', label: '本周列表' },
 ];
 
-/** Tasks「小习惯」两列卡片网格 */
+/** Tasks「小习惯」卡片网格间距；列数随屏宽变化 */
 const HABIT_CARD_GAP = 10;
-const HABIT_GRID_COLUMNS = 2;
+function habitGridColumnsForWidth(w: number): number {
+  if (w >= 900) return 4;
+  if (w >= 600) return 3;
+  return 2;
+}
 
 function habitKindLabel(kind: HabitKind): string {
   if (kind === 'break') return '戒除';
@@ -298,10 +304,16 @@ function HabitProgressDots({
 const STANDALONE_TODO_TITLE_MAX = 50;
 
 function PulseDot({ color }: { color: string }) {
+  const reduceMotion = useReducedMotion();
   const scale = React.useRef(new Animated.Value(1)).current;
   const opacity = React.useRef(new Animated.Value(0.45)).current;
 
   React.useEffect(() => {
+    if (reduceMotion) {
+      scale.setValue(1);
+      opacity.setValue(1);
+      return;
+    }
     const loop = Animated.loop(
       Animated.sequence([
         Animated.parallel([
@@ -314,14 +326,15 @@ function PulseDot({ color }: { color: string }) {
         ]),
       ]),
     );
-
     loop.start();
     return () => loop.stop();
-  }, [opacity, scale]);
+  }, [opacity, reduceMotion, scale]);
 
   return (
     <View style={styles.pulseWrap}>
-      <Animated.View style={[styles.pulseRing, { backgroundColor: color, transform: [{ scale }], opacity }]} />
+      {reduceMotion ? null : (
+        <Animated.View style={[styles.pulseRing, { backgroundColor: color, transform: [{ scale }], opacity }]} />
+      )}
       <View style={[styles.pulseCenter, { backgroundColor: color }]} />
     </View>
   );
@@ -377,7 +390,8 @@ function SegmentTabs({
       horizontal
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={styles.segmentRow}
-      keyboardShouldPersistTaps="handled">
+      keyboardShouldPersistTaps="handled"
+      accessibilityRole="tablist">
       {tabs.map((tab) => {
         const isActive = tab.key === active;
         return (
@@ -386,6 +400,9 @@ function SegmentTabs({
             onPress={() => onChange(tab.key)}
             onLongPress={() => onLongPressTab?.(tab.key, tab.label)}
             delayLongPress={260}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: isActive }}
+            accessibilityLabel={tab.label}
             style={styles.segmentBtn}>
             <Text
               style={[
@@ -433,6 +450,7 @@ function MainListViewSwitcher({
             onPress={() => onChange(tab.key)}
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
+            accessibilityLabel={tab.label}
             style={({ pressed }) => [
               styles.mainListViewBtn,
               active && { backgroundColor: primary },
@@ -468,6 +486,7 @@ function ProjectListTaskFilterChip({
   onPrimary: string;
   isDark: boolean;
 }) {
+  const { colors } = useAppTheme();
   return (
     <ScalePressable
       onPress={onPress}
@@ -477,14 +496,8 @@ function ProjectListTaskFilterChip({
       style={({ pressed }) => [
         styles.projectFilterChip,
         {
-          borderColor: active ? `${primary}55` : isDark ? 'rgba(148,163,184,0.28)' : 'rgba(194,198,214,0.8)',
-          backgroundColor: active
-            ? isDark
-              ? 'rgba(96,165,250,0.16)'
-              : 'rgba(0,88,190,0.08)'
-            : isDark
-              ? 'rgba(15,23,42,0.45)'
-              : 'rgba(248,250,252,0.95)',
+          borderColor: active ? primary : outline,
+          backgroundColor: active ? colors.primaryMuted : isDark ? colors.surfaceMuted : colors.surfaceSubtle,
         },
         pressed && { opacity: 0.88 },
       ]}>
@@ -516,32 +529,37 @@ function ScalePressable({
   scaleTo?: number;
   animatedStyle?: any;
 }) {
+  const reduceMotion = useReducedMotion();
   const scale = React.useRef(new Animated.Value(1)).current;
 
   const handlePressIn = React.useCallback(
     (event: any) => {
-      Animated.spring(scale, {
-        toValue: scaleTo,
-        speed: 30,
-        bounciness: 4,
-        useNativeDriver: true,
-      }).start();
+      if (!reduceMotion) {
+        Animated.spring(scale, {
+          toValue: scaleTo,
+          speed: 30,
+          bounciness: 4,
+          useNativeDriver: true,
+        }).start();
+      }
       onPressIn?.(event);
     },
-    [onPressIn, scale, scaleTo]
+    [onPressIn, reduceMotion, scale, scaleTo],
   );
 
   const handlePressOut = React.useCallback(
     (event: any) => {
-      Animated.spring(scale, {
-        toValue: 1,
-        speed: 24,
-        bounciness: 6,
-        useNativeDriver: true,
-      }).start();
+      if (!reduceMotion) {
+        Animated.spring(scale, {
+          toValue: 1,
+          speed: 24,
+          bounciness: 6,
+          useNativeDriver: true,
+        }).start();
+      }
       onPressOut?.(event);
     },
-    [onPressOut, scale]
+    [onPressOut, reduceMotion, scale],
   );
 
   return (
@@ -770,8 +788,7 @@ function isHabitGridItemCompletedToday(item: HabitGridItem, logicalTodayYmd: str
 /** 小习惯卡片连点防抖间隔 */
 const HABIT_CARD_PRESS_DEBOUNCE_MS = 500;
 
-/** 戒除挑战成功后展示用绿色（与打卡管理页一致） */
-const HABIT_KIND_BREAK_SUCCESS = '#059669';
+/** 戒除挑战成功色来自 TaskUiColors（按主题取） */
 
 function optimisticHabitCountDelta(
   item: HabitGridItem,
@@ -924,11 +941,7 @@ function formatTaskPriority(priority: number): string {
 }
 
 function getTaskPriorityColor(priority: number, isDark: boolean) {
-  if (priority >= 4) return isDark ? '#f87171' : '#ba1a1a';
-  if (priority === 3) return isDark ? '#fbbf24' : '#9a5b00';
-  if (priority === 2) return isDark ? '#60a5fa' : '#0058be';
-  if (priority === 1) return isDark ? '#94a3b8' : '#727785';
-  return isDark ? '#94a3b8' : '#727785';
+  return getTaskPriorityTone(priority, isDark);
 }
 
 function sortTaskTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
@@ -1048,14 +1061,6 @@ const COMPLETION_HEATMAP_WEEKS = 15;
 const COMPLETION_HEAT_CELL = 22;
 const COMPLETION_HEAT_GAP = 8;
 const COMPLETION_HEAT_MONTH_ROW_H = 24;
-const COMPLETION_HEAT_LEVEL_COLORS_LIGHT = ['#EAEBEE', '#C1DFCC', '#87C3A0', '#4EA871', '#329258'] as const;
-const COMPLETION_HEAT_LEVEL_COLORS_DARK = [
-  'rgba(51,65,85,0.78)',
-  'rgba(193,223,204,0.32)',
-  'rgba(135,195,160,0.5)',
-  'rgba(78,168,113,0.68)',
-  'rgba(50,146,88,0.85)',
-] as const;
 
 type CompletionHeatCell = { level: number | null; ymd: string | null; count: number };
 
@@ -1098,7 +1103,8 @@ function TaskCompletionHeatmap({
 }) {
   const router = useRouter();
   const scrollRef = React.useRef<ScrollView>(null);
-  const colors = isDark ? COMPLETION_HEAT_LEVEL_COLORS_DARK : COMPLETION_HEAT_LEVEL_COLORS_LIGHT;
+  const taskUi = getTaskUiColors(isDark);
+  const heatColors = taskUi.heatmapLevels;
   const [selectedYmd, setSelectedYmd] = React.useState<string | null>(null);
   const [frogCountByYmd, setFrogCountByYmd] = React.useState<Map<string, number>>(new Map());
   const [todoCountByYmd, setTodoCountByYmd] = React.useState<Map<string, number>>(new Map());
@@ -1258,22 +1264,10 @@ function TaskCompletionHeatmap({
 
   return (
     <View style={styles.frogHeatmapOuter}>
-      <View style={styles.frogHeatmapHeading}>
-        <Text style={[styles.frogHeatmapTitle, { color: textMain }]}>完成热力图</Text>
-        <View style={styles.frogHeatmapLegend}>
-          <Text style={[styles.frogHeatmapLegendText, { color: textMuted }]}>少</Text>
-          <View style={styles.frogHeatmapLegendSwatches}>
-            {colors.map((bg, i) => (
-              <View key={i} style={[styles.frogHeatmapLegendCell, { backgroundColor: bg }]} />
-            ))}
-          </View>
-          <Text style={[styles.frogHeatmapLegendText, { color: textMuted }]}>多</Text>
-        </View>
-      </View>
-
       <View
         style={[
           styles.frogHeatmapCard,
+          styles.frogHeatmapCardQuiet,
           { backgroundColor: innerCardBg, borderColor: innerBorderColor },
         ]}>
         <View style={styles.frogHeatmapBodyRow}>
@@ -1330,7 +1324,7 @@ function TaskCompletionHeatmap({
                               {
                                 width: COMPLETION_HEAT_CELL,
                                 height: COMPLETION_HEAT_CELL,
-                                backgroundColor: isFuture ? 'transparent' : colors[cell.level!],
+                                backgroundColor: isFuture ? 'transparent' : heatColors[cell.level!],
                                 borderWidth: selected ? 2 : 0,
                                 borderColor: selected ? accentColor : 'transparent',
                               },
@@ -1350,7 +1344,7 @@ function TaskCompletionHeatmap({
           <View
             style={[
               styles.frogHeatmapDetail,
-              { borderTopColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(148,163,184,0.28)' },
+              { borderTopColor: taskUi.hairlineStrong },
             ]}>
             <View style={styles.frogHeatmapDetailHead}>
               <Text style={[styles.frogHeatmapDetailDate, { color: textMain }]} numberOfLines={1}>
@@ -1384,7 +1378,7 @@ function TaskCompletionHeatmap({
                           style={({ pressed }) => [
                             styles.frogHeatmapDetailRow,
                             {
-                              borderBottomColor: isDark ? 'rgba(148,163,184,0.14)' : 'rgba(148,163,184,0.2)',
+                              borderBottomColor: taskUi.hairlineSoft,
                               opacity: pressed && canOpen ? 0.85 : 1,
                             },
                             isLast && { borderBottomWidth: 0 },
@@ -1427,7 +1421,7 @@ function TaskCompletionHeatmap({
                           style={({ pressed }) => [
                             styles.frogHeatmapDetailRow,
                             {
-                              borderBottomColor: isDark ? 'rgba(148,163,184,0.14)' : 'rgba(148,163,184,0.2)',
+                              borderBottomColor: taskUi.hairlineSoft,
                               opacity: pressed && canOpen ? 0.85 : 1,
                             },
                             idx === selectedTodoItems.length - 1 && { borderBottomWidth: 0 },
@@ -1485,10 +1479,7 @@ function formatTaskDueText(dueYmd: string, todayYmd: string): string {
 
 /** 待办勾选图标颜色：与任务优先级象限语义一致 */
 function getTaskPriorityCheckColor(priority: number, isDark: boolean) {
-  if (priority >= 4) return isDark ? '#f87171' : '#ba1a1a';
-  if (priority === 3) return isDark ? '#fbbf24' : '#825100';
-  if (priority === 2) return isDark ? '#60a5fa' : '#0058be';
-  return isDark ? '#94a3b8' : '#727785';
+  return getTaskPriorityCheckTone(priority, isDark);
 }
 
 const URGENT_IMPORTANT_PRIORITY = 4;
@@ -1641,24 +1632,6 @@ function alertProjectTaskLocked(lockInfo: ProjectLockInfo | undefined) {
   Alert.alert('无法操作', '该项目仍被前置项目锁定，请先完成前置项目。');
 }
 
-/** 直接子任务中未完成（非 done/cancelled）数量；有则不可指派为青蛙 */
-function countUnfinishedDirectChildren(node: TaskTreeNode): number {
-  const children = Array.isArray(node.children) ? node.children : [];
-  return children.filter((c) => c.status !== 'done' && c.status !== 'cancelled').length;
-}
-
-function frogBlockedReasonFromLock(lockInfo: ProjectLockInfo | undefined): string | null {
-  if (!lockInfo?.locked) return null;
-  if (lockInfo.unmetPrerequisiteNames.length > 0) {
-    return `等待前置：${lockInfo.unmetPrerequisiteNames.join('、')}`;
-  }
-  if (lockInfo.scheduleNotStarted) {
-    return lockInfo.scheduleStartYmd
-      ? `计划尚未开始（${lockInfo.scheduleStartYmd}）`
-      : '计划尚未开始';
-  }
-  return '项目已锁定';
-}
 
 function showProjectCompletionDispositionPrompt(
   project: ProjectRow,
@@ -1734,6 +1707,9 @@ async function reactivateInboxCompletedProjectsWithOpenTasks(
 
 export default function TasksScreen() {
   const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
+  const reduceMotion = useReducedMotion();
+  const { width: windowWidth } = useWindowDimensions();
+  const habitGridColumns = habitGridColumnsForWidth(windowWidth);
   /** 用户在本页做过写操作后调用，下次聚焦时再从后端全量拉取 */
   const markPageDirty = resetSync;
   /** 首次数据未就绪前展示骨架屏，避免显示空列表闪动 */
@@ -1746,13 +1722,13 @@ export default function TasksScreen() {
   const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
   const habitGridItemWidth = React.useMemo(() => {
     const gap = HABIT_CARD_GAP;
-    const cols = HABIT_GRID_COLUMNS;
+    const cols = habitGridColumns;
     const rowWidth =
       habitItemsRowWidth > 1
         ? habitItemsRowWidth
-        : Math.max(120, Dimensions.get('window').width - Spacing.md * 2 - Spacing['4xl'] * 2);
+        : Math.max(120, windowWidth - Spacing.md * 2 - Spacing['4xl'] * 2);
     return (rowWidth - gap * (cols - 1)) / cols;
-  }, [habitItemsRowWidth]);
+  }, [habitGridColumns, habitItemsRowWidth, windowWidth]);
 
   const onHabitItemsRowLayout = React.useCallback((e: { nativeEvent: { layout: { width: number } } }) => {
     const w = e.nativeEvent.layout.width;
@@ -1834,8 +1810,12 @@ export default function TasksScreen() {
 
   const router = useRouter();
   const { colors, isDark, shadows } = useAppTheme();
+  const taskUi = getTaskUiColors(isDark);
+  const habitBreakSuccess = taskUi.habitBreakSuccess;
+  const touchTarget = getMinTouchTarget(Platform.OS);
   const insets = useSafeAreaInsets();
   const TASK_INDENT = 18;
+  const maxFontScale = 1.35;
 
   const [projectTab, setProjectTab] = React.useState<string>('all');
   const [mainListView, setMainListView] = React.useState<TasksMainListView>('projects');
@@ -1846,8 +1826,6 @@ export default function TasksScreen() {
   >(() => new Map());
   const [standaloneTodos, setStandaloneTodos] = React.useState<TaskRow[]>([]);
   const [matrixWeekTasks, setMatrixWeekTasks] = React.useState<TaskRow[]>([]);
-  const [todayFrogs, setTodayFrogs] = React.useState<TaskRow[]>([]);
-  const [projectFrogIds, setProjectFrogIds] = React.useState<Set<string>>(() => new Set());
   const [completionHeatmapReloadToken, setCompletionHeatmapReloadToken] = React.useState(0);
   const [projectTaskTreeMap, setProjectTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
   const [expandedProjectIds, setExpandedProjectIds] = React.useState<Record<string, boolean>>({});
@@ -1880,6 +1858,8 @@ export default function TasksScreen() {
     Map<string, { name: string; icon: string }>
   >(() => new Map());
   const [expandedHabitSections, setExpandedHabitSections] = React.useState<Record<string, boolean>>({});
+  /** 小习惯 / 待办 / 项目并排分段，一次只展示一块 */
+  const [secondaryPane, setSecondaryPane] = React.useState<'habits' | 'todos' | 'projects'>('todos');
   const [subHabitModal, setSubHabitModal] = React.useState<{
     habitId: string;
     name: string;
@@ -1907,7 +1887,7 @@ export default function TasksScreen() {
   });
   /** 键盘占用高度：用于主列表底部留白，避免快捷待办被键盘挡住后无法滚到位 */
   const [mainScrollKeyboardPad, setMainScrollKeyboardPad] = React.useState(0);
-  const mainScrollRef = React.useRef<ScrollView>(null);
+  const mainScrollRef = React.useRef<FlatList<ProjectRow>>(null);
   const quickTodoAnchorRef = React.useRef<View>(null);
   const mainScrollOffsetYRef = React.useRef(0);
   const keyboardHeightRef = React.useRef(0);
@@ -1924,7 +1904,7 @@ export default function TasksScreen() {
       if (inputBottom <= visibleBottom) return;
       const delta = inputBottom - visibleBottom;
       const nextY = mainScrollOffsetYRef.current + delta;
-      mainScrollRef.current?.scrollTo({ y: Math.max(0, nextY), animated: true });
+      mainScrollRef.current?.scrollToOffset({ offset: Math.max(0, nextY), animated: true });
     });
   }, []);
 
@@ -2016,68 +1996,6 @@ export default function TasksScreen() {
     return ids;
   }, [projectLockMap]);
 
-  const [assignFrogSheet, setAssignFrogSheet] = React.useState<{
-    mode: 'pick' | 'direct';
-    subject: AssignFrogSubject | null;
-  } | null>(null);
-
-  const openAssignFrogPick = React.useCallback(() => {
-    setAssignFrogSheet({ mode: 'pick', subject: null });
-  }, []);
-
-  const openAssignFrogForTaskNode = React.useCallback(
-    (node: TaskTreeNode, projectId: string | null | undefined) => {
-      const pid = typeof projectId === 'string' && projectId.trim() ? projectId.trim() : null;
-      let blockedReason: string | null = null;
-      if (countUnfinishedDirectChildren(node) > 0) {
-        blockedReason = '存在未完成子任务';
-      } else if (pid) {
-        blockedReason = frogBlockedReasonFromLock(projectLockMap.get(pid));
-      }
-      const projectName = pid ? projects.find((p) => p.id === pid)?.name ?? null : null;
-      const tags = pid ? projectTagsByProjectId.get(pid) ?? [] : [];
-      setAssignFrogSheet({
-        mode: 'direct',
-        subject: buildSubjectFromTask(node, {
-          projectName,
-          tags,
-          blockedReason,
-        }),
-      });
-    },
-    [projectLockMap, projectTagsByProjectId, projects],
-  );
-
-  const openAssignFrogForProject = React.useCallback(
-    (project: ProjectRow) => {
-      const tree = projectTaskTreeMap[project.id] ?? [];
-      const taskCount = getProjectTreeTaskProgress(tree).total;
-      const lockInfo = projectLockMap.get(project.id);
-      const tags = projectTagsByProjectId.get(project.id) ?? [];
-      setAssignFrogSheet({
-        mode: 'direct',
-        subject: buildSubjectFromProject(project, {
-          tags,
-          taskCount,
-          locked: !!lockInfo?.locked,
-          lockInfo: lockInfo ?? null,
-        }),
-      });
-    },
-    [projectLockMap, projectTagsByProjectId, projectTaskTreeMap],
-  );
-
-  const openAssignFrogForStandaloneTodo = React.useCallback((todo: TaskRow) => {
-    setAssignFrogSheet({
-      mode: 'direct',
-      subject: buildSubjectFromTask(todo, {
-        projectName: null,
-        tags: [],
-        blockedReason: null,
-      }),
-    });
-  }, []);
-
   const projectTagWeightById = React.useMemo(() => {
     const map = new Map<string, number>();
     projectTagsByProjectId.forEach((tags, projectId) => {
@@ -2103,7 +2021,6 @@ export default function TasksScreen() {
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
-  const frogCardAnim = React.useRef(new Animated.Value(0)).current;
   const matrixAnim = React.useRef(new Animated.Value(0)).current;
   const projectAnim = React.useRef(new Animated.Value(0)).current;
   const bgFloatAnim = React.useRef(new Animated.Value(0)).current;
@@ -2277,20 +2194,6 @@ export default function TasksScreen() {
     } catch (err) {
       console.warn('加载任务列表失败', err);
       return 0;
-    }
-  }, [dayBoundary]);
-
-  const loadTodayFrogs = React.useCallback(async (opts?: { forceLocal?: boolean }) => {
-    try {
-      const result = await fetchTodayFrogs({
-        boundary: dayBoundary,
-        offlineFallback: true,
-        forceLocal: opts?.forceLocal,
-      });
-      setTodayFrogs(result.tasks);
-      setProjectFrogIds(new Set(result.projectFrogIds));
-    } catch (err) {
-      console.warn('加载今日青蛙失败', err);
     }
   }, [dayBoundary]);
 
@@ -2468,10 +2371,10 @@ export default function TasksScreen() {
         await loadTasks(silentTaskOpts);
       }
       if (pending.frogs) {
-        await loadTodayFrogs({ forceLocal: true });
+        notifyFrogScheduleChanged();
       }
     },
-    [loadProjectTasks, loadProjects, loadTasks, loadTodayFrogs, reloadProjectTasksFromLocal],
+    [loadProjectTasks, loadProjects, loadTasks, reloadProjectTasksFromLocal],
   );
 
   const schedulePostMutationSync = React.useCallback(
@@ -2547,9 +2450,14 @@ export default function TasksScreen() {
       tasksContentOpacity.setValue(0);
       pageFadeAnim.setValue(1);
       pageTranslateAnim.setValue(0);
-      frogCardAnim.setValue(1);
       matrixAnim.setValue(1);
       projectAnim.setValue(1);
+      if (reduceMotion) {
+        tasksSkeletonOpacity.setValue(0);
+        tasksContentOpacity.setValue(1);
+        setTasksSkeletonMounted(false);
+        return;
+      }
       Animated.parallel([
         Animated.timing(tasksSkeletonOpacity, {
           toValue: 0,
@@ -2569,9 +2477,17 @@ export default function TasksScreen() {
       return;
     }
 
+    if (reduceMotion) {
+      pageFadeAnim.setValue(1);
+      pageTranslateAnim.setValue(0);
+      matrixAnim.setValue(1);
+      projectAnim.setValue(1);
+      tasksContentOpacity.setValue(1);
+      return;
+    }
+
     pageFadeAnim.setValue(0);
     pageTranslateAnim.setValue(18);
-    frogCardAnim.setValue(0);
     matrixAnim.setValue(0);
     projectAnim.setValue(0);
     tasksContentOpacity.setValue(1);
@@ -2591,12 +2507,6 @@ export default function TasksScreen() {
         }),
       ]),
       Animated.stagger(90, [
-        Animated.timing(frogCardAnim, {
-          toValue: 1,
-          duration: 440,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
         Animated.timing(matrixAnim, {
           toValue: 1,
           duration: 460,
@@ -2612,12 +2522,12 @@ export default function TasksScreen() {
       ]),
     ]).start();
   }, [
-    frogCardAnim,
     initialTasksLoadPending,
     matrixAnim,
     pageFadeAnim,
     pageTranslateAnim,
     projectAnim,
+    reduceMotion,
     tasksContentOpacity,
     tasksSkeletonOpacity,
   ]);
@@ -2663,6 +2573,10 @@ export default function TasksScreen() {
   }, []);
 
   React.useEffect(() => {
+    if (reduceMotion) {
+      bgFloatAnim.setValue(0);
+      return;
+    }
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(bgFloatAnim, {
@@ -2677,12 +2591,11 @@ export default function TasksScreen() {
           easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
-      ])
+      ]),
     );
-
     loop.start();
     return () => loop.stop();
-  }, [bgFloatAnim]);
+  }, [bgFloatAnim, reduceMotion]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -2738,7 +2651,6 @@ export default function TasksScreen() {
 
     const effectiveHideCompleted = storedHideCompleted ?? hideCompletedProjectTasks;
     const habitsPromise = loadHabits();
-    const frogsPromise = loadTodayFrogs();
     const pointsPromise = getPointsBalance({ offlineFallback: true })
       .then((balance) => {
         if (!isStale()) setPointsBalance(balance);
@@ -2862,7 +2774,7 @@ export default function TasksScreen() {
       await loadProjectTasks(workingRows, projectTaskOpts({ preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
-    await Promise.all([habitsPromise, frogsPromise, pointsPromise]);
+    await Promise.all([habitsPromise, pointsPromise]);
   }, [
     hideCompletedProjectTasks,
     loadExpandedProjectState,
@@ -2871,7 +2783,6 @@ export default function TasksScreen() {
     loadProjects,
     loadProjectTasks,
     loadTasks,
-    loadTodayFrogs,
     loadHabits,
     dayBoundary,
     logicalTodayYmd,
@@ -2911,8 +2822,7 @@ export default function TasksScreen() {
       const fromLists =
         standaloneTodos.find((t) => t.id === taskId) ??
         matrixWeekTasks.find((t) => t.id === taskId) ??
-        findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId) ??
-        todayFrogs.find((t) => t.id === taskId);
+        findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (fromLists) return fromLists;
       const project = projects.find((p) => p.id === taskId);
       if (!project || !isLeafProjectWithoutTasks(project, (projectTaskTreeMap[project.id] ?? []).length)) {
@@ -2920,7 +2830,7 @@ export default function TasksScreen() {
       }
       return projectToFrogTaskRow(project);
     },
-    [standaloneTodos, matrixWeekTasks, projectTaskTreeMap, todayFrogs, projects],
+    [standaloneTodos, matrixWeekTasks, projectTaskTreeMap, projects],
   );
 
   const patchVisibleTask = React.useCallback(
@@ -2960,11 +2870,6 @@ export default function TasksScreen() {
   const standaloneTodoOpenCount = React.useMemo(
     () => standaloneTodos.filter((t) => isStandaloneTodoOpen(t)).length,
     [standaloneTodos],
-  );
-
-  const frogCarouselCardWidth = React.useMemo(
-    () => Math.min(196, Math.max(152, Dimensions.get('window').width * 0.46)),
-    [],
   );
 
   const matrixGroups = React.useMemo(() => {
@@ -3047,12 +2952,7 @@ export default function TasksScreen() {
   };
 
   const openTask = (id: string) => {
-    const frogRow = todayFrogs.find((t) => t.id === id);
-    if (frogRow && isFrogSubjectDeleted(frogRow.extra_data)) {
-      Alert.alert('已删除', '该青蛙对应的任务/项目已删除，仅保留今日完成记录。');
-      return;
-    }
-    if (projectFrogIds.has(id) || projects.some((p) => p.id === id)) {
+    if (projects.some((p) => p.id === id)) {
       openProject(id);
       return;
     }
@@ -3188,93 +3088,6 @@ export default function TasksScreen() {
     [getFrogDoneBounce]
   );
 
-  const unassignFrog = React.useCallback(
-    (taskId: string) => {
-      const isProjectFrog = projectFrogIds.has(taskId);
-      const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
-      const frog = isProjectFrog
-        ? project
-          ? projectToFrogTaskRow(project)
-          : todayFrogs.find((t) => t.id === taskId)
-        : findVisibleTask(taskId);
-      if (!frog) return;
-      if (isFrogSubjectDeleted(frog.extra_data)) {
-        Alert.alert('无法取消', '该青蛙对应的任务/项目已删除，仅保留今日完成记录。');
-        return;
-      }
-      const titleLabel = (frog.title ?? '').trim() || (isProjectFrog ? '该项目' : '该任务');
-      Alert.alert('取消指派', `确定将「${titleLabel}」从今日青蛙中移除吗？`, [
-        { text: '保留', style: 'cancel' },
-        {
-          text: '取消指派',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              markPageDirty();
-              const nextExtra = removeFrogAssignedOn(frog.extra_data, logicalTodayYmd);
-              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-              setTodayFrogs((prev) => prev.filter((t) => t.id !== taskId));
-              setProjectFrogIds((prev) => {
-                if (!prev.has(taskId)) return prev;
-                const next = new Set(prev);
-                next.delete(taskId);
-                return next;
-              });
-              if (!isProjectFrog) {
-                patchVisibleTask(taskId, { extra_data: nextExtra });
-                setProjectTaskTreeMap((prev) =>
-                  updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtra })),
-                );
-              }
-              try {
-                if (isProjectFrog) {
-                  const snap = project ?? (await getProjectById(taskId));
-                  await unassignProjectFrogFromApi(
-                    taskId,
-                    snap?.extra_data ?? frog.extra_data,
-                    (snap ?? frog) as Record<string, unknown>,
-                    logicalTodayYmd,
-                  );
-                  await loadProjects();
-                } else {
-                  await unassignFrogFromApi(
-                    taskId,
-                    frog.extra_data,
-                    frog as Record<string, unknown>,
-                    logicalTodayYmd,
-                  );
-                }
-                schedulePostMutationSync({ frogs: true });
-              } catch (err) {
-                console.warn('取消青蛙指派失败', err);
-                Alert.alert('操作失败', '未能取消指派，请稍后重试。');
-                await loadTasks({ forceLocal: true });
-                await loadTodayFrogs({ forceLocal: true });
-                await loadProjectTasks(projects);
-              }
-            })();
-          },
-        },
-      ]);
-    },
-    [
-      findVisibleTask,
-      loadProjectTasks,
-      loadProjects,
-      loadTasks,
-      loadTodayFrogs,
-      logicalTodayYmd,
-      markPageDirty,
-      patchVisibleTask,
-      projectFrogIds,
-      projects,
-      projectTaskTreeMap,
-      schedulePostMutationSync,
-      todayFrogs,
-      updateTaskInProjectTree,
-    ],
-  );
-
   const moveProjectToInboxById = React.useCallback(async (projectId: string) => {
     try {
       await runExclusiveMutation('正在收纳项目...', async () => {
@@ -3348,17 +3161,6 @@ export default function TasksScreen() {
           }
           return sortProjectTaskTreeMap(next);
         });
-        setTodayFrogs((prev) =>
-          prev.map((t) => {
-            if (!incomplete.some((u) => u.id === t.id)) return t;
-            let nextExtraData = t.extra_data;
-            if (taskHasRepeatingSchedule(nextExtraData)) {
-              nextExtraData = patchExtraDataOnRepeatTaskComplete(nextExtraData, logicalTodayYmd);
-            }
-            nextExtraData = clearFrogSessionCompletedOn(nextExtraData);
-            return { ...t, status: 'done', completed_at: completedAt, extra_data: nextExtraData };
-          }),
-        );
         scheduleHeatmapReload();
       }
 
@@ -3427,7 +3229,6 @@ export default function TasksScreen() {
           await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
           const rows = await loadProjects();
           await loadProjectTasks(rows);
-          await loadTodayFrogs();
           await loadProjectsListFromApi(projectTab, { replaceMap: true });
           scheduleHeatmapReload();
         }, '项目已删除');
@@ -3443,7 +3244,6 @@ export default function TasksScreen() {
       loadProjectTasks,
       loadProjects,
       loadProjectsListFromApi,
-      loadTodayFrogs,
       markPageDirty,
       projectTab,
       runExclusiveMutation,
@@ -3468,7 +3268,6 @@ export default function TasksScreen() {
           projectSwipeableRefs.current[project.id]?.close();
           const rows = await loadProjects();
           await loadProjectTasks(rows);
-          await loadTodayFrogs();
         }, '项目已完成');
       } catch (err) {
         console.warn('完成项目失败', err);
@@ -3480,7 +3279,6 @@ export default function TasksScreen() {
       completeIncompleteProjectTasksForProject,
       loadProjectTasks,
       loadProjects,
-      loadTodayFrogs,
       markPageDirty,
       grantProjectPointsWithToast,
       runExclusiveMutation,
@@ -3714,19 +3512,12 @@ export default function TasksScreen() {
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
-      // optimistic update: 待办/矩阵、今日青蛙、项目树
+      // optimistic update: 待办/矩阵、项目树
       patchVisibleTask(taskId, {
         status: nextStatus,
         completed_at: nextCompletedAt,
         extra_data: nextExtraData,
       });
-      setTodayFrogs((prev) =>
-        prev.map((t) =>
-          t.id === taskId
-            ? { ...t, status: nextStatus, completed_at: nextCompletedAt, extra_data: nextExtraData }
-            : t
-        )
-      );
       setProjectTaskTreeMap((prev) =>
         sortProjectTaskTreeMap(
           updateTaskInProjectTree(prev, taskId, (node) => ({
@@ -3874,7 +3665,6 @@ export default function TasksScreen() {
       } catch (err) {
         console.warn('更新任务状态失败', err);
         // fallback: reload to ensure consistency
-        await loadTodayFrogs({ forceLocal: true });
         if (isTaskInProjectListScope(current, projectTaskTreeMap, taskId)) {
           await reloadProjectTasksFromLocal();
         } else {
@@ -3890,7 +3680,6 @@ export default function TasksScreen() {
       loadProjectTasks,
       loadProjects,
       loadTasks,
-      loadTodayFrogs,
       lockedProjectIds,
       logicalTodayYmd,
       markPageDirty,
@@ -3910,12 +3699,10 @@ export default function TasksScreen() {
 
   const completeFrogSessionOnly = React.useCallback(
     async (taskId: string, assignYmd: string = logicalTodayYmd) => {
-      const isProjectFrog = projectFrogIds.has(taskId);
-      const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
+      const project = projects.find((p) => p.id === taskId);
+      const isProjectFrog = Boolean(project);
       const current = isProjectFrog
-        ? project
-          ? projectToFrogTaskRow(project)
-          : todayFrogs.find((t) => t.id === taskId)
+        ? projectToFrogTaskRow(project!)
         : findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
@@ -3934,10 +3721,11 @@ export default function TasksScreen() {
       const nextExtraData = setFrogSessionCompletedOn(current.extra_data, assignYmd);
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setTodayFrogs((prev) =>
-        prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtraData } : t)),
-      );
-      if (!isProjectFrog) {
+      if (isProjectFrog) {
+        setProjects((prev) =>
+          prev.map((p) => (p.id === taskId ? { ...p, extra_data: nextExtraData } : p)),
+        );
+      } else {
         patchVisibleTask(taskId, { extra_data: nextExtraData });
         setProjectTaskTreeMap((prev) =>
           updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtraData })),
@@ -3975,9 +3763,9 @@ export default function TasksScreen() {
         });
       } catch (err) {
         console.warn('完成青蛙会话失败', err);
-        Alert.alert('操作失败', '未能完成今日青蛙，请稍后重试。');
+        Alert.alert('操作失败', '未能完成青蛙，请稍后重试。');
         await loadTasks({ forceLocal: true });
-        await loadTodayFrogs({ forceLocal: true });
+        if (isProjectFrog) await loadProjects();
         await loadProjectTasks(projects);
       }
     },
@@ -3986,31 +3774,25 @@ export default function TasksScreen() {
       loadProjectTasks,
       loadProjects,
       loadTasks,
-      loadTodayFrogs,
       lockedProjectIds,
       logicalTodayYmd,
       markPageDirty,
       patchVisibleTask,
-      projectFrogIds,
       projectLockMap,
       projectTaskTreeMap,
       projects,
-      reloadProjectTasksFromLocal,
       scheduleHeatmapReload,
       schedulePostMutationSync,
-      todayFrogs,
       updateTaskInProjectTree,
     ],
   );
 
   const reopenFrogSessionOnly = React.useCallback(
     async (taskId: string, assignYmd: string = logicalTodayYmd) => {
-      const isProjectFrog = projectFrogIds.has(taskId);
-      const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
+      const project = projects.find((p) => p.id === taskId);
+      const isProjectFrog = Boolean(project);
       const current = isProjectFrog
-        ? project
-          ? projectToFrogTaskRow(project)
-          : todayFrogs.find((t) => t.id === taskId)
+        ? projectToFrogTaskRow(project!)
         : findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current) return;
 
@@ -4024,10 +3806,11 @@ export default function TasksScreen() {
           : current.extra_data;
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setTodayFrogs((prev) =>
-        prev.map((t) => (t.id === taskId ? { ...t, extra_data: nextExtraData } : t)),
-      );
-      if (!isProjectFrog) {
+      if (isProjectFrog) {
+        setProjects((prev) =>
+          prev.map((p) => (p.id === taskId ? { ...p, extra_data: nextExtraData } : p)),
+        );
+      } else {
         patchVisibleTask(taskId, { extra_data: nextExtraData });
         setProjectTaskTreeMap((prev) =>
           updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtraData })),
@@ -4065,9 +3848,9 @@ export default function TasksScreen() {
         });
       } catch (err) {
         console.warn('恢复青蛙会话失败', err);
-        Alert.alert('操作失败', '未能恢复今日青蛙，请稍后重试。');
+        Alert.alert('操作失败', '未能恢复青蛙，请稍后重试。');
         await loadTasks({ forceLocal: true });
-        await loadTodayFrogs({ forceLocal: true });
+        if (isProjectFrog) await loadProjects();
         await loadProjectTasks(projects);
       }
     },
@@ -4076,34 +3859,28 @@ export default function TasksScreen() {
       loadProjectTasks,
       loadProjects,
       loadTasks,
-      loadTodayFrogs,
       logicalTodayYmd,
       markPageDirty,
       patchVisibleTask,
-      projectFrogIds,
       projectTaskTreeMap,
       projects,
-      reloadProjectTasksFromLocal,
       scheduleHeatmapReload,
       schedulePostMutationSync,
-      todayFrogs,
       updateTaskInProjectTree,
     ],
   );
 
   const toggleFrogDone = React.useCallback(
     (taskId: string, assignYmd: string = logicalTodayYmd) => {
-      const isProjectFrog = projectFrogIds.has(taskId);
-      const project = isProjectFrog ? projects.find((p) => p.id === taskId) : undefined;
+      const project = projects.find((p) => p.id === taskId);
+      const isProjectFrog = Boolean(project);
       const current = isProjectFrog
-        ? project
-          ? projectToFrogTaskRow(project)
-          : todayFrogs.find((t) => t.id === taskId)
-        : findVisibleTask(taskId);
+        ? projectToFrogTaskRow(project!)
+        : findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current || isTaskShelvedStatus(current.status)) return;
       if (isFrogSubjectDeleted(current.extra_data)) {
         playFrogDoneBounce(taskId);
-        Alert.alert('无法操作', '该青蛙对应的任务/项目已删除，仅保留今日完成记录。');
+        Alert.alert('无法操作', '该青蛙对应的任务/项目已删除，仅保留完成记录。');
         return;
       }
 
@@ -4173,12 +3950,11 @@ export default function TasksScreen() {
       findVisibleTask,
       logicalTodayYmd,
       playFrogDoneBounce,
-      projectFrogIds,
+      projectTaskTreeMap,
       projects,
       promptProjectCompletionDisposition,
       reopenFrogSessionOnly,
       reopenProjectFromList,
-      todayFrogs,
       toggleTaskDone,
     ],
   );
@@ -4990,35 +4766,75 @@ export default function TasksScreen() {
     () => [styles.sectionCard, shadows.card, { backgroundColor: card, borderColor: colors.outline }],
     [card, colors.outline, shadows.card],
   );
+  /** 待办/项目等次要区块：保留描边，去掉厚阴影 */
+  const sectionCardQuietStyle = React.useMemo(
+    () => [styles.sectionCard, styles.sectionCardQuiet, { backgroundColor: card, borderColor: colors.outline }],
+    [card, colors.outline],
+  );
+  /** 次要分区：无阴影卡片壳，仅用顶部分隔线区分 */
   const stackedSectionStyle = React.useMemo(
     () => [styles.section, styles.stackedSection, { borderTopColor: colors.outline }],
     [colors.outline],
   );
 
+  const habitsCollapseSummary = React.useMemo(() => {
+    let total = 0;
+    let pending = 0;
+    for (const section of habitSections) {
+      for (const item of section.items) {
+        if (isHabitHiddenByCalendarCycleOnTasks(item.extraData, habitScheduleAnchorDate)) continue;
+        total += 1;
+        const scheduleAllowsToday = item.extraData
+          ? isHabitScheduledToday(item.extraData, habitScheduleAnchorDate)
+          : true;
+        const isBreak = item.kind === 'break';
+        const goalMet = isBreak
+          ? scheduleAllowsToday &&
+            isHabitDayDisplayCompleted({
+              kind: item.kind,
+              todayCount: item.todayCount,
+              dailyGoal: item.dailyGoal,
+              hasDayRecord: item.hasTodayRecord,
+              ymd: logicalTodayYmd,
+              logicalTodayYmd,
+            })
+          : isHabitGridItemCompletedToday(item, logicalTodayYmd);
+        if (!goalMet) pending += 1;
+      }
+    }
+    if (total === 0) return '暂无习惯';
+    if (pending === 0) return `${total} 项 · 今日已完成`;
+    return `${total} 项 · 待完成 ${pending}`;
+  }, [habitSections, habitScheduleAnchorDate, logicalTodayYmd]);
+
+  const selectSecondaryPane = React.useCallback((pane: 'habits' | 'todos' | 'projects') => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setSecondaryPane(pane);
+  }, []);
+
   const scheduleSubjects = React.useMemo(() => {
     const map = new Map<string, TaskRow>();
     for (const t of standaloneTodos) map.set(t.id, t);
     for (const t of matrixWeekTasks) map.set(t.id, t);
-    for (const t of todayFrogs) map.set(t.id, t);
     for (const t of flattenProjectTaskTreeMap(projectTaskTreeMap)) map.set(t.id, t);
     return {
       tasks: [...map.values()],
       projects,
-      projectFrogIds,
+      projectFrogIds: new Set<string>(),
     };
-  }, [standaloneTodos, matrixWeekTasks, todayFrogs, projectTaskTreeMap, projects, projectFrogIds]);
+  }, [standaloneTodos, matrixWeekTasks, projectTaskTreeMap, projects]);
 
   const onScheduleChanged = React.useCallback(() => {
     markPageDirty();
-    void loadTodayFrogs({ forceLocal: true });
+    notifyFrogScheduleChanged();
     schedulePostMutationSync({ frogs: true });
-  }, [loadTodayFrogs, markPageDirty, schedulePostMutationSync]);
+  }, [markPageDirty, schedulePostMutationSync]);
 
   const emptyCardBg = isDark ? colors.surfaceMuted : colors.surfaceSubtle;
   /** 过期待办卡片底色（不透明，避免左滑时透出操作条） */
-  const standaloneOverdueCardBg = isDark ? '#2c2326' : '#fff5f5';
+  const standaloneOverdueCardBg = taskUi.overdueSurface;
   /** 搁置待办卡片底色（置灰、不透明） */
-  const standaloneShelvedCardBg = isDark ? '#252a34' : '#f0f2f7';
+  const standaloneShelvedCardBg = taskUi.shelvedSurface;
 
   const buildCategoryId = React.useCallback((scope: 'task' | 'project') => {
     const prefix = scope === 'task' ? 'tc_' : 'pc_';
@@ -5290,8 +5106,8 @@ export default function TasksScreen() {
           styles.pageHeader,
           {
             paddingTop: insets.top,
-            borderBottomColor: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(194,198,214,0.55)',
-            backgroundColor: isDark ? 'rgba(15,23,42,0.75)' : 'rgba(250,248,255,0.86)',
+            borderBottomColor: taskUi.headerBorder,
+            backgroundColor: taskUi.headerScrim,
           },
         ]}>
         <View style={styles.pageHeaderRow}>
@@ -5304,18 +5120,27 @@ export default function TasksScreen() {
               style={({ pressed }) => [
                 styles.pointsBalanceChip,
                 {
-                  backgroundColor: isDark ? 'rgba(251,191,36,0.14)' : 'rgba(251,191,36,0.12)',
-                  borderColor: isDark ? 'rgba(251,191,36,0.28)' : 'rgba(217,119,6,0.22)',
+                  minHeight: touchTarget,
+                  backgroundColor: taskUi.pointsChipBg,
+                  borderColor: taskUi.pointsChipBorder,
                   opacity: pressed ? 0.82 : 1,
                 },
               ]}>
-              <MaterialIcons name="stars" size={15} color="#f59e0b" />
-              <Text style={[styles.pointsBalanceValue, { color: colors.text }]} numberOfLines={1}>
+              <MaterialIcons name="stars" size={15} color={taskUi.pointsAccent} />
+              <Text
+                style={[styles.pointsBalanceValue, { color: colors.text }]}
+                maxFontSizeMultiplier={maxFontScale}
+                numberOfLines={1}>
                 {formatPoints(pointsBalance)}
               </Text>
             </Pressable>
           </View>
-          <Text style={[styles.pageHeaderTitle, { color: colors.text }]}>{formatTasksHeaderDate(logicalTodayYmd)}</Text>
+          <Text
+            style={[styles.pageHeaderTitle, { color: colors.text }]}
+            maxFontSizeMultiplier={maxFontScale}
+            numberOfLines={1}>
+            {formatTasksHeaderDate(logicalTodayYmd)}
+          </Text>
           <View style={[styles.pageHeaderSide, styles.pageHeaderSideRight]}>
             <AppIconButton
               icon="calendar-today"
@@ -5326,32 +5151,60 @@ export default function TasksScreen() {
         </View>
       </View>
 
-      <ScrollView
+      <View style={[styles.scroll, styles.tasksBodyStack]}>
+        {!initialTasksLoadPending ? (
+          <Animated.View style={{ flex: 1, opacity: tasksContentOpacity }}>
+            <Animated.View
+              style={{
+                flex: 1,
+                opacity: pageFadeAnim,
+                transform: [{ translateY: pageTranslateAnim }],
+              }}
+            >
+      <FlatList
         ref={mainScrollRef}
+        data={secondaryPane === 'projects' ? projectsShownInList : []}
+        keyExtractor={(project) => project.id}
         refreshControl={refreshControl}
         style={styles.scroll}
         contentContainerStyle={[
           styles.content,
-          { paddingTop: Spacing.xl, paddingBottom: 0 },
+          styles.projectList,
+          {
+            paddingTop: Spacing.xl,
+            paddingBottom: 0,
+            maxWidth: windowWidth >= 768 ? Layout.contentMaxWidthWide : undefined,
+            alignSelf: 'center',
+            width: '100%',
+          },
         ]}
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled
+        removeClippedSubviews={Platform.OS === 'android'}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         onScroll={(e) => {
           mainScrollOffsetYRef.current = e.nativeEvent.contentOffset.y;
         }}
         scrollEventThrottle={16}
-      >
-        <View style={styles.tasksBodyStack}>
-          {!initialTasksLoadPending ? (
-            <Animated.View style={{ opacity: tasksContentOpacity }}>
-        <Animated.View
-          style={{
-            opacity: pageFadeAnim,
-            transform: [{ translateY: pageTranslateAnim }],
-          }}
-        >
+        initialNumToRender={6}
+        maxToRenderPerBatch={6}
+        windowSize={7}
+        updateCellsBatchingPeriod={50}
+        extraData={{
+          projectTaskTreeMap,
+          expandedProjectIds,
+          collapsedTaskIds,
+          hideCompletedProjectTasks,
+          projectTagsByProjectId,
+          projectLockMap,
+          projectTab,
+          logicalTodayYmd,
+          isDark,
+          secondaryPane,
+        }}
+        ListHeaderComponent={
+          <>
           <WeeklyFrogSchedule
             logicalTodayYmd={logicalTodayYmd}
             sectionCardStyle={sectionCardStyle}
@@ -5365,242 +5218,188 @@ export default function TasksScreen() {
             }}
             onToggleDone={({ id, assignYmd }) => {
               toggleFrogDone(id, assignYmd);
+              notifyFrogScheduleChanged();
             }}
           />
 
-          <View style={styles.section}>
-              <View style={sectionCardStyle}>
-              <View style={styles.headerRow}>
-                <View style={styles.titleRow}>
-                  <Text style={[styles.sectionTitle, { color: colors.text }]}>今日青蛙</Text>
-                  <MaterialIcons name="eco" size={20} color={primary} />
+          <View style={stackedSectionStyle}>
+            <View style={styles.heatmapFixedHead}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]} maxFontSizeMultiplier={maxFontScale}>
+                完成热力图
+              </Text>
+              <View style={styles.frogHeatmapLegend}>
+                <Text style={[styles.frogHeatmapLegendText, { color: outline }]}>少</Text>
+                <View style={styles.frogHeatmapLegendSwatches}>
+                  {taskUi.heatmapLevels.map((bg, i) => (
+                    <View key={i} style={[styles.frogHeatmapLegendCell, { backgroundColor: bg }]} />
+                  ))}
                 </View>
-                <View style={styles.frogHeaderActions}>
-                  <ScalePressable
-                    onPress={openAssignFrogPick}
-                    style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
-                    <MaterialIcons name="add" size={14} color={primary} />
-                    <Text style={[styles.ghostBtnText, { color: primary }]}>添加</Text>
-                  </ScalePressable>
-                </View>
+                <Text style={[styles.frogHeatmapLegendText, { color: outline }]}>多</Text>
               </View>
+            </View>
+            <TaskCompletionHeatmap
+              logicalTodayYmd={logicalTodayYmd}
+              dayBoundary={dayBoundary}
+              textMain={colors.text}
+              textMuted={outline}
+              accentColor={primary}
+              todoAccentColor={secondary}
+              innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
+              innerBorderColor={colors.outlineStrong}
+              isDark={isDark}
+              reloadToken={completionHeatmapReloadToken}
+              projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+            />
+          </View>
 
-              <Animated.View
-                style={{
-                  opacity: frogCardAnim,
-                  transform: [
+          <View style={stackedSectionStyle}>
+            <View
+              style={[
+                styles.secondaryTabTrack,
+                {
+                  backgroundColor: isDark ? colors.surfaceMuted : colors.capsule,
+                  borderColor: colors.outline,
+                },
+              ]}
+              accessibilityRole="tablist">
+              <Pressable
+                onPress={() => selectSecondaryPane('habits')}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: secondaryPane === 'habits' }}
+                accessibilityLabel={`小习惯，${habitsCollapseSummary}`}
+                style={({ pressed }) => [
+                  styles.secondaryTabItem,
+                  secondaryPane === 'habits' && [
+                    styles.secondaryTabItemActive,
                     {
-                      translateY: frogCardAnim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }),
-                    },
-                    {
-                      scale: frogCardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }),
+                      backgroundColor: card,
+                      borderColor: taskUi.primaryWashBorder,
                     },
                   ],
-                }}
-              >
-                {todayFrogs.length > 0 ? (
-                  <ScrollView
-                    horizontal
-                    nestedScrollEnabled
-                    directionalLockEnabled
-                    showsHorizontalScrollIndicator={false}
-                    style={styles.frogCarousel}
-                    contentContainerStyle={styles.frogCarouselContent}>
-                    {todayFrogs.map((frog) => {
-                      const isDone = isFrogDoneForToday(frog.extra_data, frog.status, logicalTodayYmd);
-                      const isProjectFrog = projectFrogIds.has(frog.id);
-                      const isLongTerm = getIsLongTermFrog(frog.extra_data);
-                      const isDeletedSnapshot = isFrogSubjectDeleted(frog.extra_data);
-                      return (
-                        <ScalePressable
-                          key={frog.id}
-                          onPress={() => openTask(frog.id)}
-                          onLongPress={() => {
-                            if (!isDeletedSnapshot) unassignFrog(frog.id);
-                          }}
-                          scaleTo={0.985}
-                          style={({ pressed }) => [
-                            styles.frogCard,
-                            styles.frogCardSlide,
-                            { width: frogCarouselCardWidth },
-                            {
-                              backgroundColor: isDone ? colors.surfaceMuted : card,
-                              borderColor: isDone ? colors.outline : `${primary}33`,
-                              opacity: pressed ? 0.94 : 1,
-                            },
-                          ]}>
-                          <View style={[styles.frogAccentBar, { backgroundColor: isDone ? success : primary }]} />
-                          <View style={styles.frogTopRowCompact}>
-                            <View style={styles.frogTopLeft}>
-                              <View style={[styles.frogIconBadge, { backgroundColor: colors.primaryMuted }]}>
-                                <MaterialIcons name={isProjectFrog ? 'folder-special' : 'eco'} size={18} color={primary} />
-                              </View>
-                              <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
-                                <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>
-                                  {isDeletedSnapshot
-                                    ? isProjectFrog
-                                      ? '项目 · 今日已完成'
-                                      : '今日已完成'
-                                    : isLongTerm
-                                      ? isProjectFrog
-                                        ? '长期项目 · 今日已指派'
-                                        : '长期 · 今日已指派'
-                                      : isProjectFrog
-                                        ? '项目 · 今日已指派'
-                                        : '今日已指派'}
-                                </Text>
-                              </View>
-                            </View>
-                            <View style={styles.frogCardActions}>
-                              {!isDeletedSnapshot ? (
-                                <Pressable
-                                  onPress={(e) => {
-                                    e.stopPropagation?.();
-                                    unassignFrog(frog.id);
-                                  }}
-                                  hitSlop={10}
-                                  accessibilityLabel="取消指派"
-                                  style={({ pressed }) => [styles.inlineDoneBtn, pressed && { opacity: 0.75 }]}>
-                                  <MaterialIcons name="link-off" size={17} color={outline} />
-                                </Pressable>
-                              ) : null}
-                              <Pressable
-                                onPress={(e) => {
-                                  e.stopPropagation?.();
-                                  toggleFrogDone(frog.id);
-                                }}
-                                hitSlop={10}
-                                style={({ pressed }) => [styles.inlineDoneBtn, pressed && { opacity: 0.75 }]}>
-                                <Animated.View style={{ transform: [{ scale: getFrogDoneBounce(frog.id) }] }}>
-                                  <MaterialIcons
-                                    name={isDone ? 'check-circle' : 'radio-button-unchecked'}
-                                    size={18}
-                                    color={primary}
-                                  />
-                                </Animated.View>
-                              </Pressable>
-                            </View>
-                          </View>
-                          {isDeletedSnapshot ? (
-                            <Text
-                              style={[
-                                styles.taskParentHint,
-                                { color: outline, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.65 : 1 },
-                              ]}
-                              numberOfLines={1}>
-                              {isProjectFrog ? '项目已删除' : '任务已删除'}
-                            </Text>
-                          ) : isProjectFrog ? (
-                            <Text
-                              style={[
-                                styles.taskParentHint,
-                                { color: outline, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.65 : 1 },
-                              ]}
-                              numberOfLines={1}>
-                              空项目（无子任务）
-                            </Text>
-                          ) : frog.parent_task_id ? (
-                            <Text
-                              style={[
-                                styles.taskParentHint,
-                                { color: outline, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.65 : 1 },
-                              ]}
-                              numberOfLines={1}>
-                              上级任务：{taskTitleById.get(frog.parent_task_id) ?? '（未找到）'}
-                            </Text>
-                          ) : null}
-                          <Text
-                            style={[
-                              styles.frogTitleCompact,
-                              { color: colors.text, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.55 : 1 },
-                            ]}
-                            numberOfLines={2}>
-                            {frog.title}
-                          </Text>
-                          <Text
-                            style={[
-                              styles.frogDescCompact,
-                              { color: colors.textSecondary, textDecorationLine: isDone ? 'line-through' : 'none', opacity: isDone ? 0.58 : 1 },
-                            ]}
-                            numberOfLines={2}>
-                            {resolveAcceptanceCriteria(frog.description, frog.note) || '点击查看详情或继续执行。'}
-                          </Text>
-                          <View style={[styles.frogCardFooter, { borderTopColor: colors.outline }]}>
-                            <Text style={[styles.progressLabel, { color: outline }]}>状态</Text>
-                            <Text style={[styles.progressLabel, { color: isDone ? success : primary }]}>
-                              {isDone ? '已完成' : '进行中'}
-                            </Text>
-                          </View>
-                        </ScalePressable>
-                      );
-                    })}
-                  </ScrollView>
-                ) : (
-                  <View
+                  pressed && { opacity: 0.9 },
+                ]}>
+                <MaterialIcons
+                  name="self-improvement"
+                  size={16}
+                  color={secondaryPane === 'habits' ? primary : outline}
+                />
+                <View style={styles.secondaryTabTextCol}>
+                  <Text
                     style={[
-                      styles.frogCard,
-                      styles.frogCardEmpty,
-                      {
-                        backgroundColor: card,
-                        borderColor: `${primary}33`,
-                      },
-                    ]}>
-                    <View style={[styles.frogAccentBar, { backgroundColor: primary }]} />
-                    <View style={styles.frogTopRowCompact}>
-                      <View style={styles.frogTopLeft}>
-                        <View style={[styles.frogIconBadge, { backgroundColor: colors.primaryMuted }]}>
-                          <MaterialIcons name="eco" size={18} color={primary} />
-                        </View>
-                        <View style={[styles.badge, styles.badgeCompact, { backgroundColor: colors.primaryMuted }]}>
-                          <Text style={[styles.badgeText, styles.badgeTextCompact, { color: primary }]}>今日未指派</Text>
-                        </View>
-                      </View>
-                      <MaterialIcons name="radio-button-unchecked" size={18} color={primary} />
-                    </View>
-                    <Text style={[styles.frogTitleCompact, { color: colors.text }]}>还没有今日青蛙</Text>
-                    <Text style={[styles.frogDescCompact, { color: colors.textSecondary }]}>
-                      点右上角「添加」，或长按项目列表中的项目/任务（也可长按待办）。
-                    </Text>
-                  </View>
-                )}
-              </Animated.View>
+                      styles.secondaryTabLabel,
+                      { color: secondaryPane === 'habits' ? colors.text : outline },
+                    ]}
+                    maxFontSizeMultiplier={maxFontScale}
+                    numberOfLines={1}>
+                    小习惯
+                  </Text>
+                  <Text
+                    style={[styles.secondaryTabMeta, { color: outline }]}
+                    maxFontSizeMultiplier={maxFontScale}
+                    numberOfLines={1}>
+                    {habitsCollapseSummary}
+                  </Text>
+                </View>
+              </Pressable>
+              <Pressable
+                onPress={() => selectSecondaryPane('todos')}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: secondaryPane === 'todos' }}
+                accessibilityLabel={`待办，进行中 ${standaloneTodoOpenCount}`}
+                style={({ pressed }) => [
+                  styles.secondaryTabItem,
+                  secondaryPane === 'todos' && [
+                    styles.secondaryTabItemActive,
+                    {
+                      backgroundColor: card,
+                      borderColor: taskUi.primaryWashBorder,
+                    },
+                  ],
+                  pressed && { opacity: 0.9 },
+                ]}>
+                <MaterialIcons
+                  name="checklist"
+                  size={16}
+                  color={secondaryPane === 'todos' ? primary : outline}
+                />
+                <View style={styles.secondaryTabTextCol}>
+                  <Text
+                    style={[
+                      styles.secondaryTabLabel,
+                      { color: secondaryPane === 'todos' ? colors.text : outline },
+                    ]}
+                    maxFontSizeMultiplier={maxFontScale}
+                    numberOfLines={1}>
+                    待办
+                  </Text>
+                  <Text
+                    style={[styles.secondaryTabMeta, { color: outline }]}
+                    maxFontSizeMultiplier={maxFontScale}
+                    numberOfLines={1}>
+                    进行中 {standaloneTodoOpenCount}
+                  </Text>
+                </View>
+              </Pressable>
+              <Pressable
+                onPress={() => selectSecondaryPane('projects')}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: secondaryPane === 'projects' }}
+                accessibilityLabel={`项目，${projectsShownInList.length} 个`}
+                style={({ pressed }) => [
+                  styles.secondaryTabItem,
+                  secondaryPane === 'projects' && [
+                    styles.secondaryTabItemActive,
+                    {
+                      backgroundColor: card,
+                      borderColor: taskUi.primaryWashBorder,
+                    },
+                  ],
+                  pressed && { opacity: 0.9 },
+                ]}>
+                <MaterialIcons
+                  name="folder-special"
+                  size={16}
+                  color={secondaryPane === 'projects' ? primary : outline}
+                />
+                <View style={styles.secondaryTabTextCol}>
+                  <Text
+                    style={[
+                      styles.secondaryTabLabel,
+                      { color: secondaryPane === 'projects' ? colors.text : outline },
+                    ]}
+                    maxFontSizeMultiplier={maxFontScale}
+                    numberOfLines={1}>
+                    项目
+                  </Text>
+                  <Text
+                    style={[styles.secondaryTabMeta, { color: outline }]}
+                    maxFontSizeMultiplier={maxFontScale}
+                    numberOfLines={1}>
+                    {projectsShownInList.length} 个
+                  </Text>
+                </View>
+              </Pressable>
             </View>
-          </View>
 
-          <View style={stackedSectionStyle}>
-            <View style={sectionCardStyle}>
-              <TaskCompletionHeatmap
-                logicalTodayYmd={logicalTodayYmd}
-                dayBoundary={dayBoundary}
-                textMain={colors.text}
-                textMuted={outline}
-                accentColor={primary}
-                todoAccentColor={secondary}
-                innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
-                innerBorderColor={colors.outlineStrong}
-                isDark={isDark}
-                reloadToken={completionHeatmapReloadToken}
-                projects={projects.map((p) => ({ id: p.id, name: p.name }))}
-              />
-            </View>
-          </View>
-
-          <View style={stackedSectionStyle}>
-            <View style={sectionCardStyle}>
+            {secondaryPane === 'habits' ? (
+            <View style={styles.habitsBodyQuiet}>
               <View style={styles.habitHeaderRow}>
-                <Text style={[styles.sectionTitle, { color: colors.text }]}>小习惯</Text>
+                <View style={{ flex: 1 }} />
                 <ScalePressable
                   onPress={() => router.push('/habit-manage')}
+                  accessibilityRole="button"
+                  accessibilityLabel="管理习惯"
                   style={({ pressed }) => [
                     styles.ghostBtn,
-                    { borderColor: `${primary}44` },
+                    { minHeight: touchTarget, borderColor: taskUi.primaryWashBorder },
                     pressed && { opacity: 0.8 },
                   ]}>
                   <MaterialIcons name="dashboard" size={14} color={primary} />
-                  <Text style={[styles.ghostBtnText, { color: primary }]}>管理习惯</Text>
+                  <Text style={[styles.ghostBtnText, { color: primary }]} maxFontSizeMultiplier={maxFontScale}>
+                    管理习惯
+                  </Text>
                 </ScalePressable>
               </View>
-
               {habitSections.map((section) => {
                 const isOpen = expandedHabitSections[section.id] ?? true;
                 const visibleHabitItems = section.items.filter(
@@ -5610,12 +5409,20 @@ export default function TasksScreen() {
                   <View key={section.id} style={styles.habitSection}>
                     <Pressable
                       onPress={() => toggleHabitSection(section.id)}
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: isOpen }}
+                      accessibilityLabel={`${isOpen ? '收起' : '展开'}习惯分组 ${section.title}`}
                       style={({ pressed }) => [
                         styles.habitSectionToggle,
-                        { backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : 'rgba(148,163,184,0.14)' },
+                        {
+                          minHeight: touchTarget,
+                          backgroundColor: isDark ? colors.surfaceMuted : colors.capsule,
+                        },
                         pressed && { opacity: 0.8 },
                       ]}>
-                      <Text style={[styles.habitSectionToggleText, { color: outline }]}>
+                      <Text
+                        style={[styles.habitSectionToggleText, { color: outline }]}
+                        maxFontSizeMultiplier={maxFontScale}>
                         {section.title}・{visibleHabitItems.length}
                       </Text>
                       <MaterialIcons name={isOpen ? 'expand-less' : 'expand-more'} size={16} color={outline} />
@@ -5680,13 +5487,9 @@ export default function TasksScreen() {
                           const rewardBadgeBg = getRewardBadgeBackgroundColor(rewardPoints, isDark);
                           const kindTone =
                             item.kind === 'break'
-                              ? isDark
-                                ? '#fb923c'
-                                : '#c2410c'
+                              ? taskUi.habitKindBreak
                               : item.kind === 'task'
-                                ? isDark
-                                  ? '#60a5fa'
-                                  : '#1d4ed8'
+                                ? taskUi.habitKindTask
                                 : secondary;
                           const useProgressDots =
                             progressTotal != null && progressTotal > 0 && progressTotal < 5;
@@ -5705,6 +5508,16 @@ export default function TasksScreen() {
                           return (
                             <Pressable
                               key={item.id}
+                              accessibilityRole="button"
+                              accessibilityLabel={`${item.name}${
+                                !scheduleAllowsToday
+                                  ? '，今日不可打卡'
+                                  : breakChallengeDone
+                                    ? '，挑战已完成'
+                                    : goalMet
+                                      ? '，今日已完成'
+                                      : '，点击打卡'
+                              }`}
                               onPress={() => {
                                 if (breakChallengeDone) {
                                   // 挑战已完成：点击进入详情查看成绩，不再记录/撤销
@@ -5729,9 +5542,9 @@ export default function TasksScreen() {
                                 styles.habitCard,
                                 {
                                   width: habitGridItemWidth,
-                                  backgroundColor: isDark ? 'rgba(30,41,59,0.72)' : '#fff',
+                                  backgroundColor: colors.surface,
                                   borderColor: breakChallengeDone
-                                    ? HABIT_KIND_BREAK_SUCCESS
+                                    ? habitBreakSuccess
                                     : goalMet
                                       ? secondary
                                       : brokeToday
@@ -5741,12 +5554,8 @@ export default function TasksScreen() {
                                             isDark,
                                           )
                                       : goalFailed
-                                        ? isDark
-                                        ? 'rgba(248,113,113,0.7)'
-                                        : 'rgba(220,38,38,0.55)'
-                                      : isDark
-                                        ? 'rgba(148,163,184,0.32)'
-                                        : 'rgba(148,163,184,0.4)',
+                                        ? colors.dangerSoft
+                                      : colors.outlineStrong,
                                   opacity: scheduleAllowsToday
                                     ? pressed
                                       ? 0.9
@@ -5770,9 +5579,9 @@ export default function TasksScreen() {
                                   style={[
                                     styles.habitCardIconWrap,
                                     {
-                                      backgroundColor: isDark
-                                        ? 'rgba(148,163,184,0.12)'
-                                        : 'rgba(148,163,184,0.1)',
+                                      width: touchTarget,
+                                      height: touchTarget,
+                                      backgroundColor: taskUi.hairlineFaint,
                                     },
                                   ]}>
                                   <Text style={styles.habitCardIcon}>{item.icon}</Text>
@@ -5793,7 +5602,7 @@ export default function TasksScreen() {
                                       <MaterialIcons
                                         name="check-circle"
                                         size={15}
-                                        color={breakChallengeDone ? HABIT_KIND_BREAK_SUCCESS : secondary}
+                                        color={breakChallengeDone ? habitBreakSuccess : secondary}
                                       />
                                     </View>
                                   ) : null}
@@ -5850,15 +5659,15 @@ export default function TasksScreen() {
                                       style={[
                                         styles.habitTaskCompletionBadge,
                                         {
-                                          backgroundColor: isDark ? 'rgba(248,113,113,0.22)' : 'rgba(220,38,38,0.12)',
-                                          borderColor: isDark ? 'rgba(248,113,113,0.5)' : 'rgba(220,38,38,0.4)',
+                                          backgroundColor: taskUi.dangerSlipBadgeBg,
+                                          borderColor: taskUi.dangerSlipBadgeBorder,
                                         },
                                       ]}
                                       accessibilityLabel={`今日破戒 ${Math.floor(item.todayCount)} 次`}>
                                       <Text
                                         style={[
                                           styles.habitTaskCompletionBadgeText,
-                                          { color: isDark ? '#f87171' : '#dc2626' },
+                                          { color: taskUi.dangerSlipText },
                                         ]}>
                                         破戒 {Math.floor(item.todayCount)}
                                       </Text>
@@ -5890,8 +5699,8 @@ export default function TasksScreen() {
                                         activeColor={brokeToday ? breakSlipBadgeColor(item.todayCount, item.dailyGoal, isDark) : kindTone}
                                         idleColor={
                                           isDark
-                                            ? 'rgba(148,163,184,0.35)'
-                                            : 'rgba(148,163,184,0.4)'
+                                            ? taskUi.hairlineStrong
+                                            : taskUi.hairlineStrong
                                         }
                                       />
                                     </View>
@@ -5902,8 +5711,8 @@ export default function TasksScreen() {
                                           styles.habitProgressTrack,
                                           {
                                             backgroundColor: isDark
-                                              ? 'rgba(148,163,184,0.22)'
-                                              : 'rgba(148,163,184,0.28)',
+                                              ? taskUi.hairline
+                                              : taskUi.hairlineStrong,
                                           },
                                         ]}>
                                         <View
@@ -5933,7 +5742,7 @@ export default function TasksScreen() {
                                           styles.habitProgressText,
                                           {
                                             color: breakChallengeDone
-                                              ? HABIT_KIND_BREAK_SUCCESS
+                                              ? habitBreakSuccess
                                               : brokeToday
                                                 ? breakSlipBadgeColor(
                                                     item.todayCount,
@@ -5962,14 +5771,14 @@ export default function TasksScreen() {
                         })}
                         <Pressable
                           onPress={() => router.push('/add-habit')}
+                          accessibilityRole="button"
+                          accessibilityLabel="添加打卡"
                           style={({ pressed }) => [
                             styles.habitAddCard,
                             {
                               width: habitGridItemWidth,
-                              borderColor: isDark ? 'rgba(148,163,184,0.35)' : 'rgba(148,163,184,0.4)',
-                              backgroundColor: isDark
-                                ? 'rgba(30, 41, 59, 0.35)'
-                                : 'rgba(248, 250, 252, 0.72)',
+                              borderColor: colors.outlineStrong,
+                              backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
                               opacity: pressed ? 0.86 : 1,
                             },
                           ]}>
@@ -5984,35 +5793,41 @@ export default function TasksScreen() {
                 );
               })}
             </View>
-          </View>
-
-          <View style={stackedSectionStyle}>
-            <View style={sectionCardStyle}>
+            ) : secondaryPane === 'todos' ? (
+            <View style={[sectionCardQuietStyle, styles.secondaryPaneBody]}>
               <View style={{ gap: 6 }}>
                 <View style={styles.habitHeaderRow}>
-                  <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 18, flex: 1, minWidth: 0 }]}>
+                  <Text style={[styles.sectionTitle, { color: colors.text, flex: 1, minWidth: 0 }]} maxFontSizeMultiplier={maxFontScale}>
                     待办
                   </Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                     <ScalePressable
                       onPress={() => router.push('/tasks-overview')}
+                      accessibilityRole="button"
+                      accessibilityLabel="待办总览"
                       style={({ pressed }) => [
                         styles.ghostBtn,
-                        { borderColor: `${primary}44` },
+                        { minHeight: touchTarget, borderColor: taskUi.primaryWashBorder },
                         pressed && { opacity: 0.8 },
                       ]}>
                       <MaterialIcons name="insights" size={14} color={primary} />
-                      <Text style={[styles.ghostBtnText, { color: primary }]}>待办总览</Text>
+                      <Text style={[styles.ghostBtnText, { color: primary }]} maxFontSizeMultiplier={maxFontScale}>
+                        待办总览
+                      </Text>
                     </ScalePressable>
                     <ScalePressable
                       onPress={openStandaloneTaskComposer}
+                      accessibilityRole="button"
+                      accessibilityLabel="详细新建待办"
                       style={({ pressed }) => [
                         styles.ghostBtn,
-                        { borderColor: `${tertiary}44` },
+                        { minHeight: touchTarget, borderColor: taskUi.pointsChipBorder },
                         pressed && { opacity: 0.8 },
                       ]}>
                       <MaterialIcons name="playlist-add" size={14} color={tertiary} />
-                      <Text style={[styles.ghostBtnText, { color: tertiary }]}>详细新建</Text>
+                      <Text style={[styles.ghostBtnText, { color: tertiary }]} maxFontSizeMultiplier={maxFontScale}>
+                        详细新建
+                      </Text>
                     </ScalePressable>
                   </View>
                 </View>
@@ -6033,7 +5848,7 @@ export default function TasksScreen() {
                       style={[
                         styles.standaloneTodoHintChip,
                         {
-                          backgroundColor: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(148,163,184,0.12)',
+                          backgroundColor: taskUi.hairlineFaint,
                         },
                       ]}>
                       <MaterialIcons name="swipe" size={13} color={outline} />
@@ -6091,12 +5906,17 @@ export default function TasksScreen() {
                     style={({ pressed }) => [
                       styles.quickTodoSendBtn,
                       {
+                        width: touchTarget,
+                        height: touchTarget,
+                        borderRadius: touchTarget / 2,
                         backgroundColor: secondary,
                         opacity: quickTodoSaving ? 0.5 : pressed ? 0.88 : 1,
                       },
                     ]}>
                     {quickTodoSaving ? (
-                      <Text style={styles.quickTodoSendBtnDots}>…</Text>
+                      <Text style={[styles.quickTodoSendBtnDots, { color: taskUi.onAccent }]} maxFontSizeMultiplier={1.2}>
+                        …
+                      </Text>
                     ) : (
                       <MaterialIcons name="arrow-upward" size={22} color={colors.onPrimary} />
                     )}
@@ -6115,11 +5935,7 @@ export default function TasksScreen() {
                   cardBg={emptyCardBg}
                 />
               ) : (
-                <ScrollView
-                  style={styles.standaloneTodoList}
-                  contentContainerStyle={styles.standaloneTodoListContent}
-                  nestedScrollEnabled
-                  showsVerticalScrollIndicator={false}>
+                <View style={styles.standaloneTodoListContent}>
                   {standaloneTodos.map((t) => {
                     const isDone = isTaskTerminalStatus(t.status);
                     const isShelved = isTaskShelvedStatus(t.status);
@@ -6166,9 +5982,9 @@ export default function TasksScreen() {
                                   accessibilityRole="button"
                                   accessibilityLabel={`激活 ${t.title} 为正常待办`}>
                                   {isActivating ? (
-                                    <ActivityIndicator color="#fff" size="small" />
+                                    <ActivityIndicator color={taskUi.onAccent} size="small" />
                                   ) : (
-                                    <MaterialIcons name="play-arrow" size={22} color="#fff" />
+                                    <MaterialIcons name="play-arrow" size={22} color={taskUi.onAccent} />
                                   )}
                                   <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
                                     激活
@@ -6188,9 +6004,9 @@ export default function TasksScreen() {
                                   accessibilityRole="button"
                                   accessibilityLabel={`将 ${t.title} 升级为项目`}>
                                   {isUpgrading ? (
-                                    <ActivityIndicator color="#fff" size="small" />
+                                    <ActivityIndicator color={taskUi.onAccent} size="small" />
                                   ) : (
-                                    <MaterialIcons name="upgrade" size={22} color="#fff" />
+                                    <MaterialIcons name="upgrade" size={22} color={taskUi.onAccent} />
                                   )}
                                   <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
                                     升级
@@ -6206,7 +6022,7 @@ export default function TasksScreen() {
                                 ]}
                                 accessibilityRole="button"
                                 accessibilityLabel={`删除 ${t.title}`}>
-                                <MaterialIcons name="delete-outline" size={22} color="#fff" />
+                                <MaterialIcons name="delete-outline" size={22} color={taskUi.onAccent} />
                                 <Text style={styles.standaloneSwipeDeleteText} numberOfLines={1}>
                                   删除
                                 </Text>
@@ -6257,8 +6073,7 @@ export default function TasksScreen() {
                               styles.taskBody,
                               (isShelved || isRepeatWaiting) && !isDone && styles.shelvedTodoBodyMuted,
                             ]}
-                            onPress={() => openTask(t.id)}
-                            onLongPress={() => openAssignFrogForStandaloneTodo(t)}>
+                            onPress={() => openTask(t.id)}>
                             <View style={styles.standaloneTodoTitleRow}>
                               <Text
                                 style={[
@@ -6410,17 +6225,15 @@ export default function TasksScreen() {
                       </View>
                     );
                   })}
-                </ScrollView>
+                </View>
               )}
             </View>
-          </View>
-
-          <View style={stackedSectionStyle}>
-            <Animated.View style={{ opacity: projectAnim, transform: [{ translateY: projectAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
-              <View style={sectionCardStyle}>
+            ) : (
+            <Animated.View style={[styles.secondaryPaneBody, { opacity: projectAnim, transform: [{ translateY: projectAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }]}>
+              <View style={sectionCardQuietStyle}>
                 <View style={styles.headerRow}>
                   <View style={styles.projectListTitleCol}>
-                    <Text style={[styles.sectionTitle, { color: colors.text }]}>项目列表</Text>
+                    <Text style={[styles.sectionTitle, { color: colors.text }]} maxFontSizeMultiplier={maxFontScale}>项目列表</Text>
                     <Text style={[styles.sectionMeta, { color: outline }]} numberOfLines={2}>
                       共 {projectsShownInList.length} 个活跃项目
                       {projectTab === INBOX_PROJECT_CATEGORY_ID && projectsShownInList.length > 0
@@ -6436,9 +6249,17 @@ export default function TasksScreen() {
                           : { pathname: '/add-project', params: { categoryId: projectTab } },
                       )
                     }
-                    style={({ pressed }) => [styles.ghostBtn, { borderColor: `${primary}44` }, pressed && { opacity: 0.8 }]}>
+                    accessibilityRole="button"
+                    accessibilityLabel="新建项目"
+                    style={({ pressed }) => [
+                      styles.ghostBtn,
+                      { minHeight: touchTarget, borderColor: taskUi.primaryWashBorder },
+                      pressed && { opacity: 0.8 },
+                    ]}>
                     <MaterialIcons name="add-circle" size={14} color={primary} />
-                    <Text style={[styles.ghostBtnText, { color: primary }]}>新建项目</Text>
+                    <Text style={[styles.ghostBtnText, { color: primary }]} maxFontSizeMultiplier={maxFontScale}>
+                      新建项目
+                    </Text>
                   </ScalePressable>
                 </View>
                 <SegmentTabs
@@ -6459,8 +6280,32 @@ export default function TasksScreen() {
                     isDark={isDark}
                   />
                 </View>
-                <View style={styles.projectList}>
-                {projectsShownInList.map((project) => {
+              </View>
+            </Animated.View>
+            )}
+          </View>
+          </>
+        }
+        ListEmptyComponent={
+          secondaryPane === 'projects' && projectsShownInList.length === 0 ? (
+<View style={styles.projectSwipeWrap}>
+                  <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
+                    <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
+                      <View style={styles.projectHeadLeft}>
+                        <MaterialIcons name="folder-open" size={22} color={outline} />
+                        <View style={styles.projectHeadMainColumn}>
+                          <Text style={[styles.projectTitle, { color: colors.textSecondary }]}>暂无项目</Text>
+                          <Text style={[styles.projectSub, { color: outline }]}>可点击右上角“新建项目”添加</Text>
+                        </View>
+                      </View>
+                    </View>
+                  </View>
+                  </View>
+          ) : null
+        }
+        ListFooterComponent={<View style={{ height: 46 + mainScrollKeyboardPad }} />}
+        renderItem={({ item: project }) => {
+
                   const lockInfo = projectLockMap.get(project.id);
                   const isScheduleNotStarted = isProjectScheduleNotYetStarted(project, logicalTodayYmd);
                   const isLocked = !!(lockInfo?.locked || isScheduleNotStarted);
@@ -6502,8 +6347,8 @@ export default function TasksScreen() {
 
                   const renderTaskLevel = (nodes: TaskTreeNode[], level: number): React.ReactNode => {
                     if (nodes.length === 0 || level > 3) return null;
-                    const childAccent = isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.28)';
-                    const hairlineColor = isDark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(203,213,225,0.9)';
+                    const childAccent = taskUi.primaryWashLine;
+                    const hairlineColor = taskUi.treeLine;
                     return nodes.map((node) => {
                       const isDone = node.status === 'done' || node.status === 'cancelled';
                       const fullNode = taskNodeById.get(node.id) ?? node;
@@ -6556,7 +6401,7 @@ export default function TasksScreen() {
                                 accessibilityState={{ expanded: isExpandedTask }}
                                 style={({ pressed }) => [
                                   styles.taskExpandBtn,
-                                  { backgroundColor: isDark ? 'rgba(96,165,250,0.12)' : 'rgba(0,88,190,0.08)' },
+                                  { backgroundColor: taskUi.primaryWash },
                                   pressed && { opacity: 0.75 },
                                 ]}>
                                 <MaterialIcons
@@ -6598,7 +6443,7 @@ export default function TasksScreen() {
                                   isLocked
                                     ? {
                                         borderColor: outline,
-                                        backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(114,119,133,0.08)',
+                                        backgroundColor: taskUi.hairlineFaint,
                                         opacity: 0.72,
                                       }
                                     : { borderColor: primary, backgroundColor: isDone ? primary : 'transparent' },
@@ -6612,7 +6457,6 @@ export default function TasksScreen() {
                             </Pressable>
                             <Pressable
                               onPress={() => openEditTask(node.id)}
-                              onLongPress={() => openAssignFrogForTaskNode(fullNode, project.id)}
                               hitSlop={8}
                               style={({ pressed }) => [{ flex: 1, minWidth: 0 }, pressed && { opacity: 0.85 }]}>
                               <View style={styles.projectTaskMain}>
@@ -6622,8 +6466,8 @@ export default function TasksScreen() {
                                     styles.projectTaskParentTag,
                                     {
                                       alignSelf: 'flex-start',
-                                      backgroundColor: isDark ? 'rgba(96,165,250,0.14)' : 'rgba(0,88,190,0.1)',
-                                      borderColor: isDark ? 'rgba(96,165,250,0.35)' : 'rgba(0,88,190,0.22)',
+                                      backgroundColor: taskUi.primaryWashStrong,
+                                      borderColor: taskUi.primaryWashBorder,
                                     },
                                   ]}>
                                   <MaterialIcons name="account-tree" size={12} color={primary} />
@@ -6693,7 +6537,7 @@ export default function TasksScreen() {
                                       {boundHabitIds.length > 1 ? `${boundHabitIds.length}项习惯` : '习惯'}
                                     </Text>
                                   ) : null}
-                                  {isDone ? <Text style={styles.taskDoneTag}>已完成</Text> : null}
+                                  {isDone ? <Text style={[styles.taskDoneTag, { color: colors.textMuted }]}>已完成</Text> : null}
                                 </View>
                               </View>
                               {(() => {
@@ -6771,7 +6615,7 @@ export default function TasksScreen() {
                                     <View
                                       style={[
                                         styles.projectTaskProgressTrack,
-                                        { backgroundColor: isDark ? 'rgba(148,163,184,0.14)' : '#e2e7ff' },
+                                        { backgroundColor: taskUi.tagWash },
                                       ]}>
                                       <View
                                         style={[
@@ -6817,7 +6661,7 @@ export default function TasksScreen() {
                               style={[
                                 styles.projectTaskEllipsisInline,
                                 {
-                                  color: '#6b7280',
+                                  color: taskUi.doneText,
                                   paddingLeft: hintPaddingLeft,
                                 },
                               ]}>
@@ -6856,7 +6700,7 @@ export default function TasksScreen() {
                                 ]}
                                 accessibilityRole="button"
                                 accessibilityLabel={`彻底删除 ${project.name}`}>
-                                <MaterialIcons name="delete-outline" size={22} color="#fff" />
+                                <MaterialIcons name="delete-outline" size={22} color={taskUi.onAccent} />
                                 <Text style={styles.projectSwipeDeleteText} numberOfLines={1}>
                                   删除
                                 </Text>
@@ -6870,7 +6714,7 @@ export default function TasksScreen() {
                                 ]}
                                 accessibilityRole="button"
                                 accessibilityLabel={`将 ${project.name} 归纳到收集箱`}>
-                                <MaterialIcons name="inventory-2" size={22} color="#fff" />
+                                <MaterialIcons name="inventory-2" size={22} color={taskUi.onAccent} />
                                 <Text style={styles.projectSwipeArchiveText} numberOfLines={1}>
                                   收纳
                                 </Text>
@@ -6884,21 +6728,14 @@ export default function TasksScreen() {
                             {
                               backgroundColor: projectCardBg,
                               borderColor: isLocked
-                                ? isDark
-                                  ? 'rgba(148,163,184,0.32)'
-                                  : 'rgba(148,163,184,0.38)'
+                                ? taskUi.hairlineMutedStrong
                                 : isCompleted
-                                  ? isDark
-                                    ? 'rgba(52, 211, 153, 0.32)'
-                                    : 'rgba(0, 108, 73, 0.24)'
-                                  : isDark
-                                    ? 'rgba(148,163,184,0.2)'
-                                    : 'rgba(15, 23, 42, 0.08)',
+                                  ? taskUi.successWashLine
+                                  : taskUi.hairline,
                             },
                           ]}>
                       <ScalePressable
                         onPress={() => openProject(project.id)}
-                        onLongPress={() => openAssignFrogForProject(project)}
                         hitSlop={6}
                         scaleTo={0.988}
                         style={styles.projectHeadPressable}>
@@ -6923,16 +6760,10 @@ export default function TasksScreen() {
                               styles.projectIconWrap,
                               {
                                 backgroundColor: isLocked
-                                  ? isDark
-                                    ? 'rgba(148,163,184,0.14)'
-                                    : 'rgba(114,119,133,0.1)'
+                                  ? taskUi.hairlineMuted
                                   : isCompleted
-                                    ? isDark
-                                      ? 'rgba(52, 211, 153, 0.14)'
-                                      : 'rgba(0, 108, 73, 0.1)'
-                                    : isDark
-                                      ? 'rgba(96,165,250,0.14)'
-                                      : 'rgba(0,88,190,0.08)',
+                                    ? taskUi.successWashStrong
+                                    : taskUi.primaryWash,
                               },
                               pressed && { opacity: 0.75 },
                             ]}>
@@ -6973,8 +6804,8 @@ export default function TasksScreen() {
                                   style={[
                                     styles.projectDoneBadge,
                                     {
-                                      backgroundColor: isDark ? 'rgba(248,113,113,0.16)' : 'rgba(186,26,26,0.1)',
-                                      borderColor: isDark ? 'rgba(248,113,113,0.38)' : 'rgba(186,26,26,0.28)',
+                                      backgroundColor: taskUi.dangerWash,
+                                      borderColor: taskUi.dangerWashBorder,
                                     },
                                   ]}>
                                   <MaterialIcons name="report-problem" size={12} color={error} />
@@ -6987,8 +6818,8 @@ export default function TasksScreen() {
                                   style={[
                                     styles.projectDoneBadge,
                                     {
-                                      backgroundColor: isDark ? 'rgba(148,163,184,0.16)' : 'rgba(114,119,133,0.1)',
-                                      borderColor: isDark ? 'rgba(148,163,184,0.38)' : 'rgba(114,119,133,0.28)',
+                                      backgroundColor: taskUi.hairlineMuted,
+                                      borderColor: taskUi.hairlineMutedStrong,
                                     },
                                   ]}>
                                   <MaterialIcons name="lock" size={12} color={outline} />
@@ -6999,8 +6830,8 @@ export default function TasksScreen() {
                                   style={[
                                     styles.projectDoneBadge,
                                     {
-                                      backgroundColor: isDark ? 'rgba(52, 211, 153, 0.16)' : 'rgba(0, 108, 73, 0.1)',
-                                      borderColor: isDark ? 'rgba(52, 211, 153, 0.38)' : 'rgba(0, 108, 73, 0.28)',
+                                      backgroundColor: taskUi.successWashStrong,
+                                      borderColor: taskUi.successWashBorder,
                                     },
                                   ]}>
                                   <MaterialIcons name="verified" size={12} color={success} />
@@ -7016,24 +6847,16 @@ export default function TasksScreen() {
                                   styles.projectMetaChip,
                                   {
                                     backgroundColor: isScheduleExpired
-                                      ? isDark
-                                        ? 'rgba(248,113,113,0.18)'
-                                        : 'rgba(186,26,26,0.1)'
+                                      ? taskUi.dangerWash
                                       : isCompleted
-                                        ? isDark
-                                          ? 'rgba(148,163,184,0.16)'
-                                          : 'rgba(114,119,133,0.1)'
+                                        ? taskUi.hairlineMuted
                                         : isDark
                                           ? `${primary}28`
                                           : `${primary}14`,
                                     borderColor: isScheduleExpired
-                                      ? isDark
-                                        ? 'rgba(248,113,113,0.4)'
-                                        : 'rgba(186,26,26,0.28)'
+                                      ? taskUi.dangerWashBorder
                                       : isCompleted
-                                        ? isDark
-                                          ? 'rgba(148,163,184,0.36)'
-                                          : 'rgba(114,119,133,0.24)'
+                                        ? taskUi.hairlineMutedBorder
                                         : isDark
                                           ? `${primary}44`
                                           : `${primary}30`,
@@ -7079,16 +6902,12 @@ export default function TasksScreen() {
                                   styles.projectMetaChip,
                                   {
                                     backgroundColor: isCompleted
-                                      ? isDark
-                                        ? 'rgba(148,163,184,0.16)'
-                                        : 'rgba(114,119,133,0.1)'
+                                      ? taskUi.hairlineMuted
                                       : isDark
                                         ? `${tertiary}28`
                                         : `${tertiary}14`,
                                     borderColor: isCompleted
-                                      ? isDark
-                                        ? 'rgba(148,163,184,0.36)'
-                                        : 'rgba(114,119,133,0.24)'
+                                      ? taskUi.hairlineMutedBorder
                                       : isDark
                                         ? `${tertiary}44`
                                         : `${tertiary}30`,
@@ -7115,14 +6934,10 @@ export default function TasksScreen() {
                                     styles.projectMetaChip,
                                     {
                                       backgroundColor: isCompleted
-                                        ? isDark
-                                          ? 'rgba(148,163,184,0.16)'
-                                          : 'rgba(114,119,133,0.1)'
+                                        ? taskUi.hairlineMuted
                                         : `${tag.color}18`,
                                       borderColor: isCompleted
-                                        ? isDark
-                                          ? 'rgba(148,163,184,0.36)'
-                                          : 'rgba(114,119,133,0.24)'
+                                        ? taskUi.hairlineMutedBorder
                                         : `${tag.color}44`,
                                     },
                                   ]}>
@@ -7149,12 +6964,8 @@ export default function TasksScreen() {
                                   style={[
                                     styles.projectMetaChip,
                                     {
-                                      backgroundColor: isDark
-                                        ? 'rgba(148,163,184,0.16)'
-                                        : 'rgba(114,119,133,0.1)',
-                                      borderColor: isDark
-                                        ? 'rgba(148,163,184,0.36)'
-                                        : 'rgba(114,119,133,0.24)',
+                                      backgroundColor: taskUi.hairlineMuted,
+                                      borderColor: taskUi.hairlineMutedBorder,
                                     },
                                   ]}>
                                   <Text
@@ -7186,9 +6997,7 @@ export default function TasksScreen() {
                                 style={[
                                   styles.projectNoteRow,
                                   {
-                                    borderTopColor: isDark
-                                      ? 'rgba(148, 163, 184, 0.22)'
-                                      : 'rgba(203,213,225,0.9)',
+                                    borderTopColor: taskUi.treeLine,
                                   },
                                 ]}>
                                 <MaterialIcons name="notes" size={14} color={outline} style={styles.projectNoteIcon} />
@@ -7208,11 +7017,7 @@ export default function TasksScreen() {
                                     : isPaused
                                       ? '已暂停'
                                       : '未知状态';
-                                const statusColor = isPaused
-                                  ? isDark
-                                    ? '#fbbf24'
-                                    : '#9a5b00'
-                                  : secondary;
+                                const statusColor = isPaused ? taskUi.priorityP3 : secondary;
                                 return (
                                   <View
                                     style={[
@@ -7270,16 +7075,12 @@ export default function TasksScreen() {
                                     styles.projectMetaChip,
                                     {
                                       backgroundColor: isCompleted
-                                        ? isDark
-                                          ? 'rgba(148,163,184,0.16)'
-                                          : 'rgba(114,119,133,0.1)'
+                                        ? taskUi.hairlineMuted
                                         : isDark
                                           ? `${primary}28`
                                           : `${primary}14`,
                                       borderColor: isCompleted
-                                        ? isDark
-                                          ? 'rgba(148,163,184,0.36)'
-                                          : 'rgba(114,119,133,0.24)'
+                                        ? taskUi.hairlineMutedBorder
                                         : isDark
                                           ? `${primary}44`
                                           : `${primary}30`,
@@ -7305,16 +7106,12 @@ export default function TasksScreen() {
                                     styles.projectMetaChip,
                                     {
                                       backgroundColor: isCompleted
-                                        ? isDark
-                                          ? 'rgba(148,163,184,0.16)'
-                                          : 'rgba(114,119,133,0.1)'
+                                        ? taskUi.hairlineMuted
                                         : isDark
                                           ? `${primary}28`
                                           : `${primary}14`,
                                       borderColor: isCompleted
-                                        ? isDark
-                                          ? 'rgba(148,163,184,0.36)'
-                                          : 'rgba(114,119,133,0.24)'
+                                        ? taskUi.hairlineMutedBorder
                                         : isDark
                                           ? `${primary}44`
                                           : `${primary}30`,
@@ -7358,12 +7155,8 @@ export default function TasksScreen() {
                                     styles.projectProgressTrack,
                                     {
                                       backgroundColor: isCompleted
-                                        ? isDark
-                                          ? 'rgba(52, 211, 153, 0.12)'
-                                          : 'rgba(0, 108, 73, 0.1)'
-                                        : isDark
-                                          ? 'rgba(148,163,184,0.16)'
-                                          : '#e2e7ff',
+                                        ? taskUi.successWash
+                                        : taskUi.tagWash,
                                     },
                                   ]}>
                                   <View
@@ -7435,7 +7228,7 @@ export default function TasksScreen() {
                             styles.projectTaskBody,
                             {
                               borderTopColor: outlineVariant,
-                              backgroundColor: isDark ? 'rgba(15,23,42,0.28)' : 'rgba(248,250,252,0.9)',
+                              backgroundColor: taskUi.surfaceFrost,
                             },
                           ]}>
                           {!hasAnyTasks ? (
@@ -7455,34 +7248,15 @@ export default function TasksScreen() {
                       </Swipeable>
                     </View>
                   );
-                })}
-                {projectsShownInList.length === 0 && (
-                  <View style={styles.projectSwipeWrap}>
-                  <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
-                    <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
-                      <View style={styles.projectHeadLeft}>
-                        <MaterialIcons name="folder-open" size={22} color={outline} />
-                        <View style={styles.projectHeadMainColumn}>
-                          <Text style={[styles.projectTitle, { color: colors.textSecondary }]}>暂无项目</Text>
-                          <Text style={[styles.projectSub, { color: outline }]}>可点击右上角“新建项目”添加</Text>
-                        </View>
-                      </View>
-                    </View>
-                  </View>
-                  </View>
-                )}
-                </View>
-              </View>
-          </Animated.View>
-          </View>
 
-          {/* 底部留白用实体高度，避免 scrollEnabled 切换时与 paddingBottom 叠加触发布局回弹 */}
-          <View style={{ height: 46 + mainScrollKeyboardPad }} />
-        </Animated.View>
+        }}
+      />
             </Animated.View>
-          ) : null}
+          </Animated.View>
+        ) : null}
 
           {initialTasksLoadPending || tasksSkeletonMounted ? (
+
             <Animated.View
               pointerEvents={initialTasksLoadPending ? 'auto' : 'none'}
               style={[
@@ -7493,7 +7267,6 @@ export default function TasksScreen() {
                 },
               ]}
             >
-              <TasksFrogSectionSkeleton colors={colors} cardBg={card} frogCardWidth={frogCarouselCardWidth} />
               <TasksHeatmapSkeleton colors={colors} cardBg={card} />
               <TasksStandaloneSectionSkeleton colors={colors} cardBg={card} />
               <TasksHabitSectionSkeleton colors={colors} cardBg={card} habitItemWidth={habitGridItemWidth} />
@@ -7501,8 +7274,7 @@ export default function TasksScreen() {
               <View style={{ height: 46 }} />
             </Animated.View>
           ) : null}
-        </View>
-      </ScrollView>
+      </View>
 
       {operationToast && (
         <View pointerEvents="none" style={styles.operationToastWrap}>
@@ -7514,7 +7286,7 @@ export default function TasksScreen() {
             <MaterialIcons
               name={operationToast.kind === 'success' ? 'check-circle' : 'error'}
               size={18}
-              color="#fff"
+              color={taskUi.onAccent}
             />
             <Text style={styles.operationToastText}>{operationToast.message}</Text>
           </View>
@@ -7529,22 +7301,6 @@ export default function TasksScreen() {
           </View>
         </View>
       </Modal>
-
-      <AssignFrogSheet
-        visible={!!assignFrogSheet}
-        mode={assignFrogSheet?.mode ?? 'pick'}
-        subject={assignFrogSheet?.subject ?? null}
-        defaultYmd={logicalTodayYmd}
-        lockedProjectIds={lockedProjectIds}
-        projectLockMap={projectLockMap}
-        onClose={() => setAssignFrogSheet(null)}
-        onAssigned={() => {
-          setAssignFrogSheet(null);
-          markPageDirty();
-          void loadTodayFrogs({ forceLocal: true });
-          schedulePostMutationSync({ frogs: true });
-        }}
-      />
 
       <Modal
         visible={subHabitModal != null}
@@ -7604,23 +7360,13 @@ export default function TasksScreen() {
                           {
                             backgroundColor: done
                               ? isBreakKind
-                                ? isDark
-                                  ? 'rgba(239,68,68,0.16)'
-                                  : 'rgba(220,38,38,0.08)'
-                                : isDark
-                                  ? 'rgba(52,211,153,0.14)'
-                                  : 'rgba(0,108,73,0.08)'
-                              : isDark
-                                ? 'rgba(148,163,184,0.1)'
-                                : 'rgba(148,163,184,0.08)',
+                                ? taskUi.dangerSoftWash
+                                : taskUi.successWashStrong
+                              : taskUi.hairlineFaint,
                             borderColor: done
                               ? isBreakKind
-                                ? isDark
-                                  ? 'rgba(248,113,113,0.5)'
-                                  : 'rgba(220,38,38,0.35)'
-                                : isDark
-                                  ? 'rgba(52,211,153,0.45)'
-                                  : 'rgba(0,108,73,0.35)'
+                                ? taskUi.dangerSoftBorder
+                                : taskUi.primaryWashLine
                               : colors.outline,
                             opacity: busy ? 0.7 : pressed ? 0.88 : 1,
                           },
@@ -7637,7 +7383,7 @@ export default function TasksScreen() {
                             <MaterialIcons
                               name={isBreakKind ? 'close' : 'check'}
                               size={16}
-                              color="#fff"
+                              color={taskUi.onAccent}
                             />
                           ) : null}
                         </View>
@@ -7663,21 +7409,26 @@ export default function TasksScreen() {
                 <ScalePressable
                   onPress={() => void handleSubHabitConfirmClean()}
                   disabled={subHabitTogglingId != null}
+                  accessibilityRole="button"
+                  accessibilityLabel="确认今日守住"
                   style={({ pressed }) => [
                     styles.ghostBtn,
                     {
-                      marginTop: 12,
+                      marginTop: Spacing.xl,
+                      minHeight: touchTarget,
                       alignSelf: 'stretch',
                       justifyContent: 'center',
-                      borderColor: `${success}66`,
-                      backgroundColor: isDark ? 'rgba(16,185,129,0.12)' : 'rgba(0,108,73,0.08)',
+                      borderColor: taskUi.successWashBorder,
+                      backgroundColor: taskUi.successWash,
                       opacity: confirmCleanBusy ? 0.7 : pressed ? 0.88 : 1,
                     },
                   ]}>
                   {confirmCleanBusy ? (
                     <ActivityIndicator size="small" color={success} />
                   ) : (
-                    <Text style={[styles.ghostBtnText, { color: success }]}>确认今日守住</Text>
+                    <Text style={[styles.ghostBtnText, { color: success }]} maxFontSizeMultiplier={maxFontScale}>
+                      确认今日守住
+                    </Text>
                   )}
                 </ScalePressable>
               ) : null}
@@ -7813,7 +7564,7 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
   },
   operationToastText: {
-    color: '#fff',
+    color: TaskUiColors.light.onAccent,
     fontSize: 14,
     fontWeight: '800',
   },
@@ -7860,7 +7611,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    minHeight: 32,
+    minHeight: Layout.minTouchTarget,
     paddingHorizontal: 10,
     borderRadius: Radius.pill,
     borderWidth: StyleSheet.hairlineWidth,
@@ -7872,15 +7623,14 @@ const styles = StyleSheet.create({
     maxWidth: 72,
   },
   pageHeaderTitle: {
+    ...Typography.title,
     flex: 1,
-    fontSize: 16,
-    fontWeight: '900',
-    letterSpacing: -0.2,
     textAlign: 'center',
   },
   scroll: { flex: 1 },
   content: {
     width: '100%',
+    alignSelf: 'center',
     paddingHorizontal: Spacing.md,
     paddingBottom: Spacing['4xl'],
     gap: Spacing['4xl'],
@@ -7916,13 +7666,17 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
     paddingTop: Spacing['2xl'],
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(148,163,184,0.18)',
+    borderTopColor: TaskUiColors.light.headerBorder,
   },
   sectionCard: {
     borderRadius: Radius['2xl'],
     padding: Spacing['4xl'],
     borderWidth: StyleSheet.hairlineWidth,
     gap: Spacing.xl,
+  },
+  sectionCardQuiet: {
+    paddingVertical: Spacing['2xl'],
+    paddingHorizontal: Spacing.xl,
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.md },
   projectListTitleCol: { flex: 1, minWidth: 0, gap: Spacing.xs },
@@ -7947,9 +7701,9 @@ const styles = StyleSheet.create({
   },
   projectFilterChipText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flexShrink: 1 },
-  sectionTitle: { ...Typography.h2 },
+  /** 分区标题：Operate 密度用 h3，避免 h2 抢主标题权重 */
+  sectionTitle: { ...Typography.h3 },
   sectionMeta: { ...Typography.caption },
-  frogHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexShrink: 0 },
   ghostBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -7957,11 +7711,46 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: Radius.md,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
+    paddingVertical: Spacing.lg,
+    minHeight: Layout.minTouchTarget,
   },
-  ghostBtnText: { fontSize: 12, fontWeight: '800' },
+  ghostBtnText: { ...Typography.caption, fontWeight: '800' },
 
   frogHeatmapOuter: { marginTop: 2, gap: 10 },
+  heatmapFixedHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  secondaryTabTrack: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: Spacing.sm,
+    padding: Spacing.sm,
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  secondaryTabItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: Spacing.xs,
+    minHeight: 48,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
+  },
+  secondaryTabItemActive: {},
+  secondaryTabTextCol: { flex: 1, minWidth: 0, gap: 1 },
+  secondaryTabLabel: { ...Typography.caption, fontWeight: '800' },
+  secondaryTabMeta: { fontSize: 10, fontWeight: '600' },
+  secondaryPaneBody: { marginTop: Spacing.xl, gap: Spacing.md },
+  habitsBodyQuiet: { gap: Spacing.xl, marginTop: Spacing.md },
   completionHeatmapDetailSectionLabel: { fontSize: 12, fontWeight: '800', marginBottom: 4, letterSpacing: 0.2 },
   frogHeatmapHeading: {
     flexDirection: 'row',
@@ -7970,9 +7759,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
     gap: 10,
   },
-  frogHeatmapTitle: { fontSize: 17, fontWeight: '800', letterSpacing: 0.3 },
-  frogHeatmapLegend: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  frogHeatmapLegendText: { fontSize: 12, fontWeight: '600' },
+  frogHeatmapTitle: { ...Typography.title, letterSpacing: 0.3 },
+  frogHeatmapLegend: { flexDirection: 'row', alignItems: 'center', gap: 5, flexShrink: 0 },
+  frogHeatmapLegendText: { ...Typography.caption, fontWeight: '600' },
   frogHeatmapLegendSwatches: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   frogHeatmapLegendCell: { width: 14, height: 14, borderRadius: 4 },
   frogHeatmapCard: {
@@ -7980,7 +7769,9 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing['2xl'],
-    ...Shadows.card,
+  },
+  frogHeatmapCardQuiet: {
+    // 展开态去掉厚阴影，避免次要区块抢视觉权重
   },
   frogHeatmapBodyRow: { flexDirection: 'row', alignItems: 'flex-start' },
   frogHeatmapYAxis: { width: 22, marginRight: 4 },
@@ -8016,70 +7807,8 @@ const styles = StyleSheet.create({
   },
   frogHeatmapDetailTitle: { flex: 1, fontSize: 14, fontWeight: '700', lineHeight: 20 },
 
-  frogCarousel: {
-    flexGrow: 0,
-    marginHorizontal: -2,
-  },
-  frogCarouselContent: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    paddingRight: 4,
-  },
-  frogCard: {
-    borderRadius: Radius.xl,
-    paddingHorizontal: Spacing['2xl'],
-    paddingTop: Spacing.xl + 4,
-    paddingBottom: Spacing.xl,
-    overflow: 'hidden',
-    borderWidth: StyleSheet.hairlineWidth,
-    ...Shadows.card,
-  },
-  frogAccentBar: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 3,
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-  },
-  frogCardSlide: {
-    flexShrink: 0,
-    marginRight: 12,
-  },
-  frogCardEmpty: {
-    alignSelf: 'stretch',
-  },
-  frogIconBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  frogTopLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 },
-  frogTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  frogTopRowCompact: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  frogCardFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  frogCardActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  inlineDoneBtn: { borderRadius: 10 },
-  badge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
-  badgeCompact: { paddingHorizontal: 8, paddingVertical: 3 },
-  badgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 1.1, textTransform: 'uppercase' },
-  badgeTextCompact: { fontSize: 9, letterSpacing: 0.7 },
-  frogTitle: { fontSize: 20, fontWeight: '800', marginBottom: 6, paddingRight: 40 },
-  frogTitleCompact: { fontSize: 16, fontWeight: '800', marginBottom: 4, lineHeight: 22 },
-  frogDesc: { fontSize: 13, lineHeight: 19, marginBottom: 14 },
-  frogDescCompact: { fontSize: 12, lineHeight: 17, marginBottom: 2 },
   progressMeta: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  progressLabel: { fontSize: 10, fontWeight: '800' },
+  progressLabel: { ...Typography.kicker, letterSpacing: 0.4 },
   progressTrack: { height: 6, borderRadius: 999, overflow: 'hidden' },
   progressFill: { height: '100%' },
 
@@ -8102,8 +7831,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: Radius.md,
-    paddingVertical: 10,
+    paddingVertical: 12,
     paddingHorizontal: 8,
+    minHeight: Layout.minTouchTarget,
   },
   mainListViewBtnText: {
     fontSize: 14,
@@ -8114,10 +7844,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 16,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(148,163,184,0.22)',
+    borderBottomColor: TaskUiColors.light.hairline,
     marginBottom: 2,
   },
-  segmentBtn: { paddingBottom: 8 },
+  segmentBtn: {
+    minHeight: Layout.minTouchTarget,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    paddingBottom: 8,
+  },
   segmentText: {
     fontSize: 14,
     letterSpacing: 0.4,
@@ -8143,7 +7878,7 @@ const styles = StyleSheet.create({
   quadTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   quadTitle: { fontSize: 10, fontWeight: '900', letterSpacing: 1.2, textTransform: 'uppercase', flexShrink: 1 },
   dot: { width: 8, height: 8, borderRadius: 4 },
-  quadList: { maxHeight: 190 },
+  quadList: { gap: 8 },
   quadEmpty: { fontSize: 12, fontWeight: '700', opacity: 0.7 },
   emptyWrap: {
     flex: 1,
@@ -8172,12 +7907,12 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(148,163,184,0.18)',
+    borderBottomColor: TaskUiColors.light.headerBorder,
   },
   taskDoneRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   taskBody: { flex: 1, gap: 4 },
-  taskParentHint: { fontSize: 10, fontWeight: '700', opacity: 0.7, letterSpacing: 0.2 },
-  taskText: { fontSize: 13, fontWeight: '600', lineHeight: 18 },
+  taskParentHint: { ...Typography.kicker, opacity: 0.7, letterSpacing: 0.2 },
+  taskText: { ...Typography.body, fontWeight: '600', lineHeight: 18 },
   deadlineRow: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
@@ -8268,7 +8003,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   projectSwipeArchiveText: {
-    color: '#fff',
+    color: TaskUiColors.light.onAccent,
     fontSize: 15,
     fontWeight: '800',
     flexShrink: 0,
@@ -8285,7 +8020,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   projectSwipeDeleteText: {
-    color: '#fff',
+    color: TaskUiColors.light.onAccent,
     fontSize: 15,
     fontWeight: '800',
     flexShrink: 0,
@@ -8488,7 +8223,7 @@ const styles = StyleSheet.create({
     top: -14,
     bottom: -14,
     width: 1,
-    backgroundColor: 'rgba(203,213,225,0.9)',
+    backgroundColor: TaskUiColors.light.treeLine,
   },
   statusCircle: {
     width: 18,
@@ -8502,8 +8237,8 @@ const styles = StyleSheet.create({
   taskTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   projectTaskTitleMain: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 6 },
   projectTaskTitleTags: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
-  taskTitleDoneMain: { color: '#6b7280', textDecorationLine: 'line-through' },
-  taskDoneTag: { color: '#6b7280', fontSize: 12, fontWeight: '700' },
+  taskTitleDoneMain: { textDecorationLine: 'line-through' },
+  taskDoneTag: { fontSize: 12, fontWeight: '700' },
   projectTaskMain: { flex: 1, gap: 4, paddingTop: 1 },
   projectTaskText: { flex: 1, fontSize: 13, fontWeight: '600' },
   projectTaskTextDone: { textDecorationLine: 'line-through' },
@@ -8552,7 +8287,7 @@ const styles = StyleSheet.create({
 
   modalRoot: { flex: 1 },
   modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   modalCenter: {
     flex: 1,
@@ -8607,7 +8342,7 @@ const styles = StyleSheet.create({
   editorGhostBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12 },
   editorGhostText: { fontSize: 14, fontWeight: '700' },
   editorPrimaryBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 },
-  editorPrimaryText: { fontSize: 14, fontWeight: '800', color: '#fff' },
+  editorPrimaryText: { fontSize: 14, fontWeight: '800', color: TaskUiColors.light.onAccent },
 
   habitHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   habitSection: { gap: 10 },
@@ -8618,9 +8353,10 @@ const styles = StyleSheet.create({
     gap: 4,
     borderRadius: 999,
     paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingVertical: 10,
+    minHeight: Layout.minTouchTarget,
   },
-  habitSectionToggleText: { fontSize: 13, fontWeight: '800' },
+  habitSectionToggleText: { ...Typography.body, fontWeight: '800' },
   habitItemsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: HABIT_CARD_GAP },
   habitCard: {
     position: 'relative',
@@ -8635,8 +8371,8 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
   },
   habitCardIconWrap: {
-    width: 44,
-    height: 44,
+    width: Layout.minTouchTarget,
+    height: Layout.minTouchTarget,
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
@@ -8648,11 +8384,11 @@ const styles = StyleSheet.create({
     bottom: -5,
   },
   habitCardLockMark: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 14,
-    backgroundColor: 'rgba(15,23,42,0.28)',
+    backgroundColor: TaskUiColors.dark.overlayDim,
   },
   habitCardBody: { alignSelf: 'stretch', gap: 3, minWidth: 0 },
   habitCardTitle: {
@@ -8711,7 +8447,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     alignItems: 'center',
   },
-  habitRewardBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  habitRewardBadgeText: { color: TaskUiColors.light.onAccent, fontSize: 10, fontWeight: '800' },
   habitTaskCompletionBadge: {
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 999,
@@ -8738,7 +8474,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(148,163,184,0.12)',
+    backgroundColor: TaskUiColors.light.hairlineFaint,
   },
   habitAddText: { fontSize: 12, fontWeight: '700', textAlign: 'center' },
 
@@ -8813,9 +8549,8 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     paddingLeft: Spacing.xs,
     paddingRight: Spacing.xs,
-    paddingVertical: 3,
-    minHeight: 40,
-    maxHeight: 40,
+    paddingVertical: 4,
+    minHeight: Layout.minTouchTarget,
   },
   quickTodoIconBadge: {
     width: 32,
@@ -8826,24 +8561,23 @@ const styles = StyleSheet.create({
   },
   quickTodoInput: {
     flex: 1,
-    fontSize: 15,
+    ...Typography.title,
     fontWeight: '600',
     paddingVertical: 0,
     paddingHorizontal: 6,
     margin: 0,
-    height: 40,
+    minHeight: Layout.minTouchTarget,
     lineHeight: Platform.OS === 'ios' ? 20 : undefined,
   },
   quickTodoSendBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: Layout.minTouchTarget,
+    height: Layout.minTouchTarget,
+    borderRadius: Layout.minTouchTarget / 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  quickTodoSendBtnDots: { color: '#fff', fontSize: 16, fontWeight: '900' },
-  quickTodoHint: { fontSize: 11, fontWeight: '600', marginTop: 6, marginLeft: 8 },
-  standaloneTodoList: { maxHeight: 280 },
+  quickTodoSendBtnDots: { color: TaskUiColors.light.onAccent, fontSize: 16, fontWeight: '900' },
+  quickTodoHint: { ...Typography.label, fontWeight: '600', marginTop: 6, marginLeft: 8 },
   standaloneTodoListContent: { paddingTop: 2, paddingBottom: 6, gap: 0 },
   /** 外边距放在 Swipeable 外，保证侧滑层高度与卡片本体一致 */
   standaloneTodoSwipeWrap: { marginBottom: 10 },
@@ -8880,7 +8614,7 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
   },
   standaloneSwipeUpgradeText: {
-    color: '#fff',
+    color: TaskUiColors.light.onAccent,
     fontSize: 15,
     fontWeight: '800',
     flexShrink: 0,
@@ -8900,7 +8634,7 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
   },
   standaloneSwipeDeleteText: {
-    color: '#fff',
+    color: TaskUiColors.light.onAccent,
     fontSize: 15,
     fontWeight: '800',
     flexShrink: 0,

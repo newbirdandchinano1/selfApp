@@ -38,7 +38,7 @@ export function isProjectEligibleAsFrog(
   return true;
 }
 
-/** 将项目映射为今日青蛙列表所用的 TaskRow 形态（id 仍为项目 id） */
+/** 将项目映射为课程表/完成流所用的 TaskRow 形态（id 仍为项目 id） */
 export function projectToFrogTaskRow(project: ProjectRow): TaskRow {
   const terminal = project.status === 'completed' || project.status === 'archived';
   return {

@@ -8,6 +8,7 @@ import {
   formatMinutesAsHm,
   getSlotCount,
   maxSpanFromSlot,
+  placementEndMinutes,
   slotStartMinutes,
 } from '@/lib/schedule/axis';
 import {
@@ -26,20 +27,28 @@ import {
   removePlacementSegment,
   type WeekScheduleView,
 } from '@/lib/schedule-service';
+import { subscribeFrogScheduleChanged } from '@/lib/schedule-events';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
   ActivityIndicator,
   Alert,
+  LayoutAnimation,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  UIManager,
   View,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 import {
   SchedulePlaceFrogSheet,
   type SchedulePlaceResult,
@@ -233,23 +242,35 @@ export function WeeklyFrogSchedule({
     placement: SchedulePlacementRow;
     subject: ScheduleSubjectInfo;
   } | null>(null);
+  /** 首页默认折叠为摘要，避免周网格占满首屏 */
+  const [expanded, setExpanded] = React.useState(false);
 
-  const reload = React.useCallback(async (week: string) => {
-    setLoading(true);
+  const reload = React.useCallback(async (week: string, opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
-      const data = await loadWeekSchedule(week, logicalTodayYmd);
+      const data = await loadWeekSchedule(week, logicalTodayYmd, { hydrateRemote: !opts?.silent });
       setView(data);
     } catch (err) {
       console.warn('[WeeklyFrogSchedule] load failed', err);
-      Alert.alert('加载失败', '无法加载周课程表');
+      if (!opts?.silent) Alert.alert('加载失败', '无法加载周课程表');
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [logicalTodayYmd]);
+
+  const weekStartYmdRef = React.useRef(weekStartYmd);
+  weekStartYmdRef.current = weekStartYmd;
 
   React.useEffect(() => {
     void reload(weekStartYmd);
   }, [weekStartYmd, reload]);
+
+  // 任意本地课表变更（含设置页改轴）立即静默重载
+  React.useEffect(() => {
+    return subscribeFrogScheduleChanged(() => {
+      void reload(weekStartYmdRef.current, { silent: true });
+    });
+  }, [reload]);
 
   React.useEffect(() => {
     // 逻辑日跨周时跟到本周
@@ -334,7 +355,7 @@ export function WeeklyFrogSchedule({
 
   const handlePlaceConfirm = async (result: SchedulePlaceResult) => {
     if (!placeTarget || !view) return;
-    await placeFrogOnSchedule({
+    const row = await placeFrogOnSchedule({
       weekStartYmd,
       weekday: placeTarget.weekday,
       startSlotIndex: placeTarget.startSlotIndex,
@@ -343,8 +364,18 @@ export function WeeklyFrogSchedule({
       subjectId: result.id,
       logicalTodayYmd,
     });
+    // 乐观合并，避免等 reload 才看见
+    setView((prev) =>
+      prev
+        ? {
+            ...prev,
+            placements: [...prev.placements.filter((p) => p.id !== row.id), row],
+            orphanedCount: prev.placements.filter((p) => p.orphaned || p.startSlotIndex == null).length,
+          }
+        : prev,
+    );
     setPlaceTarget(null);
-    await reload(weekStartYmd);
+    await reload(weekStartYmd, { silent: true });
     onChanged?.();
   };
 
@@ -420,7 +451,7 @@ export function WeeklyFrogSchedule({
           '复制完成',
           `成功 ${result.copied} 条${result.overwritten ? `（已覆盖 ${result.overwritten}）` : ''}${skipMsg}`,
         );
-        await reload(weekStartYmd);
+        await reload(weekStartYmd, { silent: true });
         onChanged?.();
       } catch (err) {
         if (err instanceof Error && err.message === 'NEED_CONFIRM_OVERWRITE') {
@@ -443,43 +474,230 @@ export function WeeklyFrogSchedule({
     ) ??
       false);
 
+  const todayCompactItems = React.useMemo(() => {
+    if (!view || todayWeekday == null) return [];
+    const assignYmd = ymdForWeekday(weekStartYmd, todayWeekday);
+    const items: Array<{
+      placement: SchedulePlacementRow;
+      title: string;
+      done: boolean;
+      timeLabel: string;
+      endLabel: string;
+    }> = [];
+    for (const p of view.placements) {
+      if (p.orphaned || p.startSlotIndex == null || p.weekday !== todayWeekday) continue;
+      const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
+      const startMins = slotStartMinutes(view.axis, p.startSlotIndex);
+      const endMins = placementEndMinutes(view.axis, p.startSlotIndex, Math.max(1, p.spanSlots));
+      items.push({
+        placement: p,
+        title: sub?.title?.trim() || '青蛙',
+        done: !!sub?.done,
+        timeLabel: formatMinutesAsHm(startMins),
+        endLabel: formatMinutesAsHm(endMins),
+      });
+    }
+    items.sort((a, b) => {
+      const sa = a.placement.startSlotIndex ?? 0;
+      const sb = b.placement.startSlotIndex ?? 0;
+      if (sa !== sb) return sa - sb;
+      return a.title.localeCompare(b.title, 'zh');
+    });
+    return items;
+  }, [view, todayWeekday, weekStartYmd, subjects]);
+
+  const todayCompactCols = todayCompactItems.length >= 5 ? 3 : 2;
+  const todayChipFlexBasis = todayCompactCols === 3 ? ('30%' as const) : ('47%' as const);
+
+  /** 折叠时回到本周，保证「今日课」有数据 */
+  React.useEffect(() => {
+    if (!expanded && weekStartYmd !== thisMonday) {
+      setWeekStartYmd(thisMonday);
+    }
+  }, [expanded, thisMonday, weekStartYmd]);
+
+  const toggleExpanded = React.useCallback(() => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpanded((v) => !v);
+  }, []);
+
   return (
     <View style={styles.section}>
-      <View style={sectionCardStyle}>
-        <View style={styles.headerRow}>
+      <View
+        style={
+          expanded
+            ? sectionCardStyle
+            : [
+                styles.summaryCard,
+                {
+                  backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : 'rgba(241,245,249,0.9)',
+                  borderColor: gridLine,
+                },
+              ]
+        }>
+        <Pressable
+          onPress={toggleExpanded}
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          accessibilityLabel={
+            expanded
+              ? '收起周课程表'
+              : `展开周课程表，今日 ${todayCompactItems.length} 节`
+          }
+          style={({ pressed }) => [
+            styles.headerRow,
+            styles.headerRowPressable,
+            { marginBottom: expanded || !loading ? 8 : 0 },
+            pressed && { opacity: 0.88 },
+          ]}>
           <View style={styles.titleRow}>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>周课程表</Text>
-            <MaterialIcons name="calendar-view-week" size={20} color={primary} />
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>
+              {expanded ? '周课程表' : '今日课程'}
+            </Text>
+            <MaterialIcons
+              name={expanded ? 'calendar-view-week' : 'today'}
+              size={20}
+              color={primary}
+            />
           </View>
           <View style={styles.headerActions}>
-            {view && view.orphanedCount > 0 ? (
-              <Pressable onPress={onOpenSettings} hitSlop={6}>
+            {!expanded ? (
+              <Text style={[styles.summaryMeta, { color: outline }]} numberOfLines={1}>
+                {loading && !view
+                  ? '加载中…'
+                  : todayCompactItems.length > 0
+                    ? `${todayCompactItems.length} 节`
+                    : '暂无安排'}
+              </Text>
+            ) : null}
+            {expanded && view && view.orphanedCount > 0 ? (
+              <Pressable
+                onPress={(e) => {
+                  e.stopPropagation?.();
+                  onOpenSettings?.();
+                }}
+                hitSlop={6}>
                 <Text style={{ color: theme.danger, fontSize: 12, fontWeight: '700' }}>
                   未入格 {view.orphanedCount}
                 </Text>
               </Pressable>
             ) : null}
+            {expanded ? (
+              <Pressable
+                onPress={(e) => {
+                  e.stopPropagation?.();
+                  onCopyLastWeek();
+                }}
+                disabled={!view?.editable}
+                style={({ pressed }) => [
+                  styles.ghostBtn,
+                  { borderColor: `${primary}44`, opacity: !view?.editable ? 0.4 : pressed ? 0.8 : 1 },
+                ]}>
+                <MaterialIcons name="content-copy" size={14} color={primary} />
+                <Text style={[styles.ghostBtnText, { color: primary }]}>复制上周</Text>
+              </Pressable>
+            ) : null}
             <Pressable
-              onPress={onCopyLastWeek}
-              disabled={!view?.editable}
-              style={({ pressed }) => [
-                styles.ghostBtn,
-                { borderColor: `${primary}44`, opacity: !view?.editable ? 0.4 : pressed ? 0.8 : 1 },
-              ]}>
-              <MaterialIcons name="content-copy" size={14} color={primary} />
-              <Text style={[styles.ghostBtnText, { color: primary }]}>复制上周</Text>
-            </Pressable>
-            <Pressable
-              onPress={onOpenSettings}
+              onPress={(e) => {
+                e.stopPropagation?.();
+                onOpenSettings?.();
+              }}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="课表设置"
               style={({ pressed }) => [
                 styles.ghostBtn,
                 { borderColor: `${outline}44`, opacity: pressed ? 0.8 : 1 },
               ]}>
               <MaterialIcons name="tune" size={14} color={outline} />
             </Pressable>
+            <MaterialIcons
+              name={expanded ? 'expand-less' : 'expand-more'}
+              size={22}
+              color={outline}
+            />
           </View>
-        </View>
+        </Pressable>
 
+        {!expanded ? (
+          loading && !view ? (
+            <ActivityIndicator color={primary} style={{ marginVertical: 12 }} />
+          ) : todayCompactItems.length === 0 ? (
+            <Pressable
+              onPress={toggleExpanded}
+              style={({ pressed }) => [
+                styles.todayEmpty,
+                { borderColor: gridLine, opacity: pressed ? 0.85 : 1 },
+              ]}>
+              <Text style={{ color: outline, fontSize: 13, fontWeight: '600' }}>
+                今日暂无课程
+              </Text>
+              <Text style={{ color: outline, fontSize: 11, marginTop: 2 }}>
+                点开周视图添加或查看整周
+              </Text>
+            </Pressable>
+          ) : (
+            <View style={[styles.todayGrid, { maxHeight: todayCompactCols === 3 ? 168 : 152 }]}>
+              <ScrollView
+                nestedScrollEnabled
+                showsVerticalScrollIndicator={todayCompactItems.length > todayCompactCols * 2}
+                keyboardShouldPersistTaps="handled">
+                <View style={styles.todayGridInner}>
+                  {todayCompactItems.map((item) => (
+                    <Pressable
+                      key={item.placement.id}
+                      onPress={() => openDetail(item.placement)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${item.timeLabel} ${item.title}${item.done ? '，已完成' : ''}`}
+                      style={({ pressed }) => [
+                        styles.todayChip,
+                        {
+                          flexBasis: todayChipFlexBasis,
+                          flexGrow: 1,
+                          maxWidth: todayCompactCols === 3 ? '32%' : '49%',
+                          backgroundColor: item.done
+                            ? isDark
+                              ? 'rgba(100,116,139,0.35)'
+                              : 'rgba(148,163,184,0.28)'
+                            : `${primary}18`,
+                          borderColor: item.done ? `${outline}55` : `${primary}44`,
+                          opacity: pressed ? 0.88 : 1,
+                        },
+                      ]}>
+                      <Text
+                        style={[
+                          styles.todayChipTime,
+                          { color: item.done ? outline : primary },
+                        ]}
+                        numberOfLines={1}>
+                        {item.timeLabel}–{item.endLabel}
+                      </Text>
+                      <View style={styles.todayChipTitleRow}>
+                        <Text
+                          style={[
+                            styles.todayChipTitle,
+                            {
+                              color: item.done ? outline : theme.text,
+                              textDecorationLine: item.done ? 'line-through' : 'none',
+                            },
+                          ]}
+                          numberOfLines={2}>
+                          {item.title}
+                        </Text>
+                        {item.done ? (
+                          <MaterialIcons name="check" size={14} color={outline} />
+                        ) : null}
+                      </View>
+                    </Pressable>
+                  ))}
+                </View>
+              </ScrollView>
+            </View>
+          )
+        ) : null}
+
+        {expanded ? (
+          <>
         <View style={styles.weekNav}>
           <Pressable onPress={() => goWeek(-1)} hitSlop={8} style={styles.navBtn}>
             <MaterialIcons name="chevron-left" size={22} color={primary} />
@@ -658,6 +876,8 @@ export function WeeklyFrogSchedule({
             </ScrollView>
           </View>
         ) : null}
+          </>
+        ) : null}
       </View>
 
       <SchedulePlaceFrogSheet
@@ -744,7 +964,7 @@ export function WeeklyFrogSchedule({
             try {
               await removePlacementSegment(detail.placement.id, logicalTodayYmd);
               setDetail(null);
-              await reload(weekStartYmd);
+              await reload(weekStartYmd, { silent: true });
               onChanged?.();
             } catch (err) {
               Alert.alert('移除失败', err instanceof Error ? err.message : '请稍后重试');
@@ -757,7 +977,7 @@ export function WeeklyFrogSchedule({
             try {
               await cancelAssignForPlacementDay(detail.placement.id, logicalTodayYmd);
               setDetail(null);
-              await reload(weekStartYmd);
+              await reload(weekStartYmd, { silent: true });
               onChanged?.();
             } catch (err) {
               Alert.alert('取消失败', err instanceof Error ? err.message : '请稍后重试');
@@ -776,6 +996,51 @@ export function WeeklyFrogSchedule({
 
 const styles = StyleSheet.create({
   section: { marginBottom: 4 },
+  summaryCard: {
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  todayEmpty: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+  },
+  todayGrid: {
+    overflow: 'hidden',
+  },
+  todayGridInner: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  todayChip: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    minHeight: 58,
+    gap: 4,
+  },
+  todayChipTime: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  todayChipTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 4,
+  },
+  todayChipTitle: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 17,
+  },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -783,9 +1048,14 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     gap: 8,
   },
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  headerRowPressable: {
+    marginBottom: 0,
+    minHeight: 44,
+  },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 },
   sectionTitle: { fontSize: 17, fontWeight: '700' },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 },
+  summaryMeta: { fontSize: 12, fontWeight: '600', flexShrink: 1, maxWidth: 160 },
   ghostBtn: {
     flexDirection: 'row',
     alignItems: 'center',

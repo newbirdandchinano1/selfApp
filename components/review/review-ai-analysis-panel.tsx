@@ -1,10 +1,10 @@
 import { ReviewSectionCard } from '@/components/review/review-shared-ui';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { getMinTouchTarget, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { MaterialIcons } from '@expo/vector-icons';
-import React from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useMemo } from 'react';
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 export function ReviewAiAnalysisPanel({
   text,
@@ -21,13 +21,17 @@ export function ReviewAiAnalysisPanel({
 }) {
   const { colors } = useAppTheme();
   const body = (text ?? '').trim();
+  const touchMin = useMemo(() => getMinTouchTarget(Platform.OS), []);
+  const actionLabel = body ? '重新分析' : 'AI 分析';
 
   return (
     <ReviewSectionCard variant="muted" style={styles.wrap}>
       <View style={styles.head}>
         <View style={styles.headLeft}>
           <MaterialIcons name="auto-awesome" size={18} color={colors.primary} />
-          <Text style={[Typography.title, { color: colors.text, fontSize: 15 }]}>AI 分析</Text>
+          <Text style={[Typography.title, { color: colors.text }]} maxFontSizeMultiplier={1.35}>
+            AI 分析
+          </Text>
         </View>
         <Pressable
           onPress={onAnalyze}
@@ -36,22 +40,24 @@ export function ReviewAiAnalysisPanel({
             styles.btn,
             {
               backgroundColor: colors.primary,
+              minHeight: touchMin,
               opacity: !canRun || busy ? 0.45 : pressed ? 0.88 : 1,
             },
           ]}
           accessibilityRole="button"
-          accessibilityLabel="AI 分析">
+          accessibilityLabel={actionLabel}
+          accessibilityState={{ disabled: !canRun || busy, busy }}>
           {busy ? (
             <ActivityIndicator color={colors.onPrimary} size="small" />
           ) : (
-            <Text style={[styles.btnText, { color: colors.onPrimary }]}>
-              {body ? '重新分析' : 'AI 分析'}
+            <Text style={[Typography.caption, { color: colors.onPrimary, fontWeight: '800' }]} maxFontSizeMultiplier={1.35}>
+              {actionLabel}
             </Text>
           )}
         </Pressable>
       </View>
       {!canRun && disabledReason ? (
-        <Text style={[Typography.caption, { color: colors.textMuted, lineHeight: 18 }]}>
+        <Text style={[Typography.caption, { color: colors.textMuted, lineHeight: 18 }]} maxFontSizeMultiplier={1.35}>
           {disabledReason}
         </Text>
       ) : null}
@@ -62,13 +68,15 @@ export function ReviewAiAnalysisPanel({
           <Skeleton width="78%" height={12} borderRadius={5} />
         </View>
       ) : body ? (
-        <Text style={[Typography.body, { color: colors.text, lineHeight: 22 }]}>{body}</Text>
+        <Text style={[Typography.body, { color: colors.text, lineHeight: 22 }]} maxFontSizeMultiplier={1.35}>
+          {body}
+        </Text>
       ) : (
         <View style={styles.emptyRow}>
           <View style={[styles.emptyIcon, { backgroundColor: colors.primaryMuted }]}>
             <MaterialIcons name="auto-awesome" size={18} color={colors.primary} />
           </View>
-          <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21, flex: 1 }]}>
+          <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21, flex: 1 }]} maxFontSizeMultiplier={1.35}>
             填写一定内容后，可生成「目前的问题 / 潜在问题 / 建议」诊断分析。
           </Text>
         </View>
@@ -95,14 +103,9 @@ const styles = StyleSheet.create({
   },
   btn: {
     borderRadius: Radius.sm,
-    minHeight: 34,
     paddingHorizontal: Spacing.xl,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  btnText: {
-    fontSize: 13,
-    fontWeight: '800',
   },
   busySkeleton: {
     gap: Spacing.sm,

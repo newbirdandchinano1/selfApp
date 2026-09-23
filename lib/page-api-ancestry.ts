@@ -22,7 +22,6 @@ const PAGE_PARENTS: Record<string, string[]> = {
   'edit-task': ['task-detail', 'add-task', TAB.tasks],
   'add-project': [TAB.tasks],
   'edit-project': [TAB.tasks],
-  'add-frog': [TAB.tasks],
   'task-detail': [TAB.tasks],
   'tasks-calendar': [TAB.tasks],
   'tasks-overview': [TAB.tasks],

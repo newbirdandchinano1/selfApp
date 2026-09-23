@@ -66,6 +66,10 @@ export type FinanceSavingsGoalBlockProps = {
   subtle: string;
   primary: string;
   surface: string;
+  surfaceMuted?: string;
+  primaryMuted?: string;
+  danger?: string;
+  secondary?: string;
   outlineVariant: string;
   tertiary: string;
   /** 到目标日预计定时支出合计，抬高每日需存 */
@@ -86,6 +90,10 @@ export function FinanceSavingsGoalBlock({
   subtle,
   primary,
   surface,
+  surfaceMuted,
+  primaryMuted,
+  danger,
+  secondary,
   outlineVariant,
   tertiary,
   scheduledDrainUntilTarget = 0,
@@ -257,6 +265,13 @@ export function FinanceSavingsGoalBlock({
   const monthTitle = `${calendarMonth.getFullYear()}年${calendarMonth.getMonth() + 1}月`;
   const hasScheduledHint = scheduledBudgetDeduction > 0 || scheduledDrainUntilTarget > 0;
 
+  const rowBg = surfaceMuted ?? (isDark ? 'rgba(148,163,184,0.10)' : '#f7f9fd');
+  const badgePrimary = primaryMuted ?? (isDark ? 'rgba(96,165,250,0.16)' : '#eef4ff');
+  const badgeDanger = isDark ? 'rgba(248,113,113,0.16)' : 'rgba(220,38,38,0.08)';
+  const badgeSuccess = isDark ? 'rgba(74,222,128,0.16)' : 'rgba(0,108,73,0.10)';
+  const dangerColor = danger ?? (isDark ? '#f87171' : '#dc2626');
+  const successColor = secondary ?? (isDark ? '#4ade80' : '#16a34a');
+
   return (
     <>
       {/* 与预算进度合并为同一视觉行：左预算预扣提示 / 右预期存款 */}
@@ -264,7 +279,7 @@ export function FinanceSavingsGoalBlock({
         style={[
           styles.mergedRow,
           {
-            backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : '#f7f9fd',
+            backgroundColor: rowBg,
             borderColor: outlineVariant,
           },
         ]}>
@@ -297,16 +312,10 @@ export function FinanceSavingsGoalBlock({
                   styles.countdownBadge,
                   {
                     backgroundColor: progress.overdue
-                      ? isDark
-                        ? 'rgba(248,113,113,0.16)'
-                        : '#fef2f2'
+                      ? badgeDanger
                       : progress.achieved
-                        ? isDark
-                          ? 'rgba(74,222,128,0.16)'
-                          : '#ecfdf5'
-                        : isDark
-                          ? 'rgba(96,165,250,0.16)'
-                          : '#eef4ff',
+                        ? badgeSuccess
+                        : badgePrimary,
                   },
                 ]}>
                 <Text
@@ -314,13 +323,9 @@ export function FinanceSavingsGoalBlock({
                     styles.countdownText,
                     {
                       color: progress.overdue
-                        ? isDark
-                          ? '#f87171'
-                          : '#dc2626'
+                        ? dangerColor
                         : progress.achieved
-                          ? isDark
-                            ? '#4ade80'
-                            : '#16a34a'
+                          ? successColor
                           : primary,
                     },
                   ]}>
@@ -345,7 +350,7 @@ export function FinanceSavingsGoalBlock({
               <Text
                 style={[
                   styles.mergedValue,
-                  { color: progress.achieved ? (isDark ? '#4ade80' : '#16a34a') : text },
+                  { color: progress.achieved ? successColor : text },
                 ]}
                 numberOfLines={1}>
                 {showAmounts
@@ -578,7 +583,7 @@ export function FinanceSavingsGoalBlock({
 
 const styles = StyleSheet.create({
   mergedRow: {
-    marginTop: 14,
+    marginTop: Spacing.xl,
     flexDirection: 'row',
     alignItems: 'stretch',
     borderRadius: Radius.lg,
@@ -630,7 +635,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   countdownText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
   },
   kav: {

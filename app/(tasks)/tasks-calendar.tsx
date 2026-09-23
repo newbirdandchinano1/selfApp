@@ -493,8 +493,7 @@ function DayDetailSections({
   const counts = daySummaryCounts(summary);
   const hasAny = counts.total > 0;
   const selectedYmd = formatYmd(selectedDate);
-  const isTodaySelected = selectedYmd === logicalTodayYmd;
-  const frogSectionTitle = isTodaySelected ? '今日青蛙' : '青蛙';
+  const frogSectionTitle = '青蛙';
   const frogIncompleteCount = summary.frogs.filter((f) => f.frogDayStatus === 'incomplete').length;
 
   const renderSection = (

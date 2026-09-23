@@ -7,9 +7,8 @@ import {
 import { FinanceSavingsGoalBlock } from '@/components/finance/finance-savings-goal-block';
 import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
-import { Colors } from '@/constants/theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { shouldSkipDuplicateAutoLedgerImage } from '@/lib/auto-ledger-dedupe';
@@ -538,23 +537,26 @@ export default function FinanceScreen() {
   const financeContentRevealDoneRef = React.useRef(false);
   const financeSkeletonOpacity = React.useRef(new Animated.Value(1)).current;
   const financeContentOpacity = React.useRef(new Animated.Value(0)).current;
-  const colorScheme = useColorScheme();
-  const themeKey: keyof typeof Colors = colorScheme === 'dark' ? 'dark' : 'light';
-  const baseTheme = Colors[themeKey];
+  const { colors, isDark } = useAppTheme();
 
-  const isDark = themeKey === 'dark';
-
-  const bg = isDark ? baseTheme.background : '#faf8ff';
-  const surface = isDark ? baseTheme.surface : '#ffffff';
-  const surfaceSubtle = isDark ? 'rgba(148,163,184,0.10)' : '#f9fafb';
-  const text = isDark ? baseTheme.text : '#131b2e';
-  const subtle = isDark ? baseTheme.textSecondary : '#424754';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(194,198,214,0.26)';
-  const outlineStrong = isDark ? 'rgba(148,163,184,0.24)' : '#e5e7eb';
-
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const secondary = isDark ? '#34d399' : '#006c49';
-  const tertiary = isDark ? '#fbbf24' : '#825100';
+  const bg = colors.background;
+  const surface = colors.surface;
+  const surfaceSubtle = colors.surfaceSubtle;
+  const surfaceMuted = colors.surfaceMuted;
+  const text = colors.text;
+  const subtle = colors.textSecondary;
+  const textMuted = colors.textMuted;
+  const outlineVariant = colors.outline;
+  const outlineStrong = colors.outlineStrong;
+  const primary = colors.primary;
+  const primaryMuted = colors.primaryMuted;
+  const primarySoft = colors.primarySoft;
+  const secondary = colors.secondary;
+  const tertiary = colors.tertiary;
+  const danger = colors.danger;
+  const progressTrack = colors.progressTrack;
+  const progressFill = colors.progressFill;
+  const headerScrim = colors.headerScrim;
   const accountTagColor = isDark ? '#2dd4bf' : '#0f766e';
   const weekdayCn = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
   const { logicalTodayYmd: calendarTodayYmd, logicalTodayDate: today, boundary: financeDayBoundary } =
@@ -1255,7 +1257,7 @@ export default function FinanceScreen() {
               ? 'shopping-bag'
               : 'sync-alt';
         const iconColor = isTransfer ? subtle : isIncome ? secondary : isExpense ? tertiary : subtle;
-        const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? '#dc2626' : text;
+        const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? danger : text;
         const amountPrefix = displayAmount > 0 ? '+' : displayAmount < 0 ? '-' : '';
 
         const aiLine = buildTxnAiInsightLine(txn, {
@@ -1290,6 +1292,7 @@ export default function FinanceScreen() {
     generatingTxnAiId,
     getTxnDisplayAmount,
     pendingAutoLedgers,
+    danger,
     secondary,
     subtle,
     tertiary,
@@ -1356,7 +1359,7 @@ export default function FinanceScreen() {
             ? 'shopping-bag'
             : 'sync-alt';
       const iconColor = isTransfer ? subtle : isIncome ? secondary : isExpense ? tertiary : subtle;
-      const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? '#dc2626' : text;
+      const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? danger : text;
       const amountPrefix = displayAmount > 0 ? '+' : displayAmount < 0 ? '-' : '';
 
       const aiLine = buildTxnAiInsightLine(txn, {
@@ -1393,6 +1396,7 @@ export default function FinanceScreen() {
     generatingTxnAiId,
     getDayKey,
     getTxnDisplayAmount,
+    danger,
     secondary,
     sortedTransactions,
     subtle,
@@ -1434,7 +1438,7 @@ export default function FinanceScreen() {
             ? 'shopping-bag'
             : 'sync-alt';
       const iconColor = isTransfer ? subtle : isIncome ? secondary : isExpense ? tertiary : subtle;
-      const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? '#dc2626' : text;
+      const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? danger : text;
       const amountPrefix = displayAmount > 0 ? '+' : displayAmount < 0 ? '-' : '';
 
       const aiLine = buildTxnAiInsightLine(txn, {
@@ -1468,6 +1472,7 @@ export default function FinanceScreen() {
     generatingTxnAiId,
     getDayKey,
     getTxnDisplayAmount,
+    danger,
     secondary,
     sortedTransactions,
     subtle,
@@ -1580,7 +1585,7 @@ export default function FinanceScreen() {
   const monthlyIncomeText = showNetAmounts ? formatCurrencyWithDecimals(monthlyIncome) : hiddenAmountText;
   const monthlyExpenseText = showNetAmounts ? formatCurrencyWithDecimals(monthlyExpense) : hiddenAmountText;
   const monthlySurplusText = showNetAmounts ? formatCurrencyWithDecimals(monthlySurplus) : hiddenAmountText;
-  const monthlySurplusColor = monthlySurplus > 0 ? secondary : monthlySurplus < 0 ? '#dc2626' : text;
+  const monthlySurplusColor = monthlySurplus > 0 ? secondary : monthlySurplus < 0 ? danger : text;
   const savingRateText = showNetAmounts ? `${savingsRate.toFixed(1)}%` : '--';
 
   const daysLeftIncludingToday = budgetDaysLeftIncludingToday(today, budgetPeriodEndExclusive);
@@ -3122,7 +3127,7 @@ export default function FinanceScreen() {
           style={[
             styles.header,
             {
-              backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.82)',
+              backgroundColor: headerScrim,
               borderBottomColor: outlineVariant,
               paddingTop: insets.top,
             },
@@ -3160,153 +3165,177 @@ export default function FinanceScreen() {
                 Shadows.card,
                 { backgroundColor: surface, borderColor: outlineStrong },
               ]}>
-                  <View style={styles.budgetTopRow}>
-                    <View style={styles.budgetTopMain}>
-                      <View style={styles.budgetTitleRow}>
-                        <Text style={[styles.budgetSurplusTitle, { color: subtle }]}>{budgetUiScopeShort}预算结余</Text>
-                        <View
-                          style={[
-                            styles.budgetPeriodBadge,
-                            { backgroundColor: isDark ? 'rgba(96,165,250,0.16)' : '#eef4ff' },
-                          ]}>
-                          <Text style={[styles.budgetPeriodCountdown, { color: primary }]}>
-                            {budgetPeriodCountdownLabel}
+                  {/* 主层：预算结余 + 今日可用 */}
+                  <View style={styles.budgetHeroBand}>
+                    <View style={styles.budgetTopRow}>
+                      <View style={styles.budgetTopMain}>
+                        <View style={styles.budgetTitleRow}>
+                          <Text style={[styles.budgetSurplusTitle, { color: subtle }]}>
+                            {budgetUiScopeShort}预算结余
                           </Text>
+                          <View style={[styles.budgetPeriodBadge, { backgroundColor: primaryMuted }]}>
+                            <Text style={[styles.budgetPeriodCountdown, { color: primary }]}>
+                              {budgetPeriodCountdownLabel}
+                            </Text>
+                          </View>
                         </View>
-                      </View>
-                      <Text style={[styles.budgetPeriodEndDate, { color: subtle }]}>
-                        截止 {budgetPeriodEndDateLabel}
-                      </Text>
-                      <View style={styles.budgetAmountRow}>
-                        <Pressable
-                          onPress={openBudgetAdjust}
-                          hitSlop={8}
-                          style={({ pressed }) => [pressed && { opacity: 0.72 }]}
-                          accessibilityRole="button"
-                          accessibilityLabel="调整本月预算">
-                          <Text style={[styles.budgetSurplusValue, { color: text }]}>
-                            {showNetAmounts ? formatCurrencyWithDecimals(budgetSurplusAmount) : hiddenAmountText}
-                          </Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() => setShowNetAmounts((prev) => !prev)}
-                          style={({ pressed }) => [
-                            styles.netVisibilityBtn,
-                            { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f4f6fb' },
-                            pressed && { opacity: 0.75 },
-                          ]}
-                          accessibilityRole="button"
-                          accessibilityLabel={showNetAmounts ? '隐藏金额' : '显示金额'}>
-                          <MaterialIcons name={showNetAmounts ? 'visibility-off' : 'visibility'} size={18} color={subtle} />
-                        </Pressable>
-                      </View>
-
-                      <View style={styles.budgetProgressBlock}>
-                        <View style={styles.budgetProgressLabels}>
-                          <Text style={[styles.budgetProgressEnd, { color: subtle }]}>
-                            已用 {showNetAmounts ? formatCurrencyWithDecimals(monthlyBudgetExpense) : hiddenAmountText}
-                          </Text>
-                          <Text style={[styles.budgetProgressEnd, { color: primary }]}>
-                            {showNetAmounts ? `${Math.round(budgetUsedPercent)}%` : '--'}
-                            {' · '}
-                            {showNetAmounts ? formatCurrencyWithDecimals(budgetTotalAmount) : hiddenAmountText}
-                          </Text>
-                        </View>
-                        <View style={[styles.budgetProgressTrack, { backgroundColor: isDark ? 'rgba(96,165,250,0.18)' : '#e8f0fe' }]}>
-                          <View
-                            style={[
-                              styles.budgetProgressFill,
-                              {
-                                width: `${budgetUsedPercent}%`,
-                                backgroundColor: isDark ? '#60a5fa' : primary,
-                              },
+                        <Text style={[styles.budgetPeriodEndDate, { color: textMuted }]}>
+                          截止 {budgetPeriodEndDateLabel}
+                        </Text>
+                        <View style={styles.budgetAmountRow}>
+                          <Pressable
+                            onPress={openBudgetAdjust}
+                            hitSlop={8}
+                            style={({ pressed }) => [pressed && { opacity: 0.72 }]}
+                            accessibilityRole="button"
+                            accessibilityLabel="调整本月预算">
+                            <Text style={[styles.budgetSurplusValue, { color: text }]}>
+                              {showNetAmounts
+                                ? formatCurrencyWithDecimals(budgetSurplusAmount)
+                                : hiddenAmountText}
+                            </Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => setShowNetAmounts((prev) => !prev)}
+                            style={({ pressed }) => [
+                              styles.netVisibilityBtn,
+                              { backgroundColor: surfaceMuted },
+                              pressed && { opacity: 0.75 },
                             ]}
-                          />
+                            accessibilityRole="button"
+                            accessibilityLabel={showNetAmounts ? '隐藏金额' : '显示金额'}>
+                            <MaterialIcons
+                              name={showNetAmounts ? 'visibility-off' : 'visibility'}
+                              size={18}
+                              color={subtle}
+                            />
+                          </Pressable>
+                        </View>
+
+                        <View style={styles.budgetProgressBlock}>
+                          <View style={styles.budgetProgressLabels}>
+                            <Text style={[styles.budgetProgressEnd, { color: subtle }]}>
+                              已用{' '}
+                              {showNetAmounts
+                                ? formatCurrencyWithDecimals(monthlyBudgetExpense)
+                                : hiddenAmountText}
+                            </Text>
+                            <Text style={[styles.budgetProgressEnd, { color: primary }]}>
+                              {showNetAmounts ? `${Math.round(budgetUsedPercent)}%` : '--'}
+                              {' · '}
+                              {showNetAmounts
+                                ? formatCurrencyWithDecimals(budgetTotalAmount)
+                                : hiddenAmountText}
+                            </Text>
+                          </View>
+                          <View style={[styles.budgetProgressTrack, { backgroundColor: progressTrack }]}>
+                            <View
+                              style={[
+                                styles.budgetProgressFill,
+                                {
+                                  width: `${budgetUsedPercent}%`,
+                                  backgroundColor: progressFill,
+                                },
+                              ]}
+                            />
+                          </View>
                         </View>
                       </View>
-                    </View>
 
-                    <Pressable
-                      onPress={() => setIsTodayBudgetHintVisible(true)}
-                      style={({ pressed }) => [styles.budgetTodayRing, pressed && { opacity: 0.82 }]}
-                      accessibilityRole="button"
-                      accessibilityLabel="查看今日可用与剩余预算说明">
-                      {(() => {
-                        const ringSize = 84;
-                        const stroke = 5;
-                        const r = (ringSize - stroke) / 2;
-                        const c = 2 * Math.PI * r;
-                        const dash = c * (isTodayBudgetOver ? 1 : todayBudgetUsagePct);
-                        const ringTrack = isDark ? 'rgba(148,163,184,0.18)' : '#e3eefc';
-                        const budgetAlertColor = isDark ? '#f87171' : '#dc2626';
-                        const ringProg = isTodayBudgetOver
-                          ? budgetAlertColor
-                          : isDark
-                            ? '#60a5fa'
-                            : primary;
-                        const ringPadBg = isTodayBudgetOver
-                          ? isDark
-                            ? 'rgba(248,113,113,0.12)'
-                            : '#fef2f2'
-                          : isDark
-                            ? 'rgba(96,165,250,0.12)'
-                            : '#f0f6ff';
-                        return (
-                          <View
-                            style={[
-                              styles.budgetTodayRingPad,
-                              {
-                                width: ringSize + 12,
-                                height: ringSize + 12,
-                                borderRadius: (ringSize + 12) / 2,
-                                backgroundColor: ringPadBg,
-                              },
-                            ]}>
-                            <View style={{ width: ringSize, height: ringSize, alignItems: 'center', justifyContent: 'center' }}>
-                              <Svg
-                                key={`today-budget-ring-${todayBudgetUsagePct.toFixed(4)}-${todayAvailableAmount.toFixed(2)}-${todayBudgetOverAmount.toFixed(2)}`}
-                                width={ringSize}
-                                height={ringSize}
-                                viewBox={`0 0 ${ringSize} ${ringSize}`}
-                                style={{ position: 'absolute', transform: [{ rotate: '-90deg' }] }}>
-                                <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={ringTrack} strokeWidth={stroke} fill="none" />
-                                <Circle
-                                  cx={ringSize / 2}
-                                  cy={ringSize / 2}
-                                  r={r}
-                                  stroke={ringProg}
-                                  strokeWidth={stroke}
-                                  fill="none"
-                                  strokeDasharray={`${dash} ${c}`}
-                                  strokeLinecap="round"
-                                />
-                              </Svg>
-                              <View style={styles.budgetRingCenter}>
-                                <Text
-                                  style={[
-                                    styles.budgetRingLabel,
-                                    { color: isTodayBudgetOver ? budgetAlertColor : subtle },
-                                  ]}
-                                  numberOfLines={2}>
-                                  {isTodayBudgetOver ? '超出预算' : '今日可用'}
-                                </Text>
-                                <Text
-                                  style={[
-                                    styles.budgetRingValue,
-                                    { color: isTodayBudgetOver ? budgetAlertColor : text },
-                                  ]}>
-                                  {showNetAmounts
-                                    ? formatCurrencyWithDecimals(
-                                        isTodayBudgetOver ? todayBudgetOverAmount : todayAvailableAmount,
-                                      )
-                                    : hiddenAmountText}
-                                </Text>
+                      <Pressable
+                        onPress={() => setIsTodayBudgetHintVisible(true)}
+                        style={({ pressed }) => [styles.budgetTodayRing, pressed && { opacity: 0.82 }]}
+                        accessibilityRole="button"
+                        accessibilityLabel="查看今日可用与剩余预算说明">
+                        {(() => {
+                          const ringSize = 80;
+                          const stroke = 5;
+                          const r = (ringSize - stroke) / 2;
+                          const c = 2 * Math.PI * r;
+                          const dash = c * (isTodayBudgetOver ? 1 : todayBudgetUsagePct);
+                          const ringTrack = progressTrack;
+                          const budgetAlertColor = danger;
+                          const ringProg = isTodayBudgetOver ? budgetAlertColor : primarySoft;
+                          const ringPadBg = isTodayBudgetOver
+                            ? isDark
+                              ? 'rgba(248,113,113,0.12)'
+                              : 'rgba(220,38,38,0.08)'
+                            : primaryMuted;
+                          return (
+                            <View
+                              style={[
+                                styles.budgetTodayRingPad,
+                                {
+                                  width: ringSize + 8,
+                                  height: ringSize + 8,
+                                  borderRadius: (ringSize + 8) / 2,
+                                  backgroundColor: ringPadBg,
+                                },
+                              ]}>
+                              <View
+                                style={{
+                                  width: ringSize,
+                                  height: ringSize,
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}>
+                                <Svg
+                                  key={`today-budget-ring-${todayBudgetUsagePct.toFixed(4)}-${todayAvailableAmount.toFixed(2)}-${todayBudgetOverAmount.toFixed(2)}`}
+                                  width={ringSize}
+                                  height={ringSize}
+                                  viewBox={`0 0 ${ringSize} ${ringSize}`}
+                                  style={{
+                                    position: 'absolute',
+                                    transform: [{ rotate: '-90deg' }],
+                                  }}>
+                                  <Circle
+                                    cx={ringSize / 2}
+                                    cy={ringSize / 2}
+                                    r={r}
+                                    stroke={ringTrack}
+                                    strokeWidth={stroke}
+                                    fill="none"
+                                  />
+                                  <Circle
+                                    cx={ringSize / 2}
+                                    cy={ringSize / 2}
+                                    r={r}
+                                    stroke={ringProg}
+                                    strokeWidth={stroke}
+                                    fill="none"
+                                    strokeDasharray={`${dash} ${c}`}
+                                    strokeLinecap="round"
+                                  />
+                                </Svg>
+                                <View style={styles.budgetRingCenter}>
+                                  <Text
+                                    style={[
+                                      styles.budgetRingLabel,
+                                      { color: isTodayBudgetOver ? budgetAlertColor : subtle },
+                                    ]}
+                                    numberOfLines={2}>
+                                    {isTodayBudgetOver ? '超出预算' : '今日可用'}
+                                  </Text>
+                                  <Text
+                                    style={[
+                                      styles.budgetRingValue,
+                                      { color: isTodayBudgetOver ? budgetAlertColor : text },
+                                    ]}>
+                                    {showNetAmounts
+                                      ? formatCurrencyWithDecimals(
+                                          isTodayBudgetOver
+                                            ? todayBudgetOverAmount
+                                            : todayAvailableAmount,
+                                        )
+                                      : hiddenAmountText}
+                                  </Text>
+                                </View>
                               </View>
                             </View>
-                          </View>
-                        );
-                      })()}
-                    </Pressable>
+                          );
+                        })()}
+                      </Pressable>
+                    </View>
                   </View>
 
                   <FinanceSavingsGoalBlock
@@ -3320,6 +3349,10 @@ export default function FinanceScreen() {
                     subtle={subtle}
                     primary={primary}
                     surface={surface}
+                    surfaceMuted={surfaceMuted}
+                    primaryMuted={primaryMuted}
+                    danger={danger}
+                    secondary={secondary}
                     outlineVariant={outlineVariant}
                     tertiary={tertiary}
                     scheduledDrainUntilTarget={scheduledDrainUntilSavingsTarget}
@@ -3327,216 +3360,252 @@ export default function FinanceScreen() {
                     onGoalChange={(g) => setSavingsGoalTargetDate(g?.targetDate ?? null)}
                   />
 
-                  <View style={[styles.budgetNetDivider, { backgroundColor: outlineVariant }]} />
-
-                  <View style={styles.budgetNetHeader}>
-                    <Pressable
-                      onPress={() => setBudgetCardNetExpanded((v) => !v)}
-                      style={({ pressed }) => [styles.budgetNetHeaderLeft, pressed && { opacity: 0.75 }]}
-                      accessibilityRole="button"
-                      accessibilityLabel={budgetCardNetExpanded ? '收起净资产详情' : '展开净资产详情'}>
-                      <Text style={[styles.budgetNetTitle, { color: text }]}>净资产</Text>
-                      <MaterialIcons
-                        name={budgetCardNetExpanded ? 'keyboard-arrow-up' : 'keyboard-arrow-down'}
-                        size={20}
-                        color={subtle}
-                      />
-                    </Pressable>
-                    <Pressable
-                      onPress={() => router.push('/finance-stats')}
-                      style={({ pressed }) => [
-                        styles.trendPill,
-                        {
-                          borderColor: outlineVariant,
-                          backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : '#f4f6fb',
-                        },
-                        pressed && { opacity: 0.8 },
-                      ]}>
-                      <MaterialIcons name="timeline" size={14} color={subtle} />
-                      <Text style={[styles.trendPillText, { color: subtle }]}>30 日</Text>
-                    </Pressable>
-                  </View>
-                  <View style={styles.budgetNetAmountRow}>
-                    <Text style={[styles.budgetNetAmount, { color: text }]}>
-                      {showNetAmounts ? formatCurrencyWithDecimals(displayedNetWorthAmount) : hiddenAmountText}
-                    </Text>
-                    <Text style={[styles.trendChartDayLabel, { color: isSelectedNetTrendToday ? subtle : primary }]}>
-                      {selectedNetTrend.label}
-                      {!isSelectedNetTrendToday ? ' · 净资产' : ''}
-                    </Text>
-                  </View>
-                  {isSelectedNetTrendToday ? (
-                    <View style={styles.netBreakdownRow}>
-                      <Text style={[styles.netBreakdownText, { color: subtle }]}>
-                        总资产{' '}
-                        {showNetAmounts ? formatCurrencyWithDecimals(totalAssetsAmount) : hiddenAmountText}
-                      </Text>
-                      <Text style={[styles.netBreakdownSep, { color: outlineVariant }]}>·</Text>
-                      <Text style={[styles.netBreakdownText, { color: subtle }]}>
-                        总负债{' '}
+                  {/* 次层：净资产与趋势（与预算视觉分离） */}
+                  <View style={[styles.budgetNetBand, { borderTopColor: outlineVariant }]}>
+                    <View style={styles.budgetNetHeader}>
+                      <Pressable
+                        onPress={() => setBudgetCardNetExpanded((v) => !v)}
+                        style={({ pressed }) => [
+                          styles.budgetNetHeaderLeft,
+                          pressed && { opacity: 0.75 },
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          budgetCardNetExpanded ? '收起净资产详情' : '展开净资产详情'
+                        }>
+                        <Text style={[styles.budgetNetTitle, { color: text }]}>净资产</Text>
+                        <MaterialIcons
+                          name={
+                            budgetCardNetExpanded ? 'keyboard-arrow-up' : 'keyboard-arrow-down'
+                          }
+                          size={20}
+                          color={subtle}
+                        />
+                      </Pressable>
+                      <Pressable
+                        onPress={() => router.push('/finance-stats')}
+                        style={({ pressed }) => [
+                          styles.trendPill,
+                          {
+                            borderColor: outlineVariant,
+                            backgroundColor: surfaceMuted,
+                          },
+                          pressed && { opacity: 0.8 },
+                        ]}>
+                        <MaterialIcons name="timeline" size={14} color={subtle} />
+                        <Text style={[styles.trendPillText, { color: subtle }]}>30 日</Text>
+                      </Pressable>
+                    </View>
+                    <View style={styles.budgetNetAmountRow}>
+                      <Text style={[styles.budgetNetAmount, { color: text }]}>
                         {showNetAmounts
-                          ? formatCurrencyWithDecimals(totalLiabilitiesAbsAmount)
+                          ? formatCurrencyWithDecimals(displayedNetWorthAmount)
                           : hiddenAmountText}
                       </Text>
+                      <Text
+                        style={[
+                          styles.trendChartDayLabel,
+                          { color: isSelectedNetTrendToday ? textMuted : primary },
+                        ]}>
+                        {selectedNetTrend.label}
+                        {!isSelectedNetTrendToday ? ' · 净资产' : ''}
+                      </Text>
                     </View>
-                  ) : null}
-
-                  <View style={styles.trendChartWrap}>
-                    <GestureDetector gesture={netWorthTrendScrubGesture}>
-                      <View
-                        collapsable={false}
-                        style={styles.trendChartPlot}
-                        onLayout={(e) => {
-                          trendChartPlotWidthRef.current = e.nativeEvent.layout.width;
-                        }}
-                        accessibilityRole="adjustable"
-                        accessibilityLabel="净资产趋势图，点按或滑动查看不同日期"
-                        accessibilityHint="在图表上点按或左右滑动以查看各日净资产">
-                        {/* 圆角背景单独一层，避免 overflow:hidden 裁掉底部圆点 */}
-                        <View
-                          pointerEvents="none"
-                          style={[
-                            styles.trendChartPlotBg,
-                            {
-                              backgroundColor: isDark ? 'rgba(148,163,184,0.06)' : '#f8fafc',
-                              borderColor: outlineVariant,
-                            },
-                          ]}
-                        />
-                        <Svg
-                          width="100%"
-                          height={NET_WORTH_TREND_CHART_H}
-                          viewBox={`0 0 ${NET_WORTH_TREND_CHART_W} ${NET_WORTH_TREND_CHART_H}`}
-                          preserveAspectRatio="none"
-                          pointerEvents="none"
-                          style={StyleSheet.absoluteFill}>
-                          {trendChartGeometry ? (
-                            <>
-                              <Defs>
-                                <LinearGradient id="netWorthTrendFill" x1="0" y1="0" x2="0" y2="1">
-                                  <Stop offset="0" stopColor={primary} stopOpacity={isDark ? 0.22 : 0.16} />
-                                  <Stop offset="1" stopColor={primary} stopOpacity={0} />
-                                </LinearGradient>
-                              </Defs>
-                              <Path d={trendChartGeometry.areaD} fill="url(#netWorthTrendFill)" />
-                              <Path
-                                d={trendChartGeometry.pathD}
-                                fill="none"
-                                stroke={primary}
-                                strokeWidth={2}
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              />
-                              {selectedNetTrendChartPoint && !isSelectedNetTrendToday ? (
-                                <Path
-                                  d={`M${selectedNetTrendChartPoint.x.toFixed(1)},${NET_WORTH_TREND_CHART_INSET} L${selectedNetTrendChartPoint.x.toFixed(1)},${NET_WORTH_TREND_CHART_H - NET_WORTH_TREND_CHART_INSET}`}
-                                  stroke={isDark ? 'rgba(96,165,250,0.35)' : 'rgba(0,88,190,0.28)'}
-                                  strokeWidth={1}
-                                  strokeDasharray="3 3"
-                                />
-                              ) : null}
-                            </>
-                          ) : null}
-                        </Svg>
-                        {trendChartGeometry ? (
-                          <View style={styles.trendChartNodes} pointerEvents="none" collapsable={false}>
-                            {netTrendVisibleNodeIndices.map((i) => {
-                              const p = trendChartGeometry.points[i];
-                              if (!p) return null;
-                              const isSelected = i === selectedNetTrendIndex;
-                              const isLast = i === netTrendLastIndex;
-                              const dotSize = isSelected ? 10 : 8;
-                              return (
-                                <View
-                                  key={`net-trend-node-${i}`}
-                                  style={[
-                                    styles.trendChartNodeHit,
-                                    {
-                                      left: `${(p.x / NET_WORTH_TREND_CHART_W) * 100}%`,
-                                      top: `${(p.y / NET_WORTH_TREND_CHART_H) * 100}%`,
-                                    },
-                                  ]}>
-                                  <View
-                                    style={[
-                                      styles.trendChartNodeDot,
-                                      {
-                                        width: dotSize,
-                                        height: dotSize,
-                                        borderRadius: dotSize / 2,
-                                        backgroundColor: isSelected ? primary : surface,
-                                        borderColor: primary,
-                                        borderWidth: isSelected ? 2 : 1.5,
-                                        opacity: isLast && !isSelected ? 0.85 : 1,
-                                      },
-                                    ]}
-                                  />
-                                </View>
-                              );
-                            })}
-                          </View>
-                        ) : null}
+                    {isSelectedNetTrendToday ? (
+                      <View style={styles.netBreakdownRow}>
+                        <Text style={[styles.netBreakdownText, { color: subtle }]}>
+                          总资产{' '}
+                          {showNetAmounts
+                            ? formatCurrencyWithDecimals(totalAssetsAmount)
+                            : hiddenAmountText}
+                        </Text>
+                        <Text style={[styles.netBreakdownSep, { color: outlineVariant }]}>·</Text>
+                        <Text style={[styles.netBreakdownText, { color: subtle }]}>
+                          总负债{' '}
+                          {showNetAmounts
+                            ? formatCurrencyWithDecimals(totalLiabilitiesAbsAmount)
+                            : hiddenAmountText}
+                        </Text>
                       </View>
-                    </GestureDetector>
-                    <Text style={[styles.trendChartHint, { color: subtle }]}>点按或左右滑动查看各日净资产</Text>
+                    ) : null}
+
+                    <View style={styles.trendChartWrap}>
+                      <GestureDetector gesture={netWorthTrendScrubGesture}>
+                        <View
+                          collapsable={false}
+                          style={styles.trendChartPlot}
+                          onLayout={(e) => {
+                            trendChartPlotWidthRef.current = e.nativeEvent.layout.width;
+                          }}
+                          accessibilityRole="adjustable"
+                          accessibilityLabel="净资产趋势图，点按或滑动查看不同日期"
+                          accessibilityHint="在图表上点按或左右滑动以查看各日净资产">
+                          <View
+                            pointerEvents="none"
+                            style={[
+                              styles.trendChartPlotBg,
+                              {
+                                backgroundColor: surfaceSubtle,
+                                borderColor: outlineVariant,
+                              },
+                            ]}
+                          />
+                          <Svg
+                            width="100%"
+                            height={NET_WORTH_TREND_CHART_H}
+                            viewBox={`0 0 ${NET_WORTH_TREND_CHART_W} ${NET_WORTH_TREND_CHART_H}`}
+                            preserveAspectRatio="none"
+                            pointerEvents="none"
+                            style={StyleSheet.absoluteFill}>
+                            {trendChartGeometry ? (
+                              <>
+                                <Defs>
+                                  <LinearGradient
+                                    id="netWorthTrendFill"
+                                    x1="0"
+                                    y1="0"
+                                    x2="0"
+                                    y2="1">
+                                    <Stop
+                                      offset="0"
+                                      stopColor={primary}
+                                      stopOpacity={isDark ? 0.22 : 0.16}
+                                    />
+                                    <Stop offset="1" stopColor={primary} stopOpacity={0} />
+                                  </LinearGradient>
+                                </Defs>
+                                <Path d={trendChartGeometry.areaD} fill="url(#netWorthTrendFill)" />
+                                <Path
+                                  d={trendChartGeometry.pathD}
+                                  fill="none"
+                                  stroke={primary}
+                                  strokeWidth={2}
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                                {selectedNetTrendChartPoint && !isSelectedNetTrendToday ? (
+                                  <Path
+                                    d={`M${selectedNetTrendChartPoint.x.toFixed(1)},${NET_WORTH_TREND_CHART_INSET} L${selectedNetTrendChartPoint.x.toFixed(1)},${NET_WORTH_TREND_CHART_H - NET_WORTH_TREND_CHART_INSET}`}
+                                    stroke={primaryMuted}
+                                    strokeWidth={1}
+                                    strokeDasharray="3 3"
+                                  />
+                                ) : null}
+                              </>
+                            ) : null}
+                          </Svg>
+                          {trendChartGeometry ? (
+                            <View
+                              style={styles.trendChartNodes}
+                              pointerEvents="none"
+                              collapsable={false}>
+                              {netTrendVisibleNodeIndices.map((i) => {
+                                const p = trendChartGeometry.points[i];
+                                if (!p) return null;
+                                const isSelected = i === selectedNetTrendIndex;
+                                const isLast = i === netTrendLastIndex;
+                                const dotSize = isSelected ? 10 : 8;
+                                return (
+                                  <View
+                                    key={`net-trend-node-${i}`}
+                                    style={[
+                                      styles.trendChartNodeHit,
+                                      {
+                                        left: `${(p.x / NET_WORTH_TREND_CHART_W) * 100}%`,
+                                        top: `${(p.y / NET_WORTH_TREND_CHART_H) * 100}%`,
+                                      },
+                                    ]}>
+                                    <View
+                                      style={[
+                                        styles.trendChartNodeDot,
+                                        {
+                                          width: dotSize,
+                                          height: dotSize,
+                                          borderRadius: dotSize / 2,
+                                          backgroundColor: isSelected ? primary : surface,
+                                          borderColor: primary,
+                                          borderWidth: isSelected ? 2 : 1.5,
+                                          opacity: isLast && !isSelected ? 0.85 : 1,
+                                        },
+                                      ]}
+                                    />
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          ) : null}
+                        </View>
+                      </GestureDetector>
+                      <Text style={[styles.trendChartHint, { color: textMuted }]}>
+                        滑动查看各日净资产
+                      </Text>
+                    </View>
+
+                    {budgetCardNetExpanded ? (
+                      <View style={styles.netStats}>
+                        <View style={[styles.netStatCol, { backgroundColor: surfaceSubtle }]}>
+                          <Text style={[styles.netStatLabel, { color: subtle }]}>本月收入</Text>
+                          <Text style={[styles.netStatValue, { color: secondary }]}>
+                            {monthlyIncomeText}
+                          </Text>
+                        </View>
+                        <View style={[styles.netStatCol, { backgroundColor: surfaceSubtle }]}>
+                          <Text style={[styles.netStatLabel, { color: subtle }]}>本月支出</Text>
+                          <Text style={[styles.netStatValue, { color: danger }]}>
+                            {monthlyExpenseText}
+                          </Text>
+                        </View>
+                        <View style={[styles.netStatCol, { backgroundColor: surfaceSubtle }]}>
+                          <Text style={[styles.netStatLabel, { color: subtle }]}>本月盈余</Text>
+                          <Text style={[styles.netStatValue, { color: monthlySurplusColor }]}>
+                            {monthlySurplusText}
+                          </Text>
+                        </View>
+                        <View style={[styles.netStatCol, { backgroundColor: surfaceSubtle }]}>
+                          <Text style={[styles.netStatLabel, { color: subtle }]}>储蓄率</Text>
+                          <Text style={[styles.netStatValue, { color: text }]}>{savingRateText}</Text>
+                        </View>
+                      </View>
+                    ) : null}
                   </View>
 
-                  {budgetCardNetExpanded ? (
-                    <View style={styles.netStats}>
-                      <View style={[styles.netStatCol, { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : '#f8fafc' }]}>
-                        <Text style={[styles.netStatLabel, { color: subtle }]}>本月收入</Text>
-                        <Text style={[styles.netStatValue, { color: secondary }]}>{monthlyIncomeText}</Text>
-                      </View>
-                      <View style={[styles.netStatCol, { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : '#f8fafc' }]}>
-                        <Text style={[styles.netStatLabel, { color: subtle }]}>本月支出</Text>
-                        <Text style={[styles.netStatValue, { color: '#dc2626' }]}>{monthlyExpenseText}</Text>
-                      </View>
-                      <View style={[styles.netStatCol, { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : '#f8fafc' }]}>
-                        <Text style={[styles.netStatLabel, { color: subtle }]}>本月盈余</Text>
-                        <Text style={[styles.netStatValue, { color: monthlySurplusColor }]}>{monthlySurplusText}</Text>
-                      </View>
-                      <View style={[styles.netStatCol, { backgroundColor: isDark ? 'rgba(148,163,184,0.08)' : '#f8fafc' }]}>
-                        <Text style={[styles.netStatLabel, { color: subtle }]}>储蓄率</Text>
-                        <Text style={[styles.netStatValue, { color: text }]}>{savingRateText}</Text>
-                      </View>
-                    </View>
-                  ) : null}
-
-                  <View style={[styles.assetsBtnRow, { marginTop: budgetCardNetExpanded ? 14 : 12 }]}>
+                  {/* 底层：快捷入口，弱化填充避免与主数字抢视线 */}
+                  <View style={[styles.assetsBtnRow, styles.budgetShortcutsBand]}>
                     <Pressable
                       onPress={() => router.push('/assets')}
                       style={({ pressed }) => [
                         styles.assetsBtn,
-                        { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : '#f4f6fb' },
-                        pressed && { opacity: 0.88 },
+                        { borderColor: outlineVariant, backgroundColor: surface },
+                        pressed && { opacity: 0.88, backgroundColor: surfaceMuted },
                       ]}
                       accessibilityRole="button"
                       accessibilityLabel="资产">
                       <MaterialIcons name="account-balance" size={18} color={primary} />
-                      <Text style={[styles.assetsBtnText, { color: text }]}>资产</Text>
+                      <Text style={[styles.assetsBtnText, { color: subtle }]}>资产</Text>
                     </Pressable>
                     <Pressable
                       onPress={() => router.push('/scheduled-expenses')}
                       style={({ pressed }) => [
                         styles.assetsBtn,
-                        { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : '#f4f6fb' },
-                        pressed && { opacity: 0.88 },
+                        { borderColor: outlineVariant, backgroundColor: surface },
+                        pressed && { opacity: 0.88, backgroundColor: surfaceMuted },
                       ]}
                       accessibilityRole="button"
                       accessibilityLabel="定时支出">
                       <MaterialIcons name="event-repeat" size={18} color={primary} />
-                      <Text style={[styles.assetsBtnText, { color: text }]}>定时支出</Text>
+                      <Text style={[styles.assetsBtnText, { color: subtle }]}>定时支出</Text>
                     </Pressable>
                     <Pressable
                       onPress={() => router.push('/cash-flow')}
                       style={({ pressed }) => [
                         styles.assetsBtn,
-                        { backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : '#f4f6fb' },
-                        pressed && { opacity: 0.88 },
+                        { borderColor: outlineVariant, backgroundColor: surface },
+                        pressed && { opacity: 0.88, backgroundColor: surfaceMuted },
                       ]}
                       accessibilityRole="button"
                       accessibilityLabel="现金流图">
                       <MaterialIcons name="show-chart" size={18} color={primary} />
-                      <Text style={[styles.assetsBtnText, { color: text }]}>现金流</Text>
+                      <Text style={[styles.assetsBtnText, { color: subtle }]}>现金流</Text>
                     </Pressable>
                   </View>
             </View>
@@ -3604,7 +3673,7 @@ export default function FinanceScreen() {
                       style={[
                         styles.accountValue,
                         {
-                          color: isFinanceLiabilityAccount(acc) ? '#dc2626' : text,
+                          color: isFinanceLiabilityAccount(acc) ? danger : text,
                         },
                       ]}>
                       {formatCurrencyBalanceForAccount(acc)}
@@ -3642,7 +3711,7 @@ export default function FinanceScreen() {
                   </Text>
                 </View>
                 <View style={styles.dayGroupTotals}>
-                  <Text style={[styles.dayGroupTotalText, { color: '#dc2626' }]}>
+                  <Text style={[styles.dayGroupTotalText, { color: danger }]}>
                     支 {formatCurrencyWithDecimals(todayExpenseTotal)}
                   </Text>
                   <Text style={[styles.dayGroupTotalText, { color: secondary }]}>
@@ -3760,7 +3829,7 @@ export default function FinanceScreen() {
                       <Text style={[styles.dayGroupSub, { color: subtle }]}>{daySub}</Text>
                     </View>
                     <View style={styles.dayGroupTotals}>
-                      <Text style={[styles.dayGroupTotalText, { color: '#dc2626' }]}>
+                      <Text style={[styles.dayGroupTotalText, { color: danger }]}>
                         支 {formatCurrencyWithDecimals(section.expense)}
                       </Text>
                       <Text style={[styles.dayGroupTotalText, { color: secondary }]}>
@@ -4971,7 +5040,7 @@ export default function FinanceScreen() {
                   <Text style={[styles.budgetHintLabel, { color: subtle }]}>
                     {isTodayBudgetOver ? '今日超出预算' : '今日可用预算'}
                   </Text>
-                  <Text style={[styles.budgetHintValue, { color: isTodayBudgetOver ? '#dc2626' : primary }]}>
+                  <Text style={[styles.budgetHintValue, { color: isTodayBudgetOver ? danger : primary }]}>
                     {showNetAmounts
                       ? formatCurrencyWithDecimals(
                           isTodayBudgetOver ? todayBudgetOverAmount : todayAvailableAmount,
@@ -4995,7 +5064,7 @@ export default function FinanceScreen() {
                       <Text
                         style={[
                           styles.budgetHintMetaText,
-                          { color: isTodayBudgetOver ? (isDark ? '#f87171' : '#dc2626') : primary },
+                          { color: isTodayBudgetOver ? danger : primary },
                         ]}>
                         日均可支配 {formatCurrencyWithDecimals(dailyBudgetAmount)} · 今日已用{' '}
                         {formatCurrencyWithDecimals(todayBudgetExpenseTotal)}
@@ -5129,8 +5198,21 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   budgetOverviewCard: {
-    paddingTop: 18,
+    paddingTop: Spacing['4xl'],
+    paddingBottom: Spacing['3xl'],
     gap: 0,
+  },
+  budgetHeroBand: {
+    gap: 0,
+  },
+  budgetNetBand: {
+    marginTop: Spacing['4xl'],
+    paddingTop: Spacing['4xl'],
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  budgetShortcutsBand: {
+    marginTop: Spacing['4xl'],
+    paddingTop: Spacing.xl,
   },
   budgetTopRow: {
     flexDirection: 'row',
@@ -5185,7 +5267,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   budgetSurplusValue: {
-    fontSize: 28,
+    fontSize: 30,
     fontWeight: '900',
     letterSpacing: -0.9,
     flexShrink: 1,
@@ -5242,15 +5324,15 @@ const styles = StyleSheet.create({
     maxWidth: 78,
   },
   budgetRingLabel: {
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: '800',
     textAlign: 'center',
-    lineHeight: 12,
+    lineHeight: 14,
     letterSpacing: 0.2,
   },
   budgetRingValue: {
     marginTop: 2,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '900',
     letterSpacing: -0.2,
     textAlign: 'center',
@@ -5337,7 +5419,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   budgetNetTitle: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
     letterSpacing: -0.2,
   },
@@ -5381,12 +5463,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0.1,
   },
   budgetNetAmount: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '900',
-    letterSpacing: -0.6,
+    letterSpacing: -0.5,
   },
   trendChartWrap: {
-    marginTop: 12,
+    marginTop: 10,
     width: '100%',
   },
   trendChartPlot: {
@@ -5422,11 +5504,11 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   trendChartHint: {
-    marginTop: 8,
-    fontSize: 10,
+    marginTop: 6,
+    fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.1,
-    opacity: 0.8,
+    opacity: 0.75,
   },
   netAccent: {
     position: 'absolute',
@@ -5529,13 +5611,14 @@ const styles = StyleSheet.create({
   },
   assetsBtn: {
     flex: 1,
-    borderRadius: 12,
-    paddingVertical: 12,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 10,
     paddingHorizontal: 8,
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 4,
   },
   assetsBtnText: {
     fontSize: 12,

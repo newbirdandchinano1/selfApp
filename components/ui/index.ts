@@ -3,7 +3,9 @@ export { ScreenLoadingShell, type ScreenLoadingShellProps } from '../screen-load
 export { PullRefreshScrollView, type PullRefreshScrollViewProps } from '../pull-refresh-scroll-view';
 export { AppButton, type AppButtonProps, type AppButtonSize, type AppButtonVariant } from './app-button';
 export { AppCard, type AppCardProps, type AppCardVariant } from './app-card';
+export { AppIcon, type AppIconName, type AppIconProps } from './app-icon';
 export { AppIconButton, type AppIconButtonProps } from './app-icon-button';
 export { AppInput, type AppInputProps } from './app-input';
 export { AppScreen, type AppScreenProps } from './app-screen';
+export { AppText, type AppTextProps } from './app-text';
 export { ScreenHeader, ScreenHeaderIconAction, type ScreenHeaderProps } from './screen-header';
