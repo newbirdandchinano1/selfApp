@@ -38,24 +38,3 @@ export type AiFinanceDashboardPayload = {
   income_forecast_12: number[];
   surplus_forecast_12: number[];
 };
-
-export type VisionWallAiSection = {
-  title: string;
-  body: string;
-};
-
-export type VisionWallAiPerGoalRow = {
-  goal_id: string;
-  title: string;
-  feasibility_level: string;
-  remain_assessment: string;
-  optimization: string;
-};
-
-export type VisionWallAiAssessmentPayload = {
-  feasibility_score: number;
-  headline: string;
-  sections: VisionWallAiSection[];
-  per_goal: VisionWallAiPerGoalRow[];
-  closing_summary: string;
-};

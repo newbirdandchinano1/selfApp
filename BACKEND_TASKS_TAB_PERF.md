@@ -41,7 +41,7 @@ GET /api/pages/projects?...
 GET /api/pages/tasks/habits-grid
 GET /api/pages/tasks/today-frogs
 GET /api/pages/tasks/completion-heatmap
-GET /api/app/wish-board/balance   （积分，已有）
+GET /api/app/points/balance   （积分，已有）
 ```
 
 **禁止**再为上述任一接口失败而降级到 `/api/data/*` List。

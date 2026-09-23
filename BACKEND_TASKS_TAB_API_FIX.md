@@ -35,7 +35,7 @@ GET /api/pages/projects?...
 GET /api/pages/tasks/habits-grid
 GET /api/pages/tasks/today-frogs
 GET /api/pages/tasks/completion-heatmap
-GET /api/app/wish-board/balance
+GET /api/app/points/balance
 ```
 
 抓包若再出现 `/api/data/habits`、`/api/data/habit_check_ins`、`/api/data/tasks`，视为回归，不要用「前端再降级 List」来修。

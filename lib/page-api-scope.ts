@@ -31,8 +31,6 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   cash_flow_holdings: [TAB_PAGE_KEYS.finance],
   cash_flow_expense_lines: [TAB_PAGE_KEYS.finance],
   // 画像子页走 /api/pages/profile/*；dirty 仅用于 local-first 重读 SQLite
-  visions: [TAB_PAGE_KEYS.profile],
-  wish_items: [TAB_PAGE_KEYS.profile],
   points_wallet: [TAB_PAGE_KEYS.tasks],
   // 复盘表：dirty 仅用于 local-first 重读 SQLite；REST 走 /api/pages/review/*，禁止 List
   weekly_review_journal: [TAB_PAGE_KEYS.review],

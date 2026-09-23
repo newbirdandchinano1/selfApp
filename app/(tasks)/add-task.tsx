@@ -856,7 +856,7 @@ export default function AddTaskScreen() {
               <ComposerSectionHead
                 accentColor={colors.tertiary}
                 title="奖励积分"
-                description="完成任务后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动"
+                description="完成任务后计入积分；负数表示扣除，可含小数；0 表示无变动"
                 rightIcon="stars"
               />
               <ComposerEditorialCard>

@@ -68,6 +68,11 @@ export type FinanceSavingsGoalBlockProps = {
   surface: string;
   outlineVariant: string;
   tertiary: string;
+  /** 到目标日预计定时支出合计，抬高每日需存 */
+  scheduledDrainUntilTarget?: number;
+  /** 本周期定时支出预扣合计（展示用） */
+  scheduledBudgetDeduction?: number;
+  onGoalChange?: (goal: FinanceSavingsGoal | null) => void;
 };
 
 export function FinanceSavingsGoalBlock({
@@ -83,6 +88,9 @@ export function FinanceSavingsGoalBlock({
   surface,
   outlineVariant,
   tertiary,
+  scheduledDrainUntilTarget = 0,
+  scheduledBudgetDeduction = 0,
+  onGoalChange,
 }: FinanceSavingsGoalBlockProps) {
   const insets = useSafeAreaInsets();
   const [goal, setGoal] = React.useState<FinanceSavingsGoal | null>(null);
@@ -105,8 +113,11 @@ export function FinanceSavingsGoalBlock({
   }, [reloadGoal]);
 
   const progress = React.useMemo(
-    () => (goal ? computeFinanceSavingsGoalProgress(goal, currentNetWorth, today) : null),
-    [goal, currentNetWorth, today],
+    () =>
+      goal
+        ? computeFinanceSavingsGoalProgress(goal, currentNetWorth, today, scheduledDrainUntilTarget)
+        : null,
+    [goal, currentNetWorth, today, scheduledDrainUntilTarget],
   );
 
   const openSheet = React.useCallback(() => {
@@ -203,13 +214,14 @@ export function FinanceSavingsGoalBlock({
       };
       await persistFinanceSavingsGoal(next);
       setGoal(next);
+      onGoalChange?.(next);
       closeSheet();
     } catch (e) {
       Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后重试。');
     } finally {
       setSaving(false);
     }
-  }, [amountDraft, currentNetWorth, dateDraft, formatCurrency, today, closeSheet]);
+  }, [amountDraft, currentNetWorth, dateDraft, formatCurrency, today, closeSheet, onGoalChange]);
 
   const handleClear = React.useCallback(() => {
     Alert.alert('清除存款目标', '确定清除当前预期存款目标吗？', [
@@ -222,6 +234,7 @@ export function FinanceSavingsGoalBlock({
             try {
               await clearFinanceSavingsGoal();
               setGoal(null);
+              onGoalChange?.(null);
               closeSheet();
             } catch {
               Alert.alert('清除失败', '请稍后重试。');
@@ -230,7 +243,7 @@ export function FinanceSavingsGoalBlock({
         },
       },
     ]);
-  }, [closeSheet]);
+  }, [closeSheet, onGoalChange]);
 
   if (!loaded) return null;
 
@@ -242,35 +255,43 @@ export function FinanceSavingsGoalBlock({
     (calendarMonth.getFullYear() === minDate.getFullYear() &&
       calendarMonth.getMonth() > minDate.getMonth());
   const monthTitle = `${calendarMonth.getFullYear()}年${calendarMonth.getMonth() + 1}月`;
+  const hasScheduledHint = scheduledBudgetDeduction > 0 || scheduledDrainUntilTarget > 0;
 
   return (
     <>
-      <View style={[styles.divider, { backgroundColor: outlineVariant }]} />
+      {/* 与预算进度合并为同一视觉行：左预算预扣提示 / 右预期存款 */}
+      <View
+        style={[
+          styles.mergedRow,
+          {
+            backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : '#f7f9fd',
+            borderColor: outlineVariant,
+          },
+        ]}>
+        <View style={styles.mergedBudgetCol}>
+          <Text style={[styles.mergedKicker, { color: subtle }]}>定时预扣</Text>
+          <Text style={[styles.mergedValue, { color: text }]} numberOfLines={1}>
+            {showAmounts
+              ? scheduledBudgetDeduction > 0
+                ? formatCurrency(scheduledBudgetDeduction)
+                : '—'
+              : hiddenAmountText}
+          </Text>
+          <Text style={[styles.mergedHint, { color: subtle }]} numberOfLines={1}>
+            {hasScheduledHint ? '已从本周期预算扣除' : '在「定时支出」中设置'}
+          </Text>
+        </View>
 
-      {!goal || !progress ? (
+        <View style={[styles.mergedDivider, { backgroundColor: outlineVariant }]} />
+
         <Pressable
           onPress={openSheet}
-          style={({ pressed }) => [styles.emptyRow, pressed && { opacity: 0.78 }]}
+          style={({ pressed }) => [styles.mergedSavingsCol, pressed && { opacity: 0.82 }]}
           accessibilityRole="button"
-          accessibilityLabel="设置预期存款目标">
-          <View style={styles.emptyLeft}>
-            <MaterialIcons name="flag" size={18} color={primary} />
-            <View style={styles.emptyTextCol}>
-              <Text style={[styles.emptyTitle, { color: text }]}>预期存款目标</Text>
-              <Text style={[styles.emptyHint, { color: subtle }]}>设定目标金额与日期，查看每日需存</Text>
-            </View>
-          </View>
-          <MaterialIcons name="add-circle-outline" size={22} color={primary} />
-        </Pressable>
-      ) : (
-        <Pressable
-          onPress={openSheet}
-          style={({ pressed }) => [styles.goalBlock, pressed && { opacity: 0.82 }]}
-          accessibilityRole="button"
-          accessibilityLabel="编辑预期存款目标">
-          <View style={styles.goalHeader}>
-            <View style={styles.goalTitleRow}>
-              <Text style={[styles.goalTitle, { color: subtle }]}>预期存款目标</Text>
+          accessibilityLabel={goal ? '编辑预期存款目标' : '设置预期存款目标'}>
+          <View style={styles.mergedSavingsHeader}>
+            <Text style={[styles.mergedKicker, { color: subtle }]}>预期存款</Text>
+            {goal && progress ? (
               <View
                 style={[
                   styles.countdownBadge,
@@ -308,49 +329,40 @@ export function FinanceSavingsGoalBlock({
                     : formatSavingsGoalCountdownLabel(progress.daysLeft, goal.targetDate, today)}
                 </Text>
               </View>
-            </View>
-            <MaterialIcons name="edit" size={16} color={subtle} />
+            ) : (
+              <MaterialIcons name="add-circle-outline" size={16} color={primary} />
+            )}
           </View>
-
-          <View style={styles.goalAmountRow}>
-            <Text style={[styles.goalAmount, { color: text }]}>
-              {showAmounts ? formatCurrency(goal.targetAmount) : hiddenAmountText}
-            </Text>
-            <Text style={[styles.goalDeadline, { color: subtle }]}>
-              截止 {formatSavingsGoalDateLabel(goal.targetDate)}
-            </Text>
-          </View>
-
-          <View
-            style={[
-              styles.dailyCard,
-              {
-                backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : '#f7f9fd',
-                borderColor: outlineVariant,
-              },
-            ]}>
-            <Text style={[styles.dailyLabel, { color: subtle }]}>
-              {progress.achieved ? '每日目标' : '每日需存'}
-            </Text>
-            <Text
-              style={[
-                styles.dailyValue,
-                { color: progress.achieved ? (isDark ? '#4ade80' : '#16a34a') : text },
-              ]}>
-              {showAmounts
-                ? progress.achieved
-                  ? '¥0'
-                  : formatCurrency(progress.dailyTarget)
-                : hiddenAmountText}
-            </Text>
-            <Text style={[styles.dailyHint, { color: subtle }]}>
-              {progress.achieved
-                ? '当前净资产已达到或超过目标'
-                : `距目标还差 ${showAmounts ? formatCurrency(progress.gap) : hiddenAmountText} · 含今天共 ${progress.daysLeft} 天`}
-            </Text>
-          </View>
+          {!goal || !progress ? (
+            <>
+              <Text style={[styles.mergedValue, { color: primary }]}>设置目标</Text>
+              <Text style={[styles.mergedHint, { color: subtle }]} numberOfLines={1}>
+                设定金额与日期
+              </Text>
+            </>
+          ) : (
+            <>
+              <Text
+                style={[
+                  styles.mergedValue,
+                  { color: progress.achieved ? (isDark ? '#4ade80' : '#16a34a') : text },
+                ]}
+                numberOfLines={1}>
+                {showAmounts
+                  ? progress.achieved
+                    ? '¥0 / 日'
+                    : `${formatCurrency(progress.dailyTarget)} / 日`
+                  : hiddenAmountText}
+              </Text>
+              <Text style={[styles.mergedHint, { color: subtle }]} numberOfLines={1}>
+                {progress.achieved
+                  ? '已达目标净资产'
+                  : `目标 ${showAmounts ? formatCurrency(goal.targetAmount) : hiddenAmountText}`}
+              </Text>
+            </>
+          )}
         </Pressable>
-      )}
+      </View>
 
       <Modal visible={sheetVisible} animationType="slide" transparent onRequestClose={closeSheet}>
         <KeyboardAvoidingView
@@ -565,101 +577,61 @@ export function FinanceSavingsGoalBlock({
 }
 
 const styles = StyleSheet.create({
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    marginTop: 18,
-    marginBottom: 14,
-  },
-  emptyRow: {
+  mergedRow: {
+    marginTop: 14,
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingVertical: 2,
+    alignItems: 'stretch',
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
   },
-  emptyLeft: {
+  mergedBudgetCol: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  emptyTextCol: {
-    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     gap: 2,
   },
-  emptyTitle: {
+  mergedSavingsCol: {
+    flex: 1.15,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 2,
+  },
+  mergedDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: 'stretch',
+  },
+  mergedKicker: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  mergedValue: {
     fontSize: 15,
     fontWeight: '800',
     letterSpacing: -0.2,
+    marginTop: 2,
   },
-  emptyHint: {
-    fontSize: 12,
+  mergedHint: {
+    fontSize: 11,
     fontWeight: '500',
-    lineHeight: 16,
+    lineHeight: 14,
+    marginTop: 1,
   },
-  goalBlock: {
-    gap: 10,
-  },
-  goalHeader: {
+  mergedSavingsHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
-  },
-  goalTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flex: 1,
-  },
-  goalTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.1,
+    gap: 6,
   },
   countdownBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     borderRadius: 999,
   },
   countdownText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
-  },
-  goalAmountRow: {
-    gap: 2,
-  },
-  goalAmount: {
-    fontSize: 22,
-    fontWeight: '900',
-    letterSpacing: -0.5,
-  },
-  goalDeadline: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  dailyCard: {
-    marginTop: 2,
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 4,
-  },
-  dailyLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  dailyHint: {
-    fontSize: 11,
-    fontWeight: '500',
-    lineHeight: 15,
-    marginTop: 2,
-  },
-  dailyValue: {
-    fontSize: 18,
-    fontWeight: '900',
-    letterSpacing: -0.3,
   },
   kav: {
     flex: 1,

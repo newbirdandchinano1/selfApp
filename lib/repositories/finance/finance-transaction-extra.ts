@@ -2,14 +2,14 @@
  * 财务流水 `extra_data`（JSON）中与预算相关的字段。
  * `exclude_from_budget === true` 时，该笔支出不计入首页月度预算已用与今日可用计算；
  * 收入标记为排除时亦不计入预算总额增加。
- * 含 `budget_fixed_expense_id` 的固定支出快速支付流水亦不计入（该金额已在月预算中预扣）。
+ * 定时支出若开启「预扣预算」，自动记账流水也会带 exclude（金额已在周期预算中预扣）。
  */
 export const FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET = 'exclude_from_budget' as const;
 
-/** 由「固定支出快速支付」创建的流水，值为对应 `BudgetFixedExpense.id`。 */
+/** @deprecated 历史固定支出快速支付字段，仅兼容旧流水。 */
 export const FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_ID = 'budget_fixed_expense_id' as const;
 
-/** 标记流水由固定支出快速支付创建（与 `budget_fixed_expense_id` 成对出现）。 */
+/** @deprecated 历史固定支出快速支付标记。 */
 export const FINANCE_TXN_EXTRA_BUDGET_FIXED_EXPENSE_PAY = 'budget_fixed_expense_pay' as const;
 
 /** 由定时支出自动创建的流水，值为对应 `ScheduledFinanceExpense.id`。 */

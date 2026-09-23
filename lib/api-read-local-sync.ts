@@ -50,8 +50,6 @@ const API_RECONCILE_SKIP_TABLES = new Set([
   'frog_completion_events',
   /** 健康专用列表仅近 30 天，避免 reconcile 误删更早本地记录 */
   'health_records',
-  /** 心愿列表专用接口只返回 active，避免 reconcile 误删已兑换心愿 */
-  'wish_board_items',
   'points_ledger',
 ]);
 

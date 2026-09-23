@@ -13,9 +13,6 @@ export type {
   DailyIntakeTargetsEstimateJson,
   FoodNutritionJson,
   FoodTextIntakeJson,
-  VisionWallAiAssessmentPayload,
-  VisionWallAiPerGoalRow,
-  VisionWallAiSection,
 } from '@/lib/ai-types';
 
 import type {
@@ -23,7 +20,6 @@ import type {
   DailyIntakeTargetsEstimateJson,
   FoodNutritionJson,
   FoodTextIntakeJson,
-  VisionWallAiAssessmentPayload,
 } from '@/lib/ai-types';
 
 const FOOD_NUTRITION_FALLBACK: FoodNutritionJson = {
@@ -534,38 +530,6 @@ export async function analyzeCashFlowDashboardFromText(
   }
 }
 
-export type AnalyzeWishListRationalReviewFromTextOptions = {
-  apiKey: string;
-  contextText: string;
-  maxAttempts?: number;
-  retryDelayMs?: number;
-};
-
-export type AnalyzeWishListRationalReviewFromTextResult =
-  | { ok: true; headline: string; review: string; rawContent: string; attempts: number }
-  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
-
-export async function analyzeWishListRationalReviewFromText(
-  options: AnalyzeWishListRationalReviewFromTextOptions,
-): Promise<AnalyzeWishListRationalReviewFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
-  const text = options.contextText.trim();
-  if (!text) return { ok: false, error: '清单上下文为空', attempts: 0 };
-  try {
-    const data = await aiApi.aiWishListRationalReview({ context_text: text });
-    return {
-      ok: true,
-      headline: data.headline,
-      review: data.review,
-      rawContent: JSON.stringify(data),
-      attempts: 1,
-    };
-  } catch (e) {
-    const err = mapApiError(e);
-    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
-  }
-}
-
 export type AnalyzeFinanceTxnCommentFromTextOptions = {
   apiKey: string;
   summaryText: string;
@@ -585,32 +549,6 @@ export async function analyzeFinanceTxnCommentFromText(
   if (!text) return { ok: false, error: '摘要为空', attempts: 0 };
   try {
     const { comment } = await aiApi.aiFinanceTxnComment({ summary_text: text });
-    return { ok: true, comment, rawContent: JSON.stringify({ comment }), attempts: 1 };
-  } catch (e) {
-    const err = mapApiError(e);
-    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
-  }
-}
-
-export type AnalyzeWishItemAiCommentFromTextOptions = {
-  apiKey: string;
-  summaryText: string;
-  maxAttempts?: number;
-  retryDelayMs?: number;
-};
-
-export type AnalyzeWishItemAiCommentFromTextResult =
-  | { ok: true; comment: string; rawContent: string; attempts: number }
-  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
-
-export async function analyzeWishItemAiCommentFromText(
-  options: AnalyzeWishItemAiCommentFromTextOptions,
-): Promise<AnalyzeWishItemAiCommentFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
-  const text = options.summaryText.trim();
-  if (!text) return { ok: false, error: '摘要为空', attempts: 0 };
-  try {
-    const { comment } = await aiApi.aiWishItemComment({ summary_text: text });
     return { ok: true, comment, rawContent: JSON.stringify({ comment }), attempts: 1 };
   } catch (e) {
     const err = mapApiError(e);
@@ -672,42 +610,6 @@ export async function generateWeeklyReviewCoachingFromText(
   try {
     const { text } = await aiApi.aiWeeklyReviewCoaching({ user_prompt: userPrompt });
     return { ok: true, text, attempts: 1 };
-  } catch (e) {
-    const err = mapApiError(e);
-    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
-  }
-}
-
-export type AnalyzeVisionWallGoalsFromTextOptions = {
-  apiKey: string;
-  userDisplayName?: string;
-  planDigestText: string;
-  expectedGoalIds: string[];
-  maxAttempts?: number;
-  retryDelayMs?: number;
-};
-
-export type AnalyzeVisionWallGoalsFromTextResult =
-  | { ok: true; data: VisionWallAiAssessmentPayload; rawContent: string; attempts: number }
-  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
-
-export async function analyzeVisionWallGoalsFromText(
-  options: AnalyzeVisionWallGoalsFromTextOptions,
-): Promise<AnalyzeVisionWallGoalsFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
-  const planDigestText = options.planDigestText.trim();
-  if (!planDigestText) return { ok: false, error: '计划摘要为空', attempts: 0 };
-  const expectedGoalIds = options.expectedGoalIds.map(id => id.trim()).filter(Boolean);
-  if (expectedGoalIds.length === 0) {
-    return { ok: false, error: 'expected_goal_ids 为空', attempts: 0 };
-  }
-  try {
-    const data = await aiApi.aiVisionWallAssessment({
-      plan_digest_text: planDigestText,
-      expected_goal_ids: expectedGoalIds,
-      user_display_name: options.userDisplayName?.trim() || undefined,
-    });
-    return { ok: true, data, rawContent: JSON.stringify(data), attempts: 1 };
   } catch (e) {
     const err = mapApiError(e);
     return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };

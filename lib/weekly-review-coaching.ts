@@ -38,7 +38,6 @@ function buildMetricsBlock(m: WeeklyReviewMetrics | null): string {
     `习惯打卡合计: ${m.habitCheckInTotal} 次`,
     `存钱入账: ¥${m.savingsWeekTotal.toLocaleString('zh-CN')}`,
     `记账收入: ¥${m.financeIncome.toLocaleString('zh-CN')}，支出: ¥${m.financeExpense.toLocaleString('zh-CN')}`,
-    `心愿单更新: ${m.wishUpdates} 条`,
   ].join('\n');
 }
 

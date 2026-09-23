@@ -105,7 +105,8 @@ async function createScheduledExpenseTransaction(input: {
     [FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_SLOT]: buildScheduledExpenseSlotKey(item.id, ymd, slotIndex),
     category_key: item.categoryKey ?? null,
     category_label: item.categoryLabel ?? null,
-    ...budgetExtraPatchForTransaction('expense', item.includeInBudget),
+    // includeInBudget=true 表示预扣预算：自动记账不再计入「已用」；false 则按普通支出计入已用。
+    ...budgetExtraPatchForTransaction('expense', !item.includeInBudget),
   });
 
   const boundsErr = await validateFinanceTransactionBeforeSave({

@@ -16,7 +16,6 @@ export const API_ALLOWED_TABLES = new Set([
   'finance_flow_categories',
   'finance_transactions',
   'frog_completion_events',
-  'goal_dimensions',
   'habit_check_ins',
   'habit_contexts',
   'habits',
@@ -36,11 +35,8 @@ export const API_ALLOWED_TABLES = new Set([
   'task_items',
   'tasks',
   'users',
-  'visions',
   'weekly_review_journal',
-  'wish_items',
   'points_wallet',
-  'wish_board_items',
   'points_ledger',
 ]);
 

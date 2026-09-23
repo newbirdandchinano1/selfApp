@@ -10,7 +10,7 @@ import { normalizeRewardPoints, roundPoints } from '@/lib/reward-points';
 import {
   adjustPointsBalance,
   getLocalPointsBalance,
-} from '@/lib/repositories/wish-board/wish-board';
+} from '@/lib/repositories/points/points';
 import { getDatabase } from '@/lib/database';
 
 const REF_TYPE = 'health_metric';

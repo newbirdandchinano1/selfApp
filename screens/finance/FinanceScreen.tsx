@@ -56,10 +56,17 @@ import {
     persistBudgetRefreshDay,
     persistMonthBudgetSettings,
     resolvePeriodBudgetSurplus,
-    sumBudgetFixedExpenses,
-    type BudgetFixedExpense,
     type MonthBudgetSetting,
 } from '@/lib/finance-monthly-budget';
+import {
+    loadFinanceSavingsGoal,
+    financeSavingsGoalParseIsoDate,
+} from '@/lib/finance-savings-goal';
+import {
+    loadScheduledFinanceExpenses,
+    sumScheduledExpensesInRange,
+    type ScheduledFinanceExpense,
+} from '@/lib/finance-scheduled-expense';
 import { scheduleRunScheduledFinanceExpenses } from '@/lib/finance-scheduled-expense-runner';
 import { setFinanceSheetBridge } from '@/lib/finance-sheet-bridge';
 import { notifyFinanceSheetSaved, subscribeFinanceSheetSaved } from '@/lib/finance-sheet-controller';
@@ -95,7 +102,6 @@ import {
 import {
     budgetExtraPatchForTransaction,
     buildFinanceTransferTxnExtra,
-    getBudgetFixedExpenseIdFromTxnExtra,
     isFinanceTransactionExcludedFromBudget,
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
@@ -642,10 +648,8 @@ export default function FinanceScreen() {
   const [periodSurplusDraft, setPeriodSurplusDraft] = React.useState('');
   const [periodSurplusLoadedFromBudget, setPeriodSurplusLoadedFromBudget] = React.useState<number | null>(null);
   const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
-  const [fixedExpensesDraft, setFixedExpensesDraft] = React.useState<BudgetFixedExpense[]>([]);
-  const [payingFixedExpenseId, setPayingFixedExpenseId] = React.useState<string | null>(null);
-  /** 防止固定支出快速支付/撤销连点产生并发流水。 */
-  const fixedExpenseQuickPayLockRef = React.useRef<Set<string>>(new Set());
+  const [scheduledExpenses, setScheduledExpenses] = React.useState<ScheduledFinanceExpense[]>([]);
+  const [savingsGoalTargetDate, setSavingsGoalTargetDate] = React.useState<string | null>(null);
   /** 收支明细：除「今天」外，初次最多再展示的历史日数（2 → 今天+前两日共三天） */
   const INITIAL_HISTORY_DAY_SLICES = 2;
   /** 触底后继续加载的历史日数（按有记录的自然日聚合） */
@@ -845,6 +849,8 @@ export default function FinanceScreen() {
   React.useEffect(() => {
     void loadMonthBudgetSettings().then(setMonthBudgetSettings);
     void loadBudgetRefreshDay().then(setBudgetRefreshDay);
+    void loadScheduledFinanceExpenses().then(setScheduledExpenses);
+    void loadFinanceSavingsGoal().then((g) => setSavingsGoalTargetDate(g?.targetDate ?? null));
   }, []);
 
   const screenWidth = Dimensions.get('window').width;
@@ -1527,19 +1533,20 @@ export default function FinanceScreen() {
     [budgetPeriodTransactions]
   );
 
-  /** 本预算周期内，各固定支出快速支付产生的全部流水 ID（含连点竞态产生的重复记录）。 */
-  const budgetFixedExpenseTxnIdsByFixedId = React.useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const txn of budgetPeriodTransactions) {
-      if (txn.transaction_type !== 'expense') continue;
-      const fixedId = getBudgetFixedExpenseIdFromTxnExtra(txn.extra_data);
-      if (!fixedId) continue;
-      const list = map.get(fixedId) ?? [];
-      list.push(txn.id);
-      map.set(fixedId, list);
-    }
-    return map;
-  }, [budgetPeriodTransactions]);
+  /** 本预算周期定时支出预扣合计（接替原「每月固定支出」）。 */
+  const scheduledBudgetDeduction = React.useMemo(
+    () => sumScheduledExpensesInRange(scheduledExpenses, budgetPeriodStart, budgetPeriodEndExclusive),
+    [scheduledExpenses, budgetPeriodStart, budgetPeriodEndExclusive],
+  );
+
+  /** 到预期存款目标日（含）仍预计发生的定时支出，抬高每日需存。 */
+  const scheduledDrainUntilSavingsTarget = React.useMemo(() => {
+    if (!savingsGoalTargetDate) return 0;
+    const target = financeSavingsGoalParseIsoDate(savingsGoalTargetDate);
+    const endExclusive = new Date(target.getFullYear(), target.getMonth(), target.getDate() + 1);
+    return sumScheduledExpensesInRange(scheduledExpenses, today, endExclusive);
+  }, [scheduledExpenses, savingsGoalTargetDate, today]);
+
   const monthlySurplus = monthlyIncome - monthlyExpense;
   const savingsRate = monthlyIncome > 0 ? (monthlySurplus / monthlyIncome) * 100 : 0;
 
@@ -1586,20 +1593,18 @@ export default function FinanceScreen() {
   const effectiveBaseBudget =
     currentMonthKey in monthBudgetSettings ? monthBudgetSettings[currentMonthKey]!.baseAmount : 0;
   const includeLastBalanceEffective = persistedBudgetSetting?.includeLastBalance ?? false;
-  const persistedFixedExpensesTotal = sumBudgetFixedExpenses(persistedBudgetSetting?.fixedExpenses);
   const grossBudgetAmount = includeLastBalanceEffective
     ? effectiveBaseBudget + lastMonthRemaining
     : effectiveBaseBudget;
   const budgetTotalAmount = Math.max(
     0,
-    grossBudgetAmount - persistedFixedExpensesTotal + monthlyBudgetIncome,
+    grossBudgetAmount - scheduledBudgetDeduction + monthlyBudgetIncome,
   );
   const parsedBudgetDraft = parseFloat(budgetBaseDraft.trim().replace(/,/g, ''));
   const baseForBudgetPreview =
     Number.isFinite(parsedBudgetDraft) && parsedBudgetDraft >= 0 ? parsedBudgetDraft : effectiveBaseBudget;
-  const previewFixedExpensesTotal = sumBudgetFixedExpenses(fixedExpensesDraft);
   const budgetPreviewGross = modalIncludeLast ? baseForBudgetPreview + lastMonthRemaining : baseForBudgetPreview;
-  const budgetPreviewTotal = Math.max(0, budgetPreviewGross - previewFixedExpensesTotal + monthlyBudgetIncome);
+  const budgetPreviewTotal = Math.max(0, budgetPreviewGross - scheduledBudgetDeduction + monthlyBudgetIncome);
   const autoPeriodSurplusPreview = budgetPreviewTotal - monthlyBudgetExpense;
   /**
    * 页面主展示始终按「预算总额 - 已用」实时计算，避免预算结余被手动草稿值或旧的覆盖值锁死。
@@ -1613,7 +1618,7 @@ export default function FinanceScreen() {
     Math.abs(parsedPeriodSurplusDraft - periodSurplusLoadedFromBudget) >= 0.005;
   const budgetUsedPercentRaw = budgetTotalAmount > 0 ? (monthlyBudgetExpense / budgetTotalAmount) * 100 : 0;
   const budgetUsedPercent = Math.min(100, Math.max(0, budgetUsedPercentRaw));
-  /** 调整预算弹层打开时用草稿预览，使「今日可用」与固定支出/基数/结余编辑同步。 */
+  /** 调整预算弹层打开时用草稿预览，使「今日可用」与定时预扣/基数/结余编辑同步。 */
   const todayBudgetTotalAmount = isBudgetAdjustVisible ? budgetPreviewTotal : budgetTotalAmount;
   const todayBudgetSurplusAmount = isBudgetAdjustVisible
     ? Number.isFinite(parsedPeriodSurplusDraft)
@@ -2370,6 +2375,12 @@ export default function FinanceScreen() {
         setMonthBudgetSettings(settings);
         const rd = await loadBudgetRefreshDay();
         setBudgetRefreshDay(rd);
+        const [scheduled, savingsGoal] = await Promise.all([
+          loadScheduledFinanceExpenses(),
+          loadFinanceSavingsGoal(),
+        ]);
+        setScheduledExpenses(scheduled);
+        setSavingsGoalTargetDate(savingsGoal?.targetDate ?? null);
         await loadFinanceLastUsedAccountId();
 
         if (forceApi || !financeTransactionsRef.current.length) {
@@ -2487,24 +2498,17 @@ export default function FinanceScreen() {
     setIsBudgetAdjustVisible(false);
   }, []);
 
-  const newBudgetFixedExpenseId = React.useCallback(
-    () => makeTimestampEntityId('mfe_', 8),
-    [],
-  );
-
   const openBudgetAdjust = React.useCallback(() => {
     const row = monthBudgetSettings[currentMonthKey];
     const base = row ? row.baseAmount : 0;
     const inc = row?.includeLastBalance ?? false;
-    const fixedTotal = sumBudgetFixedExpenses(row?.fixedExpenses);
     const gross = inc ? base + lastMonthRemaining : base;
-    const totalWithIncome = Math.max(0, gross - fixedTotal + monthlyBudgetIncome);
+    const totalWithIncome = Math.max(0, gross - scheduledBudgetDeduction + monthlyBudgetIncome);
     const autoSurplus = totalWithIncome - monthlyBudgetExpense;
     setBudgetBaseDraft(base.toFixed(2));
     setPeriodSurplusDraft(autoSurplus.toFixed(2));
     setPeriodSurplusLoadedFromBudget(autoSurplus);
     setModalIncludeLast(inc);
-    setFixedExpensesDraft(row?.fixedExpenses ? row.fixedExpenses.map((item) => ({ ...item })) : []);
     setBudgetRefreshDayDraft(budgetRefreshDay);
     setIsBudgetAdjustVisible(true);
   }, [
@@ -2514,200 +2518,8 @@ export default function FinanceScreen() {
     monthBudgetSettings,
     monthlyBudgetExpense,
     monthlyBudgetIncome,
+    scheduledBudgetDeduction,
   ]);
-
-  const handleAddFixedExpense = React.useCallback(() => {
-    setFixedExpensesDraft((prev) => [...prev, { id: newBudgetFixedExpenseId(), name: '', amount: 0 }]);
-  }, [newBudgetFixedExpenseId]);
-
-  const handleUpdateFixedExpense = React.useCallback(
-    (id: string, patch: Partial<Pick<BudgetFixedExpense, 'name' | 'amount'>>) => {
-      setFixedExpensesDraft((prev) =>
-        prev.map((item) => (item.id === id ? { ...item, ...patch } : item)),
-      );
-    },
-    [],
-  );
-
-  const handleDeleteFixedExpense = React.useCallback((id: string, name: string) => {
-    Alert.alert('删除固定支出', `确定删除「${name || '未命名'}」？`, [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '删除',
-        style: 'destructive',
-        onPress: () => setFixedExpensesDraft((prev) => prev.filter((item) => item.id !== id)),
-      },
-    ]);
-  }, []);
-
-  const isFixedExpensePayable = React.useCallback((item: BudgetFixedExpense) => {
-    return item.name.trim().length > 0 && Number.isFinite(item.amount) && item.amount > 0;
-  }, []);
-
-  const handleQuickPayFixedExpense = React.useCallback(
-    (item: BudgetFixedExpense) => {
-      const title = item.name.trim();
-      if (!title || !(item.amount > 0)) return;
-      if (fixedExpenseQuickPayLockRef.current.has(item.id)) return;
-
-      const accountId = getDefaultSheetAccountIdForTab('expense', financeAccounts);
-      const account =
-        (accountId ? financeAccounts.find((a) => a.id === accountId) : null) ?? financeAccounts[0] ?? null;
-      if (!account) {
-        Alert.alert('暂无账户', '请先添加可用于支付的账户。');
-        return;
-      }
-
-      const existingTxnIds = budgetFixedExpenseTxnIdsByFixedId.get(item.id) ?? [];
-      const isUndo = existingTxnIds.length > 0;
-
-      fixedExpenseQuickPayLockRef.current.add(item.id);
-      setPayingFixedExpenseId(item.id);
-      markPageDirty();
-
-      void (async () => {
-        try {
-          if (!isUndo) {
-            const amountAbs = item.amount;
-            const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, amountAbs);
-            const boundsErr = await validateFinanceTransactionBeforeSave({
-              accountId: account.id,
-              transactionType: 'expense',
-              amount: signedAmount,
-              extraData: null,
-              accountName: account.name,
-              uiLedgerBalance: account.balance,
-            });
-            if (boundsErr) {
-              Alert.alert('无法记账', boundsErr);
-              return;
-            }
-          }
-          if (isUndo) {
-            for (const txnId of existingTxnIds) {
-              await deleteFinanceTransaction(txnId);
-            }
-          } else {
-            const cat = expenseCategories[0];
-            const txnId = makeTimestampEntityId('ft_', 8);
-            const amountAbs = item.amount;
-            const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, amountAbs);
-            await createFinanceTransaction({
-              id: txnId,
-              name: title,
-              happened_at: formatFinanceHappenedAt(new Date()),
-              account_id: account.id,
-              transaction_type: 'expense',
-              amount: signedAmount,
-              note: '固定支出快速支付',
-              extra_data: JSON.stringify({
-                manual: true,
-                exclude_from_budget: true,
-                budget_fixed_expense_pay: true,
-                budget_fixed_expense_id: item.id,
-                budget_month_key: currentMonthKey,
-                category_key: cat?.key ?? null,
-                category_label: cat?.label ?? null,
-              }),
-            });
-          }
-          await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
-          setSelectedNetTrendIndex((prev) => {
-            const last = netTrendPointCountRef.current - 1;
-            return last >= 0 ? last : prev;
-          });
-        } catch (error) {
-          console.warn(isUndo ? 'Failed to undo fixed expense quick pay:' : 'Failed to quick-pay fixed expense:', error);
-          Alert.alert(
-            isUndo ? '撤销失败' : '支付失败',
-            error instanceof Error && error.message.trim()
-              ? error.message
-              : isUndo
-                ? '无法撤销支付记录，请稍后重试。'
-                : '记录保存失败，请稍后重试。',
-          );
-        } finally {
-          fixedExpenseQuickPayLockRef.current.delete(item.id);
-          setPayingFixedExpenseId(null);
-        }
-      })();
-    },
-    [
-      budgetFixedExpenseTxnIdsByFixedId,
-      currentMonthKey,
-      expenseCategories,
-      financeAccounts,
-      getDefaultSheetAccountIdForTab,
-      loadFinanceAccounts,
-      loadFinanceTransactions,
-      markPageDirty,
-    ],
-  );
-
-  const renderFixedExpensePayButton = React.useCallback(
-    (item: BudgetFixedExpense) => {
-      if (!isFixedExpensePayable(item)) return null;
-      const isPaid = (budgetFixedExpenseTxnIdsByFixedId.get(item.id)?.length ?? 0) > 0;
-      const isBusy = payingFixedExpenseId === item.id;
-      return (
-        <Pressable
-          onPress={() => handleQuickPayFixedExpense(item)}
-          disabled={isBusy}
-          style={({ pressed }) => [
-            styles.budgetFixedExpensePayBtn,
-            {
-              borderColor: isPaid ? (isDark ? 'rgba(34,197,94,0.45)' : '#bbf7d0') : outlineVariant,
-              backgroundColor: isPaid
-                ? isDark
-                  ? 'rgba(34,197,94,0.14)'
-                  : '#f0fdf4'
-                : isDark
-                  ? 'rgba(96,165,250,0.12)'
-                  : '#eff6ff',
-              opacity: pressed || isBusy ? 0.78 : 1,
-            },
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel={isPaid ? `撤销${item.name}的快速支付` : `快速支付${item.name}`}>
-          {isBusy ? (
-            <ActivityIndicator size="small" color={primary} />
-          ) : (
-            <>
-              <MaterialIcons
-                name={isPaid ? 'check-circle' : 'payments'}
-                size={16}
-                color={isPaid ? '#16a34a' : primary}
-              />
-              <Text style={[styles.budgetFixedExpensePayText, { color: isPaid ? '#16a34a' : primary }]}>
-                {isPaid ? '已付' : '支付'}
-              </Text>
-            </>
-          )}
-        </Pressable>
-      );
-    },
-    [
-      handleQuickPayFixedExpense,
-      isDark,
-      isFixedExpensePayable,
-      outlineVariant,
-      budgetFixedExpenseTxnIdsByFixedId,
-      payingFixedExpenseId,
-      primary,
-    ],
-  );
-
-  const sanitizeFixedExpensesDraft = React.useCallback((): BudgetFixedExpense[] => {
-    const out: BudgetFixedExpense[] = [];
-    for (const item of fixedExpensesDraft) {
-      const name = item.name.trim();
-      const amount = item.amount;
-      if (!name) continue;
-      if (!Number.isFinite(amount) || amount <= 0) continue;
-      out.push({ id: item.id, name, amount });
-    }
-    return out;
-  }, [fixedExpensesDraft]);
 
   const handleSaveBudgetAdjust = React.useCallback(() => {
     const normalized = budgetBaseDraft.trim().replace(/,/g, '');
@@ -2716,25 +2528,14 @@ export default function FinanceScreen() {
       Alert.alert('金额无效', '请输入大于等于 0 的月预算基数。');
       return;
     }
-    const incompleteFixed = fixedExpensesDraft.some((item) => {
-      const hasName = item.name.trim().length > 0;
-      const hasAmount = Number.isFinite(item.amount) && item.amount > 0;
-      return (hasName && !hasAmount) || (!hasName && hasAmount);
-    });
-    if (incompleteFixed) {
-      Alert.alert('固定支出未填完整', '请为每条固定支出填写名称和大于 0 的金额，或删除空白行。');
-      return;
-    }
     const surplusNormalized = periodSurplusDraft.trim().replace(/,/g, '');
     const surplusN = parseFloat(surplusNormalized);
     if (!Number.isFinite(surplusN)) {
       Alert.alert('金额无效', '请输入有效的本周期预算结余。');
       return;
     }
-    const fixedExpenses = sanitizeFixedExpensesDraft();
     const previewGross = modalIncludeLast ? n + lastMonthRemaining : n;
-    const previewFixedTotal = sumBudgetFixedExpenses(fixedExpenses);
-    const previewTotal = Math.max(0, previewGross - previewFixedTotal + monthlyBudgetIncome);
+    const previewTotal = Math.max(0, previewGross - scheduledBudgetDeduction + monthlyBudgetIncome);
     const autoSurplus = previewTotal - monthlyBudgetExpense;
     const surplusDelta = surplusN - autoSurplus;
     const adjustedBase = Math.max(0, n + surplusDelta);
@@ -2748,7 +2549,6 @@ export default function FinanceScreen() {
         [currentMonthKey]: {
           baseAmount: adjustedBase,
           includeLastBalance: modalIncludeLast,
-          ...(fixedExpenses.length > 0 ? { fixedExpenses } : {}),
         },
       };
       void persistMonthBudgetSettings(next);
@@ -2759,14 +2559,13 @@ export default function FinanceScreen() {
     budgetBaseDraft,
     budgetRefreshDayDraft,
     currentMonthKey,
-    fixedExpensesDraft,
     lastMonthRemaining,
     markPageDirty,
     modalIncludeLast,
     monthlyBudgetExpense,
     monthlyBudgetIncome,
     periodSurplusDraft,
-    sanitizeFixedExpensesDraft,
+    scheduledBudgetDeduction,
   ]);
 
   const handleResetBudgetAdjust = React.useCallback(() => {
@@ -3330,15 +3129,7 @@ export default function FinanceScreen() {
           ]}
           collapsable={false}>
           <View style={styles.headerInner}>
-            <View style={styles.headerSide}>
-              <AppIconButton
-                icon="savings"
-                color={text}
-                hitSlop={Layout.hitSlop}
-                onPress={() => router.push('/wish-list')}
-                accessibilityLabel="心愿单"
-              />
-            </View>
+            <View style={styles.headerSide} />
             <View style={styles.headerCenter} pointerEvents="box-none">
               <Text style={[styles.headerTitle, { color: text }]} numberOfLines={1} pointerEvents="none">
                 {headerDateLabel}
@@ -3433,37 +3224,6 @@ export default function FinanceScreen() {
                           />
                         </View>
                       </View>
-
-                      {(persistedBudgetSetting?.fixedExpenses?.length ?? 0) > 0 ? (
-                        <View style={styles.budgetFixedPaySection}>
-                          <Text style={[styles.budgetFixedPaySectionTitle, { color: subtle }]}>固定支出</Text>
-                          <View style={styles.budgetFixedPayList}>
-                            {persistedBudgetSetting!.fixedExpenses!.map((item) => (
-                              <View
-                                key={item.id}
-                                style={[
-                                  styles.budgetFixedPayChip,
-                                  {
-                                    backgroundColor: isDark ? 'rgba(148,163,184,0.10)' : '#f8fafc',
-                                    borderColor: outlineVariant,
-                                  },
-                                ]}>
-                                <View style={styles.budgetFixedPayChipMain}>
-                                  <Text style={[styles.budgetFixedPayChipName, { color: text }]} numberOfLines={1}>
-                                    {item.name}
-                                  </Text>
-                                  <Text style={[styles.budgetFixedPayChipAmount, { color: subtle }]}>
-                                    {showNetAmounts
-                                      ? formatCurrencyWithDecimals(item.amount)
-                                      : hiddenAmountText}
-                                  </Text>
-                                </View>
-                                {renderFixedExpensePayButton(item)}
-                              </View>
-                            ))}
-                          </View>
-                        </View>
-                      ) : null}
                     </View>
 
                     <Pressable
@@ -3562,6 +3322,9 @@ export default function FinanceScreen() {
                     surface={surface}
                     outlineVariant={outlineVariant}
                     tertiary={tertiary}
+                    scheduledDrainUntilTarget={scheduledDrainUntilSavingsTarget}
+                    scheduledBudgetDeduction={scheduledBudgetDeduction}
+                    onGoalChange={(g) => setSavingsGoalTargetDate(g?.targetDate ?? null)}
                   />
 
                   <View style={[styles.budgetNetDivider, { backgroundColor: outlineVariant }]} />
@@ -3646,7 +3409,7 @@ export default function FinanceScreen() {
                           viewBox={`0 0 ${NET_WORTH_TREND_CHART_W} ${NET_WORTH_TREND_CHART_H}`}
                           preserveAspectRatio="none"
                           pointerEvents="none"
-                          style={StyleSheet.absoluteFillObject}>
+                          style={StyleSheet.absoluteFill}>
                           {trendChartGeometry ? (
                             <>
                               <Defs>
@@ -4940,10 +4703,10 @@ export default function FinanceScreen() {
               <View style={[styles.budgetDetailsTotalCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb' }]}>
                 <View style={styles.budgetDetailsTotalTextCol}>
                   <Text style={[styles.budgetDetailsTotalLabel, { color: subtle }]}>真实{budgetUiScopeShort}预算</Text>
-                  {previewFixedExpensesTotal > 0 ? (
+                  {scheduledBudgetDeduction > 0 ? (
                     <Text style={[styles.budgetDetailsTotalHint, { color: subtle }]}>
-                      毛预算 {formatCurrencyWithDecimals(budgetPreviewGross)}，已扣固定支出{' '}
-                      {formatCurrencyWithDecimals(previewFixedExpensesTotal)}
+                      毛预算 {formatCurrencyWithDecimals(budgetPreviewGross)}，已扣定时支出{' '}
+                      {formatCurrencyWithDecimals(scheduledBudgetDeduction)}
                     </Text>
                   ) : null}
                 </View>
@@ -5098,84 +4861,36 @@ export default function FinanceScreen() {
               <View style={styles.budgetFixedExpensesBlock}>
                 <View style={styles.budgetFixedExpensesHeader}>
                   <View style={styles.budgetFixedExpensesTitleCol}>
-                    <Text style={[styles.budgetFixedExpensesTitle, { color: text }]}>每月固定支出</Text>
+                    <Text style={[styles.budgetFixedExpensesTitle, { color: text }]}>定时支出预扣</Text>
                     <Text style={[styles.budgetFixedExpensesHint, { color: subtle }]}>
-                      房租、订阅等固定开销会从预算中预先扣除，剩余为真实可支配预算
+                      房租、订阅等请在「定时支出」中设置；开启预扣后会从本周期预算与预期存款中扣除预计金额
                     </Text>
                   </View>
                   <Pressable
-                    onPress={handleAddFixedExpense}
+                    onPress={() => {
+                      closeBudgetAdjust();
+                      router.push('/scheduled-expenses');
+                    }}
                     style={({ pressed }) => [
                       styles.budgetFixedExpensesAddBtn,
                       { borderColor: outlineVariant, opacity: pressed ? 0.84 : 1 },
                     ]}
                     accessibilityRole="button"
-                    accessibilityLabel="添加固定支出">
-                    <MaterialIcons name="add" size={18} color={primary} />
-                    <Text style={[styles.budgetFixedExpensesAddText, { color: primary }]}>添加</Text>
+                    accessibilityLabel="管理定时支出">
+                    <MaterialIcons name="schedule" size={18} color={primary} />
+                    <Text style={[styles.budgetFixedExpensesAddText, { color: primary }]}>管理</Text>
                   </Pressable>
                 </View>
 
-                {fixedExpensesDraft.length === 0 ? (
-                  <Text style={[styles.budgetFixedExpensesEmpty, { color: subtle }]}>暂无固定支出项</Text>
-                ) : (
-                  <View style={styles.budgetFixedExpensesList}>
-                    {fixedExpensesDraft.map((item) => (
-                      <View
-                        key={item.id}
-                        style={[
-                          styles.budgetFixedExpenseRow,
-                          { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb', borderColor: outlineVariant },
-                        ]}>
-                        <TextInput
-                          value={item.name}
-                          onChangeText={(v) => handleUpdateFixedExpense(item.id, { name: v })}
-                          placeholder="名称，如房租"
-                          placeholderTextColor={subtle}
-                          style={[styles.budgetFixedExpenseNameInput, { color: text }]}
-                        />
-                        <View style={[styles.budgetFixedExpenseAmountWrap, { borderColor: outlineVariant }]}>
-                          <Text style={[styles.budgetFixedExpenseYuan, { color: subtle }]}>¥</Text>
-                          <TextInput
-                            value={item.amount > 0 ? String(item.amount) : ''}
-                            onChangeText={(v) => {
-                              const normalized = v.trim().replace(/,/g, '');
-                              if (!normalized) {
-                                handleUpdateFixedExpense(item.id, { amount: 0 });
-                                return;
-                              }
-                              const n = parseFloat(normalized);
-                              handleUpdateFixedExpense(item.id, {
-                                amount: Number.isFinite(n) && n >= 0 ? n : 0,
-                              });
-                            }}
-                            keyboardType="decimal-pad"
-                            placeholder="0"
-                            placeholderTextColor={subtle}
-                            style={[styles.budgetFixedExpenseAmountInput, { color: text }]}
-                          />
-                        </View>
-                        {renderFixedExpensePayButton(item)}
-                        <Pressable
-                          onPress={() => handleDeleteFixedExpense(item.id, item.name.trim())}
-                          style={({ pressed }) => [
-                            styles.budgetFixedExpenseDeleteBtn,
-                            { opacity: pressed ? 0.72 : 1 },
-                          ]}
-                          accessibilityRole="button"
-                          accessibilityLabel={`删除${item.name || '固定支出'}`}>
-                          <MaterialIcons name="delete-outline" size={20} color="#ef4444" />
-                        </Pressable>
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                {previewFixedExpensesTotal > 0 ? (
+                {scheduledBudgetDeduction > 0 ? (
                   <Text style={[styles.budgetFixedExpensesSum, { color: subtle }]}>
-                    固定支出合计 {formatCurrencyWithDecimals(previewFixedExpensesTotal)}
+                    本周期预扣合计 {formatCurrencyWithDecimals(scheduledBudgetDeduction)}
                   </Text>
-                ) : null}
+                ) : (
+                  <Text style={[styles.budgetFixedExpensesEmpty, { color: subtle }]}>
+                    暂无预扣项，可点「管理」添加定时支出
+                  </Text>
+                )}
               </View>
             </View>
             </ScrollView>
@@ -5682,12 +5397,12 @@ const styles = StyleSheet.create({
     overflow: 'visible',
   },
   trendChartPlotBg: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
   },
   trendChartNodes: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 1,
   },
   trendChartNodeHit: {
@@ -6182,7 +5897,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.25)',
   },
   sheetBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 0,
   },
   sheetContainer: {
@@ -6608,7 +6323,7 @@ const styles = StyleSheet.create({
     padding: 18,
   },
   pickerModalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   pickerModalCard: {
     width: '100%',

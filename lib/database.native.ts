@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 43;
+export const DB_VERSION = 45;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -51,48 +51,41 @@ async function migrateDropPersonaPortraitCache(db: SQLite.SQLiteDatabase): Promi
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
 }
 
-async function migrateEarnedRewardsHabitSource(db: SQLite.SQLiteDatabase): Promise<void> {
+async function migrateDropRemovedProfileFeatures(db: SQLite.SQLiteDatabase): Promise<void> {
   const done = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM app_meta WHERE key = ?',
-    ['earned_rewards_habit_source_v34'],
+    ['drop_profile_features_v44'],
   );
   if (done) return;
 
   await db.execAsync(`
-    CREATE TABLE IF NOT EXISTS earned_rewards_new (
-      id TEXT PRIMARY KEY NOT NULL,
-      source_type TEXT NOT NULL CHECK (source_type IN ('task', 'project', 'habit')),
-      source_id TEXT NOT NULL,
-      source_title TEXT NOT NULL,
-      reward_kind TEXT NOT NULL CHECK (reward_kind IN ('wish', 'custom')),
-      wish_item_id TEXT,
-      label TEXT NOT NULL,
-      earned_at TEXT NOT NULL,
-      redeemed_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      extra_data TEXT,
-      FOREIGN KEY (wish_item_id) REFERENCES wish_items(id) ON DELETE SET NULL
-    );
-
-    INSERT INTO earned_rewards_new (
-      id, source_type, source_id, source_title, reward_kind, wish_item_id, label,
-      earned_at, redeemed_at, created_at, updated_at, sync_status, extra_data
-    )
-    SELECT
-      id, source_type, source_id, source_title, reward_kind, wish_item_id, label,
-      earned_at, redeemed_at, created_at, updated_at, sync_status, extra_data
-    FROM earned_rewards;
-
-    DROP TABLE earned_rewards;
-    ALTER TABLE earned_rewards_new RENAME TO earned_rewards;
+    DROP TABLE IF EXISTS earned_rewards;
+    DROP TABLE IF EXISTS wish_items;
+    DROP TABLE IF EXISTS goal_dimensions;
+    DROP TABLE IF EXISTS visions;
   `);
 
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
-    'earned_rewards_habit_source_v34',
+    'drop_profile_features_v44',
     '1',
   ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/** v44 曾误删 persona_portrait；v45 补回该列（个人信息功能保留） */
+async function migrateRestorePersonaPortraitColumn(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['restore_persona_portrait_v45'],
+  );
+  if (done) return;
+
+  await ensureColumn(db, 'users', 'persona_portrait', 'TEXT');
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'restore_persona_portrait_v45',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
 }
 
 /**
@@ -182,71 +175,27 @@ async function migrateHabitCheckInsAllowZeroCount(db: SQLite.SQLiteDatabase): Pr
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
 }
 
-/** 心愿板所需积分允许负数（去掉 cost_points >= 0） */
-async function migrateWishBoardCostPointsAllowNegative(db: SQLite.SQLiteDatabase): Promise<void> {
+
+/**
+ * 积分支持小数；钱包余额允许负数（负奖励扣除）。
+ */
+/** 下线心愿板：DROP wish_board_items（保留积分表） */
+async function migrateDropWishBoardItems(db: SQLite.SQLiteDatabase): Promise<void> {
   const done = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM app_meta WHERE key = ?',
-    ['wish_board_cost_points_allow_negative_v41'],
+    ['drop_wish_board_items_v43'],
   );
   if (done) return;
 
-  const table = await db.getFirstAsync<{ name: string }>(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='wish_board_items'",
-  );
-  if (!table) {
-    await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
-      'wish_board_cost_points_allow_negative_v41',
-      '1',
-    ]);
-    return;
-  }
-
-  await db.execAsync('PRAGMA foreign_keys = OFF');
-  try {
-    await db.execAsync(`
-      CREATE TABLE wish_board_items_new (
-        id TEXT PRIMARY KEY NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT,
-        note TEXT,
-        icon_key TEXT,
-        wish_type TEXT NOT NULL DEFAULT 'once' CHECK (wish_type IN ('once', 'repeat')),
-        cost_points INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed')),
-        redeemed_at TEXT,
-        sort_order INTEGER NOT NULL DEFAULT 1000,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        sync_status TEXT NOT NULL DEFAULT 'pending_create',
-        extra_data TEXT
-      );
-
-      INSERT INTO wish_board_items_new (
-        id, title, description, note, icon_key, wish_type, cost_points, status, redeemed_at,
-        sort_order, created_at, updated_at, sync_status, extra_data
-      )
-      SELECT
-        id, title, description, note, icon_key, wish_type, cost_points, status, redeemed_at,
-        sort_order, created_at, updated_at, sync_status, extra_data
-      FROM wish_board_items;
-
-      DROP TABLE wish_board_items;
-      ALTER TABLE wish_board_items_new RENAME TO wish_board_items;
-    `);
-  } finally {
-    await db.execAsync('PRAGMA foreign_keys = ON');
-  }
+  await db.execAsync('DROP TABLE IF EXISTS wish_board_items');
 
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
-    'wish_board_cost_points_allow_negative_v41',
+    'drop_wish_board_items_v43',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
 }
 
-/**
- * 积分支持小数；心愿所需积分恢复非负；钱包余额允许负数（负奖励扣除）。
- */
 async function migratePointsAllowDecimalAndSignedBalance(db: SQLite.SQLiteDatabase): Promise<void> {
   const done = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM app_meta WHERE key = ?',
@@ -256,43 +205,6 @@ async function migratePointsAllowDecimalAndSignedBalance(db: SQLite.SQLiteDataba
 
   await db.execAsync('PRAGMA foreign_keys = OFF');
   try {
-    const hasWish = await db.getFirstAsync<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='wish_board_items'",
-    );
-    if (hasWish) {
-      await db.execAsync(`
-        CREATE TABLE wish_board_items_new (
-          id TEXT PRIMARY KEY NOT NULL,
-          title TEXT NOT NULL,
-          description TEXT,
-          note TEXT,
-          icon_key TEXT,
-          wish_type TEXT NOT NULL DEFAULT 'once' CHECK (wish_type IN ('once', 'repeat')),
-          cost_points REAL NOT NULL DEFAULT 0 CHECK (cost_points >= 0),
-          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed')),
-          redeemed_at TEXT,
-          sort_order INTEGER NOT NULL DEFAULT 1000,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          sync_status TEXT NOT NULL DEFAULT 'pending_create',
-          extra_data TEXT
-        );
-
-        INSERT INTO wish_board_items_new (
-          id, title, description, note, icon_key, wish_type, cost_points, status, redeemed_at,
-          sort_order, created_at, updated_at, sync_status, extra_data
-        )
-        SELECT
-          id, title, description, note, icon_key, wish_type,
-          CASE WHEN cost_points < 0 THEN 0 ELSE cost_points END,
-          status, redeemed_at, sort_order, created_at, updated_at, sync_status, extra_data
-        FROM wish_board_items;
-
-        DROP TABLE wish_board_items;
-        ALTER TABLE wish_board_items_new RENAME TO wish_board_items;
-      `);
-    }
-
     const hasWallet = await db.getFirstAsync<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='points_wallet'",
     );
@@ -840,47 +752,6 @@ export async function initDatabase() {
       extra_data TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS visions (
-      id TEXT PRIMARY KEY NOT NULL,
-      title TEXT NOT NULL,
-      description TEXT,
-      track_kind TEXT NOT NULL,
-      direction TEXT,
-      bg_option_idx INTEGER NOT NULL DEFAULT 0,
-      sort_order INTEGER NOT NULL DEFAULT 1000,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      extra_data TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS goal_dimensions (
-      id TEXT PRIMARY KEY NOT NULL,
-      title TEXT NOT NULL,
-      sort_order INTEGER NOT NULL DEFAULT 1000,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      extra_data TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS wish_items (
-      id TEXT PRIMARY KEY NOT NULL,
-      name TEXT NOT NULL,
-      price REAL NOT NULL,
-      category_id TEXT,
-      category_label TEXT,
-      desire_level INTEGER NOT NULL DEFAULT 3 CHECK (desire_level >= 1 AND desire_level <= 5),
-      reason TEXT,
-      reference_image_uri TEXT,
-      ai_comment TEXT,
-      ai_review_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      extra_data TEXT
-    );
-
     CREATE TABLE IF NOT EXISTS points_wallet (
       id TEXT PRIMARY KEY NOT NULL,
       balance REAL NOT NULL DEFAULT 0,
@@ -890,22 +761,6 @@ export async function initDatabase() {
       extra_data TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS wish_board_items (
-      id TEXT PRIMARY KEY NOT NULL,
-      title TEXT NOT NULL,
-      description TEXT,
-      note TEXT,
-      icon_key TEXT,
-      wish_type TEXT NOT NULL DEFAULT 'once' CHECK (wish_type IN ('once', 'repeat')),
-      cost_points REAL NOT NULL DEFAULT 0 CHECK (cost_points >= 0),
-      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed')),
-      redeemed_at TEXT,
-      sort_order INTEGER NOT NULL DEFAULT 1000,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      extra_data TEXT
-    );
 
     CREATE TABLE IF NOT EXISTS points_ledger (
       id TEXT PRIMARY KEY NOT NULL,
@@ -1003,23 +858,6 @@ export async function initDatabase() {
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'synced',
       FOREIGN KEY (category_id) REFERENCES recipe_categories(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS earned_rewards (
-      id TEXT PRIMARY KEY NOT NULL,
-      source_type TEXT NOT NULL CHECK (source_type IN ('task', 'project', 'habit')),
-      source_id TEXT NOT NULL,
-      source_title TEXT NOT NULL,
-      reward_kind TEXT NOT NULL CHECK (reward_kind IN ('wish', 'custom')),
-      wish_item_id TEXT,
-      label TEXT NOT NULL,
-      earned_at TEXT NOT NULL,
-      redeemed_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      extra_data TEXT,
-      FOREIGN KEY (wish_item_id) REFERENCES wish_items(id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS memo_dimensions (
@@ -1189,8 +1027,6 @@ export async function initDatabase() {
   await ensureColumn(db, 'finance_transactions', 'amount', 'REAL');
   await ensureColumn(db, 'finance_transactions', 'note', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'extra_data', 'TEXT');
-  await ensureColumn(db, 'wish_items', 'ai_comment', 'TEXT');
-  await ensureColumn(db, 'wish_items', 'ai_review_at', 'TEXT');
   await ensureColumn(db, 'memos', 'dimension_id', 'TEXT');
   await ensureColumn(db, 'memos', 'dimension', 'TEXT');
 
@@ -1313,24 +1149,8 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_cash_flow_holdings_sort_order ON cash_flow_holdings(sort_order);
     CREATE INDEX IF NOT EXISTS idx_cash_flow_holdings_updated_at ON cash_flow_holdings(updated_at);
 
-    CREATE INDEX IF NOT EXISTS idx_visions_updated_at ON visions(updated_at);
-    CREATE INDEX IF NOT EXISTS idx_visions_sort_order ON visions(sort_order);
-
-    CREATE INDEX IF NOT EXISTS idx_goal_dimensions_updated_at ON goal_dimensions(updated_at);
-    CREATE INDEX IF NOT EXISTS idx_goal_dimensions_sort_order ON goal_dimensions(sort_order);
-
-    CREATE INDEX IF NOT EXISTS idx_wish_items_updated_at ON wish_items(updated_at);
-    CREATE INDEX IF NOT EXISTS idx_wish_items_category_id ON wish_items(category_id);
-    CREATE INDEX IF NOT EXISTS idx_wish_board_items_status ON wish_board_items(status);
-    CREATE INDEX IF NOT EXISTS idx_wish_board_items_updated_at ON wish_board_items(updated_at);
-    CREATE INDEX IF NOT EXISTS idx_wish_board_items_sort_order ON wish_board_items(sort_order);
     CREATE INDEX IF NOT EXISTS idx_points_ledger_created_at ON points_ledger(created_at);
     CREATE INDEX IF NOT EXISTS idx_points_ledger_ref ON points_ledger(ref_type, ref_id);
-
-    CREATE INDEX IF NOT EXISTS idx_earned_rewards_earned_at ON earned_rewards(earned_at);
-    CREATE INDEX IF NOT EXISTS idx_earned_rewards_source ON earned_rewards(source_type, source_id);
-    CREATE INDEX IF NOT EXISTS idx_earned_rewards_redeemed_at ON earned_rewards(redeemed_at);
-    CREATE INDEX IF NOT EXISTS idx_earned_rewards_updated_at ON earned_rewards(updated_at);
 
     CREATE INDEX IF NOT EXISTS idx_review_dimensions_scope ON review_dimensions(scope);
     CREATE INDEX IF NOT EXISTS idx_review_dimensions_sort_order ON review_dimensions(sort_order);
@@ -1366,29 +1186,6 @@ export async function initDatabase() {
      VALUES (?, 0, datetime('now'), datetime('now'), 'synced')`,
     ['default'],
   );
-  await ensureColumn(db, 'wish_board_items', 'description', 'TEXT');
-  await ensureColumn(db, 'wish_board_items', 'icon_key', 'TEXT');
-  await ensureColumn(db, 'wish_board_items', 'wish_type', "TEXT NOT NULL DEFAULT 'once'");
-  try {
-    await db.runAsync(
-      `UPDATE wish_board_items
-       SET description = note
-       WHERE (description IS NULL OR TRIM(description) = '')
-         AND note IS NOT NULL AND TRIM(note) != ''`,
-    );
-    await db.runAsync(
-      `UPDATE wish_board_items
-       SET icon_key = 'card-giftcard'
-       WHERE icon_key IS NULL OR TRIM(icon_key) = ''`,
-    );
-    await db.runAsync(
-      `UPDATE wish_board_items
-       SET wish_type = 'once'
-       WHERE wish_type IS NULL OR TRIM(wish_type) = '' OR wish_type NOT IN ('once', 'repeat')`,
-    );
-  } catch {
-    /* 旧库尚无表时忽略 */
-  }
   await db.runAsync(
     `UPDATE users
      SET gender = COALESCE(NULLIF(gender, ''), '男'),
@@ -1519,9 +1316,10 @@ export async function initDatabase() {
 
   await migrateDropDeletedAtAndVersionColumns(db);
   await migrateDropPersonaPortraitCache(db);
-  await migrateEarnedRewardsHabitSource(db);
+  await migrateDropRemovedProfileFeatures(db);
+  await migrateRestorePersonaPortraitColumn(db);
   await migrateHabitCheckInsAllowZeroCount(db);
-  await migrateWishBoardCostPointsAllowNegative(db);
+  await migrateDropWishBoardItems(db);
   await migratePointsAllowDecimalAndSignedBalance(db);
   await migrateRemoveSeededHabitContexts(db);
 

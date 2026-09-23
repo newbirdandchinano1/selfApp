@@ -53,11 +53,7 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   cash_flow_expense_lines: [TAB_PAGE_KEYS.finance],
   savings_plans: [TAB_PAGE_KEYS.profile],
   savings_plan_deposits: [TAB_PAGE_KEYS.profile],
-  visions: [TAB_PAGE_KEYS.profile],
-  goal_dimensions: [TAB_PAGE_KEYS.profile],
-  wish_items: [TAB_PAGE_KEYS.profile],
   points_wallet: [TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
-  wish_board_items: [TAB_PAGE_KEYS.profile],
   points_ledger: [TAB_PAGE_KEYS.profile],
   // 复盘 dirty → local-first 重读；REST 走 /api/pages/review/*（已从 page scope 移除 List）
   weekly_review_journal: [TAB_PAGE_KEYS.review],
@@ -75,9 +71,8 @@ const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
 const TABLE_CHILD_PAGE_DIRTY_MAP: Record<string, string[]> = {
   habit_check_ins: ['habit-detail', 'habit-manage', 'tasks-calendar'],
   habits: ['habit-detail', 'habit-manage'],
-  points_wallet: ['wish-board', 'edit-wish-board-item', 'points-ledger'],
-  wish_board_items: ['wish-board', 'edit-wish-board-item'],
-  points_ledger: ['wish-board', 'points-ledger'],
+  points_wallet: ['points-ledger'],
+  points_ledger: ['points-ledger'],
   memos: ['memo-list', 'memo-view'],
   memo_dimensions: ['memo-list'],
 };

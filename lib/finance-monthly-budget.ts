@@ -117,17 +117,9 @@ export async function persistBudgetRefreshDay(day: number): Promise<void> {
   await setAppSetting(AppSettingKey.financeBudgetRefreshDay, clampBudgetRefreshDay(day));
 }
 
-/** 每月固定支出项（从可支配预算中预先扣除）。 */
-export type BudgetFixedExpense = {
-  id: string;
-  name: string;
-  amount: number;
-};
-
 export type MonthBudgetSetting = {
   baseAmount: number;
   includeLastBalance: boolean;
-  fixedExpenses?: BudgetFixedExpense[];
   /** 手工设定的本周期预算结余，覆盖「总预算 − 已用」的自动计算。 */
   periodSurplusOverride?: number;
 };
@@ -163,30 +155,6 @@ export function computeDailyBudgetFromPeriodSurplus(
   return dailyFromSurplus;
 }
 
-export function sumBudgetFixedExpenses(items: BudgetFixedExpense[] | undefined): number {
-  if (!items?.length) return 0;
-  return items.reduce((sum, item) => {
-    const a = item.amount;
-    return sum + (Number.isFinite(a) && a > 0 ? a : 0);
-  }, 0);
-}
-
-function normalizeFixedExpenses(raw: unknown): BudgetFixedExpense[] {
-  if (!Array.isArray(raw)) return [];
-  const out: BudgetFixedExpense[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const o = item as Record<string, unknown>;
-    const id = typeof o.id === 'string' && o.id.trim() ? o.id.trim() : null;
-    const name = typeof o.name === 'string' ? o.name.trim() : '';
-    const amount = o.amount;
-    if (!id || !name) continue;
-    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) continue;
-    out.push({ id, name, amount });
-  }
-  return out;
-}
-
 function normalizeSettings(parsed: unknown): Record<string, MonthBudgetSetting> {
   const out: Record<string, MonthBudgetSetting> = {};
   if (!parsed || typeof parsed !== 'object') return out;
@@ -196,12 +164,10 @@ function normalizeSettings(parsed: unknown): Record<string, MonthBudgetSetting> 
       const base = o.baseAmount;
       const inc = o.includeLastBalance;
       if (typeof base === 'number' && Number.isFinite(base) && base >= 0 && typeof inc === 'boolean') {
-        const fixedExpenses = normalizeFixedExpenses(o.fixedExpenses);
         const surplusOverride = o.periodSurplusOverride;
         out[k] = {
           baseAmount: base,
           includeLastBalance: inc,
-          ...(fixedExpenses.length > 0 ? { fixedExpenses } : {}),
           ...(typeof surplusOverride === 'number' &&
           Number.isFinite(surplusOverride)
             ? { periodSurplusOverride: surplusOverride }

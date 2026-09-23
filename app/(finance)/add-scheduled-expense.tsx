@@ -311,8 +311,10 @@ export default function AddScheduledExpenseScreen() {
 
             <View style={styles.switchRow}>
               <View style={{ flex: 1 }}>
-                <Text style={[Typography.bodyStrong, { color: colors.text }]}>计入本月预算</Text>
-                <Text style={[Typography.caption, { color: colors.textSecondary }]}>关闭后该笔自动记账不计入预算已用</Text>
+                <Text style={[Typography.bodyStrong, { color: colors.text }]}>预扣本月预算</Text>
+                <Text style={[Typography.caption, { color: colors.textSecondary }]}>
+                  开启后从可支配预算中预先扣除本周期预计金额，并抬高预期存款每日需存；自动记账不再计入已用
+                </Text>
               </View>
               <Switch
                 value={includeInBudget}

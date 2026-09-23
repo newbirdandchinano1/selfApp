@@ -1438,7 +1438,7 @@ export default function EditProjectScreen() {
               />
             </View>
             <Text style={[styles.longTermHint, { color: outline, marginTop: 8 }]}>
-              完成整个项目后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动
+              完成整个项目后计入积分；负数表示扣除，可含小数；0 表示无变动
             </Text>
           </View>
 

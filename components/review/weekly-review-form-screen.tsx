@@ -578,7 +578,6 @@ export function WeeklyReviewFormScreen({
 
                     <View style={styles.linkRow}>
                       <LinkChip label="去任务" onPress={() => router.push('/(tabs)/tasks')} color={primary} />
-                      <LinkChip label="心愿单" onPress={() => router.push('/wish-list')} color={tertiary} />
                       <LinkChip label="财务日历" onPress={() => router.push('/finance-calendar')} color={primary} />
                     </View>
                   </View>

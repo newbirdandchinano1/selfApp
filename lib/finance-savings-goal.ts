@@ -90,15 +90,24 @@ export type FinanceSavingsGoalProgress = {
   overdue: boolean;
 };
 
-/** 相对当前净资产计算缺口与每日需存金额。 */
+/**
+ * 相对当前净资产计算缺口与每日需存金额。
+ * `scheduledDrainUntilTarget`：到目标日（含）预计仍会发生的定时支出合计，会抬高有效缺口与每日需存。
+ */
 export function computeFinanceSavingsGoalProgress(
   goal: FinanceSavingsGoal,
   currentNetWorth: number,
   today: Date,
+  scheduledDrainUntilTarget = 0,
 ): FinanceSavingsGoalProgress {
   const net = Number.isFinite(currentNetWorth) ? currentNetWorth : 0;
-  const gap = Math.max(0, goal.targetAmount - net);
-  const achieved = gap <= 1e-6;
+  const rawGap = Math.max(0, goal.targetAmount - net);
+  const drain =
+    Number.isFinite(scheduledDrainUntilTarget) && scheduledDrainUntilTarget > 0
+      ? scheduledDrainUntilTarget
+      : 0;
+  const gap = rawGap + drain;
+  const achieved = rawGap <= 1e-6 && drain <= 1e-6;
   const daysLeft = savingsGoalDaysLeftIncludingToday(today, goal.targetDate);
   const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
   const target = parseIsoDateLocal(goal.targetDate);

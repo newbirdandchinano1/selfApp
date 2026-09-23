@@ -11,7 +11,6 @@ export const PRESERVE_ON_EMPTY_API: Record<string, readonly string[]> = {
   projects: ['category_id'],
   finance_transactions: ['flow_category_id', 'account_id'],
   memos: ['dimension_id'],
-  wish_items: ['category_id'],
   recipe_items: ['category_id'],
 };
 

@@ -5,7 +5,7 @@ import { getTaskById } from '@/lib/repositories/tasks/task';
 import {
   adjustPointsBalance,
   getLocalPointsBalance,
-} from '@/lib/repositories/wish-board/wish-board';
+} from '@/lib/repositories/points/points';
 import { getDatabase } from '@/lib/database';
 
 export type PointsRewardRefType = 'habit' | 'task' | 'project';

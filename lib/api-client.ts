@@ -1740,7 +1740,6 @@ export type ReviewWeekMetricsPayload = {
   savingsWeekTotal: number;
   financeIncome: number;
   financeExpense: number;
-  wishUpdates: number;
   meta?: ReviewPageMeta;
 };
 
@@ -1767,50 +1766,8 @@ export async function apiGetReviewWeekMetrics(params: {
 
 export type ProfilePageMeta = {
   serverTime?: string;
-  wishPreviewLimit?: number;
   catalogComplete?: boolean;
 };
-
-/** GET /api/pages/profile/home — Tab 冷启动 / 下拉主口 */
-export type ProfileHomePayload = {
-  user?: Record<string, unknown> | null;
-  visions: Record<string, unknown>[];
-  /** 未完成心愿预览（优先字段名） */
-  wishPreview?: Record<string, unknown>[];
-  /** 兼容别名 */
-  wishItems?: Record<string, unknown>[];
-  meta?: ProfilePageMeta;
-};
-
-export async function apiGetProfileHome(params?: {
-  wishPreviewLimit?: number;
-  signal?: AbortSignal;
-}): Promise<ProfileHomePayload> {
-  const qs = buildQuery({
-    wishPreviewLimit: params?.wishPreviewLimit,
-  });
-  return apiRequest<ProfileHomePayload>(`/api/pages/profile/home${qs}`, {
-    method: 'GET',
-    signal: params?.signal,
-  });
-}
-
-/** GET /api/pages/profile/wish-list */
-export type ProfileWishListPayload = {
-  wishItems: Record<string, unknown>[];
-  savingsPlans: Record<string, unknown>[];
-  savingsDeposits: Record<string, unknown>[];
-  meta?: ProfilePageMeta;
-};
-
-export async function apiGetProfileWishList(params?: {
-  signal?: AbortSignal;
-}): Promise<ProfileWishListPayload> {
-  return apiRequest<ProfileWishListPayload>('/api/pages/profile/wish-list', {
-    method: 'GET',
-    signal: params?.signal,
-  });
-}
 
 /** GET /api/pages/profile/memo-list */
 export type ProfileMemoListPayload = {
@@ -1823,45 +1780,6 @@ export async function apiGetProfileMemoList(params?: {
   signal?: AbortSignal;
 }): Promise<ProfileMemoListPayload> {
   return apiRequest<ProfileMemoListPayload>('/api/pages/profile/memo-list', {
-    method: 'GET',
-    signal: params?.signal,
-  });
-}
-
-/** GET /api/pages/profile/vision-wall */
-export type ProfileVisionWallPayload = {
-  user?: Record<string, unknown> | null;
-  visions: Record<string, unknown>[];
-  goalDimensions?: Record<string, unknown>[];
-  /** 兼容别名 */
-  dimensions?: Record<string, unknown>[];
-  meta?: ProfilePageMeta;
-};
-
-export async function apiGetProfileVisionWall(params?: {
-  signal?: AbortSignal;
-}): Promise<ProfileVisionWallPayload> {
-  return apiRequest<ProfileVisionWallPayload>('/api/pages/profile/vision-wall', {
-    method: 'GET',
-    signal: params?.signal,
-  });
-}
-
-/** GET /api/pages/profile/wish-board */
-export type ProfileWishBoardPayload = {
-  pointsWallet?: Record<string, unknown>[];
-  wallet?: Record<string, unknown>[];
-  items?: Record<string, unknown>[];
-  wishBoardItems?: Record<string, unknown>[];
-  pointsLedger?: Record<string, unknown>[];
-  ledger?: Record<string, unknown>[];
-  meta?: ProfilePageMeta;
-};
-
-export async function apiGetProfileWishBoard(params?: {
-  signal?: AbortSignal;
-}): Promise<ProfileWishBoardPayload> {
-  return apiRequest<ProfileWishBoardPayload>('/api/pages/profile/wish-board', {
     method: 'GET',
     signal: params?.signal,
   });

@@ -2,14 +2,14 @@ import { AppCard, AppScreen, ScreenHeader } from '@/components/ui';
 import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import {
-  appWishBoardListPointsLedger,
+  appPointsListLedger,
   type AppPointsLedgerItem,
 } from '@/lib/api-app-domain';
 import {
   formatHealthMetricLedgerRefTitle,
   formatPointsLedgerReasonLabel,
 } from '@/lib/points-ledger-reason-label';
-import { deletePointsLedgerRecord } from '@/lib/repositories/wish-board/wish-board';
+import { deletePointsLedgerRecord } from '@/lib/repositories/points/points';
 import { formatPoints } from '@/lib/reward-points';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -74,7 +74,7 @@ export default function PointsLedgerScreen() {
     if (append) setLoadingMore(true);
     else setLoading(true);
     try {
-      const result = await appWishBoardListPointsLedger({
+      const result = await appPointsListLedger({
         page: nextPage,
         limit: PAGE_LIMIT,
       });

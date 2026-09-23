@@ -247,13 +247,69 @@ export default function AssetsScreen() {
   const cashTotal = React.useMemo(() => sumAssetBalanceForDisplay(grouped.cash_wallet), [grouped.cash_wallet, sumAssetBalanceForDisplay]);
   const bankTotal = React.useMemo(() => sumAssetBalanceForDisplay(grouped.bank), [grouped.bank, sumAssetBalanceForDisplay]);
   const investTotal = React.useMemo(() => sumAssetBalanceForDisplay(grouped.investment), [grouped.investment, sumAssetBalanceForDisplay]);
+  const unknownAssetTotal = React.useMemo(
+    () => sumAssetBalanceForDisplay(grouped.unknown),
+    [grouped.unknown, sumAssetBalanceForDisplay],
+  );
+
+  const customAssetSegments = React.useMemo(() => {
+    const palette = [
+      colors.tertiary,
+      isDark ? '#a78bfa' : '#7c3aed',
+      isDark ? '#f472b6' : '#db2777',
+      isDark ? '#38bdf8' : '#0284c7',
+      isDark ? '#fbbf24' : '#d97706',
+    ];
+    let colorIdx = 0;
+    const segs: Array<{ key: string; label: string; amount: number; color: string }> = [];
+    for (const group of customTypeGroups) {
+      const assetRows = group.rows.filter((a) => !isLiabilityAccount(a));
+      const amount = sumAssetBalanceForDisplay(assetRows);
+      if (amount <= 0) continue;
+      segs.push({
+        key: `custom:${group.name}`,
+        label: group.name,
+        amount,
+        color: palette[colorIdx % palette.length]!,
+      });
+      colorIdx += 1;
+    }
+    if (unknownAssetTotal > 0) {
+      segs.push({
+        key: 'unknown',
+        label: '其他',
+        amount: unknownAssetTotal,
+        color: colors.textSecondary,
+      });
+    }
+    return segs;
+  }, [
+    customTypeGroups,
+    isLiabilityAccount,
+    sumAssetBalanceForDisplay,
+    unknownAssetTotal,
+    colors.tertiary,
+    colors.textSecondary,
+    isDark,
+  ]);
+
+  const ringSegments = React.useMemo(() => {
+    const base: Array<{ key: string; label: string; amount: number; color: string }> = [
+      { key: 'cash', label: '现金', amount: cashTotal, color: assetSegmentColors.cash },
+      { key: 'bank', label: '银行', amount: bankTotal, color: assetSegmentColors.bank },
+      { key: 'invest', label: '投资', amount: investTotal, color: assetSegmentColors.invest },
+      ...customAssetSegments,
+    ];
+    return base.filter((s) => s.amount > 0);
+  }, [cashTotal, bankTotal, investTotal, customAssetSegments, assetSegmentColors]);
+
+  const ringCoveredTotal = React.useMemo(
+    () => ringSegments.reduce((sum, s) => sum + s.amount, 0),
+    [ringSegments],
+  );
 
   const hasAssets = totalAssets > 0;
-  const cashPct = hasAssets ? cashTotal / totalAssets : 0;
-  const bankPct = hasAssets ? bankTotal / totalAssets : 0;
-  const investPct = hasAssets ? investTotal / totalAssets : 0;
-
-  const ringPct = hasAssets ? Math.round(((cashTotal + bankTotal + investTotal) / totalAssets) * 100) : 0;
+  const ringPct = hasAssets ? Math.round((ringCoveredTotal / totalAssets) * 100) : 0;
 
   const accountIcon = React.useCallback(
     (acc: FinanceAccountBalanceRow) => {
@@ -348,32 +404,48 @@ export default function AssetsScreen() {
               <View style={styles.ringWrap}>
                 <Svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`} style={{ transform: [{ rotate: '-90deg' }] }}>
                   <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={colors.progressTrack} strokeWidth={2} fill="none" />
-                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={assetSegmentColors.cash} strokeWidth={ringStroke} strokeDasharray={dash(cashPct)} strokeDashoffset={c * (1 - cashPct)} fill="none" />
-                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={assetSegmentColors.bank} strokeWidth={ringStroke} strokeDasharray={dash(bankPct)} strokeDashoffset={c * (1 - bankPct)} fill="none" transform={`rotate(${cashPct * 360} ${ringSize / 2} ${ringSize / 2})`} />
-                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={assetSegmentColors.invest} strokeWidth={ringStroke} strokeDasharray={dash(investPct)} strokeDashoffset={c * (1 - investPct)} fill="none" transform={`rotate(${(cashPct + bankPct) * 360} ${ringSize / 2} ${ringSize / 2})`} />
+                  {(() => {
+                    let offsetRatio = 0;
+                    return ringSegments.map((seg) => {
+                      const pct = hasAssets ? seg.amount / totalAssets : 0;
+                      const node = (
+                        <Circle
+                          key={seg.key}
+                          cx={ringSize / 2}
+                          cy={ringSize / 2}
+                          r={r}
+                          stroke={seg.color}
+                          strokeWidth={ringStroke}
+                          strokeDasharray={dash(pct)}
+                          strokeDashoffset={0}
+                          fill="none"
+                          transform={`rotate(${offsetRatio * 360} ${ringSize / 2} ${ringSize / 2})`}
+                        />
+                      );
+                      offsetRatio += pct;
+                      return node;
+                    });
+                  })()}
                 </Svg>
                 <Text style={[Typography.title, styles.ringText, { color: colors.text }]}>{ringPct}%</Text>
               </View>
 
               <View style={styles.legend}>
-                <View style={styles.legendRow}>
-                  <View style={[styles.legendDot, { backgroundColor: assetSegmentColors.cash }]} />
-                  <Text style={[Typography.body, { color: colors.text }]}>
-                    现金 ({Math.round(cashPct * 100)}%)
-                  </Text>
-                </View>
-                <View style={styles.legendRow}>
-                  <View style={[styles.legendDot, { backgroundColor: assetSegmentColors.bank }]} />
-                  <Text style={[Typography.body, { color: colors.text }]}>
-                    银行 ({Math.round(bankPct * 100)}%)
-                  </Text>
-                </View>
-                <View style={styles.legendRow}>
-                  <View style={[styles.legendDot, { backgroundColor: assetSegmentColors.invest }]} />
-                  <Text style={[Typography.body, { color: colors.text }]}>
-                    投资 ({Math.round(investPct * 100)}%)
-                  </Text>
-                </View>
+                {ringSegments.length === 0 ? (
+                  <Text style={[Typography.body, { color: colors.textSecondary }]}>暂无资产分布</Text>
+                ) : (
+                  ringSegments.map((seg) => {
+                    const pct = hasAssets ? Math.round((seg.amount / totalAssets) * 100) : 0;
+                    return (
+                      <View key={seg.key} style={styles.legendRow}>
+                        <View style={[styles.legendDot, { backgroundColor: seg.color }]} />
+                        <Text style={[Typography.body, { color: colors.text, flexShrink: 1 }]} numberOfLines={1}>
+                          {seg.label} ({pct}%)
+                        </Text>
+                      </View>
+                    );
+                  })
+                )}
               </View>
             </View>
           </AppCard>

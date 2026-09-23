@@ -545,10 +545,10 @@ export async function upsertFinanceAccountType(input: UpsertFinanceAccountTypeIn
   if (existing) {
     await db.runAsync(
       `UPDATE finance_account_types
-       SET is_liability = ?, icon_key = ?, updated_at = datetime('now'),
+       SET is_liability = ?, updated_at = datetime('now'),
            sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
        WHERE id = ?`,
-      [input.is_liability ? 1 : 0, input.icon_key || 'savings', existing.id]
+      [input.is_liability ? 1 : 0, existing.id]
     );
     return existing.id;
   }

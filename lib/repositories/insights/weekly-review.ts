@@ -15,7 +15,6 @@ export type WeeklyReviewMetrics = {
   savingsWeekTotal: number;
   financeIncome: number;
   financeExpense: number;
-  wishUpdates: number;
 };
 
 function pad2(n: number) {
@@ -161,11 +160,10 @@ async function computeWeeklyReviewMetricsFromLocal(
       savingsWeekTotal: 0,
       financeIncome: 0,
       financeExpense: 0,
-      wishUpdates: 0,
     };
   }
 
-  const [tasks, habitCheckIns, habits, deposits, plans, transactions, wishes] = await Promise.all([
+  const [tasks, habitCheckIns, habits, deposits, plans, transactions] = await Promise.all([
     db.getAllAsync<{ status?: string; completed_at?: string | null; created_at?: string }>(
       `SELECT status, completed_at, created_at FROM tasks WHERE sync_status != 'pending_delete'`,
     ),
@@ -181,9 +179,6 @@ async function computeWeeklyReviewMetricsFromLocal(
     db.getAllAsync<{ id: string }>(`SELECT id FROM savings_plans WHERE sync_status != 'pending_delete'`),
     db.getAllAsync<{ transaction_type?: string; amount?: number; happened_at?: string }>(
       `SELECT transaction_type, amount, happened_at FROM finance_transactions WHERE sync_status != 'pending_delete'`,
-    ),
-    db.getAllAsync<{ updated_at?: string }>(
-      `SELECT updated_at FROM wish_items WHERE sync_status != 'pending_delete'`,
     ),
   ]);
 
@@ -229,11 +224,6 @@ async function computeWeeklyReviewMetricsFromLocal(
     })
     .reduce((sum, t) => sum + Math.abs(Number(t.amount ?? 0)), 0);
 
-  const wishUpdates = (wishes ?? []).filter(w => {
-    const day = ymdFromDatetime(w.updated_at);
-    return day != null && isYmdInRange(day, startYmd, endYmd);
-  }).length;
-
   return {
     tasksCompleted,
     tasksCreated,
@@ -241,7 +231,6 @@ async function computeWeeklyReviewMetricsFromLocal(
     savingsWeekTotal: Math.round(savingsWeekTotal),
     financeIncome: Math.round(financeIncome),
     financeExpense: Math.round(financeExpense),
-    wishUpdates,
   };
 }
 
@@ -268,10 +257,6 @@ export function buildWeeklyReviewNarrative(m: WeeklyReviewMetrics): string {
     sentences.push(
       `记账流水：收入约 ¥${m.financeIncome.toLocaleString('zh-CN')}，支出约 ¥${m.financeExpense.toLocaleString('zh-CN')}。`,
     );
-  }
-
-  if (m.wishUpdates > 0) {
-    sentences.push(`心愿单有 ${m.wishUpdates} 条更新，愿望也在被认真对待。`);
   }
 
   if (sentences.length === 0) {

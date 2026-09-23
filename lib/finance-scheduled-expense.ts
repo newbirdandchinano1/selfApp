@@ -227,3 +227,52 @@ export function addDaysToYmd(ymd: string, delta: number): string | null {
 export function compareYmd(a: string, b: string): number {
   return a.localeCompare(b);
 }
+
+export function dateToFinanceYmd(d: Date): string {
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${day}`;
+}
+
+/**
+ * 区间 [startInclusive, endExclusive) 内，单条定时支出预计发生金额。
+ * `onlyIncludeInBudget !== false` 时仅统计「计入预算预扣」的启用项。
+ */
+export function estimateScheduledExpenseAmountInRange(
+  item: ScheduledFinanceExpense,
+  startInclusive: Date,
+  endExclusive: Date,
+  opts?: { onlyIncludeInBudget?: boolean },
+): number {
+  if (!item.enabled) return 0;
+  if (opts?.onlyIncludeInBudget !== false && !item.includeInBudget) return 0;
+  const startYmd = dateToFinanceYmd(startInclusive);
+  const endYmd = dateToFinanceYmd(endExclusive);
+  if (compareYmd(startYmd, endYmd) >= 0) return 0;
+
+  let total = 0;
+  let cursor: string | null = startYmd;
+  while (cursor && compareYmd(cursor, endYmd) < 0) {
+    if (isScheduledFinanceExpenseDueOnDay(item, cursor)) {
+      total += item.amount * item.timesPerDay;
+    }
+    const next = addDaysToYmd(cursor, 1);
+    if (!next || next === cursor) break;
+    cursor = next;
+  }
+  return total;
+}
+
+/** 多条定时支出在区间内的预计合计（默认仅「计入预算预扣」）。 */
+export function sumScheduledExpensesInRange(
+  items: ScheduledFinanceExpense[],
+  startInclusive: Date,
+  endExclusive: Date,
+  opts?: { onlyIncludeInBudget?: boolean },
+): number {
+  return items.reduce(
+    (sum, item) => sum + estimateScheduledExpenseAmountInRange(item, startInclusive, endExclusive, opts),
+    0,
+  );
+}

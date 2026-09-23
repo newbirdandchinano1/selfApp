@@ -1437,7 +1437,7 @@ export default function EditTaskScreen() {
               />
             </View>
             <Text style={{ color: outline, fontSize: 12, fontWeight: '600', marginTop: 8 }}>
-              完成任务后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动
+              完成任务后计入积分；负数表示扣除，可含小数；0 表示无变动
             </Text>
           </View>
 

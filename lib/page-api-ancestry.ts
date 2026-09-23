@@ -44,24 +44,14 @@ const PAGE_PARENTS: Record<string, string[]> = {
   'auto-ledger': [TAB.finance],
 
   // —— 我的 / 个人 ——
-  'vision-wall': [TAB.profile],
-  'vision-create': ['vision-wall', TAB.profile],
-  'vision-detail': ['vision-wall', TAB.profile],
-  'vision-sub-goals-detail': ['vision-detail', 'vision-wall', TAB.profile],
+  'edit-profile': [TAB.profile],
   'memo-list': [TAB.profile],
   'memo-view': ['memo-list', TAB.profile],
   'memo-edit': ['memo-view', 'memo-list', TAB.profile],
-  'wish-list': [TAB.profile],
-  'add-wish-item': ['wish-list', TAB.profile],
-  'edit-wish-item': ['wish-list', TAB.profile],
-  'wish-board': [TAB.profile],
-  'add-wish-board-item': ['wish-board', TAB.profile],
-  'edit-wish-board-item': ['wish-board', TAB.profile],
+  'points-ledger': [TAB.profile],
   'my-recipes': [TAB.profile],
   'recipe-view': ['my-recipes', TAB.profile],
   'recipe-edit': ['recipe-view', 'my-recipes', TAB.profile],
-  'edit-profile': [TAB.profile],
-  'edit-goal-dimension': ['vision-wall', TAB.profile],
 
   // —— 复盘 ——
   'daily-review': [TAB.review],

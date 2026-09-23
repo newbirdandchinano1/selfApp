@@ -7,6 +7,7 @@ import {
   FINANCE_ACCOUNT_ICON_OPTIONS,
   type FinanceAccountIconOption,
 } from '@/lib/constants/finance-account-icons';
+import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import {
   applyFinanceAccountBalanceCorrection,
   createFinanceAccount,
@@ -16,22 +17,24 @@ import {
   financeTargetLedgerFromUserBalanceInput,
   getFinanceAccounts,
   updateFinanceAccount,
+  upsertFinanceAccountType,
 } from '@/lib/repositories/finance/finance';
-import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import {
   getCustomAccountTypeDraft,
   getCustomAccountTypeOptions,
   removeCustomAccountTypeOption,
   setCustomAccountTypeDraft,
+  upsertCustomAccountTypeOption,
 } from '@/lib/state/account-type-draft';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from "expo-router/react-navigation";
+import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   Alert,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -42,17 +45,18 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+const ICON_ROW_COUNT = 5;
+
 type AccountType = 'cash_wallet' | 'bank' | 'investment' | 'liability' | 'custom';
 
 const BASE_TYPE_OPTIONS: {
   key: Exclude<AccountType, 'custom'>;
   label: string;
-  icon: keyof typeof MaterialIcons.glyphMap;
 }[] = [
-  { key: 'cash_wallet', label: '现金与钱包', icon: 'account-balance-wallet' },
-  { key: 'bank', label: '银行账户', icon: 'account-balance' },
-  { key: 'investment', label: '投资项目', icon: 'trending-up' },
-  { key: 'liability', label: '负债', icon: 'credit-card' },
+  { key: 'cash_wallet', label: '现金与钱包' },
+  { key: 'bank', label: '银行账户' },
+  { key: 'investment', label: '投资项目' },
+  { key: 'liability', label: '负债' },
 ];
 
 function resolveAccountTypeLabel(accountType: AccountType, customTypeName: string): string {
@@ -60,18 +64,7 @@ function resolveAccountTypeLabel(accountType: AccountType, customTypeName: strin
   return BASE_TYPE_OPTIONS.find((t) => t.key === accountType)?.label ?? '银行账户';
 }
 
-function resolveAccountTypeIcon(
-  accountType: AccountType,
-  iconKey: string,
-): keyof typeof MaterialIcons.glyphMap {
-  if (accountType === 'custom') {
-    return FINANCE_ACCOUNT_ICON_OPTIONS.find((item) => item.key === iconKey)?.icon ?? 'tune';
-  }
-  return BASE_TYPE_OPTIONS.find((t) => t.key === accountType)?.icon ?? 'account-balance';
-}
-
 const PAGE_API_KEY = 'add-account';
-const ICON_ROW_COUNT = 5;
 
 export default function AddAccountScreen() {
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
@@ -91,7 +84,7 @@ export default function AddAccountScreen() {
     const base = Math.floor((iconGridWidth - gaps) / ICON_ROW_COUNT);
     const remainder = iconGridWidth - gaps - base * ICON_ROW_COUNT;
     return { base, lastColExtra: remainder };
-  }, [iconGridWidth]);
+  }, [iconGridGap, iconGridWidth]);
 
   const editExtraBaselineRef = React.useRef<Record<string, unknown>>({});
   const editLedgerMetaRef = React.useRef<{ sign_rule: number; account_type: string }>({
@@ -104,15 +97,20 @@ export default function AddAccountScreen() {
   const [accountNo, setAccountNo] = React.useState('');
   const [balance, setBalance] = React.useState('');
   const [notes, setNotes] = React.useState('');
-  const [iconKey, setIconKey] = React.useState<string>(() => getCustomAccountTypeDraft().iconKey || 'savings');
+  const [iconKey, setIconKey] = React.useState('savings');
   const [saving, setSaving] = React.useState(false);
   const [customTypeName, setCustomTypeName] = React.useState(() => getCustomAccountTypeDraft().name);
   const [customIsLiability, setCustomIsLiability] = React.useState(() => getCustomAccountTypeDraft().isLiability);
-  const [customTypeOptions, setCustomTypeOptions] = React.useState<
-    Array<{ name: string; isLiability: boolean; iconKey: string }>
-  >([]);
+  const [customTypeOptions, setCustomTypeOptions] = React.useState<Array<{ name: string; isLiability: boolean }>>(
+    [],
+  );
   const [editSheetReady, setEditSheetReady] = React.useState(!isEditMode);
   const [iconPickerExpanded, setIconPickerExpanded] = React.useState(false);
+
+  const [customTypeModalOpen, setCustomTypeModalOpen] = React.useState(false);
+  const [modalTypeName, setModalTypeName] = React.useState('');
+  const [modalIsLiability, setModalIsLiability] = React.useState(false);
+  const [modalSaving, setModalSaving] = React.useState(false);
 
   const canSave =
     accountName.trim().length > 0 &&
@@ -134,91 +132,89 @@ export default function AddAccountScreen() {
     () => resolveAccountTypeLabel(accountType, customTypeName),
     [accountType, customTypeName],
   );
-  const accountTypeIcon = React.useMemo(
-    () => resolveAccountTypeIcon(accountType, iconKey),
-    [accountType, iconKey],
-  );
 
-  const reloadCustomTypes = React.useCallback(async (forceApi = false) => {
-    await wrapLoad(async () => {
-    try {
-      const catalog = await fetchFinanceCatalog({ offlineFallback: true });
-      const rows = catalog.accountTypes;
-      setCustomTypeOptions(
-        rows.map((row) => ({
-          name: row.name,
-          isLiability: row.is_liability === 1,
-          iconKey: row.icon_key || 'savings',
-        })),
-      );
-    } catch (e) {
-      console.warn('Failed to load custom account types:', e);
-      setCustomTypeOptions(getCustomAccountTypeOptions());
-    }
-    }, forceApi);
-  }, [wrapLoad]);
-
-  const reload = React.useCallback(async (forceApi = false) => {
-    if (isEditMode && editAccountId) {
-      setEditSheetReady(false);
+  const reloadCustomTypes = React.useCallback(
+    async (forceApi = false) => {
       await wrapLoad(async () => {
         try {
           const catalog = await fetchFinanceCatalog({ offlineFallback: true });
-          const rows = catalog.accounts;
-          const row = rows.find((r) => r.id === editAccountId);
-          if (!row) {
-            Alert.alert('账户不存在', '该账户可能已被删除。', [{ text: '确定', onPress: () => router.back() }]);
-            return;
-          }
-          setAccountName(row.name);
-          setAccountNo(row.account_no ?? '');
-          setNotes(row.note ?? '');
-          editLedgerMetaRef.current = { sign_rule: row.sign_rule, account_type: row.account_type };
-          setBalance(financeBalanceInputTextFromLedger(row.balance ?? 0, row.sign_rule, row.account_type));
-          let parsed: Record<string, unknown> = {};
-          try {
-            parsed = row.extra_data ? (JSON.parse(row.extra_data) as Record<string, unknown>) : {};
-          } catch {
-            parsed = {};
-          }
-          editExtraBaselineRef.current = { ...parsed };
-          const uiType = parsed.ui_account_type;
-          if (
-            uiType === 'cash_wallet' ||
-            uiType === 'bank' ||
-            uiType === 'investment' ||
-            uiType === 'liability' ||
-            uiType === 'custom'
-          ) {
-            setAccountType(uiType);
-          } else if (row.account_type === 'liability') {
-            setAccountType('liability');
-          } else {
-            setAccountType('bank');
-          }
-          if (typeof parsed.ui_custom_type_name === 'string') setCustomTypeName(parsed.ui_custom_type_name);
-          if (typeof parsed.ui_is_liability === 'boolean') setCustomIsLiability(parsed.ui_is_liability);
-          const ik = parsed.ui_icon_key;
-          if (typeof ik === 'string' && ik.length > 0) setIconKey(ik);
-          setEditSheetReady(true);
+          const rows = catalog.accountTypes;
+          setCustomTypeOptions(
+            rows.map((row) => ({
+              name: row.name,
+              isLiability: row.is_liability === 1,
+            })),
+          );
         } catch (e) {
-          console.warn('Failed to load account for edit:', e);
-          Alert.alert('加载失败', '请稍后重试。', [{ text: '确定', onPress: () => router.back() }]);
+          console.warn('Failed to load custom account types:', e);
+          setCustomTypeOptions(getCustomAccountTypeOptions());
         }
       }, forceApi);
-      return;
-    }
+    },
+    [wrapLoad],
+  );
 
-    setEditSheetReady(true);
-    setBalance('');
-    const draft = getCustomAccountTypeDraft();
-    setCustomTypeName(draft.name);
-    setCustomIsLiability(draft.isLiability);
-    await reloadCustomTypes(forceApi);
-    if (accountType === 'custom' && draft.iconKey) {
-      setIconKey(draft.iconKey);
-    }
-  }, [accountType, editAccountId, isEditMode, reloadCustomTypes, router, wrapLoad]);
+  const reload = React.useCallback(
+    async (forceApi = false) => {
+      if (isEditMode && editAccountId) {
+        setEditSheetReady(false);
+        await wrapLoad(async () => {
+          try {
+            const catalog = await fetchFinanceCatalog({ offlineFallback: true });
+            const rows = catalog.accounts;
+            const row = rows.find((r) => r.id === editAccountId);
+            if (!row) {
+              Alert.alert('账户不存在', '该账户可能已被删除。', [{ text: '确定', onPress: () => router.back() }]);
+              return;
+            }
+            setAccountName(row.name);
+            setAccountNo(row.account_no ?? '');
+            setNotes(row.note ?? '');
+            editLedgerMetaRef.current = { sign_rule: row.sign_rule, account_type: row.account_type };
+            setBalance(financeBalanceInputTextFromLedger(row.balance ?? 0, row.sign_rule, row.account_type));
+            let parsed: Record<string, unknown> = {};
+            try {
+              parsed = row.extra_data ? (JSON.parse(row.extra_data) as Record<string, unknown>) : {};
+            } catch {
+              parsed = {};
+            }
+            editExtraBaselineRef.current = { ...parsed };
+            const uiType = parsed.ui_account_type;
+            if (
+              uiType === 'cash_wallet' ||
+              uiType === 'bank' ||
+              uiType === 'investment' ||
+              uiType === 'liability' ||
+              uiType === 'custom'
+            ) {
+              setAccountType(uiType);
+            } else if (row.account_type === 'liability') {
+              setAccountType('liability');
+            } else {
+              setAccountType('bank');
+            }
+            if (typeof parsed.ui_custom_type_name === 'string') setCustomTypeName(parsed.ui_custom_type_name);
+            if (typeof parsed.ui_is_liability === 'boolean') setCustomIsLiability(parsed.ui_is_liability);
+            const ik = parsed.ui_icon_key;
+            if (typeof ik === 'string' && ik.length > 0) setIconKey(ik);
+            setEditSheetReady(true);
+          } catch (e) {
+            console.warn('Failed to load account for edit:', e);
+            Alert.alert('加载失败', '请稍后重试。', [{ text: '确定', onPress: () => router.back() }]);
+          }
+        }, forceApi);
+        return;
+      }
+
+      setEditSheetReady(true);
+      setBalance('');
+      const draft = getCustomAccountTypeDraft();
+      setCustomTypeName(draft.name);
+      setCustomIsLiability(draft.isLiability);
+      await reloadCustomTypes(forceApi);
+    },
+    [editAccountId, isEditMode, reloadCustomTypes, router, wrapLoad],
+  );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
@@ -227,6 +223,45 @@ export default function AddAccountScreen() {
       void reload();
     }, [reload]),
   );
+
+  const openCustomTypeModal = React.useCallback(() => {
+    setModalTypeName('');
+    setModalIsLiability(false);
+    setCustomTypeModalOpen(true);
+  }, []);
+
+  const closeCustomTypeModal = React.useCallback(() => {
+    if (modalSaving) return;
+    setCustomTypeModalOpen(false);
+  }, [modalSaving]);
+
+  const onSaveCustomType = React.useCallback(async () => {
+    const nextName = modalTypeName.trim();
+    if (!nextName) {
+      Alert.alert('请输入类型名称', '类型名称不能为空。');
+      return;
+    }
+    setModalSaving(true);
+    try {
+      await upsertFinanceAccountType({
+        name: nextName,
+        is_liability: modalIsLiability ? 1 : 0,
+      });
+      const option = { name: nextName, isLiability: modalIsLiability };
+      upsertCustomAccountTypeOption(option);
+      setCustomAccountTypeDraft(option);
+      setAccountType('custom');
+      setCustomTypeName(nextName);
+      setCustomIsLiability(modalIsLiability);
+      setCustomTypeModalOpen(false);
+      await reloadCustomTypes();
+    } catch (e) {
+      console.warn('保存自定义类型失败:', e);
+      Alert.alert('保存失败', '自定义类型保存失败，请稍后重试。');
+    } finally {
+      setModalSaving(false);
+    }
+  }, [modalIsLiability, modalTypeName, reloadCustomTypes]);
 
   const onSave = React.useCallback(async () => {
     Keyboard.dismiss();
@@ -422,12 +457,11 @@ export default function AddAccountScreen() {
     );
   };
 
-  const renderTypeCard = (
+  const renderTypeChip = (
     key: string,
     active: boolean,
     onPress: () => void,
     onLongPress: (() => void) | undefined,
-    icon: keyof typeof MaterialIcons.glyphMap,
     label: string,
   ) => (
     <Pressable
@@ -435,18 +469,15 @@ export default function AddAccountScreen() {
       onPress={onPress}
       onLongPress={onLongPress}
       style={({ pressed }) => [
-        styles.typeCard,
+        styles.typeChip,
         {
-          backgroundColor: colors.surface,
+          backgroundColor: active ? colors.primaryMuted : colors.surface,
           borderColor: active ? colors.primary : colors.outline,
         },
         active && shadows.card,
         pressed && styles.pressed,
       ]}>
-      <View style={[styles.typeIconWrap, { backgroundColor: active ? colors.primaryMuted : colors.input }]}>
-        <MaterialIcons name={icon} size={22} color={active ? colors.primary : colors.textSecondary} />
-      </View>
-      <Text numberOfLines={1} style={[Typography.bodyStrong, styles.typeLabel, { color: colors.text }]}>
+      <Text numberOfLines={1} style={[Typography.bodyStrong, styles.typeLabel, { color: active ? colors.primary : colors.text }]}>
         {label}
       </Text>
     </Pressable>
@@ -483,7 +514,6 @@ export default function AddAccountScreen() {
                           borderColor: colors.outline,
                         },
                       ]}>
-                      <MaterialIcons name={accountTypeIcon} size={14} color={colors.textSecondary} />
                       <Text style={[Typography.caption, styles.typeBadgeText, { color: colors.text }]}>
                         {accountTypeLabel}
                       </Text>
@@ -499,26 +529,17 @@ export default function AddAccountScreen() {
                 <Text style={[Typography.kicker, styles.cardKicker, { color: colors.textSecondary }]}>选择账户类型</Text>
                 <View style={styles.typeGrid}>
                   {BASE_TYPE_OPTIONS.map((t) =>
-                    renderTypeCard(
-                      t.key,
-                      t.key === accountType,
-                      () => setAccountType(t.key),
-                      undefined,
-                      t.icon,
-                      t.label,
-                    ),
+                    renderTypeChip(t.key, t.key === accountType, () => setAccountType(t.key), undefined, t.label),
                   )}
                   {customTypeOptions.map((t) => {
-                    const icon = FINANCE_ACCOUNT_ICON_OPTIONS.find((item) => item.key === t.iconKey)?.icon ?? 'tune';
                     const active = accountType === 'custom' && customTypeName === t.name;
-                    return renderTypeCard(
+                    return renderTypeChip(
                       `custom-type-${t.name}`,
                       active,
                       () => {
                         setAccountType('custom');
                         setCustomTypeName(t.name);
                         setCustomIsLiability(t.isLiability);
-                        setIconKey(t.iconKey);
                       },
                       () => {
                         void (async () => {
@@ -543,7 +564,6 @@ export default function AddAccountScreen() {
                                       setAccountType('bank');
                                       setCustomTypeName('');
                                       setCustomIsLiability(false);
-                                      setIconKey('savings');
                                     }
                                   } catch (e) {
                                     console.warn('删除自定义类型失败:', e);
@@ -558,26 +578,10 @@ export default function AddAccountScreen() {
                           }
                         })();
                       },
-                      icon,
                       t.name,
                     );
                   })}
-                  {renderTypeCard(
-                    'custom-add',
-                    accountType === 'custom' && !customTypeName,
-                    () => {
-                      setAccountType('custom');
-                      setCustomAccountTypeDraft({
-                        name: customTypeName,
-                        isLiability: customIsLiability,
-                        iconKey,
-                      });
-                      router.push('/add-account-type');
-                    },
-                    undefined,
-                    'add',
-                    '自定义',
-                  )}
+                  {renderTypeChip('custom-add', false, openCustomTypeModal, undefined, '自定义')}
                 </View>
               </AppCard>
             )}
@@ -691,6 +695,93 @@ export default function AddAccountScreen() {
           />
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        transparent
+        animationType="fade"
+        visible={customTypeModalOpen}
+        onRequestClose={closeCustomTypeModal}>
+        <View style={styles.modalRoot}>
+          <Pressable
+            style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]}
+            onPress={closeCustomTypeModal}
+          />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.modalCenter}
+            pointerEvents="box-none">
+            <AppCard padded style={[styles.modalCard, shadows.sheet]}>
+              <Text style={[Typography.h3, { color: colors.text }]}>自定义类型</Text>
+
+              <AppInput
+                label="类型名称"
+                value={modalTypeName}
+                onChangeText={setModalTypeName}
+                placeholder="例如：房产 / 保险 / 借款"
+                editable={!modalSaving}
+              />
+
+              <View style={styles.modalField}>
+                <Text style={[Typography.kicker, styles.cardKicker, { color: colors.textSecondary }]}>类型性质</Text>
+                <View style={[styles.segmented, { backgroundColor: colors.capsule }]}>
+                  <Pressable
+                    onPress={() => setModalIsLiability(false)}
+                    disabled={modalSaving}
+                    style={({ pressed }) => [
+                      styles.segmentItem,
+                      !modalIsLiability && [styles.segmentItemActive, { backgroundColor: colors.surface }, shadows.card],
+                      pressed && styles.pressed,
+                    ]}>
+                    <Text
+                      style={[
+                        Typography.bodyStrong,
+                        { color: !modalIsLiability ? colors.primary : colors.textSecondary, fontSize: 14 },
+                      ]}>
+                      资产
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setModalIsLiability(true)}
+                    disabled={modalSaving}
+                    style={({ pressed }) => [
+                      styles.segmentItem,
+                      modalIsLiability && [styles.segmentItemActive, { backgroundColor: colors.surface }, shadows.card],
+                      pressed && styles.pressed,
+                    ]}>
+                    <Text
+                      style={[
+                        Typography.bodyStrong,
+                        { color: modalIsLiability ? colors.primary : colors.textSecondary, fontSize: 14 },
+                      ]}>
+                      负债
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+
+              <View style={styles.modalActions}>
+                <AppButton
+                  label="取消"
+                  variant="outline"
+                  size="md"
+                  onPress={closeCustomTypeModal}
+                  disabled={modalSaving}
+                  style={styles.modalBtn}
+                />
+                <AppButton
+                  label={modalSaving ? '保存中…' : '保存'}
+                  variant="primary"
+                  size="md"
+                  loading={modalSaving}
+                  disabled={modalSaving || modalTypeName.trim().length === 0}
+                  onPress={() => void onSaveCustomType()}
+                  style={styles.modalBtn}
+                />
+              </View>
+            </AppCard>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -736,26 +827,42 @@ const styles = StyleSheet.create({
   typeGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: Spacing.lg,
-  },
-  typeCard: {
-    width: '31%',
-    minWidth: 96,
-    alignItems: 'center',
-    justifyContent: 'center',
     gap: Spacing.md,
-    paddingVertical: Spacing['2xl'],
-    borderRadius: Radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
   },
-  typeIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: Radius.icon,
+  typeChip: {
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  typeLabel: { fontSize: 12, textAlign: 'center' },
+  typeLabel: { fontSize: 13, textAlign: 'center' },
+  sectionDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginVertical: Spacing.xs,
+  },
+  iconGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    width: '100%',
+  },
+  iconGridCellInner: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconExpandToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    paddingVertical: Spacing.sm,
+  },
   fieldLabel: { marginBottom: Spacing.xs },
   amountRow: { gap: Spacing.sm },
   balanceHint: {
@@ -792,31 +899,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     textAlignVertical: 'top',
   },
-  sectionDivider: {
-    height: StyleSheet.hairlineWidth,
-    marginVertical: Spacing.xs,
-  },
-  iconGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    width: '100%',
-  },
-  iconGridCellInner: {
-    flex: 1,
-    width: '100%',
-    height: '100%',
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  iconExpandToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.xs,
-    paddingVertical: Spacing.sm,
-  },
   footer: {
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: Layout.pagePaddingX,
@@ -824,6 +906,48 @@ const styles = StyleSheet.create({
     maxWidth: Layout.contentMaxWidth,
     alignSelf: 'center',
     width: '100%',
+  },
+  modalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFill,
+  },
+  modalCenter: {
+    paddingHorizontal: Layout.pagePaddingX,
+    justifyContent: 'center',
+  },
+  modalCard: {
+    gap: Spacing.lg,
+    maxWidth: Layout.contentMaxWidth,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  modalField: {
+    gap: Spacing.sm,
+  },
+  segmented: {
+    flexDirection: 'row',
+    padding: Spacing.xs,
+    borderRadius: Radius.md,
+    gap: Spacing.xs,
+  },
+  segmentItem: {
+    flex: 1,
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.sm,
+    alignItems: 'center',
+    minWidth: 0,
+  },
+  segmentItemActive: {},
+  modalActions: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    marginTop: Spacing.xs,
+  },
+  modalBtn: {
+    flex: 1,
   },
   pressed: { opacity: 0.85 },
 });

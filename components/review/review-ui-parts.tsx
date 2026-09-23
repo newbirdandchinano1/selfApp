@@ -300,18 +300,6 @@ export function WeeklyMetricsReferenceCard({
                     />
                   </View>
                 </View>
-                <View style={[styles.metricsFullTile, { backgroundColor: tileBg, borderColor: outlineVariant }]}>
-                  <View style={[styles.metricsFullIcon, { backgroundColor: isDark ? `${primary}28` : `${primary}16` }]}>
-                    <MaterialIcons name="favorite-border" size={20} color={primary} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.metricsFullLabel, { color: outline }]}>心愿单更新</Text>
-                    <Text style={[styles.metricsFullValue, { color: text }]}>
-                      {formatMetricInt(metrics.wishUpdates)}
-                      <Text style={[styles.metricsFullUnit, { color: outline }]}> 条</Text>
-                    </Text>
-                  </View>
-                </View>
                 <Text style={[styles.metricsFootnote, { color: outline }]}>
                   {metrics.rangeKind === 'rolling-7'
                     ? '周期：复盘日当天起向前连续 7 个自然日（含当天），按本地日期汇总。收入/支出仅含对应类型的记账流水。'

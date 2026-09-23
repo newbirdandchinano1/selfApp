@@ -1,19 +1,16 @@
 type CustomAccountTypeDraft = {
   name: string;
   isLiability: boolean;
-  iconKey: string;
 };
 
 export type CustomAccountTypeOption = {
   name: string;
   isLiability: boolean;
-  iconKey: string;
 };
 
 let customAccountTypeDraft: CustomAccountTypeDraft = {
   name: '',
   isLiability: false,
-  iconKey: 'savings',
 };
 
 let customAccountTypeOptions: CustomAccountTypeOption[] = [];
@@ -37,7 +34,6 @@ export function upsertCustomAccountTypeOption(next: CustomAccountTypeOption) {
   const value: CustomAccountTypeOption = {
     name: normalized,
     isLiability: next.isLiability,
-    iconKey: next.iconKey || 'savings',
   };
   if (idx >= 0) {
     customAccountTypeOptions = [
@@ -55,4 +51,3 @@ export function removeCustomAccountTypeOption(name: string) {
   if (!normalized) return;
   customAccountTypeOptions = customAccountTypeOptions.filter((item) => item.name !== normalized);
 }
-

@@ -217,7 +217,7 @@ import {
 } from '@/lib/tasks-ui-settings';
 import { fetchTodayFrogs } from '@/lib/today-frogs-api';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
-import { getPointsBalance } from '@/lib/repositories/wish-board/wish-board';
+import { getPointsBalance } from '@/lib/repositories/points/points';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React from 'react';
@@ -5269,9 +5269,9 @@ export default function TasksScreen() {
         <View style={styles.pageHeaderRow}>
           <View style={styles.pageHeaderSide}>
             <Pressable
-              onPress={() => router.push('/wish-board')}
+              onPress={() => router.push('/points-ledger')}
               accessibilityRole="button"
-              accessibilityLabel={`当前积分 ${formatPoints(pointsBalance)}，打开心愿板`}
+              accessibilityLabel={`当前积分 ${formatPoints(pointsBalance)}，打开积分`}
               hitSlop={6}
               style={({ pressed }) => [
                 styles.pointsBalanceChip,

@@ -250,7 +250,6 @@ function emptyWeekMetrics(
     savingsWeekTotal: 0,
     financeIncome: 0,
     financeExpense: 0,
-    wishUpdates: 0,
   };
 }
 
@@ -281,7 +280,6 @@ export async function fetchReviewWeekMetrics(opts: {
       savingsWeekTotal: Math.round(Number(payload.savingsWeekTotal) || 0),
       financeIncome: Math.round(Number(payload.financeIncome) || 0),
       financeExpense: Math.round(Number(payload.financeExpense) || 0),
-      wishUpdates: Number(payload.wishUpdates) || 0,
       fromApi: true,
     };
   } catch (e) {

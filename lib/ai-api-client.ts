@@ -10,7 +10,6 @@ import type {
   DailyIntakeTargetsEstimateJson,
   FoodNutritionJson,
   FoodTextIntakeJson,
-  VisionWallAiAssessmentPayload,
 } from '@/lib/ai-types';
 
 const AI_PREFIX = '/api/app/ai';
@@ -100,17 +99,6 @@ export async function aiFinanceCashFlowAnalysis(body: { summary_text: string }):
   return apiRequest(`${AI_PREFIX}/finance/cash-flow-analysis`, { method: 'POST', body });
 }
 
-export async function aiWishListRationalReview(body: { context_text: string }): Promise<{
-  headline: string;
-  review: string;
-}> {
-  return apiRequest(`${AI_PREFIX}/wish-list/rational-review`, { method: 'POST', body });
-}
-
-export async function aiWishItemComment(body: { summary_text: string }): Promise<{ comment: string }> {
-  return apiRequest(`${AI_PREFIX}/wish-item/comment`, { method: 'POST', body });
-}
-
 export async function aiMemoReview(body: { memo_context_text: string }): Promise<{
   evaluation: string;
   suggestions: string;
@@ -120,14 +108,6 @@ export async function aiMemoReview(body: { memo_context_text: string }): Promise
 
 export async function aiWeeklyReviewCoaching(body: { user_prompt: string }): Promise<{ text: string }> {
   return apiRequest(`${AI_PREFIX}/weekly-review/coaching`, { method: 'POST', body });
-}
-
-export async function aiVisionWallAssessment(body: {
-  plan_digest_text: string;
-  expected_goal_ids: string[];
-  user_display_name?: string;
-}): Promise<VisionWallAiAssessmentPayload> {
-  return apiRequest(`${AI_PREFIX}/vision-wall/assessment`, { method: 'POST', body });
 }
 
 /** 拆分 data URI 或纯 Base64，供图片类接口使用 */

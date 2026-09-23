@@ -1,6 +1,6 @@
 /**
- * App 专用业务接口（/api/app/*），对齐后端菜谱 / 备忘录 / 健康摄入 / 心愿板文档。
- * 供 api-client 表级 CRUD 路由，以及心愿板动作直接调用。
+ * App 专用业务接口（/api/app/*），对齐后端菜谱 / 备忘录 / 健康摄入 / 积分文档。
+ * 供 api-client 表级 CRUD 路由，以及积分动作直接调用。
  */
 
 import { apiRequest, type ApiListQueryOpts, type ApiListResponse } from '@/lib/api-client';
@@ -21,7 +21,6 @@ export const APP_DOMAIN_CRUD_TABLES = new Set([
   'memo_dimensions',
   'memos',
   'health_records',
-  'wish_board_items',
 ]);
 
 function asRecord(row: unknown): Record<string, unknown> {
@@ -107,10 +106,6 @@ function prepareHealthIntakeBody(row: Record<string, unknown>): Record<string, u
   return out;
 }
 
-function prepareWishBoardItemBody(row: Record<string, unknown>): Record<string, unknown> {
-  return stripSyncFields(row);
-}
-
 function buildQuery(params: Record<string, string | number | boolean | null | undefined>): string {
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -166,12 +161,6 @@ export async function appDomainCreateRecord<T = unknown>(
         body: prepareHealthIntakeBody(row),
         signal,
       });
-    case 'wish_board_items':
-      return apiRequest<T>(`${APP_API_PREFIX}/wish-board/items`, {
-        method: 'POST',
-        body: prepareWishBoardItemBody(row),
-        signal,
-      });
     default:
       throw new Error(`表「${table}」无 App 专用创建接口`);
   }
@@ -210,9 +199,6 @@ export async function appDomainUpdateRecord<T = unknown>(
         body: prepareMemoBody(row),
         signal,
       });
-    case 'wish_board_items':
-      // 专用文档暂无编辑接口；保留通用 CRUD 由调用方回退
-      throw new AppDomainFallbackError(table, 'update');
     case 'health_records':
       throw new AppDomainFallbackError(table, 'update');
     default:
@@ -239,9 +225,6 @@ export async function appDomainDeleteRecord(
       return;
     case 'memos':
       await apiRequest(`${APP_API_PREFIX}/memos/${enc}`, { method: 'DELETE', signal });
-      return;
-    case 'wish_board_items':
-      await apiRequest(`${APP_API_PREFIX}/wish-board/items/${enc}`, { method: 'DELETE', signal });
       return;
     case 'health_records':
       throw new AppDomainFallbackError(table, 'delete');
@@ -272,7 +255,6 @@ export async function appDomainGetRecord<T extends Record<string, unknown>>(
     case 'recipe_categories':
     case 'memo_dimensions':
     case 'health_records':
-    case 'wish_board_items':
       throw new AppDomainFallbackError(table, 'get');
     default:
       throw new Error(`表「${table}」无 App 专用详情接口`);
@@ -324,14 +306,6 @@ export async function appDomainListRecords<T extends Record<string, unknown>>(
       });
       const items = extractHealthIntakeItems(data).map(normalizeHealthRecordRow);
       await enrichHealthRecordsWithDailyTargets(items, signal);
-      return wrapList(items as T[]);
-    }
-    case 'wish_board_items': {
-      const data = await apiRequest<{ items?: unknown[] }>(`${APP_API_PREFIX}/wish-board/items`, {
-        method: 'GET',
-        signal,
-      });
-      const items = Array.isArray(data?.items) ? data.items.map(asRecord) : [];
       return wrapList(items as T[]);
     }
     default:
@@ -476,28 +450,17 @@ export class AppDomainFallbackError extends Error {
   }
 }
 
-// —— 心愿板专用动作 ——
+// —— 积分专用动作 ——
 
-export async function appWishBoardGetBalance(opts?: { signal?: AbortSignal }): Promise<number> {
-  const data = await apiRequest<{ balance?: number }>(`${APP_API_PREFIX}/wish-board/points/balance`, {
+export async function appPointsGetBalance(opts?: { signal?: AbortSignal }): Promise<number> {
+  const data = await apiRequest<{ balance?: number }>(`${APP_API_PREFIX}/points/balance`, {
     method: 'GET',
     signal: opts?.signal,
   });
   return asPoints(data?.balance);
 }
 
-export async function appWishBoardRedeem(
-  id: string,
-  opts?: { signal?: AbortSignal },
-): Promise<{ balance?: number; item?: Record<string, unknown> }> {
-  return apiRequest(`${APP_API_PREFIX}/wish-board/redeem`, {
-    method: 'POST',
-    body: { id },
-    signal: opts?.signal,
-  });
-}
-
-export async function appWishBoardAdjustPoints(
+export async function appPointsAdjust(
   input: {
     delta: number;
     reason: string;
@@ -507,7 +470,7 @@ export async function appWishBoardAdjustPoints(
   },
   opts?: { signal?: AbortSignal },
 ): Promise<{ balance?: number; delta?: number; ledger_id?: string | null }> {
-  return apiRequest(`${APP_API_PREFIX}/wish-board/points/adjust`, {
+  return apiRequest(`${APP_API_PREFIX}/points/adjust`, {
     method: 'POST',
     body: {
       delta: input.delta,
@@ -520,10 +483,10 @@ export async function appWishBoardAdjustPoints(
   });
 }
 
-export async function appWishBoardResetPoints(opts?: {
+export async function appPointsReset(opts?: {
   signal?: AbortSignal;
 }): Promise<{ balance?: number; delta?: number; ledger_id?: string | null }> {
-  return apiRequest(`${APP_API_PREFIX}/wish-board/points/reset`, {
+  return apiRequest(`${APP_API_PREFIX}/points/reset`, {
     method: 'POST',
     signal: opts?.signal,
   });
@@ -553,8 +516,8 @@ export type AppPointsLedgerResult = {
   };
 };
 
-/** GET /api/app/wish-board/points/ledger — 积分流水（全部来源） */
-export async function appWishBoardListPointsLedger(
+/** GET /api/app/points/ledger — 积分流水（全部来源） */
+export async function appPointsListLedger(
   params?: { page?: number; limit?: number },
   opts?: { signal?: AbortSignal },
 ): Promise<AppPointsLedgerResult> {
@@ -566,7 +529,7 @@ export async function appWishBoardListPointsLedger(
     balance?: number;
     pagination?: Partial<AppPointsLedgerResult['pagination']>;
     total?: number;
-  }>(`${APP_API_PREFIX}/wish-board/points/ledger${qs}`, {
+  }>(`${APP_API_PREFIX}/points/ledger${qs}`, {
     method: 'GET',
     signal: opts?.signal,
   });
@@ -607,8 +570,8 @@ export async function appWishBoardListPointsLedger(
   };
 }
 
-/** DELETE /api/app/wish-board/points/ledger/:id — 删除流水并回退积分 */
-export async function appWishBoardDeletePointsLedger(
+/** DELETE /api/app/points/ledger/:id — 删除流水并回退积分 */
+export async function appPointsDeleteLedger(
   id: string,
   opts?: { signal?: AbortSignal },
 ): Promise<{
@@ -632,7 +595,7 @@ export async function appWishBoardDeletePointsLedger(
     reason?: string;
     ref_type?: string | null;
     ref_id?: string | null;
-  }>(`${APP_API_PREFIX}/wish-board/points/ledger/${encodeURIComponent(ledgerId)}`, {
+  }>(`${APP_API_PREFIX}/points/ledger/${encodeURIComponent(ledgerId)}`, {
     method: 'DELETE',
     signal: opts?.signal,
   });
@@ -646,42 +609,6 @@ export async function appWishBoardDeletePointsLedger(
     ref_type: data?.ref_type == null ? null : String(data.ref_type),
     ref_id: data?.ref_id == null ? null : String(data.ref_id),
   };
-}
-
-export type AppWishRedeemedItem = {
-  ledger_id: string;
-  wish_id: string;
-  delta: number;
-  balance_after?: number;
-  redeemed_at: string;
-  title?: string | null;
-  description?: string | null;
-  cost_points?: number | null;
-  note?: string | null;
-  icon_key?: string | null;
-  wish_type?: string | null;
-  status?: string | null;
-};
-
-export async function appWishBoardListRedeemed(opts?: {
-  signal?: AbortSignal;
-}): Promise<AppWishRedeemedItem[]> {
-  const data = await apiRequest<{ items?: AppWishRedeemedItem[] }>(
-    `${APP_API_PREFIX}/wish-board/redeemed`,
-    { method: 'GET', signal: opts?.signal },
-  );
-  return Array.isArray(data?.items) ? data.items : [];
-}
-
-export async function appWishBoardDeleteRedeemed(opts?: {
-  id?: string;
-  signal?: AbortSignal;
-}): Promise<{ deleted?: number; ids?: string[] }> {
-  const qs = opts?.id ? `?id=${encodeURIComponent(opts.id)}` : '';
-  return apiRequest(`${APP_API_PREFIX}/wish-board/redeemed${qs}`, {
-    method: 'DELETE',
-    signal: opts?.signal,
-  });
 }
 
 // —— 备忘录 AI ——

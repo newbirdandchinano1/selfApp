@@ -256,13 +256,8 @@ function RootLayoutInner() {
             <Stack.Screen name="add-subtask" />
             <Stack.Screen name="pick-parent-task" />
             <Stack.Screen name="add-account" />
-            <Stack.Screen name="add-account-type" />
             <Stack.Screen name="account-detail" />
             <Stack.Screen name="assets" />
-            <Stack.Screen name="vision-wall" />
-            <Stack.Screen name="vision-create" />
-            <Stack.Screen name="edit-goal-dimension/[id]" />
-            <Stack.Screen name="vision-detail/[id]" />
             <Stack.Screen
               name="task/[id]"
               options={{ gestureEnabled: false, headerBackButtonMenuEnabled: false }}
@@ -280,16 +275,10 @@ function RootLayoutInner() {
             <Stack.Screen name="quick-add-edit" />
             <Stack.Screen name="habit-detail" />
             <Stack.Screen name="add-item" />
-            <Stack.Screen name="wish-list" />
-            <Stack.Screen name="wish-board" />
             <Stack.Screen name="points-ledger" />
-            <Stack.Screen name="add-wish-board-item" />
-            <Stack.Screen name="edit-wish-board-item/[id]" />
             <Stack.Screen name="memo-list" />
             <Stack.Screen name="memo-view/[id]" />
             <Stack.Screen name="memo-edit/[id]" />
-            <Stack.Screen name="add-wish-item" />
-            <Stack.Screen name="edit-wish-item/[id]" />
             <Stack.Screen name="weekly-review" />
             <Stack.Screen name="weekly-review-form" />
             <Stack.Screen name="weekly-review/[weekStartYmd]/[dimensionId]" />

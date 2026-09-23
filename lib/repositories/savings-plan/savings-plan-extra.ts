@@ -2,7 +2,7 @@ import type { TaskPriorityKey } from '@/components/composer/task-priority-matrix
 
 export type SavingsPlanExtraPayload = {
   priority?: TaskPriorityKey;
-  /** 关联的心愿单好物 id */
+  /** 历史关联字段：心愿单已下线，仅兼容旧 extra_data */
   wish_item_id?: string;
 };
 

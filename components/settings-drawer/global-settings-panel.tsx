@@ -495,24 +495,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
             </View>
           </Pressable>
 
-          <Pressable
-            onPress={() => {
-              closeSettingsDrawer();
-              router.push('/wish-board');
-            }}
-            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <MaterialIcons name="card-giftcard" size={26} color={isDark ? '#f472b6' : '#be185d'} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>心愿板</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  查看积分余额，用积分兑换心愿；支持新增与列表管理。
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
-
         </View>
 
         <View

@@ -1038,8 +1038,8 @@ export default function AddHabitScreen() {
             keyboardType="numbers-and-punctuation"
             hint={
               habitKind === 'task'
-                ? '完成本周期任务目标后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
-                : '达成当日目标后计入心愿板积分；负数表示扣除，可含小数；0 表示无变动'
+                ? '完成本周期任务目标后计入积分；负数表示扣除，可含小数；0 表示无变动'
+                : '达成当日目标后计入积分；负数表示扣除，可含小数；0 表示无变动'
             }
             inputWrapStyle={styles.rewardPointsWrap}
           />

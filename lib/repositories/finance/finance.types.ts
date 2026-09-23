@@ -25,6 +25,7 @@ export type FinanceAccountTypeRow = {
   id: string;
   name: string;
   is_liability: number;
+  /** @deprecated 图标选择已下线，列保留兼容同步 */
   icon_key: string;
   sort_order: number;
   created_at: string;
@@ -36,7 +37,7 @@ export type FinanceAccountTypeRow = {
 export type UpsertFinanceAccountTypeInput = {
   name: string;
   is_liability: number;
-  icon_key: string;
+  icon_key?: string;
 };
 
 export type CreateFinanceAccountInput = {
