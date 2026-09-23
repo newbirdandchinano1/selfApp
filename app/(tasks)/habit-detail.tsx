@@ -610,7 +610,9 @@ export default function HabitDetailScreen() {
     if (!habit || makeUpSaving || cancelMakeUpSaving) return;
     if (!consumeHabitDetailPressDebounce(habit.id)) return;
     if (hasActiveSubHabits(habit.extra_data)) {
-      Alert.alert('提示', '该习惯已启用子习惯，请在任务页点击习惯后，在子习惯清单中完成打卡。');
+      const kind = parseHabitKind(habit.extra_data);
+      const label = kind === 'task' ? '子任务' : '子习惯';
+      Alert.alert('提示', `该习惯已启用${label}，请在任务页点击习惯后，在清单中完成打卡。`);
       return;
     }
     const ymd = focusYmd;

@@ -96,6 +96,7 @@ import {
 import {
   areAllSubHabitsCompletedForYmd,
   getSubHabitDoneMapForYmd,
+  habitSubItemsLabel,
   hasActiveSubHabits,
   parseHabitSubHabitsMeta,
   toggleSubHabitCheckIn,
@@ -1880,6 +1881,7 @@ export default function TasksScreen() {
     habitId: string;
     name: string;
     icon: string;
+    kind: HabitKind;
     subHabits: HabitSubItem[];
     doneMap: Record<string, boolean>;
   } | null>(null);
@@ -4706,6 +4708,7 @@ export default function TasksScreen() {
       habitId: item.id,
       name: item.name,
       icon: item.icon,
+      kind: item.kind,
       subHabits,
       doneMap: getSubHabitDoneMapForYmd(item.extraData, logicalTodayYmd),
     });
@@ -4732,7 +4735,8 @@ export default function TasksScreen() {
         const prevAllDone =
           prevAllDoneFromModal ||
           areAllSubHabitsCompletedForYmd(habitBefore?.extra_data ?? null, logicalTodayYmd);
-        const habitKind = parseHabitKind(habitBefore?.extra_data ?? null);
+        const habitKind =
+          subHabitModal.kind ?? parseHabitKind(habitBefore?.extra_data ?? null);
         const gridItem = habitSections
           .flatMap((s) => s.items)
           .find((it) => it.id === subHabitModal.habitId);
@@ -4748,12 +4752,26 @@ export default function TasksScreen() {
         if (nextDone) void playHabitCheckInDing();
         const completedCount = result.completedCount;
         const total = result.total;
-        patchHabitTodayCount(subHabitModal.habitId, completedCount, 0);
+        patchHabitTodayCount(subHabitModal.habitId, completedCount, 0, {
+          hasTodayRecord: habitKind === 'break' ? true : undefined,
+        });
         setHabitSections((prev) =>
           prev.map((sec) => ({
             ...sec,
             items: sec.items.map((it) => {
               if (it.id !== subHabitModal.habitId) return it;
+              if (habitKind === 'break') {
+                return {
+                  ...it,
+                  todayCount: completedCount,
+                  displayCompleted: result.allDone,
+                  hasTodayRecord: true,
+                  hasSubHabits: true,
+                  subHabits: subHabitModal.subHabits,
+                  subHabitCompletedCount: completedCount,
+                  extraData: result.extraData,
+                };
+              }
               return {
                 ...it,
                 todayCount: completedCount,
@@ -4768,7 +4786,7 @@ export default function TasksScreen() {
             }),
           })),
         );
-        // 养成：子习惯全部完成才按次发奖；任务：周期目标边界发整包
+        // 养成：子习惯全部完成才按次发奖；任务：周期目标边界发整包；戒除：破戒扣分 / 回到零破戒发守住奖
         if (habitKind === 'build') {
           if (nextDone && result.allDone && !prevAllDone) {
             await grantHabitCheckInPointsWithToast(subHabitModal.habitId, 'earn');
@@ -4783,8 +4801,31 @@ export default function TasksScreen() {
             wasTaskPeriodMet,
             logicalTodayYmd,
           );
+        } else if (habitKind === 'break') {
+          const prevBroken = prevCompleted > 0;
+          const nextBroken = result.completedCount > 0 || result.anyBroken;
+          try {
+            await syncBreakHabitPenaltyPointsReward({
+              habitId: subHabitModal.habitId,
+              prevCount: prevCompleted,
+              nextCount: result.completedCount,
+              dailyGoal: gridItem?.dailyGoal ?? null,
+              extraData: result.extraData,
+            });
+          } catch (e) {
+            if (__DEV__) console.warn('[habit-break-penalty-sub]', e);
+          }
+          if (prevBroken && !nextBroken) {
+            try {
+              await applyBreakHabitReward(subHabitModal.habitId, 'clean', 'earn');
+            } catch (e) {
+              if (__DEV__) console.warn('[habit-break-clean-sub]', e);
+            }
+          }
         }
-        runHabitSideEffectsAfterCountChange(subHabitModal.habitId, result.parentCount);
+        runHabitSideEffectsAfterCountChange(subHabitModal.habitId, result.parentCount, {
+          skipHabitReload: habitKind === 'break',
+        });
       } catch (err) {
         console.warn('子习惯打卡失败', err);
         setSubHabitModal((prev) =>
@@ -4808,8 +4849,63 @@ export default function TasksScreen() {
       subHabitModal,
       subHabitTogglingId,
       syncTaskHabitPeriodPointsWithToast,
+      syncBreakHabitPenaltyPointsReward,
+      applyBreakHabitReward,
     ],
   );
+
+  const handleSubHabitConfirmClean = React.useCallback(async () => {
+    if (!subHabitModal || subHabitModal.kind !== 'break' || subHabitTogglingId) return;
+    const brokenCount = Object.values(subHabitModal.doneMap).filter(Boolean).length;
+    if (brokenCount > 0) return;
+    if (!consumeHabitCardPressDebounce(`${subHabitModal.habitId}:confirm-clean`)) return;
+    setSubHabitTogglingId('__confirm_clean__');
+    markPageDirty();
+    try {
+      await confirmBreakHabitDayClean(subHabitModal.habitId, logicalTodayYmd);
+      patchHabitTodayCount(subHabitModal.habitId, 0, 0, { hasTodayRecord: true });
+      setHabitSections((prev) =>
+        prev.map((sec) => ({
+          ...sec,
+          items: sec.items.map((it) => {
+            if (it.id !== subHabitModal.habitId) return it;
+            return {
+              ...it,
+              todayCount: 0,
+              displayCompleted: true,
+              hasTodayRecord: true,
+              hasSubHabits: true,
+              subHabits: subHabitModal.subHabits,
+              subHabitCompletedCount: 0,
+            };
+          }),
+        })),
+      );
+      try {
+        await applyBreakHabitReward(subHabitModal.habitId, 'clean', 'earn');
+      } catch (e) {
+        if (__DEV__) console.warn('[habit-break-clean-sub-confirm]', e);
+      }
+      runHabitSideEffectsAfterCountChange(subHabitModal.habitId, 0, { skipHabitReload: true });
+      setSubHabitModal(null);
+    } catch (err) {
+      console.warn('确认今日守住失败', err);
+      Alert.alert(
+        '确认失败',
+        err instanceof Error && err.message.trim() ? err.message : '保持戒除未能保存，请稍后重试',
+      );
+    } finally {
+      setSubHabitTogglingId(null);
+    }
+  }, [
+    consumeHabitCardPressDebounce,
+    logicalTodayYmd,
+    markPageDirty,
+    patchHabitTodayCount,
+    runHabitSideEffectsAfterCountChange,
+    subHabitModal,
+    subHabitTogglingId,
+  ]);
 
   const handleHabitIconPress = React.useCallback(
     (item: HabitGridItem) => {
@@ -5429,6 +5525,24 @@ export default function TasksScreen() {
 
           <View style={stackedSectionStyle}>
             <View style={sectionCardStyle}>
+              <TaskCompletionHeatmap
+                logicalTodayYmd={logicalTodayYmd}
+                dayBoundary={dayBoundary}
+                textMain={colors.text}
+                textMuted={outline}
+                accentColor={primary}
+                todoAccentColor={secondary}
+                innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
+                innerBorderColor={colors.outlineStrong}
+                isDark={isDark}
+                reloadToken={completionHeatmapReloadToken}
+                projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+              />
+            </View>
+          </View>
+
+          <View style={stackedSectionStyle}>
+            <View style={sectionCardStyle}>
               <View style={styles.habitHeaderRow}>
                 <Text style={[styles.sectionTitle, { color: colors.text }]}>小习惯</Text>
                 <ScalePressable
@@ -5825,24 +5939,6 @@ export default function TasksScreen() {
                   </View>
                 );
               })}
-            </View>
-          </View>
-
-          <View style={stackedSectionStyle}>
-            <View style={sectionCardStyle}>
-              <TaskCompletionHeatmap
-                logicalTodayYmd={logicalTodayYmd}
-                dayBoundary={dayBoundary}
-                textMain={colors.text}
-                textMuted={outline}
-                accentColor={primary}
-                todoAccentColor={secondary}
-                innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
-                innerBorderColor={colors.outlineStrong}
-                isDark={isDark}
-                reloadToken={completionHeatmapReloadToken}
-                projects={projects.map((p) => ({ id: p.id, name: p.name }))}
-              />
             </View>
           </View>
 
@@ -7418,18 +7514,29 @@ export default function TasksScreen() {
           />
           <View pointerEvents="box-none" style={styles.modalCenter}>
             <View style={[styles.modalCard, { backgroundColor: modalCardBg, maxHeight: '78%', width: '92%' }]}>
+              {(() => {
+                const subLabel = habitSubItemsLabel(subHabitModal?.kind ?? 'build');
+                const brokenOrDoneCount = subHabitModal
+                  ? Object.values(subHabitModal.doneMap).filter(Boolean).length
+                  : 0;
+                const totalSubs = subHabitModal?.subHabits.length ?? 0;
+                const isBreakKind = subHabitModal?.kind === 'break';
+                const confirmCleanBusy = subHabitTogglingId === '__confirm_clean__';
+                return (
+                  <>
               <View style={styles.modalHeader}>
                 <View style={styles.subHabitModalTitleRow}>
                   <Text style={styles.subHabitModalIcon}>{subHabitModal?.icon ?? '✓'}</Text>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={[styles.modalTitle, { color: colors.text }]} numberOfLines={1}>
-                      {subHabitModal?.name ?? '子习惯'}
+                      {subHabitModal?.name?.trim()
+                        ? subHabitModal.name
+                        : subLabel.section}
                     </Text>
                     <Text style={[styles.subHabitModalProgress, { color: outline }]}>
-                      今日进度{' '}
-                      {subHabitModal
-                        ? `${Object.values(subHabitModal.doneMap).filter(Boolean).length}/${subHabitModal.subHabits.length}`
-                        : '0/0'}
+                      {isBreakKind
+                        ? `破戒 ${brokenOrDoneCount}/${totalSubs}`
+                        : `今日进度 ${brokenOrDoneCount}/${totalSubs}`}
                     </Text>
                   </View>
                 </View>
@@ -7442,6 +7549,7 @@ export default function TasksScreen() {
                   {(subHabitModal?.subHabits ?? []).map((sub) => {
                     const done = Boolean(subHabitModal?.doneMap[sub.id]);
                     const busy = subHabitTogglingId === sub.id;
+                    const activeColor = isBreakKind ? error : secondary;
                     return (
                       <Pressable
                         key={sub.id}
@@ -7451,16 +7559,24 @@ export default function TasksScreen() {
                           styles.subHabitModalRow,
                           {
                             backgroundColor: done
-                              ? isDark
-                                ? 'rgba(52,211,153,0.14)'
-                                : 'rgba(0,108,73,0.08)'
+                              ? isBreakKind
+                                ? isDark
+                                  ? 'rgba(239,68,68,0.16)'
+                                  : 'rgba(220,38,38,0.08)'
+                                : isDark
+                                  ? 'rgba(52,211,153,0.14)'
+                                  : 'rgba(0,108,73,0.08)'
                               : isDark
                                 ? 'rgba(148,163,184,0.1)'
                                 : 'rgba(148,163,184,0.08)',
                             borderColor: done
-                              ? isDark
-                                ? 'rgba(52,211,153,0.45)'
-                                : 'rgba(0,108,73,0.35)'
+                              ? isBreakKind
+                                ? isDark
+                                  ? 'rgba(248,113,113,0.5)'
+                                  : 'rgba(220,38,38,0.35)'
+                                : isDark
+                                  ? 'rgba(52,211,153,0.45)'
+                                  : 'rgba(0,108,73,0.35)'
                               : colors.outline,
                             opacity: busy ? 0.7 : pressed ? 0.88 : 1,
                           },
@@ -7469,17 +7585,23 @@ export default function TasksScreen() {
                           style={[
                             styles.subHabitModalCheck,
                             {
-                              backgroundColor: done ? secondary : 'transparent',
-                              borderColor: done ? secondary : outline,
+                              backgroundColor: done ? activeColor : 'transparent',
+                              borderColor: done ? activeColor : outline,
                             },
                           ]}>
-                          {done ? <MaterialIcons name="check" size={16} color="#fff" /> : null}
+                          {done ? (
+                            <MaterialIcons
+                              name={isBreakKind ? 'close' : 'check'}
+                              size={16}
+                              color="#fff"
+                            />
+                          ) : null}
                         </View>
                         <Text
                           style={[
                             styles.subHabitModalName,
                             {
-                              color: colors.text,
+                              color: done && isBreakKind ? error : colors.text,
                               textDecorationLine: done ? 'line-through' : 'none',
                               opacity: done ? 0.72 : 1,
                             },
@@ -7493,9 +7615,34 @@ export default function TasksScreen() {
                   })}
                 </View>
               </ScrollView>
+              {isBreakKind && brokenOrDoneCount === 0 ? (
+                <ScalePressable
+                  onPress={() => void handleSubHabitConfirmClean()}
+                  disabled={subHabitTogglingId != null}
+                  style={({ pressed }) => [
+                    styles.ghostBtn,
+                    {
+                      marginTop: 12,
+                      alignSelf: 'stretch',
+                      justifyContent: 'center',
+                      borderColor: `${success}66`,
+                      backgroundColor: isDark ? 'rgba(16,185,129,0.12)' : 'rgba(0,108,73,0.08)',
+                      opacity: confirmCleanBusy ? 0.7 : pressed ? 0.88 : 1,
+                    },
+                  ]}>
+                  {confirmCleanBusy ? (
+                    <ActivityIndicator size="small" color={success} />
+                  ) : (
+                    <Text style={[styles.ghostBtnText, { color: success }]}>确认今日守住</Text>
+                  )}
+                </ScalePressable>
+              ) : null}
               <Text style={[styles.subHabitModalHint, { color: outline }]}>
-                点选完成子习惯；全部完成后计入父习惯当日打卡
+                {subLabel.modalHint}
               </Text>
+                  </>
+                );
+              })()}
             </View>
           </View>
         </View>

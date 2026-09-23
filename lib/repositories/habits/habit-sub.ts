@@ -13,7 +13,7 @@ export type HabitSubItem = {
 export type HabitSubHabitsMeta = {
   enabled: boolean;
   items: HabitSubItem[];
-  /** ymd → { subHabitId → count }；count>0 视为当日已完成 */
+  /** ymd → { subHabitId → count }；count>0：养成/任务=已完成，戒除=已破戒 */
   checkIns: Record<string, Record<string, number>>;
 };
 
@@ -77,10 +77,57 @@ export function parseHabitSubHabitsMeta(extraData: string | null): HabitSubHabit
   };
 }
 
-/** 已开启子习惯模式且至少有一条子习惯 */
+/** 已开启子习惯/子任务模式且至少有一条 */
 export function hasActiveSubHabits(extraData: string | null): boolean {
   const meta = parseHabitSubHabitsMeta(extraData);
   return meta.enabled && meta.items.length > 0;
+}
+
+/** 子项文案：完成任务用「子任务」，养成/戒除用「子习惯」 */
+export function habitSubItemsLabel(kind: 'build' | 'break' | 'task'): {
+  section: string;
+  singular: string;
+  enableTitle: string;
+  enableHint: string;
+  addButton: string;
+  editorTitle: (editing: boolean) => string;
+  emptyHint: string;
+  modalHint: string;
+} {
+  if (kind === 'task') {
+    return {
+      section: '子任务',
+      singular: '子任务',
+      enableTitle: '启用子任务模式',
+      enableHint: '开启后首页点击将展示子任务清单，全部完成后才计入父任务打卡',
+      addButton: '添加子任务',
+      editorTitle: (editing) => (editing ? '编辑子任务' : '添加子任务'),
+      emptyHint: '尚未添加子任务。添加后，首页将改为在弹窗中逐项完成。',
+      modalHint: '点选完成子任务；全部完成后计入父任务当日打卡',
+    };
+  }
+  if (kind === 'break') {
+    return {
+      section: '子习惯',
+      singular: '子习惯',
+      enableTitle: '启用子习惯模式',
+      enableHint: '开启后首页点击将展示子习惯清单；任一项破戒则当日整体破戒',
+      addButton: '添加子习惯',
+      editorTitle: (editing) => (editing ? '编辑子习惯' : '添加子习惯'),
+      emptyHint: '尚未添加子习惯。添加后，在弹窗中标记破戒项；一项破戒即整日破戒。',
+      modalHint: '点选标记破戒；任一项破戒则当日整体破戒。无破戒时可点「确认今日守住」。',
+    };
+  }
+  return {
+    section: '子习惯',
+    singular: '子习惯',
+    enableTitle: '启用子习惯模式',
+    enableHint: '开启后首页点击将展示子习惯清单，全部完成后才计入父习惯打卡',
+    addButton: '添加子习惯',
+    editorTitle: (editing) => (editing ? '编辑子习惯' : '添加子习惯'),
+    emptyHint: '尚未添加子习惯。添加后，首页将改为在弹窗中逐项完成。',
+    modalHint: '点选完成子习惯；全部完成后计入父习惯当日打卡',
+  };
 }
 
 export function createHabitSubItemId(): string {
@@ -171,9 +218,9 @@ function setSubHabitCountInExtra(
 }
 
 /**
- * 切换某日子习惯完成态，并同步父习惯当日打卡：
- * - 全部完成 → parent count = 1（计入养成天数/绑定任务）
- * - 未全部完成 → 清除父习惯当日记录
+ * 切换某日子习惯/子任务完成态，并同步父习惯当日打卡：
+ * - 养成 / 完成任务：全部完成 → parent count = 目标次数；未全完 → 0
+ * - 戒除：勾选表示该子项破戒；任一项破戒 → parent count = 破戒项数；全无破戒 → 写入保持戒除（count=0）
  */
 export async function toggleSubHabitCheckIn(params: {
   habitId: string;
@@ -187,15 +234,17 @@ export async function toggleSubHabitCheckIn(params: {
   completedCount: number;
   total: number;
   parentCount: number;
+  /** 戒除：是否任一子项破戒 */
+  anyBroken: boolean;
 }> {
   const habit = await getHabitById(params.habitId);
   if (!habit) throw new Error('习惯不存在');
   const meta = parseHabitSubHabitsMeta(habit.extra_data);
   if (!meta.enabled || meta.items.length === 0) {
-    throw new Error('该习惯未启用子习惯');
+    throw new Error('该习惯未启用子项');
   }
   if (!meta.items.some((i) => i.id === params.subHabitId)) {
-    throw new Error('子习惯不存在');
+    throw new Error('子项不存在');
   }
   const currentlyDone = (meta.checkIns[params.ymd]?.[params.subHabitId] ?? 0) > 0;
   const nextDone = params.done !== undefined ? params.done === true : !currentlyDone;
@@ -209,12 +258,38 @@ export async function toggleSubHabitCheckIn(params: {
 
   const completedCount = countSubHabitsCompletedForYmd(nextExtra, params.ymd);
   const total = meta.items.length;
-  const allDone = completedCount >= total;
   const kind = parseHabitKind(nextExtra);
   const dailyGoal = parseHabitDailyGoal(nextExtra, kind);
-  // 父习惯当日打卡：全部子习惯完成时写入满足每日目标的次数（便于统计/绑定任务）
+
+  if (kind === 'break') {
+    const anyBroken = completedCount > 0;
+    const parentCount = anyBroken ? completedCount : 0;
+    if (anyBroken) {
+      await upsertHabitDayCount(params.habitId, params.ymd, parentCount);
+    } else {
+      await upsertHabitDayCount(params.habitId, params.ymd, 0, { keepZeroRecord: true });
+    }
+    // allDone：当日戒除成功（无破戒且已写确认）
+    return {
+      extraData: nextExtra,
+      allDone: !anyBroken,
+      completedCount,
+      total,
+      parentCount,
+      anyBroken,
+    };
+  }
+
+  const allDone = completedCount >= total;
   const parentCount = allDone ? (dailyGoal != null && dailyGoal > 0 ? dailyGoal : 1) : 0;
   await upsertHabitDayCount(params.habitId, params.ymd, parentCount);
 
-  return { extraData: nextExtra, allDone, completedCount, total, parentCount };
+  return {
+    extraData: nextExtra,
+    allDone,
+    completedCount,
+    total,
+    parentCount,
+    anyBroken: false,
+  };
 }

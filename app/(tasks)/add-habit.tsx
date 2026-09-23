@@ -34,6 +34,7 @@ import {
 } from '@/lib/repositories/habits/habit-reward-points';
 import {
   createHabitSubItemId,
+  habitSubItemsLabel,
   mergeSubHabitsIntoExtraData,
   parseHabitSubHabitsMeta,
   type HabitSubItem,
@@ -568,7 +569,6 @@ export default function AddHabitScreen() {
       setQuantifyEnabled(true);
       setDailyGoal((v) => (v === null || v < 1 ? 1 : v));
       setExpectedGoalTab('none');
-      setSubHabitsEnabled(false);
     } else if (habitKind === 'task') {
       setDailyGoal(null);
       setExpectedGoalTab((tab) => {
@@ -677,7 +677,7 @@ export default function AddHabitScreen() {
     const buildQuantifyExtra =
       habitKind === 'build' && nextBuildExpectedGoal ? { expectedGoal: nextBuildExpectedGoal } : {};
 
-    const canUseSubHabits = habitKind !== 'break';
+    const canUseSubHabits = true;
     const resolvedSubEnabled = canUseSubHabits && subHabitsEnabled;
 
     const breakRewardsPayload =
@@ -1355,18 +1355,20 @@ export default function AddHabitScreen() {
             ) : null}
           </View>
 
-          {habitKind !== 'break' ? (
+          {(() => {
+            const subLabel = habitSubItemsLabel(habitKind);
+            return (
             <View>
-              {renderSectionHeader('account-tree', '子习惯', subHabitsOpen, () => setSubHabitsOpen((v) => !v))}
+              {renderSectionHeader('account-tree', subLabel.section, subHabitsOpen, () => setSubHabitsOpen((v) => !v))}
               {subHabitsOpen ? (
                 <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
                   <View style={styles.quantifyTop}>
                     <View style={{ flex: 1, paddingRight: Spacing.md }}>
                       <Text style={[Typography.bodyStrong, styles.quantifyTitle, { color: colors.text }]}>
-                        启用子习惯模式
+                        {subLabel.enableTitle}
                       </Text>
                       <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
-                        开启后首页点击将展示子习惯清单，全部完成后才计入父习惯打卡
+                        {subLabel.enableHint}
                       </Text>
                     </View>
                     <Pressable
@@ -1385,7 +1387,7 @@ export default function AddHabitScreen() {
                     <View style={[styles.quantifyBody, { borderTopColor: colors.outline, gap: Spacing.md }]}>
                       {subHabits.length === 0 ? (
                         <Text style={[Typography.caption, { color: colors.textSecondary }]}>
-                          尚未添加子习惯。添加后，首页将改为在弹窗中逐项完成。
+                          {subLabel.emptyHint}
                         </Text>
                       ) : (
                         subHabits.map((item, index) => (
@@ -1445,7 +1447,7 @@ export default function AddHabitScreen() {
                               </Pressable>
                               <Pressable
                                 onPress={() => {
-                                  Alert.alert('删除子习惯', `确定删除「${item.name}」？`, [
+                                  Alert.alert(`删除${subLabel.singular}`, `确定删除「${item.name}」？`, [
                                     { text: '取消', style: 'cancel' },
                                     {
                                       text: '删除',
@@ -1475,7 +1477,7 @@ export default function AddHabitScreen() {
                         ]}>
                         <MaterialIcons name="add" size={18} color={colors.primary} />
                         <Text style={[Typography.bodyStrong, { color: colors.primary, fontSize: 14 }]}>
-                          添加子习惯
+                          {subLabel.addButton}
                         </Text>
                       </Pressable>
                     </View>
@@ -1483,7 +1485,8 @@ export default function AddHabitScreen() {
                 </AppCard>
               ) : null}
             </View>
-          ) : null}
+            );
+          })()}
 
           {habitKind === 'build' ? (
             <View>
@@ -2005,12 +2008,18 @@ export default function AddHabitScreen() {
           />
           <View style={[styles.iconModalCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
             <Text style={[Typography.title, styles.iconModalTitle, { color: colors.text }]}>
-              {subHabitEditor.editingId ? '编辑子习惯' : '添加子习惯'}
+              {habitSubItemsLabel(habitKind).editorTitle(!!subHabitEditor.editingId)}
             </Text>
             <TextInput
               value={subHabitEditor.name}
               onChangeText={(name) => setSubHabitEditor((prev) => ({ ...prev, name }))}
-              placeholder="例如：叠被子、喝一杯水"
+              placeholder={
+                habitKind === 'task'
+                  ? '例如：写大纲、改一稿'
+                  : habitKind === 'break'
+                    ? '例如：不抽烟、不晚睡刷手机'
+                    : '例如：叠被子、喝一杯水'
+              }
               placeholderTextColor={colors.textMuted}
               autoFocus
               style={[

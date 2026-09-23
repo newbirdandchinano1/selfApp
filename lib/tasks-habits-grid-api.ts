@@ -206,8 +206,11 @@ async function mergeHabitGridExtraFields(
           ? item.dailyGoal
           : null;
       const todayCount = subActive ? subCompleted : serverTodayCount;
-      // 以合并后的 extra_data 为准；服务端 dailyGoal 仅作回退
-      const dailyGoal = subActive ? subTotal : (parsedDailyGoal ?? serverDailyGoal);
+      // 养成/任务：进度分母为子项总数；戒除：每日目标仍为破戒阈值
+      const dailyGoal =
+        subActive && resolvedKind !== 'break'
+          ? subTotal
+          : (parsedDailyGoal ?? serverDailyGoal);
       const periodProgress = item.periodProgress ?? null;
       const periodGoal = item.periodGoal ?? null;
       const taskShowPeriodCheck =
@@ -221,13 +224,15 @@ async function mergeHabitGridExtraFields(
         ? subTotal
         : parseHabitIncrementCap(extraData, resolvedKind) ??
           (dailyGoal != null && dailyGoal > 0 && resolvedKind !== 'break' ? dailyGoal : null);
+      // 养成/任务：子项全完成；戒除：无破戒项时交给服务端/本地 hasTodayRecord 判定（此处仅在有破戒时强制未完成）
       const displayCompleted = subActive
-        ? subTotal > 0 && subCompleted >= subTotal
+        ? resolvedKind === 'break'
+          ? subCompleted === 0 && Boolean(item.displayCompleted)
+          : subTotal > 0 && subCompleted >= subTotal
         : resolvedKind === 'task'
           ? taskShowPeriodCheck
           : resolvedKind === 'break'
-            ? // 戒除完成态依赖 hasTodayRecord，网格阶段仍信服务端；TasksScreen load 后会重算
-              Boolean(item.displayCompleted)
+            ? Boolean(item.displayCompleted)
             : isHabitDayDisplayCompleted({
                 kind: resolvedKind,
                 todayCount,
