@@ -1,6 +1,6 @@
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
-import { formatMinutesAsHm } from '@/lib/schedule/axis';
+import { formatMinutesAsHm, snapToHourMinutes } from '@/lib/schedule/axis';
 import type { ScheduleSlotHours } from '@/lib/schedule/types';
 import {
   getOrphanedPlacementCount,
@@ -8,14 +8,13 @@ import {
 } from '@/lib/schedule-service';
 import { getScheduleAxisSettings } from '@/lib/repositories/schedule/schedule-store';
 import { MaterialIcons } from '@expo/vector-icons';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import React from 'react';
 import {
   ActivityIndicator,
   Alert,
   Modal,
-  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -33,13 +32,12 @@ const SLOT_OPTIONS: ScheduleSlotHours[] = [1, 2, 3, 4];
 
 type PickerTarget = 'start' | 'end';
 
-function minutesToDate(minutes: number): Date {
-  const m = ((Math.round(minutes) % (24 * 60)) + 24 * 60) % (24 * 60);
-  return new Date(2000, 0, 1, Math.floor(m / 60), m % 60, 0, 0);
-}
-
-function dateToMinutes(date: Date): number {
-  return date.getHours() * 60 + date.getMinutes();
+/** 日开始：00:00–23:00；日结束：01:00–24:00（整点） */
+function hourOptionsFor(target: PickerTarget): number[] {
+  if (target === 'start') {
+    return Array.from({ length: 24 }, (_, h) => h * 60);
+  }
+  return Array.from({ length: 24 }, (_, i) => (i + 1) * 60);
 }
 
 export function FrogScheduleSettingsCard({
@@ -61,7 +59,6 @@ export function FrogScheduleSettingsCard({
   const [loaded, setLoaded] = React.useState(false);
 
   const [pickerTarget, setPickerTarget] = React.useState<PickerTarget | null>(null);
-  const [draftMinutes, setDraftMinutes] = React.useState(8 * 60);
 
   const reload = React.useCallback(async () => {
     const axis = await getScheduleAxisSettings();
@@ -77,35 +74,27 @@ export function FrogScheduleSettingsCard({
   }, [reload]);
 
   const openPicker = (target: PickerTarget) => {
-    setDraftMinutes(target === 'start' ? startMinutes : endMinutes);
     setPickerTarget(target);
   };
 
-  const confirmPicker = () => {
-    if (pickerTarget === 'start') setStartMinutes(draftMinutes);
-    if (pickerTarget === 'end') setEndMinutes(draftMinutes);
-    setPickerTarget(null);
-  };
-
-  const onAndroidTimeChange = (_: unknown, date?: Date) => {
-    // Android default display closes itself after one change
-    if (Platform.OS === 'android') {
-      const target = pickerTarget;
-      setPickerTarget(null);
-      if (!date || !target) return;
-      const mins = dateToMinutes(date);
-      if (target === 'start') setStartMinutes(mins);
-      else setEndMinutes(mins);
-      return;
+  const pickHour = (mins: number) => {
+    if (pickerTarget === 'start') {
+      setStartMinutes(snapToHourMinutes(mins, { allow24: false }));
+    } else if (pickerTarget === 'end') {
+      setEndMinutes(snapToHourMinutes(mins, { allow24: true }));
     }
-    if (date) setDraftMinutes(dateToMinutes(date));
+    setPickerTarget(null);
   };
 
   const onSave = React.useCallback(async () => {
     setSaving(true);
     try {
       const result = await saveScheduleAxisWithRemap(
-        { startMinutes, endMinutes, slotHours },
+        {
+          startMinutes: snapToHourMinutes(startMinutes, { allow24: false }),
+          endMinutes: snapToHourMinutes(endMinutes, { allow24: true }),
+          slotHours,
+        },
         logicalTodayYmd,
       );
       if (!result.ok) {
@@ -120,6 +109,9 @@ export function FrogScheduleSettingsCard({
         return;
       }
       setOrphanedCount(result.orphanedCount);
+      setStartMinutes(result.axis.startMinutes);
+      setEndMinutes(result.axis.endMinutes);
+      setSlotHours(result.axis.slotHours);
       const remapHint =
         result.remappedCount > 0 ? `\n已重映射 ${result.remappedCount} 条占用。` : '';
       const orphanHint =
@@ -136,11 +128,15 @@ export function FrogScheduleSettingsCard({
   }, [startMinutes, endMinutes, slotHours, logicalTodayYmd, reload]);
 
   const pickerCardBg = isDark ? '#1e293b' : '#ffffff';
+  const selectedMinutes =
+    pickerTarget === 'end' ? endMinutes : pickerTarget === 'start' ? startMinutes : null;
+  const hourChoices = pickerTarget ? hourOptionsFor(pickerTarget) : [];
 
   return (
     <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
       <Text style={[styles.hint, { color: outline }]}>
-        全周统一日开始 / 日结束 / 格宽。历史周使用当时快照，不受新设置影响。改格宽会对本周及未来已有占用按开始时间重映射；改起止若会裁掉占用则禁止保存。
+        日开始 / 日结束仅可选整点；结束最晚 24:00。课表按「昨·今·明」三天周期展示；表体高度按 2h
+        格宽为基准固定——设为 1h 时可上下滚动，2h 及以上格子会拉高填满。历史周使用当时快照。改格宽会对本周及未来已有占用按开始时间重映射；改起止若会裁掉占用则禁止保存。
       </Text>
 
       {!loaded ? (
@@ -229,19 +225,8 @@ export function FrogScheduleSettingsCard({
         </>
       )}
 
-      {/* Android：系统时间弹层；iOS：底部确认弹层 */}
-      {Platform.OS === 'android' && pickerTarget != null ? (
-        <DateTimePicker
-          value={minutesToDate(draftMinutes)}
-          mode="time"
-          is24Hour
-          display="default"
-          onChange={onAndroidTimeChange}
-        />
-      ) : null}
-
       <Modal
-        visible={Platform.OS === 'ios' && pickerTarget != null}
+        visible={pickerTarget != null}
         transparent
         animationType="fade"
         onRequestClose={() => setPickerTarget(null)}>
@@ -249,26 +234,45 @@ export function FrogScheduleSettingsCard({
           <Pressable style={styles.modalBackdrop} onPress={() => setPickerTarget(null)} />
           <View style={[styles.modalCard, { backgroundColor: pickerCardBg }]}>
             <Text style={[styles.modalTitle, { color: text }]}>
-              {pickerTarget === 'end' ? '日结束时间' : '日开始时间'}
+              {pickerTarget === 'end' ? '日结束（整点）' : '日开始（整点）'}
             </Text>
-            <DateTimePicker
-              value={minutesToDate(draftMinutes)}
-              mode="time"
-              is24Hour
-              display="spinner"
-              themeVariant={isDark ? 'dark' : 'light'}
-              onChange={(_, date) => {
-                if (date) setDraftMinutes(dateToMinutes(date));
-              }}
-            />
-            <View style={styles.modalActions}>
-              <Pressable onPress={() => setPickerTarget(null)}>
-                <Text style={{ color: outline, fontWeight: '700' }}>取消</Text>
-              </Pressable>
-              <Pressable onPress={confirmPicker}>
-                <Text style={{ color: primary, fontWeight: '800' }}>确定</Text>
-              </Pressable>
-            </View>
+            <Text style={[styles.modalHint, { color: outline }]}>
+              {pickerTarget === 'end'
+                ? '可选 01:00–24:00；2h 格宽下需选到 24:00 才能覆盖 22:00 之后'
+                : '可选 00:00–23:00'}
+            </Text>
+            <ScrollView
+              style={styles.hourScroll}
+              contentContainerStyle={styles.hourGrid}
+              showsVerticalScrollIndicator={false}>
+              {hourChoices.map((mins) => {
+                const active = selectedMinutes === mins;
+                return (
+                  <Pressable
+                    key={mins}
+                    onPress={() => pickHour(mins)}
+                    style={[
+                      styles.hourChip,
+                      {
+                        borderColor: active ? primary : cardBorder,
+                        backgroundColor: active ? `${primary}18` : 'transparent',
+                      },
+                    ]}>
+                    <Text
+                      style={{
+                        color: active ? primary : text,
+                        fontWeight: '800',
+                        fontVariant: ['tabular-nums'],
+                      }}>
+                      {formatMinutesAsHm(mins)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <Pressable onPress={() => setPickerTarget(null)} style={styles.modalCancel}>
+              <Text style={{ color: outline, fontWeight: '700' }}>取消</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -338,15 +342,31 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     gap: 8,
-    opacity: 1,
+    maxHeight: '72%',
     overflow: 'hidden',
   },
   modalTitle: { fontSize: 17, fontWeight: '800' },
-  modalActions: {
+  modalHint: { fontSize: 12, lineHeight: 17, marginBottom: 4 },
+  hourScroll: { maxHeight: 320 },
+  hourGrid: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 20,
-    marginTop: 8,
-    paddingTop: 4,
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  hourChip: {
+    width: '22%',
+    minWidth: 64,
+    flexGrow: 1,
+    height: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalCancel: {
+    alignSelf: 'flex-end',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
   },
 });

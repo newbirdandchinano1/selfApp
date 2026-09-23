@@ -39,6 +39,27 @@ export function formatWeekRangeLabel(weekStartYmd: string): string {
   return `${a.getMonth() + 1}/${a.getDate()} – ${b.getMonth() + 1}/${b.getDate()}`;
 }
 
+/** 以 center 为中日的三天窗口：[前一天, 中日, 后一天] */
+export function threeDayWindow(centerYmd: string): [string, string, string] {
+  return [
+    addDaysToLogicalYmd(centerYmd, -1),
+    centerYmd,
+    addDaysToLogicalYmd(centerYmd, 1),
+  ];
+}
+
+/** 周期索引 0 = 今天居中；每 ±1 周期平移 3 天 */
+export function centerYmdForPeriod(logicalTodayYmd: string, periodIndex: number): string {
+  return addDaysToLogicalYmd(logicalTodayYmd, periodIndex * 3);
+}
+
+export function formatThreeDayRangeLabel(centerYmd: string): string {
+  const [aYmd, , cYmd] = threeDayWindow(centerYmd);
+  const a = logicalYmdToLocalDate(aYmd);
+  const c = logicalYmdToLocalDate(cYmd);
+  return `${a.getMonth() + 1}/${a.getDate()} – ${c.getMonth() + 1}/${c.getDate()}`;
+}
+
 /** 历史周：周一早于本周周一 */
 export function isHistoricalWeek(weekStartYmd: string, logicalTodayYmd: string): boolean {
   const thisMonday = getWeekStartMondayYmd(logicalTodayYmd);

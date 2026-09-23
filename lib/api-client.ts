@@ -570,7 +570,10 @@ export type FrogCandidateApiItem = {
   rewardPoints: number;
   projectId: string | null;
   projectName: string | null;
+  /** @deprecated 优先用 tags */
   tagNames: string[];
+  tags?: { name: string; color: string }[];
+  isOverdue?: boolean;
   alreadyAssigned: boolean;
   blockedReason: string | null;
 };

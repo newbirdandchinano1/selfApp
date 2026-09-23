@@ -12,6 +12,20 @@ export function clampSlotHours(raw: unknown): ScheduleSlotHours {
   return DEFAULT_SCHEDULE_AXIS.slotHours;
 }
 
+/** 一天内最大结束时刻：24:00（午夜），以分钟表示 */
+export const SCHEDULE_DAY_END_MAX_MINUTES = 24 * 60;
+
+/** 对齐到整点（向下）；24:00 保持为 1440 */
+export function snapToHourMinutes(minutes: number, opts?: { allow24?: boolean }): number {
+  if (!Number.isFinite(minutes)) return 0;
+  const max = opts?.allow24 ? SCHEDULE_DAY_END_MAX_MINUTES : 23 * 60;
+  const clamped = Math.min(max, Math.max(0, Math.round(minutes)));
+  if (opts?.allow24 && clamped >= SCHEDULE_DAY_END_MAX_MINUTES) {
+    return SCHEDULE_DAY_END_MAX_MINUTES;
+  }
+  return Math.floor(clamped / 60) * 60;
+}
+
 export function normalizeAxisSettings(
   raw: {
     startMinutes?: number;
@@ -19,17 +33,17 @@ export function normalizeAxisSettings(
     slotHours?: number;
   } | null | undefined,
 ): Omit<ScheduleAxisSettings, 'updatedAt'> {
-  const start =
+  const startRaw =
     typeof raw?.startMinutes === 'number' && Number.isFinite(raw.startMinutes)
-      ? Math.round(raw.startMinutes)
+      ? raw.startMinutes
       : DEFAULT_SCHEDULE_AXIS.startMinutes;
-  const end =
+  const endRaw =
     typeof raw?.endMinutes === 'number' && Number.isFinite(raw.endMinutes)
-      ? Math.round(raw.endMinutes)
+      ? raw.endMinutes
       : DEFAULT_SCHEDULE_AXIS.endMinutes;
   return {
-    startMinutes: Math.min(23 * 60 + 59, Math.max(0, start)),
-    endMinutes: Math.min(23 * 60 + 59, Math.max(0, end)),
+    startMinutes: snapToHourMinutes(startRaw, { allow24: false }),
+    endMinutes: snapToHourMinutes(endRaw, { allow24: true }),
     slotHours: clampSlotHours(raw?.slotHours),
   };
 }
@@ -76,7 +90,9 @@ export function placementEndMinutes(
 }
 
 export function formatMinutesAsHm(minutes: number): string {
-  const m = ((Math.round(minutes) % (24 * 60)) + 24 * 60) % (24 * 60);
+  const rounded = Math.round(minutes);
+  if (rounded >= SCHEDULE_DAY_END_MAX_MINUTES) return '24:00';
+  const m = ((rounded % (24 * 60)) + 24 * 60) % (24 * 60);
   const h = Math.floor(m / 60);
   const mm = m % 60;
   return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
@@ -187,4 +203,50 @@ export function maxSpanFromSlot(
 ): number {
   const count = getSlotCount(axis);
   return Math.max(0, count - startSlotIndex);
+}
+
+/** 格高基准：按 2h 格宽铺满时的单格高度；可视区高度不随格宽变 */
+export const SCHEDULE_REF_SLOT_HOURS = 2;
+export const SCHEDULE_BASE_SLOT_H = 52;
+
+export type ScheduleSlotLayout = {
+  slotCount: number;
+  /** 单格像素高度 */
+  slotH: number;
+  /** 格子区域固定可视高度（按 2h 参考轴） */
+  fixedBodyH: number;
+  /** 格宽 < 2h 时内容超出，需纵向滚动 */
+  scrollable: boolean;
+};
+
+/**
+ * 表体高度固定为「同起止、2h 格宽」时的高度。
+ * 1h：格高保持基准，区域可上下滚动；≥2h：格高放大以填满固定高度。
+ */
+export function computeScheduleSlotLayout(
+  axis: { startMinutes: number; endMinutes: number; slotHours: number },
+  baseSlotH: number = SCHEDULE_BASE_SLOT_H,
+): ScheduleSlotLayout {
+  const refCount = Math.max(
+    1,
+    getSlotCount({
+      startMinutes: axis.startMinutes,
+      endMinutes: axis.endMinutes,
+      slotHours: SCHEDULE_REF_SLOT_HOURS,
+    }),
+  );
+  const fixedBodyH = refCount * baseSlotH;
+  const slotCount = getSlotCount(axis);
+  if (slotCount <= 0) {
+    return { slotCount: 0, slotH: baseSlotH, fixedBodyH, scrollable: false };
+  }
+  if (axis.slotHours < SCHEDULE_REF_SLOT_HOURS) {
+    return { slotCount, slotH: baseSlotH, fixedBodyH, scrollable: true };
+  }
+  return {
+    slotCount,
+    slotH: fixedBodyH / slotCount,
+    fixedBodyH,
+    scrollable: false,
+  };
 }

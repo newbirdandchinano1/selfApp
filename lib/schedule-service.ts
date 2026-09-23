@@ -104,6 +104,52 @@ export async function loadWeekSchedule(
   return view;
 }
 
+/** 加载跨周的多日窗口（三天周期等）；轴取中日所在周 */
+export async function loadScheduleForDayWindow(
+  dayYmds: string[],
+  logicalTodayYmd: string,
+  opts?: { hydrateRemote?: boolean },
+): Promise<WeekScheduleView> {
+  await ensureScheduleTables();
+  const uniqueDays = [...new Set(dayYmds.filter(Boolean))].sort();
+  if (uniqueDays.length === 0) {
+    const weekStartYmd = getWeekStartMondayYmd(logicalTodayYmd);
+    return loadWeekSchedule(weekStartYmd, logicalTodayYmd, opts);
+  }
+
+  const centerYmd = uniqueDays[Math.floor(uniqueDays.length / 2)] ?? uniqueDays[0]!;
+  const preferredAxisDay = uniqueDays.includes(logicalTodayYmd)
+    ? logicalTodayYmd
+    : uniqueDays.find((d) => isEditableWeek(getWeekStartMondayYmd(d), logicalTodayYmd)) ??
+      centerYmd;
+  const axisWeek = getWeekStartMondayYmd(preferredAxisDay);
+  const weekStarts = [...new Set(uniqueDays.map((d) => getWeekStartMondayYmd(d)))];
+
+  const views = await Promise.all(
+    weekStarts.map((w) => loadWeekSchedule(w, logicalTodayYmd, opts)),
+  );
+  // 可编辑周始终跟全局轴（避免快照/邻周拖累设置刷新）
+  const { axis, fromSnapshot } = await resolveAxisForWeek(axisWeek, logicalTodayYmd);
+  const daySet = new Set(uniqueDays);
+  const byId = new Map<string, SchedulePlacementRow>();
+  for (const v of views) {
+    for (const p of v.placements) {
+      const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
+      if (!daySet.has(ymd)) continue;
+      byId.set(p.id, p);
+    }
+  }
+  const placements = [...byId.values()];
+  return {
+    weekStartYmd: axisWeek,
+    editable: isEditableWeek(axisWeek, logicalTodayYmd),
+    axis,
+    placements,
+    orphanedCount: placements.filter((p) => p.orphaned || p.startSlotIndex == null).length,
+    fromSnapshot,
+  };
+}
+
 async function hydrateWeekFromRemote(weekStartYmd: string): Promise<number> {
   try {
     const remote = await apiGetFrogScheduleWeek(weekStartYmd);

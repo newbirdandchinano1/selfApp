@@ -1,4 +1,4 @@
-import { WeeklyFrogSchedule } from '@/components/tasks/WeeklyFrogSchedule';
+import { WeeklyFrogSchedule, type SchedulePendingPlace } from '@/components/tasks/WeeklyFrogSchedule';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
 import {
   TasksHabitSectionSkeleton,
@@ -48,6 +48,7 @@ import {
 import {
   isLeafProjectWithoutTasks,
   isMatrixProjectInCurrentWeek,
+  isProjectEligibleAsFrog,
   projectToFrogTaskRow,
 } from '@/lib/project-frog';
 import { consumeForceFullApiRefreshAfterLocalClear } from '@/lib/page-api-session';
@@ -1617,6 +1618,22 @@ function collectIncompleteTasksFromProjectTree(nodes: TaskTreeNode[]): TaskTreeN
   return out;
 }
 
+/** 可指派为青蛙的叶子任务（无未完成子任务） */
+function collectAssignableFrogTasksFromTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
+  const out: TaskTreeNode[] = [];
+  const walk = (list: TaskTreeNode[]) => {
+    for (const n of list) {
+      const ch = Array.isArray(n.children) ? n.children : [];
+      if (ch.length > 0) walk(ch);
+      if (isTaskTerminalStatus(n.status)) continue;
+      const hasOpenChild = ch.some((c) => !isTaskTerminalStatus(c.status));
+      if (!hasOpenChild) out.push(n);
+    }
+  };
+  walk(nodes);
+  return out;
+}
+
 /** 是否达到可询问归纳收集箱的完成度：有截止日期对齐列表进度，否则需整棵树完成 */
 function isProjectInboxProgressComplete(project: ProjectRow, nodes: TaskTreeNode[]): boolean {
   if (nodes.length === 0) return false;
@@ -2049,6 +2066,10 @@ export default function TasksScreen() {
   const projectTaskRefilledRef = React.useRef(new Set<string>());
   const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
   const [activatingShelvedTodoId, setActivatingShelvedTodoId] = React.useState<string | null>(null);
+  /** 长按项目/任务后，在课程表点格入格 */
+  const [pendingSchedulePlace, setPendingSchedulePlace] = React.useState<SchedulePendingPlace | null>(
+    null,
+  );
 
   const loadProjects = React.useCallback(async () => {
     try {
@@ -2974,6 +2995,143 @@ export default function TasksScreen() {
       },
     });
   };
+
+  const beginSchedulePlace = React.useCallback(
+    (subject: SchedulePendingPlace) => {
+      setPendingSchedulePlace(subject);
+      mainScrollRef.current?.scrollToOffset({ offset: 0, animated: true });
+      showOperationToast('success', '请在上方课程表点选格子');
+    },
+    [showOperationToast],
+  );
+
+  const beginSchedulePlaceForTask = React.useCallback(
+    (task: TaskRow, projectName?: string | null) => {
+      if (isTaskShelvedStatus(task.status)) {
+        Alert.alert('无法入格', '已搁置的待办请先激活后再指派到课程表。');
+        return;
+      }
+      const ch = Array.isArray((task as TaskTreeNode).children)
+        ? (task as TaskTreeNode).children
+        : [];
+      const hasOpenChild =
+        ch.length > 0 && ch.some((c) => !isTaskTerminalStatus(c.status));
+      if (hasOpenChild) {
+        Alert.alert('无法入格', '该任务仍有未完成的子任务，请先完成子任务或选择叶子任务。');
+        return;
+      }
+      if (isTaskTerminalStatus(task.status)) {
+        Alert.alert('无法入格', '已完成/已取消的任务不能指派为青蛙。');
+        return;
+      }
+      const tagRows =
+        task.project_id != null ? (projectTagsByProjectId.get(task.project_id) ?? []) : [];
+      const dueDate = task.due_date?.slice(0, 10) ?? null;
+      const standalone = isStandaloneTodoTask(task);
+      beginSchedulePlace({
+        kind: 'task',
+        id: task.id,
+        title: task.title,
+        priority: task.priority ?? 0,
+        dueDate,
+        acceptanceCriteria: trimTaskAcceptanceCriteria(task),
+        rewardPoints: parseRewardPointsFromExtraData(task.extra_data),
+        projectId: task.project_id,
+        projectName: projectName ?? null,
+        tagNames: tagRows.map((t) => t.name),
+        tags: tagRows.map((t) => ({ name: t.name, color: t.color })),
+        isOverdue: standalone
+          ? isStandaloneTodoOverdue(task, logicalTodayYmd)
+          : isTaskDueOverdue(dueDate ?? '', false, logicalTodayYmd),
+      });
+    },
+    [beginSchedulePlace, logicalTodayYmd, projectTagsByProjectId],
+  );
+
+  const handleProjectLongPressForSchedule = React.useCallback(
+    (project: ProjectRow) => {
+      const lockInfo = projectLockMap.get(project.id);
+      const isScheduleNotStarted = isProjectScheduleNotYetStarted(project, logicalTodayYmd);
+      const locked = !!(lockInfo?.locked || isScheduleNotStarted);
+      const tree = projectTaskTreeMap[project.id] ?? [];
+      const taskCount = getProjectTreeTaskProgress(tree).total;
+
+      if (isProjectEligibleAsFrog(project, taskCount, locked)) {
+        const tagRows = projectTagsByProjectId.get(project.id) ?? [];
+        beginSchedulePlace({
+          kind: 'project',
+          id: project.id,
+          title: project.name,
+          priority: project.priority ?? 0,
+          dueDate: project.due_date?.slice(0, 10) ?? null,
+          acceptanceCriteria: (project.note ?? '').trim(),
+          rewardPoints: parseRewardPointsFromExtraData(project.extra_data),
+          projectId: project.id,
+          projectName: project.name,
+          tagNames: tagRows.map((t) => t.name),
+          tags: tagRows.map((t) => ({ name: t.name, color: t.color })),
+          isOverdue: isProjectScheduleExpired(project, logicalTodayYmd),
+        });
+        return;
+      }
+
+      if (locked) {
+        if (isScheduleNotStarted) {
+          Alert.alert('无法入格', '该项目计划尚未开始，到达开始日期前不可指派青蛙。');
+        } else {
+          Alert.alert('无法入格', '该项目仍被前置项目锁定，请先完成前置项目。');
+        }
+        return;
+      }
+
+      if (project.status !== 'active') {
+        Alert.alert('无法入格', '仅进行中的项目可指派为青蛙。');
+        return;
+      }
+
+      if (isProjectInInboxCategory(project.category_id)) {
+        Alert.alert('无法入格', '收集箱中的项目请先移到正式分类后再指派。');
+        return;
+      }
+
+      const assignable = collectAssignableFrogTasksFromTree(tree)
+        .slice()
+        .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+      if (assignable.length === 0) {
+        Alert.alert(
+          '无法直接入格',
+          taskCount > 0
+            ? '该项目暂无可用的叶子任务（需无未完成子任务）。可展开后长按任务入格。'
+            : '该项目当前不可指派为青蛙。',
+        );
+        return;
+      }
+
+      const buttons: {
+        text: string;
+        onPress?: () => void;
+        style?: 'cancel' | 'destructive' | 'default';
+      }[] = assignable.slice(0, 6).map((t) => ({
+        text: t.title.slice(0, 28) + (t.title.length > 28 ? '…' : ''),
+        onPress: () => beginSchedulePlaceForTask(t, project.name),
+      }));
+      if (assignable.length > 6) {
+        buttons.push({
+          text: `还有 ${assignable.length - 6} 项…（请展开后长按）`,
+        });
+      }
+      buttons.push({ text: '取消', style: 'cancel' });
+      Alert.alert('选择任务入格', `「${project.name}」含任务，请选择要放入课程表的叶子任务：`, buttons);
+    },
+    [
+      beginSchedulePlace,
+      beginSchedulePlaceForTask,
+      logicalTodayYmd,
+      projectLockMap,
+      projectTagsByProjectId,
+      projectTaskTreeMap,
+    ],
+  );
 
   const updateTaskInProjectTree = React.useCallback(
     (treeMap: Record<string, TaskTreeNode[]>, taskId: string, updater: (node: TaskTreeNode) => TaskTreeNode) => {
@@ -5210,6 +5368,8 @@ export default function TasksScreen() {
             sectionCardStyle={sectionCardStyle}
             lockedProjectIds={lockedProjectIds}
             subjects={scheduleSubjects}
+            pendingPlace={pendingSchedulePlace}
+            onClearPendingPlace={() => setPendingSchedulePlace(null)}
             onChanged={onScheduleChanged}
             onOpenSettings={() => openSettingsDrawer('frogSchedule')}
             onOpenSubject={(kind, id) => {
@@ -6073,7 +6233,10 @@ export default function TasksScreen() {
                               styles.taskBody,
                               (isShelved || isRepeatWaiting) && !isDone && styles.shelvedTodoBodyMuted,
                             ]}
-                            onPress={() => openTask(t.id)}>
+                            onPress={() => openTask(t.id)}
+                            onLongPress={() => beginSchedulePlaceForTask(t)}
+                            delayLongPress={380}
+                            accessibilityHint="长按可将待办指派到课程表格子">
                             <View style={styles.standaloneTodoTitleRow}>
                               <Text
                                 style={[
@@ -6457,7 +6620,16 @@ export default function TasksScreen() {
                             </Pressable>
                             <Pressable
                               onPress={() => openEditTask(node.id)}
+                              onLongPress={() => {
+                                if (isLocked) {
+                                  alertProjectTaskLocked(lockInfo);
+                                  return;
+                                }
+                                beginSchedulePlaceForTask(fullNode, project.name);
+                              }}
+                              delayLongPress={380}
                               hitSlop={8}
+                              accessibilityHint="长按可将任务指派到课程表格子"
                               style={({ pressed }) => [{ flex: 1, minWidth: 0 }, pressed && { opacity: 0.85 }]}>
                               <View style={styles.projectTaskMain}>
                               {hasAnyChildren ? (
@@ -6736,9 +6908,12 @@ export default function TasksScreen() {
                           ]}>
                       <ScalePressable
                         onPress={() => openProject(project.id)}
+                        onLongPress={() => handleProjectLongPressForSchedule(project)}
+                        delayLongPress={380}
                         hitSlop={6}
                         scaleTo={0.988}
-                        style={styles.projectHeadPressable}>
+                        style={styles.projectHeadPressable}
+                        accessibilityHint="长按可将项目或任务指派到课程表格子">
                       <View style={styles.projectHead}>
                         <View style={styles.projectHeadLeft}>
                           <Pressable
