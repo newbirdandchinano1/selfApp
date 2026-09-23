@@ -591,6 +591,73 @@ export async function apiGetTodayFrogs(params?: {
   });
 }
 
+export type FrogCandidateApiItem = {
+  kind: 'task' | 'project';
+  id: string;
+  title: string;
+  priority: number;
+  dueDate: string | null;
+  acceptanceCriteria: string;
+  rewardPoints: number;
+  projectId: string | null;
+  projectName: string | null;
+  tagNames: string[];
+  alreadyAssigned: boolean;
+  blockedReason: string | null;
+};
+
+export type FrogCandidatesPayload = {
+  assignYmd: string;
+  logicalToday: string;
+  items: FrogCandidateApiItem[];
+  meta?: { filtersVersion?: string; count?: number };
+};
+
+export async function apiGetFrogCandidates(params?: {
+  assignYmd?: string;
+  dayBoundaryHour?: number;
+  dayBoundaryMinute?: number;
+  signal?: AbortSignal;
+}): Promise<FrogCandidatesPayload> {
+  const qs = buildQuery({
+    assignYmd: params?.assignYmd,
+    dayBoundaryHour: params?.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params?.dayBoundaryMinute ?? 0,
+  });
+  return apiRequest<FrogCandidatesPayload>(`/api/pages/tasks/frog-candidates${qs}`, {
+    method: 'GET',
+    signal: params?.signal,
+  });
+}
+
+export type FrogAssignPayload = {
+  kind: 'task' | 'project';
+  id: string;
+  assignYmd: string;
+  action: 'assign' | 'unassign';
+  extra_data: string | null;
+  assignedDates: string[];
+};
+
+export async function apiPostFrogAssign(body: {
+  kind: 'task' | 'project';
+  id: string;
+  assignYmd: string;
+  action?: 'assign' | 'unassign';
+  signal?: AbortSignal;
+}): Promise<FrogAssignPayload> {
+  return apiRequest<FrogAssignPayload>('/api/pages/tasks/frog-assign', {
+    method: 'POST',
+    body: JSON.stringify({
+      kind: body.kind,
+      id: body.id,
+      assignYmd: body.assignYmd,
+      action: body.action ?? 'assign',
+    }),
+    signal: body.signal,
+  });
+}
+
 export type TasksCatalogTableVersion = {
   count?: number;
   version?: string | null;

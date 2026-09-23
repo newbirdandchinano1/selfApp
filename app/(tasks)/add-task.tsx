@@ -22,6 +22,7 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import { clearProjectFrogFields } from '@/lib/frog-assignment';
 import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
+import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
 import {
   mergeRewardPointsIntoExtraData,
   normalizeRewardPoints,
@@ -76,7 +77,7 @@ type Subtask = {
   reminderText?: string;
   repeat?: string;
   repeatText?: string;
-  note?: string;
+  note?: string | null;
   acceptanceCriteria?: string;
   schedule?: TaskScheduleMeta | null;
   isLongTermTask?: boolean;
@@ -244,7 +245,6 @@ export default function AddTaskScreen() {
 
   const [title, setTitle] = React.useState('');
   const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
-  const [notes, setNotes] = React.useState('');
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [mainTaskOpen, setMainTaskOpen] = React.useState(false);
@@ -258,6 +258,7 @@ export default function AddTaskScreen() {
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [projectName, setProjectName] = React.useState<string | null>(null);
+  const [projectPriority, setProjectPriority] = React.useState<TaskPriority>(0);
   /** 独立待办：正常待办 vs 暂时搁置（时间未定，不可直接完成） */
   const [standaloneIntent, setStandaloneIntent] = React.useState<'active' | 'shelved'>('active');
   const [loadingEdit, setLoadingEdit] = React.useState(false);
@@ -308,6 +309,8 @@ export default function AddTaskScreen() {
       try {
         const project = await getProjectById(quickProjectId);
         if (!project || cancelled) return;
+        setProjectName(project.name?.trim() || null);
+        setProjectPriority(project.priority ?? 0);
         const extra = project.extra_data ? (JSON.parse(project.extra_data) as { schedule?: TaskScheduleMeta }) : {};
         const projectSchedule = extra.schedule ?? null;
         const limit = extractScheduleLimitFromExtra(project.extra_data, project.due_date);
@@ -332,8 +335,7 @@ export default function AddTaskScreen() {
 
   const applyLoadedStandaloneTask = React.useCallback((task: TaskRow) => {
     setTitle(task.title ?? '');
-    setAcceptanceCriteria(task.description ?? '');
-    setNotes(task.note ?? '');
+    setAcceptanceCriteria(resolveAcceptanceCriteria(task.description, task.note));
     setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
     setPriority(taskPriorityToKey(task.priority ?? 0));
     editTaskStatusRef.current = task.status;
@@ -396,8 +398,10 @@ export default function AddTaskScreen() {
         if (quickProjectId) {
           const project = await getProjectById(quickProjectId);
           setProjectName(project?.name?.trim() || null);
+          setProjectPriority(project?.priority ?? 0);
         } else {
           setProjectName(null);
+          setProjectPriority(0);
         }
       }, forceApi);
     },
@@ -549,7 +553,7 @@ export default function AddTaskScreen() {
           await updateTask(editTaskId, {
             title: trimmedTitle,
             description: trimmedAcceptanceCriteria,
-            note: notes.trim() || null,
+            note: null,
             status: resolveStandaloneStatusOnSave(editTaskStatusRef.current, standaloneIntent),
             priority: labelToTaskPriority(priorityLabel),
             due_date: dueDate,
@@ -564,7 +568,7 @@ export default function AddTaskScreen() {
             parent_task_id: null,
             title: trimmedTitle,
             description: trimmedAcceptanceCriteria,
-            note: notes.trim() || null,
+            note: null,
             status: shelved ? 'shelved' : 'todo',
             priority: labelToTaskPriority(priorityLabel),
             due_date: dueDate,
@@ -598,9 +602,9 @@ export default function AddTaskScreen() {
           parent_task_id: null,
           title: trimmedTitle,
           description: acceptanceCriteria.trim() || null,
-          note: notes.trim() || null,
+          note: null,
           status: 'todo',
-          priority: labelToTaskPriority(priorityLabel),
+          priority: projectPriority,
           due_date: dueDateFromScheduleMeta(scheduleMeta, extractDueDateFromDeadlineText(deadlineText)),
           extra_data: mergeRewardPointsIntoExtraData(
             mergeLongTermTaskIntoExtraData(
@@ -647,15 +651,13 @@ export default function AddTaskScreen() {
         id: makeTimestampEntityId('tsk_', 8),
         title: trimmedTitle,
         done: false,
-        priority: priorityLabel,
-        priorityLabel: priorityLabel,
         deadline: deadlineText,
         deadlineText: deadlineText,
         reminder: reminderText,
         reminderText: reminderText,
         repeat: repeatText,
         repeatText: repeatText,
-        note: notes.trim(),
+        note: null,
         acceptanceCriteria: acceptanceCriteria.trim(),
         schedule: scheduleMeta,
         isLongTermTask,
@@ -800,7 +802,7 @@ export default function AddTaskScreen() {
               </Text>
             ) : null}
 
-            <ComposerPriorityMatrix value={priority} onChange={setPriority} />
+            {isStandalone ? <ComposerPriorityMatrix value={priority} onChange={setPriority} /> : null}
 
             {!isStandalone || standaloneIntent === 'active' ? (
               <ComposerSection>
@@ -874,12 +876,6 @@ export default function AddTaskScreen() {
               onChangeText={setAcceptanceCriteria}
               title="验收标准"
               placeholder="怎样算完成？可写可验证的标准…（可选）"
-            />
-
-            <ComposerNoteSection
-              value={notes}
-              onChangeText={setNotes}
-              placeholder="背景信息、协作人、链接…（可选）"
             />
 
             {isEditStandalone ? (

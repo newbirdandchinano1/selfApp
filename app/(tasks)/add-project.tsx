@@ -596,7 +596,8 @@ export default function AddProjectScreen() {
             <ComposerNoteSection
               value={notes}
               onChangeText={setNotes}
-              placeholder="目标、范围、关键干系人…（可选）"
+              title="验收标准"
+              placeholder="怎样算完成？可写可验证的标准…（可选）"
             />
           </ComposerMain>
         </ScrollView>

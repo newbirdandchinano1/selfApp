@@ -4,7 +4,6 @@ import {
   applyScheduleMetaToLabels,
   parseDateLimitParam,
   parseDefaultScheduleParam,
-  type DateLimitYmd,
   type ScheduleMetaLike,
 } from '@/lib/schedule-inherit';
 import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
@@ -14,23 +13,20 @@ import { useFocusEffect } from "expo-router/react-navigation";
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type PriorityKey = 'urgent-important' | 'urgent-not-important' | 'not-urgent-important' | 'not-urgent-not-important';
 type Subtask = {
   id: string;
   title: string;
   done: boolean;
-  priority?: string;
-  priorityLabel?: string;
   deadline?: string;
   deadlineText?: string;
   reminder?: string;
   reminderText?: string;
   repeat?: string;
   repeatText?: string;
-  note?: string;
+  note?: string | null;
   schedule?: ScheduleMetaLike | null;
 };
 type SchedulePickerResult = {
@@ -125,9 +121,6 @@ export default function AddSubtaskScreen() {
   const isDark = colorScheme === 'dark';
 
   const [title, setTitle] = React.useState('');
-  const [notes, setNotes] = React.useState('');
-  const [priority, setPriority] = React.useState<PriorityKey>('urgent-important');
-  const [priorityOpen, setPriorityOpen] = React.useState(false);
   const [deadlineText, setDeadlineText] = React.useState('');
   const [reminderText, setReminderText] = React.useState('');
   const [repeatText, setRepeatText] = React.useState('');
@@ -159,14 +152,6 @@ export default function AddSubtaskScreen() {
   const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
   const surfaceLow = isDark ? 'rgba(30,41,59,0.35)' : 'rgba(241,243,255,0.9)';
   const surfaceLowest = theme.surface;
-
-  const priorityOptions: Array<{ key: PriorityKey; label: string; color: string }> = [
-    { key: 'urgent-important', label: '紧急重要', color: isDark ? '#f87171' : '#ba1a1a' },
-    { key: 'urgent-not-important', label: '紧急不重要', color: isDark ? '#fbbf24' : '#825100' },
-    { key: 'not-urgent-important', label: '不紧急重要', color: isDark ? '#60a5fa' : '#0058be' },
-    { key: 'not-urgent-not-important', label: '不紧急不重要', color: isDark ? '#94a3b8' : '#727785' },
-  ];
-  const currentPriority = priorityOptions.find((p) => p.key === priority) ?? priorityOptions[0];
 
   const readScheduleResult = React.useCallback(() => {
     const picked = consumeSchedulePickerResult(scheduleSource);
@@ -265,15 +250,13 @@ export default function AddSubtaskScreen() {
         id: makeTimestampEntityId('tsk_', 8),
         title: trimmedTitle,
         done: false,
-        priority: currentPriority.label,
-        priorityLabel: currentPriority.label,
         deadline: deadlineText,
         deadlineText,
         reminder: reminderText,
         reminderText,
         repeat: repeatText,
         repeatText,
-        note: notes.trim(),
+        note: null,
         schedule: scheduleMeta,
       },
     };
@@ -316,19 +299,6 @@ export default function AddSubtaskScreen() {
           </View>
 
           <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>优先级别</Text>
-            <Pressable
-              onPress={() => setPriorityOpen(true)}
-              style={({ pressed }) => [styles.prioritySelect, { backgroundColor: surfaceLow, borderColor: `${outlineVariant}70` }, pressed && { opacity: 0.85 }]}>
-              <View style={styles.priorityLeft}>
-                <View style={[styles.priorityDot, { backgroundColor: currentPriority.color }]} />
-                <Text style={[styles.priorityValue, { color: theme.text }]}>{currentPriority.label}</Text>
-              </View>
-              <MaterialIcons name="expand-more" size={22} color={outline} />
-            </Pressable>
-          </View>
-
-          <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>时间限制</Text>
             <View style={[styles.deadlineCard, { backgroundColor: surfaceLow }]}>
               <View style={[styles.deadlineIconWrap, { backgroundColor: surfaceLowest }]}>
@@ -359,23 +329,6 @@ export default function AddSubtaskScreen() {
               </Pressable>
             </View>
           </View>
-
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>上下文备注</Text>
-            <View style={[styles.notesWrap, { backgroundColor: surfaceLow }]}>
-              <TextInput
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="在此记录更多背景信息..."
-                placeholderTextColor={outline}
-                multiline
-                style={[styles.notesInput, { color: theme.text }]}
-              />
-              <View style={styles.notesIcon} pointerEvents="none">
-                <MaterialIcons name="notes" size={20} color={outlineVariant} />
-              </View>
-            </View>
-          </View>
         </ScrollView>
 
         <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12), backgroundColor: isDark ? 'rgba(15,23,42,0.65)' : 'rgba(250,248,255,0.65)', borderTopColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)' }]}>
@@ -388,30 +341,6 @@ export default function AddSubtaskScreen() {
             </Pressable>
           </View>
         </View>
-
-        <Modal transparent visible={priorityOpen} animationType="fade" onRequestClose={() => setPriorityOpen(false)}>
-          <Pressable style={styles.priorityOverlay} onPress={() => setPriorityOpen(false)}>
-            <Pressable onPress={() => {}} style={[styles.prioritySheet, { backgroundColor: surfaceLowest, borderColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.5)' }]}>
-              <Text style={[styles.prioritySheetTitle, { color: theme.text }]}>选择优先级别</Text>
-              {priorityOptions.map((item) => {
-                const active = item.key === priority;
-                return (
-                  <Pressable
-                    key={item.key}
-                    onPress={() => {
-                      setPriority(item.key);
-                      setPriorityOpen(false);
-                    }}
-                    style={({ pressed }) => [styles.priorityItem, { backgroundColor: active ? `${item.color}14` : 'transparent', borderColor: active ? `${item.color}44` : `${outlineVariant}60` }, pressed && { opacity: 0.85 }]}>
-                    <View style={[styles.priorityDot, { backgroundColor: item.color }]} />
-                    <Text style={[styles.priorityItemText, { color: theme.text }]}>{item.label}</Text>
-                    {active ? <MaterialIcons name="check" size={18} color={item.color} /> : null}
-                  </Pressable>
-                );
-              })}
-            </Pressable>
-          </Pressable>
-        </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -428,10 +357,6 @@ const styles = StyleSheet.create({
   section: { gap: 10 },
   sectionLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.6, textTransform: 'uppercase', opacity: 0.75 },
   titleInput: { padding: 0, fontSize: 30, fontWeight: '900', lineHeight: 36 },
-  prioritySelect: { borderRadius: 20, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  priorityLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  priorityDot: { width: 10, height: 10, borderRadius: 5 },
-  priorityValue: { fontSize: 14, fontWeight: '700' },
   deadlineCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16 },
   deadlineIconWrap: { width: 46, height: 46, borderRadius: 12, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
   deadlineBody: { flex: 1, gap: 4 },
@@ -441,16 +366,8 @@ const styles = StyleSheet.create({
   metaTag: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaTagText: { fontSize: 11, fontWeight: '700' },
   deadlineEdit: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  notesWrap: { borderRadius: 16, padding: 14, minHeight: 120 },
-  notesInput: { minHeight: 92, fontSize: 14, fontWeight: '500', lineHeight: 20, paddingRight: 34 },
-  notesIcon: { position: 'absolute', right: 12, bottom: 12 },
   bottomBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1 },
   bottomInner: { maxWidth: 520, width: '100%', alignSelf: 'center' },
   createBtn: { width: '100%', paddingVertical: 16, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.14, shadowRadius: 20, elevation: 8 },
   createText: { color: '#fff', fontSize: 18, fontWeight: '900', letterSpacing: -0.2 },
-  priorityOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.35)', justifyContent: 'flex-end', padding: 18 },
-  prioritySheet: { borderRadius: 18, borderWidth: 1, padding: 14, gap: 10 },
-  prioritySheetTitle: { fontSize: 14, fontWeight: '800', marginBottom: 2 },
-  priorityItem: { borderRadius: 12, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  priorityItemText: { flex: 1, fontSize: 14, fontWeight: '600' },
 });

@@ -7,6 +7,7 @@ import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import { formatWriteError } from '@/lib/format-write-error';
 import { notifyAncestorPagesLocalReload } from '@/lib/page-api-session';
+import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
 import {
   countIncompleteDescendantTasks,
   deleteTask,
@@ -335,7 +336,6 @@ export default function TaskDetailScreen() {
 
   const [title, setTitle] = React.useState('');
   const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
-  const [note, setNote] = React.useState('');
   const [status, setStatus] = React.useState('todo');
   const [priority, setPriority] = React.useState<number>(0);
   const [dueDate, setDueDate] = React.useState<string | null>(null);
@@ -414,8 +414,7 @@ export default function TaskDetailScreen() {
     if (row) {
       setTaskLoaded(true);
       setTitle(row.title);
-      setAcceptanceCriteria(row.description ?? '');
-      setNote(row.note ?? '');
+      setAcceptanceCriteria(resolveAcceptanceCriteria(row.description, row.note));
       setStatus(row.status);
       setPriority(row.priority ?? 0);
       setDueDate(row.due_date ?? null);
@@ -450,7 +449,6 @@ export default function TaskDetailScreen() {
       setTaskLoaded(false);
       setTitle('');
       setAcceptanceCriteria('');
-      setNote('');
       setStatus('todo');
       setPriority(0);
       setDueDate(null);
@@ -720,16 +718,6 @@ export default function TaskDetailScreen() {
             <View style={[styles.noteAccent, { backgroundColor: secondary }]} />
             <Text style={[styles.noteText, { color: theme.textSecondary }]}>
               {acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : '暂无验收标准'}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={[styles.sectionLabel, { color: outline }]}>背景与备注</Text>
-          <View style={[styles.noteCard, { backgroundColor: surfaceLow, borderColor: border }]}>
-            <View style={[styles.noteAccent, { backgroundColor: primary }]} />
-            <Text style={[styles.noteText, { color: theme.textSecondary }]}>
-              {note?.trim() ? note.trim() : '暂无备注'}
             </Text>
           </View>
         </View>

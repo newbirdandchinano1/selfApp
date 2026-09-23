@@ -1,5 +1,4 @@
 import { AppInput } from '@/components/ui/app-input';
-import { ApiDebugLogViewer } from '@/components/api-debug-log-viewer';
 import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
@@ -14,7 +13,6 @@ import {
     loadCloudBackupTokenCache,
     setCloudUserToken,
 } from '@/lib/cloud-backup-config';
-import { loadApiDebugEnabled, setApiDebugEnabled } from '@/lib/api-debug';
 import { getLastFullCloudBackupAtIso } from '@/lib/cloud-backup-meta';
 import {
     triggerCloudFullBackup,
@@ -29,7 +27,6 @@ import {
     type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import type { ThemePreference } from '@/lib/theme-preference';
-import { probeZhipuTextConnectivity, type ZhipuConnectivityProbeResult } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
@@ -130,10 +127,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [draftBoundary, setDraftBoundary] = useState<TasksDayBoundary>(() => ({ ...DEFAULT_TASKS_DAY_BOUNDARY }));
   const [dayBoundaryPickerVisible, setDayBoundaryPickerVisible] = useState(false);
 
-  const [zhipuProbeLoading, setZhipuProbeLoading] = useState(false);
-  const [zhipuProbeResult, setZhipuProbeResult] = useState<ZhipuConnectivityProbeResult | null>(null);
-  const [zhipuProbeError, setZhipuProbeError] = useState<string | null>(null);
-
   const [cloudTokenDraft, setCloudTokenDraft] = useState('');
   const [cloudTokenConfigured, setCloudTokenConfigured] = useState(() => hasCloudUserTokenSync());
   const [cloudTokenSaving, setCloudTokenSaving] = useState(false);
@@ -142,7 +135,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
   const [cloudBackupProgress, setCloudBackupProgress] = useState<CloudSyncProgress | null>(null);
   const [cloudRestoreBusy, setCloudRestoreBusy] = useState(false);
   const [localDbClearBusy, setLocalDbClearBusy] = useState(false);
-  const [apiDebugEnabled, setApiDebugEnabledState] = useState(false);
   const cloudOpAbortRef = useRef<AbortController | null>(null);
   /** 同步标记：备份/同步进行中（不依赖 setState，避免连点竞态） */
   const cloudOpInFlightRef = useRef(false);
@@ -179,15 +171,8 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
   useEffect(() => {
     void loadLastFullCloudBackupMeta();
-    void loadAiLlmProviderPreference();
     void refreshCloudTokenFromStorage();
-    void loadApiDebugEnabled().then(setApiDebugEnabledState);
   }, [loadLastFullCloudBackupMeta, refreshCloudTokenFromStorage]);
-
-  const onApiDebugToggle = useCallback(async (next: boolean) => {
-    setApiDebugEnabledState(next);
-    await setApiDebugEnabled(next);
-  }, []);
 
   const saveCloudToken = useCallback(async () => {
     setCloudTokenSaving(true);
@@ -418,20 +403,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     );
   }, [cloudOpBusy, runLocalDatabaseClear]);
 
-  const runZhipuConnectivityProbe = useCallback(async () => {
-    setZhipuProbeLoading(true);
-    setZhipuProbeError(null);
-    setZhipuProbeResult(null);
-    try {
-      const row = await probeZhipuTextConnectivity();
-      setZhipuProbeResult(row);
-    } catch (e) {
-      setZhipuProbeError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setZhipuProbeLoading(false);
-    }
-  }, []);
-
   const saveDayBoundary = useCallback(async () => {
     try {
       await persistDayBoundary(draftBoundary);
@@ -467,9 +438,8 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     [setPreference],
   );
 
-  const renderSectionHead = (kicker: string, title: string) => (
+  const renderSectionHead = (title: string) => (
     <View style={styles.sectionHead}>
-      <Text style={[styles.kicker, { color: outline }]}>{kicker}</Text>
       <Text style={[styles.sectionTitle, { color: text }]}>{title}</Text>
     </View>
   );
@@ -488,7 +458,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled">
         <View style={styles.section}>
-          {renderSectionHead('MANAGE', '个人管理')}
+          {renderSectionHead('个人管理')}
           <Pressable
             onPress={() => {
               closeSettingsDrawer();
@@ -548,7 +518,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         <View
           onLayout={ev => onSectionLayout('appearance', ev.nativeEvent.layout.y)}
           style={styles.section}>
-          {renderSectionHead('APPEARANCE', '外观与夜间模式')}
+          {renderSectionHead('外观与夜间模式')}
           <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
             <View style={styles.rowBetween}>
               <View style={{ flex: 1, paddingRight: 12 }}>
@@ -595,7 +565,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         <View
           onLayout={ev => onSectionLayout('dayBoundary', ev.nativeEvent.layout.y)}
           style={styles.section}>
-          {renderSectionHead('DAY BOUNDARY', '日界线')}
+          {renderSectionHead('日界线')}
           <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 10 }]}>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 19 }]}>
               自定义日界仅作用于下方勾选的页面：未到该时刻仍算「昨天」。未勾选的页面始终按凌晨
@@ -643,7 +613,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         <View
           onLayout={ev => onSectionLayout('notifications', ev.nativeEvent.layout.y)}
           style={styles.section}>
-          {renderSectionHead('NOTIFICATIONS', '通知管理')}
+          {renderSectionHead('通知管理')}
           <NotificationSettingsSection
             cardBg={cardBg}
             cardBorder={cardBorder}
@@ -658,7 +628,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         <View
           onLayout={ev => onSectionLayout('backup', ev.nativeEvent.layout.y)}
           style={styles.section}>
-          {renderSectionHead('BACKUP', '云备份与同步')}
+          {renderSectionHead('云备份与同步')}
           <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 12 }]}>
             <Text style={[styles.rowTitle, { color: text }]}>云端 SQL 访问密钥</Text>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 18 }]}>
@@ -818,89 +788,6 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           ) : null}
 
         </View>
-
-        <View onLayout={ev => onSectionLayout('ai', ev.nativeEvent.layout.y)} style={styles.section}>
-          {renderSectionHead('AI', '文本与识图引擎')}
-          <View style={[styles.card, { backgroundColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(0,88,190,0.04)', borderColor: cardBorder, gap: 10 }]}>
-            <Text style={[styles.rowHint, { color: outline, lineHeight: 19 }]}>
-              记账、备忘、心愿、饮食识图等 AI 能力由内置 REST 后端统一代理（智谱 Key 仅存服务端）。
-            </Text>
-            <Text style={[styles.rowHint, { color: outline, fontSize: 11 }]}>
-              下方按钮可探测后端 → 智谱链路是否正常。
-            </Text>
-
-            <Pressable
-              onPress={() => void runZhipuConnectivityProbe()}
-              disabled={zhipuProbeLoading}
-              style={({ pressed }) => [
-                styles.probeBtn,
-                { borderColor: cardBorder, opacity: pressed || zhipuProbeLoading ? 0.75 : 1 },
-              ]}>
-              {zhipuProbeLoading ? (
-                <ActivityIndicator size="small" color={primary} />
-              ) : (
-                <MaterialIcons name="cloud-done" size={20} color={primary} />
-              )}
-              <Text style={[styles.rowTitle, { color: text, fontSize: 14 }]}>
-                {zhipuProbeLoading ? '正在测试智谱…' : '测试智谱连通性'}
-              </Text>
-            </Pressable>
-
-            {zhipuProbeError ? (
-              <Text selectable style={{ fontSize: 12, color: '#b91c1c', fontFamily: 'monospace' }}>
-                {zhipuProbeError}
-              </Text>
-            ) : null}
-
-            {zhipuProbeResult ? (
-              <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled>
-                <Text selectable style={{ fontSize: 11, color: text, fontFamily: 'monospace' }}>
-                  {JSON.stringify(zhipuProbeResult, null, 2)}
-                </Text>
-              </ScrollView>
-            ) : null}
-
-            {__DEV__ ? (
-              <Pressable
-                onPress={() => router.push('/zhipu-api-test')}
-                style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-                <View style={[styles.probeBtn, { borderColor: cardBorder }]}>
-                  <MaterialIcons name="api" size={20} color={primary} />
-                  <Text style={[styles.rowTitle, { color: text, fontSize: 14 }]}>智谱 API 测试</Text>
-                  <MaterialIcons name="chevron-right" size={20} color={outline} />
-                </View>
-              </Pressable>
-            ) : null}
-
-            <View style={[styles.rowBetween, { marginTop: 4 }]}>
-              <View style={{ flex: 1, paddingRight: 12 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>接口调试模式</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  开启后下方立即显示请求日志，并自动探测 /health；右上角也会出现「API」按钮。
-                </Text>
-              </View>
-              <Switch
-                value={apiDebugEnabled}
-                onValueChange={v => {
-                  void onApiDebugToggle(v);
-                }}
-                trackColor={{ false: outlineVariant, true: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.35)' }}
-                thumbColor={apiDebugEnabled ? primary : isDark ? '#94a3b8' : '#f8fafc'}
-              />
-            </View>
-            {apiDebugEnabled ? (
-              <ApiDebugLogViewer
-                textColor={text}
-                mutedColor={outline}
-                borderColor={cardBorder}
-                cardBg={isDark ? 'rgba(15,23,42,0.55)' : '#f8fafc'}
-                primary={primary}
-                maxHeight={320}
-                emptyHint="正在等待请求… 若一直为空，请检查网络或服务器地址。"
-              />
-            ) : null}
-          </View>
-        </View>
         </ScrollView>
       </GestureDetector>
 
@@ -961,8 +848,7 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: 18, paddingBottom: 32, gap: 8 },
   section: { marginTop: 8, gap: 8 },
-  sectionHead: { gap: 2, marginBottom: 4 },
-  kicker: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
+  sectionHead: { marginBottom: 4 },
   sectionTitle: { fontSize: 18, fontWeight: '800' },
   card: { borderRadius: 12, borderWidth: 1, padding: 14 },
   actionCard: { flexDirection: 'row', alignItems: 'center', gap: 12 },

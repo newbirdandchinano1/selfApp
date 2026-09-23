@@ -300,9 +300,7 @@ function isProjectSubtaskUnchanged(
   return (
     existing.title === (subtask.title.trim() || '未命名任务') &&
     (existing.description ?? null) === (subtask.acceptanceCriteria?.trim() || null) &&
-    (existing.note ?? null) === (subtask.note?.trim() || null) &&
     existing.status === nextStatus &&
-    existing.priority === toTaskPriority(subtask.priority || subtask.priorityLabel) &&
     (existing.due_date?.slice(0, 10) ?? null) === (nextDue ?? null) &&
     (existing.extra_data ?? null) === nextExtra &&
     (existing.parent_task_id ?? null) === (parentTaskId ?? null)
@@ -568,9 +566,9 @@ export default function EditProjectScreen() {
         parent_task_id: null,
         title: task.title.trim() || '未命名任务',
         description: task.acceptanceCriteria?.trim() || null,
-        note: task.note?.trim() || null,
+        note: null,
         status: (task.done ? 'done' : 'todo') as TaskRow['status'],
-        priority: toTaskPriority(task.priority || task.priorityLabel),
+        priority: taskPriorityKeyToNumber(priority),
         due_date: dueDate,
         extra_data: mergeLongTermTaskIntoExtraData(
           JSON.stringify({
@@ -600,7 +598,7 @@ export default function EditProjectScreen() {
       Alert.alert('任务保存失败', formatWriteError(error, '任务未能写入数据库，请返回重新添加或稍后重试。'));
       return true;
     }
-  }, [addTaskSource, projectId, showToast]);
+  }, [addTaskSource, priority, projectId, showToast]);
 
   const loadProject = React.useCallback(async () => {
     if (!projectId) {
@@ -938,6 +936,7 @@ export default function EditProjectScreen() {
       };
       walkExistingTasks(existingTasks);
 
+      const projectPriorityValue = taskPriorityKeyToNumber(priority);
       const flatWithParents = flattenSubtasksWithParents(subtasks, null);
       for (const { subtask, parent_task_id } of flatWithParents) {
         const existingTask = existingTaskById.get(subtask.id);
@@ -947,9 +946,9 @@ export default function EditProjectScreen() {
           parent_task_id,
           title: subtask.title.trim() || '未命名任务',
           description: subtask.acceptanceCriteria?.trim() || null,
-          note: subtask.note?.trim() || null,
+          note: null,
           status: (subtask.done ? 'done' : 'todo') as TaskRow['status'],
-          priority: toTaskPriority(subtask.priority || subtask.priorityLabel),
+          priority: projectPriorityValue,
           due_date: extractDueDate(subtask.deadline || subtask.deadlineText || ''),
           extra_data: JSON.stringify({
             ...existingExtra,
@@ -959,7 +958,7 @@ export default function EditProjectScreen() {
         };
 
         if (existingTaskIds.has(subtask.id)) {
-          if (!existingTask || !isProjectSubtaskUnchanged(existingTask, subtask, parent_task_id)) {
+          if (!existingTask || !isProjectSubtaskUnchanged(existingTask, subtask, parent_task_id) || existingTask.priority !== projectPriorityValue) {
             await updateTask(subtask.id, payload, writeOpts);
           }
         } else {
@@ -971,6 +970,14 @@ export default function EditProjectScreen() {
             },
             writeOpts,
           );
+        }
+      }
+      // 同步未出现在编辑分录中的项目任务优先级（继承母项目）
+      const editedSubtaskIds = new Set(flatWithParents.map((x) => x.subtask.id));
+      for (const [tid, existingTask] of existingTaskById) {
+        if (editedSubtaskIds.has(tid)) continue;
+        if (existingTask.priority !== projectPriorityValue) {
+          await updateTask(tid, { priority: projectPriorityValue }, writeOpts);
         }
       }
       await tightenAllProjectTasks(projectId, projectFrame, writeOpts);
@@ -1436,10 +1443,10 @@ export default function EditProjectScreen() {
           </View>
 
           <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>上下文备注</Text>
+            <Text style={[styles.sectionLabel, { color: outline }]}>验收标准</Text>
             <View style={[styles.notesWrap, { backgroundColor: surfaceLow }]}>
-              <TextInput value={notes} onChangeText={setNotes} placeholder="在此记录更多背景信息..." placeholderTextColor={outline} multiline editable={!loading && !saving} style={[styles.notesInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]} />
-              <View style={styles.notesIcon} pointerEvents="none"><MaterialIcons name="notes" size={20} color={outlineVariant} /></View>
+              <TextInput value={notes} onChangeText={setNotes} placeholder="怎样算完成？可写可验证的标准…（可选）" placeholderTextColor={outline} multiline editable={!loading && !saving} style={[styles.notesInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]} />
+              <View style={styles.notesIcon} pointerEvents="none"><MaterialIcons name="fact-check" size={20} color={outlineVariant} /></View>
             </View>
           </View>
         </ScrollView>

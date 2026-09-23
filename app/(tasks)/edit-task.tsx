@@ -62,6 +62,7 @@ import {
   tryCompleteTaskByBoundHabits,
 } from '@/lib/repositories/tasks/task-habit-binding';
 import { getIsLongTermTask, mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
+import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
 
 type PriorityKey =
   | 'urgent-important'
@@ -261,7 +262,6 @@ function priorityKeyToLabel(key: PriorityKey): string {
 type EditTaskFormSnapshot = {
   title: string;
   acceptanceCriteria: string;
-  notes: string;
   priority: PriorityKey;
   deadlineText: string;
   reminderText: string;
@@ -294,8 +294,7 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
 
   return {
     title: (task.title ?? '').trim(),
-    acceptanceCriteria: (task.description ?? '').trim(),
-    notes: (task.note ?? '').trim(),
+    acceptanceCriteria: resolveAcceptanceCriteria(task.description, task.note),
     priority: mapPriorityTextToKey(priorityLabel),
     deadlineText,
     reminderText,
@@ -310,7 +309,6 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
 function buildFormSnapshotFromFields(input: {
   title: string;
   acceptanceCriteria: string;
-  notes: string;
   priority: PriorityKey;
   deadlineText: string;
   reminderText: string;
@@ -323,7 +321,6 @@ function buildFormSnapshotFromFields(input: {
   return {
     title: input.title.trim(),
     acceptanceCriteria: input.acceptanceCriteria.trim(),
-    notes: input.notes.trim(),
     priority: input.priority,
     deadlineText: input.deadlineText,
     reminderText: input.reminderText,
@@ -365,9 +362,9 @@ export default function EditTaskScreen() {
 
   const [title, setTitle] = React.useState('');
   const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
-  const [notes, setNotes] = React.useState('');
   const [priority, setPriority] = React.useState<PriorityKey>('urgent-important');
   const [priorityOpen, setPriorityOpen] = React.useState(false);
+  const [projectPriorityLabel, setProjectPriorityLabel] = React.useState('');
   const [deadlineText, setDeadlineText] = React.useState('');
   const [reminderText, setReminderText] = React.useState('');
   const [repeatText, setRepeatText] = React.useState('');
@@ -394,7 +391,6 @@ export default function EditTaskScreen() {
   const [skipRemoveGuard, setSkipRemoveGuard] = React.useState(false);
   const titleRef = React.useRef(title);
   const acceptanceCriteriaRef = React.useRef(acceptanceCriteria);
-  const notesRef = React.useRef(notes);
   const priorityRef = React.useRef(priority);
   const deadlineTextRef = React.useRef(deadlineText);
   const reminderTextRef = React.useRef(reminderText);
@@ -406,7 +402,6 @@ export default function EditTaskScreen() {
   const rewardPointsTextRef = React.useRef(rewardPointsText);
   titleRef.current = title;
   acceptanceCriteriaRef.current = acceptanceCriteria;
-  notesRef.current = notes;
   priorityRef.current = priority;
   deadlineTextRef.current = deadlineText;
   reminderTextRef.current = reminderText;
@@ -416,6 +411,8 @@ export default function EditTaskScreen() {
   boundHabitIdsRef.current = boundHabitIds;
   isLongTermTaskRef.current = isLongTermTask;
   rewardPointsTextRef.current = rewardPointsText;
+
+  const inheritsProjectPriority = !!taskSnapshot?.project_id;
 
   const subtaskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const selfLimit = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
@@ -458,7 +455,6 @@ export default function EditTaskScreen() {
     const current = buildFormSnapshotFromFields({
       title,
       acceptanceCriteria,
-      notes,
       priority,
       deadlineText,
       reminderText,
@@ -469,7 +465,7 @@ export default function EditTaskScreen() {
       rewardPointsText,
     });
     return !formSnapshotsEqual(loadedFormSnapshot, current);
-  }, [acceptanceCriteria, boundHabitIds, deadlineText, isLongTermTask, loadedFormSnapshot, loading, notes, priority, reminderText, repeatText, rewardPointsText, scheduleMeta, title]);
+  }, [acceptanceCriteria, boundHabitIds, deadlineText, isLongTermTask, loadedFormSnapshot, loading, priority, reminderText, repeatText, rewardPointsText, scheduleMeta, title]);
 
   const reload = React.useCallback(async (forceApi = false) => {
     if (!taskId) return;
@@ -586,15 +582,20 @@ export default function EditTaskScreen() {
         subtaskSchedule,
         extractDueDate(payload.task.deadline || payload.task.deadlineText || ''),
       );
+      let subtaskPriority = parentTask.priority;
+      if (parentTask.project_id) {
+        const project = await getProjectById(parentTask.project_id);
+        if (project) subtaskPriority = project.priority ?? 0;
+      }
       await createTask({
         id: payload.task.id,
         project_id: parentTask.project_id,
         category_id: parentTask.category_id,
         parent_task_id: taskId,
         title: payload.task.title.trim() || '未命名任务',
-        note: payload.task.note?.trim() || null,
+        note: null,
         status: 'todo',
-        priority: toTaskPriority(payload.task.priority || payload.task.priorityLabel),
+        priority: subtaskPriority,
         due_date: dueDate,
         extra_data: JSON.stringify({
           reminder: payload.task.reminder || payload.task.reminderText || '',
@@ -687,8 +688,7 @@ export default function EditTaskScreen() {
       setTaskSnapshot(task);
       setLoadedFormSnapshot(buildFormSnapshotFromTask(task));
       setTitle(task.title ?? '');
-      setAcceptanceCriteria(task.description ?? '');
-      setNotes(task.note ?? '');
+      setAcceptanceCriteria(resolveAcceptanceCriteria(task.description, task.note));
       setDeadlineText(task.due_date ? formatDate(task.due_date) : '');
       setScheduleMeta(null);
       const priorityLabel = fromTaskPriority(task.priority);
@@ -746,12 +746,21 @@ export default function EditTaskScreen() {
         setParentTask(null);
       }
       let projectLimit: DateLimitYmd = {};
+      let inheritedPriorityLabel = '';
       if (task.project_id) {
         const project = await getProjectById(task.project_id);
         if (project) {
           projectLimit = extractScheduleLimitFromExtra(project.extra_data, project.due_date);
+          inheritedPriorityLabel = fromTaskPriority(project.priority ?? 0);
+          setPriority(mapPriorityTextToKey(inheritedPriorityLabel));
+          setLoadedFormSnapshot((prev) =>
+            prev
+              ? { ...prev, priority: mapPriorityTextToKey(inheritedPriorityLabel), acceptanceCriteria: resolveAcceptanceCriteria(task.description, task.note) }
+              : prev,
+          );
         }
       }
+      setProjectPriorityLabel(inheritedPriorityLabel);
       setParentDateLimit(parentLimit);
       setProjectDateLimit(projectLimit);
 
@@ -823,11 +832,22 @@ export default function EditTaskScreen() {
         ),
         normalizeRewardPoints(rewardPointsTextRef.current),
       );
+      const acceptance = acceptanceCriteriaRef.current.trim() || null;
+      let nextPriority = toTaskPriority(priorityKeyToLabel(priorityRef.current));
+      if (snapshot.project_id) {
+        const project = await getProjectById(snapshot.project_id);
+        if (project) {
+          nextPriority = project.priority ?? 0;
+          const label = fromTaskPriority(nextPriority);
+          setProjectPriorityLabel(label);
+          setPriority(mapPriorityTextToKey(label));
+        }
+      }
       await updateTask(taskId, {
         title: trimmedTitle,
-        description: acceptanceCriteriaRef.current.trim() || null,
-        note: notesRef.current.trim() || null,
-        priority: toTaskPriority(priorityKeyToLabel(priorityRef.current)),
+        description: acceptance,
+        note: null,
+        priority: nextPriority,
         due_date: dueDate,
         extra_data: mergedExtra,
       });
@@ -841,8 +861,7 @@ export default function EditTaskScreen() {
       const nextSnapshot = buildFormSnapshotFromFields({
         title: trimmedTitle,
         acceptanceCriteria: acceptanceCriteriaRef.current,
-        notes: notesRef.current,
-        priority: priorityRef.current,
+        priority: mapPriorityTextToKey(fromTaskPriority(nextPriority)),
         deadlineText: deadlineTextRef.current,
         reminderText: reminderTextRef.current,
         repeatText: repeatTextRef.current,
@@ -864,9 +883,9 @@ export default function EditTaskScreen() {
           ? {
               ...prev,
               title: trimmedTitle,
-              description: acceptanceCriteriaRef.current.trim() || null,
-              note: notesRef.current.trim() || null,
-              priority: toTaskPriority(priorityKeyToLabel(priorityRef.current)),
+              description: acceptance,
+              note: null,
+              priority: nextPriority,
               due_date: dueDate,
               extra_data: mergedExtra,
             }
@@ -1080,23 +1099,42 @@ export default function EditTaskScreen() {
 
           <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>优先级别</Text>
-            <Pressable
-              onPress={() => setPriorityOpen(true)}
-              disabled={loading}
-              style={({ pressed }) => [
-                styles.prioritySelect,
-                {
-                  backgroundColor: surfaceLow,
-                  borderColor: `${outlineVariant}70`,
-                  opacity: loading ? 0.65 : pressed ? 0.85 : 1,
-                },
-              ]}>
-              <View style={styles.priorityLeft}>
-                <View style={[styles.priorityDot, { backgroundColor: currentPriority.color }]} />
-                <Text style={[styles.priorityValue, { color: theme.text }]}>{currentPriority.label}</Text>
+            {inheritsProjectPriority ? (
+              <View
+                style={[
+                  styles.prioritySelect,
+                  {
+                    backgroundColor: surfaceLow,
+                    borderColor: `${outlineVariant}70`,
+                    opacity: loading ? 0.65 : 1,
+                  },
+                ]}>
+                <View style={styles.priorityLeft}>
+                  <View style={[styles.priorityDot, { backgroundColor: currentPriority.color }]} />
+                  <Text style={[styles.priorityValue, { color: theme.text }]}>
+                    {`与项目一致：${projectPriorityLabel || currentPriority.label || '未设置'}`}
+                  </Text>
+                </View>
               </View>
-              <MaterialIcons name="expand-more" size={22} color={outline} />
-            </Pressable>
+            ) : (
+              <Pressable
+                onPress={() => setPriorityOpen(true)}
+                disabled={loading}
+                style={({ pressed }) => [
+                  styles.prioritySelect,
+                  {
+                    backgroundColor: surfaceLow,
+                    borderColor: `${outlineVariant}70`,
+                    opacity: loading ? 0.65 : pressed ? 0.85 : 1,
+                  },
+                ]}>
+                <View style={styles.priorityLeft}>
+                  <View style={[styles.priorityDot, { backgroundColor: currentPriority.color }]} />
+                  <Text style={[styles.priorityValue, { color: theme.text }]}>{currentPriority.label}</Text>
+                </View>
+                <MaterialIcons name="expand-more" size={22} color={outline} />
+              </Pressable>
+            )}
           </View>
 
           <View style={styles.section}>
@@ -1420,24 +1458,6 @@ export default function EditTaskScreen() {
               </View>
             </View>
           </View>
-
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>上下文备注</Text>
-            <View style={[styles.notesWrap, { backgroundColor: surfaceLow }]}>
-              <TextInput
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="在此记录更多背景信息..."
-                placeholderTextColor={outline}
-                multiline
-                editable={!loading}
-                style={[styles.notesInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
-              />
-              <View style={styles.notesIcon} pointerEvents="none">
-                <MaterialIcons name="notes" size={20} color={outlineVariant} />
-              </View>
-            </View>
-          </View>
         </ScrollView>
 
         <View
@@ -1467,7 +1487,7 @@ export default function EditTaskScreen() {
           </View>
         </View>
 
-        <Modal transparent visible={priorityOpen} animationType="fade" onRequestClose={() => setPriorityOpen(false)}>
+        <Modal transparent visible={!inheritsProjectPriority && priorityOpen} animationType="fade" onRequestClose={() => setPriorityOpen(false)}>
           <Pressable style={styles.priorityOverlay} onPress={() => setPriorityOpen(false)}>
             <Pressable
               onPress={() => {}}

@@ -16,7 +16,7 @@ export type AddTaskBridgePayload = {
     reminderText?: string;
     repeat?: string;
     repeatText?: string;
-    note?: string;
+    note?: string | null;
     acceptanceCriteria?: string;
     schedule?: Record<string, unknown> | null;
     isLongTermTask?: boolean;
