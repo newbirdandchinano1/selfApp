@@ -41,9 +41,9 @@ import React from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Keyboard,
   KeyboardAvoidingView,
-  LayoutAnimation,
   Modal,
   Platform,
   Pressable,
@@ -51,16 +51,11 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  UIManager,
   View,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
-
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 import {
   SchedulePlaceFrogSheet,
   type SchedulePlacePreselected,
@@ -83,6 +78,35 @@ import {
   type ScheduleSlotNotesMap,
 } from '@/lib/schedule/slot-notes';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+/** 日程表缩放：最简（当前时段）→ 今日列表 → 三天课表 */
+export type ScheduleZoomMode = 'minimal' | 'agenda' | 'grid';
+
+type TodayCompactItem = {
+  placement: SchedulePlacementRow;
+  title: string;
+  done: boolean;
+  timeLabel: string;
+  endLabel: string;
+  startMins: number;
+  endMins: number;
+};
+
+function formatRemainLabel(remainSec: number, opts?: { untilStart?: boolean }): string {
+  const sec = Math.max(0, remainSec);
+  const prefix = opts?.untilStart ? '距开始' : '剩余';
+  if (sec < 60) return `${prefix} ${sec} 秒`;
+  const totalMin = Math.floor(sec / 60);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h > 0) return m > 0 ? `${prefix} ${h} 时 ${m} 分` : `${prefix} ${h} 时`;
+  return `${prefix} ${m} 分`;
+}
+
+function remainSecondsUntil(targetMinutes: number, wall: Date): number {
+  const nowMins = wall.getHours() * 60 + wall.getMinutes() + wall.getSeconds() / 60;
+  return Math.round((targetMinutes - nowMins) * 60);
+}
 
 const TIME_GUTTER = 56;
 const DAY_HEADER_H = 48;
@@ -335,7 +359,7 @@ function scheduleBlockColors(
 
 export function WeeklyFrogSchedule({
   logicalTodayYmd,
-  now = new Date(),
+  now,
   sectionCardStyle,
   lockedProjectIds,
   subjects,
@@ -413,8 +437,30 @@ export function WeeklyFrogSchedule({
     placement: SchedulePlacementRow;
     subject: ScheduleSubjectInfo;
   } | null>(null);
-  /** 首页默认折叠为摘要，避免网格占满首屏 */
-  const [expanded, setExpanded] = React.useState(false);
+  /** 首页默认最简：当前时段 + 倒计时；可展开今日列表 / 三天课表 */
+  const [zoomMode, setZoomMode] = React.useState<ScheduleZoomMode>('minimal');
+  const zoomModeRef = React.useRef(zoomMode);
+  zoomModeRef.current = zoomMode;
+  const isGrid = zoomMode === 'grid';
+  const isAgenda = zoomMode === 'agenda';
+  const isMinimal = zoomMode === 'minimal';
+  const zoomBusyRef = React.useRef(false);
+  const bodyOpacity = React.useRef(new Animated.Value(1)).current;
+  const bodyScale = React.useRef(new Animated.Value(1)).current;
+  const bodyTranslateY = React.useRef(new Animated.Value(0)).current;
+
+  /** 墙钟：最简态每秒刷新倒计时；课表「现在」线每 30s（勿用默认 now=new Date()，否则每渲染新引用会炸更新环） */
+  const nowTs = now?.getTime();
+  const [wallNow, setWallNow] = React.useState(() => (nowTs != null ? new Date(nowTs) : new Date()));
+  React.useEffect(() => {
+    if (nowTs == null) return;
+    setWallNow(new Date(nowTs));
+  }, [nowTs]);
+  React.useEffect(() => {
+    const ms = zoomMode === 'minimal' ? 1000 : 30_000;
+    const id = setInterval(() => setWallNow(new Date()), ms);
+    return () => clearInterval(id);
+  }, [zoomMode]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [slotNotes, setSlotNotes] = React.useState<ScheduleSlotNotesMap>({});
   const [slotNoteEditor, setSlotNoteEditor] = React.useState<{
@@ -454,13 +500,92 @@ export function WeeklyFrogSchedule({
     };
   }, [slotNoteEditor]);
 
+  const goZoom = React.useCallback(
+    (next: ScheduleZoomMode) => {
+      const prev = zoomModeRef.current;
+      if (prev === next || zoomBusyRef.current) return;
+      zoomBusyRef.current = true;
+
+      const enteringGrid = next === 'grid';
+      const leavingGrid = prev === 'grid';
+      const expanding = prev === 'minimal' && next === 'agenda';
+      const collapsing = (prev === 'agenda' && next === 'minimal') || leavingGrid;
+
+      // 退场：淡出 + 按方向位移/缩放
+      const exitScale = enteringGrid ? 0.94 : leavingGrid ? 1.06 : 1;
+      const exitTY = expanding ? -14 : collapsing && !leavingGrid ? 14 : leavingGrid ? 10 : 0;
+
+      Animated.parallel([
+        Animated.timing(bodyOpacity, {
+          toValue: 0,
+          duration: 150,
+          useNativeDriver: true,
+        }),
+        Animated.timing(bodyScale, {
+          toValue: exitScale,
+          duration: 150,
+          useNativeDriver: true,
+        }),
+        Animated.timing(bodyTranslateY, {
+          toValue: exitTY,
+          duration: 150,
+          useNativeDriver: true,
+        }),
+      ]).start(({ finished }) => {
+        if (!finished) {
+          zoomBusyRef.current = false;
+          return;
+        }
+        setZoomMode(next);
+
+        const enterFromScale = enteringGrid ? 0.86 : leavingGrid ? 1.1 : 1;
+        const enterFromTY = expanding
+          ? -22
+          : collapsing && !leavingGrid
+            ? 22
+            : enteringGrid
+              ? 16
+              : leavingGrid
+                ? -12
+                : 0;
+        bodyOpacity.setValue(0);
+        bodyScale.setValue(enterFromScale);
+        bodyTranslateY.setValue(enterFromTY);
+
+        requestAnimationFrame(() => {
+          Animated.parallel([
+            Animated.timing(bodyOpacity, {
+              toValue: 1,
+              duration: enteringGrid || leavingGrid ? 320 : 260,
+              useNativeDriver: true,
+            }),
+            Animated.spring(bodyScale, {
+              toValue: 1,
+              friction: 6.5,
+              tension: 64,
+              useNativeDriver: true,
+            }),
+            Animated.spring(bodyTranslateY, {
+              toValue: 0,
+              friction: 7,
+              tension: 68,
+              useNativeDriver: true,
+            }),
+          ]).start(() => {
+            zoomBusyRef.current = false;
+          });
+        });
+      });
+    },
+    [bodyOpacity, bodyScale, bodyTranslateY],
+  );
+
   /** 长按项目指派：自动展开课表并提示点选空格 */
   React.useEffect(() => {
     if (!pendingPlace) return;
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setExpanded(true);
+    goZoom('grid');
     setPeriodIndex(0);
-  }, [pendingPlace]);
+  }, [pendingPlace, goZoom]);
 
   const loadDaysKey = loadDayYmds.join(',');
 
@@ -536,9 +661,9 @@ export function WeeklyFrogSchedule({
   );
 
   React.useEffect(() => {
-    if (!expanded || gridWidth <= 0) return;
+    if (!isGrid || gridWidth <= 0) return;
     snapPagerToMiddle(false);
-  }, [expanded, gridWidth, periodIndex, axisKey, snapPagerToMiddle]);
+  }, [isGrid, gridWidth, periodIndex, axisKey, snapPagerToMiddle]);
 
   const placementsByCell = React.useMemo(() => {
     const map = new Map<CellKey, SchedulePlacementRow[]>();
@@ -573,7 +698,7 @@ export function WeeklyFrogSchedule({
 
   const nowLineTop = React.useMemo(() => {
     if (!view || !layout || !dayYmds.includes(logicalTodayYmd)) return null;
-    const mins = now.getHours() * 60 + now.getMinutes();
+    const mins = wallNow.getHours() * 60 + wallNow.getMinutes();
     if (mins < view.axis.startMinutes || mins > view.axis.endMinutes) return null;
     let top = 0;
     for (let i = 0; i < layout.timeline.length; i++) {
@@ -589,7 +714,7 @@ export function WeeklyFrogSchedule({
       top += h;
     }
     return top;
-  }, [view, layout, dayYmds, logicalTodayYmd, now]);
+  }, [view, layout, dayYmds, logicalTodayYmd, wallNow]);
 
   const goPeriod = (delta: number) => {
     setPeriodIndex((i) => i + delta);
@@ -735,8 +860,7 @@ export function WeeklyFrogSchedule({
     setDetail(null);
     setOrphanListOpen(false);
     setCellList(null);
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setExpanded(true);
+    goZoom('grid');
     const assignYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
     const dayOffset = Math.round(
       (logicalYmdToLocalDate(assignYmd).getTime() -
@@ -877,13 +1001,7 @@ export function WeeklyFrogSchedule({
 
   const todayCompactItems = React.useMemo(() => {
     if (!view) return [];
-    const items: Array<{
-      placement: SchedulePlacementRow;
-      title: string;
-      done: boolean;
-      timeLabel: string;
-      endLabel: string;
-    }> = [];
+    const items: TodayCompactItem[] = [];
     for (const p of view.placements) {
       if (p.orphaned || p.startSlotIndex == null) continue;
       const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
@@ -897,6 +1015,8 @@ export function WeeklyFrogSchedule({
         done: !!sub?.done,
         timeLabel: formatMinutesAsHm(startMins),
         endLabel: formatMinutesAsHm(endMins),
+        startMins,
+        endMins,
       });
     }
     items.sort((a, b) => {
@@ -908,19 +1028,60 @@ export function WeeklyFrogSchedule({
     return items;
   }, [view, logicalTodayYmd, subjects]);
 
-  // 折叠时强制回今天周期
+  const minimalFocus = React.useMemo(() => {
+    const nowMins =
+      wallNow.getHours() * 60 + wallNow.getMinutes() + wallNow.getSeconds() / 60;
+    const current = todayCompactItems.filter(
+      (x) => nowMins >= x.startMins && nowMins < x.endMins,
+    );
+    if (current.length > 0) {
+      const startMins = Math.min(...current.map((x) => x.startMins));
+      const endMins = Math.max(...current.map((x) => x.endMins));
+      return {
+        kind: 'current' as const,
+        items: current,
+        rangeLabel: `${formatMinutesAsHm(startMins)}–${formatMinutesAsHm(endMins)}`,
+        countdownLabel: formatRemainLabel(remainSecondsUntil(endMins, wallNow)),
+      };
+    }
+    const upcoming = todayCompactItems.filter((x) => x.startMins > nowMins);
+    if (upcoming.length > 0) {
+      const nextStart = upcoming[0]!.startMins;
+      const nextItems = upcoming.filter((x) => x.startMins === nextStart);
+      const endMins = Math.max(...nextItems.map((x) => x.endMins));
+      return {
+        kind: 'upcoming' as const,
+        items: nextItems,
+        rangeLabel: `${formatMinutesAsHm(nextStart)}–${formatMinutesAsHm(endMins)}`,
+        countdownLabel: formatRemainLabel(remainSecondsUntil(nextStart, wallNow), {
+          untilStart: true,
+        }),
+      };
+    }
+    if (todayCompactItems.length > 0) {
+      return {
+        kind: 'finished' as const,
+        items: [] as TodayCompactItem[],
+        rangeLabel: '',
+        countdownLabel: '今日安排已结束',
+      };
+    }
+    return {
+      kind: 'empty' as const,
+      items: [] as TodayCompactItem[],
+      rangeLabel: '',
+      countdownLabel: '今日暂无安排',
+    };
+  }, [todayCompactItems, wallNow]);
+
+  // 非课表态强制回今天周期
   React.useEffect(() => {
-    if (!expanded && periodIndex !== 0) {
+    if (!isGrid && periodIndex !== 0) {
       setPeriodIndex(0);
     }
-  }, [expanded, periodIndex]);
+  }, [isGrid, periodIndex]);
 
   const todayDoneCount = todayCompactItems.filter((x) => x.done).length;
-
-  const toggleExpanded = React.useCallback(() => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setExpanded((v) => !v);
-  }, []);
 
   const renderDayHeader = (ymd: string, width: number) => {
     const isTodayCol = ymd === logicalTodayYmd;
@@ -1148,10 +1309,30 @@ export function WeeklyFrogSchedule({
             <View
               pointerEvents="none"
               style={[styles.nowLine, { top: nowLineTop }]}>
-              <View style={[styles.nowDot, { backgroundColor: theme.danger }]} />
-              <View style={[styles.nowBar, { backgroundColor: theme.danger }]} />
-              <View style={[styles.nowPill, { backgroundColor: theme.danger }]}>
-                <Text style={styles.nowPillText}>现在</Text>
+              <View
+                style={[
+                  styles.nowDot,
+                  {
+                    backgroundColor: isDark ? '#f87171' : '#fca5a5',
+                  },
+                ]}
+              />
+              <View
+                style={[
+                  styles.nowBar,
+                  {
+                    backgroundColor: isDark ? '#f87171' : '#fca5a5',
+                  },
+                ]}
+              />
+              <View style={styles.nowPill}>
+                <Text
+                  style={[
+                    styles.nowPillText,
+                    { color: isDark ? '#fca5a5' : '#ef4444' },
+                  ]}>
+                  现在
+                </Text>
               </View>
             </View>
           ) : null}
@@ -1317,11 +1498,117 @@ export function WeeklyFrogSchedule({
     );
   };
 
+  const renderCompactRow = (
+    item: TodayCompactItem,
+    index: number,
+    list: TodayCompactItem[],
+    opts?: { dense?: boolean },
+  ) => (
+    <Pressable
+      key={item.placement.id}
+      onPress={() => openDetail(item.placement)}
+      accessibilityRole="button"
+      accessibilityLabel={`${item.timeLabel} ${item.title}${item.done ? '，已完成' : ''}`}
+      style={({ pressed }) => [
+        opts?.dense ? styles.todayRowDense : styles.todayRow,
+        index < list.length - 1 &&
+          item.done && {
+            borderBottomWidth: StyleSheet.hairlineWidth,
+            borderBottomColor: gridLineSoft,
+          },
+        index < list.length - 1 &&
+          !item.done && {
+            marginBottom: 2,
+          },
+        item.done
+          ? {
+              opacity: pressed ? 0.4 : 0.48,
+            }
+          : {
+              backgroundColor: isDark ? 'rgba(96,165,250,0.10)' : 'rgba(0,88,190,0.07)',
+              borderRadius: Radius.sm,
+              opacity: pressed ? 0.88 : 1,
+            },
+      ]}>
+      <View style={styles.todayTimeCol}>
+        <Text
+          style={[
+            styles.todayTimeStart,
+            { color: item.done ? outline : primary },
+          ]}>
+          {item.timeLabel}
+        </Text>
+        <Text
+          style={[
+            styles.todayTimeEnd,
+            { color: outline, opacity: item.done ? 0.85 : 1 },
+          ]}>
+          {item.endLabel}
+        </Text>
+      </View>
+      <View
+        style={[
+          styles.todayRail,
+          !item.done && styles.todayRailActive,
+          {
+            backgroundColor: item.done ? `${outline}66` : primary,
+          },
+        ]}
+      />
+      <View style={styles.todayRowBody}>
+        <Text
+          style={[
+            styles.todayRowTitle,
+            !item.done && styles.todayRowTitleActive,
+            {
+              color: item.done ? outline : theme.text,
+              textDecorationLine: item.done ? 'line-through' : 'none',
+            },
+          ]}
+          numberOfLines={opts?.dense ? 1 : 2}>
+          {item.title}
+        </Text>
+      </View>
+      {item.done ? (
+        <MaterialIcons name="check-circle" size={18} color={outline} />
+      ) : (
+        <MaterialIcons name="chevron-right" size={18} color={primary} />
+      )}
+    </Pressable>
+  );
+
+  const headerTitle =
+    zoomMode === 'grid' ? '日程表' : zoomMode === 'agenda' ? '今日日程' : '此刻';
+  const headerIcon =
+    zoomMode === 'grid' ? 'view-week' : zoomMode === 'agenda' ? 'today' : 'schedule';
+
+  const zoomActionBtn = (
+    icon: keyof typeof MaterialIcons.glyphMap,
+    label: string,
+    onPress: () => void,
+    accent?: boolean,
+  ) => (
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={({ pressed }) => [
+        styles.iconActionBtn,
+        {
+          backgroundColor: accent ? todayWash : surfaceLow,
+          opacity: pressed ? 0.75 : 1,
+        },
+      ]}>
+      <MaterialIcons name={icon} size={18} color={accent ? primary : outline} />
+    </Pressable>
+  );
+
   return (
     <View style={styles.section}>
       <View
         style={
-          expanded
+          isGrid
             ? sectionCardStyle
             : [
                 styles.summaryCard,
@@ -1332,34 +1619,27 @@ export function WeeklyFrogSchedule({
                 },
               ]
         }>
-        <Pressable
-          onPress={toggleExpanded}
-          accessibilityRole="button"
-          accessibilityState={{ expanded }}
-          accessibilityLabel={
-            expanded
-              ? '收起日程表'
-              : `展开日程表，今日 ${todayCompactItems.length} 节`
-          }
-          style={({ pressed }) => [
+        <View
+          style={[
             styles.headerRow,
-            styles.headerRowPressable,
-            { marginBottom: expanded || !loading ? Spacing.md : 0 },
-            pressed && { opacity: 0.88 },
+            { marginBottom: isGrid || isAgenda || isMinimal || !loading ? Spacing.md : 0 },
           ]}>
           <View style={styles.titleRow}>
             <View style={[styles.titleIconWrap, { backgroundColor: todayWash }]}>
-              <MaterialIcons
-                name={expanded ? 'view-week' : 'today'}
-                size={18}
-                color={primary}
-              />
+              <MaterialIcons name={headerIcon} size={18} color={primary} />
             </View>
             <View style={styles.titleTextCol}>
               <Text style={[styles.sectionTitle, { color: theme.text }]}>
-                {expanded ? '日程表' : '今日日程'}
+                {headerTitle}
               </Text>
-              {!expanded && todayCompactItems.length > 0 ? (
+              {isMinimal && minimalFocus.kind !== 'empty' ? (
+                <Text style={[styles.summaryMeta, { color: outline }]} numberOfLines={1}>
+                  {minimalFocus.kind === 'finished'
+                    ? minimalFocus.countdownLabel
+                    : `${minimalFocus.rangeLabel} · ${minimalFocus.countdownLabel}`}
+                </Text>
+              ) : null}
+              {isAgenda && todayCompactItems.length > 0 ? (
                 <Text style={[styles.summaryMeta, { color: outline }]} numberOfLines={1}>
                   {todayDoneCount > 0
                     ? `${todayDoneCount}/${todayCompactItems.length} 已完成`
@@ -1369,15 +1649,15 @@ export function WeeklyFrogSchedule({
             </View>
           </View>
           <View style={styles.headerActions}>
-            {!expanded && todayCompactItems.length === 0 && !(loading && !view) ? (
+            {isMinimal && todayCompactItems.length === 0 && !(loading && !view) ? (
               <Text style={[styles.summaryMeta, { color: outline }]}>暂无安排</Text>
             ) : null}
-            {expanded && orphanedPlacements.length > 0 ? (
+            {isAgenda && todayCompactItems.length === 0 && !(loading && !view) ? (
+              <Text style={[styles.summaryMeta, { color: outline }]}>暂无安排</Text>
+            ) : null}
+            {isGrid && orphanedPlacements.length > 0 ? (
               <Pressable
-                onPress={(e) => {
-                  e.stopPropagation?.();
-                  setOrphanListOpen(true);
-                }}
+                onPress={() => setOrphanListOpen(true)}
                 hitSlop={6}
                 accessibilityRole="button"
                 accessibilityLabel={`查看未入格任务 ${orphanedPlacements.length} 项`}
@@ -1387,12 +1667,9 @@ export function WeeklyFrogSchedule({
                 </Text>
               </Pressable>
             ) : null}
-            {expanded ? (
+            {isGrid ? (
               <Pressable
-                onPress={(e) => {
-                  e.stopPropagation?.();
-                  onCopyLastWeek();
-                }}
+                onPress={() => onCopyLastWeek()}
                 disabled={!isEditableWeek(thisMonday, logicalTodayYmd)}
                 accessibilityRole="button"
                 accessibilityLabel="复制上周"
@@ -1411,10 +1688,7 @@ export function WeeklyFrogSchedule({
               </Pressable>
             ) : null}
             <Pressable
-              onPress={(e) => {
-                e.stopPropagation?.();
-                setSettingsOpen(true);
-              }}
+              onPress={() => setSettingsOpen(true)}
               hitSlop={8}
               accessibilityRole="button"
               accessibilityLabel="课表设置"
@@ -1427,15 +1701,23 @@ export function WeeklyFrogSchedule({
               ]}>
               <MaterialIcons name="tune" size={16} color={outline} />
             </Pressable>
-            <View style={[styles.expandChevron, { backgroundColor: surfaceLow }]}>
-              <MaterialIcons
-                name={expanded ? 'expand-less' : 'expand-more'}
-                size={20}
-                color={outline}
-              />
-            </View>
+            {isMinimal ? (
+              <>
+                {zoomActionBtn('expand-more', '下拉展开今日日程', () => goZoom('agenda'))}
+                {zoomActionBtn('zoom-out-map', '放大为完整日程表', () => goZoom('grid'), true)}
+              </>
+            ) : null}
+            {isAgenda ? (
+              <>
+                {zoomActionBtn('expand-less', '上拉收起为此刻', () => goZoom('minimal'))}
+                {zoomActionBtn('zoom-out-map', '放大为完整日程表', () => goZoom('grid'), true)}
+              </>
+            ) : null}
+            {isGrid
+              ? zoomActionBtn('close-fullscreen', '收起日程表', () => goZoom('agenda'))
+              : null}
           </View>
-        </Pressable>
+        </View>
 
         {reassignPending ? (
           <View
@@ -1497,12 +1779,88 @@ export function WeeklyFrogSchedule({
           </View>
         ) : null}
 
-        {!expanded ? (
+        <Animated.View
+          style={{
+            opacity: bodyOpacity,
+            transform: [{ scale: bodyScale }, { translateY: bodyTranslateY }],
+          }}>
+        {isMinimal ? (
+          loading && !view ? (
+            <ActivityIndicator color={primary} style={{ marginVertical: Spacing.lg }} />
+          ) : (
+            <View style={styles.minimalBody}>
+              <View
+                style={[
+                  styles.minimalCountdownRow,
+                  { backgroundColor: surfaceLow, borderColor: gridLineSoft },
+                ]}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.minimalCountdownLabel, { color: outline }]}>
+                    {minimalFocus.kind === 'current'
+                      ? '当前时段'
+                      : minimalFocus.kind === 'upcoming'
+                        ? '下一时段'
+                        : minimalFocus.kind === 'finished'
+                          ? '日程'
+                          : '今日'}
+                  </Text>
+                  {minimalFocus.rangeLabel ? (
+                    <Text
+                      style={[styles.minimalRange, { color: theme.text }]}
+                      numberOfLines={1}>
+                      {minimalFocus.rangeLabel}
+                    </Text>
+                  ) : null}
+                </View>
+                <Text
+                  style={[
+                    styles.minimalCountdown,
+                    {
+                      color:
+                        minimalFocus.kind === 'current' || minimalFocus.kind === 'upcoming'
+                          ? primary
+                          : outline,
+                    },
+                  ]}
+                  numberOfLines={1}>
+                  {minimalFocus.countdownLabel}
+                </Text>
+              </View>
+              {minimalFocus.items.length > 0 ? (
+                <View style={styles.todayAgenda}>
+                  {minimalFocus.items.map((item, index) =>
+                    renderCompactRow(item, index, minimalFocus.items, { dense: true }),
+                  )}
+                </View>
+              ) : minimalFocus.kind === 'empty' || minimalFocus.kind === 'finished' ? (
+                <Pressable
+                  onPress={() => goZoom('grid')}
+                  style={({ pressed }) => [
+                    styles.todayEmpty,
+                    styles.todayEmptyCompact,
+                    {
+                      backgroundColor: surfaceLow,
+                      borderColor: gridLineSoft,
+                      opacity: pressed ? 0.85 : 1,
+                    },
+                  ]}>
+                  <Text style={[styles.todayEmptyHint, { color: outline }]}>
+                    {minimalFocus.kind === 'finished'
+                      ? '点开完整课表查看今日安排'
+                      : '点开三天视图添加或查看课表'}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          )
+        ) : null}
+
+        {isAgenda ? (
           loading && !view ? (
             <ActivityIndicator color={primary} style={{ marginVertical: Spacing.xl }} />
           ) : todayCompactItems.length === 0 ? (
             <Pressable
-              onPress={toggleExpanded}
+              onPress={() => goZoom('grid')}
               style={({ pressed }) => [
                 styles.todayEmpty,
                 {
@@ -1523,68 +1881,15 @@ export function WeeklyFrogSchedule({
                 nestedScrollEnabled
                 showsVerticalScrollIndicator={todayCompactItems.length > 4}
                 keyboardShouldPersistTaps="handled">
-                {todayCompactItems.map((item, index) => (
-                  <Pressable
-                    key={item.placement.id}
-                    onPress={() => openDetail(item.placement)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`${item.timeLabel} ${item.title}${item.done ? '，已完成' : ''}`}
-                    style={({ pressed }) => [
-                      styles.todayRow,
-                      index < todayCompactItems.length - 1 && {
-                        borderBottomWidth: StyleSheet.hairlineWidth,
-                        borderBottomColor: gridLineSoft,
-                      },
-                      {
-                        opacity: pressed ? 0.88 : 1,
-                      },
-                    ]}>
-                    <View style={styles.todayTimeCol}>
-                      <Text
-                        style={[
-                          styles.todayTimeStart,
-                          { color: item.done ? outline : primary },
-                        ]}>
-                        {item.timeLabel}
-                      </Text>
-                      <Text style={[styles.todayTimeEnd, { color: outline }]}>
-                        {item.endLabel}
-                      </Text>
-                    </View>
-                    <View
-                      style={[
-                        styles.todayRail,
-                        {
-                          backgroundColor: item.done ? `${outline}55` : primary,
-                        },
-                      ]}
-                    />
-                    <View style={styles.todayRowBody}>
-                      <Text
-                        style={[
-                          styles.todayRowTitle,
-                          {
-                            color: item.done ? outline : theme.text,
-                            textDecorationLine: item.done ? 'line-through' : 'none',
-                          },
-                        ]}
-                        numberOfLines={2}>
-                        {item.title}
-                      </Text>
-                    </View>
-                    {item.done ? (
-                      <MaterialIcons name="check-circle" size={18} color={successTint} />
-                    ) : (
-                      <MaterialIcons name="chevron-right" size={18} color={outline} />
-                    )}
-                  </Pressable>
-                ))}
+                {todayCompactItems.map((item, index) =>
+                  renderCompactRow(item, index, todayCompactItems),
+                )}
               </ScrollView>
             </View>
           )
         ) : null}
 
-        {expanded ? (
+        {isGrid ? (
           <>
             <View style={[styles.weekNav, { backgroundColor: surfaceLow }]}>
               <Pressable
@@ -1630,6 +1935,7 @@ export function WeeklyFrogSchedule({
             ) : null}
           </>
         ) : null}
+        </Animated.View>
       </View>
 
       <SchedulePlaceFrogSheet
@@ -2098,6 +2404,41 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 16,
   },
+  todayEmptyCompact: {
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+  },
+  minimalBody: {
+    gap: Spacing.md,
+  },
+  minimalCountdownRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  minimalCountdownLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  minimalRange: {
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+    fontVariant: ['tabular-nums'],
+    marginTop: 2,
+  },
+  minimalCountdown: {
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+    flexShrink: 0,
+  },
   todayAgenda: {
     overflow: 'hidden',
     borderRadius: Radius.sm,
@@ -2109,6 +2450,14 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.lg,
     paddingHorizontal: Spacing.xs,
     minHeight: Layout.minTouchTarget,
+  },
+  todayRowDense: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xs,
+    minHeight: 44,
   },
   todayTimeCol: {
     width: 44,
@@ -2132,6 +2481,9 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     minHeight: 28,
   },
+  todayRailActive: {
+    width: 4,
+  },
   todayRowBody: {
     flex: 1,
     minWidth: 0,
@@ -2141,6 +2493,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 19,
     letterSpacing: -0.2,
+  },
+  todayRowTitleActive: {
+    fontWeight: '800',
   },
   headerRow: {
     flexDirection: 'row',
@@ -2249,26 +2604,29 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   timeCell: {
-    justifyContent: 'flex-start',
+    justifyContent: 'center',
+    alignItems: 'center',
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: Spacing.xs,
     paddingHorizontal: Spacing.xs,
   },
   timeLabelBlock: {
     gap: 2,
-    alignItems: 'flex-start',
+    alignItems: 'center',
+    width: '100%',
   },
   timeRangeText: {
     fontSize: 11,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
     letterSpacing: -0.2,
+    textAlign: 'center',
   },
   timeSlotNote: {
     fontSize: 10,
     fontWeight: '700',
     lineHeight: 12,
     letterSpacing: 0.1,
+    textAlign: 'center',
   },
   noteKav: {
     flex: 1,
@@ -2390,15 +2748,16 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 0,
-    zIndex: 5,
+    /** 压在空格底色上，但低于色块标题，避免挡住字 */
+    zIndex: 1,
     flexDirection: 'row',
     alignItems: 'center',
   },
   nowDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginLeft: -1,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginLeft: 0,
   },
   nowBar: {
     flex: 1,
@@ -2406,16 +2765,12 @@ const styles = StyleSheet.create({
   },
   nowPill: {
     position: 'absolute',
-    left: 8,
-    top: -11,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: Radius.pill,
+    left: 6,
+    top: -8,
   },
   nowPillText: {
-    color: '#fff',
     fontSize: 10,
-    fontWeight: '800',
+    fontWeight: '700',
   },
   listBackdrop: {
     flex: 1,
