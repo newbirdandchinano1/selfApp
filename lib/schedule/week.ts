@@ -70,4 +70,9 @@ export function isEditableWeek(weekStartYmd: string, logicalTodayYmd: string): b
   return !isHistoricalWeek(weekStartYmd, logicalTodayYmd);
 }
 
+/** 日程可编辑日：今天及未来；过去日仅可见不可改 */
+export function isEditableScheduleDay(ymd: string, logicalTodayYmd: string): boolean {
+  return ymd >= logicalTodayYmd;
+}
+
 export const WEEKDAY_SHORT_LABELS = ['一', '二', '三', '四', '五', '六', '日'] as const;

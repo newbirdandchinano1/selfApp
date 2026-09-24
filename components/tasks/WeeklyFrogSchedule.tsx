@@ -17,18 +17,21 @@ import {
   centerYmdForPeriod,
   formatThreeDayRangeLabel,
   getWeekStartMondayYmd,
+  isEditableScheduleDay,
   isEditableWeek,
   threeDayWindow,
   WEEKDAY_SHORT_LABELS,
   weekdayFromYmd,
   ymdForWeekday,
 } from '@/lib/schedule/week';
+import { logicalYmdToLocalDate } from '@/lib/tasks-logical-day';
 import type { SchedulePlacementRow } from '@/lib/schedule/types';
 import {
   cancelAssignForPlacementDay,
   copyPreviousWeekToThisWeek,
   loadScheduleForDayWindow,
   placeFrogOnSchedule,
+  rematerializeOrphanedPlacement,
   removePlacementSegment,
   type WeekScheduleView,
 } from '@/lib/schedule-service';
@@ -297,7 +300,37 @@ function confirmTogglePlacementDone(
 }
 
 function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
-  return isEditableWeek(getWeekStartMondayYmd(ymd), logicalTodayYmd);
+  return isEditableScheduleDay(ymd, logicalTodayYmd);
+}
+
+/** 有任务格子的蓝灰底：任务越多越深；过去日一律灰阶 */
+function scheduleBlockColors(
+  taskCount: number,
+  opts: { isPast: boolean; allDone: boolean; isDark: boolean },
+): { backgroundColor: string; borderColor: string } {
+  const level = Math.min(4, Math.max(1, Math.round(taskCount))) - 1;
+  if (opts.isPast || opts.allDone) {
+    const alphas = opts.isDark
+      ? [0.28, 0.36, 0.46, 0.58]
+      : [0.14, 0.22, 0.30, 0.40];
+    const a = alphas[level]!;
+    return {
+      backgroundColor: opts.isDark
+        ? `rgba(100,116,139,${a})`
+        : `rgba(148,163,184,${a})`,
+      borderColor: opts.isDark ? 'rgba(148,163,184,0.28)' : 'rgba(148,163,184,0.35)',
+    };
+  }
+  const alphas = opts.isDark
+    ? [0.18, 0.26, 0.36, 0.48]
+    : [0.10, 0.16, 0.24, 0.34];
+  const a = alphas[level]!;
+  return {
+    backgroundColor: opts.isDark
+      ? `rgba(96,165,250,${a})`
+      : `rgba(0,88,190,${a})`,
+    borderColor: opts.isDark ? 'rgba(96,165,250,0.32)' : 'rgba(0,88,190,0.18)',
+  };
 }
 
 export function WeeklyFrogSchedule({
@@ -319,8 +352,6 @@ export function WeeklyFrogSchedule({
   const gridLineSoft = theme.outline;
   const todayWash = theme.primaryMuted;
   const todayWashStrong = isDark ? 'rgba(96,165,250,0.28)' : 'rgba(0,88,190,0.12)';
-  const blockActiveBg = isDark ? 'rgba(96,165,250,0.28)' : 'rgba(0,88,190,0.14)';
-  const blockDoneBg = isDark ? 'rgba(100,116,139,0.35)' : 'rgba(148,163,184,0.22)';
   const successTint = theme.secondary;
 
   /** 0 = 今天居中的三天；±1 切换一整周期（平移 3 天） */
@@ -358,6 +389,9 @@ export function WeeklyFrogSchedule({
     startSlotIndex: number;
     assignYmd: string;
     maxSpan: number;
+    /** 未入格重新落入 */
+    rematerializePlacementId?: string;
+    rematerializePreselected?: SchedulePlacePreselected;
   } | null>(null);
 
   const [cellList, setCellList] = React.useState<{
@@ -365,6 +399,14 @@ export function WeeklyFrogSchedule({
     slotIndex: number;
     placements: SchedulePlacementRow[];
     editable: boolean;
+  } | null>(null);
+
+  const [orphanListOpen, setOrphanListOpen] = React.useState(false);
+
+  /** 点选格子为未入格项重新指派时间 */
+  const [reassignPending, setReassignPending] = React.useState<{
+    placement: SchedulePlacementRow;
+    subject: ScheduleSubjectInfo;
   } | null>(null);
 
   const [detail, setDetail] = React.useState<{
@@ -621,7 +663,19 @@ export function WeeklyFrogSchedule({
     }
   }, [slotNoteEditor]);
 
-  const openPlace = (assignYmd: string, startSlotIndex: number) => {
+  const orphanedPlacements = React.useMemo(() => {
+    if (!view) return [] as SchedulePlacementRow[];
+    return view.placements.filter((p) => p.orphaned || p.startSlotIndex == null);
+  }, [view]);
+
+  const openPlace = (
+    assignYmd: string,
+    startSlotIndex: number,
+    opts?: {
+      rematerializePlacementId?: string;
+      rematerializePreselected?: SchedulePlacePreselected;
+    },
+  ) => {
     if (!dayEditable(assignYmd, logicalTodayYmd) || !view) return;
     const weekStartYmd = getWeekStartMondayYmd(assignYmd);
     const weekday = weekdayFromYmd(assignYmd);
@@ -631,11 +685,27 @@ export function WeeklyFrogSchedule({
       startSlotIndex,
       assignYmd,
       maxSpan: maxSpanFromSlot(view.axis, startSlotIndex),
+      rematerializePlacementId: opts?.rematerializePlacementId,
+      rematerializePreselected: opts?.rematerializePreselected,
     });
   };
 
   const handlePlaceConfirm = async (result: SchedulePlaceResult) => {
     if (!placeTarget || !view) return;
+    if (placeTarget.rematerializePlacementId) {
+      await rematerializeOrphanedPlacement({
+        placementId: placeTarget.rematerializePlacementId,
+        assignYmd: placeTarget.assignYmd,
+        startSlotIndex: placeTarget.startSlotIndex,
+        spanSlots: result.spanSlots,
+        logicalTodayYmd,
+      });
+      setPlaceTarget(null);
+      setReassignPending(null);
+      await reload(loadDayYmds, { silent: true });
+      onChanged?.();
+      return;
+    }
     const row = await placeFrogOnSchedule({
       weekStartYmd: placeTarget.weekStartYmd,
       weekday: placeTarget.weekday,
@@ -661,6 +731,22 @@ export function WeeklyFrogSchedule({
     onChanged?.();
   };
 
+  const startReassignTime = (placement: SchedulePlacementRow, subject: ScheduleSubjectInfo) => {
+    setDetail(null);
+    setOrphanListOpen(false);
+    setCellList(null);
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpanded(true);
+    const assignYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
+    const dayOffset = Math.round(
+      (logicalYmdToLocalDate(assignYmd).getTime() -
+        logicalYmdToLocalDate(logicalTodayYmd).getTime()) /
+        (24 * 60 * 60 * 1000),
+    );
+    setPeriodIndex(Math.round(dayOffset / 3));
+    setReassignPending({ placement, subject });
+  };
+
   const openCellList = (
     assignYmd: string,
     slotIndex: number,
@@ -679,6 +765,23 @@ export function WeeklyFrogSchedule({
     const key = cellKey(assignYmd, slotIndex);
     const list = placementsByCell.get(key) ?? [];
     const editable = dayEditable(assignYmd, logicalTodayYmd);
+
+    if (reassignPending && editable) {
+      openPlace(assignYmd, slotIndex, {
+        rematerializePlacementId: reassignPending.placement.id,
+        rematerializePreselected: {
+          kind: reassignPending.subject.kind,
+          id: reassignPending.subject.id,
+          title: reassignPending.subject.title,
+          priority: reassignPending.subject.priority,
+          dueDate: reassignPending.subject.dueDate,
+          acceptanceCriteria: reassignPending.subject.acceptanceCriteria,
+          projectName: reassignPending.subject.projectName,
+        },
+      });
+      return;
+    }
+
     if (list.length === 0) {
       if (editable) openPlace(assignYmd, slotIndex);
       return;
@@ -707,6 +810,10 @@ export function WeeklyFrogSchedule({
   };
 
   const handleCellLongPress = (assignYmd: string, slotIndex: number) => {
+    if (reassignPending) {
+      handleCellPress(assignYmd, slotIndex);
+      return;
+    }
     const key = cellKey(assignYmd, slotIndex);
     const list = placementsByCell.get(key) ?? [];
     const editable = dayEditable(assignYmd, logicalTodayYmd);
@@ -722,6 +829,7 @@ export function WeeklyFrogSchedule({
     const subject = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
     if (!subject) return;
     setCellList(null);
+    setOrphanListOpen(false);
     setDetail({ placement: p, subject });
   };
 
@@ -816,6 +924,7 @@ export function WeeklyFrogSchedule({
 
   const renderDayHeader = (ymd: string, width: number) => {
     const isTodayCol = ymd === logicalTodayYmd;
+    const isPastCol = ymd < logicalTodayYmd;
     const weekday = weekdayFromYmd(ymd);
     const dayNum = ymd.slice(8);
     return (
@@ -829,9 +938,14 @@ export function WeeklyFrogSchedule({
             borderColor: gridLineSoft,
             backgroundColor: isTodayCol
               ? todayWash
-              : isDark
-                ? theme.surface
-                : theme.surfaceSubtle,
+              : isPastCol
+                ? isDark
+                  ? 'rgba(51,65,85,0.45)'
+                  : 'rgba(226,232,240,0.85)'
+                : isDark
+                  ? theme.surface
+                  : theme.surfaceSubtle,
+            opacity: isPastCol ? 0.72 : 1,
           },
         ]}>
         <Text
@@ -849,7 +963,13 @@ export function WeeklyFrogSchedule({
           <Text
             style={[
               styles.dayHeaderDate,
-              { color: isTodayCol ? theme.onPrimary : theme.text },
+              {
+                color: isTodayCol
+                  ? theme.onPrimary
+                  : isPastCol
+                    ? outline
+                    : theme.text,
+              },
             ]}>
             {dayNum}
           </Text>
@@ -861,11 +981,21 @@ export function WeeklyFrogSchedule({
   const renderDaySlots = (ymd: string, width: number) => {
     if (!view || !layout) return null;
     const isTodayCol = ymd === logicalTodayYmd;
+    const isPastCol = ymd < logicalTodayYmd;
     const editable = dayEditable(ymd, logicalTodayYmd);
     const breakBg = isDark ? 'rgba(51,65,85,0.55)' : 'rgba(226,232,240,0.95)';
     const breakFg = isDark ? 'rgba(148,163,184,0.95)' : 'rgba(100,116,139,0.95)';
+    const emptyCellBg = isPastCol
+      ? isDark
+        ? 'rgba(51,65,85,0.4)'
+        : 'rgba(226,232,240,0.7)'
+      : isTodayCol
+        ? todayWash
+        : isDark
+          ? 'rgba(15,23,42,0.35)'
+          : theme.surfaceSubtle;
     return (
-      <View key={ymd} style={{ width }}>
+      <View key={ymd} style={{ width, opacity: isPastCol ? 0.7 : 1 }}>
         <View style={{ height: totalBodyH, position: 'relative' }}>
           {timeline.map((row, rowIndex) => {
             const rowH = rowHeights[rowIndex] ?? 52;
@@ -915,11 +1045,7 @@ export function WeeklyFrogSchedule({
                   {
                     height: rowH,
                     borderColor: gridLineSoft,
-                    backgroundColor: isTodayCol
-                      ? todayWash
-                      : isDark
-                        ? 'rgba(15,23,42,0.35)'
-                        : theme.surfaceSubtle,
+                    backgroundColor: emptyCellBg,
                   },
                 ]}>
                 {(() => {
@@ -942,10 +1068,16 @@ export function WeeklyFrogSchedule({
                   const showUnfinished =
                     unfinishedTitles.length > 0 ? unfinishedTitles : null;
                   const titleDone = !showUnfinished;
+                  const taskCount = uniquePlacementsBySubject(starts).length;
+                  const fill = scheduleBlockColors(taskCount, {
+                    isPast: isPastCol,
+                    allDone: display.done,
+                    isDark,
+                  });
                   const titleStyle = [
                     styles.blockTitle,
                     {
-                      color: titleDone ? outline : theme.text,
+                      color: isPastCol || titleDone ? outline : theme.text,
                       textDecorationLine: titleDone
                         ? ('line-through' as const)
                         : ('none' as const),
@@ -960,23 +1092,12 @@ export function WeeklyFrogSchedule({
                         styles.block,
                         {
                           height: Math.max(20, h),
-                          backgroundColor: display.done ? blockDoneBg : blockActiveBg,
-                          borderColor: display.done
-                            ? `${outline}40`
-                            : todayWashStrong,
+                          backgroundColor: fill.backgroundColor,
+                          borderColor: fill.borderColor,
                         },
                       ]}>
-                      <View
-                        style={[
-                          styles.blockAccent,
-                          {
-                            backgroundColor: display.done ? outline : primary,
-                            opacity: display.done ? 0.45 : 1,
-                          },
-                        ]}
-                      />
                       <View style={styles.blockBody}>
-                        {showUnfinished && showUnfinished.length > 1 ? (
+                        {showUnfinished && showUnfinished.length > 1 && !isPastCol ? (
                           <ScheduleCellTitleRotator
                             titles={showUnfinished}
                             numberOfLines={1}
@@ -1002,7 +1123,7 @@ export function WeeklyFrogSchedule({
 
                 {(() => {
                   const unfinished = countUnfinishedInCell(covering, subjects, ymd);
-                  if (unfinished <= 1) return null;
+                  if (unfinished <= 1 || isPastCol) return null;
                   return (
                     <View style={[styles.badge, { backgroundColor: primary }]}>
                       <Text style={styles.badgeText}>{unfinished}</Text>
@@ -1251,16 +1372,18 @@ export function WeeklyFrogSchedule({
             {!expanded && todayCompactItems.length === 0 && !(loading && !view) ? (
               <Text style={[styles.summaryMeta, { color: outline }]}>暂无安排</Text>
             ) : null}
-            {expanded && view && view.orphanedCount > 0 ? (
+            {expanded && orphanedPlacements.length > 0 ? (
               <Pressable
                 onPress={(e) => {
                   e.stopPropagation?.();
-                  setSettingsOpen(true);
+                  setOrphanListOpen(true);
                 }}
                 hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel={`查看未入格任务 ${orphanedPlacements.length} 项`}
                 style={[styles.orphanChip, { backgroundColor: `${theme.danger}14` }]}>
                 <Text style={{ color: theme.danger, fontSize: 12, fontWeight: '700' }}>
-                  未入格 {view.orphanedCount}
+                  未入格 {orphanedPlacements.length}
                 </Text>
               </Pressable>
             ) : null}
@@ -1314,7 +1437,36 @@ export function WeeklyFrogSchedule({
           </View>
         </Pressable>
 
-        {pendingPlace ? (
+        {reassignPending ? (
+          <View
+            style={[
+              styles.pendingBanner,
+              {
+                backgroundColor: `${theme.danger}12`,
+                borderColor: `${theme.danger}33`,
+              },
+            ]}>
+            <View style={[styles.pendingIconWrap, { backgroundColor: `${theme.danger}22` }]}>
+              <MaterialIcons name="schedule" size={18} color={theme.danger} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ color: theme.danger, fontWeight: '800', fontSize: 13 }} numberOfLines={1}>
+                重新指派：{reassignPending.subject.title}
+              </Text>
+              <Text style={{ color: outline, fontSize: 12, marginTop: 2, lineHeight: 16 }}>
+                点选今天或未来的格子以落入时段
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => setReassignPending(null)}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="取消重新指派"
+              style={styles.pendingClose}>
+              <MaterialIcons name="close" size={20} color={outline} />
+            </Pressable>
+          </View>
+        ) : pendingPlace ? (
           <View
             style={[
               styles.pendingBanner,
@@ -1452,8 +1604,6 @@ export function WeeklyFrogSchedule({
                 </Text>
                 {periodIndex !== 0 ? (
                   <Text style={[styles.weekSub, { color: primary }]}>回今天</Text>
-                ) : view && !dayEditable(logicalTodayYmd, logicalTodayYmd) ? (
-                  <Text style={[styles.weekSub, { color: outline }]}>只读</Text>
                 ) : (
                   <Text style={[styles.weekSub, { color: outline }]}>昨 · 今 · 明</Text>
                 )}
@@ -1491,7 +1641,9 @@ export function WeeklyFrogSchedule({
         assignYmd={placeTarget?.assignYmd ?? logicalTodayYmd}
         maxSpan={placeTarget?.maxSpan ?? 1}
         lockedProjectIds={lockedProjectIds}
-        preselected={pendingPlace}
+        preselected={
+          placeTarget?.rematerializePreselected ?? pendingPlace ?? null
+        }
         onConfirm={handlePlaceConfirm}
       />
 
@@ -1499,6 +1651,139 @@ export function WeeklyFrogSchedule({
         visible={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
+
+      <Modal
+        visible={orphanListOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setOrphanListOpen(false)}>
+        <Pressable style={styles.listBackdrop} onPress={() => setOrphanListOpen(false)}>
+          <Pressable
+            onPress={() => {}}
+            style={[
+              styles.listCard,
+              shadows.card,
+              { backgroundColor: theme.surface, borderColor: theme.outline },
+            ]}>
+            <Text style={[styles.listTitle, { color: theme.text }]}>
+              未入格任务（{orphanedPlacements.length}）
+            </Text>
+            <Text style={{ color: outline, fontSize: 12, lineHeight: 17, marginBottom: Spacing.md }}>
+              改轴后无法落入时间格的占用。可重新指派时段，或取消当日指派。
+            </Text>
+            <ScrollView style={{ maxHeight: 320 }}>
+              {orphanedPlacements.length === 0 ? (
+                <Text style={{ color: outline, paddingVertical: 16 }}>当前没有未入格任务</Text>
+              ) : (
+                orphanedPlacements.map((p) => {
+                  const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
+                  const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
+                  const canEdit = dayEditable(assignYmd, logicalTodayYmd);
+                  return (
+                    <View
+                      key={p.id}
+                      style={[
+                        styles.listRow,
+                        {
+                          backgroundColor: surfaceLow,
+                          flexDirection: 'column',
+                          alignItems: 'stretch',
+                          gap: Spacing.sm,
+                          paddingVertical: Spacing.lg,
+                        },
+                      ]}>
+                      <Pressable
+                        onPress={() => openDetail(p)}
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md }}>
+                        <View
+                          style={[
+                            styles.listRowRail,
+                            { backgroundColor: theme.danger, alignSelf: 'stretch' },
+                          ]}
+                        />
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text
+                            style={{ color: theme.text, fontWeight: '700', fontSize: 14 }}
+                            numberOfLines={2}>
+                            {sub?.title ?? '青蛙'}
+                          </Text>
+                          <Text style={{ color: outline, fontSize: 12, marginTop: 2 }}>
+                            指派日 {assignYmd}
+                            {canEdit ? '' : ' · 只读'}
+                          </Text>
+                        </View>
+                        <MaterialIcons name="chevron-right" size={18} color={outline} />
+                      </Pressable>
+                      {sub && !sub.deletedSnapshot ? (
+                        <View style={styles.orphanActions}>
+                          <Pressable
+                            onPress={() => startReassignTime(p, sub)}
+                            style={({ pressed }) => [
+                              styles.orphanActionBtn,
+                              {
+                                borderColor: `${primary}55`,
+                                backgroundColor: todayWash,
+                                opacity: pressed ? 0.85 : 1,
+                              },
+                            ]}>
+                            <MaterialIcons name="schedule" size={16} color={primary} />
+                            <Text style={{ color: primary, fontWeight: '700', fontSize: 13 }}>
+                              {canEdit ? '重新指派' : '指派到今天/未来'}
+                            </Text>
+                          </Pressable>
+                          {canEdit ? (
+                            <Pressable
+                              onPress={() => {
+                                Alert.alert(
+                                  '取消指派',
+                                  `确定取消「${sub.title}」在 ${assignYmd} 的指派吗？`,
+                                  [
+                                    { text: '保留', style: 'cancel' },
+                                    {
+                                      text: '取消指派',
+                                      style: 'destructive',
+                                      onPress: () => {
+                                        void (async () => {
+                                          try {
+                                            await cancelAssignForPlacementDay(p.id, logicalTodayYmd);
+                                            await reload(loadDayYmds, { silent: true });
+                                            onChanged?.();
+                                          } catch (err) {
+                                            Alert.alert(
+                                              '取消失败',
+                                              err instanceof Error ? err.message : '请稍后重试',
+                                            );
+                                          }
+                                        })();
+                                      },
+                                    },
+                                  ],
+                                );
+                              }}
+                              style={({ pressed }) => [
+                                styles.orphanActionBtn,
+                                {
+                                  borderColor: `${outline}55`,
+                                  backgroundColor: theme.surface,
+                                  opacity: pressed ? 0.85 : 1,
+                                },
+                              ]}>
+                              <MaterialIcons name="link-off" size={16} color={outline} />
+                              <Text style={{ color: theme.text, fontWeight: '600', fontSize: 13 }}>
+                                取消指派
+                              </Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })
+              )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <Modal
         visible={!!cellList}
@@ -1621,6 +1906,11 @@ export function WeeklyFrogSchedule({
             }
           })();
         }}
+        onReassignTime={
+          detail && (detail.placement.orphaned || detail.placement.startSlotIndex == null)
+            ? () => startReassignTime(detail.placement, detail.subject)
+            : undefined
+        }
         onEdit={() => {
           if (!detail) return;
           onOpenSubject?.(detail.placement.subjectKind, detail.placement.subjectId);
@@ -2066,11 +2356,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xs,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
-    flexDirection: 'row',
     zIndex: 2,
-  },
-  blockAccent: {
-    width: 3,
   },
   blockBody: {
     flex: 1,
@@ -2159,6 +2445,21 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     borderRadius: 2,
     minHeight: 20,
+  },
+  orphanActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    paddingLeft: Spacing.md + 3,
+  },
+  orphanActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.sm,
+    paddingVertical: Spacing.md,
   },
   addMoreBtn: {
     flexDirection: 'row',

@@ -1,6 +1,10 @@
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase, type SyncStatus } from '@/lib/database.native';
-import { markCloudSqliteTableDirty } from '@/lib/cloud-sql-dirty-track';
+import {
+  beginCloudSqliteDirtyIgnoreBatch,
+  endCloudSqliteDirtyIgnoreBatch,
+  markCloudSqliteTableDirty,
+} from '@/lib/cloud-sql-dirty-track';
 import {
   DEFAULT_SCHEDULE_AXIS,
   SCHEDULE_AXIS_SETTING_KEY,
@@ -62,6 +66,12 @@ function mapPlacement(row: PlacementDbRow): SchedulePlacementRow {
     updatedAt: row.updated_at,
     syncStatus: row.sync_status,
   };
+}
+
+/** 本地是否已有轴设置（未设置时才允许从远端灌入全局轴） */
+export async function hasLocalScheduleAxisSetting(): Promise<boolean> {
+  const raw = await getAppSetting<unknown>(SCHEDULE_AXIS_SETTING_KEY);
+  return raw != null && typeof raw === 'object';
 }
 
 export async function getScheduleAxisSettings(): Promise<ScheduleAxisSettings> {
@@ -241,14 +251,87 @@ export async function insertPlacement(input: SchedulePlacementInput): Promise<Sc
   };
 }
 
+/**
+ * 从远端灌入占用：保留远端 id，标记 synced，不触发脏表上推。
+ */
+export async function upsertPlacementFromRemote(input: {
+  id: string;
+  weekStartYmd: string;
+  weekday: number;
+  startSlotIndex: number;
+  spanSlots: number;
+  subjectKind: ScheduleSubjectKind;
+  subjectId: string;
+  orphaned?: number;
+}): Promise<SchedulePlacementRow> {
+  const db = await getDatabase();
+  const now = sqlNow();
+  const spanSlots = Math.max(1, input.spanSlots);
+  const orphaned = input.orphaned ? 1 : 0;
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.runAsync(
+      `INSERT INTO schedule_placements (
+        id, week_start_ymd, weekday, start_slot_index, span_slots,
+        subject_kind, subject_id, orphaned, created_at, updated_at, sync_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
+      ON CONFLICT(id) DO UPDATE SET
+        week_start_ymd = excluded.week_start_ymd,
+        weekday = excluded.weekday,
+        start_slot_index = excluded.start_slot_index,
+        span_slots = excluded.span_slots,
+        subject_kind = excluded.subject_kind,
+        subject_id = excluded.subject_id,
+        orphaned = excluded.orphaned,
+        updated_at = excluded.updated_at,
+        sync_status = 'synced'`,
+      [
+        input.id,
+        input.weekStartYmd,
+        input.weekday,
+        input.startSlotIndex,
+        spanSlots,
+        input.subjectKind,
+        input.subjectId,
+        orphaned,
+        now,
+        now,
+      ],
+    );
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+  return {
+    id: input.id,
+    weekStartYmd: input.weekStartYmd,
+    weekday: input.weekday,
+    startSlotIndex: input.startSlotIndex,
+    spanSlots,
+    subjectKind: input.subjectKind,
+    subjectId: input.subjectId,
+    orphaned,
+    createdAt: now,
+    updatedAt: now,
+    syncStatus: 'synced',
+  };
+}
+
 export async function updatePlacementSlots(
   id: string,
-  patch: { startSlotIndex: number | null; spanSlots?: number; orphaned: boolean },
+  patch: {
+    startSlotIndex: number | null;
+    spanSlots?: number;
+    orphaned: boolean;
+    weekStartYmd?: string;
+    weekday?: number;
+  },
 ): Promise<void> {
   const db = await getDatabase();
   const now = sqlNow();
   await db.runAsync(
     `UPDATE schedule_placements SET
+      week_start_ymd = COALESCE(?, week_start_ymd),
+      weekday = COALESCE(?, weekday),
       start_slot_index = ?,
       span_slots = COALESCE(?, span_slots),
       orphaned = ?,
@@ -260,6 +343,8 @@ export async function updatePlacementSlots(
       END
      WHERE id = ?`,
     [
+      patch.weekStartYmd ?? null,
+      patch.weekday ?? null,
       patch.startSlotIndex,
       patch.spanSlots ?? null,
       patch.orphaned ? 1 : 0,

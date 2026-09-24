@@ -46,6 +46,8 @@ type Props = {
   onRemoveSegment: () => void;
   onCancelAssign: () => void;
   onEdit: () => void;
+  /** 未入格：点选格子重新落入时间 */
+  onReassignTime?: () => void;
 };
 
 function priorityLabel(p: number): string {
@@ -67,6 +69,7 @@ export function SchedulePlacementDetailSheet({
   onRemoveSegment,
   onCancelAssign,
   onEdit,
+  onReassignTime,
 }: Props) {
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
@@ -77,9 +80,10 @@ export function SchedulePlacementDetailSheet({
   const surface = isDark ? '#1e293b' : '#fff';
   const deleted = subject?.deletedSnapshot || isFrogSubjectDeleted(subject?.extraData ?? null);
   const readOnly = !editable || deleted;
+  const isOrphaned = !!placement && (placement.orphaned === 1 || placement.startSlotIndex == null);
 
   const timeLabel = React.useMemo(() => {
-    if (!placement || placement.startSlotIndex == null) return '未入格';
+    if (!placement || placement.startSlotIndex == null || placement.orphaned) return '未入格';
     const start = slotStartMinutes(axis, placement.startSlotIndex);
     const end = placementEndMinutes(axis, placement.startSlotIndex, placement.spanSlots);
     return `${formatMinutesAsHm(start)} – ${formatMinutesAsHm(end)} · ${placement.spanSlots} 格`;
@@ -126,6 +130,11 @@ export function SchedulePlacementDetailSheet({
                   所属项目 {subject.projectName}
                 </Text>
               ) : null}
+              {isOrphaned ? (
+                <Text style={[styles.metaLine, { color: theme.danger }]}>
+                  未落入时间格（可重新指派时段）
+                </Text>
+              ) : null}
               {deleted ? (
                 <Text style={[styles.metaLine, { color: theme.danger }]}>
                   主体已删除（只读快照）
@@ -140,6 +149,16 @@ export function SchedulePlacementDetailSheet({
           </ScrollView>
 
           <View style={styles.actions}>
+            {isOrphaned && onReassignTime ? (
+              <Pressable
+                disabled={deleted}
+                onPress={onReassignTime}
+                style={[styles.actionBtn, { borderColor: `${primary}55`, opacity: deleted ? 0.4 : 1 }]}>
+                <MaterialIcons name="schedule" size={18} color={primary} />
+                <Text style={{ color: primary, fontWeight: '700' }}>重新指派时间</Text>
+              </Pressable>
+            ) : null}
+
             {!deleted ? (
               <Pressable
                 disabled={readOnly}
@@ -156,18 +175,20 @@ export function SchedulePlacementDetailSheet({
               </Pressable>
             ) : null}
 
-            <Pressable
-              disabled={readOnly}
-              onPress={() => {
-                Alert.alert('从本格段移除', '仅删除这一段占用；若该日已无其它占用将取消当日指派。', [
-                  { text: '取消', style: 'cancel' },
-                  { text: '移除', style: 'destructive', onPress: onRemoveSegment },
-                ]);
-              }}
-              style={[styles.actionBtn, { borderColor: `${outline}55`, opacity: readOnly ? 0.4 : 1 }]}>
-              <MaterialIcons name="remove-circle-outline" size={18} color={outline} />
-              <Text style={{ color: theme.text, fontWeight: '600' }}>从本格段移除</Text>
-            </Pressable>
+            {!isOrphaned ? (
+              <Pressable
+                disabled={readOnly}
+                onPress={() => {
+                  Alert.alert('从本格段移除', '仅删除这一段占用；若该日已无其它占用将取消当日指派。', [
+                    { text: '取消', style: 'cancel' },
+                    { text: '移除', style: 'destructive', onPress: onRemoveSegment },
+                  ]);
+                }}
+                style={[styles.actionBtn, { borderColor: `${outline}55`, opacity: readOnly ? 0.4 : 1 }]}>
+                <MaterialIcons name="remove-circle-outline" size={18} color={outline} />
+                <Text style={{ color: theme.text, fontWeight: '600' }}>从本格段移除</Text>
+              </Pressable>
+            ) : null}
 
             <Pressable
               disabled={readOnly}
